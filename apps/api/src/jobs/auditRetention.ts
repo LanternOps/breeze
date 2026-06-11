@@ -1,22 +1,35 @@
 /**
- * Audit-Log Retention Worker (Task 29)
+ * Audit-Log Retention Worker (Task 29; hardened for issue #915)
  *
  * Walks `audit_retention_policies` daily and deletes `audit_logs` rows
- * older than each policy's `retention_days`. Bypasses Task 1's
- * append-only protections via two stacked layers (both required):
+ * older than each policy's `retention_days`.
  *
- *   1. `SET LOCAL ROLE breeze_audit_admin` — `breeze_app` has no DELETE
- *      privilege on `audit_logs` (migration 2026-05-25-a). The
- *      `breeze_audit_admin` role (migration 2026-05-25-i) does, and
- *      breeze_app is a member, so a SET LOCAL ROLE inside the
- *      transaction is sufficient to clear the privilege check.
+ * SECURE PATH (AUDIT_ADMIN_DATABASE_URL set, post-#915):
+ *   The DELETE runs on a *dedicated* pool that logs in directly as the
+ *   `breeze_audit_admin` role (db/auditAdminPool.ts). That role holds the
+ *   DELETE privilege; the main `breeze_app` pool does not and — once
+ *   `breeze_audit_admin` is REVOKEd from `breeze_app` — cannot acquire it.
+ *   Only the trigger-bypass GUC (layer 2 below) is still set; no SET ROLE
+ *   is needed because the connection already *is* the admin role. This is
+ *   the privilege-separation fix: an attacker inside the API process,
+ *   holding only a breeze_app connection, can no longer delete audit rows.
  *
- *   2. `SET LOCAL breeze.allow_audit_retention = '1'` — the
- *      `audit_log_immutable` trigger refuses every DELETE unless this
- *      session GUC is '1'. The bypass is per-transaction (SET LOCAL)
- *      and is never set outside this worker. Even another bug that
- *      somehow obtained the role membership cannot delete without
- *      explicitly setting this GUC in the same transaction.
+ * LEGACY FALLBACK (AUDIT_ADMIN_DATABASE_URL unset, pre-#915 behavior):
+ *   The DELETE runs on the shared breeze_app pool and defeats the
+ *   append-only protections via two stacked layers (both required):
+ *
+ *     1. `SET LOCAL ROLE breeze_audit_admin` — breeze_app is a member of
+ *        the role (migration 2026-05-25-i), so a SET LOCAL ROLE inside the
+ *        transaction clears the privilege check.
+ *     2. `SET LOCAL breeze.allow_audit_retention = '1'` — the
+ *        `audit_log_immutable` trigger refuses every DELETE unless this
+ *        session GUC is '1'.
+ *
+ *   This mode is reachable from the breeze_app connection (issue #915) and
+ *   logs a loud startup warning. Existing deploys keep working here until
+ *   they provision AUDIT_ADMIN_DATABASE_URL.
+ *
+ * In BOTH paths the trigger still requires `breeze.allow_audit_retention`:
  *
  * Per-policy transaction isolation: each policy runs in its own
  * `withSystemDbAccessContext` so a failure deleting for one org does
@@ -39,6 +52,11 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
+import {
+  getAuditAdminDb,
+  hasDedicatedAuditAdminPool,
+  logAuditAdminPoolMode,
+} from '../db/auditAdminPool';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 
@@ -78,6 +96,116 @@ interface PolicyRow {
   retention_days: number;
 }
 
+// Minimal shape of the postgres-js / drizzle handle we need. Both the
+// dedicated audit-admin pool and the request-scoped breeze_app tx expose
+// `.execute(sql)`, so the prune routine is agnostic to which one it runs on.
+interface SqlExecutor {
+  execute: (query: ReturnType<typeof sql>) => Promise<unknown>;
+}
+
+function extractRowCount(result: unknown): number {
+  const raw = result as { rowCount?: number; count?: number };
+  if (typeof raw.rowCount === 'number') return raw.rowCount;
+  if (typeof raw.count === 'number') return raw.count;
+  return Array.isArray(result) ? (result as unknown[]).length : 0;
+}
+
+/**
+ * The DELETE + chain re-anchor for a single org, parameterized over the
+ * executor so it can run on either pool. Assumes the caller has already
+ * armed the trigger-bypass GUC (`breeze.allow_audit_retention = '1'`) on
+ * the same transaction/connection.
+ */
+async function deleteAndReanchor(exec: SqlExecutor, policy: PolicyRow): Promise<number> {
+  const result = await exec.execute(sql`
+    DELETE FROM audit_logs
+    WHERE org_id = ${policy.org_id}
+      AND timestamp < (now() - (${policy.retention_days}::int * interval '1 day'))
+  `);
+  const count = extractRowCount(result);
+
+  // Re-anchor the chain. After the DELETE the new oldest surviving row
+  // still carries prev_checksum pointing at the deleted row, which makes
+  // audit_log_verify_chain flag it as a break the next morning — defeating
+  // the entire tamper-detection signal.
+  //
+  // Find the new chain head per org and rewrite prev_checksum to NULL +
+  // checksum to the canonical hash with prev=NULL. The WHERE filter on the
+  // existing prev_checksum makes this a no-op when no rows were deleted
+  // (oldest row's prev_checksum already NULL) and avoids unnecessary writes
+  // on idempotent reruns.
+  if (count > 0) {
+    await exec.execute(sql`
+      WITH head AS (
+        SELECT a.*
+        FROM audit_logs a
+        WHERE a.org_id IS NOT DISTINCT FROM ${policy.org_id}
+        ORDER BY a.timestamp, a.id
+        LIMIT 1
+      )
+      UPDATE audit_logs
+      SET prev_checksum = NULL,
+          checksum = encode(
+            -- convert_to(... ,'UTF8'), not ::bytea: the text->bytea cast
+            -- throws on the backslash escapes jsonb details::text emits.
+            -- Must match the trigger/verifier hash exactly or this
+            -- re-anchor would itself break the chain.
+            sha256(convert_to(audit_log_canonical_payload(head, NULL), 'UTF8')),
+            'hex'
+          )
+      FROM head
+      WHERE audit_logs.id = head.id
+        AND head.prev_checksum IS NOT NULL
+    `);
+  }
+
+  return count;
+}
+
+/**
+ * Prune one org's expired audit rows.
+ *
+ *  - SECURE path (AUDIT_ADMIN_DATABASE_URL set): open a transaction on the
+ *    dedicated breeze_audit_admin pool, arm only the bypass GUC, and run
+ *    the DELETE. No SET ROLE — the connection already holds DELETE.
+ *  - LEGACY path: run on the breeze_app pool via withSystemDbAccessContext,
+ *    arming BOTH the SET LOCAL ROLE and the bypass GUC (pre-#915 behavior).
+ */
+async function pruneOrg(policy: PolicyRow): Promise<number> {
+  if (hasDedicatedAuditAdminPool()) {
+    const adminDb = getAuditAdminDb();
+    // Run inside a transaction so SET LOCAL is scoped to this prune. The
+    // dedicated pool is NOT under the AsyncLocalStorage db-context, so we
+    // drive its own transaction directly.
+    return adminDb.transaction(async (tx) => {
+      // The dedicated pool is OUTSIDE the AsyncLocalStorage db-context, so it
+      // has none of the RLS GUCs set. audit_logs has RLS forced and
+      // breeze_audit_admin has no BYPASSRLS, so without system scope the
+      // DELETE policy `breeze_has_org_access(org_id)` would filter every row
+      // out (silent zero-delete). Establish system scope on this tx so the
+      // policy passes — same GUCs withSystemDbAccessContext sets.
+      await tx.execute(sql`select set_config('breeze.scope', 'system', true)`);
+      await tx.execute(sql`select set_config('breeze.org_id', '', true)`);
+      await tx.execute(sql`select set_config('breeze.accessible_org_ids', '*', true)`);
+      await tx.execute(sql`select set_config('breeze.accessible_partner_ids', '*', true)`);
+      await tx.execute(sql`select set_config('breeze.user_id', '', true)`);
+      // Trigger bypass; the connection logs in AS breeze_audit_admin, which
+      // already holds the DELETE privilege (no SET ROLE needed).
+      await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+      return deleteAndReanchor(tx as unknown as SqlExecutor, policy);
+    });
+  }
+
+  // Legacy shared-credential fallback (issue #915 not yet remediated).
+  return runWithSystemDbAccess(async () => {
+    // Both bypass layers are SET LOCAL — they apply only to this
+    // transaction and revert on commit/rollback automatically.
+    await dbModule.db.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
+    await dbModule.db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+    return deleteAndReanchor(dbModule.db as unknown as SqlExecutor, policy);
+  });
+}
+
 /**
  * Walk all retention policies and prune expired audit_logs rows.
  *
@@ -109,61 +237,7 @@ export async function pruneExpiredAuditLogs(): Promise<RetentionStats> {
 
   for (const policy of policies) {
     try {
-      const rowsDeleted = await runWithSystemDbAccess(async () => {
-        // Both bypass layers are SET LOCAL — they apply only to this
-        // transaction and revert on commit/rollback automatically.
-        await dbModule.db.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
-        await dbModule.db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-
-        const result = await dbModule.db.execute(sql`
-          DELETE FROM audit_logs
-          WHERE org_id = ${policy.org_id}
-            AND timestamp < (now() - (${policy.retention_days}::int * interval '1 day'))
-        `);
-        const raw = result as unknown as { rowCount?: number; count?: number };
-        const count = typeof raw.rowCount === 'number'
-          ? raw.rowCount
-          : typeof raw.count === 'number'
-            ? raw.count
-            : Array.isArray(result) ? (result as unknown[]).length : 0;
-
-        // Re-anchor the chain. After the DELETE the new oldest surviving
-        // row still carries prev_checksum pointing at the deleted row,
-        // which makes audit_log_verify_chain flag it as a break the next
-        // morning — defeating the entire tamper-detection signal.
-        //
-        // Find the new chain head per org and rewrite prev_checksum to
-        // NULL + checksum to the canonical hash with prev=NULL. The
-        // WHERE filter on the existing prev_checksum makes this a no-op
-        // when no rows were deleted (oldest row's prev_checksum already
-        // NULL) and avoids unnecessary writes on idempotent reruns.
-        if (count > 0) {
-          await dbModule.db.execute(sql`
-            WITH head AS (
-              SELECT a.*
-              FROM audit_logs a
-              WHERE a.org_id IS NOT DISTINCT FROM ${policy.org_id}
-              ORDER BY a.timestamp, a.id
-              LIMIT 1
-            )
-            UPDATE audit_logs
-            SET prev_checksum = NULL,
-                checksum = encode(
-                  -- convert_to(... ,'UTF8'), not ::bytea: the text->bytea cast
-                  -- throws on the backslash escapes jsonb details::text emits.
-                  -- Must match the trigger/verifier hash exactly or this
-                  -- re-anchor would itself break the chain.
-                  sha256(convert_to(audit_log_canonical_payload(head, NULL), 'UTF8')),
-                  'hex'
-                )
-            FROM head
-            WHERE audit_logs.id = head.id
-              AND head.prev_checksum IS NOT NULL
-          `);
-        }
-
-        return count;
-      });
+      const rowsDeleted = await pruneOrg(policy);
 
       stats.rowsDeleted += rowsDeleted;
       stats.orgsPruned += 1;
@@ -266,6 +340,11 @@ export async function scheduleAuditRetention(
 
 export async function initializeAuditRetentionWorker(): Promise<void> {
   try {
+    // Log secure-vs-legacy mode loudly so operators running pre-#915
+    // shared-credential retention are nudged to provision the dedicated
+    // AUDIT_ADMIN_DATABASE_URL credential.
+    logAuditAdminPoolMode();
+
     retentionWorker = createAuditRetentionWorker();
 
     retentionWorker.on('error', (error) => {

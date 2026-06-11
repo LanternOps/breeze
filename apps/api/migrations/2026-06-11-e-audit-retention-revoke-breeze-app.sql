@@ -1,0 +1,49 @@
+-- Audit-retention privilege separation (issue #915) — step 2 of 2.
+--
+-- This migration would complete the #915 fix by revoking the
+-- `breeze_audit_admin` membership from `breeze_app`:
+--
+--     REVOKE breeze_audit_admin FROM breeze_app;
+--
+-- After that REVOKE, the main app pool can NEVER delete audit_logs rows —
+-- even a fully compromised API process holding a breeze_app connection
+-- can't `SET ROLE breeze_audit_admin` anymore. Retention then works ONLY
+-- via the dedicated breeze_audit_admin login pool (AUDIT_ADMIN_DATABASE_URL).
+--
+-- WHY THIS MIGRATION DOES NOT AUTO-APPLY THE REVOKE
+-- -------------------------------------------------
+-- The retention worker only uses the dedicated pool when
+-- AUDIT_ADMIN_DATABASE_URL is set in the API's environment. That credential
+-- lives in the application env (/opt/breeze/.env + compose), NOT in the
+-- database, so there is no reliable in-DB signal we can guard on to know
+-- the operator has actually provisioned and wired it. If we auto-REVOKEd
+-- here, any deploy that ran migrations before wiring AUDIT_ADMIN_DATABASE_URL
+-- would immediately break audit retention (the legacy SET ROLE path would
+-- start failing the privilege check). That violates the safe-rollout
+-- requirement.
+--
+-- Therefore this migration is intentionally a NO-OP that only emits a
+-- NOTICE. The REVOKE is a DOCUMENTED MANUAL FOLLOW-UP the operator runs
+-- AFTER confirming the dedicated pool works end-to-end.
+--
+-- OPERATOR RUNBOOK (perform in order, per region):
+--   1. ALTER ROLE breeze_audit_admin PASSWORD '<strong-random-secret>';
+--   2. Set AUDIT_ADMIN_DATABASE_URL in /opt/breeze/.env and map it in the
+--      api service `environment:` block of docker-compose.yml.
+--   3. Redeploy api; confirm the startup log shows
+--      "Dedicated audit-admin credential configured" (NOT the legacy
+--      shared-credential WARNING).
+--   4. Trigger / wait for one retention run and confirm rows prune.
+--   5. ONLY THEN run the manual REVOKE below as a superuser:
+--
+--        REVOKE breeze_audit_admin FROM breeze_app;
+--
+--      (Re-running is a no-op; REVOKE of a non-membership is harmless.)
+--
+-- After step 5, the integration test
+-- `auditRetentionPrivSep.integration.test.ts` proves a breeze_app
+-- connection can no longer `SET ROLE breeze_audit_admin`.
+
+DO $$ BEGIN
+  RAISE NOTICE '[#915] breeze_audit_admin is still GRANTed to breeze_app. The REVOKE is a documented MANUAL follow-up — see the runbook in this migration file. Provision AUDIT_ADMIN_DATABASE_URL first, verify retention, then run: REVOKE breeze_audit_admin FROM breeze_app;';
+END $$;

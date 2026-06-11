@@ -165,6 +165,21 @@ export const db = Object.assign(proxiedDb, {
 
 export type Database = typeof db;
 
+// Dedicated audit-admin pool (issue #915). Re-exported here so the
+// retention worker has a single db import surface. See auditAdminPool.ts
+// for the rationale (connection-level privilege separation).
+export {
+  getAuditAdminDb,
+  hasDedicatedAuditAdminPool,
+  logAuditAdminPoolMode,
+  closeAuditAdminPool,
+  type AuditAdminDb,
+} from './auditAdminPool';
+
+import { closeAuditAdminPool as closeAuditAdminPoolInternal } from './auditAdminPool';
+
 export async function closeDb(): Promise<void> {
-  await client.end();
+  // Drain the dedicated audit-admin pool (#915) alongside the main pool so a
+  // graceful shutdown doesn't leak its connection.
+  await Promise.all([client.end(), closeAuditAdminPoolInternal()]);
 }

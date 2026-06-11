@@ -347,6 +347,22 @@ const envSchema = z
       .optional()
       .describe('Password for the breeze_app role. If unset, ensureAppRole falls back to POSTGRES_PASSWORD.'),
 
+    // Issue #915: dedicated connection string for the `breeze_audit_admin`
+    // login role used ONLY by the audit-log retention worker. When set,
+    // retention deletes run on a separate pool with connection-level
+    // privilege separation, so audit_logs DELETE is unreachable from the
+    // main breeze_app pool. When unset, retention falls back to the legacy
+    // shared-credential path and logs a startup warning. Optional so
+    // existing deploys keep working until they provision the credential.
+    AUDIT_ADMIN_DATABASE_URL: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v || v.startsWith('postgres://') || v.startsWith('postgresql://'),
+        { message: 'AUDIT_ADMIN_DATABASE_URL must be a valid postgres:// or postgresql:// URL' },
+      )
+      .describe('Optional dedicated connection for the breeze_audit_admin role (audit retention worker, issue #915). If unset, retention uses the legacy breeze_app + SET ROLE path.'),
+
     JWT_SECRET: z
       .string({ required_error: 'JWT_SECRET is required' })
       .min(1, 'JWT_SECRET must not be empty'),
@@ -1142,6 +1158,7 @@ export function validateConfig(): AppConfig {
     DATABASE_URL: env.DATABASE_URL,
     DATABASE_URL_APP: env.DATABASE_URL_APP,
     BREEZE_APP_DB_PASSWORD: env.BREEZE_APP_DB_PASSWORD,
+    AUDIT_ADMIN_DATABASE_URL: env.AUDIT_ADMIN_DATABASE_URL,
     JWT_SECRET: env.JWT_SECRET,
     JWT_SIGNING_KEYRING: env.JWT_SIGNING_KEYRING,
     JWT_ACTIVE_KID: env.JWT_ACTIVE_KID,
