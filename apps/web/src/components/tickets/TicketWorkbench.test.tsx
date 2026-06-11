@@ -533,6 +533,85 @@ describe('TicketWorkbench forms keep input when the status POST fails', () => {
   });
 });
 
+describe('TicketWorkbench sticky composer across refreshes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps the composer mounted (and its internal-note tab selected) across a refresh after send', async () => {
+    // The first GET resolves immediately; the reload GET after send stays
+    // pending until we release it, so the in-flight refresh state commits
+    // (instant mocks never let the loading=true render reach the DOM).
+    let releaseReload: (() => void) | null = null;
+    let ticketGets = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/users') return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') {
+        ticketGets += 1;
+        if (ticketGets === 1) return makeJsonResponse({ data: makeTicket() });
+        return new Promise<Response>((resolve) => {
+          releaseReload = () => resolve(makeJsonResponse({ data: makeTicket() }));
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'internal note body' } });
+    fireEvent.click(screen.getByTestId('ticket-composer-send'));
+
+    // Send landed and the reload GET is now in flight (held open by the mock).
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/comments',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+    await waitFor(() => {
+      expect(releaseReload).not.toBeNull();
+    });
+
+    // Mid-refresh: the skeleton must NOT replace the mounted tree.
+    expect(screen.queryByTestId('ticket-workbench-loading')).toBeNull();
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-selected', 'true');
+
+    releaseReload!();
+
+    // After the refresh settles the composer is still on the internal tab.
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench')).not.toHaveAttribute('aria-busy', 'true');
+    });
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('switching tickets still shows the skeleton and resets the composer (no draft/mode leak)', async () => {
+    mockTicketApiWithUsers({
+      'tk-a': makeTicket({ id: 'tk-a', internalNumber: 'T-2026-0001' }),
+      'tk-b': makeTicket({ id: 'tk-b', internalNumber: 'T-2026-0002' })
+    });
+    const { rerender } = render(<TicketWorkbench ticketId="tk-a" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'draft for ticket A' } });
+
+    rerender(<TicketWorkbench ticketId="tk-b" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-number')).toHaveTextContent('T-2026-0002');
+    });
+    // Ticket B must not inherit ticket A's draft or internal mode.
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
+    expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
 describe('TicketWorkbench host-supplied assignees prop', () => {
   beforeEach(() => {
     vi.clearAllMocks();

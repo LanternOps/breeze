@@ -83,7 +83,11 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
 
   // Reset the inline resolve form when switching tickets — otherwise ticket B
   // could be resolved with ticket A's note (`e` on A, then `j` to B).
+  // Dropping the ticket also brings back the first-load skeleton for the new
+  // ticket, unmounting the composer so its draft/mode can't leak across
+  // tickets — same-ticket refreshes keep the tree mounted (see render below).
   useEffect(() => {
+    setTicket(null);
     setResolveOpen(false);
     setResolutionNote('');
     setPendingOpen(null);
@@ -164,7 +168,10 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     onChanged?.();
   }, [ticketId, load, onChanged]);
 
-  if (loading) {
+  // Skeleton only on the first load of a ticket. Refreshes (send, status
+  // change, refreshToken bump) keep the tree mounted so composer state —
+  // the public/internal tab in particular — survives; aria-busy marks them.
+  if (loading && !ticket) {
     return <div className="p-6 animate-pulse space-y-3" data-testid="ticket-workbench-loading">
       <div className="h-5 w-2/3 rounded bg-muted" /><div className="h-4 w-1/3 rounded bg-muted/60" /><div className="h-40 rounded bg-muted/40" />
     </div>;
@@ -183,7 +190,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench">
+    <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading}>
       {/* Header */}
       <div className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
