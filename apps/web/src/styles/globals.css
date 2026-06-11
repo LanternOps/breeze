@@ -1,12 +1,20 @@
-/* Self-hosted Plus Jakarta Sans (weights used by tailwind.config.mjs). Bundled
-   by Vite and served from our own origin, so it works under the app's CSP
-   (font-src 'self') without the Google Fonts CDN — which style-src-elem/font-src
-   block, leaving every page on the system fallback font (issue #1230). Must
-   precede the @tailwind directives: CSS requires @import before other rules. */
-@import '@fontsource/plus-jakarta-sans/400.css';
-@import '@fontsource/plus-jakarta-sans/500.css';
-@import '@fontsource/plus-jakarta-sans/600.css';
-@import '@fontsource/plus-jakarta-sans/700.css';
+/* Self-hosted Plus Jakarta Sans — the family in tailwind.config.mjs, weights
+   400/500/600/700. Bundled by Vite and served from our own origin, so the CSS
+   passes style-src-elem 'self' and the .woff2 files pass font-src 'self' — the
+   Google Fonts CDN failed both directives, leaving every page on the system
+   fallback font (issue #1230). Only the latin + latin-ext subsets are imported
+   (the UI is English; this drops the cyrillic-ext/vietnamese subsets the bare
+   weight entrypoints would otherwise pull in). These @imports must stay above
+   the @tailwind directives: Vite's postcss-import resolves them at build time
+   and drops any @import that isn't first. */
+@import '@fontsource/plus-jakarta-sans/latin-400.css';
+@import '@fontsource/plus-jakarta-sans/latin-500.css';
+@import '@fontsource/plus-jakarta-sans/latin-600.css';
+@import '@fontsource/plus-jakarta-sans/latin-700.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-400.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-500.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-600.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-700.css';
 
 @tailwind base;
 @tailwind components;
