@@ -389,6 +389,8 @@ export interface UpdateTicketFieldsInput {
   categoryId?: string | null;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   dueDate?: Date | null;
+  responseSlaMinutes?: number | null;
+  resolutionSlaMinutes?: number | null;
   deviceId?: string | null;
   tags?: string[];
 }
@@ -400,6 +402,8 @@ const UPDATE_FIELD_LABELS: Record<keyof UpdateTicketFieldsInput, string> = {
   categoryId: 'category',
   priority: 'priority',
   dueDate: 'due date',
+  responseSlaMinutes: 'response SLA',
+  resolutionSlaMinutes: 'resolution SLA',
   deviceId: 'device',
   tags: 'tags'
 };

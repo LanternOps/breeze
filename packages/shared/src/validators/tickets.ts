@@ -23,6 +23,8 @@ export const updateTicketSchema = z.object({
   categoryId: z.string().uuid().nullable().optional(),
   priority: ticketPrioritySchema.optional(),
   dueDate: z.coerce.date().nullable().optional(),
+  responseSlaMinutes: z.number().int().positive().nullable().optional(),
+  resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
   deviceId: z.string().uuid().nullable().optional(),
   tags: z.array(z.string().max(50)).max(20).optional()
 });

@@ -722,6 +722,21 @@ describe('updateTicketFields', () => {
     expect(auditMock).not.toHaveBeenCalled();
   });
 
+  it('updateTicketFields persists SLA overrides and labels them in the feed comment', async () => {
+    dbMocks.selectResult.mockResolvedValue([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, responseSlaMinutes: 15 }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { responseSlaMinutes: 15 }, actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).toMatchObject({ responseSlaMinutes: 15 });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      commentType: 'system',
+      content: expect.stringContaining('response SLA')
+    }));
+  });
+
   it('rejects a deviceId belonging to a different org with a 400 TicketServiceError and writes nothing', async () => {
     // selects in order: ticket, device (cross-org)
     dbMocks.selectResult

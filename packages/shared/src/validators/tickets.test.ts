@@ -56,6 +56,17 @@ describe('ticket validators', () => {
     expect(listTicketsQuerySchema.safeParse({ deviceId: 'not-a-uuid' }).success).toBe(false);
   });
 
+  it('updateTicketSchema accepts SLA override minutes', () => {
+    expect(updateTicketSchema.parse({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 }))
+      .toEqual({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 });
+    expect(updateTicketSchema.parse({ responseSlaMinutes: null }).responseSlaMinutes).toBeNull();
+  });
+
+  it('updateTicketSchema rejects non-positive SLA minutes', () => {
+    expect(() => updateTicketSchema.parse({ responseSlaMinutes: 0 })).toThrow();
+    expect(() => updateTicketSchema.parse({ resolutionSlaMinutes: -5 })).toThrow();
+  });
+
   it('category validates hex color', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: '#1c8a9e' }).success).toBe(true);
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
