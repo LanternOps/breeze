@@ -4,6 +4,18 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles } from 'lucide-react';
 import type { EditorProps } from '@monaco-editor/react';
 
+// Statically import Monaco's editor stylesheet so Astro bundles it into the
+// route's <head> as a hashed <link>. @monaco-editor/loader otherwise injects
+// this CSS into <head> at runtime, and Astro's View-Transition document swap
+// rebuilds <head> from the new page's server markup — dropping that runtime
+// injection and leaving the editor's hidden `.inputarea` <textarea> rendered as
+// a bare unstyled white box on SPA navigation (issue #1186). A build-time <link>
+// is part of every editor route's server markup, so it survives the swap. The
+// stylesheet is self-contained (its codicon font is an inline data: URI), so
+// Vite processes it without external asset resolution. CSS-only — does not pull
+// the Monaco JS wrapper into the static bundle (see lib/monacoLoader.ts).
+import 'monaco-editor/min/vs/editor/editor.main.css';
+
 import ScriptAiPanel from './ScriptAiPanel';
 import CollapsibleSection from './CollapsibleSection';
 import { cn } from '@/lib/utils';
@@ -49,6 +61,11 @@ export default function ScriptForm({
   useEffect(() => {
     let cancelled = false;
     const loadEditor = () => {
+      // Dispose the previous instance before reloading. On a View-Transition
+      // swap Astro replaces the document without unmounting this React tree, so
+      // the wrapper's own dispose never fires — without this the orphaned editor
+      // (and its listeners/DOM) leaks on every SPA back-nav (issue #1186).
+      editorInstanceRef.current?.dispose();
       editorInstanceRef.current = null;
       setEditorLoadError(null);
       // Point Monaco's loader at our self-hosted /monaco/vs assets before the
@@ -72,6 +89,8 @@ export default function ScriptForm({
     return () => {
       cancelled = true;
       document.removeEventListener('astro:after-swap', loadEditor);
+      editorInstanceRef.current?.dispose();
+      editorInstanceRef.current = null;
     };
   }, []);
 
