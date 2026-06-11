@@ -15,9 +15,10 @@ const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
 // Mock authScope so each test can control getJwtClaims behaviour.
-const mockGetJwtClaims = vi.fn(() => ({ scope: 'partner' as const, orgId: null, partnerId: 'p-1' }));
+import type { JwtClaims } from '../../lib/authScope';
+const mockGetJwtClaims = vi.fn((): JwtClaims => ({ scope: 'partner', orgId: null, partnerId: 'p-1' }));
 vi.mock('../../lib/authScope', () => ({
-  getJwtClaims: (...args: unknown[]) => mockGetJwtClaims(...args),
+  getJwtClaims: () => mockGetJwtClaims(),
   loginPathWithNext: () => '/login?next=%2Ftickets%2Fnew'
 }));
 

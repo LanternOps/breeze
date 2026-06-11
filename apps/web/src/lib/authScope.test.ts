@@ -82,6 +82,11 @@ describe('getJwtClaims', () => {
 });
 
 describe('loginPathWithNext', () => {
+  const originalLocation = window.location;
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+  });
+
   it('returns /login when at root', () => {
     // jsdom sets pathname to '/' by default
     expect(loginPathWithNext()).toBe('/login');

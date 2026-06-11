@@ -19,9 +19,10 @@ const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
 // Mock authScope so each test can control getJwtClaims behaviour.
-const mockGetJwtClaims = vi.fn(() => ({ scope: 'partner' as const, orgId: null, partnerId: 'p-1' }));
+import type { JwtClaims } from '../../lib/authScope';
+const mockGetJwtClaims = vi.fn((): JwtClaims => ({ scope: 'partner', orgId: null, partnerId: 'p-1' }));
 vi.mock('../../lib/authScope', () => ({
-  getJwtClaims: (...args: unknown[]) => mockGetJwtClaims(...args),
+  getJwtClaims: () => mockGetJwtClaims(),
   loginPathWithNext: () => '/login?next=%2F'
 }));
 
@@ -92,11 +93,14 @@ const USERS = { data: [{ id: 'user-1', name: 'Todd', email: 'todd@example.com', 
 
 const BULK_RESULT = { data: { updated: 2, skipped: 0, failed: 0, total: 2 } };
 
-function mockListApi(tickets: TicketSummary[] | ((url: string) => TicketSummary[]), opts: { usersFail?: boolean } = {}) {
+function mockListApi(
+  tickets: TicketSummary[] | ((url: string) => TicketSummary[]),
+  opts: { usersFail?: boolean; bulkResult?: typeof BULK_RESULT } = {}
+) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
     if (url === '/tickets/stats') return makeJsonResponse(STATS);
-    if (url === '/tickets/bulk') return makeJsonResponse(BULK_RESULT);
+    if (url === '/tickets/bulk') return makeJsonResponse(opts.bulkResult ?? BULK_RESULT);
     if (url.startsWith('/tickets?')) return makeJsonResponse({ data: typeof tickets === 'function' ? tickets(url) : tickets });
     if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
     if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
@@ -464,7 +468,8 @@ describe('TicketsPage', () => {
     });
 
     it('fully-successful bulk shows a success toast with updated count', async () => {
-      mockListApi([healthy, atRisk, breached]);
+      // 3 selected, 3 updated — the toast count must come from the server response.
+      mockListApi([healthy, atRisk, breached], { bulkResult: { data: { updated: 3, skipped: 0, failed: 0, total: 3 } } });
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
@@ -476,7 +481,7 @@ describe('TicketsPage', () => {
       fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
 
       await waitFor(() => {
-        expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '2 updated' });
+        expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '3 updated' });
       });
     });
   });
