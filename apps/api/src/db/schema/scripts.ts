@@ -36,7 +36,9 @@ export const scripts = pgTable('scripts', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   // Soft delete. Hard deletes fail with FK violations once a script has any
   // execution history (script_executions / batches reference it), so deleting
-  // a script marks it here instead. All read paths filter `deletedAt IS NULL`.
+  // a script marks it here instead. Listing/lookup read paths filter
+  // `deletedAt IS NULL`; execution-history joins intentionally keep it so past
+  // runs still show the script name.
   deletedAt: timestamp('deleted_at')
 });
 

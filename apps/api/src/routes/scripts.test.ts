@@ -11,6 +11,10 @@ const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 // Mock all services
 vi.mock('../services', () => ({}));
 
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn()
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -99,6 +103,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { writeRouteAudit } from '../services/auditEvents';
 
 describe('scripts routes', () => {
   let app: Hono;
@@ -268,7 +273,9 @@ describe('scripts routes', () => {
     expect(body.error).toContain('active executions');
   });
 
-  it('should delete scripts without active executions', async () => {
+  // Mocks the script-found SELECT then the zero-active-executions count SELECT
+  // that the DELETE handler runs before deleting.
+  function mockDeletePreflight(): void {
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -287,46 +294,25 @@ describe('scripts routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 0 }])
         })
       } as any);
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
-    } as any);
+  }
 
-    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
-      method: 'DELETE',
-      headers: { Authorization: 'Bearer valid-token' }
+  // Builds the db.update mock chain (set -> where -> returning) used by the
+  // soft-delete handler, resolving the returning() call with `returnedRows`.
+  function mockSoftDeleteUpdate(returnedRows: Array<{ id: string }>) {
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(returnedRows)
+      })
     });
-
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.success).toBe(true);
-  });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+    return setMock;
+  }
 
   it('should soft-delete (not hard-delete) so scripts with execution history can be removed', async () => {
     // Script exists, and the active-execution guard sees zero ACTIVE executions
     // (completed/failed executions may still exist and hold FK references).
-    vi.mocked(db.select)
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: SCRIPT_ID_1,
-              name: 'Script One',
-              isSystem: false,
-              orgId: ORG_ID
-            }])
-          })
-        })
-      } as any)
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ count: 0 }])
-        })
-      } as any);
-
-    const setMock = vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
-    });
-    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+    mockDeletePreflight();
+    const setMock = mockSoftDeleteUpdate([{ id: SCRIPT_ID_1 }]);
 
     const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
       method: 'DELETE',
@@ -344,6 +330,24 @@ describe('scripts routes', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ deletedAt: expect.any(Date) })
     );
+  });
+
+  it('should return 404 (not a false success) when the soft-delete UPDATE matches zero rows', async () => {
+    // Simulates losing a race with a concurrent delete: the row is gone/already
+    // soft-deleted by the time the UPDATE runs, so returning() yields no rows.
+    mockDeletePreflight();
+    mockSoftDeleteUpdate([]);
+
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.success).toBeUndefined();
+    // No audit entry should be written for a delete that changed nothing.
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it.skip('should execute a script against multiple devices', async () => {

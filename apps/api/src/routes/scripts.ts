@@ -604,12 +604,20 @@ scriptRoutes.delete(
 
     // Soft delete: a hard `DELETE` throws an FK violation once the script has
     // any execution history (script_executions / batches reference it), so we
-    // stamp deletedAt instead. All read paths filter `deletedAt IS NULL`, which
-    // hides the script while preserving its execution history.
-    await db
+    // stamp deletedAt instead. Script listing/lookup paths filter
+    // `deletedAt IS NULL` to hide it; execution-history joins intentionally do
+    // not, so past runs still show the script name. The `isNull` guard in the
+    // WHERE makes a concurrent re-delete a genuine no-op the row-count catches.
+    const [deleted] = await db
       .update(scripts)
       .set({ deletedAt: new Date() })
-      .where(eq(scripts.id, scriptId));
+      .where(and(eq(scripts.id, scriptId), isNull(scripts.deletedAt)))
+      .returning({ id: scripts.id });
+
+    if (!deleted) {
+      // Lost a race with a concurrent delete; surface it instead of a false success.
+      return c.json({ error: 'Script not found' }, 404);
+    }
 
     writeRouteAudit(c, {
       orgId: resolveScriptAuditOrgId(auth, script.orgId),

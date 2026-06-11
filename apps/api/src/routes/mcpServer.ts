@@ -26,7 +26,7 @@ import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTool
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
 import { devices, alerts, scripts, automations, partners, organizations, partnerUsers } from '../db/schema';
-import { eq, and, asc, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, isNull, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
@@ -1385,7 +1385,7 @@ async function handleResourcesRead(
         description: scripts.description,
         language: scripts.language,
         category: scripts.category
-      }, orgCond(scripts.orgId), { limit: 200 });
+      }, orgCond(scripts.orgId), { extraConditions: [isNull(scripts.deletedAt)], limit: 200 });
     }
 
     if (uri === 'breeze://automations') {
