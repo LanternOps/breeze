@@ -119,9 +119,8 @@ export default function TicketsPage() {
       }
     })();
     return () => { cancelled = true; };
-    // orgScoped is stable (computed once from JWT on render), so omitting from
-    // deps is intentional — the effect runs once and doesn't need to re-run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // orgScoped is stable (computed once from JWT on render), so omitting it
+    // from deps is intentional — the effect runs once and doesn't need to re-run.
   }, []);
 
   const fetchTickets = useCallback(async () => {
