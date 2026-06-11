@@ -83,6 +83,25 @@ func validateSoftwareName(name string) error {
 	return nil
 }
 
+// validWingetPackageIDPattern mirrors the agent's patching.validWingetPkgID and
+// the API's softwareActions packageId regex: a winget identifier such as
+// "Mozilla.Firefox". Empty is allowed (the field is optional).
+var validWingetPackageIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+func validateSoftwarePackageID(packageID string) error {
+	trimmed := strings.TrimSpace(packageID)
+	if trimmed == "" {
+		return nil
+	}
+	if len(trimmed) > 256 {
+		return fmt.Errorf("software packageId exceeds 256 characters")
+	}
+	if !validWingetPackageIDPattern.MatchString(trimmed) {
+		return fmt.Errorf("software packageId contains unsafe characters")
+	}
+	return nil
+}
+
 func validateSoftwareVersion(version string) error {
 	trimmed := strings.TrimSpace(version)
 	if trimmed == "" {

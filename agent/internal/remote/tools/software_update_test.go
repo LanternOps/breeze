@@ -61,3 +61,34 @@ func TestUpdateSoftwareUnsupportedVersionFormat(t *testing.T) {
 		t.Fatalf("expected failed status for unsafe version, got %s", result.Status)
 	}
 }
+
+func TestUpdateSoftwareRejectsUnsafePackageID(t *testing.T) {
+	t.Parallel()
+	result := UpdateSoftware(map[string]any{"name": "Firefox", "packageId": "Mozilla.Firefox;rm -rf /"})
+	if result.Status != "failed" {
+		t.Fatalf("expected failed status for unsafe packageId, got %s", result.Status)
+	}
+	if !strings.Contains(result.Error, "packageId contains unsafe characters") {
+		t.Fatalf("expected packageId validation error, got %q", result.Error)
+	}
+}
+
+func TestValidateSoftwarePackageID(t *testing.T) {
+	t.Parallel()
+	// Empty is allowed (the field is optional).
+	if err := validateSoftwarePackageID(""); err != nil {
+		t.Fatalf("expected empty packageId to be allowed, got %v", err)
+	}
+	// Canonical winget identifiers pass.
+	for _, ok := range []string{"Mozilla.Firefox", "Google.Chrome", "7zip.7zip", "Microsoft.VisualStudioCode"} {
+		if err := validateSoftwarePackageID(ok); err != nil {
+			t.Fatalf("expected %q to be valid, got %v", ok, err)
+		}
+	}
+	// Shell metacharacters / spaces / leading dash are rejected.
+	for _, bad := range []string{"Mozilla Firefox", "Foo;bar", "-rf", "a/b", "x$y"} {
+		if err := validateSoftwarePackageID(bad); err == nil {
+			t.Fatalf("expected %q to be rejected", bad)
+		}
+	}
+}

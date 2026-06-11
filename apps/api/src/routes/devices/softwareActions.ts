@@ -49,6 +49,15 @@ const softwareActionPayloadSchema = z
         { message: 'version contains unsafe characters' }
       )
       .optional(),
+    // Optional winget package identifier (e.g. "Mozilla.Firefox"). When the
+    // Software tab has correlated the row to an available third-party update it
+    // sends the winget Id so the agent can upgrade by `--id` (reliable) instead
+    // of guessing from the display name. Matches the agent's validWingetPkgID.
+    packageId: z
+      .string()
+      .max(256, 'packageId exceeds 256 characters')
+      .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, { message: 'packageId contains invalid characters' })
+      .optional(),
   })
   .strict();
 
@@ -89,6 +98,7 @@ softwareActionsRoutes.post(
 
     const payload: Record<string, unknown> = { name: data.name, source: 'device_software_tab' };
     if (data.version) payload.version = data.version;
+    if (data.packageId) payload.packageId = data.packageId;
 
     const queued = await queueCommandForExecution(deviceId, CommandTypes.SOFTWARE_UPDATE, payload, {
       userId: auth.user.id,

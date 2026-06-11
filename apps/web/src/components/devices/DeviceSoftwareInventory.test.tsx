@@ -27,6 +27,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 const deviceId = '11111111-1111-1111-1111-111111111111';
 
 const SOFTWARE_FIXTURE = {
+  thirdPartyUpdatesManaged: false,
   data: [
     {
       id: 'sw-chrome',
@@ -34,6 +35,10 @@ const SOFTWARE_FIXTURE = {
       version: '125.0.6422.142',
       publisher: 'Google LLC',
       installDate: '2026-02-01',
+      updateAvailable: true,
+      availableVersion: '131.0.6778.86',
+      updatePackageId: 'Google.Chrome',
+      updateSource: 'third_party',
     },
     {
       id: 'sw-safari',
@@ -41,6 +46,14 @@ const SOFTWARE_FIXTURE = {
       version: '17.5',
       publisher: 'Apple Inc.',
       installDate: '2026-01-01',
+    },
+    {
+      // Windows row with no known update — the Update button must be disabled.
+      id: 'sw-noupdate',
+      name: 'Legacy Tool',
+      version: '1.0.0',
+      publisher: 'Acme Corp',
+      installDate: '2024-05-01',
     },
   ],
 };
@@ -88,16 +101,47 @@ describe('DeviceSoftwareInventory action buttons', () => {
         `/devices/${deviceId}/software/update`,
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ name: 'Google Chrome', version: '125.0.6422.142' }),
+          // Updates send the winget packageId (not a pinned version) so the
+          // agent upgrades by --id to the latest available.
+          body: JSON.stringify({ name: 'Google Chrome', packageId: 'Google.Chrome' }),
         })
       );
     });
 
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'success', message: expect.stringContaining('Update queued') })
+        expect.objectContaining({
+          type: 'success',
+          message: expect.stringContaining('Update to 131.0.6778.86 queued'),
+        })
       );
     });
+  });
+
+  it('disables Update for a Windows row with no available update', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(SOFTWARE_FIXTURE));
+
+    render(<DeviceSoftwareInventory deviceId={deviceId} osType="windows" />);
+
+    const updateBtn = await screen.findByTestId('software-update-sw-noupdate');
+    const uninstallBtn = await screen.findByTestId('software-uninstall-sw-noupdate');
+    // Uninstall stays available; Update is gated on a real available update.
+    expect(updateBtn).toBeDisabled();
+    expect(uninstallBtn).not.toBeDisabled();
+    expect(updateBtn.getAttribute('title')).toContain('No update available');
+  });
+
+  it('shows the available version delta and an updates-available banner', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(SOFTWARE_FIXTURE));
+
+    render(<DeviceSoftwareInventory deviceId={deviceId} osType="windows" />);
+
+    // Banner reflects the single updatable row in the fixture.
+    expect(await screen.findByText(/1 update available/i)).toBeTruthy();
+    // Not policy-managed → nudge toward enabling third-party patching.
+    expect(screen.getByText(/configuration policy/i)).toBeTruthy();
+    // The Chrome row shows current → available.
+    expect(screen.getByText('131.0.6778.86')).toBeTruthy();
   });
 
   it('shows confirmation dialog for Uninstall and only POSTs after confirm', async () => {

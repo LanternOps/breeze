@@ -39,6 +39,13 @@ type SoftwareItem = {
   installDate?: string;
   installedAt?: string;
   install_date?: string;
+  // Available-update correlation, populated server-side from the third-party
+  // patch data the agent already reports (winget upgrade). Absent/false means
+  // no managed update is known for this row.
+  updateAvailable?: boolean;
+  availableVersion?: string | null;
+  updatePackageId?: string | null;
+  updateSource?: string | null;
 };
 
 type DeviceSoftwareInventoryProps = {
@@ -54,20 +61,38 @@ type SoftwareAction = 'update' | 'uninstall';
 // expressible to `brew upgrade`/`brew uninstall`. The agent would just
 // return "no supported update command" — better to disable upfront and
 // explain why than to queue a guaranteed-to-fail command.
-function actionsAreSupported(osType: string | undefined, isApple: boolean): {
+//
+// The Update button is *additionally* gated on `updateAvailable`: a row only
+// gets an actionable Update when the server has correlated it to a real
+// available update (from the third-party patch scan). This is what stops the
+// old "click Update, winget finds nothing, silent no-op" behavior — if no
+// update is known we disable with an explanatory tooltip instead.
+function actionsAreSupported(
+  osType: string | undefined,
+  isApple: boolean,
+  updateAvailable: boolean
+): {
   update: { allowed: boolean; reason?: string };
   uninstall: { allowed: boolean; reason?: string };
 } {
   const os = (osType || '').toLowerCase();
+  const noUpdateReason = 'No update available — this package is up to date or not tracked by a package manager.';
+
   if (os === 'macos' || os === 'darwin') {
     if (isApple) {
       const reason = 'Apple-signed apps are managed by macOS — uninstall via Settings, update via Software Update.';
       return { update: { allowed: false, reason }, uninstall: { allowed: false, reason } };
     }
-    return { update: { allowed: true }, uninstall: { allowed: true } };
+    return {
+      update: updateAvailable ? { allowed: true } : { allowed: false, reason: noUpdateReason },
+      uninstall: { allowed: true },
+    };
   }
   if (os === 'windows' || os === 'linux') {
-    return { update: { allowed: true }, uninstall: { allowed: true } };
+    return {
+      update: updateAvailable ? { allowed: true } : { allowed: false, reason: noUpdateReason },
+      uninstall: { allowed: true },
+    };
   }
   const reason = `Software actions are not supported on ${osType || 'this OS'}.`;
   return { update: { allowed: false, reason }, uninstall: { allowed: false, reason } };
@@ -96,6 +121,10 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
   const [, setTotal] = useState(0);
   const [publisherFilter, setPublisherFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'apple' | 'third-party'>('all');
+  // True when a patch policy with third_party in its sources governs this
+  // device — i.e. these updates can be managed/auto-approved by policy. Drives
+  // the "manage these automatically" nudge banner.
+  const [thirdPartyManaged, setThirdPartyManaged] = useState(false);
   // Rows currently in-flight (keyed by row id) so the table can show a
   // per-row spinner and disable other actions on that row without disabling
   // the entire grid.
@@ -129,6 +158,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
       const payload = json?.data ?? json;
       setSoftware(Array.isArray(payload) ? payload : []);
       setTotal(json?.pagination?.total ?? (Array.isArray(payload) ? payload.length : 0));
+      setThirdPartyManaged(json?.thirdPartyUpdatesManaged === true);
       if (json?.timezone || json?.siteTimezone) {
         setSiteTimezone(json.timezone ?? json.siteTimezone);
       }
@@ -144,18 +174,36 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
   }, [fetchSoftware]);
 
   const queueSoftwareAction = useCallback(
-    async (rowId: string, action: SoftwareAction, name: string, version: string) => {
+    async (
+      rowId: string,
+      action: SoftwareAction,
+      name: string,
+      version: string,
+      opts?: { packageId?: string | null; availableVersion?: string | null }
+    ) => {
       setPendingActions((prev) => ({ ...prev, [rowId]: action }));
       const verb = action === 'update' ? 'Update' : 'Uninstall';
+      // Updates send the winget packageId (when known) so the agent upgrades by
+      // --id, and never pin a version — we always want the latest available.
+      const body: Record<string, string> = { name };
+      if (action === 'update') {
+        if (opts?.packageId) body.packageId = opts.packageId;
+      } else if (version) {
+        body.version = version;
+      }
+      const successMessage =
+        action === 'update' && opts?.availableVersion
+          ? `Update to ${opts.availableVersion} queued for "${name}"`
+          : `${verb} queued for "${name}"`;
       try {
         await runAction({
           request: () =>
             fetchWithAuth(`/devices/${deviceId}/software/${action}`, {
               method: 'POST',
-              body: JSON.stringify(version ? { name, version } : { name }),
+              body: JSON.stringify(body),
             }),
           errorFallback: `${verb} could not be queued`,
-          successMessage: `${verb} queued for "${name}"`,
+          successMessage,
         });
       } catch (err) {
         if (err instanceof ActionError && err.status === 401) {
@@ -189,6 +237,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
     return software.map((item, index) => {
       const publisher = item.publisher ?? item.vendor ?? '-';
       const isApple = isApplePublisher(publisher);
+      const updateAvailable = item.updateAvailable === true;
       return {
         id: item.id ?? `${item.name ?? item.title ?? 'software'}-${index}`,
         name: item.name ?? item.title ?? 'Unknown software',
@@ -196,8 +245,11 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
         rawVersion: item.version || '',
         publisher,
         isApple,
+        updateAvailable,
+        availableVersion: item.availableVersion ?? null,
+        updatePackageId: item.updatePackageId ?? null,
         installDate: formatDate(item.installDate ?? item.installedAt ?? item.install_date, effectiveTimezone),
-        capabilities: actionsAreSupported(osType, isApple),
+        capabilities: actionsAreSupported(osType, isApple, updateAvailable),
       };
     });
   }, [software, effectiveTimezone, osType]);
@@ -241,6 +293,10 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
 
   const isMac = osType?.toLowerCase() === 'macos' || osType?.toLowerCase() === 'darwin';
   const hasActiveFilters = search || publisherFilter !== 'all' || typeFilter !== 'all';
+  const updatesAvailableCount = useMemo(
+    () => rows.filter((r) => r.updateAvailable).length,
+    [rows]
+  );
 
   if (loading) {
     return (
@@ -354,6 +410,29 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
         )}
       </div>
 
+      {/* Available-updates summary + policy nudge */}
+      {updatesAvailableCount > 0 && (
+        <div className="mt-4 flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm">
+          <ArrowUpCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          <div className="text-foreground">
+            <span className="font-medium">
+              {updatesAvailableCount} update{updatesAvailableCount === 1 ? '' : 's'} available
+            </span>
+            {thirdPartyManaged ? (
+              <span className="text-muted-foreground">
+                {' '}
+                — third-party updates are policy-managed on this device.
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                {' '}
+                — update individually below, or enable third-party patching in a configuration policy to manage these automatically.
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="mt-4 overflow-hidden rounded-md border">
         <div className="max-h-[500px] overflow-auto">
@@ -394,7 +473,17 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
                           {item.name}
                         </span>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{item.version}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                        {item.updateAvailable && item.availableVersion ? (
+                          <span className="inline-flex items-center gap-1">
+                            <span>{item.version}</span>
+                            <ArrowUpCircle className="h-3 w-3 text-emerald-600" />
+                            <span className="font-semibold text-emerald-600">{item.availableVersion}</span>
+                          </span>
+                        ) : (
+                          item.version
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-muted-foreground">{item.publisher}</td>
                       <td className="px-4 py-3 text-muted-foreground">{item.installDate}</td>
                       <td className="px-4 py-3 text-right">
@@ -404,7 +493,12 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
                             data-testid={`software-update-${item.id}`}
                             disabled={!item.capabilities.update.allowed || anyPending}
                             title={item.capabilities.update.reason ?? 'Queue an update for this package'}
-                            onClick={() => queueSoftwareAction(item.id, 'update', item.name, item.rawVersion)}
+                            onClick={() =>
+                              queueSoftwareAction(item.id, 'update', item.name, item.rawVersion, {
+                                packageId: item.updatePackageId,
+                                availableVersion: item.availableVersion,
+                              })
+                            }
                             className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {isUpdatePending ? (

@@ -30,6 +30,11 @@ func UpdateSoftware(payload map[string]any) CommandResult {
 
 	name := strings.TrimSpace(GetPayloadString(payload, "name", ""))
 	version := strings.TrimSpace(GetPayloadString(payload, "version", ""))
+	// packageId is the winget identifier (e.g. "Mozilla.Firefox"). When the
+	// Software tab has correlated the row to an available third-party update it
+	// sends this so we can upgrade by `--id` — far more reliable than guessing
+	// from the registry display name. Optional and Windows-only.
+	packageID := strings.TrimSpace(GetPayloadString(payload, "packageId", ""))
 
 	if err := validateSoftwareName(name); err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -37,25 +42,29 @@ func UpdateSoftware(payload map[string]any) CommandResult {
 	if err := validateSoftwareVersion(version); err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
+	if err := validateSoftwarePackageID(packageID); err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
 
-	if err := updateSoftwareOS(name, version); err != nil {
+	if err := updateSoftwareOS(name, version, packageID); err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	result := map[string]any{
-		"name":    name,
-		"version": version,
-		"action":  "update",
-		"success": true,
+		"name":      name,
+		"version":   version,
+		"packageId": packageID,
+		"action":    "update",
+		"success":   true,
 	}
 
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
 }
 
-func updateSoftwareOS(name, version string) error {
+func updateSoftwareOS(name, version, packageID string) error {
 	switch runtime.GOOS {
 	case "windows":
-		return updateSoftwareWindows(name, version)
+		return updateSoftwareWindows(name, version, packageID)
 	case "darwin":
 		return updateSoftwareMacOS(name)
 	case "linux":
@@ -65,7 +74,7 @@ func updateSoftwareOS(name, version string) error {
 	}
 }
 
-func updateSoftwareWindows(name, version string) error {
+func updateSoftwareWindows(name, version, packageID string) error {
 	// Two-tier match strategy mirrors uninstallSoftwareWindows: try
 	// --name first (matches the human-readable name the user sees in
 	// the Software tab), then --id as a fallback (winget's stable
@@ -113,6 +122,39 @@ func updateSoftwareWindows(name, version string) error {
 				},
 			},
 		}, attempts...)
+	}
+
+	if packageID != "" {
+		// A known winget Id is the most reliable selector — prepend it so it's
+		// tried first, ahead of the display-name heuristics. Include a
+		// version-pinned variant when a target version is also supplied.
+		idAttempts := []updateAttempt{}
+		if version != "" {
+			idAttempts = append(idAttempts, updateAttempt{
+				command: "winget",
+				args: []string{
+					"upgrade",
+					"--id", packageID,
+					"--version", version,
+					"--silent",
+					"--accept-source-agreements",
+					"--accept-package-agreements",
+					"--disable-interactivity",
+				},
+			})
+		}
+		idAttempts = append(idAttempts, updateAttempt{
+			command: "winget",
+			args: []string{
+				"upgrade",
+				"--id", packageID,
+				"--silent",
+				"--accept-source-agreements",
+				"--accept-package-agreements",
+				"--disable-interactivity",
+			},
+		})
+		attempts = append(idAttempts, attempts...)
 	}
 
 	return runUpdateAttempts(name, attempts)
