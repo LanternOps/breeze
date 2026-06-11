@@ -101,6 +101,10 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'users',
   'deployment_invites',
   'access_reviews',
+  // custom_field_definitions: a field is org-scoped (org_id set) OR
+  // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
+  // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
+  'custom_field_definitions',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
