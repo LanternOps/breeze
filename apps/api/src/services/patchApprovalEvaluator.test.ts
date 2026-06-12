@@ -200,7 +200,7 @@ describe('third_party_app category rule', () => {
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, ringWithThirdPartyRule);
 
     expect(approved).toHaveLength(1);
-    expect(approved[0].approvalReason).toBe('category_rule');
+    expect(approved[0]?.approvalReason).toBe('category_rule');
   });
 
   it('does not apply the third_party_app rule to OS-source patches', async () => {
