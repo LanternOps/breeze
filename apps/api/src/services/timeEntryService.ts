@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
@@ -275,4 +275,201 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
     payload: { changed: ['endedAt', 'durationMinutes'] }
   });
   return stopped;
+}
+
+// ── Update / Delete ──────────────────────────────────────────────────────
+
+async function getEntryOr404(id: string) {
+  // RLS (partner-axis) scopes this read in the request context.
+  const rows = await db.select().from(timeEntries).where(eq(timeEntries.id, id)).limit(1);
+  const entry = rows[0];
+  if (!entry) throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
+  return entry;
+}
+
+function assertCanMutate(entry: { userId: string; isApproved: boolean }, actor: TimeEntryActor) {
+  if (entry.userId !== actor.userId && !actor.manageAll) {
+    throw new TimeEntryServiceError('You can only manage your own time entries', 403, 'NOT_OWN_ENTRY');
+  }
+  if (entry.isApproved && !actor.manageAll) {
+    throw new TimeEntryServiceError('Approved entries can only be changed by an approver', 403, 'APPROVED_IMMUTABLE');
+  }
+}
+
+export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, actor: TimeEntryActor) {
+  const entry = await getEntryOr404(id);
+  assertCanMutate(entry, actor);
+
+  const startedAt = input.startedAt ?? entry.startedAt;
+  const endedAt = input.endedAt !== undefined ? input.endedAt : entry.endedAt;
+  if (endedAt && endedAt.getTime() <= startedAt.getTime()) {
+    throw new TimeEntryServiceError('endedAt must be after startedAt', 400, 'INVALID_RANGE');
+  }
+
+  const set: Record<string, unknown> = {};
+  const changed: string[] = [];
+  if (input.startedAt !== undefined) { set.startedAt = input.startedAt; changed.push('startedAt'); }
+  if (input.endedAt !== undefined) { set.endedAt = input.endedAt; changed.push('endedAt'); }
+  if (input.description !== undefined) { set.description = input.description; changed.push('description'); }
+  if (input.isBillable !== undefined) { set.isBillable = input.isBillable; changed.push('isBillable'); }
+  if (input.hourlyRate !== undefined) { set.hourlyRate = toRate(input.hourlyRate); changed.push('hourlyRate'); }
+  if (input.billingStatus !== undefined) { set.billingStatus = input.billingStatus; changed.push('billingStatus'); }
+
+  if (input.ticketId !== undefined) {
+    if (input.ticketId === null) {
+      set.ticketId = null;
+      set.orgId = null;
+    } else {
+      const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+      set.ticketId = input.ticketId;
+      set.orgId = link.ticket.orgId;
+    }
+    changed.push('ticketId');
+  }
+  if ((input.startedAt !== undefined || input.endedAt !== undefined) && endedAt) {
+    set.durationMinutes = computeDurationMinutes(startedAt, endedAt);
+    changed.push('durationMinutes');
+  }
+
+  // Spec D1: any edit clears approval — re-approval required, including for approvers.
+  set.isApproved = false;
+  set.approvedBy = null;
+  set.approvedAt = null;
+
+  const rows = await db.update(timeEntries).set(set).where(eq(timeEntries.id, id)).returning();
+  const updated = rows[0] ?? entry;
+
+  await emitTimeEntryEvent({
+    type: 'time_entry.updated',
+    timeEntryId: id,
+    partnerId: entry.partnerId,
+    ticketId: (updated as typeof entry).ticketId ?? entry.ticketId,
+    actorUserId: actor.userId,
+    payload: { changed }
+  });
+  return updated;
+}
+
+export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
+  const entry = await getEntryOr404(id);
+  assertCanMutate(entry, actor);
+  await db.delete(timeEntries).where(eq(timeEntries.id, id));
+  await emitTimeEntryEvent({
+    type: 'time_entry.deleted',
+    timeEntryId: id,
+    partnerId: entry.partnerId,
+    ticketId: entry.ticketId,
+    actorUserId: actor.userId,
+    payload: { userId: entry.userId }
+  });
+}
+
+// ── Approval ─────────────────────────────────────────────────────────────
+
+export interface BulkApproveResult {
+  updated: number;
+  skipped: number;
+  skippedReasons: Record<string, number>;
+}
+
+export async function approveTimeEntries(ids: string[], approve: boolean, actor: TimeEntryActor): Promise<BulkApproveResult> {
+  if (!actor.manageAll) {
+    throw new TimeEntryServiceError('Approving time entries requires an admin role', 403, 'ADMIN_REQUIRED');
+  }
+  // RLS scopes to the actor's partner — out-of-partner ids look "missing", by design.
+  const candidates = await db
+    .select({ id: timeEntries.id, endedAt: timeEntries.endedAt, partnerId: timeEntries.partnerId, ticketId: timeEntries.ticketId })
+    .from(timeEntries)
+    .where(inArray(timeEntries.id, ids));
+
+  const found = new Map(candidates.map((c) => [c.id, c]));
+  const skippedReasons: Record<string, number> = {};
+  const skip = (reason: string) => { skippedReasons[reason] = (skippedReasons[reason] ?? 0) + 1; };
+  const eligible: string[] = [];
+  for (const id of ids) {
+    const row = found.get(id);
+    if (!row) { skip('ENTRY_NOT_FOUND'); continue; }
+    if (!row.endedAt) { skip('ENTRY_RUNNING'); continue; }
+    eligible.push(id);
+  }
+
+  let updated: { id: string; partnerId: string; ticketId: string | null }[] = [];
+  if (eligible.length > 0) {
+    updated = await db
+      .update(timeEntries)
+      .set(approve
+        ? { isApproved: true, approvedBy: actor.userId, approvedAt: new Date() }
+        : { isApproved: false, approvedBy: null, approvedAt: null })
+      .where(inArray(timeEntries.id, eligible))
+      .returning({ id: timeEntries.id, partnerId: timeEntries.partnerId, ticketId: timeEntries.ticketId });
+  }
+
+  if (updated.length > 0 && approve) {
+    await emitTimeEntryEvent({
+      type: 'time_entry.approved',
+      timeEntryId: updated[0]!.id,
+      partnerId: updated[0]!.partnerId,
+      ticketId: updated[0]!.ticketId,
+      actorUserId: actor.userId,
+      payload: { ids: updated.map((u) => u.id), approvedBy: actor.userId }
+    });
+  }
+
+  return {
+    updated: updated.length,
+    skipped: ids.length - updated.length,
+    skippedReasons
+  };
+}
+
+// ── Parts ────────────────────────────────────────────────────────────────
+
+export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
+  const link = await resolveTicketLink(ticketId, actor.partnerId);
+  const rows = await db
+    .insert(ticketParts)
+    .values({
+      ticketId,
+      orgId: link.ticket.orgId,
+      description: input.description,
+      partNumber: input.partNumber ?? null,
+      vendor: input.vendor ?? null,
+      quantity: input.quantity.toFixed(2),
+      unitPrice: (input.unitPrice ?? 0).toFixed(2),
+      costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
+      isBillable: input.isBillable ?? link.defaultBillable,
+      billingStatus: input.billingStatus ?? 'not_billed',
+      addedBy: actor.userId,
+      notes: input.notes ?? null
+    })
+    .returning();
+  return rows[0];
+}
+
+async function getPartOr404(id: string) {
+  const rows = await db.select().from(ticketParts).where(eq(ticketParts.id, id)).limit(1);
+  const part = rows[0];
+  if (!part) throw new TimeEntryServiceError('Part not found', 404, 'PART_NOT_FOUND');
+  return part;
+}
+
+export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, _actor: TimeEntryActor) {
+  const part = await getPartOr404(id);
+  const set: Record<string, unknown> = {};
+  if (input.description !== undefined) set.description = input.description;
+  if (input.partNumber !== undefined) set.partNumber = input.partNumber;
+  if (input.vendor !== undefined) set.vendor = input.vendor;
+  if (input.quantity !== undefined) set.quantity = input.quantity.toFixed(2);
+  if (input.unitPrice !== undefined) set.unitPrice = input.unitPrice.toFixed(2);
+  if (input.costBasis !== undefined) set.costBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
+  if (input.isBillable !== undefined) set.isBillable = input.isBillable;
+  if (input.billingStatus !== undefined) set.billingStatus = input.billingStatus;
+  if (input.notes !== undefined) set.notes = input.notes;
+  const rows = await db.update(ticketParts).set(set).where(eq(ticketParts.id, id)).returning();
+  return rows[0] ?? part;
+}
+
+export async function deleteTicketPart(id: string, _actor: TimeEntryActor) {
+  await getPartOr404(id);
+  await db.delete(ticketParts).where(eq(ticketParts.id, id));
 }

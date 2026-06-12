@@ -55,7 +55,8 @@ vi.mock('../db', () => ({
         dbMocks.updateSetArgs.push(vals);
         return { where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve(dbMocks.updateResult)) })) };
       })
-    }))
+    })),
+    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
   }
 }));
 
@@ -81,6 +82,7 @@ vi.mock('../db/schema', () => ({
 
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
+  updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart,
   TimeEntryServiceError
 } from './timeEntryService';
 
@@ -180,5 +182,100 @@ describe('startTimer / stopTimer', () => {
   it('stopTimer errors with NO_RUNNING_TIMER when nothing is running', async () => {
     dbMocks.updateResult = []; // CAS update matched no rows
     await expect(stopTimer({}, ACTOR)).rejects.toMatchObject({ code: 'NO_RUNNING_TIMER', status: 404 });
+  });
+});
+
+describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
+  const baseEntry = {
+    id: 'te-1', partnerId: 'p-1', orgId: null, ticketId: null, userId: 'u-1',
+    startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'),
+    durationMinutes: 30, isApproved: false
+  };
+
+  it("403s when a non-admin edits someone else's entry", async () => {
+    dbMocks.selectResults.push([{ ...baseEntry, userId: 'u-OTHER' }]);
+    await expect(updateTimeEntry('te-1', { description: 'x' }, ACTOR))
+      .rejects.toMatchObject({ code: 'NOT_OWN_ENTRY', status: 403 });
+  });
+
+  it('403s when a non-admin edits an approved entry', async () => {
+    dbMocks.selectResults.push([{ ...baseEntry, isApproved: true }]);
+    await expect(updateTimeEntry('te-1', { description: 'x' }, ACTOR))
+      .rejects.toMatchObject({ code: 'APPROVED_IMMUTABLE', status: 403 });
+  });
+
+  it('any edit clears approval (even by an approver)', async () => {
+    dbMocks.selectResults.push([{ ...baseEntry, isApproved: true }]);
+    dbMocks.updateResult = [{ ...baseEntry, description: 'fixed' }];
+    await updateTimeEntry('te-1', { description: 'fixed' }, ADMIN);
+    const setArgs = dbMocks.updateSetArgs.at(-1)!;
+    expect(setArgs.isApproved).toBe(false);
+    expect(setArgs.approvedBy).toBeNull();
+    expect(setArgs.approvedAt).toBeNull();
+  });
+
+  it('recomputes duration when the range changes', async () => {
+    dbMocks.selectResults.push([baseEntry]);
+    dbMocks.updateResult = [baseEntry];
+    await updateTimeEntry('te-1', { endedAt: new Date('2026-06-11T10:00:00Z') }, ACTOR);
+    expect(dbMocks.updateSetArgs.at(-1)!.durationMinutes).toBe(60);
+  });
+
+  it('rejects an update producing endedAt <= startedAt', async () => {
+    dbMocks.selectResults.push([baseEntry]);
+    await expect(updateTimeEntry('te-1', { endedAt: new Date('2026-06-11T08:00:00Z') }, ACTOR))
+      .rejects.toMatchObject({ code: 'INVALID_RANGE' });
+  });
+
+  it('relinking to a ticket re-validates partner and re-denormalizes org', async () => {
+    dbMocks.selectResults.push([baseEntry]); // the entry
+    dbMocks.selectResults.push([{ id: 't-9', partnerId: 'p-1', orgId: 'o-9', categoryId: null }]); // ticket (system read)
+    dbMocks.updateResult = [baseEntry];
+    await updateTimeEntry('te-1', { ticketId: 't-9' }, ACTOR);
+    const setArgs = dbMocks.updateSetArgs.at(-1)!;
+    expect(setArgs.ticketId).toBe('t-9');
+    expect(setArgs.orgId).toBe('o-9');
+  });
+});
+
+describe('deleteTimeEntry', () => {
+  it("403s for someone else's entry without manageAll", async () => {
+    dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-OTHER', isApproved: false, partnerId: 'p-1', ticketId: null }]);
+    await expect(deleteTimeEntry('te-1', ACTOR)).rejects.toMatchObject({ code: 'NOT_OWN_ENTRY' });
+  });
+  it('403s for an approved entry without manageAll', async () => {
+    dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-1', isApproved: true, partnerId: 'p-1', ticketId: null }]);
+    await expect(deleteTimeEntry('te-1', ACTOR)).rejects.toMatchObject({ code: 'APPROVED_IMMUTABLE' });
+  });
+});
+
+describe('approveTimeEntries', () => {
+  it('requires manageAll', async () => {
+    await expect(approveTimeEntries(['te-1'], true, ACTOR)).rejects.toMatchObject({ code: 'ADMIN_REQUIRED', status: 403 });
+  });
+
+  it('skips running and missing entries with reasons', async () => {
+    dbMocks.selectResults.push([
+      { id: 'te-1', endedAt: new Date(), partnerId: 'p-1', ticketId: null },
+      { id: 'te-2', endedAt: null, partnerId: 'p-1', ticketId: null } // running
+    ]); // te-3 missing
+    dbMocks.updateResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: null }];
+    const result = await approveTimeEntries(['te-1', 'te-2', 'te-3'], true, ADMIN);
+    expect(result.updated).toBe(1);
+    expect(result.skippedReasons).toEqual({ ENTRY_RUNNING: 1, ENTRY_NOT_FOUND: 1 });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'time_entry.approved' }));
+  });
+});
+
+describe('addTicketPart', () => {
+  it('denormalizes org_id and defaults billable from category', async () => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: null }]);
+    dbMocks.insertResult = [{ id: 'part-1' }];
+    await addTicketPart('t-1', { description: 'SSD 1TB', quantity: 1, unitPrice: 120 }, ACTOR);
+    const vals = dbMocks.insertedValues.at(-1)!;
+    expect(vals.orgId).toBe('o-1');
+    expect(vals.isBillable).toBe(false);
+    expect(vals.unitPrice).toBe('120.00');
   });
 });
