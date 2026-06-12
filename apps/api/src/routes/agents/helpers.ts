@@ -51,6 +51,7 @@ import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService'
 import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
+import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
@@ -2205,6 +2206,118 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string): 
       await redis.set(cacheKey, JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);
     } catch (cacheErr) {
       console.warn(`[helper] Redis cache write failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  return settings;
+}
+
+// ============================================
+// PAM Settings (policy-driven)
+// ============================================
+
+async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> {
+  // 1. Load device
+  const [device] = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) return PAM_DEFAULTS;
+
+  // 2. Load org (for partnerId)
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+
+  // 3. Load device group memberships
+  const groupRows = await db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const groupIds = groupRows.map((r) => r.groupId);
+
+  // 4. Build target match conditions
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
+    and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
+  ];
+  if (groupIds.length > 0) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groupIds))!
+    );
+  }
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  // 5. Single query: assignments → active policies → pam feature link (pure JSONB)
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyFeatureLinks, and(
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyFeatureLinks.featureType, 'pam'),
+    ))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      eq(configurationPolicies.orgId, device.orgId),
+      or(...targetConditions),
+    ));
+
+  if (rows.length === 0) return PAM_DEFAULTS;
+
+  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
+  rows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  const winner = rows[0];
+  if (!winner?.inlineSettings) return PAM_DEFAULTS;
+
+  return parsePamSettings(winner.inlineSettings);
+}
+
+const PAM_CACHE_TTL_SECONDS = 120;
+
+/**
+ * Build PAM config update payload for heartbeat response.
+ * Resolves pam policy settings via the config policy hierarchy.
+ * Falls back to PAM_DEFAULTS (uacInterceptionEnabled: true) if no policy found.
+ */
+export async function buildPamConfigUpdate(deviceId: string): Promise<PamSettings> {
+  const redis = getRedis();
+  const cacheKey = `pam:settings:device:${deviceId}`;
+
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) return JSON.parse(cached) as PamSettings;
+    } catch (cacheErr) {
+      console.warn(`[pam] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  const settings = await resolveDevicePamSettings(deviceId);
+
+  if (redis) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(settings), 'EX', PAM_CACHE_TTL_SECONDS);
+    } catch (cacheErr) {
+      console.warn(`[pam] Redis cache write failed for device ${deviceId}:`, cacheErr);
     }
   }
 

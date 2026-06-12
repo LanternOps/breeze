@@ -20,6 +20,7 @@ import {
   buildEventLogConfigUpdate,
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
+  buildPamConfigUpdate,
 } from './helpers';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
@@ -593,6 +594,13 @@ if (latestHelper) {
     console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
   }
 
+  let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
+  try {
+    pamSettings = await buildPamConfigUpdate(device.id);
+  } catch (err) {
+    console.error(`[agents] failed to build pam config update for ${agentId}:`, err);
+  }
+
   let mergedConfigUpdate: Record<string, unknown> | null = null;
   if (configUpdate || eventLogSettings || monitoringSettings) {
     mergedConfigUpdate = { ...(configUpdate ?? {}) };
@@ -634,6 +642,7 @@ if (latestHelper) {
       rotateToken: rotateToken || undefined,
       helperEnabled: helperSettings?.enabled ?? false,
       helperSettings: helperSettings ?? undefined,
+      uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? true,
       manageRemoteManagement: manageRemoteManagement || undefined,
     },
   };

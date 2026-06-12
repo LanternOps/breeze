@@ -94,6 +94,7 @@ vi.mock('./helpers', () => ({
   buildEventLogConfigUpdate: vi.fn(() => undefined),
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
+  buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -876,5 +877,66 @@ describe('pendingReboot persistence', () => {
     // arg) before asserting the flag is absent from it.
     expect(updateArg).toHaveProperty('watchdogStatus');
     expect(updateArg).not.toHaveProperty('pendingReboot');
+  });
+});
+
+// ---------------------------------------------------------------------
+// PAM config delivery (#uacInterceptionEnabled in heartbeat response)
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Device lookup → returns a row
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'windows',
+          osVersion: 'Windows 11',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.70.0',
+          deviceRole: 'workstation',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+
+    // db.update for devices → no return needed
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+
+    // db.insert for deviceMetrics → no return
+    insertMock.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+
+    // Any further selects → empty
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+  });
+
+  it('delivers uacInterceptionEnabled: false when buildPamConfigUpdate returns false', async () => {
+    // buildPamConfigUpdate mock returns { uacInterceptionEnabled: false } from vi.mock factory above
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.uacInterceptionEnabled).toBe(false);
   });
 });
