@@ -67,7 +67,7 @@ async function getTicketForTimeTracking(ticketId: string): Promise<TicketForTime
   );
   const ticket = rows[0];
   if (!ticket) throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_NOT_FOUND');
-  return ticket as TicketForTimeTracking;
+  return ticket;
 }
 
 async function resolveTicketPartner(ticket: TicketForTimeTracking): Promise<string | null> {
@@ -81,7 +81,7 @@ async function resolveTicketPartner(ticket: TicketForTimeTracking): Promise<stri
         .limit(1)
     )
   );
-  return (rows[0] as { partnerId: string } | undefined)?.partnerId ?? null;
+  return rows[0]?.partnerId ?? null;
 }
 
 async function getCategoryDefaults(categoryId: string): Promise<{ defaultBillable: boolean; defaultHourlyRate: string | null } | null> {
@@ -99,7 +99,7 @@ async function getCategoryDefaults(categoryId: string): Promise<{ defaultBillabl
         .limit(1)
     )
   );
-  return (rows[0] as { defaultBillable: boolean; defaultHourlyRate: string | null } | undefined) ?? null;
+  return rows[0] ?? null;
 }
 
 /**
@@ -159,18 +159,18 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
       billingStatus: input.billingStatus ?? 'not_billed'
     })
     .returning();
-  const entry = rows[0] as Record<string, unknown>;
+  const entry = rows[0]!;
 
   await emitTimeEntryEvent({
     type: 'time_entry.created',
-    timeEntryId: entry.id as string,
+    timeEntryId: entry.id,
     partnerId,
-    ticketId: (entry.ticketId as string | null) ?? null,
+    ticketId: entry.ticketId,
     actorUserId: actor.userId,
     payload: {
       userId: actor.userId,
-      durationMinutes: entry.durationMinutes as number | null,
-      isBillable: entry.isBillable as boolean
+      durationMinutes: entry.durationMinutes,
+      isBillable: entry.isBillable
     }
   });
   return entry;
@@ -194,7 +194,7 @@ async function stopRunningEntry(
     })
     .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt)))
     .returning();
-  return (rows[0] as Record<string, unknown>) ?? null;
+  return rows[0] ?? null;
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -238,10 +238,10 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         billingStatus: 'not_billed'
       })
       .returning();
-    return rows[0] as Record<string, unknown>;
+    return rows[0]!;
   };
 
-  let entry: Record<string, unknown>;
+  let entry: typeof timeEntries.$inferSelect;
   try {
     entry = await attempt();
   } catch (err) {
@@ -252,11 +252,11 @@ export async function startTimer(input: { ticketId?: string; description?: strin
 
   await emitTimeEntryEvent({
     type: 'time_entry.created',
-    timeEntryId: entry.id as string,
+    timeEntryId: entry.id,
     partnerId,
-    ticketId: (entry.ticketId as string | null) ?? null,
+    ticketId: entry.ticketId,
     actorUserId: actor.userId,
-    payload: { userId: actor.userId, durationMinutes: null, isBillable: entry.isBillable as boolean }
+    payload: { userId: actor.userId, durationMinutes: null, isBillable: entry.isBillable }
   });
   return entry;
 }
@@ -268,9 +268,9 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
   }
   await emitTimeEntryEvent({
     type: 'time_entry.updated',
-    timeEntryId: stopped.id as string,
-    partnerId: stopped.partnerId as string,
-    ticketId: (stopped.ticketId as string | null) ?? null,
+    timeEntryId: stopped.id,
+    partnerId: stopped.partnerId,
+    ticketId: stopped.ticketId,
     actorUserId: actor.userId,
     payload: { changed: ['endedAt', 'durationMinutes'] }
   });
