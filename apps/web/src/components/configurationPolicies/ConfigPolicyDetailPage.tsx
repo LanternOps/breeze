@@ -12,6 +12,7 @@ import {
   HardDrive,
   Shield,
   ShieldCheck,
+  KeyRound,
   ScrollText,
   ScanSearch,
   Usb,
@@ -79,7 +80,7 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   warranty: <ShieldCheck className="h-4 w-4" />,
   helper: <LifeBuoy className="h-4 w-4" />,
   remote_access: <Monitor className="h-4 w-4" />,
-  pam: <ShieldCheck className="h-4 w-4" />,
+  pam: <KeyRound className="h-4 w-4" />,
 };
 
 const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam'];

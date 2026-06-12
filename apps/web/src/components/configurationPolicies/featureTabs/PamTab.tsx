@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { KeyRound } from 'lucide-react';
 import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
@@ -68,7 +68,7 @@ export default function PamTab({ policyId, existingLink, onLinkChanged, linkedPo
     <FeatureTabShell
       title={meta.label}
       description={meta.description}
-      icon={<ShieldCheck className="h-5 w-5" />}
+      icon={<KeyRound className="h-5 w-5" />}
       isConfigured={!!existingLink || isInherited}
       saving={saving}
       error={error}
