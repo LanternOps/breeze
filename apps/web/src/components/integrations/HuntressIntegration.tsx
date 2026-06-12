@@ -223,9 +223,12 @@ export default function HuntressIntegration() {
         method: 'POST',
         body: JSON.stringify(body)
       });
-      const json = await res.json();
+      // Guard against non-JSON bodies (gateway HTML error pages, empty 504s) so
+      // the user sees the HTTP status, not a JSON parse error — and so a
+      // non-JSON 2xx can't masquerade as a failed save.
+      const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setSaveState({ status: 'error', message: json.error ?? 'Failed to save' });
+        setSaveState({ status: 'error', message: json.error ?? `Failed to save (${res.status})` });
         return;
       }
       setSaveState({ status: 'saved', message: json.syncWarning ?? 'Integration saved' });
@@ -248,8 +251,8 @@ export default function HuntressIntegration() {
         body: JSON.stringify({})
       });
       if (!res.ok) {
-        const json = await res.json();
-        setSyncState({ status: 'error', message: json.error ?? 'Sync failed' });
+        const json = await res.json().catch(() => ({}));
+        setSyncState({ status: 'error', message: json.error ?? `Sync failed (${res.status})` });
         return;
       }
       setSyncState({ status: 'done', message: 'Sync triggered' });

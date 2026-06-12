@@ -258,7 +258,10 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       | ((e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)
       | undefined;
 
-    if (!callback) return;
+    // Unreachable via Node's connect path (it always supplies a callback), but
+    // if it ever happened, silently returning would hang the request forever
+    // when no timeoutMs is set — throw so it surfaces as a connection error.
+    if (!callback) throw new Error('pinnedLookup invoked without a callback');
 
     if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
       (callback as (e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)(null, [safeRecord]);
