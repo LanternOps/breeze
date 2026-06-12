@@ -28,10 +28,22 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   NO_RUNNING_TIMER: 'No timer is currently running.',
   TICKET_NOT_FOUND: 'That ticket no longer exists.',
   APPROVED_IMMUTABLE: 'Approved entries can only be changed by an admin.',
+  ENTRY_RUNNING: 'A timer is already running — stop it first.',
+  TICKET_WRONG_PARTNER: 'That ticket belongs to a different partner.',
 };
 
 const friendly = (code: string): string | undefined => FRIENDLY_MESSAGES[code];
 
+/** Subscribe to timer changes; returns an unsubscribe function for effect cleanup. */
+export function onTimerChanged(cb: () => void): () => void {
+  window.addEventListener(TIMER_CHANGED_EVENT, cb);
+  return () => window.removeEventListener(TIMER_CHANGED_EVENT, cb);
+}
+
+/**
+ * @throws {ActionError} Failures are already toasted by runAction — callers should swallow
+ * ActionError (return early on 401) and only toast non-ActionError.
+ */
 export async function startTimerAction(input: { ticketId?: string; description?: string } = {}): Promise<void> {
   await runAction({
     request: () => fetchWithAuth('/time-entries/start', { method: 'POST', body: JSON.stringify(input) }),
@@ -42,6 +54,10 @@ export async function startTimerAction(input: { ticketId?: string; description?:
   broadcastTimerChanged();
 }
 
+/**
+ * @throws {ActionError} Failures are already toasted by runAction — callers should swallow
+ * ActionError (return early on 401) and only toast non-ActionError.
+ */
 export async function stopTimerAction(input: { description?: string; isBillable?: boolean } = {}): Promise<void> {
   await runAction({
     request: () => fetchWithAuth('/time-entries/stop', { method: 'POST', body: JSON.stringify(input) }),
