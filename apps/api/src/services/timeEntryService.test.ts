@@ -236,6 +236,15 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
     expect(setArgs.ticketId).toBe('t-9');
     expect(setArgs.orgId).toBe('o-9');
   });
+
+  it('detaches ticket when ticketId null: set ticketId null and orgId null', async () => {
+    dbMocks.selectResults.push([{ ...baseEntry, ticketId: 't-5', orgId: 'o-5' }]);
+    dbMocks.updateResult = [{ ...baseEntry, ticketId: null, orgId: null }];
+    await updateTimeEntry('te-1', { ticketId: null }, ACTOR);
+    const setArgs = dbMocks.updateSetArgs.at(-1)!;
+    expect(setArgs.ticketId).toBeNull();
+    expect(setArgs.orgId).toBeNull();
+  });
 });
 
 describe('deleteTimeEntry', () => {
@@ -246,6 +255,14 @@ describe('deleteTimeEntry', () => {
   it('403s for an approved entry without manageAll', async () => {
     dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-1', isApproved: true, partnerId: 'p-1', ticketId: null }]);
     await expect(deleteTimeEntry('te-1', ACTOR)).rejects.toMatchObject({ code: 'APPROVED_IMMUTABLE' });
+  });
+  it('owner deletes own unapproved entry: emits deleted event with entry userId', async () => {
+    dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-1', isApproved: false, partnerId: 'p-1', ticketId: null }]);
+    await deleteTimeEntry('te-1', ACTOR);
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'time_entry.deleted',
+      payload: expect.objectContaining({ userId: 'u-1' })
+    }));
   });
 });
 
@@ -262,8 +279,23 @@ describe('approveTimeEntries', () => {
     dbMocks.updateResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: null }];
     const result = await approveTimeEntries(['te-1', 'te-2', 'te-3'], true, ADMIN);
     expect(result.updated).toBe(1);
+    expect(result.skipped).toBe(2);
     expect(result.skippedReasons).toEqual({ ENTRY_RUNNING: 1, ENTRY_NOT_FOUND: 1 });
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'time_entry.approved' }));
+  });
+
+  it('unapprove path: nulls out approval fields and does NOT emit approved event', async () => {
+    dbMocks.selectResults.push([
+      { id: 'te-1', endedAt: new Date(), partnerId: 'p-1', ticketId: null }
+    ]);
+    dbMocks.updateResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: null }];
+    const result = await approveTimeEntries(['te-1'], false, ADMIN);
+    expect(result.updated).toBe(1);
+    const setArgs = dbMocks.updateSetArgs.at(-1)!;
+    expect(setArgs.isApproved).toBe(false);
+    expect(setArgs.approvedBy).toBeNull();
+    expect(setArgs.approvedAt).toBeNull();
+    expect(emitMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'time_entry.approved' }));
   });
 });
 
@@ -277,5 +309,16 @@ describe('addTicketPart', () => {
     expect(vals.orgId).toBe('o-1');
     expect(vals.isBillable).toBe(false);
     expect(vals.unitPrice).toBe('120.00');
+  });
+
+  it('sets addedBy from actor, defaults billingStatus to not_billed, and preserves null costBasis', async () => {
+    dbMocks.selectResults.push([{ id: 't-2', partnerId: 'p-1', orgId: 'o-2', categoryId: 'cat-2' }]);
+    dbMocks.selectResults.push([{ id: 'cat-2', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: null }]);
+    dbMocks.insertResult = [{ id: 'part-2' }];
+    await addTicketPart('t-2', { description: 'RAM 32GB', quantity: 2, unitPrice: 60 }, ACTOR);
+    const vals = dbMocks.insertedValues.at(-1)!;
+    expect(vals.addedBy).toBe('u-1');
+    expect(vals.billingStatus).toBe('not_billed');
+    expect(vals.costBasis).toBeNull();
   });
 });
