@@ -223,6 +223,14 @@ describe('GET /install.sh — generated installer script', () => {
     expect(script).toContain('Cannot reach the Breeze server');
   });
 
+  it('diagnoses TLS failures distinctly from generic unreachability', async () => {
+    const script = await fetchScript();
+    // curl exit 60 (cert verify) / 35 (handshake) are the signature of both
+    // self-signed-cert misconfigurations and TLS-intercepting middleboxes —
+    // "check DNS/firewall" would be the wrong advice for either.
+    expect(script).toContain('TLS problem connecting to');
+  });
+
   it('flags intercepted responses (captive portal / wrong responder) distinctly', async () => {
     const script = await fetchScript();
     // A 200 whose body is not Breeze's health JSON almost always means an
@@ -262,7 +270,9 @@ describe('install.sh functional pre-flight behavior', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  function runScript(args: string[]): Promise<{ code: number; output: string }> {
+  function runScript(
+    args: string[],
+  ): Promise<{ code: number; killed: boolean; output: string }> {
     return new Promise((resolve) => {
       execFile(
         'bash',
@@ -280,7 +290,11 @@ describe('install.sh functional pre-flight behavior', () => {
         },
         (err, stdout, stderr) => {
           const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0;
-          resolve({ code, output: `${stdout}${stderr}` });
+          // A timeout kill also lands here with code mapped to 1 — expose it
+          // so "fails fast" tests can't pass on a script that printed the
+          // right message but then hung.
+          const killed = Boolean(err && (err.killed || err.signal));
+          resolve({ code, killed, output: `${stdout}${stderr}` });
         },
       );
     });
@@ -288,7 +302,13 @@ describe('install.sh functional pre-flight behavior', () => {
 
   it('fails fast with a clear message when the server is unreachable', async () => {
     // Port 1 on localhost → immediate connection refused.
-    const { code, output } = await runScript(['--server', 'http://127.0.0.1:1', '--token', 'tok']);
+    const { code, killed, output } = await runScript([
+      '--server',
+      'http://127.0.0.1:1',
+      '--token',
+      'tok',
+    ]);
+    expect(killed).toBe(false);
     expect(code).not.toBe(0);
     expect(output).toContain('Cannot reach the Breeze server');
     expect(output).toContain('no response');
@@ -304,12 +324,54 @@ describe('install.sh functional pre-flight behavior', () => {
     await new Promise<void>((resolve) => portal.listen(0, '127.0.0.1', resolve));
     const { port } = portal.address() as AddressInfo;
     try {
-      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      const { code, killed, output } = await runScript([
+        '--server',
+        `http://127.0.0.1:${port}`,
+        '--token',
+        'tok',
+      ]);
+      expect(killed).toBe(false);
       expect(code).not.toBe(0);
       expect(output).toContain('captive portal');
       expect(output).not.toContain('Downloading');
     } finally {
       portal.close();
+    }
+  });
+
+  it('attributes an intercepted download to the network when /health is clean', async () => {
+    // A path-selective middlebox (web filter allowlisting /health, or a
+    // portal that whitelists short URLs) passes the pre-flight and then
+    // serves HTML where the pkg/metadata should be. The failure must still
+    // point at interception — not at Gatekeeper or "missing checksum".
+    const filter = createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', version: 'test', uptime: 1 }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><body>Filtered</body></html>');
+      }
+    });
+    await new Promise<void>((resolve) => filter.listen(0, '127.0.0.1', resolve));
+    const { port } = filter.address() as AddressInfo;
+    try {
+      const { code, killed, output } = await runScript([
+        '--server',
+        `http://127.0.0.1:${port}`,
+        '--token',
+        'tok',
+      ]);
+      expect(killed).toBe(false);
+      expect(code).not.toBe(0);
+      expect(output).toContain('Breeze server is reachable');
+      // Both platform branches must blame the network: darwin downloads the
+      // HTML as a .pkg (caught by the xar magic check), linux gets HTML as
+      // release metadata (caught before the checksum-extraction error).
+      expect(output).toContain('intercepting');
+      expect(output).not.toContain('Gatekeeper');
+    } finally {
+      filter.close();
     }
   });
 

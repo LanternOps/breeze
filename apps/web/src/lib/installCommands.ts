@@ -38,20 +38,26 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   const unixSecretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
   const unixCmd =
     `f="$(mktemp)" && ` +
-    `{ curl -fsSL -o "$f" "${apiUrl}/api/v1/agents/install.sh" && head -n1 "$f" | grep -q '^#!' || ` +
-    `{ echo "[ERROR] Could not fetch the Breeze installer from ${apiUrl} — verify this machine has network access to your Breeze server."; false; }; } && ` +
+    `{ curl -fsSL --connect-timeout 10 -o "$f" "${apiUrl}/api/v1/agents/install.sh" && head -n1 "$f" | grep -q '^#!' || ` +
+    `{ echo "[ERROR] Could not fetch the Breeze installer from ${apiUrl} — verify this machine has network access to your Breeze server." >&2; false; }; } && ` +
     `sudo bash "$f" --server "${apiUrl}" --token "${token}"${unixSecretFlag}`;
 
-  // No captive-portal detection on Windows: a 200 HTML page saved as
-  // breeze-agent.exe surfaces as a failed "service install" step instead.
-  // PowerShell has no cheap shebang-check equivalent; the $LASTEXITCODE
-  // throws at least stop the chain (native exe failures do not trip
-  // $ErrorActionPreference on their own).
+  // The MZ-magic check is the Windows analog of the unix shebang check: a
+  // captive portal's 200 HTML saved as breeze-agent.exe would otherwise stop
+  // the chain with PowerShell's raw "not a valid application" exception
+  // (which never sets $LASTEXITCODE — the process fails to start). The
+  // $LASTEXITCODE throws cover agent steps that DO run but fail, since
+  // native exe exit codes do not trip $ErrorActionPreference.
   const winSecretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
   const winThrow = (step: string) => `if($LASTEXITCODE){throw "Breeze: ${step} failed (exit code $LASTEXITCODE)"}`;
+  const winMzCheck =
+    `$b=[IO.File]::ReadAllBytes("$pwd\\breeze-agent.exe"); ` +
+    `if($b.Length -lt 2 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A)` +
+    `{throw "Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
   const windows =
     `$ErrorActionPreference='Stop'; ` +
     `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; ` +
+    `${winMzCheck}; ` +
     `.\\breeze-agent.exe service install; ${winThrow('service install')}; ` +
     `.\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${winSecretFlag}; ${winThrow('enrollment')}; ` +
     `.\\breeze-agent.exe service start; ${winThrow('service start')}`;

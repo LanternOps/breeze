@@ -41,6 +41,16 @@ describe('buildInstallCommands', () => {
       expect(macos).not.toContain('exit 1');
     });
 
+    it('sends the error to stderr and bounds the bootstrap fetch', () => {
+      const { macos } = buildInstallCommands(base);
+      // MDM/RMM log collectors split streams — the actionable message must
+      // land on stderr like install.sh's own errors do.
+      expect(macos).toContain('>&2');
+      // Against a DROP-style firewall the user should not stare at a silent
+      // prompt for curl's ~2min default connect timeout.
+      expect(macos).toContain('--connect-timeout 10');
+    });
+
     it('appends --enrollment-secret only when a secret is provided', () => {
       const withSecret = buildInstallCommands({ ...base, enrollmentSecret: 's3cret' });
       expect(withSecret.macos).toContain('--enrollment-secret "s3cret"');
@@ -62,6 +72,18 @@ describe('buildInstallCommands', () => {
       // agent steps (service install, enroll, service start) needs a check.
       expect(windows.match(/if\(\$LASTEXITCODE\)\{throw/g)).toHaveLength(3);
       expect(windows).toContain('enroll "enroll_abc123" --server "https://rmm.example.com"');
+    });
+
+    it('verifies the download is a real PE executable before running it', () => {
+      const { windows } = buildInstallCommands(base);
+      // The Windows analog of the unix shebang check: a captive portal's 200
+      // HTML saved as breeze-agent.exe must be blamed on the network, not
+      // surface as PowerShell's raw "not a valid application" exception.
+      expect(windows).toContain('0x4D');
+      expect(windows).toContain('0x5A');
+      expect(windows).toContain('captive portal or web filter');
+      // The MZ check must run before the first agent invocation.
+      expect(windows.indexOf('0x4D')).toBeLessThan(windows.indexOf('service install'));
     });
 
     it('appends --enrollment-secret only when a secret is provided', () => {

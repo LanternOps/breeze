@@ -436,11 +436,22 @@ fi
 info "Checking connectivity to \$BREEZE_SERVER..."
 HEALTH_FILE="$(mktemp)"
 trap 'rm -f "\$HEALTH_FILE"' EXIT
-HEALTH_CODE="$(curl -fsSL -m 20 -w '%{http_code}' -o "\$HEALTH_FILE" "\$BREEZE_SERVER/health" 2>/dev/null)" || true
+CURL_RC=0
+HEALTH_CODE="$(curl -fsSL -m 20 -w '%{http_code}' -o "\$HEALTH_FILE" "\$BREEZE_SERVER/health" 2>/dev/null)" || CURL_RC=\$?
+HEALTH_CODE="\${HEALTH_CODE:-000}"
 
-if [[ "\$HEALTH_CODE" == "000" ]]; then
-  fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions."
-elif [[ "\$HEALTH_CODE" != "200" ]]; then
+if [[ "\$HEALTH_CODE" != "200" ]]; then
+  # curl's exit code names the transport failure precisely — branch on the
+  # ones whose remediation differs from generic "check your network".
+  case "\$CURL_RC" in
+    35|60)
+      fatal "TLS problem connecting to \$BREEZE_SERVER — the server certificate could not be verified, or something is intercepting HTTPS on this network." ;;
+    28)
+      fatal "Connection to \$BREEZE_SERVER timed out. Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions." ;;
+  esac
+  if [[ "\$HEALTH_CODE" == "000" ]]; then
+    fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions."
+  fi
   fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (HTTP \$HEALTH_CODE). Verify the server URL is correct and this machine has network access to it."
 fi
 
@@ -505,6 +516,14 @@ if [[ "\$OS" == "darwin" ]]; then
 
   success "Downloaded installer package ($(wc -c < "\$TMPPKG" | tr -d ' ') bytes)"
 
+  # A path-selective middlebox can pass the /health pre-flight and still
+  # intercept the download path. macOS .pkg files are xar archives — anything
+  # else (typically a portal's HTML) must be blamed on the network, not on
+  # Gatekeeper below.
+  if [[ "$(head -c 4 "\$TMPPKG")" != 'xar!' ]]; then
+    fatal "Downloaded file is not a macOS installer package — something on this network may be intercepting requests to \$BREEZE_SERVER (captive portal, proxy, or web filter)."
+  fi
+
   # Verify Apple notarization/signature before installing as root — the installer
   # CLI does not enforce Gatekeeper on its own, so a tampered/MITM'd download
   # would otherwise be installed with full privileges.
@@ -566,6 +585,12 @@ trap 'rm -f "\$METADATA_FILE"' EXIT
 METADATA_HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$METADATA_FILE" "\$VERSION_METADATA_URL" 2>/dev/null)" || true
 if [[ "\$METADATA_HTTP_CODE" != "200" ]]; then
   fatal "Failed to fetch release integrity metadata (HTTP \$METADATA_HTTP_CODE). Refusing to install without a trusted checksum."
+fi
+
+# Same path-selective interception guard as the macOS branch: a 200 whose
+# body is HTML is a middlebox answering for the metadata endpoint.
+if grep -qiE '<html|<!doctype' "\$METADATA_FILE"; then
+  fatal "Got a web page instead of release metadata from \$BREEZE_SERVER — something on this network may be intercepting requests (captive portal, proxy, or web filter)."
 fi
 
 EXPECTED_SHA256="$(extract_checksum "\$METADATA_FILE")"
