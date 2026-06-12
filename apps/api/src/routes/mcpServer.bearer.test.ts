@@ -18,7 +18,17 @@ const setApiKeyContext = (c: any) => {
   c.set('apiKeyOrgId', 'org-1');
 };
 
-vi.mock('../middleware/bearerTokenAuth', () => ({ bearerTokenAuthMiddleware: mocks.bearerTokenAuthMiddleware }));
+vi.mock('../middleware/bearerTokenAuth', () => ({
+  bearerTokenAuthMiddleware: mocks.bearerTokenAuthMiddleware,
+  // mcpServer now imports the canonical resolver from here (deduped from its
+  // own inline copy). Drive it off the same mocked `db` so the partner-scope
+  // org enumeration these tests rely on still resolves to ['org-1'].
+  resolvePartnerAccessibleOrgIds: async () => {
+    const { db } = await import('../db');
+    const rows = await (db as any).select().from().where();
+    return rows.map((r: any) => r.id);
+  },
+}));
 
 vi.mock('../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: mocks.apiKeyAuthMiddleware,

@@ -7,6 +7,7 @@ const {
   updateWhereMock,
   getEligibilityMock,
   getEligibilityForUserMock,
+  revokeOauthArtifactsMock,
 } = vi.hoisted(() => ({
   sendPasswordResetMock: vi.fn(async () => undefined),
   setexMock: vi.fn(async () => 'OK'),
@@ -14,6 +15,7 @@ const {
   updateWhereMock: vi.fn(async () => undefined),
   getEligibilityMock: vi.fn(),
   getEligibilityForUserMock: vi.fn(),
+  revokeOauthArtifactsMock: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 })),
 }));
 
 vi.mock('../../db', () => ({
@@ -83,6 +85,10 @@ vi.mock('./helpers', async () => {
     revokeCurrentRefreshTokenJti: vi.fn(async () => undefined),
   };
 });
+
+vi.mock('../../oauth/grantRevocation', () => ({
+  revokeAllUserOauthArtifacts: revokeOauthArtifactsMock,
+}));
 
 vi.mock('./ssoPolicy', () => ({
   assertPasswordAuthAllowedBySso: vi.fn(async () => undefined),
@@ -275,6 +281,9 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
       expect(updateWhereMock).toHaveBeenCalled();
+      // Stolen MCP OAuth refresh tokens must be revoked on reset, not just
+      // first-party JWTs.
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -283,6 +292,23 @@ describe('password reset eligibility (#719)', () => {
           userId: 'u-pending',
         }),
       );
+    });
+
+    it('does not revoke OAuth artifacts when the reset is denied', async () => {
+      getdelMock.mockResolvedValue('u-suspended');
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: false,
+        reason: 'tenant_inactive',
+        userId: 'u-suspended',
+      });
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      expect(revokeOauthArtifactsMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset completion if partner became suspended after token issue', async () => {
@@ -351,6 +377,27 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(400);
       expect(getEligibilityForUserMock).not.toHaveBeenCalled();
       expect(updateWhereMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /change-password', () => {
+    beforeEach(() => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{ passwordHash: 'existing-hash' }]) as any);
+      vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    });
+
+    it('revokes OAuth artifacts for the authenticated user on success', async () => {
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      // A previously authorized MCP OAuth refresh token must be revoked on a
+      // password change, not just first-party JWTs.
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
     });
   });
 });

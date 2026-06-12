@@ -19,6 +19,7 @@ import { authMiddleware, requirePermission } from '../middleware/auth';
 import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { revokeUserAccess } from '../services/userSuspension';
 
 export const accessReviewRoutes = new Hono();
 
@@ -516,6 +517,16 @@ accessReviewRoutes.post(
       uniqueRevokedUserIds.map((userId) =>
         revokeAllUserTokens(userId).catch((err) => {
           console.error('[access-review] token revoke failed for user', userId, err);
+        }),
+      ),
+    );
+    // Also revoke OAuth grants/refresh tokens (e.g. MCP) for each removed user
+    // so a previously authorized refresh token can't keep minting access
+    // tokens after access is revoked. Best-effort per user, same as above.
+    await Promise.all(
+      uniqueRevokedUserIds.map((userId) =>
+        revokeUserAccess(userId).catch((err) => {
+          console.error('[access-review] oauth revoke failed for user', userId, err);
         }),
       ),
     );

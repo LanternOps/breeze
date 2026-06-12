@@ -131,14 +131,37 @@ describe('BreezeOidcAdapter', () => {
     }));
   });
 
-  it('marks AuthorizationCode rows consumed', async () => {
+  it('marks AuthorizationCode rows consumed and stamps payload.consumed for the library', async () => {
     const chain = mockUpdateChain();
 
     await new BreezeOidcAdapter('AuthorizationCode').consume('code_abc');
 
     expect(updateMock).toHaveBeenCalledWith(oauthAuthorizationCodes);
-    expect(chain.set).toHaveBeenCalledWith({ consumedAt: expect.any(Date) });
+    // Both the row-level guard (consumedAt) AND the oidc-provider consumable
+    // payload field must be written: find() returns the payload on replay and
+    // the library reads `code.consumed` from it to fire the grant-wide revoke.
+    expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({
+      consumedAt: expect.any(Date),
+      payload: expect.anything(),
+    }));
     expect(chain.where).toHaveBeenCalled();
+  });
+
+  it('consume() on RefreshToken only revokes (no payload.consumed stamp) — unchanged by the auth-code fix', async () => {
+    const chain = mockUpdateChain();
+
+    await new BreezeOidcAdapter('RefreshToken').consume('refresh_abc');
+
+    expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
+    expect(chain.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
+    expect(chain.where).toHaveBeenCalled();
+  });
+
+  it('consume() on AccessToken is a no-op DB-wise (in-memory model)', async () => {
+    // AccessToken isn't a consumable/DB-backed model in this adapter; consume()
+    // must not switch into the AuthorizationCode/RefreshToken branches.
+    await new BreezeOidcAdapter('AccessToken').consume('access_abc');
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('revokes RefreshToken rows on destroy', async () => {
@@ -221,14 +244,37 @@ describe('BreezeOidcAdapter', () => {
     expect(revokeGrant).not.toHaveBeenCalled();
   });
 
-  it('returns undefined for consumed AuthorizationCode rows', async () => {
+  it('returns the payload for a fresh (unconsumed) AuthorizationCode so the first exchange succeeds', async () => {
+    const payload = { accountId: 'user_abc', grantId: 'grant_abc' };
     mockSelectRows([{
-      payload: { accountId: 'user_abc' },
+      payload,
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBe(payload);
+  });
+
+  it('surfaces a consumed AuthorizationCode payload on replay and logs OAUTH_AUTH_CODE_REUSE', async () => {
+    // On replay the adapter MUST return the (consumed-stamped) payload rather
+    // than undefined: oidc-provider calls find() with ignoreExpiration:true and
+    // relies on its own `if (code.consumed) { revoke(grantId); throw }` branch
+    // to revoke the whole grant family. Hiding the row surfaced replays as a
+    // generic "authorization code not found" and left that revoke branch dead.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const payload = { accountId: 'user_abc', grantId: 'grant_abc', consumed: 1_700_000_000 };
+    mockSelectRows([{
+      payload,
       consumedAt: new Date(),
       expiresAt: new Date(Date.now() + 60_000),
     }]);
 
-    await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBeUndefined();
+    await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBe(payload);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('OAUTH_AUTH_CODE_REUSE'),
+      expect.objectContaining({ grant_id: 'grant_abc' }),
+    );
+    consoleError.mockRestore();
   });
 
   it('returns undefined for expired AuthorizationCode rows', async () => {

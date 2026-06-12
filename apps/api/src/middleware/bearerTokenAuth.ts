@@ -117,7 +117,7 @@ export function _resetLegacyMcpWriteWarningsForTests() {
  * — same pattern as auth.ts. The returned list is then used to build the
  * non-system context the request actually runs under.
  */
-async function resolvePartnerAccessibleOrgIds(
+export async function resolvePartnerAccessibleOrgIds(
   partnerId: string,
   userId: string,
 ): Promise<string[]> {

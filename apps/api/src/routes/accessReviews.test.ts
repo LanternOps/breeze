@@ -69,10 +69,19 @@ vi.mock('../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
 }));
 
+vi.mock('../services/userSuspension', () => ({
+  revokeUserAccess: vi.fn().mockResolvedValue({
+    grantsRevoked: 0,
+    refreshTokensRevoked: 0,
+    jtisRevoked: 0,
+  })
+}));
+
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { clearPermissionCache } from '../services/permissions';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { revokeUserAccess } from '../services/userSuspension';
 
 describe('access review routes', () => {
   let app: Hono;
@@ -429,6 +438,11 @@ describe('access review routes', () => {
       expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
       expect(revokeAllUserTokens).toHaveBeenCalledWith('user-2');
       expect(revokeAllUserTokens).toHaveBeenCalledTimes(2);
+      // OAuth grants/refresh tokens (e.g. MCP) must also be revoked per user
+      // so a previously authorized refresh token stops minting access tokens.
+      expect(revokeUserAccess).toHaveBeenCalledWith('user-1');
+      expect(revokeUserAccess).toHaveBeenCalledWith('user-2');
+      expect(revokeUserAccess).toHaveBeenCalledTimes(2);
     });
 
     it('still completes the review when token revocation fails (best-effort)', async () => {

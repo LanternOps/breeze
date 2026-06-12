@@ -75,6 +75,26 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
   bearerTokenAuthMiddleware: async () => {
     throw new Error('should not be called without a Bearer header');
   },
+  // mcpServer imports the canonical partner→org resolver from here (deduped
+  // from its former inline copy). Reimplement the real query logic against the
+  // mocked `db` so the per-case db shims (membership lookup via .limit, then org
+  // enumeration via awaited .where) still drive the partner-scope path.
+  resolvePartnerAccessibleOrgIds: async (partnerId: string, _userId: string) => {
+    const { db } = await import('../db');
+    const [membership] = await (db as any).select().from().where().limit(1);
+    if (!membership) return [];
+    if (membership.orgAccess === 'none') return [];
+    if (membership.orgAccess === 'selected') {
+      const selected = (membership.orgIds ?? []).filter(
+        (v: unknown): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (selected.length === 0) return [];
+      const rows = await (db as any).select().from().where();
+      return rows.map((r: any) => r.id);
+    }
+    const rows = await (db as any).select().from().where();
+    return rows.map((r: any) => r.id);
+  },
 }));
 
 // Test the pure utility functions extracted from mcpServer.ts

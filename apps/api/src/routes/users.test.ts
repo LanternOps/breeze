@@ -214,6 +214,7 @@ import { db } from '../db';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { revokeUserAccess } from '../services/userSuspension';
 import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
 // Mocked above — imported to drive failure paths via mockResolvedValueOnce.
 import { writeAvatar, deleteAvatar, readAvatarBuffer } from '../services/avatarStorage';
@@ -1302,6 +1303,9 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
       expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
+      // OAuth grants/refresh tokens (e.g. MCP) must also be revoked so a
+      // removed user's refresh token can't keep minting access tokens.
+      expect(revokeUserAccess).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
@@ -1368,6 +1372,7 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       expect(revokeAllUserTokens).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
       expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
+      expect(revokeUserAccess).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
     });
   });
 

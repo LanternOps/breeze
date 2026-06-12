@@ -29,6 +29,7 @@ import {
   writeAuthAudit
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
+import { revokeAllUserOauthArtifacts } from '../../oauth/grantRevocation';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -217,6 +218,10 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   await invalidateAllUserSessions(userId);
   try {
     await revokeAllUserTokens(userId);
+    // Also revoke OAuth grants/refresh tokens (e.g. MCP). A first-party JWT
+    // revoke alone leaves a stolen OAuth refresh token minting access tokens
+    // for up to 14 days after the victim resets their password.
+    await revokeAllUserOauthArtifacts(userId);
   } catch (error) {
     console.error('[auth] Failed to revoke tokens after password reset:', error);
   }
@@ -288,6 +293,10 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   try {
     await revokeAllUserTokens(auth.user.id);
     await revokeCurrentRefreshTokenJti(c, auth.user.id);
+    // Also revoke OAuth grants/refresh tokens (e.g. MCP) so a previously
+    // authorized refresh token can't keep minting access tokens after the
+    // user changes their password.
+    await revokeAllUserOauthArtifacts(auth.user.id);
   } catch (error) {
     console.error('[auth] Failed to revoke tokens after password change:', error);
   }
