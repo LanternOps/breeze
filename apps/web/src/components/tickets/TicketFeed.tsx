@@ -13,6 +13,9 @@ function systemLine(c: TicketComment): string {
   if (c.commentType === 'assignment') {
     return c.newValue ? `${c.authorName ?? 'System'} assigned this ticket` : `${c.authorName ?? 'System'} unassigned this ticket`;
   }
+  if (c.commentType === 'time_entry') {
+    return c.content || `${c.authorName ?? 'Technician'} logged time`;
+  }
   return c.content || 'System event';
 }
 
