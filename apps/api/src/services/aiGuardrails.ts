@@ -106,6 +106,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     comment: { resource: 'tickets', action: 'write' },
     assign: { resource: 'tickets', action: 'write' },
     update_status: { resource: 'tickets', action: 'write' },
+    log_time_entry: { resource: 'time_entries', action: 'write' },
+    start_timer: { resource: 'time_entries', action: 'write' },
+    stop_timer: { resource: 'time_entries', action: 'write' },
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {

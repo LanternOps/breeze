@@ -166,7 +166,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   manage_tickets: z.object({
-    action: z.enum(['list', 'get', 'create', 'comment', 'assign', 'update_status']),
+    action: z.enum(['list', 'get', 'create', 'comment', 'assign', 'update_status', 'log_time_entry', 'start_timer', 'stop_timer']),
     ticketId: uuid.optional(),
     orgId: uuid.optional(),
     deviceId: uuid.optional(),
@@ -180,6 +180,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     isPublic: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
     pendingReason: z.string().max(500).optional(),
+    startedAt: z.string().datetime().optional(),
+    endedAt: z.string().datetime().optional(),
+    isBillable: z.boolean().optional(),
+    hourlyRate: z.number().nonnegative().optional(),
   }),
 
   manage_alerts: z.object({

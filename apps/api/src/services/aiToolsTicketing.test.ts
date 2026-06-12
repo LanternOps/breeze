@@ -1,17 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { serviceMocks } = vi.hoisted(() => ({
+const { serviceMocks, timeEntryMocks } = vi.hoisted(() => ({
   serviceMocks: {
     createTicket: vi.fn(),
     changeTicketStatus: vi.fn(),
     assignTicket: vi.fn(),
     addTicketComment: vi.fn()
+  },
+  timeEntryMocks: {
+    createTimeEntry: vi.fn(),
+    startTimer: vi.fn(),
+    stopTimer: vi.fn()
   }
 }));
 
 vi.mock('./ticketService', async () => {
   const actual = await vi.importActual<typeof import('./ticketService')>('./ticketService');
   return { ...actual, ...serviceMocks };
+});
+
+vi.mock('./timeEntryService', async () => {
+  const actual = await vi.importActual<typeof import('./timeEntryService')>('./timeEntryService');
+  return { ...actual, ...timeEntryMocks };
 });
 
 // Mutable handle so individual tests can override the limit() return value
@@ -347,6 +357,141 @@ describe('manage_tickets list — site-axis scoping', () => {
   });
 });
 
+// ── time-tracking actions ─────────────────────────────────────────────────
+
+describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLimit.mockResolvedValue([]);
+  });
+
+  // log_time_entry
+  it('log_time_entry delegates to createTimeEntry with manageAll:false actor and Date conversion', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW); // ticket scope check passes
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1', durationMinutes: 30 });
+    const out = await getTool().handler(
+      {
+        action: 'log_time_entry',
+        ticketId: 't-1',
+        startedAt: '2026-06-11T09:00:00Z',
+        endedAt: '2026-06-11T09:30:00Z',
+        isBillable: true,
+        hourlyRate: 125
+      },
+      auth
+    );
+    expect(timeEntryMocks.createTimeEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticketId: 't-1',
+        startedAt: expect.any(Date),
+        endedAt: expect.any(Date),
+        isBillable: true,
+        hourlyRate: 125
+      }),
+      expect.objectContaining({ userId: 'u-1', manageAll: false, partnerId: 'p-1' })
+    );
+    expect(JSON.parse(out)).toHaveProperty('timeEntry');
+  });
+
+  it('log_time_entry returns error when startedAt is missing', async () => {
+    const out = await getTool().handler(
+      { action: 'log_time_entry', endedAt: '2026-06-11T09:30:00Z' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/startedAt is required/i);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('log_time_entry returns error when endedAt is missing', async () => {
+    const out = await getTool().handler(
+      { action: 'log_time_entry', startedAt: '2026-06-11T09:00:00Z' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/endedAt is required/i);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('log_time_entry returns error (not throws) when TimeEntryServiceError is raised', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    const { TimeEntryServiceError: TES } = await vi.importActual<typeof import('./timeEntryService')>('./timeEntryService');
+    timeEntryMocks.createTimeEntry.mockRejectedValue(new TES('Ticket must belong to the same partner', 400, 'TICKET_WRONG_PARTNER'));
+    const out = await getTool().handler(
+      { action: 'log_time_entry', ticketId: 't-1', startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/partner/i);
+  });
+
+  it('log_time_entry blocks out-of-scope ticket (site gate)', async () => {
+    // mockLimit returns [] by default — ticket not in caller's scope.
+    const out = await getTool().handler(
+      { action: 'log_time_entry', ticketId: 'other-ticket', startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/not found/i);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('log_time_entry without ticketId does not do scope check', async () => {
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-2', durationMinutes: 60 });
+    const out = await getTool().handler(
+      { action: 'log_time_entry', startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T10:00:00Z' },
+      auth
+    );
+    // No scope check select = mockSelect never called
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(JSON.parse(out)).toHaveProperty('timeEntry');
+  });
+
+  // start_timer
+  it('start_timer delegates to startTimer and returns timeEntry', async () => {
+    timeEntryMocks.startTimer.mockResolvedValue({ id: 'te-3', endedAt: null });
+    const out = await getTool().handler({ action: 'start_timer', description: 'on it' }, auth);
+    expect(timeEntryMocks.startTimer).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'on it' }),
+      expect.objectContaining({ userId: 'u-1', manageAll: false })
+    );
+    expect(JSON.parse(out)).toHaveProperty('timeEntry');
+  });
+
+  it('start_timer with ticketId blocks out-of-scope ticket', async () => {
+    // mockLimit returns [] — out of scope.
+    const out = await getTool().handler({ action: 'start_timer', ticketId: 'other-ticket' }, auth);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/not found/i);
+    expect(timeEntryMocks.startTimer).not.toHaveBeenCalled();
+  });
+
+  // stop_timer
+  it('stop_timer delegates to stopTimer and returns timeEntry', async () => {
+    timeEntryMocks.stopTimer.mockResolvedValue({ id: 'te-3', endedAt: new Date(), durationMinutes: 45 });
+    const out = await getTool().handler({ action: 'stop_timer' }, auth);
+    expect(timeEntryMocks.stopTimer).toHaveBeenCalledWith(
+      expect.objectContaining({}),
+      expect.objectContaining({ userId: 'u-1', manageAll: false })
+    );
+    expect(JSON.parse(out)).toHaveProperty('timeEntry');
+  });
+
+  it('stop_timer surfaces NO_RUNNING_TIMER as an error result (not a thrown exception)', async () => {
+    const { TimeEntryServiceError: TES } = await vi.importActual<typeof import('./timeEntryService')>('./timeEntryService');
+    timeEntryMocks.stopTimer.mockRejectedValue(new TES('No running timer', 404, 'NO_RUNNING_TIMER'));
+    const out = await getTool().handler({ action: 'stop_timer' }, auth);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/no running timer/i);
+  });
+});
+
 // ── Zod schema registry coverage ──────────────────────────────────────────
 
 describe('manage_tickets — validateToolInput schema registry', () => {
@@ -400,6 +545,37 @@ describe('manage_tickets — validateToolInput schema registry', () => {
 
   it('rejects an unknown status value', () => {
     const result = validateToolInput('manage_tickets', { action: 'update_status', status: 'unknown_status' });
+    expect(result.success).toBe(false);
+  });
+
+  it('passes for a valid log_time_entry invocation', () => {
+    const result = validateToolInput('manage_tickets', {
+      action: 'log_time_entry',
+      startedAt: '2026-06-11T09:00:00Z',
+      endedAt: '2026-06-11T09:30:00Z',
+      isBillable: true,
+      hourlyRate: 125
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('passes for a valid start_timer invocation', () => {
+    const result = validateToolInput('manage_tickets', { action: 'start_timer' });
+    expect(result.success).toBe(true);
+  });
+
+  it('passes for a valid stop_timer invocation', () => {
+    const result = validateToolInput('manage_tickets', { action: 'stop_timer' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a negative hourlyRate', () => {
+    const result = validateToolInput('manage_tickets', {
+      action: 'log_time_entry',
+      startedAt: '2026-06-11T09:00:00Z',
+      endedAt: '2026-06-11T09:30:00Z',
+      hourlyRate: -5
+    });
     expect(result.success).toBe(false);
   });
 });
