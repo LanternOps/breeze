@@ -313,6 +313,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     agentVersion: data.agentVersion,
     lastUser: data.lastUser ?? null,
     uptimeSeconds: data.uptime ?? null,
+    // OS-level pending-reboot flag. Absent (old agents) means false — the
+    // conservative default — and writing unconditionally lets the flag
+    // self-clear on the first post-reboot heartbeat.
+    pendingReboot: data.pendingReboot ?? false,
     updatedAt: new Date()
   };
 
