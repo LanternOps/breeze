@@ -7,13 +7,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
 // ListProcesses returns a paginated list of running processes.
 // On Windows, gopsutil's Username() calls LookupAccountSid per process which
-// can be very slow with AzureAD/domain accounts. We use 2 workers to overlap
-// IO-bound SID lookups without saturating CPU.
+// can be very slow with AzureAD/domain accounts. We use a small worker pool
+// (see workers below) to overlap IO-bound SID lookups without saturating CPU.
 func ListProcesses(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
@@ -35,6 +36,11 @@ func ListProcesses(payload map[string]any) CommandResult {
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
+
+	// Measure instantaneous CPU% across all processes up front: one shared
+	// sleep window, then the worker pool reads the precomputed value. This is
+	// what makes the list show *current* CPU rather than a lifetime average.
+	cpuPercents := sampleProcessCPUPercents(procs, cpuSampleInterval)
 
 	// 8 workers: overlaps IO-bound SID lookups (the bottleneck on Windows with
 	// AzureAD). The earlier 400% CPU spike was from leaked timeout goroutines
@@ -60,7 +66,7 @@ func ListProcesses(payload map[string]any) CommandResult {
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				info := getProcessInfo(job.p)
+				info := getProcessInfo(job.p, cpuPercents[job.p.Pid])
 				if info != nil {
 					mu.Lock()
 					results = append(results, indexedInfo{idx: job.idx, info: info})
@@ -198,26 +204,96 @@ func KillProcess(payload map[string]any) CommandResult {
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
 }
 
-// getProcessInfo collects lightweight fields for the list view.
+// cpuSampleInterval is how long we observe processes to compute *instantaneous*
+// CPU usage. Like Activity Monitor / top, CPU% is a rate measured over a window,
+// not a lifetime total. 250ms keeps the process list responsive while producing
+// a stable reading.
+const cpuSampleInterval = 250 * time.Millisecond
+
+// cpuPercentFromCPUSeconds converts the CPU-seconds a process consumed over a
+// wall-clock window into a percentage where 100% == one full core (Activity
+// Monitor / top convention) — so a process pinning two cores reads 200%.
+//
+// This replaces gopsutil's Process.CPUPercent(), which returns a *lifetime
+// average* (total CPU time / process uptime). That average stays misleadingly
+// high long after a burst ends — e.g. a process that did heavy work and then
+// went idle keeps reporting a large number even when its threads are parked,
+// which is exactly the idle-but-"86%" symptom that motivated this change.
+func cpuPercentFromCPUSeconds(prevSeconds, curSeconds float64, elapsed time.Duration) float64 {
+	secs := elapsed.Seconds()
+	if secs <= 0 {
+		return 0
+	}
+	delta := curSeconds - prevSeconds
+	if delta < 0 {
+		// Counter went backwards (PID reused / process replaced mid-sample).
+		delta = 0
+	}
+	return 100 * delta / secs
+}
+
+// cpuSeconds returns the CPU time a process has consumed, in seconds. We use
+// User+System (matching top's per-process %CPU) rather than TimesStat.Total(),
+// which on Linux also folds in Iowait (time blocked on I/O, not CPU burn) and
+// would inflate the reading for I/O-bound processes.
+func cpuSeconds(ts *cpu.TimesStat) float64 {
+	return ts.User + ts.System
+}
+
+// sampleProcessCPUPercents measures instantaneous CPU usage for every process by
+// reading CPU-time counters, sleeping once for interval, then reading again and
+// diffing. The cost is interval + two O(n) counter-read passes — the key point
+// is a single shared sleep, never one sleep per process. Returns pid -> percent
+// (100% == one core).
+func sampleProcessCPUPercents(procs []*process.Process, interval time.Duration) map[int32]float64 {
+	type snapshot struct {
+		seconds float64
+		at      time.Time
+	}
+
+	first := make(map[int32]snapshot, len(procs))
+	for _, p := range procs {
+		if ts, err := p.Times(); err == nil {
+			first[p.Pid] = snapshot{seconds: cpuSeconds(ts), at: time.Now()}
+		}
+	}
+
+	time.Sleep(interval)
+
+	out := make(map[int32]float64, len(procs))
+	for _, p := range procs {
+		prev, ok := first[p.Pid]
+		if !ok {
+			continue
+		}
+		ts, err := p.Times()
+		if err != nil {
+			continue
+		}
+		out[p.Pid] = cpuPercentFromCPUSeconds(prev.seconds, cpuSeconds(ts), time.Since(prev.at))
+	}
+	return out
+}
+
+// getProcessInfo collects lightweight fields for the list view. CPU% is supplied
+// by the caller (measured over a window via sampleProcessCPUPercents) rather than
+// read here, so the value reflects current usage instead of a lifetime average.
 // Expensive fields (CommandLine, CreateTime, Status, Threads, ParentPID)
 // are fetched on demand via GetProcess when the user expands a row.
-func getProcessInfo(p *process.Process) *ProcessInfo {
+func getProcessInfo(p *process.Process, cpuPercent float64) *ProcessInfo {
 	name, err := p.Name()
 	if err != nil {
 		return nil
 	}
 
 	info := &ProcessInfo{
-		PID:    p.Pid,
-		Name:   name,
-		Status: "running",
+		PID:        p.Pid,
+		Name:       name,
+		Status:     "running",
+		CPUPercent: cpuPercent,
 	}
 
 	info.User = resolveUsername(p)
-
-	if cpuPercent, err := p.CPUPercent(); err == nil {
-		info.CPUPercent = cpuPercent
-	}
 
 	if memInfo, err := p.MemoryInfo(); err == nil && memInfo != nil {
 		info.MemoryMB = float64(memInfo.RSS) / 1024 / 1024
@@ -229,7 +305,10 @@ func getProcessInfo(p *process.Process) *ProcessInfo {
 // getFullProcessInfo collects all fields including expensive ones.
 // Used by GetProcess for the single-process detail view.
 func getFullProcessInfo(p *process.Process) *ProcessInfo {
-	info := getProcessInfo(p)
+	// Single-process view: sample this one process over the interval.
+	cpuPercent := sampleProcessCPUPercents([]*process.Process{p}, cpuSampleInterval)[p.Pid]
+
+	info := getProcessInfo(p, cpuPercent)
 	if info == nil {
 		return nil
 	}

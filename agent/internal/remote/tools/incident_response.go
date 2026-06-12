@@ -102,6 +102,11 @@ func collectProcessEvidence() ([]EvidenceProcessInfo, error) {
 		return nil, fmt.Errorf("failed to list processes: %w", err)
 	}
 
+	// Instantaneous CPU% (100% == one core) measured over a window, so the
+	// evidence reflects what each process is doing *now* rather than a lifetime
+	// average that stays high long after a burst ends.
+	cpuPercents := sampleProcessCPUPercents(procs, cpuSampleInterval)
+
 	infos := make([]EvidenceProcessInfo, 0, len(procs))
 	for _, p := range procs {
 		name, err := p.Name()
@@ -123,9 +128,7 @@ func collectProcessEvidence() ([]EvidenceProcessInfo, error) {
 		if ct, err := p.CreateTime(); err == nil {
 			info.CreateTime = ct
 		}
-		if cpu, err := p.CPUPercent(); err == nil {
-			info.CPUPercent = cpu
-		}
+		info.CPUPercent = cpuPercents[p.Pid]
 		if mem, err := p.MemoryInfo(); err == nil && mem != nil {
 			info.RSS = mem.RSS
 		}
