@@ -22,7 +22,6 @@ interface TsEntry {
   ticketNumber: string;
   ticketSubject: string;
   userName: string;
-  billingStatus: string;
 }
 
 interface TsDay {
@@ -151,6 +150,7 @@ export default function TimesheetPage() {
         return;
       }
       const body = await res.json().catch(() => null) as { data?: TsSheet } | null;
+      if (body?.data?.weekStart && body.data.weekStart !== loadWeek) return; // stale response from rapid navigation
       setSheet(body?.data ?? null);
       setSelected(new Set()); // clear selection on new load
     } catch {
@@ -183,6 +183,7 @@ export default function TimesheetPage() {
   }, [week, tech]);
 
   const goToThisWeek = useCallback(() => {
+    // mondayUtc(new Date()) buckets by UTC — late-Sunday users west of UTC may land on "next" week; matches the API's UTC day-bucketing.
     const newWeek = mondayUtc(new Date());
     setWeek(newWeek);
     writeHash(newWeek, tech);
