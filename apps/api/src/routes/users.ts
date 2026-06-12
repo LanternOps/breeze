@@ -420,6 +420,11 @@ userRoutes.get('/me', async (c) => {
       avatarUrl: users.avatarUrl,
       status: users.status,
       mfaEnabled: users.mfaEnabled,
+      // Exposed so the web sidebar can hide platform-admin-only nav (e.g.
+      // account-deletion-requests) and skip its badge fetch — otherwise that
+      // fetch 403s ("platform admin access required") on every page load for
+      // ordinary partner/org users and spams the console.
+      isPlatformAdmin: users.isPlatformAdmin,
       createdAt: users.createdAt,
       lastLoginAt: users.lastLoginAt,
       setupCompletedAt: users.setupCompletedAt,
@@ -655,13 +660,12 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
 // --- Avatars ---
 //
 // POST /users/me/avatar     multipart upload of png/jpeg/webp, 5 MB max
-// GET  /users/:id/avatar    stream the bytes (auth required)
-// DELETE /users/me/avatar   unlink + clear users.avatar_url
+// GET  /users/:id/avatar    serve the bytes (auth required)
+// DELETE /users/me/avatar   clear the bytes + users.avatar_url
 //
-// Storage: filesystem, /data/avatars/<userId>.<ext> on the api_data volume.
-// Magic-byte verification is required because we don't trust the
-// browser-supplied Content-Type. Filenames are derived from the auth'd user
-// id, so path traversal is impossible.
+// Storage: a `bytea` blob on the user's own row (users.avatar_data), in the DB
+// — no filesystem volume dependency (#1059). Magic-byte verification is
+// required because we don't trust the browser-supplied Content-Type.
 
 const ALLOWED_AVATAR_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
@@ -715,26 +719,26 @@ userRoutes.post(
       );
     }
 
+    // avatar_url is set inside writeAvatar (single UPDATE) — no follow-up
+    // users update here.
     let written;
     try {
       written = await writeAvatar(userId, sniffedMime, buffer);
     } catch (err) {
-      console.error('[users/avatar] failed to write avatar:', err);
+      // This catch runs before app.onError, which would otherwise be the only
+      // Sentry reporter — capture explicitly or storage failures go dark
+      // (how the original EACCES bug stayed invisible).
+      console.error(`[users/avatar] failed to write avatar (user ${userId}, ${buffer.length} bytes):`, err);
+      captureException(err, c);
       return c.json({ error: 'Failed to store avatar' }, 500);
     }
 
-    const avatarUrl = `/api/v1/users/${userId}/avatar`;
-    const [updated] = await db
-      .update(users)
-      .set({ avatarUrl, updatedAt: new Date() })
-      .where(eq(users.id, userId))
-      .returning({
-        id: users.id,
-        avatarUrl: users.avatarUrl,
-        updatedAt: users.updatedAt,
-      });
-
-    if (!updated) {
+    if (!written) {
+      // Own row missing or invisible under RLS — either way an anomaly for an
+      // authenticated caller; log it so the 500 is traceable.
+      const err = new Error(`[users/avatar] write matched no row for authenticated user ${userId}`);
+      console.error(err.message);
+      captureException(err, c);
       return c.json({ error: 'Failed to update profile' }, 500);
     }
 
@@ -757,10 +761,10 @@ userRoutes.post(
     });
 
     return c.json({
-      avatarUrl: updated.avatarUrl,
+      avatarUrl: written.avatarUrl,
       size: written.size,
       mime: sniffedMime,
-      updatedAt: updated.updatedAt
+      updatedAt: written.updatedAt
     });
   }
 );
@@ -769,18 +773,13 @@ userRoutes.delete('/me/avatar', async (c) => {
   const auth = c.get('auth');
   const userId = auth.user.id;
 
-  deleteAvatar(userId);
-
-  const [updated] = await db
-    .update(users)
-    .set({ avatarUrl: null, updatedAt: new Date() })
-    .where(eq(users.id, userId))
-    .returning({
-      id: users.id,
-      avatarUrl: users.avatarUrl,
-    });
-
-  if (!updated) {
+  const cleared = await deleteAvatar(userId);
+  if (!cleared) {
+    // Own row missing or invisible under RLS — anomaly for an authenticated
+    // caller; log it so the 500 is traceable.
+    const err = new Error(`[users/avatar] delete matched no row for authenticated user ${userId}`);
+    console.error(err.message);
+    captureException(err, c);
     return c.json({ error: 'Failed to clear avatar' }, 500);
   }
 
@@ -811,11 +810,9 @@ userRoutes.get('/:id/avatar', async (c) => {
   const auth = c.get('auth');
   const userId = c.req.param('id')!;
 
-  // Basic shape check — userId comes from the URL and is fed straight to the
-  // filesystem (after concatenation with the extension). The filesystem layer
-  // joins it via path.join, so traversal isn't possible, but rejecting obviously
-  // bogus values up-front avoids confusing errors and keeps the on-disk listing
-  // tidy.
+  // Basic shape check — userId comes from the URL and is used as a DB lookup
+  // key (parameterized, so no injection risk); rejecting obviously bogus values
+  // up-front avoids confusing errors.
   if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
     return c.json({ error: 'Invalid user id' }, 400);
   }
@@ -831,7 +828,7 @@ userRoutes.get('/:id/avatar', async (c) => {
     }
   }
 
-  const stat = statAvatar(userId);
+  const stat = await statAvatar(userId);
   if (!stat) {
     return c.json({ error: 'No avatar' }, 404);
   }
@@ -844,13 +841,15 @@ userRoutes.get('/:id/avatar', async (c) => {
     return c.body(null, 304);
   }
 
-  // Read the whole file (avatars are capped at MAX_AVATAR_SIZE_BYTES) before
-  // sending any headers, so an I/O error is a clean 500 rather than a 200 with
-  // a truncated body under a full Content-Length (Todd's #1059 review).
-  const opened = readAvatarBuffer(userId);
+  // Avatars are capped at MAX_AVATAR_SIZE_BYTES, so buffering is bounded and
+  // Content-Length is exact.
+  const opened = await readAvatarBuffer(userId);
   if (!opened) {
-    // statAvatar passed just above, so a null here is a real read failure (or a
-    // delete race), not a "no avatar" — surface it as a 500 rather than a 404.
+    // statAvatar passed just above, so a null here is a delete race (or
+    // corrupted avatar_mime — logged inside readAvatarBuffer), not "no
+    // avatar" — surface as 500 rather than 404. A genuine DB error throws
+    // and lands in app.onError, never this branch.
+    console.error(`[users/avatar] read returned null after successful stat (user ${userId})`);
     return c.json({ error: 'Failed to read avatar' }, 500);
   }
 

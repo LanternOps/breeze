@@ -1,5 +1,16 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
+
+// Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
+// as Buffers and accepts Buffers/Uint8Arrays on write, so this is a thin
+// pass-through. Postgres TOASTs values over ~2 KB out-of-line, so wide blobs
+// don't bloat the base row — but SELECTs naming the column still pay the full
+// read; size-only checks should use octet_length() instead.
+export const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea';
+  },
+});
 
 export const userStatusEnum = pgEnum('user_status', ['active', 'invited', 'disabled']);
 export const roleScopeEnum = pgEnum('role_scope', ['system', 'partner', 'organization']);
@@ -30,7 +41,16 @@ export const users = pgTable('users', {
   // other reason (compromise, off-boarding, manual admin action) and unsuspend
   // must leave them alone. See #917 (L-5).
   disabledReason: text('disabled_reason'),
+  // avatarUrl holds the internal serving URL (`/api/v1/users/<id>/avatar`) when
+  // an avatar exists, NULL otherwise. The bytes live in avatarData (bytea) on
+  // this same row — stored in the DB rather than a filesystem volume so uploads
+  // work across replicas and don't depend on volume permissions (#1059).
   avatarUrl: text('avatar_url'),
+  avatarData: bytea('avatar_data'),
+  avatarMime: text('avatar_mime'),
+  // timestamptz in the migration — withTimezone must match or db:check-drift
+  // flags it (the sibling users timestamps are legacy timestamp-without-tz).
+  avatarUpdatedAt: timestamp('avatar_updated_at', { withTimezone: true }),
   lastLoginAt: timestamp('last_login_at'),
   passwordChangedAt: timestamp('password_changed_at'),
   setupCompletedAt: timestamp('setup_completed_at'),

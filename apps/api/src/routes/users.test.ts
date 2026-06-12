@@ -1,13 +1,38 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 
-// Set the avatar storage dir to a per-test-run tmp path BEFORE importing the
-// service (the service reads process.env.AVATAR_STORAGE_PATH at module load).
-const TMP_AVATAR_DIR = mkdtempSync(join(tmpdir(), 'breeze-avatar-test-'));
-process.env.AVATAR_STORAGE_PATH = TMP_AVATAR_DIR;
+// Avatars are stored as a bytea blob on the user row via avatarStorage, which
+// hits the DB. The DB is fully mocked here, so back the I/O functions with a
+// tiny in-memory store that mimics the POST→GET round-trip. The pure helpers
+// (sniffImageMime, weakEtagFor, MAX_AVATAR_SIZE_BYTES, …) stay real so upload
+// validation is exercised for real.
+const { avatarStore } = vi.hoisted(() => ({
+  avatarStore: new Map<string, { mime: 'image/png' | 'image/jpeg' | 'image/webp'; data: Buffer }>(),
+}));
+
+vi.mock('../services/avatarStorage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/avatarStorage')>();
+  const FIXED_MTIME = 1_700_000_000_000;
+  return {
+    ...actual,
+    writeAvatar: vi.fn(async (userId: string, mime: 'image/png' | 'image/jpeg' | 'image/webp', data: Buffer) => {
+      avatarStore.set(userId, { mime, data });
+      return { ext: actual.extForMime(mime), size: data.length, avatarUrl: `/api/v1/users/${userId}/avatar`, updatedAt: new Date() };
+    }),
+    statAvatar: vi.fn(async (userId: string) => {
+      const a = avatarStore.get(userId);
+      return a ? { mime: a.mime, size: a.data.length, mtimeMs: FIXED_MTIME } : null;
+    }),
+    readAvatarBuffer: vi.fn(async (userId: string) => {
+      const a = avatarStore.get(userId);
+      return a ? { buffer: a.data, mime: a.mime, size: a.data.length, mtimeMs: FIXED_MTIME } : null;
+    }),
+    deleteAvatar: vi.fn(async (userId: string) => {
+      avatarStore.delete(userId);
+      return true;
+    }),
+  };
+});
 
 import { userRoutes } from './users';
 
@@ -190,18 +215,15 @@ import { clearPermissionCache, getUserPermissions } from '../services/permission
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
+// Mocked above — imported to drive failure paths via mockResolvedValueOnce.
+import { writeAvatar, deleteAvatar, readAvatarBuffer } from '../services/avatarStorage';
 
 describe('user routes', () => {
   let app: Hono;
 
-  afterAll(() => {
-    if (existsSync(TMP_AVATAR_DIR)) {
-      rmSync(TMP_AVATAR_DIR, { recursive: true, force: true });
-    }
-  });
-
   beforeEach(() => {
     vi.clearAllMocks();
+    avatarStore.clear();
     // clearAllMocks only clears call history — it does NOT drain queued
     // mockReturnValueOnce implementations or reset mockReturnValue. Re-seed the
     // db builders to safe defaults so each test starts from a clean chain and is
@@ -452,6 +474,53 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+    });
+  });
+
+  describe('GET /users/me', () => {
+    beforeEach(() => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          orgId: null,
+          user: { id: 'user-123', email: 'admin@example.com' }
+        });
+        return next();
+      });
+    });
+
+    // The web sidebar gates platform-admin-only nav (account-deletion-requests)
+    // and skips its badge fetch off this flag; if it ever stops being returned,
+    // that fetch starts 403-spamming the console for every ordinary user again.
+    it('returns isPlatformAdmin so the web can gate platform-admin-only nav', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'admin@example.com',
+              name: 'Admin',
+              avatarUrl: null,
+              status: 'active',
+              mfaEnabled: false,
+              isPlatformAdmin: true,
+              createdAt: new Date(),
+              lastLoginAt: new Date(),
+              setupCompletedAt: new Date(),
+              passwordChangedAt: new Date(),
+              preferences: {}
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { isPlatformAdmin?: boolean };
+      expect(body.isPlatformAdmin).toBe(true);
     });
   });
 
@@ -1473,16 +1542,6 @@ describe('user routes', () => {
     // SVG with a small XML preamble
     const SVG_BYTES = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', 'utf-8');
 
-    function makeUpdateMock(returning: unknown[]) {
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue(returning)
-          })
-        })
-      } as any);
-    }
-
     function makeMultipart(field: string, bytes: Buffer, mime: string, filename: string): { body: BodyInit; headers: HeadersInit } {
       const formData = new FormData();
       // Buffer's polymorphic ArrayBufferLike confuses the Blob constructor type;
@@ -1501,7 +1560,6 @@ describe('user routes', () => {
 
     describe('POST /users/me/avatar', () => {
       it('accepts a PNG upload and writes /api/v1/users/<id>/avatar to users.avatar_url', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
 
         const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
@@ -1514,7 +1572,6 @@ describe('user routes', () => {
       });
 
       it('accepts a JPEG upload', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
         const { body, headers } = makeMultipart('file', JPEG_BYTES, 'image/jpeg', 'a.jpg');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
         expect(res.status).toBe(200);
@@ -1523,7 +1580,6 @@ describe('user routes', () => {
       });
 
       it('accepts a WebP upload', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
         const { body, headers } = makeMultipart('file', WEBP_BYTES, 'image/webp', 'a.webp');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
         expect(res.status).toBe(200);
@@ -1560,7 +1616,6 @@ describe('user routes', () => {
 
     describe('DELETE /users/me/avatar', () => {
       it('clears avatar_url and returns avatarUrl: null', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: null }]);
         const res = await app.request('/users/me/avatar', { method: 'DELETE' });
         expect(res.status).toBe(200);
         const data = await res.json();
@@ -1570,7 +1625,6 @@ describe('user routes', () => {
 
     describe('POST then GET roundtrip', () => {
       it('uploads a PNG and serves it back from GET /users/:id/avatar with image/png + cache headers', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
 
         const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
         const postRes = await app.request('/users/me/avatar', { method: 'POST', body, headers });
@@ -1583,6 +1637,60 @@ describe('user routes', () => {
         expect(getRes.headers.get('etag')).toMatch(/^W\//);
         const body2 = Buffer.from(await getRes.arrayBuffer());
         expect(body2.equals(PNG_BYTES)).toBe(true);
+      });
+
+      it('answers a conditional GET with 304 when If-None-Match matches, and 200 when it does not', async () => {
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        await app.request('/users/me/avatar', { method: 'POST', body, headers });
+
+        const first = await app.request(`/users/${ME_ID}/avatar`, { method: 'GET' });
+        const etag = first.headers.get('etag')!;
+
+        const hit = await app.request(`/users/${ME_ID}/avatar`, {
+          method: 'GET',
+          headers: { 'If-None-Match': etag },
+        });
+        expect(hit.status).toBe(304);
+        expect(hit.headers.get('etag')).toBe(etag);
+        expect((await hit.arrayBuffer()).byteLength).toBe(0);
+
+        const miss = await app.request(`/users/${ME_ID}/avatar`, {
+          method: 'GET',
+          headers: { 'If-None-Match': 'W/"somethingelse"' },
+        });
+        expect(miss.status).toBe(200);
+      });
+    });
+
+    describe('avatar storage failure paths', () => {
+      it('POST returns 500 when the write matches no row (deleted/RLS-invisible user)', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.mocked(writeAvatar).mockResolvedValueOnce(null);
+
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
+        expect(res.status).toBe(500);
+      });
+
+      it('DELETE returns 500 when the clear matches no row', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.mocked(deleteAvatar).mockResolvedValueOnce(false);
+
+        const res = await app.request('/users/me/avatar', { method: 'DELETE' });
+        expect(res.status).toBe(500);
+      });
+
+      it('GET returns 500 (not 404) when the read fails after a successful stat', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        await app.request('/users/me/avatar', { method: 'POST', body, headers });
+
+        // statAvatar succeeds (avatar exists); the subsequent read races a
+        // delete (or hits corrupted mime) and returns null.
+        vi.mocked(readAvatarBuffer).mockResolvedValueOnce(null);
+
+        const res = await app.request(`/users/${ME_ID}/avatar`, { method: 'GET' });
+        expect(res.status).toBe(500);
       });
     });
 
@@ -1620,14 +1728,13 @@ describe('user routes', () => {
 
       async function uploadAvatarFor(userId: string, partnerId: string) {
         authAs(userId, partnerId);
-        makeUpdateMock([{ id: userId, avatarUrl: `/api/v1/users/${userId}/avatar`, updatedAt: new Date() }]);
         const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
         expect(res.status).toBe(200);
       }
 
-      it('blocks a cross-tenant read — another user not in the caller\'s scope returns 404 even though the avatar file exists', async () => {
-        // A real avatar file now exists on disk for other-456.
+      it('blocks a cross-tenant read — another user not in the caller\'s scope returns 404 even though the avatar exists', async () => {
+        // An avatar is stored for other-456 (in the in-memory backing store).
         await uploadAvatarFor(OTHER_ID, 'partner-999');
 
         // Caller is in a DIFFERENT partner; getScopedUser resolves to nothing.

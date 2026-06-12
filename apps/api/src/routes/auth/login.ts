@@ -505,7 +505,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       email: user.email,
       name: user.name,
       mfaEnabled: ENABLE_2FA ? user.mfaEnabled : false,
-      avatarUrl: user.avatarUrl
+      avatarUrl: user.avatarUrl,
+      // The web sidebar gates platform-admin-only nav (and its badge fetch) on
+      // this flag from the auth store, which is seeded from THIS payload on
+      // password login — omit it and platform admins lose that nav entirely.
+      isPlatformAdmin: user.isPlatformAdmin === true
     },
     tokens: toPublicTokens(tokens),
     mfaRequired: false,

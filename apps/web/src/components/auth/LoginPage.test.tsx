@@ -53,6 +53,33 @@ async function fillAndSubmit(email = 'jane@example.com', password = 'Sup3rSecure
   fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
 }
 
+describe('LoginPage hydration safety', () => {
+  // Regression for React #418 on /login: the initial render must NOT depend on
+  // `typeof window` (or any window-only signal), or the server render (no
+  // window) and the client's first render disagree and React tears the tree
+  // down. `cfAccessRedirectChecked`'s initial value used to be
+  // `shouldSkipCfAccessRedirect()`, which returns true on the server (renders
+  // the form) and false on a plain client load (renders the placeholder).
+  it('renders identically with and without `window` (no SSR/CSR divergence)', async () => {
+    const { renderToString } = await import('react-dom/server');
+
+    const clientHtml = renderToString(<LoginPage />);
+
+    const realWindow = globalThis.window;
+    // Simulate the server environment where `window` is undefined.
+    // @ts-expect-error intentionally removing the global for this assertion
+    delete globalThis.window;
+    let serverHtml: string;
+    try {
+      serverHtml = renderToString(<LoginPage />);
+    } finally {
+      globalThis.window = realWindow;
+    }
+
+    expect(serverHtml).toBe(clientHtml);
+  });
+});
+
 describe('LoginPage navigation after login', () => {
   beforeEach(() => {
     vi.clearAllMocks();

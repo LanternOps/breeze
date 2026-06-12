@@ -31,14 +31,21 @@ function shouldSkipCfAccessRedirect(): boolean {
 async function checkCfAccessLoginEnabled(): Promise<boolean> {
   try {
     const apiHost = import.meta.env.PUBLIC_API_URL || '';
+    // This fetch gates the entire login form behind an empty placeholder, so a
+    // hung request (black-holed proxy, captive portal) must not stall login
+    // forever — time out and fall back to the password form.
     const res = await fetch(`${apiHost}/api/v1/config`, {
       method: 'GET',
       credentials: 'include',
+      signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return false;
     const body = (await res.json()) as { cfAccessLogin?: { enabled?: boolean } };
     return !!body.cfAccessLogin?.enabled;
-  } catch {
+  } catch (err) {
+    // Fail open to the password form — but leave a trace, or a deployment-wide
+    // config/CORS regression silently disables CF Access SSO with no signal.
+    console.warn('[login] CF Access config check failed; falling back to password form', err);
     return false;
   }
 }
@@ -58,7 +65,14 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const [phoneLast4, setPhoneLast4] = useState<string>();
   const [smsSending, setSmsSending] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
-  const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(shouldSkipCfAccessRedirect());
+  // MUST start `false` (a constant), not `shouldSkipCfAccessRedirect()`: that
+  // helper returns true on the server (no `window`) and false on a plain client
+  // load, so seeding the initial state with it made the SSR render the form
+  // while the client's first render produced the placeholder below — a React
+  // #418 hydration mismatch on every /login visit. The skip decision now lives
+  // entirely in the effect (client-only), keeping SSR and CSR initial output
+  // identical (both render the placeholder).
+  const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(false);
 
   const login = useAuthStore((state) => state.login);
 
@@ -69,6 +83,13 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // the user has an active session at the root app with the same IdP.
   useEffect(() => {
     if (cfAccessRedirectChecked) return;
+    // Post-redirect bounce / explicit sign-out: skip the check and show the
+    // form immediately (one tick after mount, so SSR and CSR still agree on the
+    // initial placeholder render).
+    if (shouldSkipCfAccessRedirect()) {
+      setCfAccessRedirectChecked(true);
+      return;
+    }
     let cancelled = false;
     void checkCfAccessLoginEnabled().then((enabled) => {
       if (cancelled) return;

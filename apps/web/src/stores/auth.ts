@@ -13,6 +13,10 @@ export interface User {
   mfaEnabled: boolean;
   avatarUrl?: string;
   requiresSetup?: boolean;
+  // True only for platform operators. Gates platform-admin-only nav (e.g.
+  // account-deletion-requests) so ordinary users don't trigger its 403 badge
+  // fetch. Absent/false for partner & org users.
+  isPlatformAdmin?: boolean;
   preferences?: UserPreferences;
 }
 
@@ -720,6 +724,13 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     if (!response.ok) return;
 
     const data = await response.json();
+    // isPlatformAdmin rides along with this refresh: fresh logins carry it in
+    // the login payload, but sessions persisted before the field existed only
+    // learn it here — without the merge, the platform-admin nav stays hidden
+    // until the next re-login.
+    if (typeof data.isPlatformAdmin === 'boolean') {
+      useAuthStore.getState().updateUser({ isPlatformAdmin: data.isPlatformAdmin });
+    }
     if (data.preferences) {
       useAuthStore.getState().updateUser({ preferences: data.preferences });
       applyThemePreference(data.preferences.theme);
