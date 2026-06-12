@@ -8,6 +8,9 @@ vi.mock('./TicketCategoriesPage', () => ({
 vi.mock('./BillablesExportCard', () => ({
   default: () => <div data-testid="stub-billables-export-card">ExportStub</div>
 }));
+vi.mock('./TicketStatusesTab', () => ({
+  default: () => <div data-testid="stub-ticket-statuses-tab">StatusesStub</div>
+}));
 
 import TicketingSettingsPage from './TicketingSettingsPage';
 

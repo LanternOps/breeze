@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import TicketCategoriesPage from './TicketCategoriesPage';
 import BillablesExportCard from './BillablesExportCard';
+import TicketStatusesTab from './TicketStatusesTab';
 
 const VALID_TABS = ['statuses', 'priorities', 'categories', 'export'] as const;
 type Tab = (typeof VALID_TABS)[number];
@@ -74,8 +75,7 @@ export default function TicketingSettingsPage() {
 
       {activeTab === 'statuses' && (
         <div data-testid="ticketing-tab-panel-statuses">
-          {/* TicketStatusesTab will be wired up in a follow-on task */}
-          <p className="text-sm text-muted-foreground">Status configuration coming soon.</p>
+          <TicketStatusesTab />
         </div>
       )}
 
