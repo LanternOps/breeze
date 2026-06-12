@@ -321,6 +321,21 @@ describe('checkGuardrails — manage_tickets tier escalation', () => {
       expect(result.requiresApproval).toBe(false);
     }
   });
+
+  it('log_time_entry/start_timer/stop_timer escalate to Tier 3 (approval required)', () => {
+    for (const action of ['log_time_entry', 'start_timer', 'stop_timer']) {
+      const result = checkGuardrails('manage_tickets', { action });
+      expect(result.tier).toBe(3);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(true);
+    }
+  });
+
+  it('update_status remains Tier 2 after adding time-entry actions to TIER3_ACTIONS', () => {
+    const result = checkGuardrails('manage_tickets', { action: 'update_status' });
+    expect(result.tier).toBe(2);
+    expect(result.requiresApproval).toBe(false);
+  });
 });
 
 describe('checkToolPermission — manage_tickets RBAC map', () => {

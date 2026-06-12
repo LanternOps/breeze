@@ -79,6 +79,8 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
+  // Ticketing time-tracking — writes at Tier 3 (spec §4)
+  manage_tickets: ['log_time_entry', 'start_timer', 'stop_timer'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
