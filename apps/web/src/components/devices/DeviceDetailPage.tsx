@@ -81,6 +81,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         deviceRole: data.deviceRole ?? undefined,
         displayName: data.displayName ?? undefined,
         isHeadless: data.isHeadless ?? undefined,
+        pendingReboot: data.pendingReboot === true,
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
       };

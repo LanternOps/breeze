@@ -185,6 +185,7 @@ export default function DevicesPage() {
           osBuild: d.osBuild as string | undefined,
           architecture: d.architecture as string | undefined,
           isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
+          pendingReboot: d.pendingReboot === true,
           enrolledAt: d.enrolledAt as string | undefined,
           desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
           hardware: hardware ? {

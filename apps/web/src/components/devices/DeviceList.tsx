@@ -57,6 +57,13 @@ export type Device = {
   deviceRoleSource?: string;
   displayName?: string;
   isHeadless?: boolean;
+  /**
+   * OS-level pending-reboot flag persisted from the agent heartbeat
+   * (devices.pending_reboot). True when Windows registry / Linux
+   * reboot-required markers say a reboot is outstanding. Absent on
+   * responses from older API versions.
+   */
+  pendingReboot?: boolean;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
