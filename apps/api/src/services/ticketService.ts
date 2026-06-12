@@ -6,7 +6,7 @@ import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
 import { resolveSlaTargets } from './ticketSla';
-import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId } from './ticketConfigService';
+import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -34,7 +34,10 @@ export type TicketServiceErrorCode =
   | 'CATEGORY_WRONG_PARTNER'
   | 'TICKET_PARTNER_UNRESOLVABLE'
   | 'INVALID_TRANSITION'
-  | 'CONCURRENT_MODIFICATION';
+  | 'CONCURRENT_MODIFICATION'
+  | 'STATUS_NOT_FOUND'
+  | 'STATUS_INACTIVE'
+  | 'INVALID_INPUT';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -299,16 +302,93 @@ export interface ChangeStatusOptions {
   pendingReason?: string;
 }
 
+export interface ChangeStatusTarget {
+  status?: TicketStatus;
+  statusId?: string;
+}
+
 export async function changeTicketStatus(
   ticketId: string,
-  toStatus: TicketStatus,
+  target: ChangeStatusTarget,
   opts: ChangeStatusOptions,
   actor: TicketActor
 ) {
   const ticket = await getTicketOrThrow(ticketId);
   const fromStatus = ticket.status as TicketStatus;
 
-  if (fromStatus === toStatus) return ticket;
+  // Validate target: exactly one of status/statusId must be set
+  const hasStatus = target.status !== undefined;
+  const hasStatusId = target.statusId !== undefined;
+  if ((hasStatus && hasStatusId) || (!hasStatus && !hasStatusId)) {
+    throw new TicketServiceError('Provide exactly one of status or statusId', 400, 'INVALID_INPUT');
+  }
+
+  let toStatus: TicketStatus;
+  let resolvedStatusId: string | null | undefined;
+  let customStatusName: string | undefined;
+
+  if (hasStatusId) {
+    const row = await getTicketStatusById(target.statusId!);
+    if (!row) throw new TicketServiceError('Status not found', 404, 'STATUS_NOT_FOUND');
+    const partnerId = await resolveTicketPartnerId(ticket);
+    if (row.partnerId !== partnerId) throw new TicketServiceError('Status not found', 404, 'STATUS_NOT_FOUND');
+    if (!row.isActive) throw new TicketServiceError('Status is inactive', 400, 'STATUS_INACTIVE');
+    toStatus = row.coreStatus;
+    resolvedStatusId = target.statusId;
+    customStatusName = row.name;
+  } else {
+    toStatus = target.status!;
+    const partnerId = await resolveTicketPartnerId(ticket);
+    resolvedStatusId = partnerId ? await getSystemStatusId(partnerId, toStatus) : null;
+    customStatusName = undefined;
+  }
+
+  // No-op: same core status AND same statusId
+  if (toStatus === fromStatus && resolvedStatusId === ticket.statusId) return ticket;
+
+  // Same core status but different statusId — update statusId only (skip FSM validation)
+  if (toStatus === fromStatus) {
+    const now = new Date();
+    const patch: Partial<typeof tickets.$inferInsert> = { statusId: resolvedStatusId ?? null, updatedAt: now };
+    const updated = await db
+      .update(tickets)
+      .set(patch)
+      .where(and(eq(tickets.id, ticketId), eq(tickets.status, fromStatus)))
+      .returning();
+    if (updated.length === 0) {
+      throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
+    }
+    await db.insert(ticketComments).values({
+      ticketId,
+      userId: actor.userId,
+      authorName: actor.name ?? null,
+      authorType: 'internal',
+      commentType: 'status_change',
+      content: customStatusName ?? '',
+      isPublic: false,
+      oldValue: fromStatus,
+      newValue: toStatus
+    });
+    await emitTicketEvent({
+      type: 'ticket.status_changed',
+      ticketId,
+      orgId: ticket.orgId,
+      partnerId: ticket.partnerId ?? null,
+      actorUserId: actor.userId,
+      payload: { from: fromStatus, to: toStatus, resolutionNote: null }
+    });
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: actor.userId,
+      action: 'ticket.status_change',
+      resourceType: 'ticket',
+      resourceId: ticketId,
+      details: { from: fromStatus, to: toStatus },
+      result: 'success'
+    });
+    return updated[0];
+  }
+
   if (!TICKET_STATUS_TRANSITIONS[fromStatus]?.includes(toStatus)) {
     throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409, 'INVALID_TRANSITION');
   }
@@ -317,7 +397,7 @@ export async function changeTicketStatus(
   }
 
   const now = new Date();
-  const patch: Partial<typeof tickets.$inferInsert> = { status: toStatus, updatedAt: now };
+  const patch: Partial<typeof tickets.$inferInsert> = { status: toStatus, statusId: resolvedStatusId ?? null, updatedAt: now };
 
   if (toStatus === 'resolved') {
     patch.resolvedAt = ticket.resolvedAt ?? now;
@@ -372,7 +452,7 @@ export async function changeTicketStatus(
     authorName: actor.name ?? null,
     authorType: 'internal',
     commentType: 'status_change',
-    content: opts.resolutionNote ?? opts.pendingReason ?? '',
+    content: opts.resolutionNote ?? opts.pendingReason ?? customStatusName ?? '',
     isPublic: false,
     oldValue: fromStatus,
     newValue: toStatus

@@ -25,6 +25,8 @@ vi.mock('../db/schema', () => ({
     partnerId: 'partnerId',
     coreStatus: 'coreStatus',
     isSystem: 'isSystem',
+    name: 'name',
+    isActive: 'isActive',
   },
   ticketPrioritySettings: {
     partnerId: 'partnerId',

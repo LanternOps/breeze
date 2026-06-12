@@ -272,7 +272,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
         const ticket = await changeTicketStatus(
           String(input.ticketId),
-          input.status as TicketStatus,
+          { status: input.status as TicketStatus },
           {
             resolutionNote: input.resolutionNote ? String(input.resolutionNote) : undefined,
             pendingReason: input.pendingReason ? String(input.pendingReason) : undefined

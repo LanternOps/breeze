@@ -78,7 +78,7 @@ ticketsBulkRoutes.post(
           await assignTicket(ticketId, body.assigneeId ?? null, actor);
         } else {
           // Schema refine guarantees status is present and not 'resolved'.
-          await changeTicketStatus(ticketId, body.status!, {}, actor);
+          await changeTicketStatus(ticketId, { status: body.status! }, {}, actor);
         }
         results.updated++;
       } catch (err) {

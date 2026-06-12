@@ -251,7 +251,7 @@ describe('manage_tickets tool', () => {
     );
     expect(serviceMocks.changeTicketStatus).toHaveBeenCalledWith(
       't-1',
-      'resolved',
+      expect.objectContaining({ status: 'resolved' }),
       expect.objectContaining({ resolutionNote: 'Done' }),
       expect.objectContaining({ userId: 'u-1' })
     );

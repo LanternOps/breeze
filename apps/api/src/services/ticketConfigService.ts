@@ -152,3 +152,30 @@ export async function getSystemStatusId(
   );
   return rows[0]?.id ?? null;
 }
+
+/**
+ * Look up a ticket_statuses row by id.
+ * System-context read — returns null when no row exists; never throws.
+ */
+export async function getTicketStatusById(id: string): Promise<{
+  id: string; partnerId: string; coreStatus: CoreTicketStatus; name: string;
+  isActive: boolean; isSystem: boolean;
+} | null> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({
+          id: ticketStatuses.id,
+          partnerId: ticketStatuses.partnerId,
+          coreStatus: ticketStatuses.coreStatus,
+          name: ticketStatuses.name,
+          isActive: ticketStatuses.isActive,
+          isSystem: ticketStatuses.isSystem,
+        })
+        .from(ticketStatuses)
+        .where(eq(ticketStatuses.id, id))
+        .limit(1)
+    )
+  );
+  return rows[0] ?? null;
+}
