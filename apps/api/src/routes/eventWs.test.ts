@@ -37,6 +37,7 @@ import {
   createEventWsTicket,
   consumeTicket,
   createEventWsTicketRoute,
+  buildSiteFilter,
   _clearTicketStore,
 } from './eventWs';
 
@@ -76,6 +77,115 @@ describe('createEventWsTicket', () => {
 
   it('rejects an empty orgIds array', async () => {
     await expect(createEventWsTicket('user-1', [])).rejects.toThrow();
+  });
+
+  it('carries allowedSiteIds onto the consumed identity', async () => {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', ['site-a', 'site-b']);
+    const identity = await consumeTicket(ticket);
+    expect(identity).toEqual({
+      userId: 'user-1',
+      orgIds: ['org-1'],
+      allowedSiteIds: ['site-a', 'site-b'],
+    });
+  });
+
+  it('treats an empty allowedSiteIds array as unrestricted (full org access)', async () => {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', []);
+    const identity = await consumeTicket(ticket);
+    expect(identity).toEqual({ userId: 'user-1', orgIds: ['org-1'], allowedSiteIds: undefined });
+  });
+
+  it('omits allowedSiteIds when not provided (unrestricted)', async () => {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1');
+    const identity = await consumeTicket(ticket);
+    expect(identity?.allowedSiteIds).toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------
+// Tests: site-scope delivery predicate (Finding #8)
+//
+// A site-restricted client must NOT receive live events for devices/sites
+// outside its allowlist. Events are delivered over Redis pub/sub with no DB
+// backstop, so the WS layer is the only enforcement point.
+// -------------------------------------------------------------------
+
+describe('buildSiteFilter', () => {
+  it('returns undefined for an unrestricted user (no allowlist)', () => {
+    expect(buildSiteFilter(undefined)).toBeUndefined();
+    expect(buildSiteFilter([])).toBeUndefined();
+  });
+
+  it('delivers an in-site event (siteId on payload)', () => {
+    const filter = buildSiteFilter(['site-a']);
+    expect(filter).toBeTypeOf('function');
+    const event = { type: 'alert.triggered', payload: { deviceId: 'dev-1', siteId: 'site-a' } };
+    expect(filter!(event)).toBe(true);
+  });
+
+  it('delivers an in-site event (siteId at top level)', () => {
+    const filter = buildSiteFilter(['site-a']);
+    const event = { type: 'device.offline', siteId: 'site-a', payload: { deviceId: 'dev-1' } };
+    expect(filter!(event)).toBe(true);
+  });
+
+  it('drops an out-of-site event for a site-restricted client', () => {
+    const filter = buildSiteFilter(['site-a']);
+    const event = { type: 'alert.triggered', payload: { deviceId: 'dev-2', siteId: 'site-b' } };
+    expect(filter!(event)).toBe(false);
+  });
+
+  it('fails closed: drops an event with no attributable siteId', () => {
+    const filter = buildSiteFilter(['site-a']);
+    // deviceId-only payload (the current real-world shape — publishers emit no
+    // siteId), and a fully org-level event with no device context.
+    expect(filter!({ type: 'alert.triggered', payload: { deviceId: 'dev-1' } })).toBe(false);
+    expect(filter!({ type: 'incident.created', payload: { userId: 'user-9' } })).toBe(false);
+    expect(filter!({ type: 'user.login' })).toBe(false);
+  });
+
+  it('matches any one of multiple allowed sites', () => {
+    const filter = buildSiteFilter(['site-a', 'site-c']);
+    expect(filter!({ type: 'device.online', payload: { siteId: 'site-c' } })).toBe(true);
+    expect(filter!({ type: 'device.online', payload: { siteId: 'site-b' } })).toBe(false);
+  });
+});
+
+// -------------------------------------------------------------------
+// Tests: the filter built for a registered client enforces site scope
+//
+// Models how the dispatcher consults `client.filter` at send time: an
+// in-site event is delivered, an out-of-site / unattributable event is
+// dropped, and an unrestricted client (no filter) receives everything.
+// (End-to-end dispatch wiring is covered in eventDispatcher.test.ts.)
+// -------------------------------------------------------------------
+
+describe('registered-client site filter enforcement', () => {
+  // Mirrors EventDispatcher.dispatch(): subscription-type match AND, when a
+  // per-client predicate is present, predicate match.
+  function delivers(client: { subscribedTypes: Set<string>; filter?: (e: any) => boolean }, event: any): boolean {
+    const matchesType = client.subscribedTypes.has('*') || client.subscribedTypes.has(event.type);
+    if (!matchesType) return false;
+    return client.filter ? client.filter(event) : true;
+  }
+
+  const inSite = { type: 'alert.triggered', payload: { deviceId: 'd1', siteId: 'site-a' } };
+  const outOfSite = { type: 'alert.triggered', payload: { deviceId: 'd2', siteId: 'site-b' } };
+  const noSite = { type: 'alert.triggered', payload: { deviceId: 'd3' } };
+
+  it('site-restricted client receives in-site events only', () => {
+    const client = { subscribedTypes: new Set(['*']), filter: buildSiteFilter(['site-a']) };
+    expect(delivers(client, inSite)).toBe(true);
+    expect(delivers(client, outOfSite)).toBe(false);
+    expect(delivers(client, noSite)).toBe(false); // fail closed
+  });
+
+  it('unrestricted client receives all events', () => {
+    const client = { subscribedTypes: new Set(['*']), filter: buildSiteFilter(undefined) };
+    expect(client.filter).toBeUndefined();
+    expect(delivers(client, inSite)).toBe(true);
+    expect(delivers(client, outOfSite)).toBe(true);
+    expect(delivers(client, noSite)).toBe(true);
   });
 });
 

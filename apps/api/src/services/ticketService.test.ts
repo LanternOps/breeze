@@ -1191,3 +1191,100 @@ describe('changeTicketStatus — SLA pause/resume (D4)', () => {
     expect(updatePayload.slaPausedMinutes).toBe(1); // floor(1.5) = 1
   });
 });
+
+// Finding #9: these mutations previously emitted only a BullMQ event and left no
+// tamper-evident audit_logs row. Each must now write an audit row mirroring the
+// createTicket/changeTicketStatus/updateTicketFields reference pattern.
+describe('Finding #9 — audit-log coverage for mutating ticket actions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('assignTicket writes a ticket.assign audit row with previous/new assignee', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: 'u-old' }]) // ticket
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);                                                   // assignee
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o-1',
+      actorId: 'u-1',
+      action: 'ticket.assign',
+      resourceType: 'ticket',
+      resourceId: 't-1',
+      details: { from: 'u-old', to: 'u-2' },
+      result: 'success'
+    }));
+  });
+
+  it('addTicketComment writes a ticket.comment audit row with commentId + isInternal (no body)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: new Date() }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-9', isPublic: false }]);
+
+    await addTicketComment('t-1', { content: 'secret internal note', isPublic: false }, actor);
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o-1',
+      actorId: 'u-1',
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: 't-1',
+      details: { commentId: 'c-9', isInternal: true },
+      result: 'success'
+    }));
+    // The comment body must never be dumped into the audit details.
+    const auditArg = auditMock.mock.calls[0]![0];
+    expect(JSON.stringify(auditArg)).not.toContain('secret internal note');
+  });
+
+  it('linkAlertToTicket writes a ticket.alert_link audit row with the alertId', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open' }])
+      .mockResolvedValueOnce([{ id: 'a-1', orgId: 'o-1', title: 'CPU high' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'link-1' }]);
+
+    await linkAlertToTicket('t-1', 'a-1', actor);
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o-1',
+      actorId: 'u-1',
+      action: 'ticket.alert_link',
+      resourceType: 'ticket',
+      resourceId: 't-1',
+      details: { alertId: 'a-1' },
+      result: 'success'
+    }));
+  });
+
+  it('unlinkAlertFromTicket writes a ticket.alert_unlink audit row with the alertId', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValueOnce([{ id: 'link-1' }]).mockResolvedValue([{ id: 'c-1' }]);
+
+    await unlinkAlertFromTicket('t-1', 'a-1', actor);
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o-1',
+      actorId: 'u-1',
+      action: 'ticket.alert_unlink',
+      resourceType: 'ticket',
+      resourceId: 't-1',
+      details: { alertId: 'a-1' },
+      result: 'success'
+    }));
+  });
+
+  it('does NOT audit when the mutation fails (e.g. concurrent assign conflict)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null }])
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);
+    dbMocks.updateReturning.mockResolvedValue([]); // concurrent modification → throws before audit
+
+    await assignTicket('t-1', 'u-2', actor).catch(() => {});
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+});

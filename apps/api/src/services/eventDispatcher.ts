@@ -20,6 +20,19 @@ export interface ClientEntry {
   ws: WSContext;
   userId: string;
   subscribedTypes: Set<string>;
+  /**
+   * Optional per-client delivery predicate. When present, an event is only
+   * delivered to this client if `filter(event)` returns true (in addition to
+   * the event-type subscription match). The dispatcher stays generic — it
+   * knows nothing about *why* a client filters; the authz semantics
+   * (e.g. site-scope restriction) are owned entirely by the registrant
+   * (see `eventWs.ts`). Unset = no extra filtering (full org access).
+   *
+   * `event` is the parsed `BreezeEvent` payload published on
+   * `breeze:events:live:<orgId>`. The predicate must be synchronous and
+   * must not throw (the dispatch loop fails closed on throw).
+   */
+  filter?: (event: Record<string, unknown>) => boolean;
 }
 
 class EventDispatcher {
@@ -105,6 +118,18 @@ class EventDispatcher {
         if (matchesEventType(eventType, pattern)) {
           matches = true;
           break;
+        }
+      }
+
+      // Per-client delivery predicate (e.g. site-scope authz, set by the WS
+      // registrant). Generic hook — the dispatcher carries no site knowledge.
+      // Fail closed: a throwing predicate drops the event for this client.
+      if (matches && client.filter) {
+        try {
+          matches = client.filter(parsed);
+        } catch (err) {
+          console.warn(`[EventDispatcher] Client ${client.userId} filter threw for ${eventType}, dropping event:`, err instanceof Error ? err.message : err);
+          matches = false;
         }
       }
 

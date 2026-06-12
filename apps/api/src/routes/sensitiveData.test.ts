@@ -42,7 +42,15 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    // Mirror the real middleware: populate permissions.allowedSiteIds when the
+    // caller is site-restricted (signalled here via the x-restrict-site header).
+    const restrict = c.req.header('x-restrict-site');
+    if (restrict) {
+      c.set('permissions', { allowedSiteIds: [restrict] });
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
@@ -299,6 +307,102 @@ describe('sensitive data routes', () => {
     expect(body.data.dryRun).toBe(true);
     expect(body.data.eligible).toBe(1);
     expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  // --- Site-axis (app-layer) enforcement ---
+
+  describe('site-scope enforcement', () => {
+    const allowedSite = 'site-a';
+    const forbiddenSite = 'site-b';
+    const findingId = '33333333-3333-3333-3333-333333333333';
+    const orgId = '11111111-1111-1111-1111-111111111111';
+
+    // db.select({id, siteId}).from(devices).where(...) — remediate site lookup
+    function mockDeviceSiteLookup(rows: any[]) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows)
+        })
+      } as any);
+    }
+
+    it('blocks a site-restricted user from remediating an out-of-site finding (403)', async () => {
+      // 1) findings lookup, 2) device-site lookup (device in forbidden site)
+      mockSelectFromWhere([
+        { id: findingId, orgId, deviceId, filePath: '/tmp/secret.txt', status: 'open' }
+      ]);
+      mockDeviceSiteLookup([{ id: deviceId, siteId: forbiddenSite }]);
+
+      const res = await app.request('/sensitive-data/remediate', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+          'x-restrict-site': allowedSite
+        },
+        body: JSON.stringify({
+          findingIds: [findingId],
+          action: 'quarantine',
+          confirm: true
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site/i);
+      // No command queued, no status flip for the out-of-site device.
+      expect(queueCommand).not.toHaveBeenCalled();
+    });
+
+    it('allows remediation when the finding device is within the site allowlist', async () => {
+      mockSelectFromWhere([
+        { id: findingId, orgId, deviceId, filePath: '/tmp/secret.txt', status: 'open' }
+      ]);
+      mockDeviceSiteLookup([{ id: deviceId, siteId: allowedSite }]);
+      mockUpdateSetWhere();
+
+      const res = await app.request('/sensitive-data/remediate', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+          'x-restrict-site': allowedSite
+        },
+        body: JSON.stringify({
+          findingIds: [findingId],
+          action: 'quarantine',
+          confirm: true
+        })
+      });
+
+      expect(res.status).toBe(202);
+      expect(queueCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it('dashboard excludes out-of-site findings for a site-restricted user', async () => {
+      // Site-restricted path adds an innerJoin before .where(); the join filters
+      // out the forbidden-site finding, so only the allowed-site row is returned.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { dataType: 'pci', risk: 'high', status: 'open', lastSeenAt: new Date() }
+            ])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/sensitive-data/dashboard', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': allowedSite }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Only the in-site finding is counted; the forbidden-site PCI total leaks nothing.
+      expect(body.data.totals.findings).toBe(1);
+      expect(body.data.byDataType.pci).toBe(1);
+    });
   });
 
   // --- SOC2 audit coverage ---

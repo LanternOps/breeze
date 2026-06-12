@@ -3,12 +3,15 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { escalationPolicies } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { listPoliciesSchema, createPolicySchema, updatePolicySchema } from './schemas';
 import { getPagination, ensureOrgAccess, getEscalationPolicyWithOrgCheck } from './helpers';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const policiesRoutes = new Hono();
+
+const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 // GET /alerts/policies - List escalation policies
 policiesRoutes.get(
@@ -79,6 +82,8 @@ policiesRoutes.get(
 policiesRoutes.post(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -140,6 +145,8 @@ policiesRoutes.post(
 policiesRoutes.put(
   '/policies/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', updatePolicySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -189,6 +196,8 @@ policiesRoutes.put(
 policiesRoutes.delete(
   '/policies/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const policyId = c.req.param('id')!;

@@ -27,6 +27,7 @@ vi.mock('../db/schema', () => ({
   devices: {},
   users: {},
   remoteSessions: {},
+  sites: { id: 'sites.id', orgId: 'sites.orgId' },
 }));
 
 // --- Auth middleware ---
@@ -66,8 +67,14 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     // Mirror prod: requirePermission is the gate that populates `permissions`.
+    // A caller lacking the required grant is rejected with 403. Tests opt into
+    // that via `x-deny-permission: <resource>:<action>` (e.g. devices:execute).
+    const denied = c.req.header('x-deny-permission');
+    if (denied && denied === `${resource}:${action}`) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
+    }
     const restrict = c.req.header('x-restrict-site');
     c.set('permissions', restrict ? {
       permissions: [{ resource: 'devices', action: 'read' }],
@@ -889,5 +896,174 @@ describe('Allowlist routes — partner-scope org resolution', () => {
     });
 
     expect(res.status).toBe(404);
+  });
+});
+
+// ─── Allowlist mutation routes — RBAC (DEVICES_EXECUTE) + MFA gate ────────────
+// Finding #7: the allowlist is consulted by isTargetAllowed() when a proxy
+// tunnel opens. A low-privilege same-org user must NOT be able to widen,
+// disable, or delete rules — those routes now require DEVICES_EXECUTE + MFA,
+// matching POST /tunnels.
+
+describe('Allowlist mutation routes — DEVICES_EXECUTE gate', () => {
+  let app: Hono;
+  const RULE_ID = 'f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1';
+  const DENY = 'devices:execute';
+
+  const ruleBody = {
+    direction: 'destination',
+    pattern: '10.0.0.0/8:*',
+    description: 'overly broad rule',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('POST /allowlist returns 403 when caller lacks DEVICES_EXECUTE', async () => {
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-deny-permission': DENY },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('POST /allowlist succeeds (201) for a caller WITH DEVICES_EXECUTE', async () => {
+    vi.mocked(db.insert).mockReturnValue(makeInsertChain([{ id: RULE_ID, orgId: ORG_ID, ...ruleBody }]) as any);
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(201);
+    expect(db.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it('PUT /allowlist/:id returns 403 when caller lacks DEVICES_EXECUTE', async () => {
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-deny-permission': DENY },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('PUT /allowlist/:id succeeds for a caller WITH DEVICES_EXECUTE', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ id: RULE_ID, orgId: ORG_ID }]) as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: RULE_ID, enabled: false }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('DELETE /allowlist/:id returns 403 when caller lacks DEVICES_EXECUTE', async () => {
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-deny-permission': DENY },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /allowlist/:id succeeds for a caller WITH DEVICES_EXECUTE', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ id: RULE_ID, orgId: ORG_ID }]) as any);
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(db.delete).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── POST /allowlist — siteId cross-org validation ───────────────────────────
+// Secondary hardening for Finding #7: a body.siteId is an arbitrary uuid until
+// proven to belong to the resolved org. A site from another org is rejected
+// before any rule is inserted.
+
+describe('POST /allowlist — siteId belongs-to-org validation', () => {
+  let app: Hono;
+  const RULE_ID = 'f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1';
+  const SITE_IN_ORG = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+  const FOREIGN_SITE = 'c9c9c9c9-c9c9-4c9c-8c9c-c9c9c9c9c9c9';
+
+  const baseBody = {
+    direction: 'destination',
+    pattern: '10.1.2.50/32:80-443',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('rejects a siteId that does not belong to the resolved org (404, no insert)', async () => {
+    // siteBelongsToOrg select returns no rows → site not in this org.
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([]) as any);
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...baseBody, siteId: FOREIGN_SITE }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('accepts a siteId that belongs to the resolved org (201)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ id: SITE_IN_ORG }]) as any);
+    vi.mocked(db.insert).mockReturnValue(makeInsertChain([{ id: RULE_ID, orgId: ORG_ID, siteId: SITE_IN_ORG }]) as any);
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...baseBody, siteId: SITE_IN_ORG }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(db.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the site lookup entirely when no siteId is provided (201)', async () => {
+    vi.mocked(db.insert).mockReturnValue(makeInsertChain([{ id: RULE_ID, orgId: ORG_ID }]) as any);
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(baseBody),
+    });
+
+    expect(res.status).toBe(201);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).toHaveBeenCalledTimes(1);
   });
 });

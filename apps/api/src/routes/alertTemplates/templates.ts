@@ -3,13 +3,16 @@ import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
 import { alertTemplates } from '../../db/schema';
 import { eq, and, or, ilike, desc } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { listTemplatesSchema, createTemplateSchema, updateTemplateSchema } from './schemas';
 import { resolveScopedOrgId, parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const templateRoutes = new Hono();
+
+const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 templateRoutes.get(
   '/templates',
@@ -121,6 +124,8 @@ templateRoutes.get(
 templateRoutes.post(
   '/templates',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', createTemplateSchema),
   async (c) => {
     try {
@@ -214,6 +219,8 @@ templateRoutes.get(
 templateRoutes.patch(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', updateTemplateSchema),
   async (c) => {
     try {
@@ -282,6 +289,8 @@ templateRoutes.patch(
 templateRoutes.delete(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     try {
       const auth = c.get('auth');

@@ -548,6 +548,15 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     actorUserId: actor.userId,
     payload: { assigneeId }
   });
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.assign',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { from: prevAssignedTo ?? null, to: assigneeId },
+    result: 'success'
+  });
   return updated[0];
 }
 
@@ -588,6 +597,18 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     partnerId: ticket.partnerId ?? null,
     actorUserId: actor.userId,
     payload: { commentId: comment.id, isPublic: input.isPublic }
+  });
+  // Record the comment id + visibility only — the comment body can carry
+  // sensitive/large content, so it stays out of the audit details (matching the
+  // sibling pattern of keeping details lean).
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.comment',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { commentId: comment.id, isInternal: !input.isPublic },
+    result: 'success'
   });
 
   return { comment, firstResponseStamped };
@@ -642,6 +663,16 @@ export async function linkAlertToTicket(
     newValue: alertId
   });
 
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.alert_link',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { alertId },
+    result: 'success'
+  });
+
   return inserted[0];
 }
 
@@ -664,6 +695,16 @@ export async function unlinkAlertFromTicket(ticketId: string, alertId: string, a
     content: 'Unlinked alert',
     isPublic: false,
     oldValue: alertId
+  });
+
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.alert_unlink',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { alertId },
+    result: 'success'
   });
   return { ticketId, alertId, orgId: ticket.orgId };
 }

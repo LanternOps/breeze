@@ -10,7 +10,7 @@ import { and, desc, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
-import { ticketSiteScopeCondition } from '../routes/tickets/siteScope';
+import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
   createTicket,
@@ -31,14 +31,24 @@ function actorFrom(auth: AuthContext) {
  * (getScopedTicketOr404) — build orgCondition-scoped conditions so neither
  * a cross-org nor a cross-partner ticket ID resolves.
  *
- * Returns the ticket row, or null when not found in the caller's scope.
+ * Site axis (#1047 class): RLS enforces only the org axis, so a site-restricted
+ * org user must also be gated on the SITE axis here. After the org-scoped load,
+ * a device-bound ticket is resolved only when its device's site is in the
+ * caller's allowlist (deviceInSiteScope); deviceless (org-level) tickets stay
+ * accessible at org scope — matching getScopedTicketOr404 in the HTTP route.
+ *
+ * Returns the ticket row, or null when not found / out of the caller's scope.
  */
 async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(tickets.id, ticketId)];
   const orgCond = auth.orgCondition(tickets.orgId);
   if (orgCond) conditions.push(orgCond);
   const [ticket] = await db.select().from(tickets).where(and(...conditions)).limit(1);
-  return ticket ?? null;
+  if (!ticket) return null;
+  if (ticket.deviceId && !(await deviceInSiteScope(auth, ticket.deviceId))) {
+    return null;
+  }
+  return ticket;
 }
 
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
