@@ -724,6 +724,13 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     if (!response.ok) return;
 
     const data = await response.json();
+    // isPlatformAdmin rides along with this refresh: fresh logins carry it in
+    // the login payload, but sessions persisted before the field existed only
+    // learn it here — without the merge, the platform-admin nav stays hidden
+    // until the next re-login.
+    if (typeof data.isPlatformAdmin === 'boolean') {
+      useAuthStore.getState().updateUser({ isPlatformAdmin: data.isPlatformAdmin });
+    }
     if (data.preferences) {
       useAuthStore.getState().updateUser({ preferences: data.preferences });
       applyThemePreference(data.preferences.theme);

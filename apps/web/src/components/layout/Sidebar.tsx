@@ -233,20 +233,25 @@ function sectionForHref(href: string): string | null {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Badge counts (admin-only nav signals). Returns undefined while loading or
-// when the caller has no permission (silently swallowed).
+// disabled. Only fetched when `enabled` (= platform admin) — the endpoint
+// requires platform-admin access, so firing it for ordinary users 403s on
+// every page load and spams the console.
 // ---------------------------------------------------------------------------
 function useDeletionRequestsBadge(enabled: boolean): number | undefined {
   const [count, setCount] = useState<number | undefined>(undefined);
   useEffect(() => {
-    // The endpoint requires platform-admin access; firing it for ordinary users
-    // 403s on every page and logs a console error. Skip it unless the caller
-    // is a platform admin.
     if (!enabled) return;
     let cancelled = false;
     fetchWithAuth('/admin/account-deletion-requests/pending-count')
       .then(async (r) => {
         if (cancelled) return;
-        if (!r.ok) return; // 401/403 quietly suppresses the badge
+        if (!r.ok) {
+          // Only platform admins reach here now, so a failure is a genuine
+          // error, not the old expected 403 — degrade to no badge but leave a
+          // trace.
+          console.warn('[sidebar] deletion-requests badge fetch failed', r.status);
+          return;
+        }
         const data = (await r.json().catch(() => ({}))) as { count?: number };
         if (!cancelled) setCount(typeof data.count === 'number' ? data.count : 0);
       })
@@ -410,15 +415,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return sectionId === activeSectionId;
   }, [expandedSections, activeSectionId]);
 
-  // Pending deletion-requests count for the admin badge. Only fetched for
-  // platform admins (the endpoint 403s otherwise); rendered next to nav items
-  // that opt in via badgeKind.
   const deletionRequestsCount = useDeletionRequestsBadge(isPlatformAdmin);
 
   // --- Render a single nav item -------------------------------------------
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
-    // Platform-admin-only items (e.g. account-deletion-requests) are hidden
-    // from ordinary users — keeps cross-tenant operator nav out of their UI.
     if (item.platformAdminOnly && !isPlatformAdmin) return null;
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;

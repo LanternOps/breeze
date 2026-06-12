@@ -719,17 +719,26 @@ userRoutes.post(
       );
     }
 
-    // writeAvatar persists the bytes + mime + avatar_url atomically on the user
-    // row and returns the serving URL / size / updatedAt.
+    // avatar_url is set inside writeAvatar (single UPDATE) — no follow-up
+    // users update here.
     let written;
     try {
       written = await writeAvatar(userId, sniffedMime, buffer);
     } catch (err) {
-      console.error('[users/avatar] failed to write avatar:', err);
+      // This catch runs before app.onError, which would otherwise be the only
+      // Sentry reporter — capture explicitly or storage failures go dark
+      // (how the original EACCES bug stayed invisible).
+      console.error(`[users/avatar] failed to write avatar (user ${userId}, ${buffer.length} bytes):`, err);
+      captureException(err, c);
       return c.json({ error: 'Failed to store avatar' }, 500);
     }
 
     if (!written) {
+      // Own row missing or invisible under RLS — either way an anomaly for an
+      // authenticated caller; log it so the 500 is traceable.
+      const err = new Error(`[users/avatar] write matched no row for authenticated user ${userId}`);
+      console.error(err.message);
+      captureException(err, c);
       return c.json({ error: 'Failed to update profile' }, 500);
     }
 
@@ -764,10 +773,13 @@ userRoutes.delete('/me/avatar', async (c) => {
   const auth = c.get('auth');
   const userId = auth.user.id;
 
-  // Clears the bytes, mime, timestamp, and avatar_url on the user row in one
-  // write. Returns false only if the row doesn't exist.
   const cleared = await deleteAvatar(userId);
   if (!cleared) {
+    // Own row missing or invisible under RLS — anomaly for an authenticated
+    // caller; log it so the 500 is traceable.
+    const err = new Error(`[users/avatar] delete matched no row for authenticated user ${userId}`);
+    console.error(err.message);
+    captureException(err, c);
     return c.json({ error: 'Failed to clear avatar' }, 500);
   }
 
@@ -829,13 +841,15 @@ userRoutes.get('/:id/avatar', async (c) => {
     return c.body(null, 304);
   }
 
-  // Read the whole blob (avatars are capped at MAX_AVATAR_SIZE_BYTES) before
-  // sending any headers, so a read error is a clean 500 rather than a 200 with
-  // a truncated body under a full Content-Length (Todd's #1059 review).
+  // Avatars are capped at MAX_AVATAR_SIZE_BYTES, so buffering is bounded and
+  // Content-Length is exact.
   const opened = await readAvatarBuffer(userId);
   if (!opened) {
-    // statAvatar passed just above, so a null here is a real read failure (or a
-    // delete race), not a "no avatar" — surface it as a 500 rather than a 404.
+    // statAvatar passed just above, so a null here is a delete race (or
+    // corrupted avatar_mime — logged inside readAvatarBuffer), not "no
+    // avatar" — surface as 500 rather than 404. A genuine DB error throws
+    // and lands in app.onError, never this branch.
+    console.error(`[users/avatar] read returned null after successful stat (user ${userId})`);
     return c.json({ error: 'Failed to read avatar' }, 500);
   }
 

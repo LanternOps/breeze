@@ -252,7 +252,12 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         id: user.id,
         email: user.email,
         name: user.name,
-        mfaEnabled: true
+        mfaEnabled: true,
+        avatarUrl: user.avatarUrl,
+        // Mirrors the password-login payload — the auth store is seeded from
+        // whichever of the two completes the login, and the sidebar gates
+        // platform-admin-only nav on this flag.
+        isPlatformAdmin: user.isPlatformAdmin === true
       },
       tokens: toPublicTokens(tokens),
       mfaRequired: false,

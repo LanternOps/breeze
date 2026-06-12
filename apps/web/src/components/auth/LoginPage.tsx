@@ -31,14 +31,21 @@ function shouldSkipCfAccessRedirect(): boolean {
 async function checkCfAccessLoginEnabled(): Promise<boolean> {
   try {
     const apiHost = import.meta.env.PUBLIC_API_URL || '';
+    // This fetch gates the entire login form behind an empty placeholder, so a
+    // hung request (black-holed proxy, captive portal) must not stall login
+    // forever — time out and fall back to the password form.
     const res = await fetch(`${apiHost}/api/v1/config`, {
       method: 'GET',
       credentials: 'include',
+      signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return false;
     const body = (await res.json()) as { cfAccessLogin?: { enabled?: boolean } };
     return !!body.cfAccessLogin?.enabled;
-  } catch {
+  } catch (err) {
+    // Fail open to the password form — but leave a trace, or a deployment-wide
+    // config/CORS regression silently disables CF Access SSO with no signal.
+    console.warn('[login] CF Access config check failed; falling back to password form', err);
     return false;
   }
 }

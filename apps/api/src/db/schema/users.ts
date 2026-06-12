@@ -3,8 +3,9 @@ import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
 // as Buffers and accepts Buffers/Uint8Arrays on write, so this is a thin
-// pass-through. Used for small, capped binary blobs (avatars ≤ 5 MB) stored
-// inline; Postgres TOASTs large values out-of-line so the base row stays lean.
+// pass-through. Postgres TOASTs values over ~2 KB out-of-line, so wide blobs
+// don't bloat the base row — but SELECTs naming the column still pay the full
+// read; size-only checks should use octet_length() instead.
 export const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType() {
     return 'bytea';
@@ -47,7 +48,9 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   avatarData: bytea('avatar_data'),
   avatarMime: text('avatar_mime'),
-  avatarUpdatedAt: timestamp('avatar_updated_at'),
+  // timestamptz in the migration — withTimezone must match or db:check-drift
+  // flags it (the sibling users timestamps are legacy timestamp-without-tz).
+  avatarUpdatedAt: timestamp('avatar_updated_at', { withTimezone: true }),
   lastLoginAt: timestamp('last_login_at'),
   passwordChangedAt: timestamp('password_changed_at'),
   setupCompletedAt: timestamp('setup_completed_at'),

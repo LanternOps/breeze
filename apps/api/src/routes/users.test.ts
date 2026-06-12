@@ -215,6 +215,8 @@ import { clearPermissionCache, getUserPermissions } from '../services/permission
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
+// Mocked above — imported to drive failure paths via mockResolvedValueOnce.
+import { writeAvatar, deleteAvatar, readAvatarBuffer } from '../services/avatarStorage';
 
 describe('user routes', () => {
   let app: Hono;
@@ -1540,16 +1542,6 @@ describe('user routes', () => {
     // SVG with a small XML preamble
     const SVG_BYTES = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', 'utf-8');
 
-    function makeUpdateMock(returning: unknown[]) {
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue(returning)
-          })
-        })
-      } as any);
-    }
-
     function makeMultipart(field: string, bytes: Buffer, mime: string, filename: string): { body: BodyInit; headers: HeadersInit } {
       const formData = new FormData();
       // Buffer's polymorphic ArrayBufferLike confuses the Blob constructor type;
@@ -1568,7 +1560,6 @@ describe('user routes', () => {
 
     describe('POST /users/me/avatar', () => {
       it('accepts a PNG upload and writes /api/v1/users/<id>/avatar to users.avatar_url', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
 
         const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
@@ -1581,7 +1572,6 @@ describe('user routes', () => {
       });
 
       it('accepts a JPEG upload', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
         const { body, headers } = makeMultipart('file', JPEG_BYTES, 'image/jpeg', 'a.jpg');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
         expect(res.status).toBe(200);
@@ -1590,7 +1580,6 @@ describe('user routes', () => {
       });
 
       it('accepts a WebP upload', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
         const { body, headers } = makeMultipart('file', WEBP_BYTES, 'image/webp', 'a.webp');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
         expect(res.status).toBe(200);
@@ -1627,7 +1616,6 @@ describe('user routes', () => {
 
     describe('DELETE /users/me/avatar', () => {
       it('clears avatar_url and returns avatarUrl: null', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: null }]);
         const res = await app.request('/users/me/avatar', { method: 'DELETE' });
         expect(res.status).toBe(200);
         const data = await res.json();
@@ -1637,7 +1625,6 @@ describe('user routes', () => {
 
     describe('POST then GET roundtrip', () => {
       it('uploads a PNG and serves it back from GET /users/:id/avatar with image/png + cache headers', async () => {
-        makeUpdateMock([{ id: ME_ID, avatarUrl: `/api/v1/users/${ME_ID}/avatar`, updatedAt: new Date() }]);
 
         const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
         const postRes = await app.request('/users/me/avatar', { method: 'POST', body, headers });
@@ -1650,6 +1637,60 @@ describe('user routes', () => {
         expect(getRes.headers.get('etag')).toMatch(/^W\//);
         const body2 = Buffer.from(await getRes.arrayBuffer());
         expect(body2.equals(PNG_BYTES)).toBe(true);
+      });
+
+      it('answers a conditional GET with 304 when If-None-Match matches, and 200 when it does not', async () => {
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        await app.request('/users/me/avatar', { method: 'POST', body, headers });
+
+        const first = await app.request(`/users/${ME_ID}/avatar`, { method: 'GET' });
+        const etag = first.headers.get('etag')!;
+
+        const hit = await app.request(`/users/${ME_ID}/avatar`, {
+          method: 'GET',
+          headers: { 'If-None-Match': etag },
+        });
+        expect(hit.status).toBe(304);
+        expect(hit.headers.get('etag')).toBe(etag);
+        expect((await hit.arrayBuffer()).byteLength).toBe(0);
+
+        const miss = await app.request(`/users/${ME_ID}/avatar`, {
+          method: 'GET',
+          headers: { 'If-None-Match': 'W/"somethingelse"' },
+        });
+        expect(miss.status).toBe(200);
+      });
+    });
+
+    describe('avatar storage failure paths', () => {
+      it('POST returns 500 when the write matches no row (deleted/RLS-invisible user)', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.mocked(writeAvatar).mockResolvedValueOnce(null);
+
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
+        expect(res.status).toBe(500);
+      });
+
+      it('DELETE returns 500 when the clear matches no row', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.mocked(deleteAvatar).mockResolvedValueOnce(false);
+
+        const res = await app.request('/users/me/avatar', { method: 'DELETE' });
+        expect(res.status).toBe(500);
+      });
+
+      it('GET returns 500 (not 404) when the read fails after a successful stat', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        await app.request('/users/me/avatar', { method: 'POST', body, headers });
+
+        // statAvatar succeeds (avatar exists); the subsequent read races a
+        // delete (or hits corrupted mime) and returns null.
+        vi.mocked(readAvatarBuffer).mockResolvedValueOnce(null);
+
+        const res = await app.request(`/users/${ME_ID}/avatar`, { method: 'GET' });
+        expect(res.status).toBe(500);
       });
     });
 
@@ -1687,7 +1728,6 @@ describe('user routes', () => {
 
       async function uploadAvatarFor(userId: string, partnerId: string) {
         authAs(userId, partnerId);
-        makeUpdateMock([{ id: userId, avatarUrl: `/api/v1/users/${userId}/avatar`, updatedAt: new Date() }]);
         const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
         const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
         expect(res.status).toBe(200);

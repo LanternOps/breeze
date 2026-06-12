@@ -1,7 +1,8 @@
 import { createHash } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { users } from '../db/schema';
+import { captureException } from './sentry';
 
 /**
  * Avatar storage service (database-backed).
@@ -13,10 +14,12 @@ import { users } from '../db/schema';
  * volume failed uploads with EACCES → 500 (#1059). Storing the bytes in
  * Postgres removes the volume dependency and works across replicas.
  *
- * All operations run in the caller's DB context, so the `users` table's
- * row-level security is the access boundary: a user can read/write their own
- * row, and cross-user reads (GET /users/:id/avatar) are gated both by the
- * route's explicit `getScopedUser` check and by the same RLS.
+ * The `users` table's row-level security is the access boundary: a user can
+ * read/write their own row, and cross-user reads (GET /users/:id/avatar) are
+ * gated both by the route's explicit `getScopedUser` check and by the same
+ * RLS. Callers must be inside a request/system DB access context — outside one
+ * RLS fails closed and these functions return null/false ("no avatar"), not an
+ * error.
  */
 
 export const MAX_AVATAR_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
@@ -54,6 +57,20 @@ function asAvatarMime(mime: string | null): AvatarMime | null {
   if (mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/webp') {
     return mime;
   }
+  return null;
+}
+
+/**
+ * Bytes exist but avatar_mime doesn't narrow — impossible via writeAvatar
+ * (which sets both atomically), so it means corruption or a bad backfill.
+ * Loudly flag it; the caller still degrades to "no avatar".
+ */
+function reportInvalidMime(userId: string, mime: string | null): null {
+  const err = new Error(
+    `[avatarStorage] avatar bytes present but avatar_mime invalid (user ${userId}, mime ${JSON.stringify(mime)})`
+  );
+  console.error(err.message);
+  captureException(err);
   return null;
 }
 
@@ -150,27 +167,30 @@ export interface AvatarStat {
 
 /**
  * Lightweight metadata (mime, byte length, mtime) for a user's avatar without
- * pulling the bytes — used to build the ETag and answer conditional GETs.
- * Returns null if no avatar is stored.
+ * pulling the bytes — `octet_length` computes the size in Postgres, so the
+ * conditional-GET 304 fast path never transfers the blob. Returns null if no
+ * avatar is stored. (`mtimeMs` is `avatar_updated_at` in epoch ms; the name is
+ * kept from the filesystem era for ETag-contract compatibility.)
  */
 export async function statAvatar(userId: string): Promise<AvatarStat | null> {
   const [row] = await db
     .select({
       mime: users.avatarMime,
-      data: users.avatarData,
+      size: sql<number | null>`octet_length(${users.avatarData})`,
       updatedAt: users.avatarUpdatedAt,
     })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
 
-  if (!row || !row.data) return null;
+  if (!row || row.size === null) return null;
   const mime = asAvatarMime(row.mime);
-  if (!mime) return null;
+  if (!mime) return reportInvalidMime(userId, row.mime);
 
   return {
     mime,
-    size: row.data.length,
+    // postgres.js may hand integers back as strings depending on parser config.
+    size: Number(row.size),
     mtimeMs: row.updatedAt ? row.updatedAt.getTime() : 0,
   };
 }
@@ -200,7 +220,7 @@ export async function readAvatarBuffer(userId: string): Promise<AvatarBuffer | n
 
   if (!row || !row.data) return null;
   const mime = asAvatarMime(row.mime);
-  if (!mime) return null;
+  if (!mime) return reportInvalidMime(userId, row.mime);
 
   return {
     buffer: row.data,
@@ -211,12 +231,11 @@ export async function readAvatarBuffer(userId: string): Promise<AvatarBuffer | n
 }
 
 /**
- * Clear the user's avatar (bytes, mime, timestamp, and serving URL). Returns
- * true if the user row was updated, false if no such row exists.
- *
- * The route already validated the user exists and always nulls avatar_url
- * afterward, so it doesn't need to distinguish "cleared something" from
- * "already empty" — only that the write landed.
+ * Clear the user's avatar (bytes, mime, timestamp, and serving URL) in one
+ * UPDATE. Returns true if the user row was updated, false if no such row
+ * exists (or it's invisible under RLS). Unlike the filesystem version, this
+ * does NOT report whether an avatar previously existed — clearing is
+ * idempotent and callers only need to know the write landed.
  */
 export async function deleteAvatar(userId: string): Promise<boolean> {
   const [updated] = await db

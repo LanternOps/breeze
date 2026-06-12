@@ -6,9 +6,9 @@
 --
 -- Columns:
 --   avatar_data       bytea  — the raw image bytes (PNG/JPEG/WebP, ≤ 5 MB).
---                              Postgres TOASTs this out-of-line so the base row
---                              stays lean and SELECTs that don't reference it
---                              don't pay for it.
+--                              Postgres TOASTs values over ~2 KB out-of-line,
+--                              so the base row stays lean; size-only reads use
+--                              octet_length() to avoid pulling the blob.
 --   avatar_mime       text   — sniffed content type (image/png|jpeg|webp).
 --   avatar_updated_at timestamptz — bump on each write; powers a cheap weak
 --                              ETag (size + mtime) without hashing the bytes.
@@ -17,21 +17,21 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data bytea;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_updated_at timestamptz;
 
--- Any pre-existing avatar_url pointed at a filesystem-backed avatar that this
--- migration does NOT carry over (the bytes stay on the old volume and are not
--- migrated). Clear the now-dangling URLs so the UI falls back to initials
--- instead of rendering a broken image / 404; affected users simply re-upload.
--- Report the count so the operation is visible in the Postgres log.
+-- A pre-existing INTERNAL avatar_url ('/api/v1/users/<id>/avatar') pointed at
+-- a filesystem-backed avatar that this migration does NOT carry over (the
+-- bytes stay on the old volume). Clear those now-dangling URLs so the UI falls
+-- back to initials instead of a broken image; affected users simply re-upload.
+-- External URLs (the pre-upload era let users set arbitrary avatar URLs) are
+-- deliberately left alone — they still resolve.
+-- Always log the count (even 0) so the run leaves a forensic trail.
 DO $$
 DECLARE
   n integer;
 BEGIN
   UPDATE users
      SET avatar_url = NULL
-   WHERE avatar_url IS NOT NULL
+   WHERE avatar_url LIKE '/api/v1/users/%/avatar'
      AND avatar_data IS NULL;
   GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN
-    RAISE WARNING 'cleared % dangling filesystem avatar_url(s) during bytea migration', n;
-  END IF;
+  RAISE WARNING 'cleared % dangling filesystem avatar_url(s) during bytea migration', n;
 END $$;

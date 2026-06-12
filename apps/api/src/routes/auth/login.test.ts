@@ -195,4 +195,38 @@ describe('POST /login — IP allowlist', () => {
     expect(await res.json()).toMatchObject({ error: 'Invalid email or password' });
     expect(createTokenPair).not.toHaveBeenCalled();
   });
+
+  // The web auth store is seeded from THIS payload on password login; the
+  // sidebar gates platform-admin-only nav (deletion requests) on the flag.
+  // If it ever drops out of the payload, platform admins silently lose that
+  // nav (the /users/me copy only reaches the store on a later refresh).
+  it('includes isPlatformAdmin in the success payload', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+      isPlatformAdmin: true,
+    }]) as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
+    expect(body.user.isPlatformAdmin).toBe(true);
+  });
+
+  it('coerces a missing isPlatformAdmin to false in the success payload', async () => {
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
+    expect(body.user.isPlatformAdmin).toBe(false);
+  });
 });
