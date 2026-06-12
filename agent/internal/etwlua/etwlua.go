@@ -67,6 +67,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -75,6 +76,16 @@ import (
 )
 
 var log = logging.L("etwlua")
+
+// dropObserved tracks suppressed-event observability while the 'pam' config
+// policy has interception disabled: one Info log on the first drop of each
+// disable interval (not per event — a busy desktop would spam), and a counter
+// so the re-enable transition can quantify the window. Package-level because
+// handleEvent is a free function; reset by the re-enable path in handleEvent.
+var (
+	dropLogged  atomic.Bool
+	dropCounter atomic.Int64
+)
 
 // Event is the platform-neutral representation of a UAC consent prompt.
 // Windows-side decoders populate it from ConsentUI ETW events; the cross-
@@ -211,6 +222,8 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 				} else if drained > 0 {
 					log.Info("etwlua: periodic drain succeeded", "events", drained)
 				}
+			} else if q != nil {
+				log.Debug("etwlua: periodic drain paused — interception disabled by configuration policy")
 			}
 		}
 	}
@@ -220,8 +233,23 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 // without spinning up the full Start loop.
 func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queue) {
 	if !hb.IsUACInterceptionEnabled() {
+		dropCounter.Add(1)
+		if dropLogged.CompareAndSwap(false, true) {
+			log.Info("etwlua: dropping UAC events — interception disabled by configuration policy")
+		}
 		return
 	}
+
+	// Interception is enabled. If a disable window just ended, log the
+	// re-enable transition with the count of events dropped. This fires
+	// lazily on the first event after re-enable, not at the exact moment
+	// the policy flips — acceptable for diagnostic purposes.
+	if dropLogged.Load() {
+		dropped := dropCounter.Swap(0)
+		dropLogged.Store(false)
+		log.Info("etwlua: interception re-enabled by configuration policy", "dropped_during_disable", dropped)
+	}
+
 	key := dedupeKey(ev)
 	if !limiter.Allow(key) {
 		log.Debug("etwlua: event deduped",
