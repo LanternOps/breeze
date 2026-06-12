@@ -29,9 +29,25 @@ import {
   peripheralPolicies,
 } from '../db/schema';
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { z } from 'zod';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
+
+// ============================================
+// Inline settings schemas
+// ============================================
+
+// Exported so the route can import the same schema (single source of truth).
+// uacInterceptionEnabled defaults to true on the read side (parsePamSettings),
+// so {} is well-formed. Non-boolean values are rejected to prevent the silent-
+// inversion bug where "false" (string) is coerced back to true on read-back.
+// .strict() matches the posture of patch/backup: unknown keys are rejected.
+export const pamInlineSettingsSchema = z
+  .object({
+    uacInterceptionEnabled: z.boolean().optional(),
+  })
+  .strict();
 
 // ============================================
 // Types
@@ -793,6 +809,10 @@ export async function addFeatureLink(
   featurePolicyId?: string | null,
   inlineSettings?: unknown
 ) {
+  if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
+    pamInlineSettingsSchema.parse(inlineSettings);
+  }
+
   return db.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
@@ -838,6 +858,10 @@ export async function updateFeatureLink(
       .where(and(...conditions))
       .limit(1);
     if (!existing) return null;
+
+    if (existing.featureType === 'pam' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      pamInlineSettingsSchema.parse(updates.inlineSettings);
+    }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
     const normalizedInlineSettings =

@@ -18,14 +18,18 @@ const {
   validateFeaturePolicyExistsMock: vi.fn(),
 }));
 
-vi.mock('../../services/configurationPolicy', () => ({
-  getConfigPolicy: getConfigPolicyMock,
-  addFeatureLink: addFeatureLinkMock,
-  updateFeatureLink: updateFeatureLinkMock,
-  removeFeatureLink: removeFeatureLinkMock,
-  listFeatureLinks: listFeatureLinksMock,
-  validateFeaturePolicyExists: validateFeaturePolicyExistsMock,
-}));
+vi.mock('../../services/configurationPolicy', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../services/configurationPolicy')>();
+  return {
+    ...original,
+    getConfigPolicy: getConfigPolicyMock,
+    addFeatureLink: addFeatureLinkMock,
+    updateFeatureLink: updateFeatureLinkMock,
+    removeFeatureLink: removeFeatureLinkMock,
+    listFeatureLinks: listFeatureLinksMock,
+    validateFeaturePolicyExists: validateFeaturePolicyExistsMock,
+  };
+});
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),

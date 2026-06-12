@@ -3,18 +3,6 @@ import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
-import { z } from 'zod';
-
-// Inline settings for the 'pam' feature type.
-// uacInterceptionEnabled defaults to true on the read side (parsePamSettings),
-// so {} is well-formed. Non-boolean present values are rejected to prevent the
-// silent-inversion bug where "false" (string) gets coerced back to true.
-// .strict() matches the posture of patch/backup: unknown keys are rejected.
-const pamInlineSettingsSchema = z
-  .object({
-    uacInterceptionEnabled: z.boolean().optional(),
-  })
-  .strict();
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -24,6 +12,7 @@ import {
   removeFeatureLink,
   listFeatureLinks,
   validateFeaturePolicyExists,
+  pamInlineSettingsSchema,
 } from '../../services/configurationPolicy';
 import {
   addFeatureLinkSchema,
