@@ -14,6 +14,26 @@ import {
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
+/**
+ * Pull a human-readable message out of an API error body. The preview route
+ * returns either a plain `{ error: string }` (e.g. 'Site access denied') or the
+ * @hono/zod-validator 400 shape `{ success:false, error: { issues: [{ message }] } }`
+ * (a serialized ZodError — the superRefine criterion/shape messages, the
+ * sha256 hash validator). Without this, those messages collapse to a bare HTTP
+ * status. Returns '' when no message can be extracted.
+ */
+function extractApiError(body: unknown): string {
+  if (!body || typeof body !== 'object') return '';
+  const b = body as { message?: unknown; error?: unknown; issues?: unknown };
+  if (typeof b.message === 'string' && b.message) return b.message;
+  if (typeof b.error === 'string' && b.error) return b.error;
+  const issues =
+    (b.error as { issues?: Array<{ message?: unknown }> } | undefined)?.issues ??
+    (b.issues as Array<{ message?: unknown }> | undefined);
+  const zodMsg = issues?.[0]?.message;
+  return typeof zodMsg === 'string' && zodMsg ? zodMsg : '';
+}
+
 interface NamedOption {
   id: string;
   name: string;
@@ -64,6 +84,10 @@ export default function PamRuleModal({
   // when there's no rule being edited; verdict/priority/timeWindow are left at
   // their defaults intentionally.
   const seed = rule === null ? initial : undefined;
+  // Narrowed accessors for the discriminated-union seed: executable-only and
+  // tool-only fields are read via `in` guards so each branch typechecks.
+  const seedExec = seed?.shape === 'executable' ? seed : undefined;
+  const seedTool = seed?.shape === 'tool' ? seed : undefined;
   const [name, setName] = useState(rule?.name ?? seed?.name ?? '');
   const [description, setDescription] = useState(rule?.description ?? '');
   const [priority, setPriority] = useState(String(rule?.priority ?? 100));
@@ -76,18 +100,18 @@ export default function PamRuleModal({
         : 'executable'
       : seed?.shape ?? 'executable',
   );
-  const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? seed?.matchSigner ?? '');
-  const [matchHash, setMatchHash] = useState(rule?.matchHash ?? seed?.matchHash ?? '');
-  const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? seed?.matchPathGlob ?? '');
+  const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? seedExec?.matchSigner ?? '');
+  const [matchHash, setMatchHash] = useState(rule?.matchHash ?? seedExec?.matchHash ?? '');
+  const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? seedExec?.matchPathGlob ?? '');
   const [matchParentImage, setMatchParentImage] = useState(rule?.matchParentImage ?? '');
-  const [matchUser, setMatchUser] = useState(rule?.matchUser ?? seed?.matchUser ?? '');
+  const [matchUser, setMatchUser] = useState(rule?.matchUser ?? seedExec?.matchUser ?? '');
   const [matchAdGroup, setMatchAdGroup] = useState(rule?.matchAdGroup ?? '');
-  const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? seed?.matchToolName ?? '');
+  const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? seedTool?.matchToolName ?? '');
   const [matchRiskTier, setMatchRiskTier] = useState(
     rule?.matchRiskTier !== null && rule?.matchRiskTier !== undefined
       ? String(rule.matchRiskTier)
-      : seed?.matchRiskTier !== null && seed?.matchRiskTier !== undefined
-        ? String(seed.matchRiskTier)
+      : seedTool?.matchRiskTier !== null && seedTool?.matchRiskTier !== undefined
+        ? String(seedTool.matchRiskTier)
         : '',
   );
   const [windowStart, setWindowStart] = useState(rule?.timeWindow?.start ?? '');
@@ -102,9 +126,15 @@ export default function PamRuleModal({
   // ("orgId is required for this scope" — resolveOrgIdForWrite).
   const [orgs, setOrgs] = useState<NamedOption[]>([]);
   const [orgsLoaded, setOrgsLoaded] = useState(false);
-  const [selectedOrgId, setSelectedOrgId] = useState('');
+  // Seed the org from the originating request so a rule-from-request keeps the
+  // request's org. This initial value wins over the orgs-load default because
+  // that effect only fills an empty selection (`prev || items[0]`).
+  const [selectedOrgId, setSelectedOrgId] = useState(seed?.orgId ?? '');
   const [sites, setSites] = useState<NamedOption[]>([]);
   const [siteId, setSiteId] = useState(rule?.siteId ?? seed?.siteId ?? '');
+  // Surfaced when a seeded site can't survive the selected org (cross-org
+  // request → org-wide fallback), so the scope change isn't silent.
+  const [siteScopeNotice, setSiteScopeNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
@@ -148,7 +178,19 @@ export default function PamRuleModal({
           const data = await res.json();
           const items = (data.data ?? data.sites ?? data ?? []) as NamedOption[];
           setSites(items.map((s) => ({ id: s.id, name: s.name })));
-          setSiteId((prev) => (prev && !items.some((s) => s.id === prev) ? '' : prev));
+          setSiteId((prev) => {
+            if (prev && !items.some((s) => s.id === prev)) {
+              // The seeded site doesn't belong to the selected org — fall back to
+              // org-wide and tell the user rather than silently re-scoping.
+              if (!isEdit && prev === (seed?.siteId ?? '')) {
+                setSiteScopeNotice(
+                  "The site from the original request isn't available in the selected organization — scope reset to org-wide.",
+                );
+              }
+              return '';
+            }
+            return prev;
+          });
         }
       })
       .catch(() => {});
@@ -277,7 +319,15 @@ export default function PamRuleModal({
           siteId: siteId || null,
         }),
       });
-      if (!res.ok) throw new Error(`Preview failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        let msg = `Preview failed (HTTP ${res.status})`;
+        try {
+          msg = extractApiError(await res.json()) || msg;
+        } catch {
+          /* non-JSON body — keep status fallback */
+        }
+        throw new Error(msg);
+      }
       setPreview((await res.json()) as PreviewResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Preview failed');
@@ -419,6 +469,7 @@ export default function PamRuleModal({
                   onChange={(e) => {
                     setSelectedOrgId(e.target.value);
                     setSiteId('');
+                    setSiteScopeNotice(null);
                   }}
                   data-testid="pam-rule-org"
                   className={inputClass}
@@ -439,7 +490,10 @@ export default function PamRuleModal({
             <select
               id={siteSelectId}
               value={siteId}
-              onChange={(e) => setSiteId(e.target.value)}
+              onChange={(e) => {
+                setSiteId(e.target.value);
+                setSiteScopeNotice(null);
+              }}
               data-testid="pam-rule-site"
               className={inputClass}
             >
@@ -450,6 +504,11 @@ export default function PamRuleModal({
                 </option>
               ))}
             </select>
+            {siteScopeNotice && (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="pam-rule-site-scope-notice">
+                {siteScopeNotice}
+              </p>
+            )}
           </div>
         </div>
 
@@ -621,7 +680,7 @@ export default function PamRuleModal({
                 <p className="text-xs text-muted-foreground">
                   {Object.entries(preview.statusBreakdown)
                     .filter(([, n]) => n > 0)
-                    .map(([s, n]) => `${n} ${STATUS_LABELS[s as ElevationStatus].toLowerCase()}`)
+                    .map(([s, n]) => `${n} ${(STATUS_LABELS[s as ElevationStatus] ?? s).toLowerCase()}`)
                     .join(' · ')}
                 </p>
               )}
@@ -635,7 +694,8 @@ export default function PamRuleModal({
               </ul>
               {matchAdGroup.trim() && (
                 <p className="text-xs text-muted-foreground">
-                  Note: historical requests don't record AD groups, so group criteria preview as 0.
+                  Note: historical requests don't record AD groups, so any draft that includes an AD
+                  group criterion previews as 0 matches.
                 </p>
               )}
             </div>

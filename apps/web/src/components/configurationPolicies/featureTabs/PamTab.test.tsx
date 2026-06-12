@@ -55,9 +55,7 @@ describe('PamTab', () => {
   it('saves uacInterceptionEnabled=false after toggling off', async () => {
     render(<PamTab {...baseProps} />);
 
-    const label = screen.getByText('Capture Windows UAC elevation prompts');
-    const row = label.closest('div')?.parentElement as HTMLElement;
-    const toggleButton = row.querySelector('button') as HTMLButtonElement;
+    const toggleButton = screen.getByTestId('pam-tab-capture-toggle') as HTMLButtonElement;
     fireEvent.click(toggleButton);
 
     const saveButton = screen

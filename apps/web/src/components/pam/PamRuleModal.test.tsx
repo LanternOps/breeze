@@ -85,6 +85,28 @@ describe('PamRuleModal', () => {
     expect((screen.getByTestId('pam-rule-risktier') as HTMLInputElement).value).toBe('3');
   });
 
+  it('seeds selectedOrgId from the draft org for multi-org create (seed wins over default)', async () => {
+    // Two orgs → the org select renders; the orgs-load effect would otherwise
+    // default to items[0] (org-1), but the seed's org-2 must win (#1286 Fix A).
+    installFetchRoutes({
+      orgs: [
+        { id: 'org-1', name: 'Acme' },
+        { id: 'org-2', name: 'Globex' },
+      ],
+    });
+    const initial: PamRuleDraft = {
+      shape: 'executable',
+      matchSigner: 'Acme Corp',
+      orgId: 'org-2',
+      siteId: '',
+    };
+    render(<PamRuleModal rule={null} initial={initial} onClose={() => {}} onSaved={() => {}} />);
+
+    await waitFor(() => {
+      expect((screen.getByTestId('pam-rule-org') as HTMLSelectElement).value).toBe('org-2');
+    });
+  });
+
   describe('rule preview', () => {
     const previewResult = {
       success: true,
@@ -183,6 +205,39 @@ describe('PamRuleModal', () => {
       });
       expect(previewCalls).toBe(0);
       expect(screen.queryByTestId('pam-rule-preview-result')).not.toBeInTheDocument();
+    });
+
+    it('surfaces the server zod error message on a 400 preview response', async () => {
+      const user = userEvent.setup();
+      fetchWithAuthMock.mockImplementation(async (url: string) => {
+        if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+        if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/pam/rules/preview')) {
+          // @hono/zod-validator 400 shape: { success:false, error: ZodError }.
+          return makeJsonResponse(
+            { success: false, error: { issues: [{ message: 'matchHash must be a 64-char sha256 hex string' }] } },
+            false,
+            400,
+          );
+        }
+        return makeJsonResponse({ success: true });
+      });
+
+      render(<PamRuleModal rule={null} onClose={() => {}} onSaved={() => {}} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('pam-rule-hash')).toBeInTheDocument();
+      });
+
+      await user.type(screen.getByTestId('pam-rule-signer'), 'Acme Corp');
+      await user.click(screen.getByTestId('pam-rule-preview-btn'));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toContain(
+          'matchHash must be a 64-char sha256 hex string',
+        );
+      });
+      expect(screen.getByRole('alert').textContent).not.toContain('HTTP 400');
     });
   });
 });

@@ -315,6 +315,36 @@ describe('PamRequestsTab', () => {
     });
   });
 
+  it('seeds the rule modal org select from the request org for multi-org users', async () => {
+    // pendingRequest.orgId is 'org-1'; with two accessible orgs the modal must
+    // default the org select to the request's org, not items[0] (#1286 Fix A).
+    const signedPending: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-org',
+      orgId: 'org-2',
+      targetExecutableSigner: 'Acme Corp',
+    };
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations'))
+        return makeJsonResponse({
+          data: [
+            { id: 'org-1', name: 'Acme' },
+            { id: 'org-2', name: 'Globex' },
+          ],
+        });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      return listResponse([signedPending]);
+    });
+
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-create-rule-btn-req-org'));
+    fireEvent.click(screen.getByTestId('pam-create-rule-btn-req-org'));
+
+    await waitFor(() => {
+      expect((screen.getByTestId('pam-rule-org') as HTMLSelectElement).value).toBe('org-2');
+    });
+  });
+
   it('offers a create-rule link in the respond modal that swaps to the rule modal', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string) => {
       if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });

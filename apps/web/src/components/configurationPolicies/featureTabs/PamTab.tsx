@@ -89,6 +89,7 @@ export default function PamTab({ policyId, existingLink, onLinkChanged, linkedPo
           </div>
           <button
             type="button"
+            data-testid="pam-tab-capture-toggle"
             onClick={() => setSettings((prev) => ({ ...prev, uacInterceptionEnabled: !prev.uacInterceptionEnabled }))}
             className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.uacInterceptionEnabled ? 'bg-emerald-500/80' : 'bg-muted'}`}
           >

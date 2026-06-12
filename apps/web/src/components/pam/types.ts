@@ -54,6 +54,10 @@ export interface ElevationRequest {
   matchedPolicyName?: string | null;
   pamRuleId?: string | null;
   pamRuleName?: string | null;
+  // 'human' and null are display-equivalent today (both fall through to
+  // decidedByLabel); the variant exists to mirror the API's derivation — do not
+  // assume 'human' implies decidedByLabel() is non-null (older rows may lack
+  // joined names).
   decisionSource?: 'software_policy' | 'pam_rule' | 'human' | null;
 }
 
@@ -93,17 +97,25 @@ export interface Pagination {
   total: number;
 }
 
-export interface PamRuleDraft {
-  shape: 'executable' | 'tool';
-  name?: string;
-  siteId?: string | null;
-  matchSigner?: string | null;
-  matchHash?: string | null;
-  matchPathGlob?: string | null;
-  matchUser?: string | null;
-  matchToolName?: string | null;
-  matchRiskTier?: number | null;
-}
+export type PamRuleDraft =
+  | {
+      shape: 'executable';
+      name?: string;
+      orgId?: string;
+      siteId?: string | null;
+      matchSigner?: string | null;
+      matchHash?: string | null;
+      matchPathGlob?: string | null;
+      matchUser?: string | null;
+    }
+  | {
+      shape: 'tool';
+      name?: string;
+      orgId?: string;
+      siteId?: string | null;
+      matchToolName?: string | null;
+      matchRiskTier?: number | null;
+    };
 
 function baseName(path: string): string {
   const i = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
@@ -120,22 +132,23 @@ export function requestToRuleDraft(r: ElevationRequest): PamRuleDraft {
     return {
       shape: 'tool',
       name: r.toolName ? `Rule for ${r.toolName}` : undefined,
+      orgId: r.orgId,
       siteId: r.siteId ?? null,
       matchToolName: r.toolName ?? null,
       matchRiskTier: r.riskTier ?? null,
     };
   }
   if (r.flowType === 'tech_jit_admin') {
-    return { shape: 'executable', siteId: r.siteId ?? null, matchUser: r.subjectUsername };
+    return { shape: 'executable', orgId: r.orgId, siteId: r.siteId ?? null, matchUser: r.subjectUsername };
   }
   const name = r.targetExecutablePath ? `Rule for ${baseName(r.targetExecutablePath)}` : undefined;
   if (r.targetExecutableSigner) {
-    return { shape: 'executable', name, siteId: r.siteId ?? null, matchSigner: r.targetExecutableSigner };
+    return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchSigner: r.targetExecutableSigner };
   }
   if (r.targetExecutableHash) {
-    return { shape: 'executable', name, siteId: r.siteId ?? null, matchHash: r.targetExecutableHash };
+    return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchHash: r.targetExecutableHash };
   }
-  return { shape: 'executable', name, siteId: r.siteId ?? null, matchPathGlob: r.targetExecutablePath ?? null };
+  return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchPathGlob: r.targetExecutablePath ?? null };
 }
 
 export const STATUS_LABELS: Record<ElevationStatus, string> = {
