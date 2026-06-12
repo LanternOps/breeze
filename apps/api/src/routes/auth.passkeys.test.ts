@@ -249,7 +249,7 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
-import { createTokenPair, rateLimiter, verifyPassword } from '../services';
+import { createTokenPair, getRedis, rateLimiter, verifyPassword } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 
@@ -667,6 +667,26 @@ describe('passkey MFA auth routes', () => {
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/too many/i) });
     expect(createTokenPair).not.toHaveBeenCalled();
+    // The limiter must short-circuit before any credential lookup/verification.
+    expect(passkeyMocks.verifyPasskeyAuthentication).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 from passkey verify when Redis is unavailable', async () => {
+    vi.mocked(getRedis).mockReturnValueOnce(null);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/unavailable/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(rateLimiter).not.toHaveBeenCalled();
   });
 
   // (d) A suspended user cannot complete passkey MFA even with a valid assertion.
@@ -842,5 +862,35 @@ describe('passkey MFA auth routes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/use passkey verification/i) });
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  // PATCH /passkeys/:id rename.
+  it('renames a passkey and returns the updated row', async () => {
+    dbState.selectQueue.push([{ ...insertedPasskeyRow, name: 'Old Name' }]);
+    dbState.updateReturningQueue.push([{ ...insertedPasskeyRow, name: 'New Name' }]);
+
+    const res = await app.request('/auth/passkeys/passkey-credential-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ name: 'New Name' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, passkey: { name: 'New Name' } });
+    expect(dbState.updateSets).toContainEqual(expect.objectContaining({ name: 'New Name' }));
+  });
+
+  it('returns 404 renaming a passkey the user does not own', async () => {
+    dbState.selectQueue.push([]);
+
+    const res = await app.request('/auth/passkeys/passkey-credential-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ name: 'New Name' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/not found/i) });
+    expect(dbState.updateSets).toHaveLength(0);
   });
 });

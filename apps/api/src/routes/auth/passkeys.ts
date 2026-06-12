@@ -218,9 +218,17 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
     return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
   }
 
-  // Throttle the unauthenticated MFA-continuation surface, mirroring the TOTP
-  // path in mfa.ts so challenge issuance can't be hammered.
-  const rateCheck = await rateLimiter(getRedis(), `mfa:${pending.userId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  // Throttle challenge issuance so it can't be hammered, but on a SEPARATE
+  // bucket from /verify. A legitimate retry issues one /options + one /verify;
+  // sharing the bucket would let challenge issuance consume the verify
+  // brute-force budget and 429 a user after ~2 attempts. Keep this bucket
+  // generous (issuing a challenge verifies no secret).
+  const rateCheck = await rateLimiter(
+    getRedis(),
+    `mfa:passkey-options:${pending.userId}`,
+    mfaLimiter.limit * 4,
+    mfaLimiter.windowSeconds
+  );
   if (!rateCheck.allowed) {
     return c.json({ error: 'Too many MFA attempts' }, 429);
   }
