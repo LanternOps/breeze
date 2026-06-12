@@ -34,9 +34,12 @@ Per platform:
 - `LastActivityAt` is set to `now − idle` when idle is known (today it is overwritten to `now` on every 5-minute refresh, making it useless as an idle signal). When idle is unknown, keep current behavior.
 - `activityState` semantics are unchanged — it remains OS session connect state (active/locked/disconnected/away). No derived "idle" state from thresholds in this iteration.
 
-### 2. API / DB — no changes
+### 2. API / DB — two one-line tweaks, no migration
 
-`submitSessionsSchema` already accepts optional `idleMinutes` (int, 0–10080). The sessions route already upserts `idle_minutes` on each report. `GET /devices/:id/sessions/active` already returns it. No migration, no RLS work, no new endpoints.
+`submitSessionsSchema` already accepts optional `idleMinutes` (int, 0–10080). `GET /devices/:id/sessions/active` already returns it. No migration, no RLS work, no new endpoints. Two small route fixes are required:
+
+- The ingestion route (`apps/api/src/routes/agents/sessions.ts:98,111`) coerces a missing `idleMinutes` to `0`, which would erase the null-means-unknown semantics. Change `?? 0` to `?? null` at both sites.
+- The active-sessions endpoint (`apps/api/src/routes/devices/sessions.ts`) doesn't select `updatedAt`; add it to the response so the UI tooltip can show report freshness.
 
 ### 3. Web UI — one stat in the overview strip
 
