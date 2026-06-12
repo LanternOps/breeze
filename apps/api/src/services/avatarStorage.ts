@@ -1,21 +1,23 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, createReadStream, readFileSync } from 'fs';
-import { writeFile } from 'fs/promises';
-import { join } from 'path';
 import { createHash } from 'crypto';
-import type { Readable } from 'stream';
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { users } from '../db/schema';
 
 /**
- * Avatar storage service.
+ * Avatar storage service (database-backed).
  *
- * Mirrors the filesystem-backed pattern used by `fileStorage.ts` for remote
- * transfers. One file per user, named `<userId>.<ext>`. New uploads overwrite.
+ * Avatars live as a `bytea` blob on the user's row (`users.avatar_data`),
+ * alongside `avatar_mime` and `avatar_updated_at`. This replaced the previous
+ * filesystem implementation (`/data/avatars/<id>.<ext>`), which depended on a
+ * writable `api_data` volume owned by the API's runtime uid — a root-owned
+ * volume failed uploads with EACCES → 500 (#1059). Storing the bytes in
+ * Postgres removes the volume dependency and works across replicas.
  *
- * Storage path defaults to /data/avatars (Docker named volume api_data is
- * mounted at /data on the api container, same volume used for transfers and
- * patch-reports).
+ * All operations run in the caller's DB context, so the `users` table's
+ * row-level security is the access boundary: a user can read/write their own
+ * row, and cross-user reads (GET /users/:id/avatar) are gated both by the
+ * route's explicit `getScopedUser` check and by the same RLS.
  */
-
-const STORAGE_PATH = process.env.AVATAR_STORAGE_PATH || './data/avatars';
 
 export const MAX_AVATAR_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 
@@ -43,6 +45,14 @@ export function extForMime(mime: AvatarMime): AvatarExt {
 export function mimeForExt(ext: string): AvatarMime | null {
   if (ext in EXT_TO_MIME) {
     return EXT_TO_MIME[ext as AvatarExt];
+  }
+  return null;
+}
+
+/** Narrow an arbitrary DB-stored mime string back to a known AvatarMime. */
+function asAvatarMime(mime: string | null): AvatarMime | null {
+  if (mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/webp') {
+    return mime;
   }
   return null;
 }
@@ -91,157 +101,145 @@ export function sniffImageMime(buf: Buffer): AvatarMime | null {
   return null;
 }
 
-function ensureStorageDir(): void {
-  if (!existsSync(STORAGE_PATH)) {
-    mkdirSync(STORAGE_PATH, { recursive: true });
-  }
+function avatarUrlFor(userId: string): string {
+  return `/api/v1/users/${userId}/avatar`;
 }
 
-function avatarPath(userId: string, ext: AvatarExt): string {
-  return join(STORAGE_PATH, `${userId}.${ext}`);
-}
-
-/**
- * Find the on-disk file for a user's avatar, regardless of extension.
- * Returns null if no avatar exists for this user.
- */
-export function findAvatar(userId: string): { path: string; ext: AvatarExt; mime: AvatarMime } | null {
-  if (!existsSync(STORAGE_PATH)) return null;
-  for (const ext of ALL_EXTS) {
-    const path = avatarPath(userId, ext);
-    if (existsSync(path)) {
-      return { path, ext, mime: EXT_TO_MIME[ext] };
-    }
-  }
-  return null;
+export interface WriteAvatarResult {
+  ext: AvatarExt;
+  size: number;
+  avatarUrl: string;
+  updatedAt: Date;
 }
 
 /**
- * Write avatar bytes atomically. Removes any pre-existing avatar for the same
- * user at a different extension.
+ * Persist the avatar bytes + metadata on the user's row, atomically, and point
+ * `avatar_url` at the serving endpoint. Returns null if the user row does not
+ * exist (or is not visible to the caller under RLS).
  */
-export async function writeAvatar(userId: string, mime: AvatarMime, data: Buffer): Promise<{ path: string; ext: AvatarExt; size: number }> {
-  ensureStorageDir();
-  const ext = extForMime(mime);
-  const finalPath = avatarPath(userId, ext);
-  const tmpPath = `${finalPath}.tmp`;
+export async function writeAvatar(
+  userId: string,
+  mime: AvatarMime,
+  data: Buffer
+): Promise<WriteAvatarResult | null> {
+  const now = new Date();
+  const avatarUrl = avatarUrlFor(userId);
 
-  await writeFile(tmpPath, data);
-  renameSync(tmpPath, finalPath);
+  const [updated] = await db
+    .update(users)
+    .set({
+      avatarData: data,
+      avatarMime: mime,
+      avatarUpdatedAt: now,
+      avatarUrl,
+      updatedAt: now,
+    })
+    .where(eq(users.id, userId))
+    .returning({ id: users.id, updatedAt: users.updatedAt });
 
-  // Clean up any avatar at a different extension so we don't accumulate.
-  for (const otherExt of ALL_EXTS) {
-    if (otherExt === ext) continue;
-    const otherPath = avatarPath(userId, otherExt);
-    if (existsSync(otherPath)) {
-      try {
-        unlinkSync(otherPath);
-      } catch {
-        // Best-effort cleanup; ignore.
-      }
-    }
-  }
+  if (!updated) return null;
 
-  return { path: finalPath, ext, size: data.length };
+  return { ext: extForMime(mime), size: data.length, avatarUrl, updatedAt: updated.updatedAt };
+}
+
+export interface AvatarStat {
+  mime: AvatarMime;
+  size: number;
+  mtimeMs: number;
 }
 
 /**
- * Open a readable stream for the user's avatar file. Returns null if no
- * avatar exists.
+ * Lightweight metadata (mime, byte length, mtime) for a user's avatar without
+ * pulling the bytes — used to build the ETag and answer conditional GETs.
+ * Returns null if no avatar is stored.
  */
-export function readAvatarStream(userId: string): { stream: Readable; mime: AvatarMime; size: number; mtimeMs: number } | null {
-  const found = findAvatar(userId);
-  if (!found) return null;
+export async function statAvatar(userId: string): Promise<AvatarStat | null> {
+  const [row] = await db
+    .select({
+      mime: users.avatarMime,
+      data: users.avatarData,
+      updatedAt: users.avatarUpdatedAt,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
 
-  let stat;
-  try {
-    stat = statSync(found.path);
-  } catch {
-    return null;
-  }
+  if (!row || !row.data) return null;
+  const mime = asAvatarMime(row.mime);
+  if (!mime) return null;
 
   return {
-    stream: createReadStream(found.path),
-    mime: found.mime,
-    size: stat.size,
-    mtimeMs: stat.mtimeMs,
+    mime,
+    size: row.data.length,
+    mtimeMs: row.updatedAt ? row.updatedAt.getTime() : 0,
   };
+}
+
+export interface AvatarBuffer {
+  buffer: Buffer;
+  mime: AvatarMime;
+  size: number;
+  mtimeMs: number;
 }
 
 /**
  * Read a user's avatar fully into a Buffer. Avatars are capped at
- * MAX_AVATAR_SIZE_BYTES on write, so buffering is bounded and lets the
- * caller send an exact Content-Length with no risk of a truncated body
- * (a mid-stream read error becomes a clean failure before any bytes or
- * headers are sent, rather than a 200 with a short body).
+ * MAX_AVATAR_SIZE_BYTES on write, so buffering is bounded and lets the caller
+ * send an exact Content-Length. Returns null if no avatar is stored.
  */
-export function readAvatarBuffer(userId: string): { buffer: Buffer; mime: AvatarMime; size: number; mtimeMs: number } | null {
-  const found = findAvatar(userId);
-  if (!found) return null;
+export async function readAvatarBuffer(userId: string): Promise<AvatarBuffer | null> {
+  const [row] = await db
+    .select({
+      data: users.avatarData,
+      mime: users.avatarMime,
+      updatedAt: users.avatarUpdatedAt,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
 
-  try {
-    const stat = statSync(found.path);
-    const buffer = readFileSync(found.path);
-    return {
-      buffer,
-      mime: found.mime,
-      size: stat.size,
-      mtimeMs: stat.mtimeMs,
-    };
-  } catch {
-    return null;
-  }
+  if (!row || !row.data) return null;
+  const mime = asAvatarMime(row.mime);
+  if (!mime) return null;
+
+  return {
+    buffer: row.data,
+    mime,
+    size: row.data.length,
+    mtimeMs: row.updatedAt ? row.updatedAt.getTime() : 0,
+  };
 }
 
 /**
- * Get file stat (size + mtimeMs) for a user's avatar without opening it.
+ * Clear the user's avatar (bytes, mime, timestamp, and serving URL). Returns
+ * true if the user row was updated, false if no such row exists.
+ *
+ * The route already validated the user exists and always nulls avatar_url
+ * afterward, so it doesn't need to distinguish "cleared something" from
+ * "already empty" — only that the write landed.
  */
-export function statAvatar(userId: string): { mime: AvatarMime; size: number; mtimeMs: number } | null {
-  const found = findAvatar(userId);
-  if (!found) return null;
-  try {
-    const stat = statSync(found.path);
-    return { mime: found.mime, size: stat.size, mtimeMs: stat.mtimeMs };
-  } catch {
-    return null;
-  }
+export async function deleteAvatar(userId: string): Promise<boolean> {
+  const [updated] = await db
+    .update(users)
+    .set({
+      avatarData: null,
+      avatarMime: null,
+      avatarUpdatedAt: null,
+      avatarUrl: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, userId))
+    .returning({ id: users.id });
+
+  return Boolean(updated);
 }
 
 /**
- * Compute a weak ETag from size + mtimeMs. Cheap, avoids hashing file bytes
- * on every read. Format follows RFC 7232 weak ETag syntax.
+ * Compute a weak ETag from size + mtimeMs. Cheap, avoids hashing the bytes on
+ * every read. Format follows RFC 7232 weak ETag syntax.
  */
 export function weakEtagFor(size: number, mtimeMs: number): string {
   const hash = createHash('sha1');
   hash.update(`${size}:${Math.floor(mtimeMs)}`);
   return `W/"${hash.digest('hex').slice(0, 16)}"`;
-}
-
-/**
- * Delete the user's avatar file (any extension). Returns true if a file was
- * removed, false if no avatar existed.
- */
-export function deleteAvatar(userId: string): boolean {
-  if (!existsSync(STORAGE_PATH)) return false;
-  let removed = false;
-  for (const ext of ALL_EXTS) {
-    const path = avatarPath(userId, ext);
-    if (existsSync(path)) {
-      try {
-        unlinkSync(path);
-        removed = true;
-      } catch {
-        // ignore
-      }
-    }
-  }
-  return removed;
-}
-
-/**
- * Test-only helper: list all avatar filenames currently on disk.
- */
-export function listAvatarsForTest(): string[] {
-  if (!existsSync(STORAGE_PATH)) return [];
-  return readdirSync(STORAGE_PATH);
 }

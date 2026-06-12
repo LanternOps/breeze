@@ -58,7 +58,14 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const [phoneLast4, setPhoneLast4] = useState<string>();
   const [smsSending, setSmsSending] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
-  const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(shouldSkipCfAccessRedirect());
+  // MUST start `false` (a constant), not `shouldSkipCfAccessRedirect()`: that
+  // helper returns true on the server (no `window`) and false on a plain client
+  // load, so seeding the initial state with it made the SSR render the form
+  // while the client's first render produced the placeholder below — a React
+  // #418 hydration mismatch on every /login visit. The skip decision now lives
+  // entirely in the effect (client-only), keeping SSR and CSR initial output
+  // identical (both render the placeholder).
+  const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(false);
 
   const login = useAuthStore((state) => state.login);
 
@@ -69,6 +76,13 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // the user has an active session at the root app with the same IdP.
   useEffect(() => {
     if (cfAccessRedirectChecked) return;
+    // Post-redirect bounce / explicit sign-out: skip the check and show the
+    // form immediately (one tick after mount, so SSR and CSR still agree on the
+    // initial placeholder render).
+    if (shouldSkipCfAccessRedirect()) {
+      setCfAccessRedirectChecked(true);
+      return;
+    }
     let cancelled = false;
     void checkCfAccessLoginEnabled().then((enabled) => {
       if (cancelled) return;

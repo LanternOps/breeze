@@ -41,7 +41,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
@@ -81,6 +81,9 @@ type NavItem = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   badgeKind?: 'deletion-requests';
+  // Hidden unless the current user is a platform admin. Keeps cross-tenant
+  // platform-operator nav (and its badge fetch) out of ordinary users' UI.
+  platformAdminOnly?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -172,7 +175,7 @@ const navSections: NavSection[] = [
       { name: 'Users', href: '/settings/users', icon: Users },
       { name: 'Roles', href: '/settings/roles', icon: KeyRound },
       { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
-      { name: 'Deletion requests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests' },
+      { name: 'Deletion requests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
     ],
   },
 ];
@@ -232,9 +235,13 @@ function sectionForHref(href: string): string | null {
 // Badge counts (admin-only nav signals). Returns undefined while loading or
 // when the caller has no permission (silently swallowed).
 // ---------------------------------------------------------------------------
-function useDeletionRequestsBadge(): number | undefined {
+function useDeletionRequestsBadge(enabled: boolean): number | undefined {
   const [count, setCount] = useState<number | undefined>(undefined);
   useEffect(() => {
+    // The endpoint requires platform-admin access; firing it for ordinary users
+    // 403s on every page and logs a console error. Skip it unless the caller
+    // is a platform admin.
+    if (!enabled) return;
     let cancelled = false;
     fetchWithAuth('/admin/account-deletion-requests/pending-count')
       .then(async (r) => {
@@ -245,7 +252,7 @@ function useDeletionRequestsBadge(): number | undefined {
       })
       .catch(() => { /* network error — leave badge hidden */ });
     return () => { cancelled = true; };
-  }, []);
+  }, [enabled]);
   return count;
 }
 
@@ -253,6 +260,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
   const currentPath = useCurrentPath(initialPath);
+  const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
 
   // --- Responsive breakpoints -----------------------------------------------
   // Track whether viewport is below lg (1024px) or md (768px) to override mode
@@ -402,12 +410,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return sectionId === activeSectionId;
   }, [expandedSections, activeSectionId]);
 
-  // Pending deletion-requests count for the admin badge. Hook is unconditional,
-  // but the badge is only rendered next to nav items that opt in via badgeKind.
-  const deletionRequestsCount = useDeletionRequestsBadge();
+  // Pending deletion-requests count for the admin badge. Only fetched for
+  // platform admins (the endpoint 403s otherwise); rendered next to nav items
+  // that opt in via badgeKind.
+  const deletionRequestsCount = useDeletionRequestsBadge(isPlatformAdmin);
 
   // --- Render a single nav item -------------------------------------------
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
+    // Platform-admin-only items (e.g. account-deletion-requests) are hidden
+    // from ordinary users — keeps cross-tenant operator nav out of their UI.
+    if (item.platformAdminOnly && !isPlatformAdmin) return null;
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;
     const narrow = forMobileOverlay ? false : isNarrow;

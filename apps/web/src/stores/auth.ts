@@ -13,6 +13,10 @@ export interface User {
   mfaEnabled: boolean;
   avatarUrl?: string;
   requiresSetup?: boolean;
+  // True only for platform operators. Gates platform-admin-only nav (e.g.
+  // account-deletion-requests) so ordinary users don't trigger its 403 badge
+  // fetch. Absent/false for partner & org users.
+  isPlatformAdmin?: boolean;
   preferences?: UserPreferences;
 }
 

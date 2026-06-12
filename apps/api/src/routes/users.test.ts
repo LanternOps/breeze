@@ -1,13 +1,38 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 
-// Set the avatar storage dir to a per-test-run tmp path BEFORE importing the
-// service (the service reads process.env.AVATAR_STORAGE_PATH at module load).
-const TMP_AVATAR_DIR = mkdtempSync(join(tmpdir(), 'breeze-avatar-test-'));
-process.env.AVATAR_STORAGE_PATH = TMP_AVATAR_DIR;
+// Avatars are stored as a bytea blob on the user row via avatarStorage, which
+// hits the DB. The DB is fully mocked here, so back the I/O functions with a
+// tiny in-memory store that mimics the POST→GET round-trip. The pure helpers
+// (sniffImageMime, weakEtagFor, MAX_AVATAR_SIZE_BYTES, …) stay real so upload
+// validation is exercised for real.
+const { avatarStore } = vi.hoisted(() => ({
+  avatarStore: new Map<string, { mime: 'image/png' | 'image/jpeg' | 'image/webp'; data: Buffer }>(),
+}));
+
+vi.mock('../services/avatarStorage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/avatarStorage')>();
+  const FIXED_MTIME = 1_700_000_000_000;
+  return {
+    ...actual,
+    writeAvatar: vi.fn(async (userId: string, mime: 'image/png' | 'image/jpeg' | 'image/webp', data: Buffer) => {
+      avatarStore.set(userId, { mime, data });
+      return { ext: actual.extForMime(mime), size: data.length, avatarUrl: `/api/v1/users/${userId}/avatar`, updatedAt: new Date() };
+    }),
+    statAvatar: vi.fn(async (userId: string) => {
+      const a = avatarStore.get(userId);
+      return a ? { mime: a.mime, size: a.data.length, mtimeMs: FIXED_MTIME } : null;
+    }),
+    readAvatarBuffer: vi.fn(async (userId: string) => {
+      const a = avatarStore.get(userId);
+      return a ? { buffer: a.data, mime: a.mime, size: a.data.length, mtimeMs: FIXED_MTIME } : null;
+    }),
+    deleteAvatar: vi.fn(async (userId: string) => {
+      avatarStore.delete(userId);
+      return true;
+    }),
+  };
+});
 
 import { userRoutes } from './users';
 
@@ -194,14 +219,9 @@ import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
 describe('user routes', () => {
   let app: Hono;
 
-  afterAll(() => {
-    if (existsSync(TMP_AVATAR_DIR)) {
-      rmSync(TMP_AVATAR_DIR, { recursive: true, force: true });
-    }
-  });
-
   beforeEach(() => {
     vi.clearAllMocks();
+    avatarStore.clear();
     // clearAllMocks only clears call history — it does NOT drain queued
     // mockReturnValueOnce implementations or reset mockReturnValue. Re-seed the
     // db builders to safe defaults so each test starts from a clean chain and is
@@ -452,6 +472,53 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+    });
+  });
+
+  describe('GET /users/me', () => {
+    beforeEach(() => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          orgId: null,
+          user: { id: 'user-123', email: 'admin@example.com' }
+        });
+        return next();
+      });
+    });
+
+    // The web sidebar gates platform-admin-only nav (account-deletion-requests)
+    // and skips its badge fetch off this flag; if it ever stops being returned,
+    // that fetch starts 403-spamming the console for every ordinary user again.
+    it('returns isPlatformAdmin so the web can gate platform-admin-only nav', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'admin@example.com',
+              name: 'Admin',
+              avatarUrl: null,
+              status: 'active',
+              mfaEnabled: false,
+              isPlatformAdmin: true,
+              createdAt: new Date(),
+              lastLoginAt: new Date(),
+              setupCompletedAt: new Date(),
+              passwordChangedAt: new Date(),
+              preferences: {}
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { isPlatformAdmin?: boolean };
+      expect(body.isPlatformAdmin).toBe(true);
     });
   });
 
@@ -1626,8 +1693,8 @@ describe('user routes', () => {
         expect(res.status).toBe(200);
       }
 
-      it('blocks a cross-tenant read — another user not in the caller\'s scope returns 404 even though the avatar file exists', async () => {
-        // A real avatar file now exists on disk for other-456.
+      it('blocks a cross-tenant read — another user not in the caller\'s scope returns 404 even though the avatar exists', async () => {
+        // An avatar is stored for other-456 (in the in-memory backing store).
         await uploadAvatarFor(OTHER_ID, 'partner-999');
 
         // Caller is in a DIFFERENT partner; getScopedUser resolves to nothing.
