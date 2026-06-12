@@ -105,6 +105,28 @@ Categories also carry SLA targets (response and resolution times) and billing de
   Today the SLA targets drive the at-risk and breached chips in the queue. The full automated SLA engine -- enforcement, escalations, and business-hours schedules -- arrives in a later release.
 </Aside>
 
+## Custom Statuses & SLA Configuration
+
+Go to **Settings → Ticketing** to configure statuses, priority labels, and SLA defaults. The page is tabbed: **Statuses**, **Priorities**, **Categories**, and **Export**.
+
+### Custom ticket statuses
+
+Every ticket status maps to one of six core states: **New**, **Open**, **Pending**, **On Hold**, **Resolved**, and **Closed**. Within each core state you can create as many custom statuses as your workflow needs -- for example "Waiting on vendor" under Pending, or "Needs review" under Resolved. Custom statuses appear in the workbench status picker, grouped by their core state. Tickets that pre-date custom statuses show the core state label directly.
+
+Statuses are partner-wide and apply across all your customer organizations. Built-in statuses cannot be deleted. Custom statuses can be deactivated (they disappear from the picker but existing tickets keep their status). Use the up/down arrows on any row to reorder statuses, which sets the order they appear in the picker.
+
+### Priority labels and partner-wide SLA defaults
+
+Under the **Priorities** tab you can rename each of the four priority levels (Low, Normal, High, Urgent) to match your team's language. For each priority you can also set partner-wide default **response** and **resolution** SLA targets (in minutes). These defaults apply to every ticket that doesn't have a more-specific override.
+
+### Per-organization SLA tiers
+
+In an organization's settings, open the **Ticketing** tab to set per-priority SLA overrides for that customer. You can also set the organization's **default hourly rate** and whether new time entries default to billable.
+
+<Aside>
+  Saving organization-level ticketing settings requires MFA confirmation. SLA precedence: a category's SLA beats an organization override, which beats the partner-wide priority default.
+</Aside>
+
 ## Time Tracking & Parts
 
 Breeze lets technicians log time and record parts against any ticket. These records feed the billing summary on the ticket's properties rail and the weekly Timesheet view -- but are **never shown in the customer portal**.
