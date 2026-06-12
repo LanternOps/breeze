@@ -1,6 +1,6 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { timeEntries, ticketParts, tickets, ticketCategories, organizations } from '../db/schema';
+import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput } from '@breeze/shared';
 
@@ -472,4 +472,159 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
 export async function deleteTicketPart(id: string, _actor: TimeEntryActor) {
   await getPartOr404(id);
   await db.delete(ticketParts).where(eq(ticketParts.id, id));
+}
+
+// ── Queries ──────────────────────────────────────────────────────────────
+
+export interface ListTimeEntriesFilters {
+  userId?: string;
+  ticketId?: string;
+  orgId?: string;
+  from?: Date;
+  to?: Date;
+  running?: boolean;
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  approved?: boolean;
+  limit: number;
+  offset: number;
+}
+
+const entrySelection = {
+  id: timeEntries.id,
+  partnerId: timeEntries.partnerId,
+  orgId: timeEntries.orgId,
+  ticketId: timeEntries.ticketId,
+  userId: timeEntries.userId,
+  startedAt: timeEntries.startedAt,
+  endedAt: timeEntries.endedAt,
+  durationMinutes: timeEntries.durationMinutes,
+  description: timeEntries.description,
+  isBillable: timeEntries.isBillable,
+  hourlyRate: timeEntries.hourlyRate,
+  billingStatus: timeEntries.billingStatus,
+  isApproved: timeEntries.isApproved,
+  approvedBy: timeEntries.approvedBy,
+  approvedAt: timeEntries.approvedAt,
+  createdAt: timeEntries.createdAt,
+  // decorations (additive, Phase 1b pattern)
+  ticketNumber: tickets.internalNumber,
+  ticketSubject: tickets.subject,
+  userName: users.name
+};
+
+function listConditions(filters: ListTimeEntriesFilters) {
+  const conditions = [];
+  if (filters.userId) conditions.push(eq(timeEntries.userId, filters.userId));
+  if (filters.ticketId) conditions.push(eq(timeEntries.ticketId, filters.ticketId));
+  if (filters.orgId) conditions.push(eq(timeEntries.orgId, filters.orgId));
+  if (filters.from) conditions.push(gte(timeEntries.startedAt, filters.from));
+  if (filters.to) conditions.push(lt(timeEntries.startedAt, filters.to));
+  if (filters.running !== undefined) {
+    conditions.push(filters.running ? isNull(timeEntries.endedAt) : sql`${timeEntries.endedAt} IS NOT NULL`);
+  }
+  if (filters.billingStatus) conditions.push(eq(timeEntries.billingStatus, filters.billingStatus));
+  if (filters.approved !== undefined) conditions.push(eq(timeEntries.isApproved, filters.approved));
+  return conditions;
+}
+
+export async function listTimeEntries(filters: ListTimeEntriesFilters) {
+  const conditions = listConditions(filters);
+  const entries = await db
+    .select(entrySelection)
+    .from(timeEntries)
+    .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
+    .leftJoin(users, eq(timeEntries.userId, users.id))
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(timeEntries.startedAt))
+    .limit(filters.limit)
+    .offset(filters.offset);
+
+  const totalRows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(timeEntries)
+    .where(conditions.length ? and(...conditions) : undefined);
+
+  return { entries, total: totalRows[0]?.count ?? 0 };
+}
+
+export async function getRunningTimer(userId: string) {
+  const rows = await db
+    .select(entrySelection)
+    .from(timeEntries)
+    .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
+    .leftJoin(users, eq(timeEntries.userId, users.id))
+    .where(and(eq(timeEntries.userId, userId), isNull(timeEntries.endedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export interface TimesheetDay {
+  date: string; // YYYY-MM-DD
+  totalMinutes: number;
+  billableMinutes: number;
+  entries: Awaited<ReturnType<typeof listTimeEntries>>['entries'];
+}
+
+export async function getTimesheet(userId: string, weekStart: Date) {
+  const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60_000);
+  const entries = await db
+    .select(entrySelection)
+    .from(timeEntries)
+    .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
+    .leftJoin(users, eq(timeEntries.userId, users.id))
+    .where(and(
+      eq(timeEntries.userId, userId),
+      gte(timeEntries.startedAt, weekStart),
+      lt(timeEntries.startedAt, weekEnd)
+    ))
+    .orderBy(asc(timeEntries.startedAt));
+
+  const days = new Map<string, TimesheetDay>();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart.getTime() + i * 24 * 60 * 60_000);
+    const key = d.toISOString().slice(0, 10);
+    days.set(key, { date: key, totalMinutes: 0, billableMinutes: 0, entries: [] });
+  }
+  for (const entry of entries) {
+    const key = entry.startedAt.toISOString().slice(0, 10);
+    const day = days.get(key);
+    if (!day) continue; // boundary rows from TZ edges — still in totals below
+    day.entries.push(entry);
+    const minutes = entry.durationMinutes ?? 0;
+    day.totalMinutes += minutes;
+    if (entry.isBillable) day.billableMinutes += minutes;
+  }
+  const allDays = [...days.values()];
+  return {
+    weekStart: weekStart.toISOString().slice(0, 10),
+    days: allDays,
+    totals: {
+      totalMinutes: allDays.reduce((s, d) => s + d.totalMinutes, 0),
+      billableMinutes: allDays.reduce((s, d) => s + d.billableMinutes, 0)
+    }
+  };
+}
+
+export async function getTicketBillingSummary(ticketId: string) {
+  const timeRows = await db
+    .select({
+      totalMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}), 0)::int`,
+      billableMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.isBillable}), 0)::int`,
+      billableAmount: sql<string>`COALESCE(SUM((${timeEntries.durationMinutes}::numeric / 60) * ${timeEntries.hourlyRate}) FILTER (WHERE ${timeEntries.isBillable} AND ${timeEntries.hourlyRate} IS NOT NULL), 0)::numeric(12,2)`
+    })
+    .from(timeEntries)
+    .where(eq(timeEntries.ticketId, ticketId));
+
+  const partsRows = await db
+    .select({
+      partsCount: sql<number>`COUNT(*)::int`,
+      billableTotal: sql<string>`COALESCE(SUM(${ticketParts.quantity} * ${ticketParts.unitPrice}) FILTER (WHERE ${ticketParts.isBillable}), 0)::numeric(12,2)`
+    })
+    .from(ticketParts)
+    .where(eq(ticketParts.ticketId, ticketId));
+
+  return {
+    time: timeRows[0] ?? { totalMinutes: 0, billableMinutes: 0, billableAmount: '0.00' },
+    parts: partsRows[0] ?? { partsCount: 0, billableTotal: '0.00' }
+  };
 }
