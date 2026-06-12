@@ -45,6 +45,10 @@ describe('buildAllowedPatchSources', () => {
     expect(buildAllowedPatchSources(undefined)).toBeNull();
     expect(buildAllowedPatchSources([])).toBeNull();
   });
+
+  it('returns an empty set (block all) when only unsupported sources are selected', () => {
+    expect(buildAllowedPatchSources(['firmware', 'drivers'])).toEqual(new Set());
+  });
 });
 
 // ---- resolveApprovedPatchesForDevice with mocked Drizzle chains ----
