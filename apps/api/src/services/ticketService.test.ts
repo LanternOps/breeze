@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Recorders for insert().values(v) and update().set(v) arguments
+// Recorders for insert().values(v), update().set(v), and update().set().where(w) arguments
 const valuesMock = vi.fn();
 const setMock = vi.fn();
+const whereMock = vi.fn();
 
 const { emitMock, auditMock, allocateMock, dbMocks, configMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
@@ -60,7 +61,10 @@ vi.mock('../db', () => ({
       set: vi.fn((v) => {
         setMock(v);
         return {
-          where: vi.fn(() => ({ returning: vi.fn(() => dbMocks.updateReturning()) }))
+          where: vi.fn((w) => {
+            whereMock(w);
+            return { returning: vi.fn(() => dbMocks.updateReturning()) };
+          })
         };
       })
     })),
@@ -1478,7 +1482,40 @@ describe('changeTicketStatus — statusId path', () => {
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ statusId: NEW_STATUS_UUID }));
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ commentType: 'status_change' }));
 
+    // WHERE clause must include 3 conditions: id, status, AND statusId CAS
+    expect(whereMock).toHaveBeenCalledTimes(1);
+    const whereArg = whereMock.mock.calls[0]![0];
+    // drizzle-orm `and(...)` with 3 args produces an object whose `.conditions` array has length 3
+    expect(whereArg).toBeDefined();
+    if (whereArg && 'conditions' in whereArg) {
+      expect((whereArg as { conditions: unknown[] }).conditions).toHaveLength(3);
+    }
+
     // But no status_changed event — core status is identical (both 'open')
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('(i) fast path CAS: concurrent label swap → 409 CONCURRENT_MODIFICATION', async () => {
+    const OLD_STATUS_UUID = 'old-status-uuid-1111-2222-3333-4444';
+    const NEW_STATUS_UUID = 'new-status-uuid-5555-6666-7777-8888';
+    dbMocks.selectResult.mockResolvedValueOnce([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', statusId: OLD_STATUS_UUID,
+      resolvedAt: null, slaPausedAt: null, slaPausedMinutes: 0
+    }]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: NEW_STATUS_UUID, partnerId: 'p-1', coreStatus: 'open', name: 'In Progress',
+      isActive: true, isSystem: false
+    });
+    // Simulate concurrent update — another request already swapped the label
+    dbMocks.updateReturning.mockResolvedValue([]);
+
+    const err = await changeTicketStatus('t-1', { statusId: NEW_STATUS_UUID }, {}, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('CONCURRENT_MODIFICATION');
+    expect(err.message).toMatch(/concurrently/i);
+    // No comment insert, no event
+    expect(valuesMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
   });
 

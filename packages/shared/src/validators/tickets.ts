@@ -41,7 +41,7 @@ export const changeTicketStatusSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide either status or statusId, not both', path: ['status'] });
   }
   if (!hasStatus && !hasStatusId) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Either status or statusId is required', path: ['status'] });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Either status or statusId is required', path: [] });
   }
   if (hasStatus && v.status === 'resolved' && (!v.resolutionNote || v.resolutionNote.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'resolutionNote is required when resolving', path: ['resolutionNote'] });

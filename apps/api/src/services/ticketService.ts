@@ -327,10 +327,11 @@ export async function changeTicketStatus(
   let resolvedStatusId: string | null | undefined;
   let customStatusName: string | undefined;
 
+  const partnerId = await resolveTicketPartnerId(ticket);
+
   if (hasStatusId) {
     const row = await getTicketStatusById(target.statusId!);
     if (!row) throw new TicketServiceError('Status not found', 404, 'STATUS_NOT_FOUND');
-    const partnerId = await resolveTicketPartnerId(ticket);
     if (row.partnerId !== partnerId) throw new TicketServiceError('Status not found', 404, 'STATUS_NOT_FOUND');
     if (!row.isActive) throw new TicketServiceError('Status is inactive', 400, 'STATUS_INACTIVE');
     toStatus = row.coreStatus;
@@ -338,7 +339,6 @@ export async function changeTicketStatus(
     customStatusName = row.name;
   } else {
     toStatus = target.status!;
-    const partnerId = await resolveTicketPartnerId(ticket);
     resolvedStatusId = partnerId ? await getSystemStatusId(partnerId, toStatus) : null;
     customStatusName = undefined;
   }
@@ -353,7 +353,11 @@ export async function changeTicketStatus(
     const updated = await db
       .update(tickets)
       .set(patch)
-      .where(and(eq(tickets.id, ticketId), eq(tickets.status, fromStatus)))
+      .where(and(
+        eq(tickets.id, ticketId),
+        eq(tickets.status, fromStatus),
+        ticket.statusId ? eq(tickets.statusId, ticket.statusId) : isNull(tickets.statusId)
+      ))
       .returning();
     if (updated.length === 0) {
       throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
