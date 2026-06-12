@@ -5,6 +5,7 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
+import BillablesExportCard from './BillablesExportCard';
 
 interface Category {
   id: string;
@@ -484,6 +485,7 @@ export default function TicketCategoriesPage() {
           ))}
         </tbody>
       </table>
+      <BillablesExportCard />
     </div>
   );
 }
