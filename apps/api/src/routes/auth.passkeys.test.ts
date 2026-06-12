@@ -24,6 +24,8 @@ const {
     dbState: {
       selectQueue: [] as unknown[][],
       updateSets: [] as Record<string, unknown>[],
+      insertReturning: [{ id: 'passkey-credential-1' }] as unknown[],
+      updateReturningQueue: [] as unknown[][],
       makeSelectChain,
     },
     redisMock: {
@@ -152,14 +154,21 @@ vi.mock('../db', () => ({
     select: vi.fn(() => dbState.makeSelectChain(dbState.selectQueue.shift() ?? [])),
     insert: vi.fn(() => ({
       values: vi.fn(() => ({
-        returning: vi.fn(() => Promise.resolve([{ id: 'passkey-credential-1' }])),
+        returning: vi.fn(() => Promise.resolve(dbState.insertReturning)),
       })),
     })),
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => {
         dbState.updateSets.push(values);
+        // `.where()` is awaited directly by most callers (verify/delete), but the
+        // rename PATCH route chains `.where(...).returning()`. Return a thenable
+        // that also exposes `.returning()` so both shapes work.
+        const whereResult: any = Promise.resolve(undefined);
+        whereResult.returning = vi.fn(() =>
+          Promise.resolve(dbState.updateReturningQueue.shift() ?? [])
+        );
         return {
-          where: vi.fn(() => Promise.resolve(undefined)),
+          where: vi.fn(() => whereResult),
         };
       }),
     })),
@@ -176,6 +185,7 @@ vi.mock('../db/schema', () => ({
     id: 'users.id',
     email: 'users.email',
     passwordHash: 'users.passwordHash',
+    status: 'users.status',
     mfaEnabled: 'users.mfaEnabled',
     mfaMethod: 'users.mfaMethod',
     mfaSecret: 'users.mfaSecret',
@@ -212,8 +222,11 @@ vi.mock('../db/schema', () => ({
     credentialId: 'userPasskeys.credentialId',
     publicKey: 'userPasskeys.publicKey',
     counter: 'userPasskeys.counter',
+    deviceType: 'userPasskeys.deviceType',
+    backedUp: 'userPasskeys.backedUp',
     transports: 'userPasskeys.transports',
     name: 'userPasskeys.name',
+    aaguid: 'userPasskeys.aaguid',
     lastUsedAt: 'userPasskeys.lastUsedAt',
     disabledAt: 'userPasskeys.disabledAt',
   },
@@ -236,7 +249,7 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
-import { createTokenPair, verifyPassword } from '../services';
+import { createTokenPair, rateLimiter, verifyPassword } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 
@@ -250,6 +263,27 @@ const user = {
   mfaMethod: 'passkey',
 };
 
+// Full row shape returned by the passkey INSERT `.returning()`. The
+// register/verify route now passes the inserted row straight to
+// `toPublicPasskey(...)`, which reads name/deviceType/backedUp/transports plus
+// the `.toISOString()`-able timestamps — so the fixture must carry real Dates.
+const insertedPasskeyRow = {
+  id: 'passkey-credential-1',
+  userId: 'user-123',
+  credentialId: 'credential-1',
+  publicKey: 'public-key',
+  counter: 0,
+  deviceType: 'singleDevice',
+  backedUp: false,
+  transports: ['internal'],
+  name: 'Passkey',
+  aaguid: null,
+  lastUsedAt: null,
+  disabledAt: null,
+  createdAt: new Date('2026-06-11T00:00:00.000Z'),
+  updatedAt: new Date('2026-06-11T00:00:00.000Z'),
+};
+
 describe('passkey MFA auth routes', () => {
   let app: Hono;
 
@@ -257,6 +291,8 @@ describe('passkey MFA auth routes', () => {
     vi.clearAllMocks();
     dbState.selectQueue = [];
     dbState.updateSets = [];
+    dbState.insertReturning = [insertedPasskeyRow];
+    dbState.updateReturningQueue = [];
     redisMock.get.mockReset();
     redisMock.setex.mockReset();
     redisMock.del.mockReset();
@@ -539,5 +575,272 @@ describe('passkey MFA auth routes', () => {
       mfaEnabled: true,
       mfaMethod: 'totp',
     }));
+  });
+
+  // (a) Failed assertion must not mint a session.
+  it('rejects a passkey MFA challenge that fails WebAuthn verification without minting tokens', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'passkey',
+    }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+    );
+    passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: false });
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/verification failed/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  // (b) A disabled credential owned by the user is still rejected (403).
+  it('rejects a disabled passkey credential even when the userId matches', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'passkey',
+    }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        disabledAt: new Date('2026-06-01T00:00:00.000Z'),
+      }],
+    );
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(passkeyMocks.verifyPasskeyAuthentication).not.toHaveBeenCalled();
+    expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  // (c) Rate limiter denial → 429, before any DB / credential work.
+  it('returns 429 when the MFA rate limiter denies a passkey verify attempt', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'passkey',
+    }));
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(),
+    });
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/too many/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  // (d) A suspended user cannot complete passkey MFA even with a valid assertion.
+  it('rejects passkey verify when the user account is no longer active', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'passkey',
+    }));
+    dbState.selectQueue.push([{ ...user, status: 'suspended' }]);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  // (e) /mfa/passkey/options guards.
+  it('returns 400 from passkey options when the pending session is not a passkey session', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'totp',
+    }));
+
+    const res = await app.request('/auth/mfa/passkey/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
+    expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 from passkey options when the account has no registered passkeys', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'passkey',
+    }));
+    dbState.selectQueue.push([]);
+
+    const res = await app.request('/auth/mfa/passkey/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/no passkeys/i) });
+    expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
+  });
+
+  // (f) register/verify must NOT clobber an existing TOTP/SMS factor's method.
+  it('does not overwrite an existing TOTP factor method when registering a passkey', async () => {
+    // Current MFA select returns an existing TOTP factor.
+    dbState.selectQueue.push([{ mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
+
+    const res = await app.request('/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ credential: { id: 'credential-1', response: {} } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      success: true,
+      passkey: { id: 'passkey-credential-1', name: 'Passkey' },
+    });
+    // The users UPDATE enables MFA but must leave mfaMethod untouched.
+    const userUpdate = dbState.updateSets.find((set) => 'mfaEnabled' in set);
+    expect(userUpdate).toBeDefined();
+    expect(userUpdate).toMatchObject({ mfaEnabled: true });
+    expect(userUpdate).not.toHaveProperty('mfaMethod');
+  });
+
+  it('makes passkey the primary MFA method when the user has no existing factor', async () => {
+    dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]);
+
+    const res = await app.request('/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ credential: { id: 'credential-1', response: {} } }),
+    });
+
+    expect(res.status).toBe(200);
+    const userUpdate = dbState.updateSets.find((set) => 'mfaEnabled' in set);
+    expect(userUpdate).toMatchObject({ mfaEnabled: true, mfaMethod: 'passkey' });
+  });
+
+  // (g) DELETE branches.
+  it('blocks deleting a passkey when the current-password step-up fails', async () => {
+    vi.mocked(verifyPassword).mockResolvedValueOnce(false);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+
+    const res = await app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'wrong-password' }),
+    });
+
+    expect(res.status).toBe(401);
+    // No passkey delete and no users update should run when the password is wrong.
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('switches the primary method to SMS when deleting the last passkey and SMS remains', async () => {
+    vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    dbState.selectQueue.push(
+      [{ passwordHash: '$argon2id$hash' }],
+      [{ id: 'credential-1', userId: 'user-123' }],
+      [{ passkeyCount: 1, hasTotp: false, hasSms: true, currentMfaMethod: 'passkey', forceMfa: false, orgRequiresMfa: false }],
+    );
+
+    const res = await app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbState.updateSets).toContainEqual(expect.objectContaining({
+      mfaEnabled: true,
+      mfaMethod: 'sms',
+    }));
+  });
+
+  it('disables MFA when deleting the only passkey and no other factor remains', async () => {
+    vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    dbState.selectQueue.push(
+      [{ passwordHash: '$argon2id$hash' }],
+      [{ id: 'credential-1', userId: 'user-123' }],
+      [{ passkeyCount: 1, hasTotp: false, hasSms: false, currentMfaMethod: 'passkey', forceMfa: false, orgRequiresMfa: false }],
+    );
+
+    const res = await app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbState.updateSets).toContainEqual(expect.objectContaining({
+      mfaEnabled: false,
+      mfaMethod: null,
+    }));
+  });
+
+  // mfa.ts guard: a passkey pending session must be routed to passkey verification.
+  it('rejects /mfa/verify (TOTP path) for a pending passkey MFA session', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'passkey',
+    }));
+    // user lookup inside /mfa/verify happens before the passkey guard returns,
+    // so provide the user row.
+    dbState.selectQueue.push([user]);
+
+    const res = await app.request('/auth/mfa/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token', code: '123456' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/use passkey verification/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 });

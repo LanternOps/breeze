@@ -9,7 +9,9 @@ import {
   bindRefreshJtiToFamily,
   createTokenPair,
   getRedis,
-  mintRefreshTokenFamily
+  mfaLimiter,
+  mintRefreshTokenFamily,
+  rateLimiter
 } from '../../services';
 import {
   PasskeyChallengeError,
@@ -34,7 +36,20 @@ import {
   writeAuthAudit
 } from './helpers';
 
-const { db, withSystemDbAccessContext } = dbModule;
+const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
+
+// WebAuthn assertion/attestation payloads are large nested objects validated
+// structurally by @simplewebauthn; at this layer we only need a string `id` to
+// look up the stored credential. Require it so a malformed body is rejected at
+// validation (400) instead of falling through to a confusing "passkey not
+// registered" (403). Output type stays `any` so it forwards to the WebAuthn
+// library's typed verifiers unchanged.
+const webAuthnCredentialSchema = z
+  .any()
+  .refine(
+    (value): boolean => typeof value?.id === 'string' && value.id.length > 0,
+    { message: 'credential.id is required' }
+  );
 
 const passkeyNameSchema = z.string().trim().min(1).max(255);
 const registerOptionsSchema = z.object({
@@ -42,7 +57,7 @@ const registerOptionsSchema = z.object({
   name: passkeyNameSchema.optional()
 });
 const registerVerifySchema = z.object({
-  credential: z.any(),
+  credential: webAuthnCredentialSchema,
   name: passkeyNameSchema.optional()
 });
 const passkeyMfaOptionsSchema = z.object({
@@ -50,7 +65,7 @@ const passkeyMfaOptionsSchema = z.object({
 });
 const passkeyMfaVerifySchema = z.object({
   tempToken: z.string().min(1),
-  credential: z.any()
+  credential: webAuthnCredentialSchema
 });
 const renamePasskeySchema = z.object({
   name: passkeyNameSchema
@@ -149,11 +164,27 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     })
     .returning();
 
+  if (!inserted) {
+    throw new Error('Passkey insert returned no row');
+  }
+
+  // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
+  // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
+  // clobbering it to 'passkey' would strand a user's working authenticator
+  // and risk lockout if they later lose the passkey device. Only make passkey
+  // the primary method when the user has no other factor configured.
+  const [currentMfa] = await db
+    .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
+
   await db
     .update(users)
     .set({
       mfaEnabled: true,
-      mfaMethod: 'passkey',
+      ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
       updatedAt: new Date()
     })
     .where(eq(users.id, auth.user.id));
@@ -169,22 +200,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
 
   return c.json({
     success: true,
-    passkey: toPublicPasskey({
-      id: inserted?.id ?? fields.credentialId,
-      userId: auth.user.id,
-      credentialId: fields.credentialId,
-      publicKey: fields.publicKey,
-      counter: fields.counter,
-      deviceType: fields.deviceType,
-      backedUp: fields.backedUp,
-      transports: fields.transports,
-      name: name ?? 'Passkey',
-      aaguid: fields.aaguid,
-      lastUsedAt: null,
-      disabledAt: null,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    })
+    passkey: toPublicPasskey(inserted)
   });
 });
 
@@ -200,6 +216,13 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
   }
   if (pending.mfaMethod !== 'passkey') {
     return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
+  }
+
+  // Throttle the unauthenticated MFA-continuation surface, mirroring the TOTP
+  // path in mfa.ts so challenge issuance can't be hammered.
+  const rateCheck = await rateLimiter(getRedis(), `mfa:${pending.userId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  if (!rateCheck.allowed) {
+    return c.json({ error: 'Too many MFA attempts' }, 429);
   }
 
   const passkeys = await withSystemDbAccessContext(() => listActivePasskeys(pending.userId));
@@ -220,6 +243,11 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return mfaDisabledResponse(c);
   }
 
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+  }
+
   const { tempToken, credential } = c.req.valid('json');
   const pending = await readPendingPasskeyMfa(tempToken);
   if (!pending) {
@@ -227,6 +255,12 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   }
   if (pending.mfaMethod !== 'passkey') {
     return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
+  }
+
+  // Rate limit assertion attempts, mirroring the TOTP path in mfa.ts.
+  const rateCheck = await rateLimiter(redis, `mfa:${pending.userId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  if (!rateCheck.allowed) {
+    return c.json({ error: 'Too many MFA attempts' }, 429);
   }
 
   const [user] = await withSystemDbAccessContext(async () =>
@@ -238,6 +272,11 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   );
   if (!user) {
     return c.json({ error: 'Invalid MFA configuration' }, 400);
+  }
+  // Re-check account status before minting tokens — the user could have been
+  // suspended during the 5-minute MFA window after the pending token was issued.
+  if (user.status !== 'active') {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
 
   const [passkey] = await withSystemDbAccessContext(() =>
@@ -282,7 +321,9 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     })
     .where(eq(userPasskeys.id, passkey.id));
 
-  await getRedis()?.del(`mfa:pending:${tempToken}`);
+  // Single-use: consume the pending token. `redis` is guarded non-null above,
+  // so this can't silently no-op the way `getRedis()?.del(...)` would.
+  await redis.del(`mfa:pending:${tempToken}`);
 
   const context = await resolveCurrentUserTokenContext(user.id);
   const familyId = await mintRefreshTokenFamily(user.id);
@@ -342,12 +383,13 @@ passkeyRoutes.patch('/passkeys/:id', authMiddleware, zValidator('json', renamePa
     return c.json({ error: 'Passkey not found' }, 404);
   }
 
-  await db
+  const [updated] = await db
     .update(userPasskeys)
     .set({ name, updatedAt: new Date() })
-    .where(eq(userPasskeys.id, id));
+    .where(eq(userPasskeys.id, id))
+    .returning();
 
-  return c.json({ success: true, passkey: { ...toPublicPasskey(passkey), name } });
+  return c.json({ success: true, passkey: toPublicPasskey(updated ?? passkey) });
 });
 
 passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deletePasskeySchema), async (c) => {
@@ -466,7 +508,13 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
   currentMfaMethod: 'totp' | 'sms' | 'passkey' | null;
   mfaRequired: boolean;
 }> {
-  const [state] = await withSystemDbAccessContext(async () =>
+  // This runs inside the DELETE handler's request (user-scoped) context, where
+  // a bare `withSystemDbAccessContext` would be a no-op. Escape the active
+  // context first so the roles / partner_users / organization_users /
+  // organizations reads that decide `mfaRequired` actually run under system
+  // scope — otherwise user-scoped RLS could hide a force_mfa role/org-setting
+  // row, under-count factors, and let the last MFA factor be removed.
+  const [state] = await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
     db
       .select({
         passkeyCount: sql<number>`(
@@ -498,7 +546,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
       .from(users)
       .where(eq(users.id, auth.user.id))
       .limit(1)
-  );
+  ));
 
   return {
     passkeyCount: Number(state?.passkeyCount ?? 0),

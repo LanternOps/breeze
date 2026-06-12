@@ -244,8 +244,9 @@ async function consumePasskeyChallenge(purpose: PasskeyPurpose, userId: string):
   }
 
   const key = passkeyChallengeKey(purpose, userId);
-  const raw = await redis.get(key);
-  await redis.del(key);
+  // Atomic read-and-delete: prevents a TOCTOU race where two concurrent
+  // verifies could both read the same challenge before either deletes it.
+  const raw = await redis.getdel(key);
 
   if (!raw) {
     throw new PasskeyChallengeError('Passkey challenge is missing or expired');

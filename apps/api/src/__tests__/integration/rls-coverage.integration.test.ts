@@ -191,6 +191,10 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // the token owner via breeze_current_user_id(). System-initiated revocation
   // (reuse detection in /auth/refresh) uses withSystemDbAccessContext.
   'refresh_token_families',
+  // user_passkeys: WebAuthn passkey credentials, scoped to the owning user
+  // via breeze_current_user_id(), with an OR breeze_current_scope() = 'system'
+  // branch for system-scope access (Shape 6).
+  'user_passkeys',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;

@@ -3,11 +3,7 @@
 -- Idempotent: safe to re-apply on databases that already have the enum value,
 -- table, indexes, or policy.
 
-DO $$ BEGIN
-  ALTER TYPE mfa_method ADD VALUE 'passkey';
-EXCEPTION
-  WHEN duplicate_object THEN null;
-END $$;
+ALTER TYPE mfa_method ADD VALUE IF NOT EXISTS 'passkey';
 
 CREATE TABLE IF NOT EXISTS user_passkeys (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),

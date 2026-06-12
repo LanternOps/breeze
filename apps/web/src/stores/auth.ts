@@ -659,6 +659,7 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     if (error instanceof Error && error.name === 'NotAllowedError') {
       return { success: false, error: 'Passkey verification was canceled or timed out' };
     }
+    console.warn('[apiVerifyPasskeyMFA] passkey MFA verification failed:', error);
     return { success: false, error: 'Network error' };
   }
 }
