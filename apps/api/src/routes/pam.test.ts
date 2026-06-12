@@ -51,6 +51,13 @@ vi.mock('../db/schema', () => ({
     revokedByUserId: 'revokedByUserId',
     softwarePolicyMatchId: 'softwarePolicyMatchId',
     metadata: 'metadata',
+    subjectUsername: 'subjectUsername',
+    targetExecutablePath: 'targetExecutablePath',
+    targetExecutableHash: 'targetExecutableHash',
+    targetExecutableSigner: 'targetExecutableSigner',
+    toolName: 'toolName',
+    riskTier: 'riskTier',
+    denialReason: 'denialReason',
   },
   elevationAudit: { id: 'id' },
   pamRules: {
@@ -736,5 +743,180 @@ describe('PATCH /pam/rules/:id shape validation (Phase 1)', () => {
     });
     expect(res.status).toBe(400);
     expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /pam/rules/preview', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  // Helper: builds a minimal elevation_requests row for the preview SELECT.
+  const previewRow = (over: Partial<Record<string, unknown>> = {}): Record<string, unknown> => ({
+    id: 'er-1',
+    requestedAt: new Date('2026-06-10T18:00:00Z'),
+    flowType: 'uac_intercept',
+    status: 'pending',
+    subjectUsername: 'ACME\\jdoe',
+    targetExecutablePath: 'C:\\Tools\\installer.exe',
+    targetExecutableHash: null,
+    targetExecutableSigner: 'Acme Corp',
+    toolName: null,
+    riskTier: null,
+    metadata: {},
+    ...over,
+  });
+
+  /** Rig db.select so it resolves to `rows` (no count branch needed for preview). */
+  function mockPreviewSelect(rows: unknown[]) {
+    vi.mocked(db.select).mockImplementation((() => {
+      const chain: any = Promise.resolve(rows);
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      return chain;
+    }) as any);
+  }
+
+  it('counts signer matches case-insensitively', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', targetExecutableSigner: 'Acme Corp' }),
+      previewRow({ id: 'er-2', targetExecutableSigner: 'ACME CORP' }),
+      previewRow({ id: 'er-3', targetExecutableSigner: 'acme corp' }),
+      previewRow({ id: 'er-4', targetExecutableSigner: 'Other Inc' }),
+      previewRow({ id: 'er-5', targetExecutableSigner: 'Other Inc' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'acme corp', windowDays: 30 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(3);
+    expect(body.totalScanned).toBe(5);
+    expect(body.sample).toHaveLength(3);
+  });
+
+  it('does not match tool-action rows against executable criteria', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', flowType: 'uac_intercept', targetExecutableSigner: 'Acme Corp', toolName: null }),
+      previewRow({ id: 'er-2', flowType: 'ai_tool_action', targetExecutableSigner: null, toolName: 'manage_services' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(1);
+  });
+
+  it('evaluates timeWindow against each row requestedAt', async () => {
+    // 23:00 row is inside the overnight window (22:00–06:00); 12:00 row is not
+    const rows = [
+      previewRow({ id: 'er-1', requestedAt: new Date('2026-06-10T23:00:00Z') }),
+      previewRow({ id: 'er-2', requestedAt: new Date('2026-06-10T12:00:00Z') }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matchUser: 'ACME\\jdoe',
+        timeWindow: { start: '22:00', end: '06:00', timezone: 'UTC' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(1);
+  });
+
+  it('returns zeroed shape on empty scan', async () => {
+    mockPreviewSelect([]);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(0);
+    expect(body.totalScanned).toBe(0);
+    expect(body.truncated).toBe(false);
+    expect(body.sample).toEqual([]);
+  });
+
+  it('rejects criterion-less, mixed, and out-of-range bodies', async () => {
+    // No criteria
+    const r1 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(r1.status).toBe(400);
+
+    // Mixed executable + tool-action
+    const r2 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'x', matchToolName: 'y' }),
+    });
+    expect(r2.status).toBe(400);
+
+    // windowDays = 0 (below min 1)
+    const r3 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'x', windowDays: 0 }),
+    });
+    expect(r3.status).toBe(400);
+
+    // windowDays = 91 (above max 90)
+    const r4 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'x', windowDays: 91 }),
+    });
+    expect(r4.status).toBe(400);
+  });
+
+  it('caps sample at 10 and tallies statusBreakdown', async () => {
+    // 14 matching rows: 9 pending, 5 auto_approved
+    const rows = [
+      ...Array.from({ length: 9 }, (_, i) =>
+        previewRow({ id: `er-p${i}`, status: 'pending', targetExecutableSigner: 'Acme Corp' }),
+      ),
+      ...Array.from({ length: 5 }, (_, i) =>
+        previewRow({ id: `er-a${i}`, status: 'auto_approved', targetExecutableSigner: 'Acme Corp' }),
+      ),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(14);
+    expect(body.sample.length).toBe(10);
+    expect(body.statusBreakdown.pending).toBe(9);
+    expect(body.statusBreakdown.auto_approved).toBe(5);
   });
 });
