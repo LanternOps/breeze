@@ -39,7 +39,8 @@ describe('TimerWidget', () => {
     fireEvent.click(await screen.findByTestId('timer-widget-stop'));
     fireEvent.change(screen.getByTestId('timer-stop-description'), { target: { value: 'fixed it' } });
     fireEvent.click(screen.getByTestId('timer-stop-billable'));
-    fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: 'te-1' }));
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: 'te-1' }))
+      .mockResolvedValueOnce(jsonRes(null));
     fireEvent.click(screen.getByTestId('timer-stop-submit'));
     await waitFor(() => {
       expect(fetchWithAuth).toHaveBeenCalledWith('/time-entries/stop', expect.objectContaining({
@@ -47,6 +48,7 @@ describe('TimerWidget', () => {
         body: JSON.stringify({ description: 'fixed it', isBillable: true })
       }));
     });
+    await waitFor(() => expect(screen.queryByTestId('timer-widget')).toBeNull());
   });
 
   it('refetches when breeze:timer-changed fires', async () => {

@@ -3,6 +3,7 @@ import { Clock, Square } from 'lucide-react';
 import { fetchRunningTimer, stopTimerAction, onTimerChanged, type RunningTimer } from '../../lib/timerActions';
 import { ActionError } from '../../lib/runAction';
 import { formatElapsedSeconds } from '../../lib/timeFormat';
+import { showToast } from '../shared/Toast';
 
 const POLL_MS = 60_000;
 
@@ -14,6 +15,8 @@ export default function TimerWidget() {
   const [billable, setBillable] = useState(false);
   const [stopping, setStopping] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const refresh = useCallback(() => {
     void fetchRunningTimer().then(setTimer).catch(() => setTimer(null));
@@ -43,6 +46,25 @@ export default function TimerWidget() {
     return () => document.removeEventListener('mousedown', onDown);
   }, [popoverOpen]);
 
+  // Escape closes the popover and returns focus to the stop button.
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setPopoverOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [popoverOpen]);
+
+  // Focus the description textarea when the popover opens.
+  useEffect(() => {
+    if (popoverOpen) textareaRef.current?.focus();
+  }, [popoverOpen]);
+
   if (!timer) return null;
 
   const openStop = () => {
@@ -58,7 +80,8 @@ export default function TimerWidget() {
       setPopoverOpen(false);
       setTimer(null);
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err; // ActionError already toasted by runAction
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Failed to stop timer.' });
     } finally {
       setStopping(false);
     }
@@ -73,13 +96,13 @@ export default function TimerWidget() {
           {timer.ticketNumber ?? 'ticket'}
         </a>
       )}
-      <button type="button" onClick={openStop} className="rounded p-0.5 text-muted-foreground hover:text-destructive" title="Stop timer" data-testid="timer-widget-stop">
+      <button type="button" ref={buttonRef} onClick={openStop} className="rounded p-0.5 text-muted-foreground hover:text-destructive" title="Stop timer" aria-label="Stop timer" aria-expanded={popoverOpen} aria-haspopup="dialog" data-testid="timer-widget-stop">
         <Square className="h-3.5 w-3.5" aria-hidden />
       </button>
       {popoverOpen && (
-        <div ref={popoverRef} className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border bg-popover p-3 shadow-lg" data-testid="timer-stop-popover">
+        <div ref={popoverRef} role="dialog" aria-label="Stop timer" className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border bg-popover p-3 shadow-lg" data-testid="timer-stop-popover">
           <p className="mb-2 text-sm font-medium">Stop timer</p>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What did you work on?" rows={2} className="mb-2 w-full rounded-md border bg-background px-2 py-1.5 text-sm" data-testid="timer-stop-description" />
+          <textarea ref={textareaRef} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What did you work on?" rows={2} aria-label="Description" className="mb-2 w-full rounded-md border bg-background px-2 py-1.5 text-sm" data-testid="timer-stop-description" />
           <label className="mb-3 flex items-center gap-2 text-sm">
             <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} data-testid="timer-stop-billable" />
             Billable
