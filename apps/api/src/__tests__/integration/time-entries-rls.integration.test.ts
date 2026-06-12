@@ -424,7 +424,7 @@ describe('approval flow (D1) — real driver', () => {
     });
     expect(approvalResult!.updated).toBe(1);
 
-    // Edit as admin — spec D1: any edit clears approval.
+    // Edit as admin — spec §3: any edit clears approval.
     let updated: Awaited<ReturnType<typeof updateTimeEntry>>;
     await withDbAccessContext(partnerAContext, async () => {
       updated = await updateTimeEntry(

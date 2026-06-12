@@ -19,6 +19,7 @@ import { moveOrgSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { DEVICE_ORG_DENORMALIZED_TABLES, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
 import { disconnectAgent } from '../agentWs';
+import { captureException } from '../../services/sentry';
 
 export const moveOrgRoutes = new Hono();
 
@@ -47,8 +48,8 @@ moveOrgRoutes.use('*', authMiddleware);
  * (see DEVICE_ORG_DENORMALIZED_TABLES). All of them MUST be rewritten in
  * the same transaction or pre-existing rows for this device will be
  * visible only to the OLD org and invisible to the NEW one. Tables that
- * denormalize org_id but have no device_id column (CUSTOM_ORG_REWRITE_TABLES,
- * currently ticket_alert_links) get dedicated rewrites in the same
+ * denormalize org_id but have no device_id column (CUSTOM_ORG_REWRITE_TABLES)
+ * get dedicated rewrites in the same
  * transaction.
  *
  * Audit: writes ONE audit row per org (source + target) so the move shows
@@ -183,6 +184,7 @@ moveOrgRoutes.post(
       });
     } catch (err) {
       console.error(`[devices.moveOrg] failed for ${deviceId}:`, err);
+      captureException(err, c);
       // Best-effort audit on the failed cross-tenant move — a rolled-back
       // attempt is security-relevant. Source-org row only since target
       // never committed.

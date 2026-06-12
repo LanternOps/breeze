@@ -5,6 +5,7 @@ const { dbMocks, emitMock } = vi.hoisted(() => {
     // queue of results for successive db.select()...where()/limit() terminals
     selectResults: [] as unknown[][],
     insertResult: [] as unknown[],
+    insertErrors: [] as unknown[],
     updateResult: [] as unknown[],
     insertedValues: [] as Record<string, unknown>[],
     updateSetArgs: [] as Record<string, unknown>[]
@@ -19,35 +20,37 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => {
-          const result = dbMocks.selectResults.shift() ?? [];
-          return {
-            limit: vi.fn(() => Promise.resolve(result)),
-            orderBy: vi.fn(() => Promise.resolve(result)),
-            then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
-              Promise.resolve(result).then(res, rej)
-          };
-        }),
-        leftJoin: vi.fn(() => ({
+      from: vi.fn(() => {
+        const chain: any = {
+          leftJoin: vi.fn(() => chain),
           where: vi.fn(() => {
             const result = dbMocks.selectResults.shift() ?? [];
-            return {
+            const terminal: any = {
               limit: vi.fn(() => Promise.resolve(result)),
               orderBy: vi.fn(() => ({
-                limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve(result)) }))
+                limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve(result)) })),
+                then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
+                  Promise.resolve(result).then(res, rej)
               })),
               then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
                 Promise.resolve(result).then(res, rej)
             };
+            return terminal;
           })
-        }))
-      }))
+        };
+        return chain;
+      })
     })),
     insert: vi.fn(() => ({
       values: vi.fn((vals: Record<string, unknown>) => {
         dbMocks.insertedValues.push(vals);
-        return { returning: vi.fn(() => Promise.resolve(dbMocks.insertResult)) };
+        return {
+          returning: vi.fn(() => {
+            const err = dbMocks.insertErrors.shift();
+            if (err) return Promise.reject(err);
+            return Promise.resolve(dbMocks.insertResult);
+          })
+        };
       })
     })),
     update: vi.fn(() => ({
@@ -71,8 +74,9 @@ vi.mock('../db/schema', () => ({
   },
   ticketParts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', description: 'description',
-    quantity: 'quantity', unitPrice: 'unitPrice', costBasis: 'costBasis',
-    isBillable: 'isBillable', billingStatus: 'billingStatus', addedBy: 'addedBy'
+    partNumber: 'partNumber', vendor: 'vendor', quantity: 'quantity', unitPrice: 'unitPrice',
+    costBasis: 'costBasis', isBillable: 'isBillable', billingStatus: 'billingStatus',
+    addedBy: 'addedBy', notes: 'notes', createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
   tickets: { id: 'id', partnerId: 'partnerId', orgId: 'orgId', categoryId: 'categoryId', internalNumber: 'internalNumber', subject: 'subject' },
   ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate' },
@@ -83,7 +87,7 @@ vi.mock('../db/schema', () => ({
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart,
-  TimeEntryServiceError
+  getTimesheet, getTicketBillingSummary, listBillables
 } from './timeEntryService';
 
 const ACTOR = { userId: 'u-1', name: 'Tess', partnerId: 'p-1', manageAll: false };
@@ -93,6 +97,7 @@ beforeEach(() => {
   dbMocks.selectResults.length = 0;
   dbMocks.insertedValues.length = 0;
   dbMocks.updateSetArgs.length = 0;
+  dbMocks.insertErrors.length = 0;
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
   emitMock.mockClear();
@@ -165,6 +170,25 @@ describe('createTimeEntry', () => {
       { ...ACTOR, partnerId: null }
     )).rejects.toMatchObject({ code: 'PARTNER_UNRESOLVABLE' });
   });
+
+  it('rejects endedAt before startedAt at the service boundary', async () => {
+    await expect(createTimeEntry(
+      { startedAt: new Date('2026-06-11T10:00:00Z'), endedAt: new Date('2026-06-11T09:00:00Z') },
+      ACTOR
+    )).rejects.toMatchObject({ code: 'INVALID_RANGE', status: 400 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('resolves a legacy ticket partner through its organization fallback', async () => {
+    dbMocks.selectResults.push([{ id: 't-legacy', partnerId: null, orgId: 'o-1', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1' }]);
+    dbMocks.insertResult = [{ id: 'te-legacy', partnerId: 'p-1', ticketId: 't-legacy', userId: 'u-1', durationMinutes: 15, isBillable: false }];
+    await createTimeEntry(
+      { ticketId: 't-legacy', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:15:00Z') },
+      ACTOR
+    );
+    expect(dbMocks.insertedValues[0]!.partnerId).toBe('p-1');
+  });
 });
 
 describe('startTimer / stopTimer', () => {
@@ -182,6 +206,22 @@ describe('startTimer / stopTimer', () => {
   it('stopTimer errors with NO_RUNNING_TIMER when nothing is running', async () => {
     dbMocks.updateResult = []; // CAS update matched no rows
     await expect(stopTimer({}, ACTOR)).rejects.toMatchObject({ code: 'NO_RUNNING_TIMER', status: 404 });
+  });
+
+  it('converts a second running-timer unique violation into a 409 service error', async () => {
+    const uniqueViolation = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+    dbMocks.insertErrors.push(uniqueViolation, uniqueViolation);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(startTimer({ description: 'race' }, ACTOR))
+        .rejects.toMatchObject({ code: 'ENTRY_RUNNING', status: 409 });
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[timeEntryService.startTimer] unique violation, retrying once',
+        uniqueViolation.message
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 });
 
@@ -320,5 +360,110 @@ describe('addTicketPart', () => {
     expect(vals.addedBy).toBe('u-1');
     expect(vals.billingStatus).toBe('not_billed');
     expect(vals.costBasis).toBeNull();
+  });
+
+  it('fails loudly if insert returning yields no part row', async () => {
+    dbMocks.selectResults.push([{ id: 't-3', partnerId: 'p-1', orgId: 'o-3', categoryId: null }]);
+    dbMocks.insertResult = [];
+    await expect(addTicketPart('t-3', { description: 'Cable', quantity: 1, unitPrice: 5 }, ACTOR))
+      .rejects.toThrow('Failed to create ticket part');
+  });
+});
+
+describe('query helpers', () => {
+  it('getTimesheet buckets seven days and totals billable minutes', async () => {
+    dbMocks.selectResults.push([
+      {
+        id: 'te-1',
+        startedAt: new Date('2026-06-08T10:00:00Z'),
+        durationMinutes: 30,
+        isBillable: true
+      },
+      {
+        id: 'te-2',
+        startedAt: new Date('2026-06-09T10:00:00Z'),
+        durationMinutes: 45,
+        isBillable: false
+      }
+    ]);
+    const result = await getTimesheet('u-1', new Date('2026-06-08T00:00:00Z'));
+    expect(result.weekStart).toBe('2026-06-08');
+    expect(result.days).toHaveLength(7);
+    expect(result.days[0]!.entries.map((e: any) => e.id)).toEqual(['te-1']);
+    expect(result.totals).toEqual({ totalMinutes: 75, billableMinutes: 30 });
+  });
+
+  it('getTicketBillingSummary returns aggregate rows and zero defaults', async () => {
+    dbMocks.selectResults.push([{ totalMinutes: 90, billableMinutes: 60, billableAmount: '125.00' }]);
+    dbMocks.selectResults.push([]);
+    const result = await getTicketBillingSummary('t-1');
+    expect(result.time).toEqual({ totalMinutes: 90, billableMinutes: 60, billableAmount: '125.00' });
+    expect(result.parts).toEqual({ partsCount: 0, billableTotal: '0.00' });
+  });
+
+  it('listBillables combines time and parts in date order', async () => {
+    dbMocks.selectResults.push([
+      {
+        date: new Date('2026-06-10T12:00:00Z'),
+        orgName: 'Acme',
+        ticketNumber: 'T-1',
+        description: 'labor',
+        technician: 'Tess',
+        minutes: 90,
+        rate: '100.00',
+        billingStatus: 'not_billed',
+        isApproved: true
+      }
+    ]);
+    dbMocks.selectResults.push([
+      {
+        date: new Date('2026-06-10T11:00:00Z'),
+        orgName: 'Acme',
+        ticketNumber: 'T-1',
+        description: 'SSD',
+        technician: 'Tess',
+        quantity: '2.00',
+        unitPrice: '50.00',
+        billingStatus: 'not_billed'
+      }
+    ]);
+    const rows = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(rows.map((r) => r.kind)).toEqual(['part', 'time']);
+    expect(rows[0]).toMatchObject({ kind: 'part', amount: '100.00', isApproved: null });
+    expect(rows[1]).toMatchObject({ kind: 'time', quantity: '1.50', amount: '150.00', isApproved: true });
+  });
+
+  it('listBillables does not emit NaN amounts for corrupt numeric DB strings', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbMocks.selectResults.push([
+      {
+        date: new Date('2026-06-10T12:00:00Z'),
+        orgName: 'Acme',
+        ticketNumber: 'T-1',
+        description: 'labor',
+        technician: 'Tess',
+        minutes: 30,
+        rate: 'not-a-rate',
+        billingStatus: 'not_billed',
+        isApproved: false
+      }
+    ]);
+    dbMocks.selectResults.push([
+      {
+        date: new Date('2026-06-10T13:00:00Z'),
+        orgName: 'Acme',
+        ticketNumber: 'T-1',
+        description: 'SSD',
+        technician: 'Tess',
+        quantity: 'bad-qty',
+        unitPrice: '50.00',
+        billingStatus: 'not_billed'
+      }
+    ]);
+    const rows = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(rows.map((r) => r.amount)).toEqual(['0.00', '0.00']);
+    expect(rows.map((r) => r.amount)).not.toContain('NaN');
+    expect(consoleSpy).toHaveBeenCalledTimes(2);
+    consoleSpy.mockRestore();
   });
 });

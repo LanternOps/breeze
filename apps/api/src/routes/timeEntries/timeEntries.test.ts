@@ -53,6 +53,7 @@ vi.mock('../../middleware/auth', async () => ({
 import { timeEntriesRoutes } from './index';
 
 const ADMIN_PERMS = { permissions: [{ resource: '*', action: '*' }] };
+const TIME_ENTRY_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 
 beforeEach(() => {
   Object.values(serviceMocks).forEach((m) => m.mockReset());
@@ -129,6 +130,55 @@ describe('POST /bulk-approve', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ data: { updated: 1, skippedReasons: { ENTRY_RUNNING: 1 } } });
+  });
+});
+
+describe('PATCH /:id and DELETE /:id', () => {
+  it('PATCH /:id passes the parsed update body and actor to the service', async () => {
+    serviceMocks.updateTimeEntry.mockResolvedValue({ id: TIME_ENTRY_ID, description: 'fixed' });
+    const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'fixed', endedAt: '2026-06-11T10:00:00Z' })
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.updateTimeEntry).toHaveBeenCalledWith(
+      TIME_ENTRY_ID,
+      expect.objectContaining({ description: 'fixed', endedAt: expect.any(Date) }),
+      expect.objectContaining({ userId: '1f2f1d8e-0001-4000-8000-000000000001', partnerId: 'p-1', manageAll: false })
+    );
+    await expect(res.json()).resolves.toEqual({ data: { id: TIME_ENTRY_ID, description: 'fixed' } });
+  });
+
+  it('PATCH /:id maps TimeEntryServiceError to its status', async () => {
+    const { TimeEntryServiceError } = await vi.importActual<typeof import('../../services/timeEntryService')>('../../services/timeEntryService');
+    serviceMocks.updateTimeEntry.mockRejectedValue(new TimeEntryServiceError('Approved entries can only be changed by an approver', 403, 'APPROVED_IMMUTABLE'));
+    const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'fixed' })
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'APPROVED_IMMUTABLE' });
+  });
+
+  it('DELETE /:id deletes through the service and returns deleted true', async () => {
+    serviceMocks.deleteTimeEntry.mockResolvedValue(undefined);
+    const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.deleteTimeEntry).toHaveBeenCalledWith(
+      TIME_ENTRY_ID,
+      expect.objectContaining({ userId: '1f2f1d8e-0001-4000-8000-000000000001', partnerId: 'p-1', manageAll: false })
+    );
+    expect(await res.json()).toEqual({ data: { deleted: true } });
+  });
+
+  it('DELETE /:id maps service not-found to 404', async () => {
+    const { TimeEntryServiceError } = await vi.importActual<typeof import('../../services/timeEntryService')>('../../services/timeEntryService');
+    serviceMocks.deleteTimeEntry.mockRejectedValue(new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND'));
+    const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: 'ENTRY_NOT_FOUND' });
   });
 });
 

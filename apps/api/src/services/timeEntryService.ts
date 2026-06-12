@@ -2,7 +2,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
-import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput } from '@breeze/shared';
+import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
   | 'TICKET_NOT_FOUND'
@@ -142,6 +142,10 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
     throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
   }
 
+  if (input.endedAt.getTime() <= input.startedAt.getTime()) {
+    throw new TimeEntryServiceError('endedAt must be after startedAt', 400, 'INVALID_RANGE');
+  }
+
   const rows = await db
     .insert(timeEntries)
     .values({
@@ -247,7 +251,15 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     // Lost the race: another start slipped in — stop it and retry once.
-    entry = await attempt();
+    console.error('[timeEntryService.startTimer] unique violation, retrying once', err instanceof Error ? err.message : err);
+    try {
+      entry = await attempt();
+    } catch (retryErr) {
+      if (isUniqueViolation(retryErr)) {
+        throw new TimeEntryServiceError('Timer start conflicted with a concurrent request — try again', 409, 'ENTRY_RUNNING');
+      }
+      throw retryErr;
+    }
   }
 
   await emitTimeEntryEvent({
@@ -331,7 +343,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
     changed.push('durationMinutes');
   }
 
-  // Spec D1: any edit clears approval — re-approval required, including for approvers.
+  // Spec §3: any edit clears approval — re-approval required, including for approvers.
   set.isApproved = false;
   set.approvedBy = null;
   set.approvedAt = null;
@@ -369,7 +381,7 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
 export interface BulkApproveResult {
   updated: number;
   skipped: number;
-  skippedReasons: Record<string, number>;
+  skippedReasons: Partial<Record<TimeEntryServiceErrorCode, number>>;
 }
 
 export async function approveTimeEntries(ids: string[], approve: boolean, actor: TimeEntryActor): Promise<BulkApproveResult> {
@@ -383,8 +395,8 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
     .where(inArray(timeEntries.id, ids));
 
   const found = new Map(candidates.map((c) => [c.id, c]));
-  const skippedReasons: Record<string, number> = {};
-  const skip = (reason: string) => { skippedReasons[reason] = (skippedReasons[reason] ?? 0) + 1; };
+  const skippedReasons: Partial<Record<TimeEntryServiceErrorCode, number>> = {};
+  const skip = (reason: TimeEntryServiceErrorCode) => { skippedReasons[reason] = (skippedReasons[reason] ?? 0) + 1; };
   const eligible: string[] = [];
   for (const id of ids) {
     const row = found.get(id);
@@ -405,6 +417,7 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
   }
 
   if (updated.length > 0 && approve) {
+    // One lifecycle event represents the bulk approval; payload.ids carries the full approved set.
     await emitTimeEntryEvent({
       type: 'time_entry.approved',
       timeEntryId: updated[0]!.id,
@@ -443,7 +456,11 @@ export async function addTicketPart(ticketId: string, input: TicketPartInput, ac
       notes: input.notes ?? null
     })
     .returning();
-  return rows[0];
+  const part = rows[0];
+  if (!part) {
+    throw new Error('Failed to create ticket part');
+  }
+  return part;
 }
 
 async function getPartOr404(id: string) {
@@ -634,8 +651,7 @@ export async function getTicketBillingSummary(ticketId: string) {
   };
 }
 
-export interface BillableRow {
-  kind: 'time' | 'part';
+interface BillableRowBase {
   date: Date;
   orgName: string | null;
   ticketNumber: string | null;
@@ -644,9 +660,22 @@ export interface BillableRow {
   quantity: string;       // hours for time rows, qty for parts
   rate: string | null;    // hourly rate / unit price
   amount: string;
-  billingStatus: string;
-  isApproved: boolean | null; // null for parts (no approval concept)
+  billingStatus: BillingStatus;
 }
+
+export type BillableRow =
+  | (BillableRowBase & { kind: 'time'; isApproved: boolean })
+  | (BillableRowBase & { kind: 'part'; isApproved: null });
+
+const toFinite = (v: string | null): number | null => {
+  if (v == null) return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) {
+    console.error('[timeEntryService.listBillables] non-numeric value in DB', v);
+    return null;
+  }
+  return n;
+};
 
 export async function listBillables(from: Date, to: Date, orgId?: string): Promise<BillableRow[]> {
   const timeConditions = [
@@ -703,7 +732,7 @@ export async function listBillables(from: Date, to: Date, orgId?: string): Promi
   const rows: BillableRow[] = [];
   for (const r of timeRows) {
     const hours = (r.minutes ?? 0) / 60;
-    const rate = r.rate != null ? Number(r.rate) : null;
+    const rate = toFinite(r.rate);
     rows.push({
       kind: 'time',
       date: r.date,
@@ -719,6 +748,8 @@ export async function listBillables(from: Date, to: Date, orgId?: string): Promi
     });
   }
   for (const r of partRows) {
+    const quantity = toFinite(r.quantity);
+    const unitPrice = toFinite(r.unitPrice);
     rows.push({
       kind: 'part',
       date: r.date,
@@ -728,7 +759,7 @@ export async function listBillables(from: Date, to: Date, orgId?: string): Promi
       technician: r.technician,
       quantity: r.quantity,
       rate: r.unitPrice,
-      amount: (Number(r.quantity) * Number(r.unitPrice)).toFixed(2),
+      amount: quantity != null && unitPrice != null ? (quantity * unitPrice).toFixed(2) : '0.00',
       billingStatus: r.billingStatus,
       isApproved: null
     });
