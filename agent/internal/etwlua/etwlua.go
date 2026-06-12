@@ -127,6 +127,10 @@ type Subscriber interface {
 // handler).
 type HeartbeatPoster interface {
 	SendElevationRequest(req Event) error
+	// IsUACInterceptionEnabled reports the server-resolved 'pam' config
+	// policy state. While false, handleEvent drops events entirely (no
+	// post, no offline queue) and the periodic queue drain is paused.
+	IsUACInterceptionEnabled() bool
 }
 
 // ErrNotPrivileged is returned by Start when the process is not running as
@@ -201,7 +205,7 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 			handleEvent(ev, limiter, hb, q)
 
 		case <-ticker.C:
-			if q != nil {
+			if q != nil && hb.IsUACInterceptionEnabled() {
 				if drained, err := q.Drain(hb); err != nil {
 					log.Debug("etwlua: periodic drain failed", "error", err.Error())
 				} else if drained > 0 {
@@ -215,6 +219,9 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 // handleEvent is the per-event hot path, extracted so tests can exercise it
 // without spinning up the full Start loop.
 func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queue) {
+	if !hb.IsUACInterceptionEnabled() {
+		return
+	}
 	key := dedupeKey(ev)
 	if !limiter.Allow(key) {
 		log.Debug("etwlua: event deduped",

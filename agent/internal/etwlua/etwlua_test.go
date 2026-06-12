@@ -18,6 +18,11 @@ type fakeHB struct {
 	received []Event
 	failNext atomic.Int32 // number of next posts to fail
 	failErr  error
+	disabled atomic.Bool // simulates uacInterceptionEnabled=false from the server
+}
+
+func (f *fakeHB) IsUACInterceptionEnabled() bool {
+	return !f.disabled.Load()
 }
 
 func (f *fakeHB) SendElevationRequest(req Event) error {
@@ -148,6 +153,26 @@ func TestHandleEventOpportunisticDrainAfterSuccess(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("queue should be empty after opportunistic drain, got %d", n)
+	}
+}
+
+func TestHandleEventDroppedWhenInterceptionDisabled(t *testing.T) {
+	hb := &fakeHB{}
+	hb.disabled.Store(true)
+	limiter := ipc.NewRateLimiter(1, dedupeWindow)
+
+	ev := sampleEvent("alice", `C:\Windows\System32\mmc.exe`)
+	handleEvent(ev, limiter, hb, nil)
+	if got := len(hb.Received()); got != 0 {
+		t.Fatalf("expected 0 posts while interception disabled, got %d", got)
+	}
+
+	// Re-enable: the same event must post — proving the disabled event was
+	// dropped BEFORE the dedupe limiter consumed its slot.
+	hb.disabled.Store(false)
+	handleEvent(ev, limiter, hb, nil)
+	if got := len(hb.Received()); got != 1 {
+		t.Fatalf("expected 1 post after re-enable, got %d", got)
 	}
 }
 
