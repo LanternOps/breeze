@@ -17,7 +17,10 @@ vi.mock('../../services/binarySource', () => ({
   },
 }));
 
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadRoutes } from './download';
@@ -169,5 +172,131 @@ describe('public agent .pkg downloads — per-arch serving', () => {
       expect.stringContaining('[pkg-download] S3 presign failed'),
       expect.anything(),
     );
+  });
+});
+
+describe('GET /install.sh — generated installer script', () => {
+  async function fetchScript(): Promise<string> {
+    const res = await downloadRoutes.request('/install.sh');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    return res.text();
+  }
+
+  it('is valid bash (bash -n syntax check)', async () => {
+    const script = await fetchScript();
+    const tmp = mkdtempSync(join(tmpdir(), 'breeze-install-sh-'));
+    const file = join(tmp, 'install.sh');
+    try {
+      writeFileSync(file, script);
+      // Throws (failing the test) on any syntax error.
+      execFileSync('bash', ['-n', file]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a --token argument for enrollment-key based enrollment', async () => {
+    const script = await fetchScript();
+    // Argument parser handles --token and forwards it to `enroll` as the
+    // positional enrollment key (the flow the Add Device UI uses).
+    expect(script).toContain('--token)');
+    expect(script).toContain('BREEZE_ENROLL_TOKEN');
+    expect(script).toContain('ENROLL_ARGS=(enroll)');
+  });
+
+  it('requires a token OR an enrollment secret, not unconditionally the secret', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('Pass --token TOKEN or --enrollment-secret SECRET');
+    // The old unconditional secret check must be gone.
+    expect(script).not.toContain('BREEZE_ENROLLMENT_SECRET is required');
+  });
+
+  it('pre-flights server connectivity via /health before downloading anything', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('/health"');
+    expect(script).toContain('Cannot reach the Breeze server');
+  });
+
+  it('flags intercepted responses (captive portal / wrong responder) distinctly', async () => {
+    const script = await fetchScript();
+    // A 200 whose body is not Breeze's health JSON means some other device
+    // answered (captive portal, router, web filter) — the SemoTech guest-VLAN
+    // case. The message must say so instead of letting `installer` fail cryptically.
+    expect(script).toContain('captive portal');
+  });
+
+  it('documents --token usage in the script header', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('--token YOUR_ENROLLMENT_TOKEN');
+  });
+});
+
+describe('install.sh functional pre-flight behavior', () => {
+  // Runs the real generated script with bash. An `id` PATH shim makes the
+  // root check pass so execution reaches the connectivity pre-flight.
+  let tmp: string;
+  let scriptFile: string;
+  let shimDir: string;
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'breeze-install-fn-'));
+    scriptFile = join(tmp, 'install.sh');
+    shimDir = join(tmp, 'bin');
+    const res = await downloadRoutes.request('/install.sh');
+    writeFileSync(scriptFile, await res.text());
+    mkdirSync(shimDir);
+    writeFileSync(join(shimDir, 'id'), '#!/bin/sh\necho 0\n', { mode: 0o755 });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function runScript(args: string[]): Promise<{ code: number; output: string }> {
+    return new Promise((resolve) => {
+      execFile(
+        'bash',
+        [scriptFile, ...args],
+        { env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` }, timeout: 30_000 },
+        (err, stdout, stderr) => {
+          const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0;
+          resolve({ code, output: `${stdout}${stderr}` });
+        },
+      );
+    });
+  }
+
+  it('fails fast with a clear message when the server is unreachable', async () => {
+    // Port 1 on localhost → immediate connection refused.
+    const { code, output } = await runScript(['--server', 'http://127.0.0.1:1', '--token', 'tok']);
+    expect(code).not.toBe(0);
+    expect(output).toContain('Cannot reach the Breeze server');
+    expect(output).toContain('no response');
+  });
+
+  it('flags a captive portal that answers 200 with a non-Breeze body', async () => {
+    // The SemoTech guest-VLAN case: an intercepting device returns 200 HTML,
+    // which previously sailed past `curl -f` and died inside `installer`.
+    const portal = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body>Guest network portal</body></html>');
+    });
+    await new Promise<void>((resolve) => portal.listen(0, '127.0.0.1', resolve));
+    const { port } = portal.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(code).not.toBe(0);
+      expect(output).toContain('captive portal');
+      expect(output).not.toContain('Downloading');
+    } finally {
+      portal.close();
+    }
+  });
+
+  it('rejects a missing enrollment credential with guidance', async () => {
+    const { code, output } = await runScript(['--server', 'http://127.0.0.1:1']);
+    expect(code).not.toBe(0);
+    expect(output).toContain('Pass --token TOKEN or --enrollment-secret SECRET');
   });
 });

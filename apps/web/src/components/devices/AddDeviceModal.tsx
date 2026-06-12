@@ -5,6 +5,7 @@ import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
+import { buildInstallCommands } from '@/lib/installCommands';
 import { navigateTo } from '@/lib/navigation';
 
 function detectUserOS(): 'windows' | 'macos' | 'linux' {
@@ -811,23 +812,14 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
             {/* Commands section */}
             {(() => {
-              const apiUrl = (
-                import.meta.env.PUBLIC_API_URL || window.location.origin
-              ).replace(/\/$/, '');
-              const ghBase = (
-                import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL ||
-                'https://github.com/lanternops/breeze/releases/latest/download'
-              ).replace(/\/$/, '');
-              const token = onboardingToken || '<TOKEN>';
-              const secretFlag = enrollmentSecret
-                ? ` --enrollment-secret "${enrollmentSecret}"`
-                : '';
-
-              const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe service install; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}; .\\breeze-agent.exe service start`;
-              const macCmd = `curl -fsSL -o /tmp/breeze-agent.pkg "${apiUrl}/api/v1/agents/download/darwin/$(uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/')/pkg" && sudo installer -pkg /tmp/breeze-agent.pkg -target / && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo launchctl kickstart -k system/com.breeze.agent`;
-              const linuxCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-linux-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo mv breeze-agent /usr/local/bin/ && sudo breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`;
-
-              const commands = { windows: winCmd, macos: macCmd, linux: linuxCmd };
+              const commands = buildInstallCommands({
+                apiUrl: import.meta.env.PUBLIC_API_URL || window.location.origin,
+                ghBase:
+                  import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL ||
+                  'https://github.com/lanternops/breeze/releases/latest/download',
+                token: onboardingToken || '<TOKEN>',
+                enrollmentSecret: enrollmentSecret || undefined,
+              });
 
               return (
                 <div>

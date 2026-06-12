@@ -310,7 +310,12 @@ function generateInstallScript(serverUrl: string): string {
 # ============================================
 # Breeze RMM Agent - One-Line Installer
 # ============================================
-# Usage:
+# Usage (enrollment token from the Add Device dialog):
+#   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash -s -- \\
+#     --server ${serverUrl} \\
+#     --token YOUR_ENROLLMENT_TOKEN
+#
+# Or with an org enrollment secret:
 #   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash -s -- \\
 #     --server ${serverUrl} \\
 #     --enrollment-secret YOUR_SECRET
@@ -338,6 +343,7 @@ fatal()   { error "$*"; exit 1; }
 
 # ----- Parse arguments -----
 BREEZE_SERVER="\${BREEZE_SERVER:-}"
+BREEZE_ENROLL_TOKEN="\${BREEZE_ENROLL_TOKEN:-}"
 BREEZE_ENROLLMENT_SECRET="\${BREEZE_ENROLLMENT_SECRET:-}"
 BREEZE_SITE_ID="\${BREEZE_SITE_ID:-}"
 BREEZE_DEVICE_ROLE="\${BREEZE_DEVICE_ROLE:-}"
@@ -346,6 +352,8 @@ while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --server)
       BREEZE_SERVER="\$2"; shift 2 ;;
+    --token)
+      BREEZE_ENROLL_TOKEN="\$2"; shift 2 ;;
     --enrollment-secret)
       BREEZE_ENROLLMENT_SECRET="\$2"; shift 2 ;;
     --site-id)
@@ -362,8 +370,8 @@ if [[ -z "\$BREEZE_SERVER" ]]; then
   fatal "BREEZE_SERVER is required. Pass --server URL or export BREEZE_SERVER."
 fi
 
-if [[ -z "\$BREEZE_ENROLLMENT_SECRET" ]]; then
-  fatal "BREEZE_ENROLLMENT_SECRET is required. Pass --enrollment-secret SECRET or export BREEZE_ENROLLMENT_SECRET."
+if [[ -z "\$BREEZE_ENROLL_TOKEN" && -z "\$BREEZE_ENROLLMENT_SECRET" ]]; then
+  fatal "An enrollment credential is required. Pass --token TOKEN or --enrollment-secret SECRET (or export BREEZE_ENROLL_TOKEN / BREEZE_ENROLLMENT_SECRET)."
 fi
 
 # Strip trailing slash from server URL
@@ -420,6 +428,29 @@ fi
 if ! command -v curl &>/dev/null; then
   fatal "curl is required but not installed. Install it and try again."
 fi
+
+# ----- Pre-flight: verify this machine can actually reach the Breeze server -----
+# Catches split-connectivity setups (guest VLANs, no NAT hairpinning, web
+# filters) up front, instead of letting a later step fail with a cryptic
+# OS-level error after downloading garbage.
+info "Checking connectivity to \$BREEZE_SERVER..."
+HEALTH_FILE="$(mktemp)"
+trap 'rm -f "\$HEALTH_FILE"' EXIT
+HEALTH_CODE="$(curl -fsSL -m 20 -w '%{http_code}' -o "\$HEALTH_FILE" "\$BREEZE_SERVER/health" 2>/dev/null)" || true
+
+if [[ "\$HEALTH_CODE" == "000" ]]; then
+  fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions."
+elif [[ "\$HEALTH_CODE" != "200" ]]; then
+  fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (HTTP \$HEALTH_CODE). Verify the server URL is correct and this machine has network access to it."
+fi
+
+if ! grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "\$HEALTH_FILE"; then
+  fatal "Got an unexpected response from \$BREEZE_SERVER/health — something other than the Breeze server answered. A captive portal, router, or web filter may be intercepting traffic on this network."
+fi
+
+rm -f "\$HEALTH_FILE"
+trap - EXIT
+success "Breeze server is reachable"
 
 sha256_file() {
   if command -v sha256sum &>/dev/null; then
@@ -489,11 +520,14 @@ if [[ "\$OS" == "darwin" ]]; then
 
   # Enroll agent
   info "Enrolling agent with Breeze server..."
-  ENROLL_ARGS=(
-    enroll
-    --server "\$BREEZE_SERVER"
-    --enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"
-  )
+  ENROLL_ARGS=(enroll)
+  if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
+    ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
+  fi
+  ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
+  if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
+    ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
+  fi
   if [[ -n "\$BREEZE_SITE_ID" ]]; then
     ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
   fi
@@ -580,11 +614,14 @@ success "Config directory ready"
 
 # ----- Enroll agent -----
 info "Enrolling agent with Breeze server..."
-ENROLL_ARGS=(
-  enroll
-  --server "\$BREEZE_SERVER"
-  --enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"
-)
+ENROLL_ARGS=(enroll)
+if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
+  ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
+fi
+ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
+if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
+  ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
+fi
 if [[ -n "\$BREEZE_SITE_ID" ]]; then
   ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
 fi
