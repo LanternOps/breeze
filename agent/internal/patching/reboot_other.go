@@ -4,11 +4,6 @@ package patching
 
 import "time"
 
-// DetectPendingReboot is a no-op on non-Windows platforms.
-func DetectPendingReboot() (bool, []string) {
-	return false, nil
-}
-
 // RebootState tracks the current reboot scheduling state.
 type RebootState struct {
 	PendingReboot    bool      `json:"pendingReboot"`
