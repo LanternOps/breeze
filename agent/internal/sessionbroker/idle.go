@@ -1,6 +1,7 @@
 package sessionbroker
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,9 @@ func parseIdleSinceHint(value string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	if usec, err := strconv.ParseUint(value, 10, 64); err == nil {
+		if usec > math.MaxInt64/1000 {
+			return time.Time{}, false
+		}
 		return time.Unix(0, int64(usec)*1000).UTC(), true
 	}
 	if t, err := time.Parse("Mon 2006-01-02 15:04:05 MST", value); err == nil {

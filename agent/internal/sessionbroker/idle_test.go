@@ -67,6 +67,7 @@ func TestParseIdleSinceHint(t *testing.T) {
 		{name: "formatted_timestamp", value: "Thu 2026-06-11 10:30:00 UTC",
 			want: time.Date(2026, 6, 11, 10, 30, 0, 0, time.UTC), wantOK: true},
 		{name: "garbage_is_unknown", value: "not-a-time", wantOK: false},
+		{name: "usec_overflow_is_unknown", value: "18446744073709551615", wantOK: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
