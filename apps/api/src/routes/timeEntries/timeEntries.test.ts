@@ -1,0 +1,147 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
+  serviceMocks: {
+    createTimeEntry: vi.fn(),
+    startTimer: vi.fn(),
+    stopTimer: vi.fn(),
+    updateTimeEntry: vi.fn(),
+    deleteTimeEntry: vi.fn(),
+    approveTimeEntries: vi.fn(),
+    listTimeEntries: vi.fn(),
+    getRunningTimer: vi.fn(),
+    getTimesheet: vi.fn()
+  },
+  authRef: {
+    current: {
+      scope: 'partner' as string,
+      user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
+      partnerId: 'p-1' as string | null,
+      orgId: null as string | null,
+      accessibleOrgIds: null as string[] | null,
+      orgCondition: () => undefined,
+      canAccessOrg: (_id: string) => true as boolean
+    }
+  },
+  // wildcard permission present => manageAll admin
+  permsRef: { current: { permissions: [{ resource: 'time_entries', action: 'write' }, { resource: 'time_entries', action: 'read' }] } }
+}));
+
+vi.mock('../../services/timeEntryService', async () => {
+  const actual = await vi.importActual<typeof import('../../services/timeEntryService')>('../../services/timeEntryService');
+  return { ...actual, ...serviceMocks };
+});
+
+vi.mock('../../middleware/auth', async () => ({
+  authMiddleware: vi.fn(async (c: any, next: any) => {
+    if (!authRef.current) return c.json({ error: 'Not authenticated' }, 401);
+    c.set('auth', authRef.current);
+    await next();
+  }),
+  requireScope: (...scopes: string[]) => async (c: any, next: any) => {
+    const auth = c.get('auth');
+    if (!auth) return c.json({ error: 'Not authenticated' }, 401);
+    if (!scopes.includes(auth.scope)) return c.json({ error: 'Forbidden' }, 403);
+    await next();
+  },
+  requirePermission: () => async (c: any, next: any) => {
+    c.set('permissions', permsRef.current);
+    await next();
+  }
+}));
+
+import { timeEntriesRoutes } from './index';
+
+const ADMIN_PERMS = { permissions: [{ resource: '*', action: '*' }] };
+
+beforeEach(() => {
+  Object.values(serviceMocks).forEach((m) => m.mockReset());
+  authRef.current.scope = 'partner';
+  permsRef.current = { permissions: [{ resource: 'time_entries', action: 'write' }, { resource: 'time_entries', action: 'read' }] };
+});
+
+describe('GET /time-entries', () => {
+  it('403s org-scope callers (internal-only, spec D4)', async () => {
+    authRef.current.scope = 'organization';
+    const res = await timeEntriesRoutes.request('/');
+    expect(res.status).toBe(403);
+  });
+
+  it('forces userId=self for non-admin callers (D5)', async () => {
+    serviceMocks.listTimeEntries.mockResolvedValue({ entries: [], total: 0 });
+    const res = await timeEntriesRoutes.request('/?userId=u-OTHER');
+    expect(res.status).toBe(200);
+    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-1' }));
+  });
+
+  it('lets wildcard-permission admins query any user', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.listTimeEntries.mockResolvedValue({ entries: [], total: 0 });
+    const res = await timeEntriesRoutes.request('/?userId=u-OTHER');
+    expect(res.status).toBe(200);
+    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-OTHER' }));
+  });
+});
+
+describe('timer endpoints', () => {
+  it('POST /start passes manageAll=false actor and returns the entry', async () => {
+    serviceMocks.startTimer.mockResolvedValue({ id: 'te-1', endedAt: null });
+    const res = await timeEntriesRoutes.request('/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketId: '3f2f1d8e-1111-4222-8333-444455556666' })
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.startTimer).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: '3f2f1d8e-1111-4222-8333-444455556666' }),
+      expect.objectContaining({ userId: 'u-1', partnerId: 'p-1', manageAll: false })
+    );
+  });
+
+  it('maps TimeEntryServiceError to its status', async () => {
+    const { TimeEntryServiceError } = await vi.importActual<typeof import('../../services/timeEntryService')>('../../services/timeEntryService');
+    serviceMocks.stopTimer.mockRejectedValue(new TimeEntryServiceError('No running timer', 404, 'NO_RUNNING_TIMER'));
+    const res = await timeEntriesRoutes.request('/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'No running timer', code: 'NO_RUNNING_TIMER' });
+  });
+
+  it('GET /running returns null data when nothing is running', async () => {
+    serviceMocks.getRunningTimer.mockResolvedValue(null);
+    const res = await timeEntriesRoutes.request('/running');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: null });
+  });
+});
+
+describe('POST /bulk-approve', () => {
+  it('surfaces skippedReasons from the service', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.approveTimeEntries.mockResolvedValue({ updated: 1, skipped: 1, skippedReasons: { ENTRY_RUNNING: 1 } });
+    const res = await timeEntriesRoutes.request('/bulk-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['3f2f1d8e-1111-4222-8333-444455556666'] })
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ data: { updated: 1, skippedReasons: { ENTRY_RUNNING: 1 } } });
+  });
+});
+
+describe('GET /timesheet', () => {
+  it("403s a non-admin requesting someone else's timesheet", async () => {
+    const res = await timeEntriesRoutes.request('/timesheet?userId=u-OTHER&weekStart=2026-06-08');
+    expect(res.status).toBe(403);
+  });
+
+  it('defaults to own timesheet', async () => {
+    serviceMocks.getTimesheet.mockResolvedValue({ weekStart: '2026-06-08', days: [], totals: { totalMinutes: 0, billableMinutes: 0 } });
+    const res = await timeEntriesRoutes.request('/timesheet?weekStart=2026-06-08');
+    expect(res.status).toBe(200);
+    expect(serviceMocks.getTimesheet).toHaveBeenCalledWith('u-1', expect.any(Date));
+  });
+});
