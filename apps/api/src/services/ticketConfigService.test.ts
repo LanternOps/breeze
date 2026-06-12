@@ -94,6 +94,14 @@ describe('getOrgSlaOverride', () => {
     expect(result).toEqual({ responseMinutes: null, resolutionMinutes: 240 });
   });
 
+  it('returns null for negative minutes in sla_overrides', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      slaOverrides: { urgent: { responseMinutes: -30, resolutionMinutes: 240 } }
+    }]);
+    const result = await getOrgSlaOverride('o-1', 'urgent');
+    expect(result).toEqual({ responseMinutes: null, resolutionMinutes: 240 });
+  });
+
   it('returns nulls when slaOverrides is null', async () => {
     dbMocks.selectResult.mockResolvedValue([{ slaOverrides: null }]);
     const result = await getOrgSlaOverride('o-1', 'urgent');

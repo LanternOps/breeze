@@ -218,10 +218,12 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   }
 
   const priority = input.priority ?? 'normal';
+  const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
 
-  const [orgSla, partnerSla] = await Promise.all([
+  const [orgSla, partnerSla, statusId] = await Promise.all([
     getOrgSlaOverride(input.orgId, priority),
     getPartnerPrioritySla(org.partnerId, priority),
+    getSystemStatusId(org.partnerId, initialCoreStatus),
   ]);
 
   const slaTargets = resolveSlaTargets({
@@ -233,9 +235,6 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     partnerResolutionMinutes: partnerSla.resolutionMinutes,
     priority
   });
-
-  const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
-  const statusId = await getSystemStatusId(org.partnerId, initialCoreStatus);
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 

@@ -54,6 +54,8 @@ function parseSlaMinutes(v: unknown): number | null {
   if (typeof v !== 'number') return null;
   if (!Number.isFinite(v)) return null;
   if (!Number.isInteger(v)) return null;
+  // Negative values are invalid; upper-bound enforcement lives in the shared write validator (Task 6).
+  if (v < 0) return null;
   return v;
 }
 
