@@ -20,7 +20,8 @@ export const ticketStatuses = pgTable('ticket_statuses', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
   index('ticket_statuses_partner_idx').on(t.partnerId),
-  uniqueIndex('ticket_statuses_partner_name_uq').on(t.partnerId, sql`lower(${t.name})`)
+  uniqueIndex('ticket_statuses_partner_name_uq').on(t.partnerId, sql`lower(${t.name})`),
+  uniqueIndex('ticket_statuses_partner_core_status_system_uq').on(t.partnerId, t.coreStatus).where(sql`${t.isSystem}`)
 ]);
 
 export const ticketPrioritySettings = pgTable('ticket_priority_settings', {

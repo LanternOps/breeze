@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS ticket_statuses (
 );
 CREATE INDEX IF NOT EXISTS ticket_statuses_partner_idx ON ticket_statuses(partner_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ticket_statuses_partner_name_uq ON ticket_statuses(partner_id, lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS ticket_statuses_partner_core_status_system_uq
+  ON ticket_statuses(partner_id, core_status) WHERE is_system;
 
 CREATE TABLE IF NOT EXISTS ticket_priority_settings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -41,33 +43,27 @@ CREATE TABLE IF NOT EXISTS org_ticket_settings (
 -- RLS: partner-axis tables (shape 3) + org-axis table (shape 1). Same migration, never deferred.
 ALTER TABLE ticket_statuses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ticket_statuses FORCE ROW LEVEL SECURITY;
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'ticket_statuses' AND policyname = 'ticket_statuses_partner_access') THEN
-    CREATE POLICY ticket_statuses_partner_access ON ticket_statuses
-      USING (breeze_has_partner_access(partner_id))
-      WITH CHECK (breeze_has_partner_access(partner_id));
-  END IF;
-END $$;
+DROP POLICY IF EXISTS ticket_statuses_partner_access ON ticket_statuses;
+CREATE POLICY ticket_statuses_partner_access ON ticket_statuses
+  FOR ALL TO breeze_app
+  USING (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id))
+  WITH CHECK (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
 
 ALTER TABLE ticket_priority_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ticket_priority_settings FORCE ROW LEVEL SECURITY;
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'ticket_priority_settings' AND policyname = 'ticket_priority_settings_partner_access') THEN
-    CREATE POLICY ticket_priority_settings_partner_access ON ticket_priority_settings
-      USING (breeze_has_partner_access(partner_id))
-      WITH CHECK (breeze_has_partner_access(partner_id));
-  END IF;
-END $$;
+DROP POLICY IF EXISTS ticket_priority_settings_partner_access ON ticket_priority_settings;
+CREATE POLICY ticket_priority_settings_partner_access ON ticket_priority_settings
+  FOR ALL TO breeze_app
+  USING (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id))
+  WITH CHECK (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
 
 ALTER TABLE org_ticket_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE org_ticket_settings FORCE ROW LEVEL SECURITY;
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'org_ticket_settings' AND policyname = 'org_ticket_settings_org_access') THEN
-    CREATE POLICY org_ticket_settings_org_access ON org_ticket_settings
-      USING (breeze_has_org_access(org_id))
-      WITH CHECK (breeze_has_org_access(org_id));
-  END IF;
-END $$;
+DROP POLICY IF EXISTS org_ticket_settings_org_access ON org_ticket_settings;
+CREATE POLICY org_ticket_settings_org_access ON org_ticket_settings
+  FOR ALL TO breeze_app
+  USING (public.breeze_has_org_access(org_id))
+  WITH CHECK (public.breeze_has_org_access(org_id));
 
 -- tickets.status_id (display/selection state; tickets.status stays the logic source of truth)
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status_id uuid;
