@@ -369,14 +369,9 @@ export async function changeTicketStatus(
       oldValue: fromStatus,
       newValue: toStatus
     });
-    await emitTicketEvent({
-      type: 'ticket.status_changed',
-      ticketId,
-      orgId: ticket.orgId,
-      partnerId: ticket.partnerId ?? null,
-      actorUserId: actor.userId,
-      payload: { from: fromStatus, to: toStatus, resolutionNote: null }
-    });
+    // Do NOT emit ticket.status_changed — core status is unchanged; only the
+    // custom-status label (statusId) differs.  Emitting with identical from/to
+    // would produce noise and confuse downstream consumers.
     await createAuditLogAsync({
       orgId: ticket.orgId,
       actorId: actor.userId,

@@ -1458,6 +1458,30 @@ describe('changeTicketStatus — statusId path', () => {
     expect(emitMock).not.toHaveBeenCalled();
   });
 
+  it('(h) fast path: same core status, different statusId → updates DB + feed but does NOT emit ticket.status_changed', async () => {
+    const OLD_STATUS_UUID = 'old-status-uuid-1111-2222-3333-4444';
+    const NEW_STATUS_UUID = 'new-status-uuid-5555-6666-7777-8888';
+    dbMocks.selectResult.mockResolvedValueOnce([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', statusId: OLD_STATUS_UUID,
+      resolvedAt: null, slaPausedAt: null, slaPausedMinutes: 0
+    }]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: NEW_STATUS_UUID, partnerId: 'p-1', coreStatus: 'open', name: 'In Progress',
+      isActive: true, isSystem: false
+    });
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open', statusId: NEW_STATUS_UUID }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { statusId: NEW_STATUS_UUID }, {}, actor);
+
+    // DB update and feed comment must still happen
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ statusId: NEW_STATUS_UUID }));
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ commentType: 'status_change' }));
+
+    // But no status_changed event — core status is identical (both 'open')
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
   it('both status + statusId → 400 INVALID_INPUT', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([{
       id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', statusId: null
