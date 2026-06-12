@@ -214,6 +214,15 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                 <span className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
                   {statusLabels[device.status]}
                 </span>
+                {device.pendingReboot && (
+                  <span
+                    data-testid="device-pending-reboot-badge"
+                    title="The OS reports a pending reboot (Windows registry / Linux reboot-required markers)."
+                    className="inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium bg-warning/15 text-warning border-warning/30"
+                  >
+                    Reboot pending
+                  </span>
+                )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                 <span>{formatOsVersion(device.os, device.osVersion)}</span>
