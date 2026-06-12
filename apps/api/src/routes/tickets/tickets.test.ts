@@ -142,7 +142,20 @@ vi.mock('../../db/schema', () => ({
   alerts: { id: 'id', title: 'title', severity: 'severity', status: 'status', deviceId: 'deviceId' },
   devices: { id: 'id', hostname: 'hostname', orgId: 'orgId', siteId: 'siteId' },
   organizations: { id: 'id', name: 'name' },
-  users: { id: 'id', name: 'name' }
+  users: { id: 'id', name: 'name' },
+  // Required by timeEntryService module-scope const entrySelection (imported via export.ts)
+  timeEntries: {
+    id: 'id', ticketId: 'ticketId', orgId: 'orgId', userId: 'userId', partnerId: 'partnerId',
+    startedAt: 'startedAt', endedAt: 'endedAt', durationMinutes: 'durationMinutes',
+    description: 'description', isBillable: 'isBillable', billingStatus: 'billingStatus',
+    hourlyRate: 'hourlyRate', isApproved: 'isApproved', addedBy: 'addedBy', runningTimerId: 'runningTimerId'
+  },
+  ticketParts: {
+    id: 'id', ticketId: 'ticketId', orgId: 'orgId', addedBy: 'addedBy',
+    description: 'description', quantity: 'quantity', unitPrice: 'unitPrice',
+    costBasis: 'costBasis', isBillable: 'isBillable', billingStatus: 'billingStatus',
+    createdAt: 'createdAt', updatedAt: 'updatedAt'
+  }
 }));
 
 // Import the hub router (./index), not ./tickets directly — the hub is what

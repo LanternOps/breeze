@@ -628,3 +628,106 @@ export async function getTicketBillingSummary(ticketId: string) {
     parts: partsRows[0] ?? { partsCount: 0, billableTotal: '0.00' }
   };
 }
+
+export interface BillableRow {
+  kind: 'time' | 'part';
+  date: Date;
+  orgName: string | null;
+  ticketNumber: string | null;
+  description: string | null;
+  technician: string | null;
+  quantity: string;       // hours for time rows, qty for parts
+  rate: string | null;    // hourly rate / unit price
+  amount: string;
+  billingStatus: string;
+  isApproved: boolean | null; // null for parts (no approval concept)
+}
+
+export async function listBillables(from: Date, to: Date, orgId?: string): Promise<BillableRow[]> {
+  const timeConditions = [
+    eq(timeEntries.isBillable, true),
+    gte(timeEntries.startedAt, from),
+    lte(timeEntries.startedAt, to)
+  ];
+  if (orgId) timeConditions.push(eq(timeEntries.orgId, orgId));
+
+  const timeRows = await db
+    .select({
+      date: timeEntries.startedAt,
+      orgName: organizations.name,
+      ticketNumber: tickets.internalNumber,
+      description: timeEntries.description,
+      technician: users.name,
+      minutes: timeEntries.durationMinutes,
+      rate: timeEntries.hourlyRate,
+      billingStatus: timeEntries.billingStatus,
+      isApproved: timeEntries.isApproved
+    })
+    .from(timeEntries)
+    .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
+    .leftJoin(organizations, eq(timeEntries.orgId, organizations.id))
+    .leftJoin(users, eq(timeEntries.userId, users.id))
+    .where(and(...timeConditions))
+    .orderBy(asc(timeEntries.startedAt));
+
+  const partConditions = [
+    eq(ticketParts.isBillable, true),
+    gte(ticketParts.createdAt, from),
+    lte(ticketParts.createdAt, to)
+  ];
+  if (orgId) partConditions.push(eq(ticketParts.orgId, orgId));
+
+  const partRows = await db
+    .select({
+      date: ticketParts.createdAt,
+      orgName: organizations.name,
+      ticketNumber: tickets.internalNumber,
+      description: ticketParts.description,
+      technician: users.name,
+      quantity: ticketParts.quantity,
+      unitPrice: ticketParts.unitPrice,
+      billingStatus: ticketParts.billingStatus
+    })
+    .from(ticketParts)
+    .leftJoin(tickets, eq(ticketParts.ticketId, tickets.id))
+    .leftJoin(organizations, eq(ticketParts.orgId, organizations.id))
+    .leftJoin(users, eq(ticketParts.addedBy, users.id))
+    .where(and(...partConditions))
+    .orderBy(asc(ticketParts.createdAt));
+
+  const rows: BillableRow[] = [];
+  for (const r of timeRows) {
+    const hours = (r.minutes ?? 0) / 60;
+    const rate = r.rate != null ? Number(r.rate) : null;
+    rows.push({
+      kind: 'time',
+      date: r.date,
+      orgName: r.orgName,
+      ticketNumber: r.ticketNumber,
+      description: r.description,
+      technician: r.technician,
+      quantity: hours.toFixed(2),
+      rate: r.rate,
+      amount: rate != null ? (hours * rate).toFixed(2) : '0.00',
+      billingStatus: r.billingStatus,
+      isApproved: r.isApproved
+    });
+  }
+  for (const r of partRows) {
+    rows.push({
+      kind: 'part',
+      date: r.date,
+      orgName: r.orgName,
+      ticketNumber: r.ticketNumber,
+      description: r.description,
+      technician: r.technician,
+      quantity: r.quantity,
+      rate: r.unitPrice,
+      amount: (Number(r.quantity) * Number(r.unitPrice)).toFixed(2),
+      billingStatus: r.billingStatus,
+      isApproved: null
+    });
+  }
+  rows.sort((a, b) => a.date.getTime() - b.date.getTime());
+  return rows;
+}
