@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users } from '../db/schema';
+import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
@@ -125,6 +125,35 @@ async function resolveTicketLink(ticketId: string, actorPartnerId: string | null
   };
 }
 
+/** "45m", "1h 30m", "2h" — shared wording for feed comments. */
+function fmtMinutes(minutes: number | null): string {
+  const m = Math.max(0, minutes ?? 0);
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  if (h === 0) return `${rest}m`;
+  return rest === 0 ? `${h}h` : `${h}h ${rest}m`;
+}
+
+/** D4: internal-only system feed line; never isPublic. No-op without a ticket. */
+async function insertTimeEntryFeedComment(
+  ticketId: string | null,
+  actor: TimeEntryActor,
+  content: string
+): Promise<void> {
+  if (!ticketId) return;
+  await db.insert(ticketComments).values({
+    ticketId,
+    userId: actor.userId,
+    authorName: actor.name ?? null,
+    authorType: 'internal',
+    commentType: 'time_entry',
+    content,
+    isPublic: false,
+    oldValue: null,
+    newValue: null
+  });
+}
+
 export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEntryActor) {
   let partnerId = actor.partnerId;
   let orgId: string | null = null;
@@ -164,6 +193,12 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
     })
     .returning();
   const entry = rows[0]!;
+
+  await insertTimeEntryFeedComment(
+    entry.ticketId,
+    actor,
+    `${actor.name ?? 'Technician'} logged ${fmtMinutes(entry.durationMinutes)}${entry.isBillable ? ' (billable)' : ''}`
+  );
 
   await emitTimeEntryEvent({
     type: 'time_entry.created',
@@ -225,7 +260,14 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   const attempt = async () => {
     // D3: auto-stop the previous timer, then start the new one. The partial
     // unique index time_entries_one_running_per_user_uq is the race backstop.
-    await stopRunningEntry(actor);
+    const autoStopped = await stopRunningEntry(actor);
+    if (autoStopped) {
+      await insertTimeEntryFeedComment(
+        autoStopped.ticketId,
+        actor,
+        `${actor.name ?? 'Technician'} logged ${fmtMinutes(autoStopped.durationMinutes)}${autoStopped.isBillable ? ' (billable)' : ''}`
+      );
+    }
     const rows = await db
       .insert(timeEntries)
       .values({
@@ -278,6 +320,13 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
   if (!stopped) {
     throw new TimeEntryServiceError('No running timer', 404, 'NO_RUNNING_TIMER');
   }
+
+  await insertTimeEntryFeedComment(
+    stopped.ticketId,
+    actor,
+    `${actor.name ?? 'Technician'} logged ${fmtMinutes(stopped.durationMinutes)}${stopped.isBillable ? ' (billable)' : ''}`
+  );
+
   await emitTimeEntryEvent({
     type: 'time_entry.updated',
     timeEntryId: stopped.id,
@@ -369,6 +418,13 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
   const entry = await getEntryOr404(id);
   assertCanMutate(entry, actor);
   await db.delete(timeEntries).where(eq(timeEntries.id, id));
+
+  await insertTimeEntryFeedComment(
+    entry.ticketId,
+    actor,
+    `${actor.name ?? 'Technician'} removed a ${fmtMinutes(entry.durationMinutes)} time entry`
+  );
+
   await emitTimeEntryEvent({
     type: 'time_entry.deleted',
     timeEntryId: id,
