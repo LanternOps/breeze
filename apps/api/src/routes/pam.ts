@@ -31,6 +31,7 @@ import {
   elevationRequests,
   pamRules,
   sites,
+  softwarePolicies,
   users,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -164,6 +165,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
         approvedByName: approvedByUser.name,
         deniedByName: deniedByUser.name,
         revokedByName: revokedByUser.name,
+        matchedPolicyName: softwarePolicies.name,
       })
       .from(elevationRequests)
       .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
@@ -171,6 +173,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
       .leftJoin(approvedByUser, eq(elevationRequests.approvedByUserId, approvedByUser.id))
       .leftJoin(deniedByUser, eq(elevationRequests.deniedByUserId, deniedByUser.id))
       .leftJoin(revokedByUser, eq(elevationRequests.revokedByUserId, revokedByUser.id))
+      .leftJoin(softwarePolicies, eq(elevationRequests.softwarePolicyMatchId, softwarePolicies.id))
       .where(where)
       .orderBy(desc(elevationRequests.requestedAt))
       .limit(limit)
@@ -183,14 +186,30 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
 
   return c.json({
     success: true,
-    requests: rows.map((r) => ({
-      ...r.request,
-      deviceHostname: r.deviceHostname,
-      siteName: r.siteName,
-      approvedByName: r.approvedByName,
-      deniedByName: r.deniedByName,
-      revokedByName: r.revokedByName,
-    })),
+    requests: rows.map((r) => {
+      const meta = (r.request.metadata ?? {}) as Record<string, unknown>;
+      const pamRuleId = typeof meta.pam_rule_id === 'string' ? meta.pam_rule_id : null;
+      const pamRuleName = typeof meta.pam_rule_name === 'string' ? meta.pam_rule_name : null;
+      const decisionSource = r.request.softwarePolicyMatchId
+        ? ('software_policy' as const)
+        : pamRuleId
+          ? ('pam_rule' as const)
+          : r.request.approvedByUserId || r.request.deniedByUserId || r.request.revokedByUserId
+            ? ('human' as const)
+            : null;
+      return {
+        ...r.request,
+        deviceHostname: r.deviceHostname,
+        siteName: r.siteName,
+        approvedByName: r.approvedByName,
+        deniedByName: r.deniedByName,
+        revokedByName: r.revokedByName,
+        matchedPolicyName: r.matchedPolicyName,
+        pamRuleId,
+        pamRuleName,
+        decisionSource,
+      };
+    }),
     pagination: { page, limit, total: countRows[0]?.total ?? 0 },
   });
 });

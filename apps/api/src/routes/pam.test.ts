@@ -49,6 +49,8 @@ vi.mock('../db/schema', () => ({
     approvedByUserId: 'approvedByUserId',
     deniedByUserId: 'deniedByUserId',
     revokedByUserId: 'revokedByUserId',
+    softwarePolicyMatchId: 'softwarePolicyMatchId',
+    metadata: 'metadata',
   },
   elevationAudit: { id: 'id' },
   pamRules: {
@@ -58,6 +60,7 @@ vi.mock('../db/schema', () => ({
     createdAt: 'createdAt',
   },
   aiToolExecutions: { id: 'id', status: 'status' },
+  softwarePolicies: { id: 'id', name: 'name' },
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -232,6 +235,119 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     expect(projection).toHaveProperty('approvedByName');
     expect(projection).toHaveProperty('deniedByName');
     expect(projection).toHaveProperty('revokedByName');
+  });
+
+  it('surfaces software-policy provenance as first-class fields', async () => {
+    const policyRow = {
+      request: {
+        id: REQ_ID,
+        orgId: ORG_ID,
+        deviceId: 'dev-1',
+        flowType: 'uac_intercept',
+        status: 'denied',
+        approvedByUserId: null,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: 'policy-1',
+        metadata: {},
+      },
+      deviceHostname: 'WS-ALPHA',
+      siteName: 'HQ',
+      approvedByName: null,
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: 'Engineering Blocklist',
+    };
+    mockListSelect([policyRow], 1);
+
+    const res = await app().request('/pam/elevation-requests');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.requests[0];
+    expect(row.matchedPolicyName).toBe('Engineering Blocklist');
+    expect(row.decisionSource).toBe('software_policy');
+  });
+
+  it('surfaces pam-rule provenance from metadata and computes decisionSource', async () => {
+    const ruleRow = {
+      request: {
+        id: REQ_ID,
+        orgId: ORG_ID,
+        deviceId: 'dev-1',
+        flowType: 'uac_intercept',
+        status: 'auto_approved',
+        approvedByUserId: null,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: null,
+        metadata: { pam_rule_id: 'rule-1', pam_rule_name: 'Allow signed installers' },
+      },
+      deviceHostname: 'WS-BETA',
+      siteName: 'Branch',
+      approvedByName: null,
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: null,
+    };
+    mockListSelect([ruleRow], 1);
+
+    const res = await app().request('/pam/elevation-requests');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.requests[0];
+    expect(row.pamRuleId).toBe('rule-1');
+    expect(row.pamRuleName).toBe('Allow signed installers');
+    expect(row.decisionSource).toBe('pam_rule');
+  });
+
+  it('computes decisionSource=human for human-decided rows and null for pending', async () => {
+    const humanRow = {
+      request: {
+        id: REQ_ID,
+        orgId: ORG_ID,
+        deviceId: 'dev-1',
+        flowType: 'uac_intercept',
+        status: 'approved',
+        approvedByUserId: USER_ID,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: null,
+        metadata: {},
+      },
+      deviceHostname: 'WS-ALPHA',
+      siteName: 'HQ',
+      approvedByName: 'Jane Admin',
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: null,
+    };
+    const pendingRow = {
+      request: {
+        id: '7b41c9a2-0000-4000-8000-000000000099',
+        orgId: ORG_ID,
+        deviceId: 'dev-2',
+        flowType: 'uac_intercept',
+        status: 'pending',
+        approvedByUserId: null,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: null,
+        metadata: {},
+      },
+      deviceHostname: 'WS-GAMMA',
+      siteName: 'HQ',
+      approvedByName: null,
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: null,
+    };
+    mockListSelect([humanRow, pendingRow], 2);
+
+    const res = await app().request('/pam/elevation-requests');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.requests[0].decisionSource).toBe('human');
+    expect(body.requests[1].decisionSource).toBeNull();
   });
 });
 
