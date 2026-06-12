@@ -452,6 +452,7 @@ export default function TimesheetPage() {
                           <button
                             type="button"
                             onClick={() => setEditingId(null)}
+                            data-testid={`timesheet-edit-cancel-${entry.id}`}
                             className="rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
                           >
                             Cancel
