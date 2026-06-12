@@ -230,4 +230,79 @@ describe('third_party_app category rule', () => {
 
     expect(approved).toHaveLength(0);
   });
+
+  it('applies the severity filter on the third_party_app rule', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000013', source: 'third_party', category: 'homebrew', severity: 'low' })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...ringWithThirdPartyRule,
+      categoryRules: [{ category: 'third_party_app', autoApprove: true, severityFilter: ['critical'] }],
+    });
+
+    expect(approved).toHaveLength(0);
+  });
+
+  it('applies the deferral window on the third_party_app rule', async () => {
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000014', source: 'third_party', category: 'homebrew', releaseDate: yesterday })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...ringWithThirdPartyRule,
+      categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
+    });
+
+    expect(approved).toHaveLength(0);
+  });
+
+  it('matches the third_party_app rule when the patch category is null', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000015', source: 'third_party', category: null })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, ringWithThirdPartyRule);
+
+    expect(approved).toHaveLength(1);
+    expect(approved[0]?.approvalReason).toBe('category_rule');
+  });
+
+  it('an exact category rule with autoApprove false suppresses the third_party_app fallback', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000016', source: 'third_party', category: 'homebrew' })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...ringWithThirdPartyRule,
+      categoryRules: [
+        { category: 'homebrew', autoApprove: false },
+        { category: 'third_party_app', autoApprove: true },
+      ],
+    });
+
+    expect(approved).toHaveLength(0);
+  });
+
+  it('combines source filtering with the third_party_app rule (headline flow)', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000017', source: 'microsoft', category: 'security' }),
+        pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000018', source: 'third_party', category: 'homebrew' }),
+      ],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...ringWithThirdPartyRule,
+      sources: ['third_party'],
+    });
+
+    expect(approved.map((p) => p.patchId)).toEqual(['aaaaaaaa-0000-0000-0000-000000000018']);
+  });
 });

@@ -374,4 +374,55 @@ describe('patch job executor queueing', () => {
     );
     expect(result).toEqual({ skipped: true, reason: 'No approved patches' });
   });
+
+  it('ignores malformed sources with a warning instead of filtering', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: { ringId: null, autoApprove: {}, sources: [42, null] },
+        targets: { deviceIds: ['device-1'] },
+      }]) as any)
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+      // checkAndFinalizeJob select (called by markDeviceSkipped)
+      .mockImplementationOnce(() => createSelectChain([]) as any);
+
+    // db.insert().values() must be thenable for markDeviceSkipped
+    vi.mocked(db.insert).mockImplementationOnce(() => ({
+      values: vi.fn(() => Promise.resolve()),
+    }) as any);
+
+    // db.update().set().where() must be thenable (no .returning) for markDeviceSkipped
+    vi.mocked(db.update).mockImplementationOnce(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => Promise.resolve()),
+      })),
+    }) as any);
+
+    vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce([]);
+
+    createPatchJobDeviceWorker();
+    await shared.processorRefs['patch-job-devices']({
+      data: {
+        type: 'execute-patch-job-device',
+        patchJobId: 'job-1',
+        deviceId: 'device-1',
+        orgId: 'org-1',
+      },
+    });
+
+    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledWith(
+      'device-1',
+      'org-1',
+      expect.objectContaining({ sources: undefined }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('malformed patches.sources'),
+      expect.any(String),
+    );
+    warnSpy.mockRestore();
+  });
 });

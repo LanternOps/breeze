@@ -44,9 +44,9 @@ export interface ApprovedPatch {
 // Policy-source → patch-source mapping
 // ============================================
 
-/** patches.source values that count as OS updates */
+/** patches.source values that count as OS updates. Keep in sync with patchSourceEnum (db/schema/patches.ts). */
 const OS_PATCH_SOURCES = ['microsoft', 'apple', 'linux'] as const;
-/** patches.source values that count as third-party application updates */
+/** patches.source values that count as third-party application updates. Keep in sync with patchSourceEnum (db/schema/patches.ts). */
 const THIRD_PARTY_PATCH_SOURCES = ['third_party', 'custom'] as const;
 
 /**
@@ -80,7 +80,7 @@ export function buildAllowedPatchSources(sources: string[] | undefined): Set<str
 }
 
 export function isThirdPartyPatchSource(source: string | null | undefined): boolean {
-  return source === 'third_party' || source === 'custom';
+  return (THIRD_PARTY_PATCH_SOURCES as readonly string[]).includes(source ?? '');
 }
 
 // ============================================
@@ -119,13 +119,17 @@ export async function resolveApprovedPatchesForDevice(
   if (pendingPatches.length === 0) return [];
 
   // Apply policy-level source filtering ('os' vs 'third_party' etc.).
-  // Legacy jobs without sources skip filtering entirely.
   const allowedSources = buildAllowedPatchSources(ringConfig.sources);
   const candidatePatches = allowedSources
     ? pendingPatches.filter((p) => allowedSources.has(p.source))
     : pendingPatches;
 
-  if (candidatePatches.length === 0) return [];
+  if (candidatePatches.length === 0) {
+    console.warn(
+      `[PatchApproval] device ${deviceId}: all ${pendingPatches.length} pending patches excluded by policy sources [${(ringConfig.sources ?? []).join(', ')}]`
+    );
+    return [];
+  }
 
   // 2. Load manual approvals for this org (optionally scoped to ring)
   const patchIds = candidatePatches.map((p) => p.patchId);
