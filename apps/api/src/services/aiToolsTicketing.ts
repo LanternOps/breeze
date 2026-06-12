@@ -271,7 +271,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
-        if (!input.status && !input.statusName) return JSON.stringify({ error: 'status is required for update_status action' });
+        if (!input.status && !input.statusName) return JSON.stringify({ error: 'status or statusName is required for update_status action' });
         // Exactly one of status / statusName must be provided.
         if (input.status && input.statusName) {
           return JSON.stringify({ error: 'Provide only one of status or statusName, not both' });
@@ -286,16 +286,22 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           // Resolve custom status name to a statusId. auth.partnerId may be null for
           // org-scope callers — fall back to the ticket's partner via found.partnerId
           // (tickets row has a partnerId column set at create time).
-          const partnerId = auth.partnerId ?? (found as { partnerId?: string }).partnerId;
+          const partnerId = auth.partnerId ?? found.partnerId;
           if (!partnerId) {
             return JSON.stringify({ error: 'Cannot resolve statusName: partner context unavailable' });
           }
           const statusRow = await findStatusByName(partnerId, String(input.statusName));
           if (!statusRow) {
             const activeNames = await listActiveStatusNames(partnerId);
-            const nameList = activeNames.length > 0
-              ? activeNames.map((n) => `"${n}"`).join(', ')
-              : '(none)';
+            let nameList: string;
+            if (activeNames.length === 0) {
+              nameList = '(none)';
+            } else {
+              const names = activeNames.slice(0, 20).map((n) => `"${n}"`).join(', ');
+              nameList = activeNames.length > 20
+                ? `${names}, …and ${activeNames.length - 20} more`
+                : names;
+            }
             return JSON.stringify({
               error: `Unknown status name "${input.statusName}". Active status names for this partner: ${nameList}`
             });

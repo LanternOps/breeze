@@ -391,7 +391,7 @@ describe('manage_tickets tool', () => {
     const out = await getTool().handler({ action: 'update_status', ticketId: 't-1' }, auth);
     const parsed = JSON.parse(out);
     expect(parsed).toHaveProperty('error');
-    expect(parsed.error).toMatch(/status is required/i);
+    expect(parsed.error).toMatch(/status or statusName is required/i);
     expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
   });
 
