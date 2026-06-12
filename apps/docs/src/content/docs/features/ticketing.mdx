@@ -105,6 +105,38 @@ Categories also carry SLA targets (response and resolution times) and billing de
   Today the SLA targets drive the at-risk and breached chips in the queue. The full automated SLA engine -- enforcement, escalations, and business-hours schedules -- arrives in a later release.
 </Aside>
 
+## Time Tracking & Parts
+
+Breeze lets technicians log time and record parts against any ticket. These records feed the billing summary on the ticket's properties rail and the weekly Timesheet view -- but are **never shown in the customer portal**.
+
+### Timer widget
+
+When you are working a ticket, click **Start timer** in the Time & Billing rail to begin tracking. A live clock appears in the top navigation bar, anchored to the ticket number, so the timer follows you across the queue. Only one timer can run per technician at a time -- starting a new timer automatically stops the previous one.
+
+Click the stop icon in the header widget to open the stop popover, where you can add a description and mark the entry as billable before saving.
+
+### Manual time entry
+
+Click **Log time** in the ticket's Time & Billing rail to open the quick-add form. Enter the number of minutes, an optional description, and whether the entry is billable, then click **Save**. The entry is back-dated so the end time is now and the start time is now minus the minutes you entered.
+
+### Parts
+
+The Parts card on the ticket rail lets you record physical or consumable items used on a job. Each part has a **description**, **quantity**, **unit price**, and an optional **cost basis** for margin tracking. Parts default to billable; uncheck the box for internal-only consumables.
+
+### Timesheet
+
+Open **/timesheet** from the sidebar to see a week-at-a-glance view of all your time entries, grouped by day with billable totals. Use the week navigation buttons to move backwards and forwards. Technicians with a wildcard-permission admin role can switch to any other technician's timesheet via the dropdown.
+
+Admins can select one or more completed entries and click **Approve selected** to mark them approved. Approved entries become immutable for non-admins.
+
+### Billables export
+
+Under **Settings → Ticketing**, the Billables Export card lets you download a CSV of all time entries and parts for any date range up to 366 days. The export includes each entry's approval status, billable flag, and computed amounts -- useful for invoicing or importing into external accounting tools.
+
+<Aside>
+  Time entries and parts are technician-facing only. End-users accessing the customer portal never see time logs, cost data, or parts records.
+</Aside>
+
 ## Tickets on a Device
 
 Every device page has a **Tickets** tab listing the tickets attached to that device, with status, priority, and SLA chips. It is the fastest way to check whether the machine you are about to work on already has open issues.
