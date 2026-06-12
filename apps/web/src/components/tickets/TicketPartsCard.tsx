@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, ActionError } from '../../lib/runAction';
-import { showToast } from '../shared/Toast';
+import { runAction, handleActionError } from '../../lib/runAction';
 import { formatMoney } from '../../lib/timeFormat';
 
 interface PartRow {
@@ -51,11 +50,6 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
     setBillable(true);
   }, [ticketId]);
 
-  const handleActionError = (err: unknown, fallback: string) => {
-    if (err instanceof ActionError && err.status === 401) return;
-    if (!(err instanceof ActionError)) showToast({ type: 'error', message: fallback });
-  };
-
   const resetForm = () => {
     setFormOpen(false);
     setEditingId(null);
@@ -66,15 +60,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
     setBillable(true);
   };
 
-  const openAdd = () => {
-    setEditingId(null);
-    setDescription('');
-    setQuantity('');
-    setUnitPrice('');
-    setCostBasis('');
-    setBillable(true);
-    setFormOpen(true);
-  };
+  const openAdd = () => { resetForm(); setFormOpen(true); };
 
   const openEdit = (part: PartRow) => {
     setEditingId(part.id);

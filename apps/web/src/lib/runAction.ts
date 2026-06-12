@@ -80,3 +80,11 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   }
   return result;
 }
+
+/** Standard catch handler for runAction callers: 401s are handled by the auth
+ *  redirect, other ActionErrors were already toasted by runAction, anything
+ *  else gets the fallback toast. */
+export function handleActionError(err: unknown, fallback: string): void {
+  if (err instanceof ActionError && err.status === 401) return;
+  if (!(err instanceof ActionError)) showToast({ message: fallback, type: 'error' });
+}

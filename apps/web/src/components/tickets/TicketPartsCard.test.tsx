@@ -45,4 +45,22 @@ describe('TicketPartsCard', () => {
     fireEvent.click(await screen.findByTestId('ticket-part-delete-p-1'));
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/tickets/parts/p-1', expect.objectContaining({ method: 'DELETE' })));
   });
+
+  it('edits a part — preserves costBasis as number, omits sparse fields', async () => {
+    render(<TicketPartsCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-part-edit-p-1'));
+    fireEvent.change(screen.getByTestId('ticket-parts-form-description'), { target: { value: 'SSD 2TB' } });
+    fireEvent.click(screen.getByTestId('ticket-parts-form-submit'));
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        (args) => args[0] === '/tickets/parts/p-1' && (args[1] as RequestInit)?.method === 'PATCH',
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse((call![1] as RequestInit).body as string) as Record<string, unknown>;
+      expect(body.costBasis).toBe(60);
+      expect(Object.keys(body)).not.toContain('partNumber');
+      expect(Object.keys(body)).not.toContain('vendor');
+      expect(Object.keys(body)).not.toContain('notes');
+    });
+  });
 });

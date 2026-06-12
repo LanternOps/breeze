@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, ActionError } from '../../lib/runAction';
-import { showToast } from '../shared/Toast';
+import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged } from '../../lib/timerActions';
 import { formatMinutes, formatMoney } from '../../lib/timeFormat';
 
@@ -53,11 +52,6 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     setMinutes('');
     setDescription('');
   }, [ticketId]);
-
-  const handleActionError = (err: unknown, fallback: string) => {
-    if (err instanceof ActionError && err.status === 401) return;
-    if (!(err instanceof ActionError)) showToast({ type: 'error', message: fallback });
-  };
 
   const startTimer = () => {
     void startTimerAction({ ticketId })
