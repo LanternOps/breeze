@@ -31,8 +31,9 @@ export function formatIdle(session: ActiveSession | null): string {
   if (session.idleMinutes === null || session.idleMinutes === undefined) return '—';
   if (session.idleMinutes < 1) return 'Active';
   const hours = Math.floor(session.idleMinutes / 60);
-  const minutes = session.idleMinutes % 60;
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  const minutes = Math.floor(session.idleMinutes % 60);
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  return `${minutes}m`;
 }
 
 function tooltip(sessions: ActiveSession[]): string | undefined {

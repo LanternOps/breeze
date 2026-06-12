@@ -65,6 +65,10 @@ describe('formatIdle', () => {
   it('formats hours and minutes', () => {
     expect(formatIdle(session({ idleMinutes: 65 }))).toBe('1h 5m');
   });
+
+  it('drops the zero-minute remainder at exact hours', () => {
+    expect(formatIdle(session({ idleMinutes: 60 }))).toBe('1h');
+  });
 });
 
 describe('DeviceUserIdleStat', () => {
