@@ -6,6 +6,7 @@ const DIGIT_COUNT = 6;
 
 type MFAVerifyFormProps = {
   onSubmit?: (code: string) => void | Promise<void>;
+  onPasskeyVerify?: () => void | Promise<void>;
   errorMessage?: string;
   submitLabel?: string;
   loading?: boolean;
@@ -18,6 +19,7 @@ type MFAVerifyFormProps = {
 
 export default function MFAVerifyForm({
   onSubmit,
+  onPasskeyVerify,
   errorMessage,
   submitLabel = 'Verify',
   loading,
@@ -35,6 +37,7 @@ export default function MFAVerifyForm({
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const code = digits.join('');
   const isSms = mfaMethod === 'sms';
+  const isPasskey = mfaMethod === 'passkey';
 
   // Resend cooldown timer
   useEffect(() => {
@@ -101,6 +104,45 @@ export default function MFAVerifyForm({
     await onSendSmsCode?.();
     setResendCooldown(60);
   };
+
+  const handlePasskeyVerify = async () => {
+    if (isLoading) return;
+    try {
+      setIsSubmitting(true);
+      await onPasskeyVerify?.();
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (isPasskey) {
+    return (
+      <div className="space-y-6">
+        <div className="space-y-2">
+          <h2 className="text-lg font-semibold">Use your passkey</h2>
+          <p className="text-sm text-muted-foreground">
+            Continue with the passkey registered to your account.
+          </p>
+        </div>
+
+        {errorMessage && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {errorMessage}
+          </div>
+        )}
+
+        <button
+          type="button"
+          data-testid="mfa-passkey-submit"
+          onClick={handlePasskeyVerify}
+          disabled={isLoading}
+          className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isLoading ? 'Verifying...' : submitLabel}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <form

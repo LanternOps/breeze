@@ -280,6 +280,25 @@ describe('GET /cf-access-login', () => {
     expect(res.headers.get('Location')).toContain('reason=mfa-required');
   });
 
+  it('redirects to /login with error=mfa-required when user has passkey MFA and TRUSTS_MFA is false', async () => {
+    envState.enabled = true;
+    envState.trustsMfa = false;
+    verifyState.next = {
+      kind: 'claims',
+      claims: {
+        email: activeUser.email,
+        sub: 'cf-1',
+        aud: envState.audience,
+        iss: `https://${envState.teamDomain}`,
+        exp: 999,
+        iat: 1,
+      },
+    };
+    dbState.userRow = { ...activeUser, mfaEnabled: true, mfaSecret: null, mfaMethod: 'passkey' };
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+    expect(res.headers.get('Location')).toContain('reason=mfa-required');
+  });
+
   it('mints a session and redirects to / with cf-access-login=success on success', async () => {
     envState.enabled = true;
     verifyState.next = {

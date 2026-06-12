@@ -2,7 +2,14 @@ import { useEffect, useState } from 'react';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
 import McpUrlCard from '../shared/McpUrlCard';
-import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode, fetchAndApplyPreferences } from '../../stores/auth';
+import {
+  useAuthStore,
+  apiLogin,
+  apiVerifyMFA,
+  apiVerifyPasskeyMFA,
+  apiSendSmsMfaCode,
+  fetchAndApplyPreferences
+} from '../../stores/auth';
 import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
@@ -140,6 +147,30 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     setLoading(false);
   };
 
+  const handlePasskeyMfaVerify = async () => {
+    if (!tempToken) return;
+
+    setLoading(true);
+    setError(undefined);
+
+    const result = await apiVerifyPasskeyMFA(tempToken);
+
+    if (!result.success) {
+      setError(result.error);
+      setLoading(false);
+      return;
+    }
+
+    if (result.user && result.tokens) {
+      login(result.user, result.tokens);
+      fetchAndApplyPreferences();
+      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
+      return;
+    }
+
+    setLoading(false);
+  };
+
   const handleSendSmsCode = async () => {
     if (!tempToken) return;
 
@@ -172,6 +203,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
         </div>
         <MFAVerifyForm
           onSubmit={handleMfaVerify}
+          onPasskeyVerify={handlePasskeyMfaVerify}
           errorMessage={error}
           loading={loading}
           mfaMethod={mfaMethod}

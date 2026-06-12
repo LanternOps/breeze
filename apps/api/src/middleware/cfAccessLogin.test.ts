@@ -425,6 +425,27 @@ describe('cfAccessLoginMiddleware', () => {
     expect(tokenState.lastPayload).toBeNull(); // no full token mint yet
   });
 
+  it('issues an MFA temp token when user has passkey MFA and TRUSTS_MFA is false', async () => {
+    envState.enabled = true;
+    envState.trustsMfa = false;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, mfaEnabled: true, mfaSecret: null, mfaMethod: 'passkey' };
+    const { next, called } = createNext();
+    const res = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next
+    );
+    expect(called()).toBe(false);
+    const body = await (res as Response).json();
+    expect(body.mfaRequired).toBe(true);
+    expect(body.mfaMethod).toBe('passkey');
+    expect(body.tokens).toBeNull();
+    expect(tokenState.lastPayload).toBeNull();
+  });
+
   it('mints tokens with mfa=true when TRUSTS_MFA is true even if user has MFA enabled', async () => {
     envState.enabled = true;
     envState.trustsMfa = true;

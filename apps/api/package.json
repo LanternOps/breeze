@@ -40,6 +40,7 @@
     "@hono/zod-validator": "^0.8.0",
     "@network-utils/vendor-lookup": "^1.0.12",
     "@sentry/node": "^10.54.0",
+    "@simplewebauthn/server": "^13.3.1",
     "@types/qrcode": "^1.5.6",
     "archiver": "^7.0.1",
     "argon2": "^0.44.0",

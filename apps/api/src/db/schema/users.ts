@@ -4,7 +4,7 @@ import { partners, organizations } from './orgs';
 export const userStatusEnum = pgEnum('user_status', ['active', 'invited', 'disabled']);
 export const roleScopeEnum = pgEnum('role_scope', ['system', 'partner', 'organization']);
 export const orgAccessEnum = pgEnum('org_access', ['all', 'selected', 'none']);
-export const mfaMethodEnum = pgEnum('mfa_method', ['totp', 'sms']);
+export const mfaMethodEnum = pgEnum('mfa_method', ['totp', 'sms', 'passkey']);
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -105,4 +105,3 @@ export const sessions = pgTable('sessions', {
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
-

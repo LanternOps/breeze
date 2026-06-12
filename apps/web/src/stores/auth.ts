@@ -1,5 +1,13 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import {
+  startAuthentication,
+  startRegistration,
+  type AuthenticationResponseJSON,
+  type PublicKeyCredentialCreationOptionsJSON,
+  type PublicKeyCredentialRequestOptionsJSON,
+  type RegistrationResponseJSON
+} from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
 
 export interface UserPreferences {
@@ -503,7 +511,32 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   return response;
 }
 
-export type MfaMethod = 'totp' | 'sms';
+export type MfaMethod = 'totp' | 'sms' | 'passkey';
+
+type ApiAuthSuccess = {
+  success: boolean;
+  user?: User;
+  tokens?: Tokens;
+  requiresSetup?: boolean;
+  error?: string;
+};
+
+export type PasskeyRegistrationOptions = PublicKeyCredentialCreationOptionsJSON;
+export type PasskeyAuthenticationOptions = PublicKeyCredentialRequestOptionsJSON;
+export type PasskeyRegistrationResponse = RegistrationResponseJSON;
+export type PasskeyAuthenticationResponse = AuthenticationResponseJSON;
+
+export async function createPasskeyCredential(
+  optionsJSON: PasskeyRegistrationOptions
+): Promise<PasskeyRegistrationResponse> {
+  return startRegistration({ optionsJSON });
+}
+
+export async function getPasskeyCredential(
+  optionsJSON: PasskeyAuthenticationOptions
+): Promise<PasskeyAuthenticationResponse> {
+  return startAuthentication({ optionsJSON });
+}
 
 export async function apiLogin(email: string, password: string): Promise<{
   success: boolean;
@@ -553,13 +586,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   }
 }
 
-export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<{
-  success: boolean;
-  user?: User;
-  tokens?: Tokens;
-  requiresSetup?: boolean;
-  error?: string;
-}> {
+export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
   try {
     const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
@@ -583,6 +610,55 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
       requiresSetup: !!data.requiresSetup
     };
   } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuccess> {
+  try {
+    const optionsResponse = await fetch(buildApiUrl('/auth/mfa/passkey/options'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ tempToken })
+    });
+
+    const optionsData = await optionsResponse.json();
+
+    if (!optionsResponse.ok) {
+      return { success: false, error: extractApiError(optionsData, 'Failed to start passkey verification') };
+    }
+
+    const optionsJSON = optionsData.options ?? optionsData.optionsJSON;
+    const credential = await getPasskeyCredential(optionsJSON);
+
+    const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ tempToken, credential })
+    });
+
+    const verifyData = await verifyResponse.json();
+
+    if (!verifyResponse.ok) {
+      return { success: false, error: extractApiError(verifyData, 'Passkey verification failed') };
+    }
+
+    const user = verifyData.user
+      ? { ...verifyData.user, requiresSetup: !!verifyData.requiresSetup }
+      : verifyData.user;
+
+    return {
+      success: true,
+      user,
+      tokens: verifyData.tokens,
+      requiresSetup: !!verifyData.requiresSetup
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotAllowedError') {
+      return { success: false, error: 'Passkey verification was canceled or timed out' };
+    }
     return { success: false, error: 'Network error' };
   }
 }
