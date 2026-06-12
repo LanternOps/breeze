@@ -25,6 +25,7 @@ import {
   stopTimer,
   TimeEntryServiceError
 } from './timeEntryService';
+import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 
 function actorFrom(auth: AuthContext) {
   return { userId: auth.user.id, name: auth.user.name };
@@ -110,7 +111,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           status: {
             type: 'string',
             enum: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'],
-            description: 'Target status (update_status) or filter (list)'
+            description: 'Target core status (update_status) or filter (list). Mutually exclusive with statusName — provide only one.'
+          },
+          statusName: {
+            type: 'string',
+            description: 'A custom status name configured by the partner (e.g. "Waiting on vendor"); alternative to status for update_status. Mutually exclusive with status — provide only one.'
           },
           resolutionNote: {
             type: 'string',
@@ -266,13 +271,43 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
-        if (!input.status) return JSON.stringify({ error: 'status is required for update_status action' });
+        if (!input.status && !input.statusName) return JSON.stringify({ error: 'status is required for update_status action' });
+        // Exactly one of status / statusName must be provided.
+        if (input.status && input.statusName) {
+          return JSON.stringify({ error: 'Provide only one of status or statusName, not both' });
+        }
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
+
+        let changeTarget: { status: TicketStatus } | { statusId: string };
+
+        if (input.statusName) {
+          // Resolve custom status name to a statusId. auth.partnerId may be null for
+          // org-scope callers — fall back to the ticket's partner via found.partnerId
+          // (tickets row has a partnerId column set at create time).
+          const partnerId = auth.partnerId ?? (found as { partnerId?: string }).partnerId;
+          if (!partnerId) {
+            return JSON.stringify({ error: 'Cannot resolve statusName: partner context unavailable' });
+          }
+          const statusRow = await findStatusByName(partnerId, String(input.statusName));
+          if (!statusRow) {
+            const activeNames = await listActiveStatusNames(partnerId);
+            const nameList = activeNames.length > 0
+              ? activeNames.map((n) => `"${n}"`).join(', ')
+              : '(none)';
+            return JSON.stringify({
+              error: `Unknown status name "${input.statusName}". Active status names for this partner: ${nameList}`
+            });
+          }
+          changeTarget = { statusId: statusRow.id };
+        } else {
+          changeTarget = { status: input.status as TicketStatus };
+        }
+
         const ticket = await changeTicketStatus(
           String(input.ticketId),
-          { status: input.status as TicketStatus },
+          changeTarget,
           {
             resolutionNote: input.resolutionNote ? String(input.resolutionNote) : undefined,
             pendingReason: input.pendingReason ? String(input.pendingReason) : undefined

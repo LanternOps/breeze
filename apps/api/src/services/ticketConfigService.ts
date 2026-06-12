@@ -208,6 +208,60 @@ export async function getTicketStatusById(id: string): Promise<{
   return rows[0] ?? null;
 }
 
+/**
+ * Find an active ticket_statuses row by name for the given partner (case-insensitive).
+ * System-context read — returns null when no matching active row exists; never throws.
+ */
+export async function findStatusByName(
+  partnerId: string,
+  name: string,
+): Promise<{ id: string; partnerId: string; coreStatus: CoreTicketStatus; name: string; isActive: boolean; isSystem: boolean } | null> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({
+          id: ticketStatuses.id,
+          partnerId: ticketStatuses.partnerId,
+          coreStatus: ticketStatuses.coreStatus,
+          name: ticketStatuses.name,
+          isActive: ticketStatuses.isActive,
+          isSystem: ticketStatuses.isSystem,
+        })
+        .from(ticketStatuses)
+        .where(
+          and(
+            eq(ticketStatuses.partnerId, partnerId),
+            eq(ticketStatuses.isActive, true),
+          )
+        )
+    )
+  );
+  // Case-insensitive match in application code (normalise both sides to lower)
+  const lowerName = name.toLowerCase();
+  return rows.find((r) => r.name.toLowerCase() === lowerName) ?? null;
+}
+
+/**
+ * List the display names of all active ticket_statuses rows for the given partner.
+ * System-context read — used to build error messages for the AI tool.
+ */
+export async function listActiveStatusNames(partnerId: string): Promise<string[]> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ name: ticketStatuses.name })
+        .from(ticketStatuses)
+        .where(
+          and(
+            eq(ticketStatuses.partnerId, partnerId),
+            eq(ticketStatuses.isActive, true),
+          )
+        )
+    )
+  );
+  return rows.map((r) => r.name);
+}
+
 // ============================================================================
 // CRUD layer (Task 6). All writes run in the REQUEST DB context (plain `db`):
 // the caller's partner context is set and the partner-axis RLS policy is the

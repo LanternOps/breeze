@@ -104,7 +104,7 @@ vi.mock('../db/schema/portal', () => ({
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
   upsertPrioritySettings, upsertOrgTicketSettings, getOrgTicketSettings,
-  TicketConfigServiceError,
+  TicketConfigServiceError, findStatusByName, listActiveStatusNames,
 } from './ticketConfigService';
 
 const PARTNER = 'p-1';
@@ -303,5 +303,58 @@ describe('TicketConfigServiceError', () => {
     const e = new TicketConfigServiceError('x');
     expect(e.status).toBe(400);
     expect(e.name).toBe('TicketConfigServiceError');
+  });
+});
+
+// ── findStatusByName ──────────────────────────────────────────────────────
+
+const ACTIVE_STATUS_ROWS = [
+  { id: 's-1', partnerId: PARTNER, coreStatus: 'new' as const, name: 'New', isActive: true, isSystem: true },
+  { id: 's-2', partnerId: PARTNER, coreStatus: 'open' as const, name: 'Waiting on vendor', isActive: true, isSystem: false },
+  { id: 's-3', partnerId: PARTNER, coreStatus: 'pending' as const, name: 'Pending', isActive: true, isSystem: true },
+];
+
+describe('findStatusByName', () => {
+  it('returns the matching row when the name exists (exact case)', async () => {
+    dbMocks.selectResults.push(ACTIVE_STATUS_ROWS);
+    const row = await findStatusByName(PARTNER, 'Waiting on vendor');
+    expect(row).not.toBeNull();
+    expect(row!.id).toBe('s-2');
+    expect(row!.coreStatus).toBe('open');
+  });
+
+  it('matches case-insensitively', async () => {
+    dbMocks.selectResults.push(ACTIVE_STATUS_ROWS);
+    const row = await findStatusByName(PARTNER, 'WAITING ON VENDOR');
+    expect(row).not.toBeNull();
+    expect(row!.id).toBe('s-2');
+  });
+
+  it('returns null for an unknown name', async () => {
+    dbMocks.selectResults.push(ACTIVE_STATUS_ROWS);
+    const row = await findStatusByName(PARTNER, 'Nonexistent status');
+    expect(row).toBeNull();
+  });
+
+  it('returns null when the partner has no active statuses', async () => {
+    dbMocks.selectResults.push([]);
+    const row = await findStatusByName(PARTNER, 'New');
+    expect(row).toBeNull();
+  });
+});
+
+// ── listActiveStatusNames ─────────────────────────────────────────────────
+
+describe('listActiveStatusNames', () => {
+  it('returns the names of all active rows', async () => {
+    dbMocks.selectResults.push(ACTIVE_STATUS_ROWS.map((r) => ({ name: r.name })));
+    const names = await listActiveStatusNames(PARTNER);
+    expect(names).toEqual(['New', 'Waiting on vendor', 'Pending']);
+  });
+
+  it('returns an empty array when the partner has no active rows', async () => {
+    dbMocks.selectResults.push([]);
+    const names = await listActiveStatusNames(PARTNER);
+    expect(names).toEqual([]);
   });
 });
