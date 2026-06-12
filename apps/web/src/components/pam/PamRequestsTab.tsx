@@ -222,7 +222,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         const FlowIcon = FLOW_ICONS[r.flowType];
                         return (
                           <span className="inline-flex items-center gap-1.5">
-                            <FlowIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                            <FlowIcon aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
                             {FLOW_LABELS[r.flowType]}
                           </span>
                         );
