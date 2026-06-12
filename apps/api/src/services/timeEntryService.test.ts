@@ -537,6 +537,22 @@ describe('time_entry feed comments', () => {
     expect(String(commentVals.content)).not.toContain('(billable)');
   });
 
+  it('startTimer auto-stops a ticket-linked entry and inserts a ticketComments row for the stopped entry', async () => {
+    // updateResult = the auto-stopped previous entry (ticket-linked, 60m, billable)
+    dbMocks.updateResult = [{ id: 'te-prev', partnerId: 'p-1', ticketId: 't-X', userId: 'u-1', durationMinutes: 60, isBillable: true }];
+    // insertResult = the new running timer (no ticket, non-billable)
+    dbMocks.insertResult = [{ id: 'te-next', partnerId: 'p-1', ticketId: null, userId: 'u-1', endedAt: null, durationMinutes: null, isBillable: false }];
+    await startTimer({ description: 'next task' }, ACTOR);
+    // Two inserts: first is ticketComments for the auto-stopped entry, second is the new timeEntries row
+    const feedComment = dbMocks.insertedValues.find((v) => v.commentType === 'time_entry');
+    expect(feedComment).toBeDefined();
+    expect(feedComment!.ticketId).toBe('t-X');
+    expect(feedComment!.commentType).toBe('time_entry');
+    expect(feedComment!.isPublic).toBe(false);
+    expect(String(feedComment!.content)).toContain('1h');
+    expect(String(feedComment!.content)).toContain('(billable)');
+  });
+
   it('deleteTimeEntry on a ticket-linked entry inserts a ticketComments row with removed wording', async () => {
     dbMocks.selectResults.push([{ id: 'te-4', userId: 'u-1', isApproved: false, partnerId: 'p-1', ticketId: 't-3', durationMinutes: 45 }]);
     await deleteTimeEntry('te-4', ACTOR);
