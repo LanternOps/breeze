@@ -201,8 +201,13 @@ describe('GET /install.sh — generated installer script', () => {
     // Argument parser handles --token and forwards it to `enroll` as the
     // positional enrollment key (the flow the Add Device UI uses).
     expect(script).toContain('--token)');
-    expect(script).toContain('BREEZE_ENROLL_TOKEN');
-    expect(script).toContain('ENROLL_ARGS=(enroll)');
+    expect(script.match(/ENROLL_ARGS=\(enroll\)/g)).toHaveLength(2);
+    // The token and conditional secret must be appended in BOTH the darwin
+    // and linux branches — a single match means one platform lost enrollment.
+    expect(script.match(/ENROLL_ARGS\+=\("\$BREEZE_ENROLL_TOKEN"\)/g)).toHaveLength(2);
+    expect(
+      script.match(/ENROLL_ARGS\+=\(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"\)/g),
+    ).toHaveLength(2);
   });
 
   it('requires a token OR an enrollment secret, not unconditionally the secret', async () => {
@@ -220,9 +225,10 @@ describe('GET /install.sh — generated installer script', () => {
 
   it('flags intercepted responses (captive portal / wrong responder) distinctly', async () => {
     const script = await fetchScript();
-    // A 200 whose body is not Breeze's health JSON means some other device
-    // answered (captive portal, router, web filter) — the SemoTech guest-VLAN
-    // case. The message must say so instead of letting `installer` fail cryptically.
+    // A 200 whose body is not Breeze's health JSON almost always means an
+    // intercepting device answered (captive portal, router, web filter) —
+    // the guest-VLAN field report behind this feature. The message must say
+    // so instead of letting `installer` fail cryptically.
     expect(script).toContain('captive portal');
   });
 
@@ -233,8 +239,11 @@ describe('GET /install.sh — generated installer script', () => {
 });
 
 describe('install.sh functional pre-flight behavior', () => {
-  // Runs the real generated script with bash. An `id` PATH shim makes the
-  // root check pass so execution reaches the connectivity pre-flight.
+  // Runs the real generated script with bash. An `id` PATH shim (always
+  // prints 0, emulating `id -u` under root) makes the script's root check
+  // pass so execution reaches the connectivity pre-flight. If the root check
+  // ever stops using `id`, these tests fail on the root-check fatal — update
+  // the shim to match.
   let tmp: string;
   let scriptFile: string;
   let shimDir: string;
@@ -258,7 +267,17 @@ describe('install.sh functional pre-flight behavior', () => {
       execFile(
         'bash',
         [scriptFile, ...args],
-        { env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` }, timeout: 30_000 },
+        {
+          env: {
+            ...process.env,
+            PATH: `${shimDir}:${process.env.PATH}`,
+            // curl must hit 127.0.0.1 directly — a developer/CI proxy would
+            // turn "connection refused" into a proxy response.
+            no_proxy: '*',
+            NO_PROXY: '*',
+          },
+          timeout: 30_000,
+        },
         (err, stdout, stderr) => {
           const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0;
           resolve({ code, output: `${stdout}${stderr}` });
@@ -276,7 +295,7 @@ describe('install.sh functional pre-flight behavior', () => {
   });
 
   it('flags a captive portal that answers 200 with a non-Breeze body', async () => {
-    // The SemoTech guest-VLAN case: an intercepting device returns 200 HTML,
+    // The guest-VLAN field report: an intercepting device returns 200 HTML,
     // which previously sailed past `curl -f` and died inside `installer`.
     const portal = createServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -298,5 +317,50 @@ describe('install.sh functional pre-flight behavior', () => {
     const { code, output } = await runScript(['--server', 'http://127.0.0.1:1']);
     expect(code).not.toBe(0);
     expect(output).toContain('Pass --token TOKEN or --enrollment-secret SECRET');
+  });
+
+  it('accepts --enrollment-secret alone (legacy flow) past credential validation', async () => {
+    const { code, output } = await runScript([
+      '--server',
+      'http://127.0.0.1:1',
+      '--enrollment-secret',
+      'sec',
+    ]);
+    // Dies at the connectivity pre-flight (nothing listening), proving the
+    // token-OR-secret check let the secret-only invocation through.
+    expect(code).not.toBe(0);
+    expect(output).not.toContain('enrollment credential is required');
+    expect(output).toContain('Cannot reach the Breeze server');
+  });
+
+  it('proceeds past the pre-flight when /health returns the real Breeze body', async () => {
+    // Guards the cross-file contract between the script's grep and the
+    // GET /health payload in apps/api/src/index.ts: if either side drifts,
+    // a pre-flight that ALWAYS fails would still pass the failure-oriented
+    // tests above while bricking every real install.
+    const breeze = createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        // Mirrors the exact body shape of GET /health in index.ts.
+        res.end(JSON.stringify({ status: 'ok', version: 'test', uptime: 1 }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      }
+    });
+    await new Promise<void>((resolve) => breeze.listen(0, '127.0.0.1', resolve));
+    const { port } = breeze.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(output).toContain('Breeze server is reachable');
+      expect(output).not.toContain('Cannot reach the Breeze server');
+      expect(output).not.toContain('captive portal');
+      // It then fails at the download step (the fake server 404s everything
+      // else) — beyond the pre-flight under test, but proof it got there.
+      expect(code).not.toBe(0);
+      expect(output).toContain('Failed to');
+    } finally {
+      breeze.close();
+    }
   });
 });

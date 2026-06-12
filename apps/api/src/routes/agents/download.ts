@@ -320,10 +320,10 @@ function generateInstallScript(serverUrl: string): string {
 #     --server ${serverUrl} \\
 #     --enrollment-secret YOUR_SECRET
 #
-# Or with environment variables:
-#   export BREEZE_SERVER="${serverUrl}"
-#   export BREEZE_ENROLLMENT_SECRET="YOUR_SECRET"
-#   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash
+# Or with environment variables — pass them through sudo, since a plain
+# \`export\` is stripped by sudo's env_reset:
+#   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | \\
+#     sudo BREEZE_SERVER="${serverUrl}" BREEZE_ENROLLMENT_SECRET="YOUR_SECRET" bash
 # ============================================
 
 set -euo pipefail
@@ -371,7 +371,7 @@ if [[ -z "\$BREEZE_SERVER" ]]; then
 fi
 
 if [[ -z "\$BREEZE_ENROLL_TOKEN" && -z "\$BREEZE_ENROLLMENT_SECRET" ]]; then
-  fatal "An enrollment credential is required. Pass --token TOKEN or --enrollment-secret SECRET (or export BREEZE_ENROLL_TOKEN / BREEZE_ENROLLMENT_SECRET)."
+  fatal "An enrollment credential is required. Pass --token TOKEN or --enrollment-secret SECRET (or pass BREEZE_ENROLL_TOKEN / BREEZE_ENROLLMENT_SECRET through sudo)."
 fi
 
 # Strip trailing slash from server URL
@@ -444,6 +444,9 @@ elif [[ "\$HEALTH_CODE" != "200" ]]; then
   fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (HTTP \$HEALTH_CODE). Verify the server URL is correct and this machine has network access to it."
 fi
 
+# NOTE: stays in lockstep with GET /health in apps/api/src/index.ts — the
+# body must contain "status":"ok". If that payload changes, healthy installs
+# would start failing with the (misleading) interception message below.
 if ! grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "\$HEALTH_FILE"; then
   fatal "Got an unexpected response from \$BREEZE_SERVER/health — something other than the Breeze server answered. A captive portal, router, or web filter may be intercepting traffic on this network."
 fi
