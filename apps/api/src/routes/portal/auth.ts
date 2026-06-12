@@ -4,7 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
-import { db } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { portalUsers } from '../../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getEmailService } from '../../services/email';
@@ -99,18 +99,24 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
     return c.json({ error: 'Invalid or expired session' }, 401);
   }
 
-  const [user] = await db
-    .select({
-      id: portalUsers.id,
-      orgId: portalUsers.orgId,
-      email: portalUsers.email,
-      name: portalUsers.name,
-      receiveNotifications: portalUsers.receiveNotifications,
-      status: portalUsers.status
-    })
-    .from(portalUsers)
-    .where(and(eq(portalUsers.id, sessionData.portalUserId), eq(portalUsers.orgId, sessionData.orgId)))
-    .limit(1);
+  // Pre-auth hydration: the session is already validated (Redis/in-memory),
+  // but the portal_users row lives behind org-forced RLS. Run this lookup
+  // under system scope so it resolves under the unprivileged breeze_app pool —
+  // the same pattern authMiddleware uses for its pre-auth users lookup.
+  const [user] = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: portalUsers.id,
+        orgId: portalUsers.orgId,
+        email: portalUsers.email,
+        name: portalUsers.name,
+        receiveNotifications: portalUsers.receiveNotifications,
+        status: portalUsers.status
+      })
+      .from(portalUsers)
+      .where(and(eq(portalUsers.id, sessionData.portalUserId), eq(portalUsers.orgId, sessionData.orgId)))
+      .limit(1)
+  );
 
   if (!user) {
     if (PORTAL_USE_REDIS) {
@@ -159,7 +165,29 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   }
 
   c.set('portalAuth', { user, token, authMethod });
-  return next();
+
+  // Run the protected request under the portal user's organization scope so
+  // RLS on every portal-facing table (tickets, devices, assets, profile, ...)
+  // is satisfied — and enforced — under the unprivileged breeze_app pool.
+  // Session/Redis work above stays OUTSIDE this context so the wrapping
+  // transaction is not held open across slow I/O (#1105).
+  //
+  // Handlers run INSIDE this transaction, so a nested withSystemDbAccessContext()
+  // is a no-op for scope (db/index.ts short-circuits when a context is already
+  // active) — it still runs under org scope. A handler that genuinely needs a
+  // system-scoped sub-query must do runOutsideDbContext(() =>
+  // withSystemDbAccessContext(...)) explicitly. Likewise, any un-awaited db.*
+  // side effect must not capture this txn (mirror auditService's pattern).
+  return withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId: user.orgId,
+      accessibleOrgIds: [user.orgId],
+      accessiblePartnerIds: [],
+      userId: null,
+    },
+    () => next()
+  );
 }
 
 // ============================================
@@ -183,23 +211,28 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
     }
   }
 
-  const userRows = await db
-    .select({
-      id: portalUsers.id,
-      orgId: portalUsers.orgId,
-      email: portalUsers.email,
-      name: portalUsers.name,
-      passwordHash: portalUsers.passwordHash,
-      receiveNotifications: portalUsers.receiveNotifications,
-      status: portalUsers.status
-    })
-    .from(portalUsers)
-    .where(
-      orgId
-        ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail))
-        : eq(portalUsers.email, normalizedEmail)
-    )
-    .limit(orgId ? 1 : 2);
+  // Pre-auth credential lookup resolves a portal user by email (optionally
+  // scoped by orgId) before any tenant context exists — run under system scope
+  // so org-forced RLS doesn't hide the row under the breeze_app pool.
+  const userRows = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: portalUsers.id,
+        orgId: portalUsers.orgId,
+        email: portalUsers.email,
+        name: portalUsers.name,
+        passwordHash: portalUsers.passwordHash,
+        receiveNotifications: portalUsers.receiveNotifications,
+        status: portalUsers.status
+      })
+      .from(portalUsers)
+      .where(
+        orgId
+          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail))
+          : eq(portalUsers.email, normalizedEmail)
+      )
+      .limit(orgId ? 1 : 2)
+  );
 
   if (!orgId && userRows.length > 1) {
     return c.json({ error: 'Multiple portal accounts found for this email. Please provide organization context.' }, 400);
@@ -267,10 +300,12 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
     capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
   }
 
-  await db
-    .update(portalUsers)
-    .set({ lastLoginAt: now, updatedAt: now })
-    .where(eq(portalUsers.id, user.id));
+  await withSystemDbAccessContext(() =>
+    db
+      .update(portalUsers)
+      .set({ lastLoginAt: now, updatedAt: now })
+      .where(eq(portalUsers.id, user.id))
+  );
 
   const resolvedAccountRateKey = `portal:login:account:${user.orgId}:${normalizedEmail}`;
   await clearRateLimitKeys([ipRateKey, accountRateKey, resolvedAccountRateKey]);
@@ -310,15 +345,17 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  const [user] = await db
-    .select({ id: portalUsers.id, email: portalUsers.email, orgId: portalUsers.orgId })
-    .from(portalUsers)
-    .where(
-      orgId
-        ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail))
-        : eq(portalUsers.email, normalizedEmail)
-    )
-    .limit(1);
+  const [user] = await withSystemDbAccessContext(() =>
+    db
+      .select({ id: portalUsers.id, email: portalUsers.email, orgId: portalUsers.orgId })
+      .from(portalUsers)
+      .where(
+        orgId
+          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail))
+          : eq(portalUsers.email, normalizedEmail)
+      )
+      .limit(1)
+  );
 
   if (user) {
     const resetToken = nanoid(48);
@@ -418,10 +455,12 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
   const passwordHash = await hashPassword(password);
   const now = new Date();
 
-  await db
-    .update(portalUsers)
-    .set({ passwordHash, updatedAt: now })
-    .where(eq(portalUsers.id, storedUserId));
+  await withSystemDbAccessContext(() =>
+    db
+      .update(portalUsers)
+      .set({ passwordHash, updatedAt: now })
+      .where(eq(portalUsers.id, storedUserId))
+  );
 
   await clearRateLimitKeys([ipRateKey, tokenRateKey]);
 

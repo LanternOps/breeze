@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/spf13/cobra"
@@ -27,52 +28,6 @@ const (
 	linuxWatchdogUnitDst     = "/etc/systemd/system/breeze-watchdog.service"
 	linuxWatchdogServiceName = "breeze-watchdog"
 )
-
-// Embedded systemd unit — matches agent/service/systemd/breeze-agent.service
-const linuxUnit = `[Unit]
-Description=Breeze RMM Agent
-Documentation=https://github.com/breeze-rmm/breeze
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=60
-StartLimitBurst=5
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/breeze-agent start
-WorkingDirectory=/etc/breeze
-Restart=on-failure
-# 30s cooldown spreads respawn across a fleet that crashes simultaneously
-# (e.g. correlated network blip). Combined with StartLimitBurst=5 over
-# StartLimitIntervalSec=60, a misbehaving host backs off entirely instead
-# of stampeding the API.
-RestartSec=30
-
-# Cap total stop time so a hung HTTP flush during OS shutdown (network
-# going down) doesn't block system power-off for the 90s systemd default.
-TimeoutStopSec=15
-KillMode=mixed
-
-# Security hardening
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/run/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin -/run/ufw.lock
-PrivateTmp=true
-NoNewPrivileges=false
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_FOWNER
-
-# Logging (stdout goes to journald)
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=breeze-agent
-
-# File limits
-LimitNOFILE=8192
-
-[Install]
-WantedBy=multi-user.target
-`
 
 // Embedded user-helper unit
 const linuxUserUnit = `[Unit]
@@ -98,8 +53,60 @@ var serviceCmd = &cobra.Command{
 var withUserHelper bool
 var noWatchdog bool
 
-// healLaunchdPlistsIfNeeded is a no-op on Linux.
-func healLaunchdPlistsIfNeeded() {}
+var reconcileOnce sync.Once
+
+// reconcileServiceUnitIfNeeded runs at startup. If the installed unit predates
+// currentUnitVersion, it rewrites it. The running agent is itself sandboxed and
+// cannot write /etc/systemd/system (ProtectSystem=strict on old units), so it
+// escapes via a systemd-run TRANSIENT SERVICE: PID 1 spawns the reconcile in a
+// fresh execution environment, outside this unit's mount namespace and
+// capability bounding set. Best-effort: on failure it logs and continues.
+func reconcileServiceUnitIfNeeded() {
+	reconcileOnce.Do(func() {
+		// Only act as the installed systemd service running as root.
+		if os.Geteuid() != 0 || os.Getenv("INVOCATION_ID") == "" {
+			return
+		}
+		data, err := os.ReadFile(linuxUnitDst)
+		if err != nil {
+			// ErrNotExist = not installed via systemd: genuinely nothing to heal.
+			// Any other read error on a host that may be running the old sandboxed
+			// unit means we couldn't even evaluate the heal — don't fail silently.
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr,
+					"Warning: could not read %s to check for an outdated systemd unit: %v. "+
+						"If the remote terminal/scripts hit privilege errors, run: "+
+						"sudo breeze-agent service install\n", linuxUnitDst, err)
+			}
+			return
+		}
+		if !unitNeedsReconcile(string(data), currentUnitVersion) {
+			return
+		}
+		if _, err := exec.LookPath("systemd-run"); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: breeze-agent systemd unit is outdated (pre-v%d) and systemd-run is "+
+					"unavailable to auto-heal it. The remote terminal/scripts may hit privilege "+
+					"errors (e.g. apt). Fix: sudo breeze-agent service install\n", currentUnitVersion)
+			return
+		}
+		// TRANSIENT SERVICE, deliberately NOT --scope: a scope child is forked
+		// from this (sandboxed) process and only its cgroup moves — it would
+		// inherit our read-only /etc (ProtectSystem) and restricted CapBnd and
+		// fail with the same Permission denied. Without --scope, PID 1 spawns the
+		// command in systemd's default execution environment — NOT inheriting this
+		// unit's ProtectSystem or CapabilityBoundingSet — so it can write
+		// /etc/systemd/system; being a child of PID 1 it also survives the agent
+		// restart it triggers. See reconcileTransientArgs for the flag invariants.
+		out, err := exec.Command(
+			"systemd-run", reconcileTransientArgs(os.Getpid(), linuxBinaryPath)...).CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: failed to auto-heal outdated systemd unit via systemd-run: %s. "+
+					"Fix: sudo breeze-agent service install\n", strings.TrimSpace(string(out)))
+		}
+	})
+}
 
 func init() {
 	rootCmd.AddCommand(serviceCmd)
@@ -108,6 +115,7 @@ func init() {
 	serviceCmd.AddCommand(serviceStartCmd)
 	serviceCmd.AddCommand(serviceStopCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
+	serviceCmd.AddCommand(serviceReconcileUnitCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper systemd unit")
 	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
 }
@@ -395,6 +403,34 @@ var serviceStatusCmd = &cobra.Command{
 			}
 		}
 		fmt.Println(strings.TrimSpace(string(out)))
+		return nil
+	},
+}
+
+var serviceReconcileUnitCmd = &cobra.Command{
+	Use:    "reconcile-unit",
+	Short:  "Rewrite the systemd unit to the current version and restart (internal)",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("must run as root")
+		}
+		// Best-effort heal: if a later step fails the unit is already v2 on disk,
+		// so the next startup won't re-attempt the restart — the relaxed sandbox
+		// then applies on the following natural service restart rather than now.
+		if err := os.WriteFile(linuxUnitDst, []byte(linuxUnit), 0644); err != nil {
+			return fmt.Errorf("write unit: %w", err)
+		}
+		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+			return fmt.Errorf("daemon-reload: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		fmt.Printf("Reconciled %s to unit version %d; restarting service.\n", linuxUnitDst, currentUnitVersion)
+		// Restart so the relaxed sandbox applies to the live process. This kills
+		// the old agent; we run as a systemd-run transient service whose parent
+		// is PID 1 (not the agent), so this child survives to finish the restart.
+		if out, err := exec.Command("systemctl", "restart", linuxServiceName).CombinedOutput(); err != nil {
+			return fmt.Errorf("restart: %w: %s", err, strings.TrimSpace(string(out)))
+		}
 		return nil
 	},
 }

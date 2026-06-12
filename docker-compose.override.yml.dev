@@ -82,6 +82,8 @@ services:
       # Mount source code for hot-reloading
       - ./apps/web/src:/app/apps/web/src:cached
       - ./apps/web/public:/app/apps/web/public:cached
+      # predev/prebuild run scripts/*.ts inside the container (copy-monaco-assets); read-only — never written at runtime
+      - ./apps/web/scripts:/app/apps/web/scripts:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       # Mount config files
       - ./apps/web/package.json:/app/apps/web/package.json:ro

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import {
   devices,
   deviceMetrics,
@@ -30,6 +30,28 @@ import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
 
+/**
+ * #1121 — pure collapse detector for the watchdogState tolerance gap.
+ * Returns the structured-warn payload when the RAW heartbeat body carried a
+ * `watchdogState` key but schema validation collapsed it to undefined (the
+ * `.catch(undefined)` firing on a corrupted value), else null. Exported for
+ * unit tests; the route handler owns the actual console.warn.
+ */
+export function detectWatchdogStateCollapse(
+  rawBody: unknown,
+  validatedWatchdogState: string | undefined,
+): { field: 'watchdogState'; rawValue: string | undefined } | null {
+  if (validatedWatchdogState !== undefined) return null;
+  if (!rawBody || typeof rawBody !== 'object') return null;
+  const rawState = (rawBody as Record<string, unknown>).watchdogState;
+  if (rawState === undefined) return null;
+  const rawValue =
+    typeof rawState === 'string'
+      ? rawState.slice(0, 100)
+      : JSON.stringify(rawState)?.slice(0, 100);
+  return { field: 'watchdogState', rawValue };
+}
+
 export const heartbeatRoutes = new Hono();
 
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
@@ -40,6 +62,50 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (!agent?.deviceId) {
     return c.json({ error: 'Agent context not found' }, 401);
   }
+
+  // #1121 — observability for the #1065 tolerance trade-off. watchdogState is
+  // an optional informational field guarded by .catch(undefined) in
+  // heartbeatSchema; if a corrupted value collapses to undefined, the
+  // `data.watchdogState === 'FAILOVER'` mapping below silently records
+  // watchdogStatus='connected', masking a genuine failover as healthy
+  // (pre-#1065 the same corruption produced a loud 400). Detect the collapse
+  // — raw body carried the key but the validated payload lost it — and emit
+  // a structured warn so it lands in logs/Sentry breadcrumbs instead of
+  // being indistinguishable from a healthy heartbeat. Hono caches the parsed
+  // JSON body (zValidator already consumed it), so the re-read is free; the
+  // check is gated to watchdog-role heartbeats, the only senders of the field.
+  if (agent.role === 'watchdog' && data.watchdogState === undefined) {
+    try {
+      const raw: unknown = await c.req.json();
+      const collapse = detectWatchdogStateCollapse(raw, data.watchdogState);
+      if (collapse) {
+        console.warn(
+          '[heartbeat] watchdogState collapsed by schema .catch — possible masked failover (#1121)',
+          { deviceId: agent.deviceId, agentId, ...collapse },
+        );
+      }
+    } catch {
+      // Raw body unavailable — nothing to report.
+    }
+  }
+
+  // #1105 — run the RLS-scoped DB work in a SHORT-LIVED context that is
+  // released before the manifest-trust-keyset fetch at the end. The heartbeat
+  // opts out of agentAuthMiddleware's request-long withDbAccessContext wrap
+  // (see agentAuth.ts) and self-manages here, so the org transaction is held
+  // only across this block — not across getActiveTrustKeyset(), which acquires
+  // its OWN (second) pooled connection. Holding both at once self-deadlocks the
+  // pool under a mass agent reconnect (idle-in-transaction → killed → outage).
+  const dbContext = {
+    scope: 'organization' as const,
+    orgId: agent.orgId,
+    accessibleOrgIds: [agent.orgId],
+    accessiblePartnerIds: [],
+  };
+
+  const scoped = await withDbAccessContext(
+    dbContext,
+    async (): Promise<Response | { mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -191,6 +257,45 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
+    // #1104 — agent recovery via the watchdog. A live watchdog whose main
+    // agent is wedged (silent past the #800 threshold) and behind the latest
+    // release has no other recovery path: the watchdog's failover loop routes
+    // an agent `upgradeTo` into doUpdateAgent(), which replaces the wedged
+    // binary. Compute it off the device's RECORDED main-agent version
+    // (`device.agentVersion`) — `data.agentVersion` in this branch is the
+    // WATCHDOG's own version. Gated on `mainAgentSilent` so a healthy main
+    // agent (which self-updates from its own heartbeat) and the watchdog never
+    // both write the same binary.
+    let agentUpgradeTo: string | undefined;
+    if (
+      mainAgentSilent &&
+      normalizedArch &&
+      device.agentVersion &&
+      !device.agentVersion.startsWith('dev-')
+    ) {
+      try {
+        const [latestAgent] = await db
+          .select({ version: agentVersions.version })
+          .from(agentVersions)
+          .where(
+            and(
+              eq(agentVersions.platform, device.osType),
+              eq(agentVersions.architecture, normalizedArch),
+              eq(agentVersions.component, 'agent'),
+              eq(agentVersions.isLatest, true)
+            )
+          )
+          .orderBy(desc(agentVersions.createdAt))
+          .limit(1);
+
+        if (latestAgent && compareAgentVersions(latestAgent.version, device.agentVersion) > 0) {
+          agentUpgradeTo = latestAgent.version;
+        }
+      } catch (err) {
+        console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);
+      }
+    }
+
     return c.json({
       commands: watchdogCommands.map(cmd => ({
         id: cmd.id,
@@ -198,6 +303,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         payload: cmd.payload,
       })),
       watchdogUpgradeTo,
+      upgradeTo: agentUpgradeTo,
     });
   }
 
@@ -507,40 +613,48 @@ if (latestHelper) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
   }
 
-  // Returns the active signing keyset from manifest_signing_keys. On hosted
-  // SaaS the table is empty because nothing in the GitHub-source path calls
-  // ensureActiveSigningKey(); on self-host (BINARY_SOURCE=local) syncBinaries
-  // populates it. See docs/deploy/agent-update-trust-bootstrap.md (#625).
-  // runOutsideDbContext is required because this handler runs inside an
-  // agentAuthMiddleware withDbAccessContext(organization) scope, which would
-  // suppress the inner withSystemDbAccessContext inside getActiveTrustKeyset
-  // (short-circuit at db/index.ts:103-105), causing the RLS policy
-  // manifest_signing_keys_system_only to return zero rows.
+  // Main-branch response payload — built inside the org context, but the
+  // manifest-trust-keyset is fetched AFTER this context closes (see below).
+  return {
+    mainResponse: {
+      commands: commands.map(cmd => ({
+        id: cmd.id,
+        type: cmd.type,
+        payload: cmd.payload
+      })),
+      configUpdate: mergedConfigUpdate,
+      upgradeTo,
+      helperUpgradeTo: helperUpgradeTo ?? undefined,
+      watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
+      renewCert: renewCert || undefined,
+      rotateToken: rotateToken || undefined,
+      helperEnabled: helperSettings?.enabled ?? false,
+      helperSettings: helperSettings ?? undefined,
+      manageRemoteManagement: manageRemoteManagement || undefined,
+    },
+  };
+    },
+  );
+
+  // 404 / 401 / watchdog branches returned a Response directly from the scoped
+  // block — pass it through.
+  if (scoped instanceof Response) return scoped;
+
+  // #1105 — the org transaction is now released. Fetch the manifest trust
+  // keyset OUTSIDE it: getActiveTrustKeyset opens its own system-scoped
+  // context/connection, so no withDbAccessContext(org) is held while it
+  // acquires a second connection. (Returns the active signing keyset from
+  // manifest_signing_keys; empty on hosted SaaS — see
+  // docs/deploy/agent-update-trust-bootstrap.md, #625.)
   let manifestTrustKeys: ManifestTrustKey[] = [];
   try {
-    manifestTrustKeys = await runOutsideDbContext(() => getActiveTrustKeyset());
+    manifestTrustKeys = await getActiveTrustKeyset();
   } catch (err) {
     console.error(`[heartbeat] Failed to load manifest trust keyset for agentId=${agentId}:`, err);
     captureException(err);
   }
 
-  return c.json({
-    commands: commands.map(cmd => ({
-      id: cmd.id,
-      type: cmd.type,
-      payload: cmd.payload
-    })),
-    configUpdate: mergedConfigUpdate,
-    upgradeTo,
-    helperUpgradeTo: helperUpgradeTo ?? undefined,
-    watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
-    renewCert: renewCert || undefined,
-    rotateToken: rotateToken || undefined,
-    helperEnabled: helperSettings?.enabled ?? false,
-    helperSettings: helperSettings ?? undefined,
-    manageRemoteManagement: manageRemoteManagement || undefined,
-    manifestTrustKeys,
-  });
+  return c.json({ ...scoped.mainResponse, manifestTrustKeys });
 });
 
 // Receive service/process monitoring check results from agent

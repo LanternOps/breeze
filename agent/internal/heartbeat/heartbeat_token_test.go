@@ -95,6 +95,38 @@ func TestSendHelperTokenUpdateOnlyReachesAssistSessions(t *testing.T) {
 	}
 }
 
+// TestHelperTokenNotDeliveredToNonConsoleAssist proves the #1009 fix at the
+// heartbeat wiring layer: on a multi-user host an assist session that is NOT in
+// the active console session must never receive the device helper token, even
+// though it carries assist scope. The console assist session still receives it.
+//
+// The active console session id is injected via the broker's test seam so this
+// runs deterministically on darwin without Windows APIs.
+func TestHelperTokenNotDeliveredToNonConsoleAssist(t *testing.T) {
+	const secret = "brz_secret"
+
+	consoleAssist := newHelperTokenSession(t, "assist-console", []string{ipc.ScopeAssist})
+	consoleAssist.session.WinSessionID = "1"
+
+	otherAssist := newHelperTokenSession(t, "assist-other", []string{ipc.ScopeAssist})
+	otherAssist.session.WinSessionID = "3"
+
+	broker := newTestBrokerWithSessions(t, consoleAssist.session, otherAssist.session)
+	broker.SetConsoleSessionIDFunc(func() string { return "1" })
+	broker.SetGOOSForTest("windows") // exercise the multi-user console-session binding
+
+	h := &Heartbeat{sessionBroker: broker}
+	h.setHelperToken(secret)
+	h.sendHelperTokenUpdate(secret)
+
+	if token, _ := awaitHelperToken(t, consoleAssist.client); token != secret {
+		t.Fatalf("console assist: expected helper token %q, got %q", secret, token)
+	}
+	if _, gotFrame := awaitHelperToken(t, otherAssist.client); gotFrame {
+		t.Fatal("non-console assist session received a frame; helper token must never leave the console session")
+	}
+}
+
 // TestHandleHelperSessionAuthenticatedPushesOnlyToAssist proves the connect-time
 // push path: a freshly authenticated assist session receives the retained token,
 // while a watchdog session does not — even when both are driven through the same

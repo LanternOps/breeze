@@ -52,6 +52,45 @@ export const enrollSchema = z.object({
 // Heartbeat
 // ============================================
 
+// Tolerant heartbeat schema (Layer A bulletproofing).
+//
+// Optional informational fields are wrapped with `.catch(undefined)` so that
+// a malformed/oversized value drops silently instead of 400-ing the entire
+// heartbeat. Critical fields (status, agentVersion, top-level metrics core,
+// role, etc.) remain strict — those are real assertions about the agent
+// contract.
+//
+// For arrays of optional inner records (currentIPs, changedIPs, removedIPs,
+// interfaceStats), one bad element collapses the whole array via
+// `.catch(undefined)` rather than rejecting the heartbeat. The server keeps
+// treating an absent IP-history update as "no change this beat."
+//
+// History: an earlier helper-window incident saw Windows pseudo-interfaces
+// emit MACs > 17 chars, which (pre-fix) rejected the entire payload and
+// flipped endpoints to "offline" even though the agent was running fine.
+// Tolerance here is the systemic fix for that whole class of bug.
+
+const ipEntrySchema = z.object({
+  interfaceName: z.string().min(1).max(100),
+  ipAddress: z.string().trim().max(45).refine(
+    (value) => {
+      const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+      return isIP(withoutZone) !== 0;
+    },
+    { message: 'Invalid IP address format' }
+  ),
+  ipType: z.enum(['ipv4', 'ipv6']).optional().catch(undefined),
+  assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional().catch(undefined),
+  // Standard MAC is 17 chars (XX:XX:XX:XX:XX:XX), but Windows pseudo-
+  // interfaces (ISATAP, Teredo, etc.) report longer EUI-64 / tunnel forms
+  // up to ~53 chars. Accept anything reasonable to avoid rejecting the
+  // whole heartbeat over an informational field.
+  macAddress: z.string().max(64).optional().catch(undefined),
+  subnetMask: z.string().max(45).optional().catch(undefined),
+  gateway: z.string().max(45).optional().catch(undefined),
+  dnsServers: z.array(z.string().max(45)).max(8).optional().catch(undefined)
+});
+
 export const heartbeatSchema = z.object({
   metrics: z.object({
     cpuPercent: z.number(),
@@ -59,17 +98,17 @@ export const heartbeatSchema = z.object({
     ramUsedMb: z.number().int(),
     diskPercent: z.number(),
     diskUsedGb: z.number(),
-    diskActivityAvailable: z.boolean().optional(),
-    diskReadBytes: z.number().int().min(0).optional(),
-    diskWriteBytes: z.number().int().min(0).optional(),
-    diskReadBps: z.number().int().min(0).optional(),
-    diskWriteBps: z.number().int().min(0).optional(),
-    diskReadOps: z.number().int().min(0).optional(),
-    diskWriteOps: z.number().int().min(0).optional(),
-    networkInBytes: z.number().int().optional(),
-    networkOutBytes: z.number().int().optional(),
-    bandwidthInBps: z.number().int().min(0).optional(),
-    bandwidthOutBps: z.number().int().min(0).optional(),
+    diskActivityAvailable: z.boolean().optional().catch(undefined),
+    diskReadBytes: z.number().int().min(0).optional().catch(undefined),
+    diskWriteBytes: z.number().int().min(0).optional().catch(undefined),
+    diskReadBps: z.number().int().min(0).optional().catch(undefined),
+    diskWriteBps: z.number().int().min(0).optional().catch(undefined),
+    diskReadOps: z.number().int().min(0).optional().catch(undefined),
+    diskWriteOps: z.number().int().min(0).optional().catch(undefined),
+    networkInBytes: z.number().int().optional().catch(undefined),
+    networkOutBytes: z.number().int().optional().catch(undefined),
+    bandwidthInBps: z.number().int().min(0).optional().catch(undefined),
+    bandwidthOutBps: z.number().int().min(0).optional().catch(undefined),
     interfaceStats: z.array(z.object({
       name: z.string().min(1),
       inBytesPerSec: z.number().int().min(0),
@@ -80,108 +119,53 @@ export const heartbeatSchema = z.object({
       outPackets: z.number().int().min(0),
       inErrors: z.number().int().min(0),
       outErrors: z.number().int().min(0),
-      speed: z.number().int().min(0).optional()
-    })).max(100).optional(),
-    processCount: z.number().int().optional()
+      speed: z.number().int().min(0).optional().catch(undefined)
+    })).max(100).optional().catch(undefined),
+    processCount: z.number().int().optional().catch(undefined)
   }).optional(),
-  metricsAvailable: z.boolean().optional(),
+  metricsAvailable: z.boolean().optional().catch(undefined),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
-  helperVersion: z.string().max(20).optional(),
+  helperVersion: z.string().max(20).optional().catch(undefined),
   ipHistoryUpdate: z.object({
-    deviceId: z.string().optional(),
-    currentIPs: z.array(z.object({
-      interfaceName: z.string().min(1).max(100),
-      ipAddress: z.string().trim().max(45).refine(
-        (value) => {
-          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
-          return isIP(withoutZone) !== 0;
-        },
-        { message: 'Invalid IP address format' }
-      ),
-      ipType: z.enum(['ipv4', 'ipv6']).optional(),
-      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      // Standard MAC is 17 chars (XX:XX:XX:XX:XX:XX), but Windows pseudo-
-      // interfaces (ISATAP, Teredo, etc.) report longer EUI-64 / tunnel forms
-      // up to ~53 chars. Accept anything reasonable to avoid rejecting the
-      // whole heartbeat over an informational field.
-      macAddress: z.string().max(64).optional(),
-      subnetMask: z.string().max(45).optional(),
-      gateway: z.string().max(45).optional(),
-      dnsServers: z.array(z.string().max(45)).max(8).optional()
-    })).max(100).nullish(),
-    changedIPs: z.array(z.object({
-      interfaceName: z.string().min(1).max(100),
-      ipAddress: z.string().trim().max(45).refine(
-        (value) => {
-          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
-          return isIP(withoutZone) !== 0;
-        },
-        { message: 'Invalid IP address format' }
-      ),
-      ipType: z.enum(['ipv4', 'ipv6']).optional(),
-      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      // Standard MAC is 17 chars (XX:XX:XX:XX:XX:XX), but Windows pseudo-
-      // interfaces (ISATAP, Teredo, etc.) report longer EUI-64 / tunnel forms
-      // up to ~53 chars. Accept anything reasonable to avoid rejecting the
-      // whole heartbeat over an informational field.
-      macAddress: z.string().max(64).optional(),
-      subnetMask: z.string().max(45).optional(),
-      gateway: z.string().max(45).optional(),
-      dnsServers: z.array(z.string().max(45)).max(8).optional()
-    })).max(100).nullish(),
-    removedIPs: z.array(z.object({
-      interfaceName: z.string().min(1).max(100),
-      ipAddress: z.string().trim().max(45).refine(
-        (value) => {
-          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
-          return isIP(withoutZone) !== 0;
-        },
-        { message: 'Invalid IP address format' }
-      ),
-      ipType: z.enum(['ipv4', 'ipv6']).optional(),
-      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      // Standard MAC is 17 chars (XX:XX:XX:XX:XX:XX), but Windows pseudo-
-      // interfaces (ISATAP, Teredo, etc.) report longer EUI-64 / tunnel forms
-      // up to ~53 chars. Accept anything reasonable to avoid rejecting the
-      // whole heartbeat over an informational field.
-      macAddress: z.string().max(64).optional(),
-      subnetMask: z.string().max(45).optional(),
-      gateway: z.string().max(45).optional(),
-      dnsServers: z.array(z.string().max(45)).max(8).optional()
-    })).max(100).nullish(),
-    detectedAt: z.string().datetime({ offset: true }).optional()
-  }).optional(),
-  pendingReboot: z.boolean().optional(),
-  lastUser: z.string().max(255).optional(),
-  uptime: z.number().int().min(0).optional(),
-  deviceRole: z.enum(DEVICE_ROLES).optional(),
-  hostname: z.string().min(1).max(255).optional(),
-  osVersion: z.string().min(1).max(255).optional(),
-  osBuild: z.string().max(255).optional(),
+    deviceId: z.string().optional().catch(undefined),
+    currentIPs: z.array(ipEntrySchema).max(100).nullish().catch(undefined),
+    changedIPs: z.array(ipEntrySchema).max(100).nullish().catch(undefined),
+    removedIPs: z.array(ipEntrySchema).max(100).nullish().catch(undefined),
+    detectedAt: z.string().datetime({ offset: true }).optional().catch(undefined)
+  }).optional().catch(undefined),
+  pendingReboot: z.boolean().optional().catch(undefined),
+  lastUser: z.string().max(255).optional().catch(undefined),
+  uptime: z.number().int().min(0).optional().catch(undefined),
+  deviceRole: z.enum(DEVICE_ROLES).optional().catch(undefined),
+  hostname: z.string().min(1).max(255).optional().catch(undefined),
+  osVersion: z.string().min(1).max(255).optional().catch(undefined),
+  osBuild: z.string().max(255).optional().catch(undefined),
   tccPermissions: z.object({
     screenRecording: z.boolean(),
     accessibility: z.boolean(),
     fullDiskAccess: z.boolean(),
-    remoteDesktop: z.boolean().nullable().optional(),
+    remoteDesktop: z.boolean().nullable().optional().catch(undefined),
     checkedAt: z.string().datetime({ offset: true }),
-  }).optional(),
+  }).optional().catch(undefined),
   desktopAccess: z.object({
     mode: z.enum(['user_session', 'login_window', 'unavailable']),
     loginUiReachable: z.boolean(),
     virtualDisplayReady: z.boolean(),
-    reason: desktopAccessReasonSchema.nullable().optional(),
-    remoteDesktopPermission: z.boolean().nullable().optional(),
+    reason: desktopAccessReasonSchema.nullable().optional().catch(undefined),
+    remoteDesktopPermission: z.boolean().nullable().optional().catch(undefined),
     checkedAt: z.string().datetime({ offset: true }),
-  }).optional(),
-  isHeadless: z.boolean().optional(),
+  }).optional().catch(undefined),
+  isHeadless: z.boolean().optional().catch(undefined),
   role: z.enum(['agent', 'watchdog']).optional(),
-  watchdogState: z.string().optional(),
+  watchdogState: z.string().optional().catch(undefined),
   // Watchdog-only: 24h restart accounting for the main agent (#799 Layer B).
-  mainAgentRestartCount24h: z.number().int().min(0).max(10_000).optional(),
-  mainAgentLastRestartAt: z.string().datetime({ offset: true }).optional(),
-  flapDetected: z.boolean().optional(),
-  osType: z.string().optional(),
+  // Optional informational fields, so they tolerate a bad/oversized value
+  // (drop it) rather than 400-ing the whole heartbeat.
+  mainAgentRestartCount24h: z.number().int().min(0).max(10_000).optional().catch(undefined),
+  mainAgentLastRestartAt: z.string().datetime({ offset: true }).optional().catch(undefined),
+  flapDetected: z.boolean().optional().catch(undefined),
+  osType: z.string().optional().catch(undefined),
 });
 
 // ============================================

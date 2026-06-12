@@ -1,4 +1,8 @@
 import 'dotenv/config';
+// Canonicalize NODE_ENV before any module reads it (some routes/services gate
+// on `NODE_ENV === 'production'` at import time). Must stay directly after
+// dotenv so .env is loaded first. See #917 (L-6).
+import './config/normalizeNodeEnv';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -18,11 +22,14 @@ import { configRoutes } from './routes/config';
 import { externalServicesRoutes } from './routes/externalServices';
 import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
+import { pamRoutes } from './routes/pam';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
 import { automationRoutes, automationWebhookRoutes } from './routes/automations';
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
+import { ticketsRoutes } from './routes/tickets';
+import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { orgRoutes } from './routes/orgs';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -116,7 +123,7 @@ import { m365Routes } from './routes/m365';
 import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
-import { captureException } from './services/sentry';
+import { captureException, flushSentry, initSentry } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
 
@@ -131,6 +138,10 @@ import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
+import {
+  initializeAuditChainVerifyWorker,
+  shutdownAuditChainVerifyWorker,
+} from './jobs/auditChainVerify';
 import { initializeTenantErasureWorker, shutdownTenantErasureWorker } from './jobs/tenantErasure';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
@@ -179,7 +190,10 @@ import {
   shutdownIncidentSlaMonitor,
 } from './jobs/incidentJobs';
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
+import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
+import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
+import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -699,12 +713,15 @@ api.route('/config', configRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
+api.route('/pam', pamRoutes);
 api.route('/scripts', scriptRoutes);
 api.route('/script-library', scriptLibraryRoutes);
 api.route('/automations/webhooks', automationWebhookRoutes);
 api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
+api.route('/tickets', ticketsRoutes);
+api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
@@ -1010,6 +1027,7 @@ async function initializeWorkers(): Promise<void> {
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
+    ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['tenantErasure', initializeTenantErasureWorker],
     ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
@@ -1040,7 +1058,10 @@ async function initializeWorkers(): Promise<void> {
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
     ['staleCommandReaper', initializeStaleCommandReaper],
+    ['pamJobs', initializePamJobs],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
+    ['ticketNotifyWorker', initializeTicketNotifyWorker],
+    ['ticketSlaWorker', initializeTicketSlaWorker],
   ];
 
   await Promise.allSettled(
@@ -1175,6 +1196,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownAuditRetentionWorker,
+    shutdownAuditChainVerifyWorker,
     shutdownTenantErasureWorker,
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
@@ -1191,7 +1213,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownOfflineDetector,
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
+    shutdownPamJobs,
     shutdownApprovalExpiryReaper,
+    shutdownTicketNotifyWorker,
+    shutdownTicketSlaWorker,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,
@@ -1200,7 +1225,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
       if (typeof closeDb === 'function') {
         await closeDb();
       }
-    }
+    },
+    // Drain any buffered Sentry events before the process exits (no-op if
+    // Sentry is disabled). Bounded internally by a 2s flush timeout.
+    () => flushSentry(),
   ];
 
   // Stop accepting requests BEFORE tearing down workers/Redis/DB. Otherwise a
@@ -1269,6 +1297,11 @@ function installSignalHandlers(): void {
 
 async function bootstrap(): Promise<void> {
   console.log(`Breeze API starting on port ${port}...`);
+
+  // Initialize error reporting first so failures during the rest of startup
+  // (migrations, seeds, self-tests) and the global onError/unhandledRejection
+  // handlers are actually captured. No-op unless SENTRY_DSN is set.
+  initSentry();
 
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().

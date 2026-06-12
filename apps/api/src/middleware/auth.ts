@@ -11,6 +11,7 @@ import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
 import { mfaForcePartnerAdmin } from '../config/env';
+import { ipAllowlistGuard } from './ipAllowlistGuard';
 
 export interface AuthContext {
   user: {
@@ -60,6 +61,14 @@ export interface AuthContext {
    * denied for a null/undefined siteId (e.g. a device with no site assignment).
    */
   canAccessSite?: (siteId: string | null | undefined) => boolean;
+
+  /**
+   * Set ONLY for Breeze Helper sessions (helperAuth). When present, the
+   * AI-tools executeTool gate forces every tool's device input to this device
+   * id and denies org-wide tools — the Helper can act only on its own device.
+   * Undefined for all normal (user/agent) contexts.
+   */
+  helperDeviceId?: string;
 }
 
 declare module 'hono' {
@@ -424,7 +433,11 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   }
   const canAccessSite = siteAccessCheck(allowedSiteIds);
 
-  await withDbAccessContext(
+  // The return value matters: ipAllowlistGuard returns its deny/error
+  // Response as a value (it does not throw). Dropping it leaves the Hono
+  // context unfinalized — every gated request then 500s with "Context is
+  // not finalized" instead of the intended 403/503.
+  return withDbAccessContext(
     {
       scope: payload.scope,
       orgId: payload.orgId,
@@ -451,7 +464,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         canAccessSite
       });
 
-      await next();
+      return ipAllowlistGuard(c, next);
     }
   );
 }

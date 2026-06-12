@@ -121,7 +121,12 @@ type Props = {
 };
 
 export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks }: Props) {
-  const { currentOrgId } = useOrgStore();
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgStore((s) => s.orgScope);
+  // Monitoring assets are scoped to a single org; the API returns 400
+  // ("orgId is required when partner has multiple organizations") for a
+  // multi-org partner with no orgId. Prompt for one org instead of erroring.
+  const needsOrgSelection = orgScope === 'all' || !currentOrgId;
   const [assets, setAssets] = useState<MonitoringAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -136,12 +141,20 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   const [actionError, setActionError] = useState<string>();
 
   const fetchAssets = useCallback(async () => {
+    // Don't fire a per-org request with no org — it 400s. The render shows a
+    // "pick an organization" prompt in this state.
+    if (orgScope === 'all' || !currentOrgId) {
+      setAssets([]);
+      setError(undefined);
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       setError(undefined);
       const params = new URLSearchParams();
       if (showAll) params.set('includeUnconfigured', 'true');
-      if (currentOrgId) params.set('orgId', currentOrgId);
+      params.set('orgId', currentOrgId);
       const qs = params.toString() ? `?${params.toString()}` : '';
       const res = await fetchWithAuth(`/monitoring/assets${qs}`);
       if (!res.ok) throw new Error('Failed to fetch monitoring assets');
@@ -152,7 +165,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
     } finally {
       setLoading(false);
     }
-  }, [showAll, currentOrgId]);
+  }, [showAll, currentOrgId, orgScope]);
 
   useEffect(() => {
     fetchAssets();
@@ -255,6 +268,16 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       setActionLoading(null);
     }
   };
+
+  if (needsOrgSelection) {
+    return (
+      <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
+        Network monitoring assets are scoped to a single organization. Switch the scope in the top bar
+        from <span className="font-medium text-foreground">All orgs</span> to a specific organization
+        to view its monitoring assets.
+      </div>
+    );
+  }
 
   if (loading && assets.length === 0) {
     return (

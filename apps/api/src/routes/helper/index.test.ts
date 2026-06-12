@@ -161,7 +161,7 @@ describe('helper routes permission derivation', () => {
       previousTokenHash: null,
       previousTokenExpiresAt: null,
     }));
-    expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'standard');
+    expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
     expect((insertedValues?.contextSnapshot as Record<string, unknown>).permissionLevel).toBe('standard');
   });
 
@@ -176,7 +176,7 @@ describe('helper routes permission derivation', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.permissionLevel).toBe('extended');
-    expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'standard');
+    expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
   });
 
   it('uses server-derived permissionLevel and allowlist when sending messages', async () => {
@@ -241,6 +241,6 @@ describe('helper routes permission derivation', () => {
     expect(systemPrompt).toBe('helper system prompt');
     expect(allowedTools).toContain('mcp__breeze__file_operations');
     expect(allowedTools).not.toContain('mcp__breeze__execute_command');
-    expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'standard');
+    expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
   });
 });

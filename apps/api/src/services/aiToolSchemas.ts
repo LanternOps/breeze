@@ -104,6 +104,29 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid,
   }),
 
+  // PAM Brain elevation tools (#1160). durationMinutes/limit are intentionally
+  // un-capped here — the handlers clamp them (480 / 100) so the Brain can pass a
+  // larger value without a validation failure.
+  request_elevation: z.object({
+    deviceId: uuid,
+    subjectUsername: z.string().min(1).max(255),
+    reason: z.string().min(1).max(2000),
+    durationMinutes: z.number().int().min(1).optional(),
+    subjectAdGroups: z.array(z.string().min(1).max(255)).max(200).optional(),
+  }),
+
+  revoke_elevation: z.object({
+    elevationRequestId: uuid,
+    reason: z.string().min(1).max(2000),
+  }),
+
+  get_elevation_history: z.object({
+    deviceId: uuid.optional(),
+    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
+    flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
+    limit: z.number().int().min(1).optional(),
+  }),
+
   get_ip_history: z.object({
     device_id: uuid.optional(),
     ip_address: ipAddress.optional(),
@@ -140,6 +163,23 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     username: z.string().max(255).optional(),
     daysBack: z.number().int().min(1).max(365).optional(),
     limit: z.number().int().min(1).max(500).optional(),
+  }),
+
+  manage_tickets: z.object({
+    action: z.enum(['list', 'get', 'create', 'comment', 'assign', 'update_status']),
+    ticketId: uuid.optional(),
+    orgId: uuid.optional(),
+    deviceId: uuid.optional(),
+    assigneeId: uuid.optional(),
+    subject: z.string().min(1).max(255).optional(),
+    description: z.string().max(50_000).optional(),
+    priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+    status: z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']).optional(),
+    resolutionNote: z.string().max(10000).optional(),
+    content: z.string().max(50_000).optional(),
+    isPublic: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    pendingReason: z.string().max(500).optional(),
   }),
 
   manage_alerts: z.object({

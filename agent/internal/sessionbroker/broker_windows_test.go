@@ -523,7 +523,9 @@ func TestAssistRoleRejectsSystemSID(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, rejected := roleIdentityRejection(tc.role, tc.sid, 0, "windows")
+			// Console session matches peer session so the SID gate (not the
+			// console-session binding) is the assertion under test here.
+			reason, rejected := roleIdentityRejection(tc.role, tc.sid, 0, "1", "1", "windows")
 			if rejected != tc.wantReject {
 				t.Fatalf("rejected = %v, want %v (reason %q)", rejected, tc.wantReject, reason)
 			}

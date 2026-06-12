@@ -19,6 +19,7 @@ import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { resolveWritableToolOrgId } from './aiTools';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { scheduleHuntressSync } from '../jobs/huntressSync';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
 
@@ -253,6 +254,22 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
       }
       if (!includeResolved) {
         conditions.push(sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`);
+      }
+
+      // Site axis (app-layer only; RLS does NOT enforce it). huntressIncidents
+      // has no site_id column, so narrow by the in-scope device-id set (this
+      // also scopes the deviceHostname join). A restricted caller with zero
+      // in-scope devices short-circuits to empty results. Intersects with the
+      // optional deviceId filter above (most-restrictive wins). Incidents not
+      // mapped to a device (deviceId null) are excluded for a restricted
+      // caller (fail closed).
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const queryOrgId = requestedOrgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        const allowed = queryOrgId ? await resolveSiteAllowedDeviceIds(queryOrgId, auth) : [];
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({ incidents: [], total: 0, limit, offset, includeResolved, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        conditions.push(inArray(huntressIncidents.deviceId, allowed));
       }
 
       const where = conditions.length > 0 ? and(...conditions) : undefined;

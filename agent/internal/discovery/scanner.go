@@ -60,6 +60,14 @@ type Scanner struct {
 	config ScanConfig
 }
 
+var (
+	scanARP      = ScanARP
+	pingSweep    = PingSweep
+	scanPorts    = ScanPorts
+	discoverSNMP = DiscoverSNMP
+	readARPCache = ReadARPCache
+)
+
 // NewScanner creates a new Scanner with the given configuration.
 func NewScanner(config ScanConfig) *Scanner {
 	return &Scanner{
@@ -113,7 +121,7 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 	now := time.Now()
 
 	if methods["arp"] {
-		arpResults, err := ScanARP(subnets, exclude, s.config.Timeout)
+		arpResults, err := scanARP(subnets, exclude, s.config.Timeout)
 		if err != nil {
 			slog.Warn("ARP scan failed", "error", err)
 		}
@@ -126,7 +134,7 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 
 	var aliveTargets []net.IP
 	if methods["ping"] {
-		pingResults := PingSweep(targets, s.config.Timeout, s.config.Concurrency)
+		pingResults := pingSweep(targets, s.config.Timeout, s.config.Concurrency)
 		for _, pr := range pingResults {
 			aliveTargets = append(aliveTargets, pr.IP)
 			host := getOrCreateHost(hosts, pr.IP.String(), now)
@@ -145,7 +153,7 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 		if err != nil {
 			return nil, err
 		}
-		portResults := ScanPorts(portTargets, portRanges, s.config.Timeout, s.config.Concurrency)
+		portResults := scanPorts(portTargets, portRanges, s.config.Timeout, s.config.Concurrency)
 		for ip, openPorts := range portResults {
 			host := getOrCreateHost(hosts, ip, now)
 			host.OpenPorts = openPorts
@@ -154,7 +162,7 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 	}
 
 	if methods["snmp"] {
-		snmpResults := DiscoverSNMP(portTargets, s.config.SNMPCommunities, s.config.Timeout, s.config.Concurrency)
+		snmpResults := discoverSNMP(targets, s.config.SNMPCommunities, s.config.Timeout, s.config.Concurrency)
 		for ip, snmpInfo := range snmpResults {
 			host := getOrCreateHost(hosts, ip, now)
 			host.SNMPData = snmpInfo
@@ -165,7 +173,7 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 	// Fill in missing MACs from the OS ARP cache.
 	// After port scanning, hosts are typically in the kernel ARP table
 	// even if pcap-based ARP scan failed (requires root).
-	arpCache := ReadARPCache()
+	arpCache := readARPCache()
 	for ip, mac := range arpCache {
 		if host, ok := hosts[ip]; ok && host.MAC == "" {
 			host.MAC = mac

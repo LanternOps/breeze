@@ -89,6 +89,10 @@ type Config struct {
 	// relay TURN, disconnect timeout, etc.) ship regardless.
 	DesktopDebug bool `mapstructure:"desktop_debug"`
 
+	// PAMEnabled gates privileged access management features, including the
+	// dormant local elevation account. Default false.
+	PAMEnabled bool `mapstructure:"pam_enabled"`
+
 	// Concurrency limits
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
 	CommandQueueSize      int `mapstructure:"command_queue_size"`
@@ -195,6 +199,7 @@ func Default() *Config {
 		LogMaxSizeMB:             50,
 		LogMaxBackups:            3,
 		LogShippingLevel:         "warn",
+		PAMEnabled:               false,
 		MaxConcurrentCommands:    10,
 		CommandQueueSize:         100,
 		AuditEnabled:             true,
@@ -422,6 +427,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("policy_config_state_probes", cfg.PolicyConfigStateProbes)
 	viper.Set("log_level", cfg.LogLevel)
 	viper.Set("log_shipping_level", cfg.LogShippingLevel)
+	viper.Set("pam_enabled", cfg.PAMEnabled)
 	viper.Set("auto_update", cfg.AutoUpdate)
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)

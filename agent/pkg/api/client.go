@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -102,13 +103,50 @@ type AgentConfig struct {
 	EnabledCollectors                []string `json:"enabledCollectors,omitempty"`
 }
 
+// refuseUntrustedRedirect is the http.Client.CheckRedirect policy for the agent
+// API client. Every request the client makes carries the device token — Enroll
+// sends it as the custom x-agent-reenrollment-token header, the other calls send
+// it as Authorization: Bearer. Go follows redirects by default and, while it
+// drops Authorization/Cookie once a redirect leaves the original domain (it
+// still trusts subdomains), it forwards arbitrary custom headers — so a
+// compromised or MITM'd server could 30x a request to a host it controls and
+// harvest the token.
+//
+// Merely stripping the headers is not enough: following the redirect would still
+// hand the request body (during enroll: hostname, hardware serial, OS info) to
+// the attacker and let it forge the response the agent parses and persists
+// (e.g. authToken / mTLS cert). A legitimate Breeze server never redirects an
+// agent to a different host, so refuse the redirect outright and surface it to
+// the caller (which wraps the resulting error). Trusted redirects on the same
+// endpoint — a different path, or an http->https upgrade — are still followed.
+// An https->http downgrade is refused because it would expose the token over
+// cleartext. See #1043.
+func refuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	prev := via[len(via)-1]
+	// The hostname is the trust boundary: the agent already trusts its
+	// configured server, so a same-host redirect (different path or port, or
+	// an http->https upgrade) is fine, but a redirect to any other host is not.
+	// Compared case-insensitively since hostnames are.
+	if !strings.EqualFold(req.URL.Hostname(), prev.URL.Hostname()) {
+		return fmt.Errorf("refusing redirect from host %s to untrusted host %s during credentialed request", prev.URL.Hostname(), req.URL.Hostname())
+	}
+	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing https->%s downgrade redirect to %s during credentialed request", req.URL.Scheme, req.URL.Hostname())
+	}
+	return nil
+}
+
 func NewClient(baseURL, authToken, agentID string) *Client {
 	return &Client{
 		baseURL:   baseURL,
 		authToken: authToken,
 		agentID:   agentID,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: refuseUntrustedRedirect,
 		},
 	}
 }
@@ -124,8 +162,9 @@ func NewClientWithTLS(baseURL, authToken, agentID string, tlsCfg *tls.Config) *C
 		authToken: authToken,
 		agentID:   agentID,
 		httpClient: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: transport,
+			Timeout:       30 * time.Second,
+			Transport:     transport,
+			CheckRedirect: refuseUntrustedRedirect,
 		},
 	}
 }

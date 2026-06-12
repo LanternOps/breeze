@@ -465,7 +465,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 						"error": err.Error(),
 					})
 				} else {
-					processHeartbeatResponse(resp, wd, journal, cfg, tokenStore, recovery)
+					handleInitialFailoverHeartbeatResponse(failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
 
@@ -569,24 +569,33 @@ func handleFailoverPoll(
 		})
 		return
 	}
-	processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
 
-	// Poll for commands.
-	commands, err := fc.PollCommands()
+	// Commands targeted at the watchdog are claimed by the heartbeat (the
+	// server marks them 'sent' and returns them inline), so the poll below
+	// won't re-return them. Execute the heartbeat-delivered batch here, then
+	// the poll batch, deduped — otherwise a `restart_agent` etc. is consumed
+	// but never run (#1103).
+	// Poll for any still-pending commands. A poll failure must not drop the
+	// heartbeat-delivered batch, so fall through with an empty poll set.
+	pollCmds, err := fc.PollCommands()
 	if err != nil {
 		journal.Log(watchdog.LevelError, "failover.poll_failed", map[string]any{
 			"error": err.Error(),
 		})
-		return
+		pollCmds = nil
 	}
 
-	for _, cmd := range commands {
+	executeFailoverCommands(heartbeatCmds, pollCmds, func(cmd watchdog.FailoverCommand) {
 		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
-	}
+	})
 }
 
-// processHeartbeatResponse handles upgrade directives from the API.
-func processHeartbeatResponse(
+// handleInitialFailoverHeartbeatResponse handles the first heartbeat sent when
+// failover starts. Those heartbeat commands are already claimed server-side, so
+// execute them immediately; there is no poll batch yet on this path.
+func handleInitialFailoverHeartbeatResponse(
+	fc *watchdog.FailoverClient,
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
@@ -594,8 +603,58 @@ func processHeartbeatResponse(
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 ) {
+	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
+		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
+	})
+}
+
+func processInitialFailoverHeartbeatResponse(
+	resp *watchdog.HeartbeatResponse,
+	wd *watchdog.Watchdog,
+	journal *watchdog.Journal,
+	cfg *config.Config,
+	tokens *tokenHolder,
+	recovery *watchdog.RecoveryManager,
+	run func(watchdog.FailoverCommand),
+) {
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	executeFailoverCommands(heartbeatCmds, nil, run)
+}
+
+// executeFailoverCommands runs the heartbeat-delivered command batch first,
+// then the poll-delivered batch, invoking run() once per unique command id.
+// The server claims+marks heartbeat commands 'sent' so the poll normally
+// won't re-return them; the dedup is defensive against any overlap. Order is
+// preserved (heartbeat batch, then poll batch). (#1103)
+func executeFailoverCommands(
+	heartbeatCmds, pollCmds []watchdog.FailoverCommand,
+	run func(watchdog.FailoverCommand),
+) {
+	seen := make(map[string]bool, len(heartbeatCmds))
+	for _, cmd := range heartbeatCmds {
+		run(cmd)
+		seen[cmd.ID] = true
+	}
+	for _, cmd := range pollCmds {
+		if seen[cmd.ID] {
+			continue
+		}
+		run(cmd)
+	}
+}
+
+// processHeartbeatResponse handles upgrade directives from the API and returns
+// any commands delivered inline with the heartbeat response.
+func processHeartbeatResponse(
+	resp *watchdog.HeartbeatResponse,
+	wd *watchdog.Watchdog,
+	journal *watchdog.Journal,
+	cfg *config.Config,
+	tokens *tokenHolder,
+	recovery *watchdog.RecoveryManager,
+) []watchdog.FailoverCommand {
 	if resp == nil {
-		return
+		return nil
 	}
 	if resp.UpgradeTo != "" {
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
@@ -609,6 +668,7 @@ func processHeartbeatResponse(
 		})
 		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, tokens, journal)
 	}
+	return resp.Commands
 }
 
 // handleFailoverCommand executes a single command from the API.

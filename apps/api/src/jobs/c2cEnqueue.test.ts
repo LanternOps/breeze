@@ -42,7 +42,7 @@ describe('c2c enqueue helpers', () => {
     expect(addMock).toHaveBeenCalledWith(
       'run-sync',
       expect.objectContaining({ jobId: 'job-123', configId: 'cfg-1' }),
-      expect.objectContaining({ jobId: 'c2c-sync:job-123' }),
+      expect.objectContaining({ jobId: 'c2c-sync-job-123' }),
     );
   });
 
@@ -64,7 +64,7 @@ describe('c2c enqueue helpers', () => {
     expect(addMock).toHaveBeenCalledWith(
       'process-restore',
       expect.objectContaining({ restoreJobId: 'restore-123', itemIds: ['item-1'] }),
-      expect.objectContaining({ jobId: 'c2c-restore:restore-123' }),
+      expect.objectContaining({ jobId: 'c2c-restore-restore-123' }),
     );
   });
 });

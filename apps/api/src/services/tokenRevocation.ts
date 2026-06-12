@@ -14,6 +14,25 @@ const REFRESH_FAMILY_REVOCATION_TTL_SECONDS = USER_REVOCATION_TTL_SECONDS;
 // token's family can be looked up without a DB round-trip on the hot
 // /refresh path. TTL matches the refresh token expiry + slop.
 const REFRESH_JTI_FAMILY_TTL_SECONDS = REFRESH_TOKEN_REVOCATION_TTL_SECONDS + ACCESS_TOKEN_REVOCATION_TTL_SECONDS;
+// Rotation-grace window. When a refresh jti is legitimately rotated we drop a
+// short-lived marker so that a benign concurrent/double-fired replay of the
+// SAME jti (multi-tab, the 5-min heartbeat, or a page reload fired while a
+// refresh was already in flight) is recognised as a race instead of an attack.
+// Within this window we suppress the family-wide reuse-detection kill — the
+// replayed jti is already revoked and cannot mint anything, so the only thing
+// suppressed is the escalation, never a real mint. 15s comfortably covers the
+// concurrency window (multi-tab, heartbeat, reload-mid-flight + one client
+// retry) while keeping the relaxed period — and thus the attack surface —
+// small. This is the standard "refresh-token rotation leeway / reuse interval"
+// pattern (cf. Auth0, IdentityServer). Overridable via env for ops tuning;
+// set REFRESH_ROTATION_GRACE_SECONDS=0 to restore strict, no-leeway
+// reuse-detection. Read per call so the value is runtime-tunable + testable.
+const DEFAULT_REFRESH_ROTATION_GRACE_SECONDS = 15;
+
+function getRotationGraceSeconds(): number {
+  const raw = Number.parseInt(process.env.REFRESH_ROTATION_GRACE_SECONDS ?? '', 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_REFRESH_ROTATION_GRACE_SECONDS;
+}
 
 function getRevokedAccessKey(userId: string): string {
   return `token:revoked:${userId}`;
@@ -33,6 +52,10 @@ function getRefreshJtiFamilyKey(jti: string): string {
 
 function getRevokedFamilyKey(familyId: string): string {
   return `refresh-fam-revoked:${familyId}`;
+}
+
+function getRotationGraceKey(jti: string): string {
+  return `refresh-rotated-grace:${jti}`;
 }
 
 // Fail-closed: when Redis is unavailable we treat access tokens as revoked.
@@ -165,6 +188,48 @@ export async function revokeRefreshTokenJti(jti: string): Promise<boolean> {
   } catch (error) {
     console.error('[token-revocation] Failed to revoke refresh token:', error);
     throw error;
+  }
+}
+
+/**
+ * Marks a refresh-token jti as having just been legitimately rotated. Read by
+ * `wasRefreshTokenJtiRecentlyRotated` during reuse-detection to tell a benign
+ * concurrent/double-fired replay apart from a true token-reuse attack.
+ *
+ * Best-effort: a Redis outage means the marker is absent, so a concurrent
+ * replay falls through to the (conservative) family-revocation path — the
+ * safe direction. Set this BEFORE revoking the old jti so the marker is
+ * already present whenever the revoked state becomes visible to a racer.
+ */
+export async function markRefreshTokenJtiRotated(jti: string): Promise<void> {
+  const graceSeconds = getRotationGraceSeconds();
+  if (graceSeconds <= 0) return; // strict mode — no leeway marker
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.setex(getRotationGraceKey(jti), graceSeconds, '1');
+  } catch (error) {
+    console.warn('[token-revocation] Failed to set refresh rotation-grace marker:', error);
+  }
+}
+
+/**
+ * Returns true when the given jti was legitimately rotated within the
+ * rotation-grace window. A `true` result means a replay of this jti is a
+ * benign race (multi-tab / heartbeat / reload-mid-flight), not an attack.
+ *
+ * Fails toward `false` (treat as a genuine replay) on any Redis error — the
+ * conservative choice that preserves reuse-detection.
+ */
+export async function wasRefreshTokenJtiRecentlyRotated(jti: string): Promise<boolean> {
+  if (getRotationGraceSeconds() <= 0) return false; // strict mode — never benign
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    return Boolean(await redis.get(getRotationGraceKey(jti)));
+  } catch (error) {
+    console.warn('[token-revocation] Failed to read refresh rotation-grace marker:', error);
+    return false;
   }
 }
 

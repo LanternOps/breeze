@@ -27,12 +27,12 @@
 //
 // Threat model: the actuator runs as SYSTEM (the agent service identity),
 // types the secret on the input desktop, and never persists it. The
-// caller (server-side approval flow, Track 6) is responsible for
+// caller (the agent-side elevation-account manager) is responsible for
 // generating the credential just-in-time and revoking it after use.
 //
 // Server contract: the actuator is triggered by a `actuate_elevation`
-// device_command whose payload carries the elevation_request id plus the
-// already-approved credential pair to type. See
+// device_command whose payload carries only a go signal. The heartbeat
+// handler mints the credential locally before calling this package. See
 // heartbeat/handlers_actuate.go.
 package pamactuator
 
@@ -48,8 +48,7 @@ type Request struct {
 	ElevationRequestID string
 
 	// Username is the dormant-admin account name to type into the
-	// consent.exe username field. Already includes any DOMAIN\ prefix
-	// the server chose to ship.
+	// consent.exe username field.
 	Username string
 
 	// Password is the cleartext credential to type into the password

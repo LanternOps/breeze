@@ -9,6 +9,16 @@ vi.mock('../services/sentry', () => ({
   isSentryEnabled: vi.fn().mockReturnValue(false)
 }));
 
+vi.mock('../services/clientIp', () => ({
+  getTrustedClientIpOrUndefined: vi.fn()
+}));
+
+vi.mock('../services/ipAllowlist', () => ({
+  clearPartnerAllowlistCache: vi.fn(),
+  ipAllowlistMode: vi.fn(() => 'enforce'),
+  readPartnerAllowlist: vi.fn(async () => [])
+}));
+
 vi.mock('../services/tenantLifecycle', () => ({
   revokePartnerTenantAccess: vi.fn().mockResolvedValue({
     apiKeysRevoked: 0,
@@ -85,6 +95,12 @@ vi.mock('drizzle-orm', async (importActual) => {
   };
 });
 
+// Mutable switch for the requirePermission mock so individual tests can
+// simulate a caller whose role LACKS the gated permission (the real middleware
+// 403s). Hoisted because the vi.mock factory below references it. Reset to
+// granted in beforeEach.
+const permissionMockState = vi.hoisted(() => ({ granted: true }));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -107,7 +123,12 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requirePartner: vi.fn((c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (!permissionMockState.granted) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
@@ -115,6 +136,8 @@ import { inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { sites } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { clearPartnerAllowlistCache, readPartnerAllowlist } from '../services/ipAllowlist';
 import {
   restoreOrganizationTenantAccess,
   restorePartnerTenantAccess,
@@ -170,6 +193,7 @@ describe('org routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionMockState.granted = true;
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
@@ -380,6 +404,102 @@ describe('org routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    describe('settings.security.ipAllowlist (system scope)', () => {
+      function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              }),
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', settings }])
+            })
+          })
+        } as any);
+      }
+
+      function mockUpdateCapture() {
+        let captured: any;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockImplementation((data: any) => {
+            captured = data;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', settings: data.settings }])
+              })
+            };
+          })
+        } as any);
+        return () => captured;
+      }
+
+      function patchPartner(body: unknown) {
+        return app.request('/orgs/partners/partner-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      }
+
+      it('rejects a malformed ipAllowlist entry with 400 (same validation as /partners/me)', async () => {
+        const res = await patchPartner({ settings: { security: { ipAllowlist: ['not-an-ip'] } } });
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('accepts valid entries and clears the partner allowlist cache', async () => {
+        mockCurrentPartnerSelect({});
+        mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: ['203.0.113.0/24', '2001:db8::/32'] } } });
+
+        expect(res.status).toBe(200);
+        expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
+      });
+
+      it('does not clear the allowlist cache when settings are untouched', async () => {
+        mockUpdateCapture();
+
+        const res = await patchPartner({ name: 'Renamed' });
+
+        expect(res.status).toBe(200);
+        expect(clearPartnerAllowlistCache).not.toHaveBeenCalled();
+      });
+
+      it('preserves an active allowlist when the incoming security object omits the key', async () => {
+        mockCurrentPartnerSelect({ security: { ipAllowlist: ['203.0.113.0/24'], requireMfa: true } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { security: { requireMfa: false } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual(['203.0.113.0/24']);
+        expect(getCaptured().settings.security.requireMfa).toBe(false);
+      });
+
+      it('preserves an active allowlist when the incoming settings omit security entirely', async () => {
+        mockCurrentPartnerSelect({ security: { ipAllowlist: ['203.0.113.0/24'] } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual(['203.0.113.0/24']);
+        expect(getCaptured().settings.branding).toEqual({ primaryColor: '#ff0000' });
+      });
+
+      it('clears the allowlist when the caller sends an explicit empty array', async () => {
+        mockCurrentPartnerSelect({ security: { ipAllowlist: ['203.0.113.0/24'] } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: [] } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual([]);
+        expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
+      });
+    });
   });
 
   describe('DELETE /orgs/partners/:id', () => {
@@ -446,6 +566,113 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.pagination.total).toBe(1);
+    });
+
+    // #1245 residual: org-scope users (Org Admin/Technician/Viewer) lack the
+    // organizations:read permission, but the tickets UI needs this route on
+    // cold load just to render their own org's name. The route skips the
+    // permission check for organization scope ONLY, and returns a projected
+    // name-level row instead of the full org row.
+    it('allows an org-scope user without organizations:read to read their own org', async () => {
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'organization', orgId: 'org-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([
+                    { id: 'org-123', name: 'Acme Corp', slug: 'acme', status: 'active' }
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].id).toBe('org-123');
+      expect(body.pagination.total).toBe(1);
+    });
+
+    it('projects the org-scope row to id/name/slug/status only (no privileged fields)', async () => {
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'organization', orgId: 'org-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([
+                    { id: 'org-123', name: 'Acme Corp', slug: 'acme', status: 'active' }
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations');
+      expect(res.status).toBe(200);
+
+      // The data query (second db.select call, after the count) must pass an
+      // explicit projection of exactly the safe fields — an unprojected
+      // select() would return full rows incl. ssoConfig/billingContact.
+      const dataSelectArg = vi.mocked(db.select).mock.calls[1]?.[0];
+      expect(dataSelectArg).toBeDefined();
+      expect(Object.keys(dataSelectArg as Record<string, unknown>).sort())
+        .toEqual(['id', 'name', 'slug', 'status']);
+
+      const row = (await res.json()).data[0];
+      expect(row).not.toHaveProperty('ssoConfig');
+      expect(row).not.toHaveProperty('billingContact');
+      expect(row).not.toHaveProperty('settings');
+      expect(row).not.toHaveProperty('maxDevices');
+    });
+
+    it('still requires organizations:read for partner scope', async () => {
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/organizations');
+
+      expect(res.status).toBe(403);
+    });
+
+    // The partner happy-path (permission granted → 200) is already covered by
+    // the 'should return organizations with pagination' test above, which runs
+    // with permissionMockState.granted = true (the beforeEach default) and
+    // scope: 'partner'. Adding a duplicate would be noise.
+
+    it('returns empty data when org-scope token has null orgId (null-guard path)', async () => {
+      // Exercises the `if (!auth.orgId)` guard at ~line 715 of orgs.ts.
+      // The org-scope branch short-circuits before any DB call and must return
+      // 200 with an empty data array, not a 4xx or 5xx.
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'organization', orgId: null });
+
+      const res = await app.request('/orgs/organizations');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
     });
   });
 
@@ -1446,6 +1673,37 @@ describe('org routes', () => {
     });
   });
 
+  describe('GET /partners/me/ip-allowlist/status', () => {
+    async function getStatus() {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      return app.request('/orgs/partners/me/ip-allowlist/status');
+    }
+
+    it('reports the current trusted IP and active=false when not enforced', async () => {
+      vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+      vi.mocked(readPartnerAllowlist).mockResolvedValueOnce([]);
+
+      const res = await getStatus();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        currentIp: '203.0.113.10',
+        proxyTrustOk: true,
+        enforced: false,
+        active: false,
+      });
+    });
+
+    it('reports active=true when an allowlist is set and the IP is trusted', async () => {
+      vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+      vi.mocked(readPartnerAllowlist).mockResolvedValueOnce(['203.0.113.0/24']);
+
+      const res = await getStatus();
+
+      expect(await res.json()).toMatchObject({ enforced: true, proxyTrustOk: true, active: true });
+    });
+  });
+
   describe('PATCH /orgs/partners/me', () => {
     it('rejects a logoUrl exceeding 400 KB', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
@@ -1749,6 +2007,131 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    describe('PATCH /partners/me — ipAllowlist', () => {
+      function mockPartnerSettingsUpdate(currentSettings: Record<string, unknown>) {
+        const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: currentSettings };
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              }),
+              limit: vi.fn().mockResolvedValue([currentPartner])
+            })
+          })
+        } as any);
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([currentPartner])
+            })
+          })
+        } as any);
+      }
+
+      async function patchPartner(body: unknown) {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        return app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      }
+
+      it('rejects a malformed CIDR entry with 400', async () => {
+        const res = await patchPartner({ settings: { security: { ipAllowlist: ['not-an-ip'] } } });
+        expect(res.status).toBe(400);
+      });
+
+      it('rejects enabling the allowlist when proxy trust is not configured (proxy_trust_required)', async () => {
+        mockPartnerSettingsUpdate({});
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue(undefined);
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: ['203.0.113.0/24'] } } });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'proxy_trust_required' });
+      });
+
+      it('accepts a valid allowlist when proxy trust is working', async () => {
+        mockPartnerSettingsUpdate({});
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: ['203.0.113.0/24'] } } });
+
+        expect(res.status).toBe(200);
+        expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
+      });
+
+      function mockPartnerUpdateCapture(currentSettings: Record<string, unknown>) {
+        const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: currentSettings };
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              }),
+              limit: vi.fn().mockResolvedValue([currentPartner])
+            })
+          })
+        } as any);
+        let captured: any;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockImplementation((data: any) => {
+            captured = data;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: data.settings }])
+              })
+            };
+          })
+        } as any);
+        return () => captured;
+      }
+
+      it('deep-merges security: a PATCH omitting ipAllowlist preserves the active allowlist and siblings', async () => {
+        const getCaptured = mockPartnerUpdateCapture({
+          security: { ipAllowlist: ['203.0.113.0/24'], sessionTimeout: 30 }
+        });
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+
+        const res = await patchPartner({ settings: { security: { requireMfa: true } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security).toEqual({
+          ipAllowlist: ['203.0.113.0/24'],
+          sessionTimeout: 30,
+          requireMfa: true
+        });
+      });
+
+      it('a PATCH whose settings omit security entirely preserves the active allowlist', async () => {
+        const getCaptured = mockPartnerUpdateCapture({
+          security: { ipAllowlist: ['203.0.113.0/24'] }
+        });
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+
+        const res = await patchPartner({ settings: { branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security).toEqual({ ipAllowlist: ['203.0.113.0/24'] });
+      });
+
+      it('an explicit empty ipAllowlist still clears the list deliberately', async () => {
+        const getCaptured = mockPartnerUpdateCapture({
+          security: { ipAllowlist: ['203.0.113.0/24'], requireMfa: true }
+        });
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: [] } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual([]);
+        expect(getCaptured().settings.security.requireMfa).toBe(true);
+        expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
+      });
     });
   });
 

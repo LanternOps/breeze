@@ -1,6 +1,8 @@
 package discovery
 
 import (
+	"net"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -88,6 +90,156 @@ func TestNormalizeMethodsEmpty(t *testing.T) {
 	result := normalizeMethods(nil)
 	if len(result) != 0 {
 		t.Fatalf("normalizeMethods(nil) should return empty map, got %d entries", len(result))
+	}
+}
+
+func TestScanSNMPUsesAllTargetsWhenPingFindsAliveSubset(t *testing.T) {
+	origPingSweep := pingSweep
+	origDiscoverSNMP := discoverSNMP
+	origReadARPCache := readARPCache
+	t.Cleanup(func() {
+		pingSweep = origPingSweep
+		discoverSNMP = origDiscoverSNMP
+		readARPCache = origReadARPCache
+	})
+
+	pingSweep = func(targets []net.IP, timeout time.Duration, workers int) []PingResult {
+		return []PingResult{{IP: net.ParseIP("192.0.2.10"), RTT: 5 * time.Millisecond}}
+	}
+	readARPCache = func() map[string]string {
+		return map[string]string{}
+	}
+
+	var snmpTargets []string
+	discoverSNMP = func(targets []net.IP, communities []string, timeout time.Duration, workers int) map[string]*SNMPInfo {
+		for _, target := range targets {
+			snmpTargets = append(snmpTargets, target.String())
+		}
+		return map[string]*SNMPInfo{
+			"192.0.2.11": {
+				SysDescr:    "Switch OS",
+				SysObjectID: "1.3.6.1.4.1.9.1.1",
+				SysName:     "edge-switch",
+			},
+		}
+	}
+
+	scanner := NewScanner(ScanConfig{
+		Subnets: []string{"192.0.2.10", "192.0.2.11"},
+		Methods: []string{"ping", "snmp"},
+	})
+
+	hosts, err := scanner.Scan()
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	wantTargets := []string{"192.0.2.10", "192.0.2.11"}
+	if !reflect.DeepEqual(snmpTargets, wantTargets) {
+		t.Fatalf("SNMP targets = %v, want %v", snmpTargets, wantTargets)
+	}
+
+	var snmpOnlyHost *DiscoveredHost
+	for i := range hosts {
+		if hosts[i].IP == "192.0.2.11" {
+			snmpOnlyHost = &hosts[i]
+			break
+		}
+	}
+	if snmpOnlyHost == nil {
+		t.Fatal("expected non-pingable SNMP responder to be included in scan results")
+	}
+	if snmpOnlyHost.SNMPData == nil || snmpOnlyHost.SNMPData.SysName != "edge-switch" {
+		t.Fatalf("SNMP data = %+v, want sysName edge-switch", snmpOnlyHost.SNMPData)
+	}
+	if !reflect.DeepEqual(snmpOnlyHost.Methods, []string{"snmp"}) {
+		t.Fatalf("SNMP-only host methods = %v, want [snmp]", snmpOnlyHost.Methods)
+	}
+}
+
+// When SNMP is the only method, ping never runs, so aliveTargets is empty and
+// portTargets falls back to the full set. SNMP must still probe every target.
+func TestScanSNMPProbesAllTargetsWithoutPing(t *testing.T) {
+	origDiscoverSNMP := discoverSNMP
+	origReadARPCache := readARPCache
+	t.Cleanup(func() {
+		discoverSNMP = origDiscoverSNMP
+		readARPCache = origReadARPCache
+	})
+	readARPCache = func() map[string]string { return map[string]string{} }
+
+	var snmpTargets []string
+	discoverSNMP = func(targets []net.IP, communities []string, timeout time.Duration, workers int) map[string]*SNMPInfo {
+		for _, target := range targets {
+			snmpTargets = append(snmpTargets, target.String())
+		}
+		return map[string]*SNMPInfo{}
+	}
+
+	scanner := NewScanner(ScanConfig{
+		Subnets: []string{"192.0.2.10", "192.0.2.11"},
+		Methods: []string{"snmp"},
+	})
+	if _, err := scanner.Scan(); err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	wantTargets := []string{"192.0.2.10", "192.0.2.11"}
+	if !reflect.DeepEqual(snmpTargets, wantTargets) {
+		t.Fatalf("SNMP targets = %v, want %v", snmpTargets, wantTargets)
+	}
+}
+
+// The fix decouples SNMP from the port-scan target set. With ping, ports, and
+// snmp all enabled, ports must stay on the ping-alive subset while SNMP probes
+// every target — regressing either direction would be a real defect.
+func TestScanPortsUseAliveSubsetWhileSNMPUsesAllTargets(t *testing.T) {
+	origPingSweep := pingSweep
+	origScanPorts := scanPorts
+	origDiscoverSNMP := discoverSNMP
+	origReadARPCache := readARPCache
+	t.Cleanup(func() {
+		pingSweep = origPingSweep
+		scanPorts = origScanPorts
+		discoverSNMP = origDiscoverSNMP
+		readARPCache = origReadARPCache
+	})
+	readARPCache = func() map[string]string { return map[string]string{} }
+
+	pingSweep = func(targets []net.IP, timeout time.Duration, workers int) []PingResult {
+		return []PingResult{{IP: net.ParseIP("192.0.2.10"), RTT: 5 * time.Millisecond}}
+	}
+
+	var portTargets []string
+	scanPorts = func(targets []net.IP, portRanges []PortRange, timeout time.Duration, workers int) map[string][]OpenPort {
+		for _, target := range targets {
+			portTargets = append(portTargets, target.String())
+		}
+		return map[string][]OpenPort{}
+	}
+
+	var snmpTargets []string
+	discoverSNMP = func(targets []net.IP, communities []string, timeout time.Duration, workers int) map[string]*SNMPInfo {
+		for _, target := range targets {
+			snmpTargets = append(snmpTargets, target.String())
+		}
+		return map[string]*SNMPInfo{}
+	}
+
+	scanner := NewScanner(ScanConfig{
+		Subnets:    []string{"192.0.2.10", "192.0.2.11"},
+		Methods:    []string{"ping", "ports", "snmp"},
+		PortRanges: []string{"22"},
+	})
+	if _, err := scanner.Scan(); err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	if want := []string{"192.0.2.10"}; !reflect.DeepEqual(portTargets, want) {
+		t.Fatalf("port targets = %v, want %v (ping-alive subset)", portTargets, want)
+	}
+	if want := []string{"192.0.2.10", "192.0.2.11"}; !reflect.DeepEqual(snmpTargets, want) {
+		t.Fatalf("SNMP targets = %v, want %v (full set)", snmpTargets, want)
 	}
 }
 

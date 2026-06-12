@@ -106,6 +106,23 @@ export async function ensureAppRole(): Promise<void> {
           -- bypass. Idempotent re-revoke is a no-op.
           REVOKE TRUNCATE ON TABLE audit_logs FROM PUBLIC;
         END IF;
+        -- audit_log_chain is also append-only from breeze_app's perspective:
+        -- the chain seal trigger + REVOKE in migration -g- together enforce
+        -- immutability, but the blanket GRANT above re-permits UPDATE/DELETE.
+        -- Re-revoke here so the privilege restriction actually sticks on boot.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_log_chain') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_log_chain FROM breeze_app;
+          -- The blanket sequence GRANT in step 4 also re-permits UPDATE (setval)
+          -- on chain_seq. setval() lets breeze_app rewind or jump the sequence,
+          -- causing PK collisions and sealing failures — DoS-grade. Revoke UPDATE
+          -- only; SELECT (currval) and USAGE (nextval via column DEFAULT) are safe
+          -- and harmless to keep. The INSERT DEFAULT calls nextval as the table
+          -- owner, so USAGE alone is sufficient for normal sealing.
+          IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_schema='public' AND sequence_name='audit_log_chain_chain_seq_seq') THEN
+            REVOKE UPDATE ON SEQUENCE audit_log_chain_chain_seq_seq FROM breeze_app;
+            GRANT USAGE ON SEQUENCE audit_log_chain_chain_seq_seq TO breeze_app;
+          END IF;
+        END IF;
       END $$;
     `);
 

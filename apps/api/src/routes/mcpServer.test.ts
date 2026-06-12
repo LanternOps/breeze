@@ -15,7 +15,13 @@ vi.mock('../db/schema', () => ({
   alerts: {},
   scripts: {},
   automations: {},
-  organizations: {},
+  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
+  partnerUsers: {
+    userId: 'partnerUsers.userId',
+    partnerId: 'partnerUsers.partnerId',
+    orgAccess: 'partnerUsers.orgAccess',
+    orgIds: 'partnerUsers.orgIds',
+  },
   aiSessions: { id: 'aiSessions.id' },
   aiToolExecutions: { id: 'aiToolExecutions.id' },
   apiKeys: {},
@@ -208,6 +214,7 @@ describe('MCP bootstrap carve-out', () => {
     else process.env.TRUST_PROXY_HEADERS = originalTrustProxyHeaders;
     vi.doUnmock('../modules/mcpInvites');
     vi.doUnmock('../middleware/apiKeyAuth');
+    vi.doUnmock('../services/ipAllowlist');
   });
 
   it('no auth header → tools/list always returns 401 + WWW-Authenticate', async () => {
@@ -335,6 +342,82 @@ describe('MCP bootstrap carve-out', () => {
       invite_ids: ['i1', 'i2'],
       skipped_duplicates: 0,
     });
+  });
+
+  it('partner-scoped API key is denied by the partner IP allowlist before MCP dispatch', async () => {
+    delete process.env.IS_HOSTED;
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          name: 'partner',
+          keyPrefix: 'brz_partner',
+          scopes: ['ai:read'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+        });
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    const enforceMock = vi.fn(async () => ({ decision: 'deny', reason: 'not_in_list' }));
+    vi.doMock('../services/ipAllowlist', () => ({
+      enforceIpAllowlist: enforceMock,
+      IP_NOT_ALLOWED_BODY: { code: 'ip_not_allowed', error: 'Access denied from this IP address' },
+      isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
+    }));
+
+    let selectCall = 0;
+    vi.doMock('../db', () => ({
+      db: {
+        select: () => {
+          selectCall += 1;
+          if (selectCall === 1) {
+            return {
+              from: () => ({
+                where: () => ({
+                  limit: async () => [{ orgAccess: 'all', orgIds: null }],
+                }),
+              }),
+            };
+          }
+          return {
+            from: () => ({
+              where: async () => [{ id: 'org-1' }],
+            }),
+          };
+        },
+      },
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_partner' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      code: 'ip_not_allowed',
+      error: 'Access denied from this IP address',
+    });
+    expect(enforceMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        partnerId: 'partner-1',
+        isPlatformAdmin: false,
+        actorId: 'user-1',
+        actorEmail: 'apikey-partner@breeze.local',
+      }),
+    );
   });
 
 

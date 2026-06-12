@@ -13,6 +13,16 @@ The Security module provides continuous visibility into the security posture of 
 
 ---
 
+## Admin IP Allowlist
+
+Partner admins can restrict dashboard access to specific source IP addresses or CIDR ranges from **Settings -> Security -> IP Allowlist**. The allowlist is partner-level: once configured, authenticated dashboard requests and password login attempts for that partner are checked before access continues. Agent endpoints use separate agent authentication and are not affected.
+
+The allowlist requires working proxy trust. In production, set `TRUST_PROXY_HEADERS=true` and configure `TRUSTED_PROXY_CIDRS` so the API trusts only your reverse proxy hop, such as Caddy behind [Cloudflare Tunnel](/deploy/cloudflare-tunnel/). If Breeze cannot determine a trusted client IP, the allowlist fails open and reports inactive status instead of creating a false lockout guarantee. See [Environment Variables](/deploy/environment/) for the proxy trust and `IP_ALLOWLIST_ENFORCEMENT_MODE` settings.
+
+Platform administrators bypass the partner allowlist as a break-glass path, and each bypass is audited. Operators can also set `IP_ALLOWLIST_ENFORCEMENT_MODE=off` to globally disable enforcement during an emergency, then return it to `enforce` after correcting the partner settings.
+
+---
+
 ## Security Status
 
 The agent reports a `SecurityStatus` payload on each heartbeat. The payload includes the detected AV provider, real-time protection state, definition freshness, firewall status, disk encryption status, local admin accounts, and password policy configuration.

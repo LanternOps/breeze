@@ -59,6 +59,9 @@ export default function OrganizationsPage() {
   // True when the site-add modal was auto-opened right after creating an org —
   // drives first-site guidance copy and a Skip-for-now affordance.
   const [guidingFirstSite, setGuidingFirstSite] = useState(false);
+  // Partner's configured timezone, used to pre-select the timezone for new sites
+  // instead of falling back to UTC. Undefined until loaded / if unavailable.
+  const [partnerTimezone, setPartnerTimezone] = useState<string>();
 
   const filteredOrgs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -126,6 +129,26 @@ export default function OrganizationsPage() {
   useEffect(() => {
     fetchOrganizations();
   }, [fetchOrganizations]);
+
+  // Load the partner's default timezone once so new sites pre-select it.
+  // Best-effort: on any failure we silently fall back to the form's UTC default.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetchWithAuth('/orgs/partners/me');
+        if (!response.ok) return;
+        const data = await response.json();
+        const tz = data?.settings?.timezone;
+        if (!cancelled && typeof tz === 'string' && tz) setPartnerTimezone(tz);
+      } catch {
+        /* best-effort; keep UTC default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-select org from URL param on initial load
   useEffect(() => {
@@ -647,7 +670,7 @@ export default function OrganizationsPage() {
       {modalMode === 'add' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4">
+            <div className="mb-4 rounded-lg border bg-card p-6 shadow-sm">
               <h2 className="text-lg font-semibold">Add Organization</h2>
               <p className="text-sm text-muted-foreground">
                 Create a new organization with the details below.
@@ -697,7 +720,7 @@ export default function OrganizationsPage() {
       {(siteModalMode === 'add' || siteModalMode === 'edit') && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4 flex items-start justify-between gap-4">
+            <div className="mb-4 flex items-start justify-between gap-4 rounded-lg border bg-card p-6 shadow-sm">
               <div>
                 <h2 className="text-lg font-semibold">
                   {siteModalMode === 'edit'
@@ -730,7 +753,9 @@ export default function OrganizationsPage() {
               defaultValues={
                 selectedSite
                   ? getSiteFormDefaults(selectedSite as Site & { address?: Record<string, string>; contact?: Record<string, string> })
-                  : undefined
+                  : partnerTimezone
+                    ? { timezone: partnerTimezone }
+                    : undefined
               }
               submitLabel={
                 siteModalMode === 'edit'

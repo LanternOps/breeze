@@ -8,6 +8,9 @@ on:
       - 'apps/docs/src/content/docs/agents/**'
       - 'e2e-tests/doc-verify/**'
 
+permissions:
+  contents: read
+
 env:
   PNPM_VERSION: '10.33.4'
 

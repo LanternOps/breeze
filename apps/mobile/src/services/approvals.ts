@@ -17,6 +17,14 @@ export interface ApprovalRequest {
   requestingMachineLabel: string | null;
   actionLabel: string;
   actionToolName: string;
+  /**
+   * Server-issued approval flow discriminant (#1154). `'uac_intercept'` is a
+   * PAM elevation surfaced for human approval; absent/other values render as a
+   * standard approval. Optional for forward-compatibility — when the server
+   * omits it, the flow type is derived from {@link actionToolName}
+   * (see screens/approvals/approvalFlow.ts).
+   */
+  flowType?: string | null;
   actionArguments: Record<string, unknown>;
   riskTier: RiskTier;
   riskSummary: string;

@@ -18,13 +18,25 @@ interface Props {
   requestId: string;
   isRecursive: boolean;
   inFlight: 'approve' | 'deny' | null;
+  /** Approve button label — flow-type aware (e.g. "Allow" for uac_intercept). */
+  approveLabel?: string;
+  /** Hold-to-confirm label for the recursive self-approval path. */
+  holdLabel?: string;
   onApprove: (requestId: CapturedRequestId) => void;
   onDeny: (requestId: CapturedRequestId, reason?: string) => void;
 }
 
 const PASSCODE_FALLBACK_CODES = new Set(['not_enrolled', 'passcode_not_set']);
 
-export function ApprovalButtons({ requestId, isRecursive, inFlight, onApprove, onDeny }: Props) {
+export function ApprovalButtons({
+  requestId,
+  isRecursive,
+  inFlight,
+  approveLabel = 'Approve',
+  holdLabel = 'Hold to approve',
+  onApprove,
+  onDeny,
+}: Props) {
   const theme = useApprovalTheme('dark');
   const [denyOpen, setDenyOpen] = useState(false);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
@@ -133,7 +145,7 @@ export function ApprovalButtons({ requestId, isRecursive, inFlight, onApprove, o
 
         {isRecursive ? (
           <View style={{ flex: 1.4 }}>
-            <HoldToConfirm label="Hold to approve" onComplete={handleApprovePress} />
+            <HoldToConfirm label={holdLabel} onComplete={handleApprovePress} />
           </View>
         ) : (
           <Pressable
@@ -148,7 +160,7 @@ export function ApprovalButtons({ requestId, isRecursive, inFlight, onApprove, o
               opacity: inFlight === 'approve' ? 0.6 : 1,
             })}
           >
-            <Text style={[type.bodyMd, { color: palette.approve.onBase }]}>Approve</Text>
+            <Text style={[type.bodyMd, { color: palette.approve.onBase }]}>{approveLabel}</Text>
           </Pressable>
         )}
       </View>

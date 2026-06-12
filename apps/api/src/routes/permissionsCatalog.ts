@@ -14,6 +14,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   devices: 'Devices',
   scripts: 'Scripts',
   alerts: 'Alerts',
+  tickets: 'Tickets',
   users: 'Users',
   organizations: 'Organizations',
   sites: 'Sites',

@@ -66,6 +66,7 @@
       "`lock`",
       "`reboot_safe_mode`",
       "`set_auto_update`",
+      "`refresh_inventory`",
       "File Operations",
       "`file_list`",
       "`file_read`",
@@ -179,7 +180,8 @@
       "Token Security",
       "Enrollment Keys",
       "Bulk Enrollment",
-      "Re-enrollment"
+      "Re-enrollment",
+      "Reusing a hostname for a decommissioned device"
     ],
     "section": "agents"
   },
@@ -233,6 +235,7 @@
       "Public Installer Links",
       "Short Enrollment Links",
       "macOS GUI Installer",
+      "Pre-Provisioning Devices",
       "What Gets Installed",
       "What Enrollment Does",
       "Verifying Installation",
@@ -548,6 +551,36 @@
     "section": "deploy"
   },
   {
+    "path": "/deploy/cloudflare-access-trust/",
+    "title": "Cloudflare Access JWT trust",
+    "description": "Skip the Breeze login form when a deployment sits behind Cloudflare Access using the same identity provider.",
+    "headings": [
+      "How it works",
+      "Failure semantics",
+      "MFA",
+      "Configuration",
+      "Recommended Cloudflare Access setup",
+      "Disabling"
+    ],
+    "section": "deploy"
+  },
+  {
+    "path": "/deploy/cloudflare-tunnel/",
+    "title": "Cloudflare Tunnel",
+    "description": "Run Breeze behind a Cloudflare Tunnel with no inbound ports, and optionally lock the dashboard behind Cloudflare Access.",
+    "headings": [
+      "Traffic Chain",
+      "TLS Termination: HTTP Origin Required",
+      "Option A — Caddy in HTTP mode (recommended)",
+      "Option B — Bypass Caddy",
+      "Prerequisites",
+      "Setup",
+      "Restricting the Dashboard with Cloudflare Access",
+      "Troubleshooting"
+    ],
+    "section": "deploy"
+  },
+  {
     "path": "/deploy/code-signing/",
     "title": "Code Signing",
     "description": "Code signing for Breeze agent, viewer, and helper binaries on Windows and macOS.",
@@ -592,6 +625,7 @@
       "Feature Flags",
       "MCP Server",
       "Cloudflare mTLS",
+      "Cloudflare Access JWT trust",
       "Cloud-to-Cloud Backup (M365)",
       "Docker Deployment",
       "MSI Installer Signing",
@@ -1287,6 +1321,7 @@
       "Querying Events",
       "Event Query Parameters",
       "Event Response Fields",
+      "Automatic Threat Alerts",
       "Statistics and Analytics",
       "Summary Statistics",
       "Top Blocked Domains",
@@ -1825,6 +1860,7 @@
       "API Reference",
       "In-App Notification Endpoints",
       "Notification Channel Endpoints",
+      "Per-channel throttle",
       "Creating a channel",
       "Testing a channel",
       "Troubleshooting"
@@ -2237,6 +2273,7 @@
       "Privilege Levels",
       "Execution Status",
       "Trigger Types",
+      "Severity by Exit Code",
       "Creating Scripts via API",
       "Executing Scripts via API",
       "Single device execution",
@@ -2267,6 +2304,7 @@
     "title": "Security",
     "description": "Monitor endpoint security posture, detect threats, enforce compliance, and get AI-powered security recommendations.",
     "headings": [
+      "Admin IP Allowlist",
       "Security Status",
       "Collected Fields",
       "Detection Methods by Platform",
@@ -2586,6 +2624,22 @@
     "section": "features"
   },
   {
+    "path": "/features/ticketing/",
+    "title": "Ticketing",
+    "description": "Built-in ticketing for MSP workflows -- a triage queue, public replies and internal notes, SLA chips, and tickets linked to alerts and devices.",
+    "headings": [
+      "The Queue",
+      "Working a Ticket",
+      "Replies and Internal Notes",
+      "Keyboard Shortcuts",
+      "Bulk Actions",
+      "Creating Tickets",
+      "Categories and SLAs",
+      "Tickets on a Device"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/update-rings/",
     "title": "Update Rings",
     "description": "Control patch rollout velocity with staged deployment rings, deferral periods, and per-category approval rules.",
@@ -2692,6 +2746,7 @@
       "State transitions",
       "Recovery",
       "Failover",
+      "Agent-Silent Detection",
       "Health Journal",
       "Configuration",
       "Watchdog Logs API",
@@ -3030,6 +3085,7 @@
       "Actor Types",
       "Action Categories",
       "Security Actions",
+      "Tamper Evidence",
       "Compliance Actions",
       "Writing Audit Events",
       "Filtering and Searching",
@@ -3246,6 +3302,7 @@
     "headings": [
       "Deployment Issues",
       "Deploy script fails with \"Missing required env var\"",
+      "API refuses to boot: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production`",
       "TLS certificate not provisioning",
       "Database migration fails",
       "Agent Issues",
@@ -3259,6 +3316,9 @@
       "Container Issues",
       "Container won't start",
       "Health check failing",
+      "Installer Issues",
+      "\"Generate Link\" fails with `Server URL not configured (set PUBLIC_API_URL or API_URL)`",
+      "\"Generate Link\" fails with `MSI build pipeline not reachable. Retry`",
       "Getting Help"
     ],
     "section": "reference"
@@ -3374,9 +3434,11 @@
       "Container Security",
       "Authentication",
       "Agent Security",
+      "Outbound Request Safety (SSRF)",
       "Monitoring",
       "Firewall Configuration",
       "Audit Logging",
+      "Tamper evidence",
       "Rate Limiting"
     ],
     "section": "security"

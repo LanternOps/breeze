@@ -174,7 +174,8 @@ export default function AssetDetailModal({
         }),
       });
       if (!response.ok) {
-        throw new Error('Failed to create allowlist entry');
+        const detail = await response.json().catch(() => null);
+        throw new Error(detail?.error || 'Failed to create allowlist entry');
       }
       setProxyEnabled(true);
       onUpdated?.(asset.id);

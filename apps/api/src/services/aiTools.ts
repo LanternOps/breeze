@@ -55,6 +55,8 @@ import { registerDocsTools } from './aiToolsDocs';
 import { registerRemoteTools } from './aiToolsRemote';
 import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 import { registerUITools } from './aiToolsUI';
+import { registerTicketingTools } from './aiToolsTicketing';
+import { registerPamTools } from './aiToolsPam';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -93,6 +95,11 @@ export async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  // Helper device lock (finding A, defense-in-depth): a Helper context may only
+  // ever resolve its own device. Return before any DB access.
+  if (auth.helperDeviceId && deviceId !== auth.helperDeviceId) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -221,6 +228,7 @@ registerCisBenchmarkTools(aiTools);
 registerComplianceTools(aiTools);
 registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
+registerTicketingTools(aiTools);
 registerIncidentTools(aiTools);
 registerPerformanceTools(aiTools);
 registerUserRiskTools(aiTools);
@@ -232,6 +240,7 @@ registerDocsTools(aiTools);
 registerRemoteTools(aiTools);
 registerAgentMgmtTools(aiTools);
 registerUITools(aiTools);
+registerPamTools(aiTools);
 
 // ============================================
 // Exports
@@ -245,6 +254,57 @@ export function getToolTier(toolName: string): AiToolTier | undefined {
   return aiTools.get(toolName)?.tier ?? m365ToolTiers[toolName] ?? googleToolTiers[toolName];
 }
 
+/**
+ * Helper device-scoping (security finding A, Phase 0).
+ * Maps each tool the Breeze Helper may run to the input field naming its
+ * target device. A tool absent from this map is org-wide and is DENIED under
+ * a Helper context. Every tool in helperToolFilter's whitelists must have an
+ * entry here (pinned by helperToolFilter.test.ts); mutating tools (tier>=2)
+ * are additionally PAM-governed at the preToolUse gate (Phase 1).
+ */
+export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
+  // Read-only (Phase 0 `basic` set).
+  get_device_details: 'deviceId',
+  analyze_metrics: 'deviceId',
+  analyze_disk_usage: 'deviceId',
+  get_cis_device_report: 'deviceId',
+  get_security_posture: 'deviceId',
+  take_screenshot: 'deviceId',
+  analyze_screen: 'deviceId',
+  search_logs: 'deviceIds',
+  // Device-pinned safe actions (`standard`, Phase 1 governed).
+  get_active_users: 'deviceId',
+  get_user_experience_metrics: 'deviceId',
+  manage_alerts: 'deviceId',
+  manage_services: 'deviceId',
+  disk_cleanup: 'deviceId',
+  file_operations: 'deviceId',
+  // Device-pinned destructive tools (`extended`, Phase 1 governed).
+  computer_control: 'deviceId',
+  execute_command: 'deviceId',
+  security_scan: 'deviceId',
+  s1_isolate_device: 'deviceId',
+  network_discovery: 'deviceId',
+  apply_cis_remediation: 'deviceId',
+};
+
+/**
+ * Force a Helper tool call onto the Helper's own device, or deny it.
+ * Pure — the caller (executeTool) applies the result.
+ */
+export function applyHelperDeviceScope(
+  toolName: string,
+  input: Record<string, unknown>,
+  helperDeviceId: string
+): { input: Record<string, unknown> } | { error: string } {
+  const field = HELPER_TOOL_SCOPING[toolName];
+  if (!field) {
+    return { error: `Tool '${toolName}' is not available in the Helper context` };
+  }
+  const value = field === 'deviceIds' ? [helperDeviceId] : helperDeviceId;
+  return { input: { ...input, [field]: value } };
+}
+
 export async function executeTool(
   toolName: string,
   input: Record<string, unknown>,
@@ -253,8 +313,17 @@ export async function executeTool(
   const tool = aiTools.get(toolName);
   if (!tool) throw new Error(`Unknown tool: ${toolName}`);
 
+  // Helper device-scope gate (finding A): force the tool onto the Helper's own
+  // device, or deny org-wide tools, before anything else runs.
+  let effectiveInput = input;
+  if (auth.helperDeviceId) {
+    const scoped = applyHelperDeviceScope(toolName, input, auth.helperDeviceId);
+    if ('error' in scoped) return JSON.stringify({ error: scoped.error });
+    effectiveInput = scoped.input;
+  }
+
   // Validate input against Zod schema before execution
-  const validation = validateToolInput(toolName, input);
+  const validation = validateToolInput(toolName, effectiveInput);
   if (!validation.success) {
     return JSON.stringify({ error: validation.error });
   }
@@ -262,8 +331,8 @@ export async function executeTool(
   // Structural device-tenant gate: any id named in `tool.deviceArgs` is
   // org+site-checked before the handler runs, so a tool can't reach a device
   // outside the caller's scope even if its handler forgets to check.
-  const gate = await enforceDeviceArgs(tool, input, auth);
+  const gate = await enforceDeviceArgs(tool, effectiveInput, auth);
   if (!gate.ok) return JSON.stringify({ error: gate.error });
 
-  return tool.handler(input, auth);
+  return tool.handler(effectiveInput, auth);
 }

@@ -133,7 +133,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
           subnet: baseline.subnet
         },
         {
-          jobId: `baseline-scan:${baseline.id}`,
+          jobId: `baseline-scan-${baseline.id}`,
           removeOnComplete: { count: 50 },
           removeOnFail: { count: 100 }
         }
@@ -354,7 +354,7 @@ export async function enqueueBaselineScan(
       subnet
     },
     {
-      jobId: `baseline-scan:${baselineId}`,
+      jobId: `baseline-scan-${baselineId}`,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }

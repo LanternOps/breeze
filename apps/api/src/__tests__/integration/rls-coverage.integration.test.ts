@@ -90,6 +90,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['oauth_clients', 'partner_id'],
   ['oauth_client_partner_grants', 'partner_id'],
   ['email_verification_tokens', 'partner_id'],
+  ['ticket_categories', 'partner_id'],
+  ['partner_ticket_sequences', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -99,6 +101,10 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'users',
   'deployment_invites',
   'access_reviews',
+  // custom_field_definitions: a field is org-scoped (org_id set) OR
+  // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
+  // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
+  'custom_field_definitions',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
@@ -148,6 +154,13 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   'user_sso_identities',
   'push_notifications',
   'mobile_devices',
+  // ticket_comments: Shape 6 on the author axis, PLUS an extra permissive
+  // SELECT policy (breeze_ticket_parent_select, 2026-06-10-a migration)
+  // that ORs in visibility when the parent ticket is org-accessible —
+  // portal-authored rows (portal_user_id set, user_id NULL) would
+  // otherwise be invisible to org/partner technicians. The EXISTS join
+  // through tickets is #1016-safe: tickets.org_id is NOT NULL and the
+  // tickets policy has no OR branches.
   'ticket_comments',
   'access_review_items',
   'oauth_authorization_codes',

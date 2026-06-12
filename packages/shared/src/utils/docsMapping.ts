@@ -38,6 +38,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/partner', docsPath: '/reference/partner-management/', label: 'Partner Settings' },
   { pattern: '/settings/roles', docsPath: '/reference/users-and-roles/', label: 'Roles' },
   { pattern: '/settings/profile', docsPath: '/reference/users-and-roles/', label: 'Profile' },
+  { pattern: '/settings/ticketing', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/settings', docsPath: '/reference/users-and-roles/', label: 'Settings' },
 
   // Admin / Partner
@@ -52,6 +53,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/alerts/rules', docsPath: '/features/alert-templates/', label: 'Alert Rules' },
   { pattern: '/alerts/channels', docsPath: '/features/alerts/', label: 'Notification Channels' },
   { pattern: '/alerts', docsPath: '/features/alerts/', label: 'Alerts' },
+  { pattern: '/tickets', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },
   { pattern: '/patches', docsPath: '/features/patch-management/', label: 'Patch Management' },
   { pattern: '/remote/tools', docsPath: '/features/system-tools/', label: 'System Tools' },

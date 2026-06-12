@@ -24,7 +24,7 @@ concurrency:
 env:
   NODE_VERSION: '22'
   PNPM_VERSION: '10.33.4'
-  GO_VERSION: '1.25.10'
+  GO_VERSION: '1.25.11'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -440,6 +440,183 @@ jobs:
           path: agent/coverage.out
           retention-days: 7
 
+  # ─── Rust Check (Tauri apps) ──────────────────────────────────────────
+  # The release workflow is the only place the helper/viewer Rust actually
+  # compiles — PR CI only runs cargo-audit (an advisory-DB scan). That let a
+  # Cargo bump merge "green" and break the release build (the digest-0.11
+  # pair: sha2 0.11 + hmac 0.13 vs. the KeyInit trait move). This job closes
+  # that blind spot at PR time. Not in the ci-success needs list yet —
+  # promote it once its runtime/caching is proven.
+  rust-check:
+    name: Rust Check (Tauri apps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            apps/helper/src-tauri -> target
+            apps/viewer/src-tauri -> target
+
+      - name: Check helper
+        working-directory: apps/helper/src-tauri
+        run: cargo check --locked --all-targets
+
+      - name: Check viewer
+        working-directory: apps/viewer/src-tauri
+        run: cargo check --locked --all-targets
+
+  # ─── Rust Check (Windows) ─────────────────────────────────────────────
+  # The ubuntu rust-check can't compile [target.'cfg(windows)'] deps (the
+  # `windows` crate family) — historically only the release build verified
+  # those, so bumps like windows 0.58→0.61 sat unverifiable (#1081). This
+  # job closes that gap, but only when Cargo files actually change: it's
+  # path-filtered so the windows runner cost isn't paid on every PR.
+  # Deliberately NOT in the ci-success needs list — it's usually skipped,
+  # and "skipped" vs "passed" handling there isn't worth the complexity.
+  rust-check-windows:
+    name: Rust Check (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Detect Cargo changes
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: changes
+        with:
+          filters: |
+            cargo:
+              - 'apps/helper/src-tauri/**'
+              - 'apps/viewer/src-tauri/**'
+
+      - name: Setup Rust
+        if: steps.changes.outputs.cargo == 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        if: steps.changes.outputs.cargo == 'true'
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            apps/helper/src-tauri -> target
+            apps/viewer/src-tauri -> target
+
+      - name: Check helper (windows)
+        if: steps.changes.outputs.cargo == 'true'
+        working-directory: apps/helper/src-tauri
+        run: cargo check --locked --all-targets
+
+      - name: Check viewer (windows)
+        if: steps.changes.outputs.cargo == 'true'
+        working-directory: apps/viewer/src-tauri
+        run: cargo check --locked --all-targets
+
+  # ─── Integration Tests ────────────────────────────────────────────────
+  # The API integration suite against a real Postgres + Redis (the only
+  # place RLS, tenant gates, and permission resolution are exercised
+  # without mocks). BLOCKING on PRs and main — it lived inside the
+  # non-blocking smoke-test job until 2026-06, which let two breakages
+  # (#1042's RBAC gate, #1092's org-scope lockout) merge "green" and keep
+  # main red for 8 days. ~2-3 min: no Docker image builds, just the
+  # docker-compose.test.yml stack (postgres + redis pulls).
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start test-stack containers
+        run: |
+          docker compose -f docker-compose.test.yml up -d
+          timeout 60 bash -c 'until docker exec breeze-postgres-test pg_isready -U breeze_test -d breeze_test; do sleep 1; done'
+          timeout 60 bash -c 'until docker exec breeze-redis-test redis-cli ping | grep -q PONG; do sleep 1; done'
+
+      - name: Run integration tests
+        env:
+          # DATABASE_URL_APP is the unprivileged role the integration tests
+          # actually hit (set up by autoMigrate's ensureAppRole on first
+          # run); DATABASE_URL is the superuser used for seeding +
+          # verification reads. See apps/api/src/__tests__/integration/
+          # loadEnv.ts for the full contract.
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          REDIS_URL: redis://localhost:6380
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          NODE_ENV: test
+        run: pnpm --filter=@breeze/api test:integration
+
+      # The rls-coverage contract test inspects pg_catalog to verify every
+      # tenant-scoped table has policies covering SELECT/INSERT/UPDATE/DELETE
+      # via the right access helper. Runs against the same test DB AFTER
+      # the integration suite (which has already triggered autoMigrate).
+      # Has its own runner because vitest.integration.config.ts excludes it:
+      # the read-only catalog inspection must not be hooked to setup.ts,
+      # which TRUNCATEs core tables on beforeEach.
+      - name: Run RLS coverage contract test
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          NODE_ENV: test
+        run: pnpm --filter=@breeze/api test:rls-coverage
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --tail=200 || true
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v || true
+
   # ─── Smoke Test ───────────────────────────────────────────────────────
   # Builds Docker images, starts the full stack, and verifies:
   #   1. DB + Redis connectivity (health/ready)
@@ -447,6 +624,9 @@ jobs:
   #   3. Authenticated API endpoints (exercises core DB tables)
   #   4. Web page loads (SSR rendering works)
   # Non-blocking on PRs (continue-on-error), required on main pushes.
+  # The API integration suite used to run here too — it now has its own
+  # BLOCKING integration-test job above; this job is purely the Docker
+  # image build + stack boot + endpoint smoke.
   smoke-test:
     name: Smoke Test
     runs-on: ubuntu-latest
@@ -649,88 +829,20 @@ jobs:
           fi
           echo "All page smoke tests passed."
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Integration tests need their own Postgres/Redis on :5433/:6380 — they
-      # run TRUNCATE CASCADE on beforeEach, so `assertTestDatabase` refuses to
-      # touch the production stack's `breeze` DB on :5432. Spin up the
-      # ephemeral test stack alongside the running production stack.
-      - name: Start test-stack containers for integration tests
-        run: |
-          docker compose -f docker-compose.test.yml up -d
-          timeout 60 bash -c 'until docker exec breeze-postgres-test pg_isready -U breeze_test -d breeze_test; do sleep 1; done'
-          timeout 60 bash -c 'until docker exec breeze-redis-test redis-cli ping | grep -q PONG; do sleep 1; done'
-
-      - name: Run integration tests
-        env:
-          # Point at the ephemeral test stack, not the running production
-          # stack on :5432. DATABASE_URL_APP is the unprivileged role the
-          # integration tests actually hit (set up by autoMigrate's
-          # ensureAppRole on first run); DATABASE_URL is the superuser used
-          # for seeding + verification reads. See apps/api/src/__tests__/
-          # integration/loadEnv.ts for the full contract.
-          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
-          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
-          BREEZE_APP_DB_PASSWORD: breeze_test
-          POSTGRES_PASSWORD: breeze_test
-          REDIS_URL: redis://localhost:6380
-          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
-          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
-          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
-          NODE_ENV: test
-        run: pnpm --filter=@breeze/api test:integration
-
-      # The rls-coverage contract test inspects pg_catalog to verify every
-      # tenant-scoped table has policies covering SELECT/INSERT/UPDATE/DELETE
-      # via the right access helper. Runs against the same test DB AFTER
-      # the integration suite (which has already triggered autoMigrate).
-      # Has its own runner because vitest.integration.config.ts excludes it:
-      # the read-only catalog inspection must not be hooked to setup.ts,
-      # which TRUNCATEs core tables on beforeEach.
-      - name: Run RLS coverage contract test
-        env:
-          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
-          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
-          BREEZE_APP_DB_PASSWORD: breeze_test
-          POSTGRES_PASSWORD: breeze_test
-          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
-          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
-          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
-          NODE_ENV: test
-        run: pnpm --filter=@breeze/api test:rls-coverage
-
       - name: Show container logs on failure
         if: failure()
-        run: |
-          echo "=== production stack logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.override.yml.ci logs --tail=200 || true
-          echo "=== test stack logs ==="
-          docker compose -f docker-compose.test.yml logs --tail=200 || true
+        run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci logs --tail=200 || true
 
       - name: Teardown
         if: always()
-        run: |
-          docker compose -f docker-compose.yml -f docker-compose.override.yml.ci down -v || true
-          docker compose -f docker-compose.test.yml down -v || true
+        run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci down -v || true
 
   # Summary job that depends on all other jobs for branch protection
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, security-audit, build-api, build-web, build-agent, test-agent, smoke-test]
-    if: always()
+    needs: [lint, typecheck, test-api, test-web, security-audit, build-api, build-web, build-agent, test-agent, integration-test, rust-check, smoke-test]
+    if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
         env:
@@ -743,6 +855,8 @@ jobs:
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
+          INTEGRATION_TEST_RESULT: ${{ needs.integration-test.result }}
+          RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
           SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
@@ -754,7 +868,9 @@ jobs:
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
-             [[ "${TEST_AGENT_RESULT}" != "success" ]]; then
+             [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
+             [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
+             [[ "${RUST_CHECK_RESULT}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1
           fi
@@ -764,3 +880,54 @@ jobs:
             exit 1
           fi
           echo "All required jobs passed!"
+
+  # ─── Main-red alerting ────────────────────────────────────────────────
+  # Main was red for 8 days in June 2026 and nobody noticed, partly
+  # because the dependabot merge storms cancel most main runs and partly
+  # from alert fatigue. This keeps exactly one open `ci-red` issue while
+  # main is red and auto-closes it when main goes green — red is loud,
+  # green is silent, and a perpetually-open issue means "act now".
+  # Cancelled runs are ignored (they say nothing about main's health).
+  main-red-alert:
+    name: Main Red Alert
+    runs-on: ubuntu-latest
+    needs: [ci-success]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update, or close the ci-red tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.ci-success.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh label create ci-red --repo "$GITHUB_REPOSITORY" \
+            --color B60205 --description "CI is failing on main" 2>/dev/null || true
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci-red --state open \
+            --json number --jq ".[0].number // empty")
+          short_sha="${SHA:0:8}"
+          case "$RESULT" in
+            success)
+              if [ -n "$existing" ]; then
+                gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
+                  --comment "Main is green again as of \`$short_sha\`: $RUN_URL"
+              fi
+              ;;
+            failure)
+              if [ -n "$existing" ]; then
+                gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+                  --body "Still red at \`$short_sha\`: $RUN_URL"
+              else
+                body=$(printf "CI failed on a main push at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$short_sha" "$RUN_URL")
+                gh issue create --repo "$GITHUB_REPOSITORY" --label ci-red \
+                  --title "CI is red on main" \
+                  --body "$body"
+              fi
+              ;;
+            *)
+              echo "ci-success result is '$RESULT' (cancelled/skipped) — no signal about main health, doing nothing."
+              ;;
+          esac

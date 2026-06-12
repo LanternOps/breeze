@@ -1,6 +1,7 @@
 export * from './accountDeletion';
 export * from './approvals';
 export * from './elevations';
+export * from './pam';
 export * from './orgs';
 export * from './oauth';
 export * from './users';
@@ -70,7 +71,9 @@ export * from './incidentResponse';
 export * from './thirdPartyCatalog';
 export * from './tunnels';
 export * from './installerBootstrapTokens';
+export * from './provisionCredentialHandles';
 export * from './deploymentInvites';
 export * from './emailVerificationTokens';
 export * from './manifestSigningKeys';
 export * from './refreshTokenFamilies';
+export * from './tickets';

@@ -347,6 +347,22 @@ const envSchema = z
       .optional()
       .describe('Password for the breeze_app role. If unset, ensureAppRole falls back to POSTGRES_PASSWORD.'),
 
+    // Issue #915: dedicated connection string for the `breeze_audit_admin`
+    // login role used ONLY by the audit-log retention worker. When set,
+    // retention deletes run on a separate pool with connection-level
+    // privilege separation, so audit_logs DELETE is unreachable from the
+    // main breeze_app pool. When unset, retention falls back to the legacy
+    // shared-credential path and logs a startup warning. Optional so
+    // existing deploys keep working until they provision the credential.
+    AUDIT_ADMIN_DATABASE_URL: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v || v.startsWith('postgres://') || v.startsWith('postgresql://'),
+        { message: 'AUDIT_ADMIN_DATABASE_URL must be a valid postgres:// or postgresql:// URL' },
+      )
+      .describe('Optional dedicated connection for the breeze_audit_admin role (audit retention worker, issue #915). If unset, retention uses the legacy breeze_app + SET ROLE path.'),
+
     JWT_SECRET: z
       .string({ required_error: 'JWT_SECRET is required' })
       .min(1, 'JWT_SECRET must not be empty'),
@@ -446,6 +462,16 @@ const envSchema = z
     DELEGANT_SERVICE_TOKEN: z.string().optional(),
     DELEGANT_PRINCIPAL_SIGNING_KEY: z.string().optional(),
     DELEGANT_PRINCIPAL_KID: z.string().optional(),
+    // -- Cloudflare Access JWT trust (Discussion #702) -----------------------
+    // Operator opt-in to short-circuiting /auth/login when a valid CF Access
+    // JWT is presented. Off by default. When on, TEAM_DOMAIN + AUD are
+    // required; TRUSTS_MFA controls whether the minted Breeze session is
+    // marked as MFA-satisfied by the CF Access policy (an operator
+    // assertion, not derivable from the JWT itself).
+    CF_ACCESS_TRUST_ENABLED: z.string().optional(),
+    CF_ACCESS_TEAM_DOMAIN: z.string().optional(),
+    CF_ACCESS_AUD: z.string().optional(),
+    CF_ACCESS_TRUSTS_MFA: z.string().optional(),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
@@ -456,6 +482,7 @@ const envSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PARTNER_HOOKS_URL: z.string().url().optional(),
     PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
+    IP_ALLOWLIST_ENFORCEMENT_MODE: z.enum(['enforce', 'off']).default('enforce'),
 
     // -- Alternative LLM backend (openai-compatible, e.g. vLLM) ---------------
     // Off by default. Chat-only PoC; tool-calling is not supported on this path.
@@ -956,6 +983,58 @@ const envSchema = z
         ctx,
       );
     }
+
+    // CF Access JWT trust (Discussion #702). Independent of NODE_ENV: the
+    // feature is opt-in via CF_ACCESS_TRUST_ENABLED, and when enabled the
+    // team domain and AUD are load-bearing for verifying the JWT. Validate
+    // anywhere the flag is on so dev misconfig is caught at boot.
+    const cfAccessTrustRaw = (data.CF_ACCESS_TRUST_ENABLED ?? '').trim().toLowerCase();
+    if (cfAccessTrustRaw && !['', 'false', '0', 'no', 'off'].includes(cfAccessTrustRaw)) {
+      if (!['true', '1', 'yes', 'on'].includes(cfAccessTrustRaw)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['CF_ACCESS_TRUST_ENABLED'],
+          message:
+            'CF_ACCESS_TRUST_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set.',
+        });
+      } else {
+        const teamDomain = (data.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+        if (!teamDomain) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['CF_ACCESS_TEAM_DOMAIN'],
+            message:
+              'CF_ACCESS_TEAM_DOMAIN is required when CF_ACCESS_TRUST_ENABLED is true (e.g. example.cloudflareaccess.com, no scheme).',
+          });
+        } else if (teamDomain.includes('://')) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['CF_ACCESS_TEAM_DOMAIN'],
+            message:
+              'CF_ACCESS_TEAM_DOMAIN must not include a scheme. Use the bare hostname (e.g. example.cloudflareaccess.com).',
+          });
+        }
+        const aud = (data.CF_ACCESS_AUD ?? '').trim();
+        if (!aud) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['CF_ACCESS_AUD'],
+            message:
+              'CF_ACCESS_AUD is required when CF_ACCESS_TRUST_ENABLED is true. Get the application AUD tag from the Cloudflare Zero Trust dashboard.',
+          });
+        }
+        const trustsMfaRaw = (data.CF_ACCESS_TRUSTS_MFA ?? '').trim().toLowerCase();
+        const cfBoolValues = new Set(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']);
+        if (trustsMfaRaw && !cfBoolValues.has(trustsMfaRaw)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['CF_ACCESS_TRUSTS_MFA'],
+            message:
+              'CF_ACCESS_TRUSTS_MFA must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (does not satisfy MFA).',
+          });
+        }
+      }
+    }
   });
 
 // Inferred config type from the schema
@@ -1079,6 +1158,7 @@ export function validateConfig(): AppConfig {
     DATABASE_URL: env.DATABASE_URL,
     DATABASE_URL_APP: env.DATABASE_URL_APP,
     BREEZE_APP_DB_PASSWORD: env.BREEZE_APP_DB_PASSWORD,
+    AUDIT_ADMIN_DATABASE_URL: env.AUDIT_ADMIN_DATABASE_URL,
     JWT_SECRET: env.JWT_SECRET,
     JWT_SIGNING_KEYRING: env.JWT_SIGNING_KEYRING,
     JWT_ACTIVE_KID: env.JWT_ACTIVE_KID,
@@ -1125,6 +1205,10 @@ export function validateConfig(): AppConfig {
     DELEGANT_SERVICE_TOKEN: env.DELEGANT_SERVICE_TOKEN,
     DELEGANT_PRINCIPAL_SIGNING_KEY: env.DELEGANT_PRINCIPAL_SIGNING_KEY,
     DELEGANT_PRINCIPAL_KID: env.DELEGANT_PRINCIPAL_KID,
+    CF_ACCESS_TRUST_ENABLED: env.CF_ACCESS_TRUST_ENABLED,
+    CF_ACCESS_TEAM_DOMAIN: env.CF_ACCESS_TEAM_DOMAIN,
+    CF_ACCESS_AUD: env.CF_ACCESS_AUD,
+    CF_ACCESS_TRUSTS_MFA: env.CF_ACCESS_TRUSTS_MFA,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     REDIS_HOST: env.REDIS_HOST,

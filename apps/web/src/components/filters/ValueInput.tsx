@@ -66,6 +66,7 @@ export function ValueInput({
   if (field?.type === 'enum' && field.enumValues) {
     return (
       <select
+        data-testid="value-enum-select"
         value={String(value)}
         onChange={(e) => onChange(e.target.value)}
         className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
@@ -83,6 +84,7 @@ export function ValueInput({
   if (field?.type === 'boolean') {
     return (
       <select
+        data-testid="value-boolean-select"
         value={String(value)}
         onChange={(e) => onChange(e.target.value === 'true')}
         className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
@@ -98,6 +100,7 @@ export function ValueInput({
     return (
       <input
         type="number"
+        data-testid="value-number-input"
         value={typeof value === 'number' ? value : ''}
         onChange={(e) => onChange(e.target.valueAsNumber || 0)}
         className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
@@ -117,6 +120,7 @@ export function ValueInput({
     return (
       <input
         type={field.type === 'date' ? 'date' : 'datetime-local'}
+        data-testid="value-date-input"
         value={dateValue}
         onChange={(e) => onChange(e.target.value)}
         className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
@@ -128,6 +132,7 @@ export function ValueInput({
   return (
     <input
       type="text"
+      data-testid="value-text-input"
       value={typeof value === 'string' ? value : ''}
       onChange={(e) => onChange(e.target.value)}
       className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
@@ -262,7 +267,7 @@ function MultiValueInput({
   // If we have enum values, show checkboxes instead of free text
   if (enumValues && enumValues.length <= 10) {
     return (
-      <div className={`flex flex-wrap gap-2 ${className}`}>
+      <div data-testid="value-multi-input" className={`flex flex-wrap gap-2 ${className}`}>
         {enumValues.map((enumValue) => {
           const isSelected = value.includes(enumValue);
           return (
@@ -295,7 +300,7 @@ function MultiValueInput({
   }
 
   return (
-    <div className={className}>
+    <div data-testid="value-multi-input" className={className}>
       <div className="flex flex-wrap gap-1 min-h-[36px] p-1 rounded-md border bg-background">
         {value.map((v) => (
           <span

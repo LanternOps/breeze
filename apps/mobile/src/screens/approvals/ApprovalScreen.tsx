@@ -19,9 +19,12 @@ import { CountdownRing } from './components/CountdownRing';
 import { RequesterRow } from './components/RequesterRow';
 import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
+import { UacInterceptDetails } from './components/UacInterceptDetails';
 import { RiskBand } from './components/RiskBand';
 import { CustomerTenantBadge } from './components/CustomerTenantBadge';
 import { ApprovalButtons } from './components/ApprovalButtons';
+import { resolveApprovalFlowType } from './approvalFlow';
+import { getApprovalCopy } from './approvalCopy';
 import { decisionTarget, type CapturedRequestId } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
 import { Toast } from '../../components/Toast';
@@ -216,6 +219,12 @@ export function ApprovalScreen() {
   // 5s hold-to-confirm self-approval UX.
   const isRecursive = focused.isRecursive;
 
+  // Flow-type-aware copy + details (#1154). uac_intercept (PAM elevation) gets
+  // an "Allow {exe} to run as admin" headline + a structured detail card; every
+  // other flow keeps the existing actionLabel + generic JSON details.
+  const flowType = resolveApprovalFlowType(focused);
+  const copy = getApprovalCopy(focused);
+
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
       <Animated.View style={[{ flex: 1 }, enterStyle, shakeStyle]}>
@@ -248,12 +257,16 @@ export function ApprovalScreen() {
             machineLabel={focused.requestingMachineLabel}
             createdAt={focused.createdAt}
           />
-          <ActionHeadline action={focused.actionLabel} />
+          <ActionHeadline action={copy.headline} />
           {focused.customerTenant ? (
             <CustomerTenantBadge tenant={focused.customerTenant} />
           ) : null}
           <RiskBand tier={focused.riskTier} summary={focused.riskSummary} />
-          <DetailsCollapse toolName={focused.actionToolName} args={focused.actionArguments} />
+          {flowType === 'uac_intercept' ? (
+            <UacInterceptDetails args={focused.actionArguments} />
+          ) : (
+            <DetailsCollapse toolName={focused.actionToolName} args={focused.actionArguments} />
+          )}
         </ScrollView>
 
         <View style={{ paddingBottom: insets.bottom + spacing[5] }}>
@@ -261,6 +274,8 @@ export function ApprovalScreen() {
             requestId={focused.id}
             isRecursive={isRecursive}
             inFlight={inFlight}
+            approveLabel={copy.approveLabel}
+            holdLabel={copy.holdLabel}
             onApprove={handleApprove}
             onDeny={handleDeny}
           />

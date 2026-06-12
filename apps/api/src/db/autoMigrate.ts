@@ -1,3 +1,6 @@
+// Canonicalize NODE_ENV before anything reads it — this is a standalone CLI
+// entrypoint (db:migrate) that, via seed, gates on NODE_ENV. See #917 (L-6).
+import '../config/normalizeNodeEnv';
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';

@@ -27,7 +27,7 @@ import {
   buildMacosInstallerZip,
   buildWindowsInstallerZip,
   fetchRegularMsi,
-  fetchMacosPkg,
+  assertMacosInstallerPkgsReachable,
   fetchMacosInstallerAppZip,
 } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
@@ -190,7 +190,7 @@ function writeEnrollmentKeyAudit(
   });
 }
 
-// fetchRegularMsi, fetchMacosPkg moved to installerBuilder.ts
+// fetchRegularMsi and the macOS installer helpers live in installerBuilder.ts
 
 const shortCodeAlphabet =
   "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz";
@@ -1074,9 +1074,9 @@ enrollmentKeyRoutes.get(
     try {
       if (platform === "windows" && !signingService) {
         binaryBuffer = await fetchRegularMsi();
-      } else if (platform === "macos") {
-        binaryBuffer = await fetchMacosPkg();
       }
+      // macOS no longer fetches a binary here — the bundled install.sh downloads
+      // the architecture-matched pkg at install time.
     } catch (err) {
       console.error(`[installer] Failed to fetch ${platform} binary:`, err);
       return c.json(
@@ -1170,16 +1170,14 @@ enrollmentKeyRoutes.get(
         return c.body(resultBuffer as unknown as ArrayBuffer);
       }
 
-      // macOS — unchanged
-      const zipBuffer = await buildMacosInstallerZip(
-        ensureBuffer(binaryBuffer, "installer/macos zip"),
-        {
-          serverUrl,
-          enrollmentKey: rawChildKey,
-          enrollmentSecret: globalSecret,
-          siteId: parentKey.siteId,
-        },
-      );
+      // macOS — install.sh downloads the architecture-matched pkg at install
+      // time, so no binary is bundled here (one zip serves Intel + Apple Silicon).
+      const zipBuffer = await buildMacosInstallerZip({
+        serverUrl,
+        enrollmentKey: rawChildKey,
+        enrollmentSecret: globalSecret,
+        siteId: parentKey.siteId,
+      });
 
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parentKey.orgId,
@@ -1402,7 +1400,9 @@ enrollmentKeyRoutes.post(
           await fetchRegularMsi();
         }
       } else {
-        await fetchMacosPkg();
+        // macOS installer downloads the arch-matched pkg at install time —
+        // validate BOTH architectures are reachable, not just arm64.
+        await assertMacosInstallerPkgsReachable();
       }
     } catch (err) {
       console.error(
@@ -1676,9 +1676,9 @@ async function serveInstaller(
   try {
     if (platform === "windows" && !signingService) {
       binaryBuffer = await fetchRegularMsi();
-    } else if (platform === "macos") {
-      binaryBuffer = await fetchMacosPkg();
     }
+    // macOS no longer fetches a binary here — the bundled install.sh downloads
+    // the architecture-matched pkg at install time.
   } catch (err) {
     console.error(`[public-download] Failed to fetch ${platform} binary:`, err);
     return c.json({ error: "Installer binary not available" }, 503);
@@ -1716,16 +1716,14 @@ async function serveInstaller(
         filename = "breeze-agent-windows.zip";
       }
     } else {
-      // macOS
-      resultBuffer = await buildMacosInstallerZip(
-        ensureBuffer(binaryBuffer, "public-download/macos zip"),
-        {
-          serverUrl,
-          enrollmentKey: rawToken,
-          enrollmentSecret: globalSecret,
-          siteId: keyRow.siteId,
-        },
-      );
+      // macOS — install.sh downloads the architecture-matched pkg at install
+      // time; nothing is bundled (one zip serves Intel + Apple Silicon).
+      resultBuffer = await buildMacosInstallerZip({
+        serverUrl,
+        enrollmentKey: rawToken,
+        enrollmentSecret: globalSecret,
+        siteId: keyRow.siteId,
+      });
       contentType = "application/zip";
       filename = "breeze-agent-macos.zip";
     }

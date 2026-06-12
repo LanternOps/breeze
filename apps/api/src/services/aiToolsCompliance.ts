@@ -23,6 +23,7 @@ import type { AiTool } from './aiTools';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -89,6 +90,23 @@ registerTool({
     if (typeof input.status === 'string') conditions.push(eq(softwareComplianceStatus.status, input.status));
     if (Array.isArray(input.deviceIds) && input.deviceIds.length > 0) {
       conditions.push(inArray(softwareComplianceStatus.deviceId, input.deviceIds as string[]));
+    }
+
+    // Site axis (app-layer only; RLS does NOT enforce it). softwareComplianceStatus
+    // has no site_id column, so narrow by the in-scope device-id set. A restricted
+    // caller with zero in-scope devices short-circuits to empty results. This
+    // intersects with the optional caller-supplied deviceIds filter above
+    // (most-restrictive wins).
+    if (auth.allowedSiteIds && auth.canAccessSite) {
+      const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+      if (!queryOrgId) {
+        return JSON.stringify({ count: 0, compliance: [] });
+      }
+      const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
+      if (!allowed || allowed.length === 0) {
+        return JSON.stringify({ count: 0, compliance: [], scopeNote: SITE_SCOPE_EMPTY_NOTE });
+      }
+      conditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
     }
 
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
@@ -381,6 +399,28 @@ registerTool({
       const deviceOrgCondition = auth.orgCondition(devices.orgId);
       if (deviceOrgCondition) complianceConditions.push(deviceOrgCondition);
 
+      // Site axis (app-layer only; RLS does NOT enforce it). When the caller
+      // supplies no deviceIds, this fallback enumerates ALL violating devices
+      // org-wide and queues remediation (a mutation) against them — a
+      // site-restricted caller must only reach its in-scope device set.
+      // (Caller-supplied deviceIds are already org+site gated centrally via
+      // `deviceArgs` → enforceDeviceArgs.)
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        if (!queryOrgId) {
+          return JSON.stringify({ message: 'No matching violation rows found for remediation', queued: 0 });
+        }
+        const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({
+            message: 'No matching violation rows found for remediation',
+            queued: 0,
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
+          });
+        }
+        complianceConditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
+      }
+
       const rows = await db
         .select({ deviceId: softwareComplianceStatus.deviceId })
         .from(softwareComplianceStatus)
@@ -529,6 +569,22 @@ registerTool({
     }
     if (input.deviceId) {
       conditions.push(eq(automationPolicyCompliance.deviceId, input.deviceId as string));
+    }
+
+    // Site axis (app-layer only; RLS does NOT enforce it). automationPolicyCompliance
+    // has no site_id column, so narrow by the in-scope device-id set. A restricted
+    // caller with zero in-scope devices short-circuits to empty results. This
+    // intersects with the optional deviceId filter above (most-restrictive wins).
+    if (auth.allowedSiteIds && auth.canAccessSite) {
+      const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+      if (!queryOrgId) {
+        return JSON.stringify({ records: [], total: 0, showing: 0, breakdown: {} });
+      }
+      const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
+      if (!allowed || allowed.length === 0) {
+        return JSON.stringify({ records: [], total: 0, showing: 0, breakdown: {}, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+      }
+      conditions.push(inArray(automationPolicyCompliance.deviceId, allowed));
     }
 
     const records = await db

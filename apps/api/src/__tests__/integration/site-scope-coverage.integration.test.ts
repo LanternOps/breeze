@@ -152,7 +152,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/helper/index.ts:DELETE /chat/sessions/:id',
   'routes/helper/index.ts:GET /chat/sessions',
   'routes/helper/index.ts:GET /chat/sessions/:id/messages',
-  'routes/helper/index.ts:POST /chat/sessions/:id/approve/:executionId',
   'routes/helper/index.ts:POST /chat/sessions/:id/flag',
   'routes/tunnels.ts:GET /desktop-access',
   'routes/tunnels.ts:POST /downgrade-to-vnc',

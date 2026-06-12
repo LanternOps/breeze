@@ -25,7 +25,7 @@ import {
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, isNull, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
@@ -143,7 +143,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const results: Record<string, unknown> = {};
 
       // Resolve script content upfront so the agent receives the full payload
-      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string)];
+      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
       const orgCond = auth.orgCondition(scripts.orgId);
       if (orgCond) scriptConditions.push(orgCond);
 
@@ -328,7 +328,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      const conditions: SQL[] = [];
+      const conditions: SQL[] = [isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
       if (orgCondition) conditions.push(orgCondition);
 
@@ -388,7 +388,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const includeExecutionStats = (input.includeExecutionStats as boolean) ?? false;
 
       // Query script with org scoping
-      const conditions: SQL[] = [eq(scripts.id, scriptId)];
+      const conditions: SQL[] = [eq(scripts.id, scriptId), isNull(scripts.deletedAt)];
       const orgCond = auth.orgCondition(scripts.orgId);
       if (orgCond) conditions.push(orgCond);
 
@@ -529,7 +529,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       // Verify the script belongs to the user's org before returning execution data
-      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string)];
+      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
       if (orgCondition) scriptConditions.push(orgCondition);
 
@@ -592,7 +592,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const includeTemplates = (input.includeTemplates as boolean) ?? false;
 
       // Query org scripts
-      const conditions: SQL[] = [];
+      const conditions: SQL[] = [isNull(scripts.deletedAt)];
       const orgCond = auth.orgCondition(scripts.orgId);
       if (orgCond) conditions.push(orgCond);
 

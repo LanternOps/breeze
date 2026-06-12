@@ -333,6 +333,80 @@ export async function recordUsageFromSdkResult(
 }
 
 /**
+ * Record usage for a single openai-compatible turn.
+ * Cost is calculated from declared per-token pricing (best-effort).
+ * No prompt caching equivalent exists on vLLM; the full context is re-sent each turn.
+ */
+export async function recordOpenAIUsage(
+  sessionId: string,
+  orgId: string,
+  inputTokens: number,
+  outputTokens: number,
+  costUsd: number,
+): Promise<void> {
+  if (!orgId) {
+    console.warn(`[AI] Skipping recordOpenAIUsage — empty orgId for session=${sessionId}`);
+    return;
+  }
+  const costCents = Math.round(costUsd * 100 * 100) / 100;
+  const now = new Date();
+  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+  const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  try {
+    await db
+      .update(aiSessions)
+      .set({
+        totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
+        totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
+        totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
+        lastActivityAt: now,
+        updatedAt: now,
+      })
+      .where(eq(aiSessions.id, sessionId));
+  } catch (err) {
+    console.error(`[AI] Failed to update session totals (OpenAI) for session=${sessionId}:`, err);
+    throw err;
+  }
+
+  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
+    try {
+      await db
+        .insert(aiCostUsage)
+        .values({
+          orgId,
+          period,
+          periodKey,
+          inputTokens,
+          outputTokens,
+          totalCostCents: costCents,
+          sessionCount: 0,
+          messageCount: 1,
+          toolExecutionCount: 0,
+        })
+        .onConflictDoUpdate({
+          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
+          set: {
+            inputTokens: sql`${aiCostUsage.inputTokens} + ${inputTokens}`,
+            outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
+            totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
+            messageCount: sql`${aiCostUsage.messageCount} + 1`,
+            updatedAt: now,
+          },
+        });
+    } catch (err) {
+      console.error(`[AI] Failed to update ${period} aggregate (OpenAI) for org=${orgId}:`, err);
+    }
+  }
+
+  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+    console.error('[AI] Cost anomaly check failed (OpenAI):', err);
+  });
+
+  await deductBillingCredits(orgId, costCents);
+}
+
+/**
  * Get the remaining monthly budget for an org in USD.
  * Returns null if no budget is configured (unlimited).
  */

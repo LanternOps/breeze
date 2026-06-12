@@ -17,6 +17,12 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/filterEngine', () => ({
   // /preview now validates conditions up front (#1044); default to valid.
   validateFilter: vi.fn(() => ({ valid: true, errors: [] })),
+  // idsOnly path — returns the complete uncapped id set.
+  evaluateFilter: vi.fn().mockResolvedValue({
+    deviceIds: Array.from({ length: 250 }, (_, i) => `dev-${i}`),
+    totalCount: 250,
+    evaluatedAt: new Date('2026-01-01')
+  }),
   evaluateFilterWithPreview: vi.fn().mockResolvedValue({
     totalCount: 2,
     devices: [
@@ -72,7 +78,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { evaluateFilterWithPreview } from '../services/filterEngine';
+import { evaluateFilter, evaluateFilterWithPreview } from '../services/filterEngine';
 
 function makeFilter(overrides: Record<string, unknown> = {}) {
   return {
@@ -303,6 +309,191 @@ describe('filter routes', () => {
       expect(body.data.totalCount).toBe(2);
       expect(body.data.devices).toHaveLength(2);
       expect(body.data.evaluatedAt).toBeDefined();
+    });
+
+    it('scopes the count to a pinned ?orgId= instead of spanning all accessible orgs', async () => {
+      // Partner user who can see two orgs. Without a pinned orgId the preview
+      // sums both (2 + 2 = 4); with ?orgId= it must evaluate only that org.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const res = await app.request(`/filters/preview?orgId=${ORG_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'offline' }] }
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.totalCount).toBe(2); // one org, not both
+      expect(evaluateFilterWithPreview).toHaveBeenCalledTimes(1);
+      expect(evaluateFilterWithPreview).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID })
+      );
+    });
+
+    it('rejects a pinned ?orgId= the caller cannot access with 403', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        return next();
+      });
+
+      const res = await app.request(`/filters/preview?orgId=${ORG_ID_2}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'offline' }] }
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(evaluateFilterWithPreview).not.toHaveBeenCalled();
+    });
+
+    it('idsOnly returns ALL matching device ids uncapped (>100) and skips the preview path', async () => {
+      const res = await app.request('/filters/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] },
+          idsOnly: true
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // 250 matches — well past the 100-row preview cap (the bug this guards).
+      expect(body.data.totalCount).toBe(250);
+      expect(body.data.deviceIds).toHaveLength(250);
+      expect(body.data.deviceIds[0]).toBe('dev-0');
+      expect(body.data.deviceIds[249]).toBe('dev-249');
+      // ids only — no per-device enrichment payload.
+      expect(body.data.devices).toBeUndefined();
+      expect(evaluateFilter).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID })
+      );
+      expect(evaluateFilterWithPreview).not.toHaveBeenCalled();
+    });
+
+    it('idsOnly aggregates ids across all accessible orgs for partner scope', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const res = await app.request('/filters/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] },
+          idsOnly: true
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.totalCount).toBe(500); // 250 per org, both orgs, uncapped
+      expect(body.data.deviceIds).toHaveLength(500);
+      expect(evaluateFilter).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the existing capped preview behavior when idsOnly is not set', async () => {
+      // Engine reports 150 matches and (hypothetically) returns 150 rows; the
+      // route must still trim the payload to the requested limit.
+      vi.mocked(evaluateFilterWithPreview).mockResolvedValueOnce({
+        totalCount: 150,
+        devices: Array.from({ length: 150 }, (_, i) => ({
+          id: `dev-${i}`, hostname: `host-${i}`, displayName: null, osType: 'linux', status: 'online', lastSeenAt: null
+        })),
+        evaluatedAt: new Date('2026-01-01')
+      } as any);
+
+      const res = await app.request('/filters/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] },
+          limit: 100
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.totalCount).toBe(150); // true count still reported
+      expect(body.data.devices).toHaveLength(100); // payload capped
+      expect(evaluateFilterWithPreview).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID, previewLimit: 100 })
+      );
+      expect(evaluateFilter).not.toHaveBeenCalled();
+    });
+
+    it('still rejects a non-idsOnly limit above 100', async () => {
+      const res = await app.request('/filters/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] },
+          limit: 500
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('idsOnly returns an empty id set when user has no org access', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: null,
+          partnerId: null,
+          accessibleOrgIds: [],
+          canAccessOrg: () => false
+        });
+        return next();
+      });
+
+      const res = await app.request('/filters/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] },
+          idsOnly: true
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.totalCount).toBe(0);
+      expect(body.data.deviceIds).toEqual([]);
     });
 
     it('should return empty when user has no org access', async () => {

@@ -141,7 +141,8 @@ describe('audit_logs append-only enforcement', () => {
     expect(caught).toBeDefined();
     const cause = (caught as { cause?: { message?: string } } | undefined)?.cause
       ?? (caught as { message?: string } | undefined);
-    expect(String(cause?.message)).toMatch(/audit log is append-only/i);
+    // audit_log_chain's FK now rejects plain TRUNCATE before the append-only trigger fires (TRUNCATE ... CASCADE would hit the trigger); either rejection preserves the property.
+    expect(String(cause?.message)).toMatch(/audit log is append-only|cannot truncate a table referenced in a foreign key/i);
 
     // Defense-in-depth: confirm the row survived.
     const rows = (await getTestDb().execute(

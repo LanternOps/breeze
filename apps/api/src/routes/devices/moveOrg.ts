@@ -46,7 +46,10 @@ moveOrgRoutes.use('*', authMiddleware);
  * RLS hazard: 64 device-scoped tables denormalize `org_id` for RLS perf
  * (see DEVICE_ORG_DENORMALIZED_TABLES). All of them MUST be rewritten in
  * the same transaction or pre-existing rows for this device will be
- * visible only to the OLD org and invisible to the NEW one.
+ * visible only to the OLD org and invisible to the NEW one. Tables that
+ * denormalize org_id but have no device_id column (CUSTOM_ORG_REWRITE_TABLES,
+ * currently ticket_alert_links) get dedicated rewrites in the same
+ * transaction.
  *
  * Audit: writes ONE audit row per org (source + target) so the move shows
  * up in both audit feeds.
@@ -148,11 +151,20 @@ moveOrgRoutes.post(
           );
         }
 
-        // Forward-defense: rewrite denormalized site_id on any device-scoped
-        // table that has one. Currently empty (no such table exists today),
-        // but kept in lockstep with the org_id loop so a future schema PR
-        // adding site_id to a device-id-scoped table is handled automatically
-        // once it lands in DEVICE_SITE_DENORMALIZED_TABLES.
+        // ticket_alert_links denormalizes org_id for RLS but has no
+        // device_id column, so the generic loop above can't reach it —
+        // rewrite via the alert join instead. Excluded from
+        // DEVICE_ORG_DENORMALIZED_TABLES; tracked in
+        // CUSTOM_ORG_REWRITE_TABLES (core.ts).
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
+        );
+
+        // Rewrite denormalized site_id on every device-scoped table that has
+        // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
+        // in core.ts). Skipping any of these strands rows under the OLD
+        // site_id. PATCH /devices/:id (core.ts) performs the same propagation
+        // for same-org site changes; keep both loops in lockstep.
         for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
           await tx.execute(
             sql`UPDATE ${sql.identifier(table)} SET site_id = ${targetSiteId}::uuid WHERE device_id = ${deviceId}::uuid`,

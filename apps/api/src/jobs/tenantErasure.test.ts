@@ -74,7 +74,7 @@ import {
 describe('tenantErasure worker', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    addMock.mockResolvedValue({ id: 'tenant-erasure:org-xyz' });
+    addMock.mockResolvedValue({ id: 'tenant-erasure-org-xyz' });
     queueCloseMock.mockResolvedValue(undefined);
     workerCloseMock.mockResolvedValue(undefined);
     cascadeDeleteOrgMock.mockResolvedValue({
@@ -108,7 +108,7 @@ describe('tenantErasure worker', () => {
       'tenant-erasure',
       { orgId: 'org-xyz', performedBy: 'admin-1', performedByEmail: 'admin@example.com' },
       expect.objectContaining({
-        jobId: 'tenant-erasure:org-xyz',
+        jobId: 'tenant-erasure-org-xyz',
         attempts: 1,
       }),
     );
@@ -125,14 +125,14 @@ describe('tenantErasure worker', () => {
     const processor = capturedWorkerProcessor.current!;
     const result = await processor({
       name: 'tenant-erasure',
-      id: 'tenant-erasure:org-xyz',
+      id: 'tenant-erasure-org-xyz',
       data: { orgId: 'org-xyz', performedBy: 'admin-1', performedByEmail: 'admin@example.com' },
     });
     expect(cascadeDeleteOrgMock).toHaveBeenCalledWith('org-xyz', 'admin-1', 'admin@example.com');
     expect(result).toMatchObject({
       orgId: 'org-xyz',
       totalRowsDeleted: 2,
-      jobId: 'tenant-erasure:org-xyz',
+      jobId: 'tenant-erasure-org-xyz',
     });
   });
 
@@ -156,7 +156,7 @@ describe('tenantErasure worker', () => {
     await expect(
       processor({
         name: 'tenant-erasure',
-        id: 'tenant-erasure:org-xyz',
+        id: 'tenant-erasure-org-xyz',
         data: { orgId: 'org-xyz', performedBy: 'admin-1' },
       }),
     ).rejects.toThrow(/cascade boom/);

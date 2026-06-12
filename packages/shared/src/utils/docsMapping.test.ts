@@ -180,6 +180,26 @@ describe('getDocsForPath', () => {
     });
   });
 
+  describe('ticketing mappings', () => {
+    it('/tickets maps to ticketing docs', () => {
+      const result = getDocsForPath('/tickets');
+      expect(result.label).toBe('Ticketing');
+      expect(result.url).toContain('/features/ticketing/');
+    });
+
+    it('/tickets/abc-123 matches ticketing', () => {
+      const result = getDocsForPath('/tickets/abc-123');
+      expect(result.label).toBe('Ticketing');
+      expect(result.url).toContain('/features/ticketing/');
+    });
+
+    it('/settings/ticketing matches Ticketing, not generic Settings', () => {
+      const result = getDocsForPath('/settings/ticketing');
+      expect(result.label).toBe('Ticketing');
+      expect(result.url).toContain('/features/ticketing/');
+    });
+  });
+
   describe('trailing slash normalization', () => {
     it('/devices/ is treated the same as /devices', () => {
       const withSlash = getDocsForPath('/devices/');

@@ -81,7 +81,7 @@ vi.mock("../services/installerBuilder", () => ({
   buildWindowsInstallerZip: vi.fn(async () => Buffer.from("windows-zip")),
   buildMacosInstallerZip: vi.fn(async () => Buffer.from("macos-zip")),
   fetchRegularMsi: vi.fn(async () => Buffer.from("regular-msi")),
-  fetchMacosPkg: vi.fn(async () => Buffer.from("macos-pkg")),
+  assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   fetchMacosInstallerAppZip: vi.fn(async () => null),
 }));
 
@@ -802,7 +802,7 @@ describe("GET /public-download/:platform", () => {
   it("uses the remote signing service (no local binary fetch) when configured", async () => {
     // Regression guard for the most-hit installer path in production. When
     // MsiSigningService is configured, serveInstaller must:
-    //   1. NOT call fetchRegularMsi / fetchMacosPkg / anything local,
+    //   1. NOT call fetchRegularMsi / macOS reachability probe / anything local,
     //   2. call buildAndSignMsi with the correct version + properties,
     //   3. serve the result as application/octet-stream.
     process.env.BINARY_VERSION = "0.62.24";
@@ -828,7 +828,7 @@ describe("GET /public-download/:platform", () => {
       }),
     } as any);
 
-    const { fetchRegularMsi, fetchMacosPkg } =
+    const { fetchRegularMsi, assertMacosInstallerPkgsReachable } =
       await import("../services/installerBuilder");
 
     consumeDownloadHandleMock.mockResolvedValueOnce(
@@ -845,7 +845,7 @@ describe("GET /public-download/:platform", () => {
     );
 
     expect(fetchRegularMsi).not.toHaveBeenCalled();
-    expect(fetchMacosPkg).not.toHaveBeenCalled();
+    expect(assertMacosInstallerPkgsReachable).not.toHaveBeenCalled();
 
     expect(buildAndSignMsi).toHaveBeenCalledTimes(1);
     const req = (

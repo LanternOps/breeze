@@ -10,6 +10,8 @@ import {
   notificationChannels,
   alertNotifications,
   devices,
+  tickets,
+  ticketAlertLinks,
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
@@ -18,6 +20,8 @@ import { publishEvent } from '../../services/eventBus';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
+import { deviceInSiteScope } from '../tickets/siteScope';
 
 export const alertsRoutes = new Hono();
 
@@ -653,5 +657,87 @@ alertsRoutes.get(
       } : null,
       notifications
     });
+  }
+);
+
+// POST /alerts/:id/create-ticket — create a pre-filled, linked ticket from this alert
+alertsRoutes.post(
+  '/:id/create-ticket',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', alertIdParamSchema),
+  zValidator('json', z.object({
+    subject: z.string().min(1).max(255).optional(),
+    categoryId: z.string().uuid().optional(),
+    priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+    assigneeId: z.string().uuid().optional()
+  })),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const overrides = c.req.valid('json');
+    const auth = c.get('auth');
+
+    // Verify the alert is visible to the caller before calling the service
+    // (defense-in-depth: service also re-checks via createTicket org access).
+    const alert = await getAlertWithOrgCheck(id, auth);
+    if (!alert) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+
+    // Site-axis gate (R2): a site-restricted caller must not create tickets
+    // from alerts whose device is outside their allowed sites. Out-of-site
+    // alerts are invisible, not forbidden — same shape as the ticket-side gate.
+    if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+
+    try {
+      const ticket = await createTicketFromAlert(
+        id,
+        { userId: auth.user.id, name: auth.user.name },
+        overrides
+      );
+      return c.json({ data: ticket }, 201);
+    } catch (err) {
+      if (err instanceof TicketServiceError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+  }
+);
+
+// GET /alerts/:id/tickets — tickets linked to this alert via ticket_alert_links
+alertsRoutes.get(
+  '/:id/tickets',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('param', alertIdParamSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const auth = c.get('auth');
+
+    const alert = await getAlertWithOrgCheck(id, auth);
+    if (!alert) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+
+    // The join filters by alertId only; org isolation is the alert-visibility
+    // gate above plus RLS on tickets/ticket_alert_links (both org-scoped) —
+    // don't remove the getAlertWithOrgCheck call without replacing that bound.
+    const data = await db
+      .select({
+        id: tickets.id,
+        internalNumber: tickets.internalNumber,
+        subject: tickets.subject,
+        status: tickets.status,
+        priority: tickets.priority,
+        linkType: ticketAlertLinks.linkType,
+        linkedAt: ticketAlertLinks.createdAt
+      })
+      .from(ticketAlertLinks)
+      .innerJoin(tickets, eq(ticketAlertLinks.ticketId, tickets.id))
+      .where(eq(ticketAlertLinks.alertId, id))
+      .orderBy(desc(ticketAlertLinks.createdAt));
+
+    return c.json({ data });
   }
 );

@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -565,6 +566,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		ensureSASPolicy()
 	}
 
+	if cfg.PAMEnabled && runtime.GOOS == "windows" {
+		if err := elevaccount.New().EnsureProvisioned(); err != nil {
+			log.Warn("failed to provision PAM dormant elevation account, continuing",
+				"error", err.Error())
+		}
+	}
+
 	// On macOS, the root daemon has Full Disk Access and can write to the
 	// system TCC database. Grant Screen Recording and Accessibility
 	// permissions so the agent doesn't rely on user interaction (bare
@@ -697,6 +705,11 @@ func retryTCCGrant() {
 		log.Debug("retrying TCC permission auto-grant")
 		if attemptTCCGrant() {
 			log.Info("TCC permissions all granted, stopping retries")
+			// The user just granted Full Disk Access, letting us write the
+			// Screen Recording + Accessibility grants. Already-running desktop
+			// helpers cached the old (denied) state — kickstart them so the new
+			// permissions take effect without the user manually restarting.
+			heartbeat.KickstartDesktopHelpers()
 			return
 		}
 	}
@@ -707,8 +720,9 @@ func retryTCCGrant() {
 // - Receiving pending commands from the server via heartbeat response
 // - Executing commands and reporting results back to the server
 func runAgent() {
-	// Self-heal launchd plists on macOS (fixes KeepAlive config from older installs).
-	healLaunchdPlistsIfNeeded()
+	// Self-heal the installed service unit from older installs (launchd plists on
+	// macOS; systemd unit on Linux) after a binary-only auto-update.
+	reconcileServiceUnitIfNeeded()
 
 	// On Windows, if launched by the SCM, run under the service framework
 	// so we report Running/Stopped status back to the SCM correctly. The

@@ -22,6 +22,10 @@ const (
 	TypeTrayUpdate   = "tray_update"
 	TypeTrayAction   = "tray_action"
 
+	// PAM approval dialog
+	TypePamRequestDialog = "pam_request_dialog"
+	TypePamDialogResult  = "pam_dialog_result"
+
 	// Phase 4: Desktop + Clipboard
 	TypeDesktopStart  = "desktop_start"
 	TypeDesktopFrame  = "desktop_frame"
@@ -119,6 +123,7 @@ const (
 // Scope constants identify the capabilities granted to a helper session.
 const (
 	ScopeAssist = "assist" // IPC scope granted to the assist helper
+	ScopePam    = "pam"    // IPC scope granted to the user helper for PAM dialogs
 )
 
 const (
@@ -206,6 +211,25 @@ type NotifyRequest struct {
 type NotifyResult struct {
 	Delivered     bool   `json:"delivered"`
 	ActionClicked string `json:"actionClicked,omitempty"`
+}
+
+// PamRequestDialog asks the user helper to show a PAM elevation approval dialog.
+type PamRequestDialog struct {
+	ExePath        string `json:"exePath"`
+	Signer         string `json:"signer"`
+	Hash           string `json:"hash"`
+	SubjectUser    string `json:"subjectUser"`
+	CommandLine    string `json:"commandLine"`
+	Reason         string `json:"reason"`
+	IntentSummary  string `json:"intentSummary"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+}
+
+// PamDialogResult is the user helper's response after showing a PAM dialog.
+type PamDialogResult struct {
+	Approved        bool   `json:"approved"`
+	Reason          string `json:"reason,omitempty"`
+	DismissedByUser bool   `json:"dismissedByUser"`
 }
 
 // TrayUpdate tells the user helper to update the system tray icon/menu.

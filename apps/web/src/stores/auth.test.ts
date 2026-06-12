@@ -63,6 +63,24 @@ describe('auth store fetchWithAuth', () => {
     expect(headers.get('Content-Type')).toBe('application/json');
   });
 
+  it('does not force a JSON content-type on FormData bodies (avatar upload)', async () => {
+    // Forcing application/json on a multipart body strips the boundary the
+    // browser would otherwise add, so the server cannot parse the upload and
+    // 400s. The avatar POST must leave Content-Type unset for FormData.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const form = new FormData();
+    form.append('file', new Blob(['x'], { type: 'image/png' }), 'a.png');
+    await fetchWithAuth('/users/me/avatar', { method: 'POST', body: form });
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = options.headers as Headers;
+    expect(headers.get('Authorization')).toBe(`Bearer ${baseTokens.accessToken}`);
+    expect(headers.get('Content-Type')).toBeNull();
+  });
+
   it('strips only exact /api prefix while preserving /api-* routes', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const fetchMock = vi
@@ -78,6 +96,22 @@ describe('auth store fetchWithAuth', () => {
     const [secondUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(firstUrl).toBe('/api/v1/devices');
     expect(secondUrl).toBe('/api/v1/api-keys');
+  });
+
+  it('does not double the /v1 for server-stored /api/v1/ paths (e.g. avatar_url)', async () => {
+    // users.avatar_url is stored as /api/v1/users/:id/avatar and round-trips
+    // through fetchWithAuth (the avatar blob fetch). Without the /api/v1/
+    // branch in buildApiUrl it became /api/v1/v1/users/:id/avatar → 404 and a
+    // broken avatar.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/api/v1/users/user-9/avatar');
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('/api/v1/users/user-9/avatar');
+    expect(url).not.toContain('/v1/v1/');
   });
 
   it('refreshes and retries when access token is expired', async () => {
@@ -303,6 +337,98 @@ describe('auth API helpers', () => {
 
     expect((fetchMock.mock.calls[0][1] as RequestInit).referrerPolicy).toBe('no-referrer');
     expect((fetchMock.mock.calls[1][1] as RequestInit).referrerPolicy).toBe('no-referrer');
+  });
+});
+
+describe('refresh rotation-race recovery (#1107)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    useAuthStore.setState({
+      user: baseUser,
+      tokens: null,
+      isAuthenticated: true,
+      isLoading: false,
+      mfaPending: false,
+      mfaTempToken: null
+    });
+  });
+
+  const racedResponse = (): Response =>
+    ({
+      ok: false,
+      status: 401,
+      json: vi.fn().mockResolvedValue({ error: 'Refresh already in progress', reason: 'refresh_raced' })
+    }) as unknown as Response;
+
+  it('retries refresh once when the server reports a benign race, then succeeds', async () => {
+    const refreshed: Tokens = { accessToken: 'access-after-race', expiresInSeconds: 3600 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(racedResponse())
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(true);
+    // First attempt raced; the second (retry) won — exactly one retry.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith('/api/v1/auth/refresh'))).toBe(true);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-race');
+  });
+
+  it('gives up after a single retry if the race persists (no infinite loop)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(racedResponse())
+      .mockResolvedValueOnce(racedResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry on a non-raced 401 (genuine auth failure)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Invalid refresh token' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes refresh through the Web Locks API when available, under the right lock name (#1107)', async () => {
+    // jsdom has no navigator.locks, so the rest of the suite exercises the
+    // fallback. Stub it here to prove the cross-tab serialization wiring:
+    // correct lock name, fn run inside the lock, result propagated.
+    const requestMock = vi.fn((_name: string, fn: () => Promise<unknown>) => fn());
+    const prevLocks = (navigator as unknown as { locks?: unknown }).locks;
+    Object.defineProperty(navigator, 'locks', { value: { request: requestMock }, configurable: true });
+
+    try {
+      const refreshed: Tokens = { accessToken: 'access-locked', expiresInSeconds: 3600 };
+      const fetchMock = vi.fn().mockResolvedValue(makeResponse({ tokens: refreshed }, true, 200));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const restored = await restoreAccessTokenFromCookie();
+
+      expect(restored).toBe(true);
+      expect(requestMock).toHaveBeenCalledWith('breeze-token-refresh', expect.any(Function));
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('access-locked');
+    } finally {
+      if (prevLocks === undefined) {
+        delete (navigator as unknown as { locks?: unknown }).locks;
+      } else {
+        Object.defineProperty(navigator, 'locks', { value: prevLocks, configurable: true });
+      }
+    }
   });
 });
 

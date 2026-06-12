@@ -5,6 +5,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -16,14 +17,18 @@ import { users } from './users';
 import { devices } from './devices';
 import { approvalRequests } from './approvals';
 import { softwarePolicies } from './softwarePolicies';
+import { aiToolExecutions } from './ai';
 
 // PAM Track 1: privileged access management.
 //
-// Two flows on one table, distinguished by `flow_type`:
+// Three flows on one table, distinguished by `flow_type`:
 //   * uac_intercept  — end-user UAC prompt captured by the agent, requests
 //                      temporary admin via Breeze policy.
 //   * tech_jit_admin — technician-initiated just-in-time admin grant against
 //                      a device they're managing.
+//   * ai_tool_action — a governed (tier>=2) Breeze Helper AI tool invocation
+//                      (Phase 1 of security finding A, spec 2026-06-10);
+//                      links back to ai_tool_executions via execution_id.
 //
 // Tenancy Shape 1: direct `org_id` column. site_id / partner_id are
 // denormalized for ops queries (mirrors devices.ts). RLS policies key on
@@ -32,6 +37,7 @@ import { softwarePolicies } from './softwarePolicies';
 export const elevationFlowTypeEnum = pgEnum('elevation_flow_type', [
   'uac_intercept',
   'tech_jit_admin',
+  'ai_tool_action',
 ]);
 
 // Distinct from approval_status — adds auto_approved (allowlist hit, no
@@ -122,6 +128,16 @@ export const elevationRequests = pgTable(
       () => softwarePolicies.id,
       { onDelete: 'set null' },
     ),
+
+    // ai_tool_action flow (Phase 1, spec 2026-06-10): links the PAM decision
+    // back to the AI tool gate. ON DELETE SET NULL — historical elevations
+    // outlive their execution rows; flow_shape_chk requires tool_name only.
+    executionId: uuid('execution_id').references(() => aiToolExecutions.id, {
+      onDelete: 'set null',
+    }),
+    toolName: varchar('tool_name', { length: 100 }),
+    actionDigest: varchar('action_digest', { length: 64 }),
+    riskTier: smallint('risk_tier'),
 
     // Session info, set by the agent once the grant is exercised.
     sessionStartedAt: timestamp('session_started_at', { withTimezone: true }),

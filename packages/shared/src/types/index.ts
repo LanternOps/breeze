@@ -495,6 +495,24 @@ export interface InheritableSecuritySettings {
   ipAllowlist?: string[];
 }
 
+/**
+ * Server-derived status of the partner IP allowlist, returned by
+ * `GET /partners/me/ip-allowlist/status`. All booleans are computed by the API
+ * (the authority on proxy trust); the client never recomputes them:
+ *   proxyTrustOk === (currentIp !== null)
+ *   active === (enforced && proxyTrustOk)
+ */
+export interface IpAllowlistStatus {
+  /** The caller's detected trusted client IP, or null if not trustable. */
+  currentIp: string | null;
+  /** Whether the API can see a real client IP (proxy trust configured). */
+  proxyTrustOk: boolean;
+  /** Allowlist is non-empty and enforcement mode is 'enforce'. */
+  enforced: boolean;
+  /** Enforcement is both configured and currently effective. */
+  active: boolean;
+}
+
 export interface InheritableNotificationSettings {
   fromAddress?: string;
   replyTo?: string;

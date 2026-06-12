@@ -33,6 +33,11 @@ vi.mock('../services/automationRuntime', () => ({
   normalizeAutomationTrigger: vi.fn((trigger) => trigger),
   normalizeNotificationTargets: vi.fn((targets) => targets ?? {}),
   withWebhookDefaults: vi.fn((trigger) => trigger),
+  checkAutomationTargetsWithinSiteScope: vi.fn(async () => ({
+    ok: true,
+    outOfScopeDeviceIds: [],
+    unbounded: false,
+  })),
 }));
 
 vi.mock('../db', () => ({
@@ -81,6 +86,8 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+const mockState: { permissions: any } = { permissions: undefined };
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -92,6 +99,7 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['org-123'],
       canAccessOrg: (orgId: string) => orgId === 'org-123'
     });
+    c.set('permissions', mockState.permissions);
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
@@ -102,12 +110,19 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { getRedis } from '../services/redis';
 import { writeAuditEvent } from '../services/auditEvents';
+import { checkAutomationTargetsWithinSiteScope, createAutomationRunRecord } from '../services/automationRuntime';
 
 describe('automations routes', () => {
   let app: Hono;
 
 	  beforeEach(() => {
 	    vi.clearAllMocks();
+	    mockState.permissions = undefined;
+	    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+	      ok: true,
+	      outOfScopeDeviceIds: [],
+	      unbounded: false,
+	    } as any);
 	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
 	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LOCAL_REPLAY_FALLBACK;
 	    vi.mocked(getRedis).mockReturnValue(null);
@@ -310,6 +325,68 @@ describe('automations routes', () => {
     expect(body.enabled).toBe(false);
   });
 
+  it('rejects an UPDATE from a site-restricted caller when the new target set escapes their sites', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            enabled: true, conditions: [], trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+    // Post-update target set resolves outside the caller's allowlist.
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false, outOfScopeDeviceIds: ['dev-out-of-site'], unbounded: false,
+    } as any);
+
+    const res = await app.request('/automations/auto-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ trigger: { type: 'all' } }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(checkAutomationTargetsWithinSiteScope)).toHaveBeenCalled();
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('allows an UPDATE from a site-restricted caller when targets stay in scope', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            enabled: true, conditions: [], trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'auto-1', enabled: false, trigger: { type: 'manual' } }]),
+        }),
+      }),
+    } as any);
+    // Default beforeEach mock already returns ok:true, but set it explicitly.
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true, outOfScopeDeviceIds: [], unbounded: false,
+    } as any);
+
+    const res = await app.request('/automations/auto-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.update)).toHaveBeenCalled();
+  });
+
   it('should delete an automation', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -390,6 +467,163 @@ describe('automations routes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  // ============================================
+  // Site-scope enforcement (tenant isolation)
+  // ============================================
+
+  it('rejects create from a site-restricted caller when target set is unbounded (all-org)', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false,
+      outOfScopeDeviceIds: [],
+      unbounded: true,
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'auto-x', name: 'x', orgId: 'org-123', trigger: { type: 'manual' } }])
+      })
+    } as any);
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'All-org reboot',
+        trigger: { type: 'manual' },
+        conditions: { type: 'all' },
+        actions: [{ type: 'run_script', scriptId: 'script-1' }]
+      })
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(checkAutomationTargetsWithinSiteScope)).toHaveBeenCalled();
+    // Must not have written the automation.
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('allows create from a site-restricted caller when targets are within an allowed site', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true,
+      outOfScopeDeviceIds: [],
+      unbounded: false,
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'auto-ok',
+          name: 'Scoped reboot',
+          orgId: 'org-123',
+          trigger: { type: 'manual' },
+          enabled: true
+        }])
+      })
+    } as any);
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'Scoped reboot',
+        trigger: { type: 'manual', deviceIds: ['device-in-allowed-site'] },
+        conditions: { type: 'devices', deviceIds: ['device-in-allowed-site'] },
+        actions: [{ type: 'run_script', scriptId: 'script-1' }]
+      })
+    });
+
+    expect(res.status).toBe(201);
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  it('rejects trigger from a site-restricted caller when resolved targets escape the allowlist', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false,
+      outOfScopeDeviceIds: ['device-elsewhere'],
+      unbounded: false,
+    } as any);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Automation One',
+            orgId: 'org-123',
+            enabled: true,
+            runCount: 0,
+            trigger: { type: 'manual' }
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/auto-1/trigger', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(createAutomationRunRecord)).not.toHaveBeenCalled();
+  });
+
+  it('allows trigger from a site-restricted caller when all targets are in scope', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true,
+      outOfScopeDeviceIds: [],
+      unbounded: false,
+    } as any);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Automation One',
+            orgId: 'org-123',
+            enabled: true,
+            runCount: 0,
+            trigger: { type: 'manual' }
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/auto-1/run', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(createAutomationRunRecord)).toHaveBeenCalled();
+  });
+
+  it('does not gate an unrestricted caller (no allowedSiteIds) on trigger', async () => {
+    mockState.permissions = undefined; // unrestricted org admin / partner / system
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Automation One',
+            orgId: 'org-123',
+            enabled: true,
+            runCount: 0,
+            trigger: { type: 'manual' }
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/auto-1/trigger', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    // Helper still consulted (it short-circuits internally for unrestricted callers).
+    expect(vi.mocked(createAutomationRunRecord)).toHaveBeenCalled();
   });
 
 	  it('should trigger automation via webhook when signed payload is valid', async () => {

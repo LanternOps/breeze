@@ -14,6 +14,8 @@ import {
   isRefreshTokenJtiRevoked,
   revokeAllUserTokens,
   revokeRefreshTokenJti,
+  markRefreshTokenJtiRotated,
+  wasRefreshTokenJtiRecentlyRotated,
   getFamilyForJti,
   revokeFamily,
   isFamilyRevoked,
@@ -51,6 +53,9 @@ import {
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
+import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
+import { captureException } from '../../services/sentry';
+import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -171,8 +176,12 @@ async function recordAccountFailureAndMaybeNotify(
 
 export const loginRoutes = new Hono();
 
-// Login
-loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
+// Login. cfAccessLoginMiddleware runs first; on a valid Cloudflare Access JWT
+// it short-circuits with a minted session. On any failure (trust disabled,
+// header absent, invalid JWT, JWKS down, user not found, etc.) it calls
+// next() and the password handler below validates the body normally.
+// See Discussion #702 and apps/api/src/middleware/cfAccessLogin.ts.
+loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSchema), async (c) => {
   const { email, password } = c.req.valid('json');
   const ip = getClientIP(c);
   const rateLimitClient = getClientRateLimitKey(c);
@@ -352,6 +361,36 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     });
     await floorPromise;
     return c.json(genericAuthError(), 401);
+  }
+
+  // Partner IP allowlist: block before issuing tokens so the login form shows
+  // a precise error. Platform admins and untrusted-IP fail-open are handled
+  // inside enforceIpAllowlist.
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: context.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+  } catch (err) {
+    console.error('[auth] IP allowlist check failed during login:', err);
+    captureException(err, c);
+    await floorPromise;
+    return c.json(genericAuthError(), 401);
+  }
+  if (isBlocked(ipDecision)) {
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      reason: 'ip_not_allowed',
+      result: 'denied',
+      details: { method: 'password' },
+    });
+    await floorPromise;
+    return c.json(IP_NOT_ALLOWED_BODY, 403);
   }
 
   // Check if MFA is required. This happens after the SSO-only check so an
@@ -560,6 +599,19 @@ loginRoutes.post('/refresh', async (c) => {
   // user's next rotation.
   const jtiAlreadyRevoked = await isRefreshTokenJtiRevoked(payload.jti);
   if (jtiAlreadyRevoked) {
+    // Distinguish a benign concurrent/double-fired refresh from a true
+    // token-reuse attack. The same cookie replayed within seconds of its own
+    // legitimate rotation (multiple tabs sharing the cookie jar, the periodic
+    // heartbeat refresh, or a page reload fired while a refresh was already in
+    // flight) is NOT an attack: the winning sibling already minted a fresh
+    // cookie this browser shares. We must NOT revoke the family and must NOT
+    // clear the cookie — clearing it would wipe the winner's valid token and
+    // log the user out (issue #1107). The loser just retries and picks up the
+    // winner's new token. Only a replay OUTSIDE the grace window (an old,
+    // long-rotated jti) is treated as reuse and kills the family.
+    if (await wasRefreshTokenJtiRecentlyRotated(payload.jti)) {
+      return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
+    }
     if (familyId) {
       await revokeFamily(familyId, 'reuse-detected');
       createAuditLogAsync({
@@ -625,6 +677,11 @@ loginRoutes.post('/refresh', async (c) => {
   // we must NOT issue a new cookie. `revokeRefreshTokenJti` returns false when
   // the jti was already claimed (NX failed) — that proves another /refresh
   // raced us, so the legitimate path is to refuse and let the loser retry.
+  // Drop the rotation-grace marker BEFORE revoking the old jti so it is
+  // already present whenever the revoked state becomes visible to a concurrent
+  // racer (see the reuse-detection branch above, issue #1107).
+  await markRefreshTokenJtiRotated(payload.jti);
+
   let claimedRevocation: boolean;
   try {
     claimedRevocation = await revokeRefreshTokenJti(payload.jti);
@@ -634,12 +691,13 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
   if (!claimedRevocation) {
-    // Another /refresh already revoked this jti. Either the legitimate client
-    // double-fired the same cookie (e.g. React strict-mode) or an attacker is
-    // racing us. Both branches must refuse — only one new token pair can exist
-    // per old jti, and we are not the winner.
-    clearRefreshTokenCookie(c);
-    return c.json({ error: 'Invalid refresh token' }, 401);
+    // Another /refresh already revoked this jti — the legitimate client
+    // double-fired the same cookie (multi-tab, heartbeat, reload-mid-flight).
+    // We lost the race, so we must not mint a new pair, but we must also NOT
+    // clear the cookie: the winning sibling already set a fresh cookie this
+    // browser shares, and clearing it would log the user out (#1107). Surface
+    // a distinct reason so the client retries rather than redirecting to login.
+    return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
   }
 
   // Create new token pair. Inherit the family from the verified claim (or

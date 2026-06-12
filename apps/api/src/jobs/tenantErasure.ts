@@ -15,7 +15,7 @@
  *
  * No cron / no kill switch: this queue ONLY runs when a platform admin
  * POSTs to `/admin/tenant-erasure`. Jobs are uniquely identified by
- * `tenant-erasure:<orgId>` so a double-POST collapses to a single job.
+ * `tenant-erasure-<orgId>` so a double-POST collapses to a single job.
  *
  * On failure: BullMQ's default retry is disabled here (`attempts: 1`)
  * because a partial-cascade re-run could hide a structural issue
@@ -52,7 +52,7 @@ export function getTenantErasureQueue(): Queue {
 }
 
 /**
- * Enqueue an erasure job. `jobId = tenant-erasure:<orgId>` so a
+ * Enqueue an erasure job. `jobId = tenant-erasure-<orgId>` so a
  * double-POST coalesces (BullMQ refuses to enqueue a duplicate). The
  * returned Job's id will be that jobId on first enqueue; subsequent
  * enqueues for the same org while the first is still in queue return
@@ -62,7 +62,7 @@ export async function enqueueTenantErasure(
   payload: TenantErasureJobPayload,
 ): Promise<{ id: string }> {
   const queue = getTenantErasureQueue();
-  const jobId = `tenant-erasure:${payload.orgId}`;
+  const jobId = `tenant-erasure-${payload.orgId}`;
   const job = await queue.add(JOB_NAME, payload, {
     jobId,
     attempts: 1,

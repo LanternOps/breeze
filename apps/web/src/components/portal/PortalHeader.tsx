@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronDown, LogOut, UserCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
+import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { usePortalBranding } from './BrandingProvider';
 
 type PortalUser = {
@@ -26,7 +27,9 @@ export default function PortalHeader({
   const branding = usePortalBranding();
   const [menuOpen, setMenuOpen] = useState(false);
   const safeLogoUrl = sanitizeImageSrc(branding.logoUrl);
-  const safeAvatarUrl = sanitizeImageSrc(user.avatarUrl);
+  // Internal avatars are auth-gated; the hook fetches via Bearer and returns a
+  // blob URL. External avatar URLs are passed through after sanitization.
+  const safeAvatarUrl = useAvatarBlobUrl(user.avatarUrl ?? null);
 
   return (
     <header

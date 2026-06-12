@@ -12,11 +12,12 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { getRedis } from '../services/redis';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import {
   AutomationValidationError,
+  checkAutomationTargetsWithinSiteScope,
   createAutomationRunRecord,
   normalizeAutomationActions,
   normalizeAutomationTrigger,
@@ -203,6 +204,36 @@ function getPagination(query: { page?: string; limit?: string }) {
 
 function ensureOrgAccess(orgId: string, auth: AuthContext) {
   return auth.canAccessOrg(orgId);
+}
+
+/**
+ * Site-scope gate for automations. Site is an app-layer authz axis RLS does not
+ * defend, and the automation runtime resolves targets org-wide (running actions
+ * as `system`). Sibling device-acting routes re-check `canAccessSite` per device;
+ * automations must do the same — both when a site-restricted user creates/updates
+ * an automation (the only gate for unattended schedule/event triggers) and when
+ * one is manually triggered (the resolved set may have drifted).
+ *
+ * Returns a 403 JSON response if the caller is site-restricted and the
+ * automation's target set escapes their allowlist, otherwise null (proceed).
+ * Unrestricted callers always pass.
+ */
+async function enforceAutomationSiteScope(
+  c: Context,
+  automation: Parameters<typeof checkAutomationTargetsWithinSiteScope>[0],
+) {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const result = await checkAutomationTargetsWithinSiteScope(automation, perms);
+  if (!result.ok) {
+    if (result.unbounded) {
+      return c.json(
+        { error: 'Site-restricted users cannot create or run automations that target all devices in the organization' },
+        403,
+      );
+    }
+    return c.json({ error: 'Access to one or more target sites denied' }, 403);
+  }
+  return null;
 }
 
 async function getAutomationWithOrgCheck(automationId: string, auth: AuthContext) {
@@ -673,6 +704,18 @@ automationRoutes.post(
         normalizeIncomingNotificationTargets(data),
       );
 
+      // Site-scope gate: a site-restricted creator must not own an automation
+      // whose resolvable target set escapes their allowlist. This is the only
+      // gate for unattended schedule/event triggers (no caller context later).
+      const siteScopeDenied = await enforceAutomationSiteScope(c, {
+        orgId: orgId!,
+        conditions: data.conditions,
+        trigger: storedTrigger,
+      } as Parameters<typeof checkAutomationTargetsWithinSiteScope>[0]);
+      if (siteScopeDenied) {
+        return siteScopeDenied;
+      }
+
       const [automation] = await db
         .insert(automations)
         .values({
@@ -794,6 +837,18 @@ async function handleUpdateAutomation(c: Context) {
       );
     }
 
+    // Site-scope gate: re-validate the post-update target set against the
+    // caller's allowlist. Covers conditions/trigger changes that would widen
+    // the target set beyond a site-restricted editor's sites.
+    const siteScopeDenied = await enforceAutomationSiteScope(c, {
+      ...automation,
+      conditions: data.conditions !== undefined ? data.conditions : automation.conditions,
+      trigger: updates.trigger !== undefined ? updates.trigger : automation.trigger,
+    } as Parameters<typeof checkAutomationTargetsWithinSiteScope>[0]);
+    if (siteScopeDenied) {
+      return siteScopeDenied;
+    }
+
     const [updated] = await db
       .update(automations)
       .set(updates)
@@ -909,6 +964,14 @@ async function triggerAutomationRun(
 
   if (!automation.enabled) {
     return c.json({ error: 'Cannot trigger disabled automation' }, 400);
+  }
+
+  // Site-scope gate: re-validate the *current* resolved target set. Protects
+  // against a target set that drifted (new devices/sites) since creation, and
+  // against an automation created before the user's sites were restricted.
+  const siteScopeDenied = await enforceAutomationSiteScope(c, automation);
+  if (siteScopeDenied) {
+    return siteScopeDenied;
   }
 
   const { run, targetDeviceIds } = await createAutomationRunRecord({

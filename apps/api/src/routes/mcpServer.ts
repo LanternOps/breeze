@@ -26,7 +26,7 @@ import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTool
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
 import { devices, alerts, scripts, automations, partners, organizations, partnerUsers } from '../db/schema';
-import { eq, and, asc, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, isNull, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
@@ -43,6 +43,8 @@ import { resolveMcpExecutionOrgId } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
+import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../services/ipAllowlist';
+import { captureException } from '../services/sentry';
 import type { BootstrapTool } from '../modules/mcpInvites/types';
 import { BootstrapError } from '../modules/mcpInvites/types';
 
@@ -289,6 +291,12 @@ type McpApiKeyContext = {
   oauthGrantId?: string | null;
 };
 
+type McpApiKeyWithAuthFields = McpApiKeyContext & {
+  scopes: string[];
+  name: string;
+  createdBy: string;
+};
+
 function buildMcpAuditAction(method: string): string {
   const normalized = method
     .toLowerCase()
@@ -475,16 +483,10 @@ async function preflightMcpRequest(
   return { kind: 'ok', body, sessionId };
 }
 
-async function dispatchAndAudit(
+async function buildCheckedAuthFromApiKey(
   c: Context,
-  body: JsonRpcRequest,
-  sessionId: string | undefined,
-): Promise<JsonRpcResponse> {
-  const apiKey = c.get('apiKey') as McpApiKeyContext & {
-    scopes: string[];
-    name: string;
-    createdBy: string;
-  };
+  apiKey: McpApiKeyWithAuthFields,
+): Promise<AuthContext | Response> {
   const auth = await buildAuthFromApiKey({
     id: apiKey.id,
     orgId: apiKey.orgId,
@@ -493,6 +495,36 @@ async function dispatchAndAudit(
     createdBy: apiKey.createdBy,
   });
 
+  if (auth.scope === 'partner' && auth.partnerId) {
+    let decision;
+    try {
+      decision = await enforceIpAllowlist(c, {
+        partnerId: auth.partnerId,
+        isPlatformAdmin: auth.user?.isPlatformAdmin === true,
+        actorId: auth.user?.id ?? null,
+        actorEmail: auth.user?.email ?? null,
+      });
+    } catch (err) {
+      console.error('[MCP] IP allowlist check failed for partner-scoped API key:', err);
+      captureException(err, c);
+      return c.json({ code: 'ip_check_failed', error: 'Access temporarily unavailable' }, 503);
+    }
+
+    if (isBlocked(decision)) {
+      return c.json(IP_NOT_ALLOWED_BODY, 403);
+    }
+  }
+
+  return auth;
+}
+
+async function dispatchAndAudit(
+  c: Context,
+  body: JsonRpcRequest,
+  sessionId: string | undefined,
+  auth: AuthContext,
+  apiKey: McpApiKeyWithAuthFields,
+): Promise<JsonRpcResponse> {
   const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c, sessionId);
 
   // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
@@ -527,11 +559,7 @@ mcpServerRoutes.post(
     const pre = await preflightMcpRequest(c, sessionIdFromQuery);
     if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
 
-    const apiKey = c.get('apiKey') as McpApiKeyContext & {
-      scopes: string[];
-      name: string;
-      createdBy: string;
-    };
+    const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;
     const principalKey = mcpPrincipalKey(apiKey);
 
     // MED-1 follow-through: the streamable POST /sse handler hardens
@@ -572,7 +600,10 @@ mcpServerRoutes.post(
       }
     }
 
-    const response = await dispatchAndAudit(c, pre.body, trustedSessionId);
+    const auth = await buildCheckedAuthFromApiKey(c, apiKey);
+    if (auth instanceof Response) return auth;
+
+    const response = await dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey);
 
     // Legacy SSE transport: if the request carries a verified-owned sessionId
     // pointing at an active SSE stream, push the response into that stream
@@ -628,11 +659,7 @@ mcpServerRoutes.post(
     const pre = await preflightMcpRequest(c, undefined);
     if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
 
-    const apiKey = c.get('apiKey') as McpApiKeyContext & {
-      scopes: string[];
-      name: string;
-      createdBy: string;
-    };
+    const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;
     const principalKey = mcpPrincipalKey(apiKey);
     const isInitialize = pre.body.method === 'initialize';
     const redis = getRedis();
@@ -714,14 +741,17 @@ mcpServerRoutes.post(
 
     // JSON-RPC notifications (no `id`) — process for side effects, return 202
     // with empty body per Streamable HTTP spec; do not emit a response body.
+    const auth = await buildCheckedAuthFromApiKey(c, apiKey);
+    if (auth instanceof Response) return auth;
+
     if (pre.body.id === undefined) {
-      void dispatchAndAudit(c, pre.body, trustedSessionId).catch((err) => {
+      void dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey).catch((err) => {
         console.error('[MCP] notification handler error:', err);
       });
       return c.body(null, 202);
     }
 
-    const response = await dispatchAndAudit(c, pre.body, trustedSessionId);
+    const response = await dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey);
     return c.json(response);
   }
 );
@@ -1355,7 +1385,7 @@ async function handleResourcesRead(
         description: scripts.description,
         language: scripts.language,
         category: scripts.category
-      }, orgCond(scripts.orgId), { limit: 200 });
+      }, orgCond(scripts.orgId), { extraConditions: [isNull(scripts.deletedAt)], limit: 200 });
     }
 
     if (uri === 'breeze://automations') {

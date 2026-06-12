@@ -889,6 +889,56 @@ func TestScopesForRoleAssist(t *testing.T) {
 	}
 }
 
+func TestPamScopeBelongsOnlyToUserHelper(t *testing.T) {
+	if !containsString(userHelperScopes, ipc.ScopePam) {
+		t.Fatalf("userHelperScopes = %v, want %q", userHelperScopes, ipc.ScopePam)
+	}
+	if containsString(systemHelperScopes, ipc.ScopePam) {
+		t.Fatalf("systemHelperScopes = %v, must not contain %q", systemHelperScopes, ipc.ScopePam)
+	}
+
+	b := &Broker{}
+	userScopes := b.scopesForRole(ipc.HelperRoleUser, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Breeze\breeze-user-helper.exe`)
+	if !containsString(userScopes, ipc.ScopePam) {
+		t.Fatalf("scopesForRole(user) = %v, want %q", userScopes, ipc.ScopePam)
+	}
+	systemScopes := b.scopesForRole(ipc.HelperRoleSystem, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Breeze\breeze-user-helper.exe`)
+	if containsString(systemScopes, ipc.ScopePam) {
+		t.Fatalf("scopesForRole(system) = %v, must not contain %q", systemScopes, ipc.ScopePam)
+	}
+}
+
+func TestFindCapableSessionPamUsesUserPamScope(t *testing.T) {
+	now := time.Now()
+	userSession := &Session{
+		SessionID:     "user-pam",
+		WinSessionID:  "7",
+		AllowedScopes: []string{ipc.ScopePam},
+		HelperRole:    ipc.HelperRoleUser,
+		ConnectedAt:   now,
+		LastSeen:      now,
+	}
+	systemSession := &Session{
+		SessionID:     "system-pam",
+		WinSessionID:  "7",
+		AllowedScopes: []string{ipc.ScopePam},
+		HelperRole:    ipc.HelperRoleSystem,
+		ConnectedAt:   now.Add(time.Second),
+		LastSeen:      now.Add(time.Second),
+	}
+	b := &Broker{
+		sessions: map[string]*Session{
+			userSession.SessionID:   userSession,
+			systemSession.SessionID: systemSession,
+		},
+	}
+
+	got := b.FindCapableSession(ipc.ScopePam, "7")
+	if got != userSession {
+		t.Fatalf("FindCapableSession(pam) = %v, want user-token session", got)
+	}
+}
+
 func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
 	paths := assistHelperBinaryPaths("/opt/breeze")
 	found := false
@@ -929,6 +979,15 @@ func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
 			t.Fatalf("darwin paths %v missing %q", paths, want)
 		}
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestAssistHelperBinaryPathsWindowsRealInstallPath guards the regression where

@@ -57,7 +57,7 @@ function createRecoveryMediaWorker(): Worker<RecoveryMediaQueueJobData> {
 
 export async function enqueueRecoveryMediaBuild(artifactId: string): Promise<string> {
   const queue = getRecoveryMediaQueue();
-  const stableJobId = `recovery-media:${artifactId}`;
+  const stableJobId = `recovery-media-${artifactId}`;
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();

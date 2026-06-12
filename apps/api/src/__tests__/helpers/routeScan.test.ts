@@ -93,6 +93,55 @@ describe('analyzeRouteSource — input-sourced device-data detector', () => {
     expect(route.touchesDeviceData).toBe(true);
     expect(route.usesSiteScopeGate).toBe(true);
   });
+
+  it('resolves a site gate reached via an exported async function helper (tickets pattern)', () => {
+    // LOCAL_HELPER_DECL must recognise `export async function` declarations
+    // (PR #1238). Modeled on getScopedTicketOr404 in routes/tickets/tickets.ts:
+    // exported + async. This fixture inlines the gate token in the helper body.
+    const src = [
+      `export async function getScopedTicketOr404(auth, id) {`,
+      `  if (auth.allowedSiteIds && !(await deviceInSiteScope(auth, deviceId))) return null;`,
+      `  return ticket;`,
+      `}`,
+      `router.get('/:id', async (c) => {`,
+      `  const ticket = await getScopedTicketOr404(auth, id);`,
+      `  return c.json(await db.select().from(devices).where(eq(devices.deviceId, id)));`,
+      `});`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.touchesDeviceData).toBe(true);
+    expect(route.usesSiteScopeGate).toBe(true);
+  });
+
+  it('resolves a site gate when the exported wrapper delegates and the token only appears below it (real tickets.ts shape)', () => {
+    // In the REAL routes/tickets/tickets.ts, getScopedTicketOr404 contains no
+    // literal gate token — it calls deviceInSiteScope, and the scanner only
+    // sees `allowedSiteIds` because the wrapper's scan window runs to the next
+    // declaration and so includes the gate helper's docblock/body below it.
+    // The scanner does not resolve helper calls transitively, so this window
+    // spill is load-bearing: this fixture mirrors that exact two-function
+    // shape so a windowing change that breaks it fails here, loudly, instead
+    // of only in the site-scope-coverage integration ratchet.
+    const src = [
+      `export async function getScopedTicketOr404(auth, id) {`,
+      `  const ticket = await fetchScoped(auth, id);`,
+      `  if (ticket.deviceId && !(await deviceInSiteScope(auth, ticket.deviceId))) return null;`,
+      `  return ticket;`,
+      `}`,
+      `/** Site gate: checks the caller's allowedSiteIds allowlist. */`,
+      `async function deviceInSiteScope(auth, deviceId) {`,
+      `  if (!auth.allowedSiteIds) return true;`,
+      `  return siteAccessCheck(auth.allowedSiteIds)(deviceId);`,
+      `}`,
+      `router.get('/:id', async (c) => {`,
+      `  const ticket = await getScopedTicketOr404(auth, id);`,
+      `  return c.json(await db.select().from(devices).where(eq(devices.deviceId, id)));`,
+      `});`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.touchesDeviceData).toBe(true);
+    expect(route.usesSiteScopeGate).toBe(true);
+  });
 });
 
 describe('analyzeRouteSource — dead permissions-sourced site gate detector', () => {

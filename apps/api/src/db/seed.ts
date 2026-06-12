@@ -1,3 +1,6 @@
+// Canonicalize NODE_ENV first — seed gates the bootstrap admin on it and runs
+// as a standalone CLI (db:seed) as well as from autoMigrate. See #917 (L-6).
+import '../config/normalizeNodeEnv';
 import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { eq, and } from 'drizzle-orm';
@@ -114,6 +117,10 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'alerts', action: 'write', description: 'Create and edit alert rules' },
   { resource: 'alerts', action: 'acknowledge', description: 'Acknowledge and resolve alerts' },
 
+  // Tickets
+  { resource: 'tickets', action: 'read', description: 'View tickets, comments, and categories' },
+  { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
+
   // Users
   { resource: 'users', action: 'read', description: 'View users' },
   { resource: 'users', action: 'write', description: 'Edit users' },
@@ -167,6 +174,7 @@ const SYSTEM_ROLES = [
       'devices:read', 'devices:execute',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
+      'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
       'organizations:read'
@@ -180,6 +188,7 @@ const SYSTEM_ROLES = [
       'devices:read',
       'scripts:read',
       'alerts:read',
+      'tickets:read',
       'reports:read',
       'sites:read',
       'organizations:read'
@@ -194,6 +203,7 @@ const SYSTEM_ROLES = [
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
+      'tickets:read', 'tickets:write',
       'reports:read', 'reports:write', 'reports:delete', 'reports:export',
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',
@@ -209,6 +219,7 @@ const SYSTEM_ROLES = [
       'devices:read', 'devices:write', 'devices:execute',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
+      'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
       'remote:access'
@@ -222,6 +233,7 @@ const SYSTEM_ROLES = [
       'devices:read',
       'scripts:read',
       'alerts:read',
+      'tickets:read',
       'reports:read',
       'sites:read'
     ]

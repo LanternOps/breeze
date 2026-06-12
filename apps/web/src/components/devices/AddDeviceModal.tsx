@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Download, Copy, Loader2, Check, Link } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { showToast } from '../shared/Toast';
@@ -33,6 +33,22 @@ function extractApiError(body: unknown): string {
     ?.issues?.[0]?.message;
   if (typeof zodIssue === 'string' && zodIssue) return zodIssue;
   return '';
+}
+
+/**
+ * Render a CLI onboarding token's expiry as friendly relative text (#1108).
+ * Falls back to the absolute local time for windows beyond a day so the copy
+ * never silently claims "24 hours" when the real TTL differs.
+ */
+function formatTokenExpiry(iso: string): string {
+  const expiresMs = new Date(iso).getTime();
+  if (!Number.isFinite(expiresMs)) return 'after a short period';
+  const diffMinutes = Math.round((expiresMs - Date.now()) / 60000);
+  if (diffMinutes <= 0) return 'shortly';
+  if (diffMinutes < 60) return `in about ${diffMinutes} minute${diffMinutes === 1 ? '' : 's'}`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 48) return `in about ${diffHours} hour${diffHours === 1 ? '' : 's'}`;
+  return `on ${new Date(expiresMs).toLocaleString()}`;
 }
 
 interface AddDeviceModalProps {
@@ -85,6 +101,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
+  // #1108: how many machines this CLI token may enroll, and its real expiry,
+  // both reported by the server so the UI never advertises a stale single-use
+  // token as good for the whole fleet.
+  const [cliDeviceCount, setCliDeviceCount] = useState(1);
+  const [tokenMaxUsage, setTokenMaxUsage] = useState<number | null>(null);
+  const [tokenExpiresAt, setTokenExpiresAt] = useState<string | null>(null);
   const [selectedOS, setSelectedOS] = useState<'windows' | 'macos' | 'linux'>(userOS);
   const [sha256s, setSha256s] = useState<Record<string, string>>({});
 
@@ -125,23 +147,42 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       setCliInitialized(false);
       setOnboardingToken('');
       setTokenError(undefined);
+      setCliDeviceCount(1);
+      setTokenMaxUsage(null);
+      setTokenExpiresAt(null);
       setGeneratedLink('');
       setLinkError(undefined);
       setLinkCopied(false);
     }
   }, [isOpen]);
 
-  // Lazy-load CLI token when CLI tab is first opened
-  const initializeCli = useCallback(async () => {
-    if (cliInitialized) return;
+  // Guards against overlapping CLI token fetches (the auto-init effect racing a
+  // manual "Generate new token", or a fast double-click). A ref, not state, so
+  // the check is synchronous and never stale inside the useCallback. Without it
+  // two in-flight POSTs could resolve out of order and display a token whose
+  // real maxUsage disagrees with the UI — the exact defect #1108 fixes.
+  const cliFetchInFlight = useRef(false);
+
+  // Fetch a CLI onboarding token for `count` machines (#1108). The once-per-open
+  // gating lives in the auto-init effect; the "Generate new token" button and
+  // error-retry call this directly to re-mint, so it only self-guards against
+  // concurrent runs rather than against being called again.
+  const initializeCli = useCallback(async (count: number) => {
+    if (cliFetchInFlight.current) return;
+    cliFetchInFlight.current = true;
     setCliInitialized(true);
     setTokenLoading(true);
     setOnboardingToken('');
     setEnrollmentSecret('');
     setTokenError(undefined);
+    setTokenMaxUsage(null);
+    setTokenExpiresAt(null);
 
     try {
-      const response = await fetchWithAuth('/devices/onboarding-token', { method: 'POST' });
+      const response = await fetchWithAuth('/devices/onboarding-token', {
+        method: 'POST',
+        body: JSON.stringify({ count }),
+      });
 
       if (!response.ok) {
         if (response.status === 401) {
@@ -174,6 +215,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         return;
       }
       setOnboardingToken(data.token);
+      if (typeof data.maxUsage === 'number') {
+        setTokenMaxUsage(data.maxUsage);
+      }
+      if (typeof data.expiresAt === 'string') {
+        setTokenExpiresAt(data.expiresAt);
+      }
       if (data.enrollmentSecret) {
         setEnrollmentSecret(data.enrollmentSecret);
       }
@@ -183,8 +230,16 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       );
     } finally {
       setTokenLoading(false);
+      cliFetchInFlight.current = false;
     }
-  }, [cliInitialized]);
+  }, []);
+
+  // Re-mint the CLI token, e.g. after the operator bumps the device count or
+  // wants a fresh one mid-session (#1108).
+  const regenerateCliToken = useCallback((count: number) => {
+    setTokenCopied(false);
+    void initializeCli(count);
+  }, [initializeCli]);
 
   // Exchange a raw enrollment key token for a short-lived one-time handle, then
   // navigate to the public-download URL. This keeps the raw token out of browser
@@ -200,11 +255,17 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
     window.location.href = `/api/v1/enrollment-keys/public-download/${platform}?h=${encodeURIComponent(handle)}`;
   }
 
+  // Auto-load the CLI token whenever the CLI tab is showing and we haven't
+  // minted one yet. This single effect covers both an explicit tab click and
+  // the Linux default where the CLI tab is already active on open (#1108).
+  useEffect(() => {
+    if (isOpen && activeTab === 'cli' && !cliInitialized) {
+      void initializeCli(cliDeviceCount);
+    }
+  }, [isOpen, activeTab, cliInitialized, cliDeviceCount, initializeCli]);
+
   const handleTabChange = (tab: 'installer' | 'cli') => {
     setActiveTab(tab);
-    if (tab === 'cli') {
-      void initializeCli();
-    }
   };
 
   // --- Installer download ---
@@ -692,10 +753,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     {tokenError}
                     <button
                       type="button"
-                      onClick={() => {
-                        setCliInitialized(false);
-                        void initializeCli();
-                      }}
+                      onClick={() => { void initializeCli(cliDeviceCount); }}
                       className="ml-2 underline hover:no-underline"
                     >
                       Retry
@@ -705,6 +763,48 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                   <code className="block rounded-md bg-background p-3 text-sm font-mono break-all">
                     {onboardingToken || 'No token available'}
                   </code>
+                )}
+
+                {/* #1108: a single CLI command is single-use by default — make
+                    multi-machine installs explicit and let the operator re-mint. */}
+                {!tokenLoading && !tokenError && (
+                  <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t pt-3">
+                    <div className="flex items-end gap-2">
+                      <div>
+                        <label
+                          htmlFor="cli-device-count"
+                          className="block text-xs font-medium text-muted-foreground mb-1"
+                        >
+                          Number of devices
+                        </label>
+                        <input
+                          id="cli-device-count"
+                          type="number"
+                          min={1}
+                          max={1000}
+                          value={cliDeviceCount}
+                          onChange={(e) =>
+                            setCliDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))
+                          }
+                          className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => regenerateCliToken(cliDeviceCount)}
+                        className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                      >
+                        Generate new token
+                      </button>
+                    </div>
+                    {onboardingToken && (
+                      <p className="text-xs text-muted-foreground">
+                        {tokenMaxUsage === 1
+                          ? 'Single-use — valid for one device. Generate a new token for each additional machine.'
+                          : `Valid for ${tokenMaxUsage ?? cliDeviceCount} device enrollments.`}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -778,8 +878,10 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
               </p>
               <div className="rounded-md border border-blue-500/40 bg-blue-500/10 p-4 text-sm">
                 <p className="text-blue-600 text-xs">
-                  The installation token expires in 24 hours. Your device will appear in the list
-                  once the agent connects.
+                  {tokenExpiresAt
+                    ? `The installation token expires ${formatTokenExpiry(tokenExpiresAt)}.`
+                    : 'The installation token expires after a short period.'}{' '}
+                  Your device will appear in the list once the agent connects.
                 </p>
               </div>
             </div>

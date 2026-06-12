@@ -44,7 +44,7 @@ type wtsSessionInfo struct {
 }
 
 func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
-	var sessionInfo uintptr
+	var sessionInfo *wtsSessionInfo
 	var count uint32
 
 	r1, _, err := procWTSEnumerateSessions.Call(
@@ -57,13 +57,13 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 	if r1 == 0 {
 		return nil, fmt.Errorf("WTSEnumerateSessions: %w", err)
 	}
-	defer procWTSFreeMemory.Call(sessionInfo)
+	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(sessionInfo)))
 
 	var sessions []DetectedSession
 	size := unsafe.Sizeof(wtsSessionInfo{})
 
 	for i := uint32(0); i < count; i++ {
-		info := (*wtsSessionInfo)(unsafe.Pointer(sessionInfo + uintptr(i)*size))
+		info := (*wtsSessionInfo)(unsafe.Add(unsafe.Pointer(sessionInfo), uintptr(i)*size))
 
 		// Skip listener sessions only
 		if info.State == 6 { // WTSListen
@@ -186,7 +186,7 @@ func (d *windowsDetector) WatchSessions(ctx context.Context) <-chan SessionEvent
 }
 
 func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32) string {
-	var buf uintptr
+	var buf *uint16
 	var bytesReturned uint32
 
 	r1, _, _ := procWTSQuerySessionInfo.Call(
@@ -196,16 +196,16 @@ func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32)
 		uintptr(unsafe.Pointer(&buf)),
 		uintptr(unsafe.Pointer(&bytesReturned)),
 	)
-	if r1 == 0 || buf == 0 {
+	if r1 == 0 || buf == nil {
 		return ""
 	}
-	defer procWTSFreeMemory.Call(buf)
+	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
 
-	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(buf)))
+	return windows.UTF16PtrToString(buf)
 }
 
 func (d *windowsDetector) querySessionUint32(sessionID uint32, infoClass uint32) (uint32, bool) {
-	var buf uintptr
+	var buf *uint32
 	var bytesReturned uint32
 
 	r1, _, _ := procWTSQuerySessionInfo.Call(
@@ -215,13 +215,12 @@ func (d *windowsDetector) querySessionUint32(sessionID uint32, infoClass uint32)
 		uintptr(unsafe.Pointer(&buf)),
 		uintptr(unsafe.Pointer(&bytesReturned)),
 	)
-	if r1 == 0 || buf == 0 {
+	if r1 == 0 || buf == nil {
 		return 0, false
 	}
-	defer procWTSFreeMemory.Call(buf)
+	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
 
-	val := *(*uint32)(unsafe.Pointer(buf))
-	return val, true
+	return *buf, true
 }
 
 // GetConsoleSessionID returns the Windows session ID attached to the physical
@@ -259,7 +258,7 @@ func IsSessionDisconnected(winSessionID string) bool {
 		return false
 	}
 
-	var buf uintptr
+	var buf *uint32
 	var bytesReturned uint32
 	r1, _, callErr := procWTSQuerySessionInfo.Call(
 		wtsCurrentServerHandle,
@@ -268,13 +267,13 @@ func IsSessionDisconnected(winSessionID string) bool {
 		uintptr(unsafe.Pointer(&buf)),
 		uintptr(unsafe.Pointer(&bytesReturned)),
 	)
-	if r1 == 0 || buf == 0 {
+	if r1 == 0 || buf == nil {
 		log.Warn("WTSQuerySessionInfo failed for disconnect check, assuming active",
 			"winSessionID", winSessionID, "error", callErr.Error())
 		return false
 	}
-	defer procWTSFreeMemory.Call(buf)
+	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
 
-	state := *(*uint32)(unsafe.Pointer(buf))
+	state := *buf
 	return state == wtsDisconnected
 }

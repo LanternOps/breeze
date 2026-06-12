@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useEventStream } from '../../hooks/useEventStream';
+import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -11,6 +12,9 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
+import { FilterChipBar } from './FilterChipBar';
+import { QuickAddChips } from './QuickAddChips';
+import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices } from '../../lib/devicesFetch';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
@@ -57,7 +61,17 @@ export default function DevicesPage() {
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
-  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
+  // v2 chip bar seeds its filter from the URL hash so a filtered view is
+  // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
+  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return decodeFilterFromHash(window.location.hash);
+  });
+  const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
+  // Resolve the advanced filter to the complete (uncapped) matching id set
+  // once, here, so the list AND grid views render the same filtered fleet.
+  // The grid previously mapped the raw devices array and ignored the filter.
+  const { ids: advancedFilterIds, loading: advancedFilterLoading } = useAdvancedFilterIds(advancedFilter);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -87,6 +101,14 @@ export default function DevicesPage() {
     const unique = [...new Set(scriptTargetDevices.map(d => d.os))];
     return unique.length > 0 ? unique : undefined;
   }, [scriptTargetDevices]);
+
+  // Grid view applies the advanced filter here; the list view passes the id
+  // set into DeviceList, which combines it with its local quick-filters
+  // (search/status/os/etc. stay list-only).
+  const gridDevices = useMemo(
+    () => (advancedFilterIds === null ? devices : devices.filter(d => advancedFilterIds.has(d.id))),
+    [devices, advancedFilterIds]
+  );
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -286,6 +308,13 @@ export default function DevicesPage() {
   useEffect(() => {
     subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled', 'device.decommissioned']);
   }, [subscribe]);
+
+  // Mirror the chip-bar filter into the URL hash so the view is shareable.
+  // Only active under v2; the legacy bar doesn't expect hash interop.
+  useEffect(() => {
+    if (!filtersV2) return;
+    writeFilterToHash(advancedFilter);
+  }, [advancedFilter, filtersV2]);
 
   const handleSelectDevice = (device: Device) => {
     void navigateTo(`/devices/${device.id}`);
@@ -708,12 +737,24 @@ export default function DevicesPage() {
         </div>
       </div>
 
-      <DeviceFilterBar
-        value={advancedFilter}
-        onChange={setAdvancedFilter}
-        showSavedFilters={true}
-        collapsible={true}
-      />
+      {filtersV2 ? (
+        <div className="flex flex-col gap-2">
+          <FilterChipBar
+            value={advancedFilter}
+            onChange={setAdvancedFilter}
+            orgs={orgs}
+            sites={sites}
+          />
+          <QuickAddChips value={advancedFilter} onChange={setAdvancedFilter} />
+        </div>
+      ) : (
+        <DeviceFilterBar
+          value={advancedFilter}
+          onChange={setAdvancedFilter}
+          showSavedFilters={true}
+          collapsible={true}
+        />
+      )}
 
       {bulkProgress && (
         <div className="rounded-md border bg-muted/20 px-4 py-3">
@@ -757,14 +798,15 @@ export default function DevicesPage() {
           onSelect={handleSelectDevice}
           onAction={handleDeviceAction}
           onBulkAction={handleBulkAction}
-          serverFilter={advancedFilter}
+          serverFilterIds={advancedFilterIds}
+          serverFilterLoading={advancedFilterLoading}
           onCreateGroup={() => setShowCreateGroup(true)}
           autoSelectGroupId={autoSelectGroupId}
           onAutoSelectConsumed={handleAutoSelectConsumed}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {devices.map(device => (
+          {gridDevices.map(device => (
             <DeviceCard
               key={device.id}
               device={device}

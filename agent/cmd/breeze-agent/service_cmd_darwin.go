@@ -466,8 +466,9 @@ var serviceStatusCmd = &cobra.Command{
 	},
 }
 
-// healLaunchdPlistsIfNeeded is the darwin implementation.
-func healLaunchdPlistsIfNeeded() {
+// reconcileServiceUnitIfNeeded is the darwin implementation: it self-heals
+// launchd plists from older installs.
+func reconcileServiceUnitIfNeeded() {
 	healLaunchdPlists()
 	ensureDesktopHelpersLoaded()
 }

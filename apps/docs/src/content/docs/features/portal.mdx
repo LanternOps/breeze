@@ -114,7 +114,7 @@ Each organization can customize the portal appearance and contact information. B
 
 ## Tickets
 
-Portal users can submit support tickets, track their status, and add comments to ongoing conversations.
+Portal users can submit support tickets, track their status, and add comments to ongoing conversations. Tickets submitted through the portal land directly in the technician [Tickets queue](/features/ticketing/) in the Breeze dashboard, where technicians triage, assign, and respond to them.
 
 ### Creating a Ticket
 
@@ -129,7 +129,7 @@ Tickets are automatically associated with the submitter's portal user account an
 
 ### Ticket Comments
 
-Both portal users and admin technicians can add comments to tickets. Portal users only see public comments (`isPublic: true`). Internal notes added by technicians with `isPublic: false` are hidden from the portal view.
+Both portal users and technicians can add comments to tickets. When a technician sends a public reply from the [Tickets queue](/features/ticketing/), it appears in the portal user's ticket conversation. Portal users only see public comments (`isPublic: true`). Internal notes added by technicians with `isPublic: false` are never shown in the portal view.
 
 ### External Ticket Integration
 

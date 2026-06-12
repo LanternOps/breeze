@@ -35,3 +35,51 @@ func TestHelperTokenUpdateRoundTrip(t *testing.T) {
 		t.Fatalf("omitempty failed: %s", b2)
 	}
 }
+
+func TestPamDialogMessagesRoundTrip(t *testing.T) {
+	req := PamRequestDialog{
+		ExePath:        `C:\Windows\System32\cmd.exe`,
+		Signer:         "Microsoft Windows",
+		Hash:           "abc123",
+		SubjectUser:    `ACME\alice`,
+		CommandLine:    `cmd.exe /c whoami`,
+		Reason:         "Install approved update",
+		IntentSummary:  "Run a privileged command shell",
+		TimeoutSeconds: 30,
+	}
+
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reqOut PamRequestDialog
+	if err := json.Unmarshal(reqBytes, &reqOut); err != nil {
+		t.Fatal(err)
+	}
+	if reqOut != req {
+		t.Fatalf("request round-trip mismatch: %+v != %+v", reqOut, req)
+	}
+
+	result := PamDialogResult{Approved: true, Reason: "approved", DismissedByUser: false}
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resultOut PamDialogResult
+	if err := json.Unmarshal(resultBytes, &resultOut); err != nil {
+		t.Fatal(err)
+	}
+	if resultOut != result {
+		t.Fatalf("result round-trip mismatch: %+v != %+v", resultOut, result)
+	}
+
+	if TypePamRequestDialog != "pam_request_dialog" {
+		t.Fatalf("TypePamRequestDialog = %q, want pam_request_dialog", TypePamRequestDialog)
+	}
+	if TypePamDialogResult != "pam_dialog_result" {
+		t.Fatalf("TypePamDialogResult = %q, want pam_dialog_result", TypePamDialogResult)
+	}
+	if ScopePam != "pam" {
+		t.Fatalf("ScopePam = %q, want pam", ScopePam)
+	}
+}

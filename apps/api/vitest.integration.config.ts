@@ -46,8 +46,10 @@ export default defineConfig({
     // Longer timeouts for database operations
     testTimeout: 30000,
     hookTimeout: 30000,
-    // Fail fast on first error for easier debugging
-    bail: 1,
+    // No `bail` here on purpose: the suite is ~90s, and bail:1 masks
+    // stacked breakages — in June 2026 it hid #1092's org-scope lockout
+    // behind #1042's RBAC 403 for a day because each CI run only ever
+    // surfaced the first failure. Always report every failure.
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

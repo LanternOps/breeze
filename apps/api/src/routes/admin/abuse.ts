@@ -20,8 +20,60 @@ import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/rem
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
+import type { Database } from '../../db';
 
 export const abuseRoutes = new Hono();
+
+// The `users.disabled_reason` marker written by partner suspension. Unsuspend
+// re-enables exactly the users carrying it, leaving users disabled for any other
+// reason (compromise, off-boarding, manual admin action → NULL) untouched.
+// See #917 (L-5).
+const SUSPENSION_DISABLED_REASON = 'partner_suspended';
+
+type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+/**
+ * Disable the currently-active non-platform-admin users under a partner as part
+ * of suspension, stamping the suspension marker so unsuspend restores exactly
+ * these (back to 'active'). We deliberately only touch `status='active'` users:
+ *  - already-`disabled` users keep their existing reason (e.g. compromise), so
+ *    unsuspend won't resurrect them; and
+ *  - `invited` users are left invited rather than disabled — the partner-level
+ *    suspension gate already blocks them, and stamping them would make unsuspend
+ *    silently promote an unaccepted invite into a full 'active' account.
+ * Returns the ids actually disabled by this call.
+ */
+export function disablePartnerUsersForSuspension(tx: Tx, partnerId: string) {
+  return tx
+    .update(users)
+    .set({ status: 'disabled', disabledReason: SUSPENSION_DISABLED_REASON, updatedAt: new Date() })
+    .where(
+      and(
+        eq(users.partnerId, partnerId),
+        eq(users.isPlatformAdmin, false),
+        eq(users.status, 'active'),
+      ),
+    )
+    .returning({ id: users.id });
+}
+
+/**
+ * Re-enable only the users that THIS partner's suspension disabled (marker set),
+ * clearing the marker. Users disabled for any other reason stay disabled.
+ */
+export function reEnableSuspensionDisabledUsers(tx: Tx, partnerId: string) {
+  return tx
+    .update(users)
+    .set({ status: 'active', disabledReason: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(users.partnerId, partnerId),
+        eq(users.status, 'disabled'),
+        eq(users.disabledReason, SUSPENSION_DISABLED_REASON),
+      ),
+    )
+    .returning({ id: users.id });
+}
 
 // confirmEmail must match the caller's account email on suspend — same
 // anti-typo gate as POST /admin/tenant-erasure. Suspend queues
@@ -126,17 +178,12 @@ abuseRoutes.post(
         }
 
         // Disable users — but never disable the calling platform admin if
-        // they happen to be a member of the partner being suspended.
-        const disableResult = await tx
-          .update(users)
-          .set({ status: 'disabled', updatedAt: new Date() })
-          .where(
-            and(
-              eq(users.partnerId, partnerId),
-              eq(users.isPlatformAdmin, false)
-            )
-          )
-          .returning({ id: users.id });
+        // they happen to be a member of the partner being suspended. Already-
+        // disabled users keep their existing disabled_reason so unsuspend can
+        // tell suspension-disabled users apart from the rest (#917 L-5). Token/
+        // session revocation below still covers ALL partner users via
+        // affectedUserIds, independent of this set.
+        const disableResult = await disablePartnerUsersForSuspension(tx, partnerId);
         const userCount = disableResult.length;
 
         // Revoke API keys for orgs under this partner.
@@ -359,16 +406,9 @@ abuseRoutes.post(
           .set({ status: newStatus, updatedAt: new Date() })
           .where(eq(partners.id, partnerId));
 
-        const reEnabled = await tx
-          .update(users)
-          .set({ status: 'active', updatedAt: new Date() })
-          .where(
-            and(
-              eq(users.partnerId, partnerId),
-              eq(users.status, 'disabled')
-            )
-          )
-          .returning({ id: users.id });
+        // Only restore users THIS suspension disabled — not users disabled for
+        // compromise / off-boarding / manual admin action (#917 L-5).
+        const reEnabled = await reEnableSuspensionDisabledUsers(tx, partnerId);
 
         return { notFound: false as const, status: newStatus, userCount: reEnabled.length };
       });

@@ -360,6 +360,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if runtime.GOOS == "windows" && cfg.IsService {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -384,6 +386,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
 					return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
@@ -394,6 +398,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	} else {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 		)
 	}
 
@@ -2315,7 +2321,19 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Handle helper upgrade if requested
 	if response.HelperUpgradeTo != "" {
-		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
+		installedHelper := h.helperMgr.InstalledVersion()
+		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, h.helperMgr.IsInstalled()); !allowed {
+			// SECURITY: never auto-downgrade the helper. The signed manifest
+			// only binds manifest.Release == requested version, so a
+			// compromised/MITM'd control plane could replay an older,
+			// validly-signed, known-vulnerable helper release.
+			log.Error("SECURITY: refusing server-directed helper update",
+				"installedVersion", installedHelper,
+				"targetVersion", response.HelperUpgradeTo,
+				"reason", reason)
+		} else {
+			h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
+		}
 	}
 
 	// Update tunnel manager policy flag
@@ -2578,6 +2596,14 @@ func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Sess
 	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
 		return
 	}
+	// #1009: never deliver the device helper token to an assist helper outside
+	// the active console session — on a multi-user host that would hand a
+	// co-logged-in user org-scoped fleet access. Inert on single-user/non-Windows.
+	if h.sessionBroker != nil && !h.sessionBroker.SessionInConsoleSession(session) {
+		log.Warn("withholding helper token from non-console assist session",
+			"sessionId", session.SessionID, "winSessionId", session.WinSessionID)
+		return
+	}
 	token := h.currentHelperToken()
 	if token == "" {
 		return
@@ -2596,6 +2622,12 @@ func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
 	}
 	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.ScopeAssist) {
 		if !shouldPushHelperToken(sess.AllowedScopes) {
+			continue
+		}
+		// #1009: only the console-session assist helper may receive the token.
+		if !h.sessionBroker.SessionInConsoleSession(sess) {
+			log.Warn("withholding rotated helper token from non-console assist session",
+				"sessionId", sess.SessionID, "winSessionId", sess.WinSessionID)
 			continue
 		}
 		h.pushHelperToken(sess, newToken)
@@ -3471,7 +3503,7 @@ func (h *Heartbeat) makeUserExecFunc() patching.UserExecFunc {
 			return "", "", -1, fmt.Errorf("no session broker available")
 		}
 
-		session := h.sessionBroker.PreferredSessionWithScope("run_as_user")
+		session := h.sessionBroker.PreferredRunAsUserSession()
 		if session == nil {
 			return "", "", -1, fmt.Errorf("no user helper connected")
 		}

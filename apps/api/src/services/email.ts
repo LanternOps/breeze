@@ -159,7 +159,7 @@ export class EmailService {
         subject,
         html,
         text,
-        reply_to: replyTo
+        replyTo
       });
       if (error) {
         throw new Error(`Resend error: ${error.message}`);

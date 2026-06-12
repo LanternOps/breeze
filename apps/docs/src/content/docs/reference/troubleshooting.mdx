@@ -23,6 +23,20 @@ AGENT_ENROLLMENT_SECRET, METRICS_SCRAPE_TOKEN, PUBLIC_API_URL,
 GRAFANA_ADMIN_PASSWORD
 ```
 
+### API refuses to boot: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production`
+
+**Cause**: This variable is the trust anchor that the API uses to verify signed release manifests before serving binaries (so a compromised GitHub release alone can't deliver tampered binaries). It is **required in production** for both `BINARY_SOURCE=github` and `BINARY_SOURCE=local`. Older `.env` templates shipped it empty, so upgrades can surface this on first boot.
+
+**Fix**: For the official Breeze releases, use the published trust anchor:
+
+```bash
+RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=
+```
+
+This is a **public** key (also embedded in the agent and CI), so it is safe to commit. Only change it if you build and sign your own binaries. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias.
+
+**Do not auto-rotate or overwrite this value.** It is a deliberately pinned trust anchor — automatically replacing it with a "new" key defeats the protection, since the source of that key becomes the thing an attacker targets. If a real signing-key rotation ever ships, trust both keys during the overlap by comma-separating them (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=old,new`) rather than replacing.
+
 ### TLS certificate not provisioning
 
 **Cause**: DNS not pointing to server, or ports 80/443 blocked.

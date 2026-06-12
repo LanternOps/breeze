@@ -288,7 +288,7 @@ export const orgLogForwardingSettingsSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['elasticsearchUrl'],
-      message: 'Elasticsearch URL is required when log forwarding is enabled',
+      message: 'Log endpoint URL is required when log forwarding is enabled',
     });
   } else {
     try {
@@ -297,14 +297,14 @@ export const orgLogForwardingSettingsSchema = z.object({
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['elasticsearchUrl'],
-          message: 'Elasticsearch URL must use HTTPS',
+          message: 'Log endpoint URL must use HTTPS',
         });
       }
     } catch {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['elasticsearchUrl'],
-        message: 'Elasticsearch URL must be a valid URL',
+        message: 'Log endpoint URL must be a valid URL',
       });
     }
   }
@@ -324,7 +324,7 @@ export const orgLogForwardingSettingsSchema = z.object({
   if (!hasApiKey && !(hasBasicUser && hasBasicPassword)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Either API key or username+password required for Elasticsearch auth',
+      message: 'Either API key or username+password required for log endpoint auth',
     });
   }
 });
@@ -587,6 +587,13 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().u
 // ============================================
 
 export * from './ai';
+
+// ============================================
+// Ticket Validators
+// ============================================
+
+export * from './tickets';
+export * from './portal';
 
 // ============================================
 // Backup Target Validators

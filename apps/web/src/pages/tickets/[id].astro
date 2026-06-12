@@ -1,0 +1,15 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import TicketWorkbench from '../../components/tickets/TicketWorkbench';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Ticket">
+  <div class="mb-3">
+    <a href="/tickets" class="text-sm text-muted-foreground hover:text-foreground" data-testid="ticket-back-link">← Back to queue</a>
+  </div>
+  <div class="h-[calc(100vh-10rem)] rounded-lg border">
+    <TicketWorkbench ticketId={id!} expanded client:load />
+  </div>
+</DashboardLayout>

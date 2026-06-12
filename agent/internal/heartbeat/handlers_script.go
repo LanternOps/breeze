@@ -86,9 +86,11 @@ func resolveRunAsSession(broker *sessionbroker.Broker, runAs string) *sessionbro
 	}
 
 	// runAs=user means "current interactive user". Prefer a user-role helper
-	// (runs as the logged-in user) over a SYSTEM helper.
+	// (runs as the logged-in user) over a SYSTEM helper. On Windows the
+	// candidate is constrained to the active console session so a co-logged-in
+	// user's helper can't intercept the script (#1009).
 	if strings.EqualFold(target, "user") {
-		return broker.PreferredSessionWithScope("run_as_user")
+		return broker.PreferredRunAsUserSession()
 	}
 
 	// Legacy path: explicit usernames still resolve directly.

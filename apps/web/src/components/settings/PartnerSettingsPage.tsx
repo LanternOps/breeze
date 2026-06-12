@@ -7,10 +7,11 @@ import {
   Save,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth } from '../../stores/auth';
+import { getJwtClaims } from '../../lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
 import KnownGuestsSettings from './KnownGuestsSettings';
-import PartnerSecurityTab from './PartnerSecurityTab';
+import PartnerSecurityTab, { currentIpCovered } from './PartnerSecurityTab';
 import PartnerNotificationsTab from './PartnerNotificationsTab';
 import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
@@ -30,7 +31,8 @@ import type {
   InheritableDefaultSettings,
   InheritableBrandingSettings,
   InheritableAiBudgetSettings,
-  InheritableRemoteAccessSettings
+  InheritableRemoteAccessSettings,
+  IpAllowlistStatus
 } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -124,6 +126,10 @@ export default function PartnerSettingsPage() {
   const [companyName, setCompanyName] = useState('');
   const [address, setAddress] = useState<NonNullable<PartnerSettings['address']>>({});
 
+  // IP allowlist status (drives "Add my current IP" + inactive banner)
+  const [ipStatus, setIpStatus] = useState<IpAllowlistStatus | null>(null);
+  const [ipStatusUnavailable, setIpStatusUnavailable] = useState(false);
+
   // Inheritable category state
   const [securityData, setSecurityData] = useState<InheritableSecuritySettings>({});
   const [notificationsData, setNotificationsData] = useState<InheritableNotificationSettings>({});
@@ -169,6 +175,14 @@ export default function PartnerSettingsPage() {
       setBrandingData(settings.branding || {});
       setAiBudgetsData(settings.aiBudgets || {});
       setRemoteAccessData(settings.remoteAccessProviders || {});
+
+      // Best-effort: IP allowlist status for the editor (non-blocking). On
+      // failure we flag it explicitly so the editor can warn rather than
+      // silently hide the inactive banner / lockout confirmation.
+      fetchWithAuth('/orgs/partners/me/ip-allowlist/status')
+        .then(r => (r.ok ? r.json() : Promise.reject(new Error('status fetch failed'))))
+        .then((s: IpAllowlistStatus) => { setIpStatus(s); setIpStatusUnavailable(false); })
+        .catch(() => { setIpStatus(null); setIpStatusUnavailable(true); });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -184,15 +198,12 @@ export default function PartnerSettingsPage() {
     if (contextLoading) return;
     // No partner context in store yet. Try to seed it from the JWT (handles
     // first-login and cleared-storage cases where currentPartnerId is null).
-    const token = useAuthStore.getState().tokens?.accessToken;
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        if (payload.scope === 'partner' && payload.partnerId) {
-          setPartnerContext(payload.partnerId as string);
-          return; // Re-render will follow with currentPartnerId set
-        }
-      } catch { /* ignore decode failures */ }
+    // getJwtClaims returns all-null on a missing/undecodable token, so the
+    // access-denied fall-through below covers those cases too.
+    const { scope, partnerId } = getJwtClaims();
+    if (scope === 'partner' && partnerId) {
+      setPartnerContext(partnerId);
+      return; // Re-render will follow with currentPartnerId set
     }
     setLoading(false); // JWT confirms non-partner scope; show access denied
   }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);
@@ -235,6 +246,26 @@ export default function PartnerSettingsPage() {
     const payload: Record<string, unknown> = { settings };
     const trimmedName = companyName.trim();
     if (trimmedName) payload.name = trimmedName;
+
+    // Lockout guard before saving a non-empty allowlist:
+    //  - status known and current IP not covered  -> precise warning
+    //  - status unavailable (fetch failed)         -> generic warning, since we
+    //    can't verify coverage and shouldn't silently skip the check
+    const nextList = securityData.ipAllowlist ?? [];
+    if (nextList.length > 0) {
+      const notCovered = ipStatus && !currentIpCovered(ipStatus.currentIp, nextList);
+      if (notCovered) {
+        const proceed = window.confirm(
+          'Your current IP is not in this allowlist. Saving may lock you out of the dashboard. Continue?'
+        );
+        if (!proceed) { setSaving(false); return; }
+      } else if (ipStatusUnavailable) {
+        const proceed = window.confirm(
+          'Couldn’t verify your current IP against this allowlist. If your IP isn’t covered, saving may lock you out. Continue?'
+        );
+        if (!proceed) { setSaving(false); return; }
+      }
+    }
 
     try {
       const updated = await runPartnerSave(payload, {
@@ -476,7 +507,7 @@ export default function PartnerSettingsPage() {
       {/* Inheritable Settings Tabs */}
       {activeTab === 'security' && (
         <section className="rounded-lg border bg-card p-6 shadow-sm">
-          <PartnerSecurityTab data={securityData} onChange={setSecurityData} />
+          <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
         </section>
       )}
 

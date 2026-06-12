@@ -15,12 +15,12 @@ concurrency:
 env:
   NODE_VERSION: '22'
   PNPM_VERSION: '10.33.4'
-  GO_VERSION: '1.25.10'
+  GO_VERSION: '1.25.11'
 
+# Least-privilege default; the SARIF-uploading job opts into
+# security-events: write per-job below.
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   npm-audit:
@@ -93,6 +93,9 @@ jobs:
   trivy-fs-scan:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -164,3 +167,30 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
+
+  # Lints the workflow files themselves. actionlint catches real workflow
+  # bugs (bad expressions, wrong action inputs, invalid syntax); shellcheck
+  # integration is disabled because the existing style nits in release.yml
+  # would make this job perma-red — red must mean "act now". zizmor audits
+  # for security smells (template injection, unpinned third-party actions,
+  # excessive permissions); pin policy + accepted findings live in
+  # .github/zizmor.yml.
+  workflow-lint:
+    name: Workflow Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install actionlint (pinned + checksum-verified)
+        run: |
+          curl -sSfL -o actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+
+      - name: Run actionlint
+        run: ./actionlint -shellcheck=
+
+      - name: Run zizmor
+        run: pipx run zizmor==1.25.2 --no-progress --config .github/zizmor.yml --min-severity medium .github/workflows/

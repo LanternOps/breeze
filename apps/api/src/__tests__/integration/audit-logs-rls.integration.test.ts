@@ -44,6 +44,7 @@
  *      really runs on its own connection, not inside the caller's tx.
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { describe, it, expect, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
@@ -93,7 +94,7 @@ describe('audit_logs RLS — logSessionAudit (issue #437)', () => {
   it('logSessionAudit with no outer context writes the row on its own system-scope connection', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
-    const sessionId = '11111111-1111-1111-1111-111111111111';
+    const sessionId = randomUUID(); // per-run: audit_logs rows survive cleanup (append-only)
     const actorId = '22222222-2222-2222-2222-222222222222';
 
     await logSessionAudit(
@@ -160,7 +161,7 @@ describe('audit_logs RLS — logSessionAudit (issue #437)', () => {
     const partner = await createPartner();
     const orgA = await createOrganization({ partnerId: partner.id });
     const orgB = await createOrganization({ partnerId: partner.id });
-    const sessionId = '66666666-6666-6666-6666-666666666666';
+    const sessionId = randomUUID(); // per-run: audit_logs rows survive cleanup (append-only)
 
     await withDbAccessContext(
       {
@@ -204,8 +205,8 @@ describe('audit_logs RLS — logSessionAudit (issue #437)', () => {
     // (b) remains.
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
-    const rollbackMarkerId = '88888888-8888-8888-8888-888888888888';
-    const auditSurvivorSessionId = '99999999-9999-9999-9999-999999999999';
+    const rollbackMarkerId = randomUUID(); // per-run: audit_logs rows survive cleanup (append-only)
+    const auditSurvivorSessionId = randomUUID();
 
     await expect(
       withDbAccessContext(

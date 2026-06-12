@@ -16,7 +16,7 @@ import {
   partners,
 } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
@@ -61,7 +61,16 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 ] as const;
 
 /**
- * Subset of {@link DEVICE_CASCADE_DELETE_TABLES} whose rows denormalize
+ * Tables with a device_id FK to devices.id whose rows are tenant business
+ * records — preserve history, detach the device (device_id SET NULL) instead
+ * of cascade-deleting during permanent device deletion. Deviceless tickets
+ * are first-class (tickets.device_id is nullable).
+ */
+export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
+
+/**
+ * Subset of {@link DEVICE_CASCADE_DELETE_TABLES} ∪
+ * {@link DEVICE_DETACH_DEVICE_ID_TABLES} whose rows denormalize
  * `org_id` for RLS performance. When a device moves between orgs, every
  * one of these tables must have its `org_id` rewritten inside the same
  * transaction that flips `devices.org_id`, otherwise pre-existing rows
@@ -98,7 +107,7 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'elevation_requests',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
-  'peripheral_events', 'playbook_executions',
+  'peripheral_events', 'playbook_executions', 'provision_credential_handles',
   'recovery_readiness', 'recovery_tokens', 'remote_sessions', 'restore_jobs',
   's1_actions', 's1_agents', 's1_threats',
   'script_executions',
@@ -111,9 +120,28 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
 ] as const;
 
 /**
+ * Tables that denormalize `org_id` for RLS but have NO `device_id` column,
+ * so the generic {@link DEVICE_ORG_DENORMALIZED_TABLES} rewrite loop in
+ * moveOrg.ts (which keys on `WHERE device_id = ...`) cannot reach them.
+ * Each table here gets a dedicated, hand-written UPDATE inside the move-org
+ * transaction — e.g. `ticket_alert_links` is rewritten via its alert_id
+ * join to alerts.device_id.
+ *
+ * moveOrg.coverage.test.ts asserts this list is disjoint from the generic
+ * lists (a table with a device_id column belongs there instead) and that
+ * every entry exists with org_id but without device_id, so a future table
+ * can't silently skip both paths. The dedicated statements themselves are
+ * covered by behavior tests in moveOrg.test.ts.
+ */
+export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links'] as const;
+
+/**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
- * Cross-org-cross-site moves via POST /devices/:id/move-org must rewrite each
- * row's site_id alongside org_id, or those rows strand under the OLD site_id.
+ * EVERY write path that changes devices.site_id must rewrite each row's
+ * site_id in the same transaction, or those rows strand under the OLD
+ * site_id. Today that is two paths:
+ *   - POST /devices/:id/move-org (moveOrg.ts — cross-org-cross-site move)
+ *   - PATCH /devices/:id        (this file — same-org site change)
  * The moveOrg.coverage.test.ts drift-detector enforces that any future
  * schema PR adding site_id to a device-id-scoped table populates this list.
  */
@@ -171,14 +199,18 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
-  // Portal & integrations
-  'psa_ticket_mappings', 'tickets', 'asset_checkouts',
+  // Portal & integrations (tickets are detached, not deleted —
+  // see DEVICE_DETACH_DEVICE_ID_TABLES)
+  'psa_ticket_mappings', 'asset_checkouts',
   // Filesystem
   'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   // Backup verification
   'recovery_readiness',
   // PAM elevation requests (elevation_audit cascades automatically via FK ON DELETE CASCADE)
   'elevation_requests',
+  // Provisioning one-time credential handles (FK device_id → devices.id ON DELETE CASCADE;
+  // listed for the explicit-cascade coverage contract — leaf table, no children)
+  'provision_credential_handles',
 ] as const;
 
 export const coreRoutes = new Hono();
@@ -191,6 +223,12 @@ function envInt(name: string, fallback: number): number {
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
+
+// #1108: caller-supplied onboarding-token limits. Count maps to maxUsage so one
+// copied CLI command can enroll a whole batch; TTL cap mirrors the enrollment-
+// keys route's 365-day ceiling.
+const ENROLL_TOKEN_MAX_COUNT = 1000;
+const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
 
 // POST /devices/onboarding-token - Generate a short-lived enrollment key.
 // If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
@@ -235,9 +273,24 @@ coreRoutes.post(
       return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
     }
 
+    // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
+    // command is frequently pasted onto several machines during a migration;
+    // without these the historical hard-coded single-use token failed on every
+    // machine after the first. Defaults preserve the old single-use, 60-min
+    // behaviour for callers that send no body.
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const rawCount = Number((body as { count?: unknown }).count);
+    const maxUsage = Number.isFinite(rawCount)
+      ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
+      : 1;
+    const rawTtl = Number((body as { ttlMinutes?: unknown }).ttlMinutes);
+    const defaultTtlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+    const ttlMinutes = Number.isFinite(rawTtl)
+      ? Math.min(ENROLL_TOKEN_MAX_TTL_MINUTES, Math.max(1, Math.trunc(rawTtl)))
+      : defaultTtlMinutes;
+
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);
-    const ttlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
 
     await db.insert(enrollmentKeys).values({
@@ -245,7 +298,7 @@ coreRoutes.post(
       siteId: site.id,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
       key: keyHash,
-      maxUsage: 1,
+      maxUsage,
       expiresAt,
       createdBy: auth.user.id,
     });
@@ -255,6 +308,7 @@ coreRoutes.post(
 
     return c.json({
       token: key,
+      maxUsage,
       expiresAt: expiresAt.toISOString(),
       enrollmentSecretMode: secretRequired ? 'global_env' : 'none',
       additionalSecretRequired: secretRequired,
@@ -948,7 +1002,11 @@ coreRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    // If moving to a different site, verify it's in the same org
+    // If moving to a different site, verify it's in the same org AND that a
+    // site-restricted caller is allowed to place a device into the TARGET site.
+    // The source device is already site-gated by getDeviceWithOrgAndSiteCheck
+    // above; without this the caller could move a device into a site outside
+    // their `allowedSiteIds` allowlist. Mirrors the gate in provision.ts.
     if (data.siteId && data.siteId !== device.siteId) {
       const [targetSite] = await db
         .select()
@@ -963,6 +1021,11 @@ coreRoutes.patch(
 
       if (!targetSite) {
         return c.json({ error: 'Target site not found or belongs to a different organization' }, 400);
+      }
+
+      const perms = c.get('permissions') as UserPermissions | undefined;
+      if (perms?.allowedSiteIds && !canAccessSite(perms, data.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
       }
     }
 
@@ -984,11 +1047,39 @@ coreRoutes.patch(
       updates.customFields = { ...existing, ...data.customFields };
     }
 
-    const [updated] = await db
-      .update(devices)
-      .set(updates)
-      .where(eq(devices.id, deviceId))
-      .returning();
+    // When the PATCH changes the device's site, the denormalized `site_id`
+    // on every table in DEVICE_SITE_DENORMALIZED_TABLES must be rewritten in
+    // the SAME transaction as the devices row flip — otherwise child rows
+    // (e.g. elevation_requests) stay pinned under the OLD site_id and drift
+    // out of site-visibility scoping. Mirrors moveOrg.ts. The proxied `db`
+    // resolves to the request-context tx via AsyncLocalStorage, so this
+    // opens a savepoint within the request transaction (established pattern).
+    const siteChanged = data.siteId !== undefined && data.siteId !== device.siteId;
+
+    let updated: typeof devices.$inferSelect | undefined;
+    if (siteChanged) {
+      await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(devices)
+          .set(updates)
+          .where(eq(devices.id, deviceId))
+          .returning();
+        updated = row;
+
+        for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
+          await tx.execute(
+            sql`UPDATE ${sql.identifier(table)} SET site_id = ${data.siteId}::uuid WHERE device_id = ${deviceId}::uuid`,
+          );
+        }
+      });
+    } else {
+      const [row] = await db
+        .update(devices)
+        .set(updates)
+        .where(eq(devices.id, deviceId))
+        .returning();
+      updated = row;
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -1201,6 +1292,10 @@ coreRoutes.delete(
         await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
         for (const linkedTable of DEVICE_LINKED_DEVICE_ID_TABLES) {
           await tx.execute(sql`UPDATE ${sql.identifier(linkedTable)} SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+        }
+        // Tenant business records (tickets): preserve history, detach the device.
+        for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
+          await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
         }
 
         const tables = DEVICE_CASCADE_DELETE_TABLES;

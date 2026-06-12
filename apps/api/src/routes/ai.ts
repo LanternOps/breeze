@@ -39,6 +39,52 @@ import {
 } from '@breeze/shared/validators/ai';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
+import { getConfig } from '../config/validate';
+import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
+import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
+
+// Provider check that tolerates an unvalidated config: route unit tests never
+// call validateConfig(), and getConfig() throws in that state. Without a
+// validated config, behave as the default anthropic path. Production always
+// validates at boot, so this never masks a misconfiguration there.
+function isOpenAICompatibleProvider(): boolean {
+  try {
+    return isOpenAICompatibleProvider();
+  } catch {
+    return false;
+  }
+}
+
+// Lazy singleton for the openai-compatible path.
+// Only constructed on first use when MCP_LLM_PROVIDER=openai-compatible.
+let _openaiSessionManager: OpenAISessionManager | null = null;
+function getOpenAISessionManager(): OpenAISessionManager {
+  if (!_openaiSessionManager) {
+    const cfg = getConfig();
+    if (!cfg.MCP_LLM_BASE_URL) {
+      // Should be caught at startup by the superRefine cross-field validation,
+      // but guard here in case getConfig() is called before validateConfig().
+      throw new Error('MCP_LLM_BASE_URL is required when MCP_LLM_PROVIDER is openai-compatible');
+    }
+    if (
+      cfg.MCP_LLM_PROVIDER === 'openai-compatible' &&
+      cfg.MCP_LLM_PRICE_INPUT_PER_M_USD === 0 &&
+      cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD === 0
+    ) {
+      console.warn(
+        'MCP_LLM_PROVIDER=openai-compatible but both MCP_LLM_PRICE_*_PER_M_USD are 0: cost tracking and budget enforcement are no-ops on this path.'
+      );
+    }
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: cfg.MCP_LLM_BASE_URL,
+      apiKey: cfg.MCP_LLM_API_KEY!,
+      priceInputPerMUsd: cfg.MCP_LLM_PRICE_INPUT_PER_M_USD,
+      priceOutputPerMUsd: cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
+    });
+    _openaiSessionManager = new OpenAISessionManager(provider);
+  }
+  return _openaiSessionManager;
+}
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional(),
@@ -194,7 +240,11 @@ aiRoutes.delete(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    streamingSessionManager.remove(sessionId);
+    const manager =
+      isOpenAICompatibleProvider()
+        ? getOpenAISessionManager()
+        : streamingSessionManager;
+    manager.remove(sessionId);
 
     writeRouteAudit(c, {
       orgId: closed.orgId,
@@ -334,6 +384,68 @@ aiRoutes.post(
 
     const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
 
+    // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
+    if (isOpenAICompatibleProvider()) {
+      const openaiManager = getOpenAISessionManager();
+      const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
+
+      if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
+        return c.json({ error: 'A message is already being processed for this session' }, 409);
+      }
+
+      writeRouteAudit(c, {
+        orgId: dbSession.orgId,
+        action: 'ai.message.send',
+        resourceType: 'ai_session',
+        resourceId: sessionId,
+        details: { contentLength: body.content.length },
+      });
+
+      try {
+        await db.insert(aiMessages).values({
+          sessionId,
+          role: 'user',
+          content: sanitizedContent,
+        });
+      } catch (err) {
+        console.error('[AI/OpenAI] Failed to save user message to DB:', err);
+        openaiSession.state = 'idle';
+        return c.json({ error: 'Failed to save message' }, 500);
+      }
+
+      if (!dbSession.title) {
+        const title = generateSessionTitle(sanitizedContent);
+        try {
+          await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+          openaiSession.eventBus.publish({ type: 'title_updated', title });
+        } catch (err) {
+          console.error('[AI/OpenAI] Failed to auto-set session title:', err);
+        }
+      }
+
+      openaiManager.startTurn(openaiSession, dbSession.model, systemPrompt, sanitizedContent);
+
+      const subscriptionId = crypto.randomUUID();
+      return streamSSE(c, async (stream) => {
+        const events = openaiSession.eventBus.subscribe(subscriptionId);
+        try {
+          for await (const event of events) {
+            await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+            if (event.type === 'done') break;
+          }
+        } catch (err) {
+          console.error('[AI/OpenAI] Stream error:', err);
+          await stream.writeSSE({
+            event: 'error',
+            data: JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : 'Stream failed' }),
+          });
+        } finally {
+          openaiSession.eventBus.unsubscribe(subscriptionId);
+        }
+      });
+    }
+    // ---- End OpenAI-compatible path ----
+
     // Get or create streaming session
     const activeSession = await streamingSessionManager.getOrCreate(
       sessionId,
@@ -443,7 +555,11 @@ aiRoutes.post(
 
     let result: { interrupted: boolean; reason?: string };
     try {
-      result = await streamingSessionManager.interrupt(sessionId);
+      const manager =
+        isOpenAICompatibleProvider()
+          ? getOpenAISessionManager()
+          : streamingSessionManager;
+      result = await manager.interrupt(sessionId);
     } catch (err) {
       console.error('[AI] Interrupt failed:', err);
       return c.json({ error: 'Failed to interrupt session' }, 500);
@@ -525,6 +641,16 @@ aiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    if (isOpenAICompatibleProvider()) {
+      return c.json(
+        {
+          error: 'This operation is not supported when using the OpenAI-compatible provider.',
+          code: 'NOT_SUPPORTED_ON_PROVIDER',
+        },
+        501,
+      );
+    }
+
     const activeSession = streamingSessionManager.get(sessionId);
     if (!activeSession) {
       return c.json({ error: 'Session not active in memory' }, 404);
@@ -570,6 +696,16 @@ aiRoutes.post(
     const session = await getSession(sessionId, auth);
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
+    }
+
+    if (isOpenAICompatibleProvider()) {
+      return c.json(
+        {
+          error: 'This operation is not supported when using the OpenAI-compatible provider.',
+          code: 'NOT_SUPPORTED_ON_PROVIDER',
+        },
+        501,
+      );
     }
 
     const activeSession = streamingSessionManager.get(sessionId);
@@ -633,6 +769,16 @@ aiRoutes.post(
     const session = await getSession(sessionId, auth);
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
+    }
+
+    if (isOpenAICompatibleProvider()) {
+      return c.json(
+        {
+          error: 'This operation is not supported when using the OpenAI-compatible provider.',
+          code: 'NOT_SUPPORTED_ON_PROVIDER',
+        },
+        501,
+      );
     }
 
     const activeSession = streamingSessionManager.get(sessionId);

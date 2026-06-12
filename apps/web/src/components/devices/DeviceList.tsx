@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3 } from 'lucide-react';
-import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { createPortal } from 'react-dom';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Rows3, Rows4, AlignJustify } from 'lucide-react';
+import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
@@ -20,6 +20,14 @@ import {
   writeColumnVisibility,
   type ColumnId,
 } from './columnVisibility';
+import {
+  DENSITY_OPTIONS,
+  densityTableClasses,
+  readDensity,
+  subscribeDensity,
+  writeDensity,
+  type Density,
+} from '@/lib/density';
 import { OSIcon } from './osIcons';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
@@ -91,7 +99,11 @@ type DeviceListProps = {
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
   pageSize?: number;
-  serverFilter?: FilterConditionGroup | null;
+  // Pre-resolved advanced-filter id set (null = no advanced filter active).
+  // Resolution lives in DevicesPage via useAdvancedFilterIds so the list and
+  // grid views filter against the same complete, uncapped id set.
+  serverFilterIds?: Set<string> | null;
+  serverFilterLoading?: boolean;
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -174,7 +186,8 @@ export default function DeviceList({
   onAction,
   onBulkAction,
   pageSize = 10,
-  serverFilter = null
+  serverFilterIds = null,
+  serverFilterLoading = false
 }: DeviceListProps) {
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -202,6 +215,15 @@ export default function DeviceList({
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => readColumnOrder());
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
+  // Table density preference (account-wide via localStorage). Subscribe so
+  // a sibling instance on the same page that flips density updates this
+  // one without a reload.
+  const [density, setDensity] = useState<Density>(() => readDensity());
+  useEffect(() => subscribeDensity(setDensity), []);
+  const handleDensityChange = (next: Density) => {
+    setDensity(next);
+    writeDensity(next);
+  };
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
@@ -210,9 +232,12 @@ export default function DeviceList({
   // kebab sits <300px from the viewport bottom would otherwise render
   // its dropdown into the area below the table and get clipped.
   const [rowMenuFlipUp, setRowMenuFlipUp] = useState(false);
+  // Viewport-relative anchor for the portaled row menu. The menu is rendered into
+  // document.body (not inside the overflow-x-auto table wrapper, which would clip it),
+  // so it positions itself with `fixed` coordinates derived from the kebab button.
+  const [rowMenuAnchor, setRowMenuAnchor] = useState<{ top: number; bottom: number; right: number } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
-  const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
-  const [serverFilterLoading, setServerFilterLoading] = useState(false);
+  const rowMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -221,12 +246,21 @@ export default function DeviceList({
   useEffect(() => {
     if (!rowMenuOpenId) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) {
-        setRowMenuOpenId(null);
-      }
+      const target = e.target as Node;
+      // The menu is portaled outside the trigger, so check both the menu and the button.
+      if (rowMenuRef.current?.contains(target) || rowMenuButtonRef.current?.contains(target)) return;
+      setRowMenuOpenId(null);
     };
+    // The menu is fixed-positioned from a captured anchor; scrolling would detach it, so close instead.
+    const handleScroll = () => setRowMenuOpenId(null);
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleScroll);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleScroll);
+    };
   }, [rowMenuOpenId]);
 
   // Close group dropdown on outside click
@@ -293,50 +327,6 @@ export default function DeviceList({
       onAutoSelectConsumed?.();
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
-
-  // Fetch matching device IDs from server when advanced filter changes
-  useEffect(() => {
-    if (!serverFilter) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    const hasValidConditions = serverFilter.conditions.some(c => {
-      if ('conditions' in c) return true;
-      return c.value !== '' && c.value !== null && c.value !== undefined;
-    });
-
-    if (!hasValidConditions) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    setServerFilterLoading(true);
-    const controller = new AbortController();
-
-    fetchWithAuth('/filters/preview', {
-      method: 'POST',
-      body: JSON.stringify({ conditions: serverFilter, limit: 100 }),
-      signal: controller.signal
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const result = data.data ?? data;
-          const ids = new Set<string>((result.devices ?? []).map((d: { id: string }) => d.id));
-          setServerFilterIds(ids);
-        }
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          console.error('Filter preview failed:', err);
-          setServerFilterIds(null);
-        }
-      })
-      .finally(() => setServerFilterLoading(false));
-
-    return () => controller.abort();
-  }, [serverFilter]);
 
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -612,7 +602,7 @@ export default function DeviceList({
               <span
                 data-testid={`device-${device.id}-agent-silent-badge`}
                 title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
-                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
               >
                 Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
               </span>
@@ -819,6 +809,32 @@ export default function DeviceList({
                 </span>
               )}
             </button>
+            {/* Density toggle: comfortable / compact / dense. Single
+                account-wide preference (breeze.density in localStorage),
+                applied to descendant td/th via Tailwind arbitrary
+                variants on the table element. */}
+            <div className="inline-flex h-10 items-center rounded-md border" role="group" aria-label="Row density">
+              {DENSITY_OPTIONS.map((opt, idx) => {
+                const Icon = opt === 'comfortable' ? Rows3 : opt === 'compact' ? Rows4 : AlignJustify;
+                const label = opt.charAt(0).toUpperCase() + opt.slice(1);
+                const isActive = density === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => handleDensityChange(opt)}
+                    aria-pressed={isActive}
+                    aria-label={`${label} row density`}
+                    title={`${label} row density`}
+                    className={`flex h-full items-center justify-center px-2.5 text-sm transition ${
+                      isActive ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60'
+                    } ${idx === 0 ? 'rounded-l-md' : ''} ${idx === DENSITY_OPTIONS.length - 1 ? 'rounded-r-md' : 'border-r'}`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                );
+              })}
+            </div>
             <div className="relative" ref={columnsMenuRef}>
               <button
                 type="button"
@@ -1113,7 +1129,7 @@ export default function DeviceList({
       )}
 
       <div className="mt-6 overflow-x-auto rounded-md border">
-        <table className="w-full divide-y">
+        <table className={`w-full divide-y ${densityTableClasses(density)}`}>
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-3">
@@ -1177,15 +1193,18 @@ export default function DeviceList({
                         desktopAccess={device.desktopAccess}
                         remoteAccessPolicy={device.remoteAccessPolicy}
                       />
-                      <div className="relative" ref={rowMenuOpenId === device.id ? rowMenuRef : undefined}>
+                      <div className="relative">
                         <button
                           type="button"
+                          aria-label="Device actions"
+                          ref={rowMenuOpenId === device.id ? rowMenuButtonRef : undefined}
                           onClick={(e) => {
                             if (rowMenuOpenId !== device.id) {
                               const rect = e.currentTarget.getBoundingClientRect();
                               // ~280px dropdown height (7 items × ~36px + padding/divider).
                               // Flip up when the space below the button is less than that.
                               setRowMenuFlipUp(window.innerHeight - rect.bottom < 300);
+                              setRowMenuAnchor({ top: rect.top, bottom: rect.bottom, right: rect.right });
                             }
                             setRowMenuOpenId(rowMenuOpenId === device.id ? null : device.id);
                           }}
@@ -1193,8 +1212,18 @@ export default function DeviceList({
                         >
                           <MoreVertical className="h-4 w-4" />
                         </button>
-                        {rowMenuOpenId === device.id && (
-                          <div className={`absolute right-0 z-50 w-48 rounded-md border bg-card shadow-lg ${rowMenuFlipUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
+                        {rowMenuOpenId === device.id && rowMenuAnchor && createPortal(
+                          <div
+                            ref={rowMenuRef}
+                            style={{
+                              position: 'fixed',
+                              right: window.innerWidth - rowMenuAnchor.right,
+                              ...(rowMenuFlipUp
+                                ? { bottom: window.innerHeight - rowMenuAnchor.top + 4 }
+                                : { top: rowMenuAnchor.bottom + 4 }),
+                            }}
+                            className="z-50 w-48 rounded-md border bg-card shadow-lg"
+                          >
                             <button
                               type="button"
                               disabled={device.status !== 'online'}
@@ -1281,7 +1310,8 @@ export default function DeviceList({
                                 Decommission
                               </button>
                             )}
-                          </div>
+                          </div>,
+                          document.body
                         )}
                       </div>
                     </div>

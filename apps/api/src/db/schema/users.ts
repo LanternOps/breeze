@@ -25,6 +25,11 @@ export const users = pgTable('users', {
   phoneVerified: boolean('phone_verified').notNull().default(false),
   mfaMethod: mfaMethodEnum('mfa_method'),
   status: userStatusEnum('status').notNull().default('invited'),
+  // Why the user is disabled. 'partner_suspended' is set by partner suspension
+  // so unsuspend re-enables exactly those users; NULL means disabled for some
+  // other reason (compromise, off-boarding, manual admin action) and unsuspend
+  // must leave them alone. See #917 (L-5).
+  disabledReason: text('disabled_reason'),
   avatarUrl: text('avatar_url'),
   lastLoginAt: timestamp('last_login_at'),
   passwordChangedAt: timestamp('password_changed_at'),

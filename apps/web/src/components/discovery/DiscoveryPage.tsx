@@ -9,6 +9,8 @@ import NetworkTopologyMap from './NetworkTopologyMap';
 import NetworkChangesPanel from './NetworkChangesPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { ActionError, runAction } from '../../lib/runAction';
+import { navigateTo } from '../../lib/navigation';
 
 const DISCOVERY_TABS = ['assets', 'profiles', 'jobs', 'topology', 'changes'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
@@ -268,6 +270,7 @@ export default function DiscoveryPage() {
   const [profilesError, setProfilesError] = useState<string>();
   const [profileFormError, setProfileFormError] = useState<string>();
   const [savingProfile, setSavingProfile] = useState(false);
+  const [runningProfileId, setRunningProfileId] = useState<string | null>(null);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ApiDiscoveryProfile | null>(null);
   const [jobsProfileFilter, setJobsProfileFilter] = useState<string | null>(null);
@@ -480,23 +483,31 @@ export default function DiscoveryPage() {
 
   const handleRunProfile = async (profile: DiscoveryProfile) => {
     setProfilesError(undefined);
+    setRunningProfileId(profile.id);
 
     try {
-      const response = await fetchWithAuth('/discovery/scan', {
-        method: 'POST',
-        body: JSON.stringify({ profileId: profile.id })
+      await runAction({
+        request: () => fetchWithAuth('/discovery/scan', {
+          method: 'POST',
+          body: JSON.stringify({ profileId: profile.id })
+        }),
+        errorFallback: `Failed to run discovery profile "${profile.name}"`,
+        successMessage: `Discovery scan queued for "${profile.name}"`,
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to run discovery profile');
-      }
 
       // Switch to jobs tab filtered to this profile so user can see the queued scan
       setJobsProfileFilter(profile.id);
       navigateToTab('jobs');
     } catch (err) {
-      setProfilesError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError) {
+        if (err.status === 401) return;
+        setProfilesError(err.message);
+      } else {
+        setProfilesError(err instanceof Error ? err.message : 'An error occurred');
+      }
+    } finally {
+      setRunningProfileId(null);
     }
   };
 
@@ -610,6 +621,7 @@ export default function DiscoveryPage() {
           onEdit={handleEditProfile}
           onDelete={handleDeleteProfile}
           onRun={handleRunProfile}
+          runningProfileId={runningProfileId}
           onViewJobs={handleNavigateToJobs}
         />
       )}

@@ -1,15 +1,49 @@
-import type { InheritableSecuritySettings } from '@breeze/shared';
+import type { InheritableSecuritySettings, IpAllowlistStatus } from '@breeze/shared';
 
 type Props = {
   data: InheritableSecuritySettings;
   onChange: (data: InheritableSecuritySettings) => void;
+  status?: IpAllowlistStatus | null;
+  /** True when the status fetch failed (distinct from "no status yet"). */
+  statusUnavailable?: boolean;
 };
 
 const PLACEHOLDER = 'Not set — orgs configure individually';
 
-export default function PartnerSecurityTab({ data, onChange }: Props) {
+/** Split textarea input into trimmed, non-empty allowlist entries. */
+export function parseAllowlistInput(text: string): string[] {
+  return text.split('\n').map(l => l.trim()).filter(Boolean);
+}
+
+/**
+ * Advisory client-side coverage check for the lockout warning. Returns true
+ * (no warning) when the current IP is unknown, so we never block on uncertainty.
+ * The server enforces the authoritative v4/v6 CIDR logic.
+ */
+export function currentIpCovered(currentIp: string | null, list: string[]): boolean {
+  if (!currentIp) return true;
+  if (list.includes(currentIp)) return true;
+  // Lightweight IPv4 CIDR check for the common case; non-IPv4 entries fall back
+  // to exact match (already handled above).
+  return list.some(entry => {
+    const [net, bitsRaw] = entry.split('/');
+    const bits = Number(bitsRaw);
+    if (!net.includes('.') || !currentIp.includes('.') || !Number.isInteger(bits)) {
+      return entry === currentIp;
+    }
+    const toInt = (ip: string) => ip.split('.').reduce((a, p) => (a << 8) + Number(p), 0) >>> 0;
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    return (toInt(net) & mask) === (toInt(currentIp) & mask);
+  });
+}
+
+export default function PartnerSecurityTab({ data, onChange, status, statusUnavailable }: Props) {
   const set = (patch: Partial<InheritableSecuritySettings>) =>
     onChange({ ...data, ...patch });
+
+  const list = data.ipAllowlist ?? [];
+  const currentIp = status?.currentIp ?? null;
+  const alreadyListed = currentIp ? list.includes(currentIp) : true;
 
   return (
     <div className="space-y-6">
@@ -94,19 +128,51 @@ export default function PartnerSecurityTab({ data, onChange }: Props) {
 
       <div className="space-y-2">
         <label className="text-sm font-medium">IP Allowlist</label>
+
+        {status && status.enforced && !status.active && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            Allowlist configured but <strong>inactive</strong> — the API isn’t seeing real client IPs.
+            Configure proxy trust (<code>TRUST_PROXY_HEADERS</code> + <code>TRUSTED_PROXY_CIDRS</code>) for it to take effect.
+          </div>
+        )}
+
+        {statusUnavailable && (
+          <div className="rounded-md border border-muted-foreground/30 bg-muted px-3 py-2 text-xs text-muted-foreground">
+            Couldn’t verify allowlist status. The server still enforces any saved allowlist — double-check your own IP is covered before saving.
+          </div>
+        )}
+
         <textarea
-          value={(data.ipAllowlist ?? []).join('\n')}
+          value={list.join('\n')}
           onChange={e => {
-            const lines = e.target.value.split('\n').filter(Boolean);
+            const lines = parseAllowlistInput(e.target.value);
             set({ ipAllowlist: lines.length > 0 ? lines : undefined });
           }}
           rows={4}
           className="w-full rounded-md border bg-background px-3 py-2 text-sm"
           placeholder="Enter one IP or CIDR range per line. Leave blank to let each org decide."
         />
-        <p className="text-xs text-muted-foreground">
-          Leave blank to let each organization configure individually. Use CIDR notation for ranges.
-        </p>
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">
+            Leave blank to let each organization configure individually. Use CIDR notation for ranges.
+            Requires a configured reverse proxy so the API can see real client IPs.
+          </p>
+          {currentIp && (
+            <button
+              type="button"
+              disabled={alreadyListed}
+              className="text-xs font-medium text-primary hover:underline disabled:text-muted-foreground disabled:no-underline"
+              onClick={() => {
+                if (!list.includes(currentIp)) {
+                  set({ ipAllowlist: [...list, currentIp] });
+                }
+              }}
+            >
+              {alreadyListed ? `Your IP (${currentIp}) is listed` : `Add my current IP (${currentIp})`}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

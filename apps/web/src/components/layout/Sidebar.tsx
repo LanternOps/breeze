@@ -32,6 +32,7 @@ import {
   ScanSearch,
   Usb,
   MessagesSquare,
+  Ticket,
   Key,
   X,
   Cloud,
@@ -40,9 +41,10 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth } from '../../stores/auth';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
+import { getJwtClaims } from '../../lib/authScope';
 import BrandHeader from './BrandHeader';
 
 interface SidebarProps {
@@ -88,6 +90,7 @@ const topLevelNav: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', href: '/devices', icon: Monitor },
   { name: 'Alerts', href: '/alerts', icon: Bell },
+  { name: 'Tickets', href: '/tickets', icon: Ticket },
   { name: 'Incidents', href: '/incidents', icon: ShieldAlert },
   { name: 'Remote Access', href: '/remote', icon: Terminal },
   { name: 'Scripts', href: '/scripts', icon: FileCode },
@@ -122,6 +125,7 @@ const navSections: NavSection[] = [
       { name: 'Network Monitor', href: '/monitoring', icon: Activity },
       { name: 'Security', href: '/security', icon: ShieldCheck },
       { name: 'DNS Security', href: '/dns-security', icon: Network },
+      { name: 'PAM', href: '/pam', icon: KeyRound },
       { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch },
       { name: 'Peripherals', href: '/peripherals', icon: Usb },
       { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
@@ -287,17 +291,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // a non-partner scope; falls through to the server (which will 403) when the scope
   // cannot be decoded.
   useEffect(() => {
-    // Decode the JWT scope without verification (safe browser-side, used only to avoid a known 403).
-    const token = useAuthStore.getState().tokens?.accessToken;
-    let scope: string | null = null;
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        scope = typeof payload.scope === 'string' ? payload.scope : null;
-      } catch {
-        // If decode fails, fall through and let the server respond (it will 403 for non-partner).
-      }
-    }
+    const { scope } = getJwtClaims();
     if (scope !== null && scope !== 'partner') return;
 
     let cancelled = false;
