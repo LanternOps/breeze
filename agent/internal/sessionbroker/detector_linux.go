@@ -88,6 +88,10 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 			if err := propScanner.Err(); err != nil {
 				return nil, fmt.Errorf("parse loginctl show-session output for %s: %w", sessionID, err)
 			}
+			// Idle is only reported when the DE actively asserts IdleHint=yes.
+			// IdleHint=no must stay unknown, not "active": most DEs and all
+			// headless sessions never call SetIdleHint, so "no" is
+			// indistinguishable from "nobody reports it".
 			if idleHint {
 				if since, ok := parseIdleSinceHint(idleSinceRaw); ok {
 					sess.IdleFor, sess.IdleKnown = idleSince(time.Now(), since)
