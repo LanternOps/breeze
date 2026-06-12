@@ -18,6 +18,7 @@ vi.mock('../../db/schema', () => ({
   },
   devicePatches: {
     deviceId: 'devicePatches.deviceId',
+    orgId: 'devicePatches.orgId',
     patchId: 'devicePatches.patchId',
     status: 'devicePatches.status',
     installedAt: 'devicePatches.installedAt',

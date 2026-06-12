@@ -135,6 +135,18 @@ complianceRoutes.get(
       complianceConditions.push(eq(patches.severity, query.severity));
     }
 
+    const approvalRingScope = query.ringId
+      ? sql`and (pa.ring_id = ${query.ringId}::uuid or pa.ring_id is null)`
+      : sql``;
+    const isApprovedForInstall = sql`exists (
+      select 1
+      from patch_approvals pa
+      where pa.org_id = ${devicePatches.orgId}
+        and pa.patch_id = ${devicePatches.patchId}
+        and pa.status = 'approved'
+        ${approvalRingScope}
+    )`;
+
     const statusCounts = await db
       .select({
         status: devicePatches.status,
@@ -179,6 +191,8 @@ complianceRoutes.get(
         osType: devices.osType,
         lastSeenAt: devices.lastSeenAt,
         missingCount: sql<number>`count(*) filter (where ${isOutstanding})`,
+        approvedMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${isApprovedForInstall})`,
+        unapprovedMissing: sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
         criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'critical')`,
         importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'important')`,
         osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
@@ -200,6 +214,8 @@ complianceRoutes.get(
       name: row.hostname,
       os: row.osType,
       missingCount: Number(row.missingCount),
+      approvedMissing: Number(row.approvedMissing),
+      unapprovedMissing: Number(row.unapprovedMissing),
       criticalCount: Number(row.criticalCount),
       importantCount: Number(row.importantCount),
       osMissing: Number(row.osMissing),

@@ -23,7 +23,7 @@ describe('PatchComplianceView', () => {
     vi.clearAllMocks();
   });
 
-  it('resolves pending patch ids before queuing bulk install', async () => {
+  it('resolves approved pending patch ids before queuing bulk install', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/patches/compliance') {
@@ -41,6 +41,8 @@ describe('PatchComplianceView', () => {
                 name: 'Workstation-1',
                 os: 'windows',
                 missingCount: 2,
+                approvedMissing: 2,
+                unapprovedMissing: 0,
                 criticalCount: 1,
                 importantCount: 1,
                 osMissing: 2,
@@ -70,8 +72,8 @@ describe('PatchComplianceView', () => {
         return makeJsonResponse({
           data: {
             pending: [
-              { id: '22222222-2222-2222-2222-222222222222', title: 'KB5050001' },
-              { id: '33333333-3333-3333-3333-333333333333', title: 'KB5050002' },
+              { id: '22222222-2222-2222-2222-222222222222', title: 'KB5050001', approvalStatus: 'approved' },
+              { id: '33333333-3333-3333-3333-333333333333', title: 'KB5050002', approvalStatus: 'approved' },
             ],
           },
         });

@@ -82,12 +82,16 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
         for (const raw of allDevices) {
           const id = String(raw.id ?? '');
           const n = needingMap.get(id);
+          const pendingPatches = toNumber(n?.missingCount ?? 0);
+          const approvedMissing = toNumber(n?.approvedMissing ?? 0);
           merged.push({
             id,
             hostname: String(n?.name ?? n?.hostname ?? raw.hostname ?? 'Unknown'),
             osType: String(n?.os ?? n?.osType ?? raw.osType ?? raw.os_type ?? 'unknown'),
             lastSeenAt: (n?.lastSeen ?? raw.lastSeenAt) ? String(n?.lastSeen ?? raw.lastSeenAt) : undefined,
-            pendingPatches: toNumber(n?.missingCount ?? 0),
+            pendingPatches,
+            approvedMissing,
+            unapprovedMissing: toNumber(n?.unapprovedMissing ?? Math.max(0, pendingPatches - approvedMissing)),
             criticalMissing: toNumber(n?.criticalCount ?? 0),
             importantMissing: toNumber(n?.importantCount ?? 0),
             osMissing: toNumber(n?.osMissing ?? 0),
@@ -164,9 +168,11 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       return [];
     }
 
-    return pending
-      .map((patch: unknown) => (patch && typeof patch === 'object' && 'id' in patch && patch.id ? String(patch.id) : ''))
-      .filter((patchId) => patchId.length > 0);
+    return pending.flatMap((patch: unknown) => {
+      if (!patch || typeof patch !== 'object') return [];
+      const row = patch as { id?: unknown; approvalStatus?: unknown };
+      return row.id && row.approvalStatus === 'approved' ? [String(row.id)] : [];
+    });
   }, []);
 
   const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);
@@ -245,10 +251,18 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {
       const d = devices.find(dev => dev.id === id);
-      return d && d.pendingPatches > 0;
+      return d && d.approvedMissing > 0;
     });
   }, [selectedIds, devices]);
   const selectedWithPatches = selectedPatchDeviceIds.length;
+  const approvedPendingPatches = useMemo(
+    () => devices.reduce((sum, d) => sum + d.approvedMissing, 0),
+    [devices]
+  );
+  const unapprovedPendingPatches = useMemo(
+    () => devices.reduce((sum, d) => sum + d.unapprovedMissing, 0),
+    [devices]
+  );
 
   // Precomputed filter counts
   const filterCounts = useMemo(() => ({
@@ -302,8 +316,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           {nonCompliantCount > 0 && (
             <span className="flex items-center gap-1 text-orange-600">
               <AlertTriangle className="h-3.5 w-3.5" />
-              {nonCompliantCount} need patches
+              {nonCompliantCount} have pending patches
             </span>
+          )}
+          {approvedPendingPatches > 0 && (
+            <span className="text-green-700 font-medium">{approvedPendingPatches} approved</span>
+          )}
+          {unapprovedPendingPatches > 0 && (
+            <span className="text-orange-600 font-medium">{unapprovedPendingPatches} pending approval</span>
           )}
           {summary.criticalPatches > 0 && (
             <span className="text-red-600 font-medium">{summary.criticalPatches} critical</span>
@@ -355,10 +375,10 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         >
           <option value="all">All Devices ({devices.length})</option>
-          <option value="needs-patches">Needs Patches ({nonCompliantCount})</option>
+          <option value="needs-patches">Pending Patches ({nonCompliantCount})</option>
           <option value="critical">Critical ({filterCounts.critical})</option>
           <option value="reboot">Pending Reboot ({summary.rebootPending})</option>
-          <option value="3rd-party">3rd-Party Missing ({filterCounts.thirdParty})</option>
+          <option value="3rd-party">3rd-Party Pending ({filterCounts.thirdParty})</option>
           <option value="compliant">Compliant ({summary.compliantDevices})</option>
         </select>
         {hasActiveFilters && (
@@ -406,7 +426,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           )}
           {confirmInstall && (
             <div className="flex items-center gap-2 rounded-md border border-orange-500/40 bg-orange-500/10 px-3 py-1">
-              <span className="text-xs text-orange-700">Install patches on {selectedWithPatches} devices?</span>
+              <span className="text-xs text-orange-700">Install approved patches on {selectedWithPatches} devices?</span>
               <button
                 type="button"
                 onClick={() => { setConfirmInstall(false); void handleBulkInstall(selectedPatchDeviceIds); }}
@@ -463,9 +483,11 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
               </th>
               <th className="px-3 py-3">Device</th>
               <th className="px-3 py-3">Status</th>
-              <th className="px-3 py-3" title="Missing updates from Windows Update, Apple, or Linux package managers">OS Patches</th>
-              <th className="px-3 py-3" title="Missing updates from third-party or custom sources">3rd-Party</th>
-              <th className="px-3 py-3" title="Missing patches rated critical severity">Critical</th>
+              <th className="px-3 py-3" title="Outstanding patches approved for installation">Approved</th>
+              <th className="px-3 py-3" title="Outstanding patches still awaiting approval">Pending Approval</th>
+              <th className="px-3 py-3" title="Outstanding updates from Windows Update, Apple, or Linux package managers">OS Patches</th>
+              <th className="px-3 py-3" title="Outstanding updates from third-party or custom sources">3rd-Party</th>
+              <th className="px-3 py-3" title="Outstanding patches rated critical severity">Critical</th>
               <th className="px-3 py-3" title="Most recent patch install or scan activity">Last Activity</th>
               <th className="px-3 py-3" title="Device needs a reboot to complete patch installation">Reboot</th>
               <th className="px-3 py-3 text-right">Actions</th>
@@ -474,7 +496,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           <tbody className="divide-y">
             {filteredDevices.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={11} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {hasActiveFilters ? 'No devices match your filters.' : 'No devices found.'}
                 </td>
               </tr>
@@ -522,16 +544,34 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                         </span>
                       ) : device.criticalMissing > 0 ? (
                         <span className="inline-flex items-center rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-700">
-                          {device.pendingPatches} missing
+                          {device.pendingPatches} outstanding
                         </span>
                       ) : (
                         <span className="inline-flex items-center rounded-full border border-orange-500/40 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-700">
-                          {device.pendingPatches} missing
+                          {device.pendingPatches} outstanding
                         </span>
                       )}
                     </td>
                     <td className="px-3 py-2.5 tabular-nums">
-                      {device.osMissing > 0 ? device.osMissing : <span className="text-muted-foreground">—</span>}
+                      {device.approvedMissing > 0 ? (
+                        <span className="inline-flex items-center rounded-full border border-green-500/40 bg-green-500/10 px-2 py-0.5 text-xs font-medium text-green-700">
+                          {device.approvedMissing}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums">
+                      {device.unapprovedMissing > 0 ? (
+                        <span className="inline-flex items-center rounded-full border border-orange-500/40 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-700">
+                          {device.unapprovedMissing}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums">
+                      {device.osMissing > 0 ? device.osMissing : <span className="text-muted-foreground">-</span>}
                     </td>
                     <td className="px-3 py-2.5 tabular-nums">
                       {device.thirdPartyMissing > 0 ? (
@@ -539,7 +579,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                           {device.thirdPartyMissing}
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
                     <td className="px-3 py-2.5">
@@ -548,7 +588,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                           {device.criticalMissing}
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-muted-foreground" title={lastActivity(device.lastInstalledAt, device.lastScannedAt).tooltip}>
@@ -561,7 +601,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                           Yes
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
                     <td className="px-3 py-2.5">

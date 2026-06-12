@@ -105,6 +105,8 @@ export type DevicePatchRow = {
   osType: string;
   lastSeenAt?: string;
   pendingPatches: number;
+  approvedMissing: number;
+  unapprovedMissing: number;
   criticalMissing: number;
   importantMissing: number;
   osMissing: number;
@@ -157,6 +159,8 @@ export type DevicePatchNeed = {
   name: string;
   os: string;
   missingCount: number;
+  approvedMissing: number;
+  unapprovedMissing: number;
   criticalCount: number;
   importantCount: number;
   osMissing: number;
@@ -197,6 +201,8 @@ export function normalizeDeviceNeed(raw: Record<string, unknown>, index: number)
     name: String(name),
     os: String(os),
     missingCount: toNumber(raw.missingCount ?? raw.missing ?? raw.patchesMissing),
+    approvedMissing: toNumber(raw.approvedMissing ?? raw.approved_missing ?? 0),
+    unapprovedMissing: toNumber(raw.unapprovedMissing ?? raw.unapproved_missing ?? 0),
     criticalCount: toNumber(raw.criticalCount ?? raw.critical ?? raw.criticalMissing),
     importantCount: toNumber(raw.importantCount ?? raw.important ?? raw.importantMissing),
     osMissing: toNumber(raw.osMissing ?? raw.os_missing ?? 0),

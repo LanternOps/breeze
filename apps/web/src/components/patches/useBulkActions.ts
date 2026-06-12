@@ -82,11 +82,11 @@ export function useBulkActions(
           parts.push(`Install failed on ${failed.length} of ${ids.length} devices`);
         }
         if (skipped.length > 0) {
-          parts.push(`Skipped ${skipped.length} ${skipped.length === 1 ? 'device' : 'devices'} with no installable pending patches`);
+          parts.push(`Skipped ${skipped.length} ${skipped.length === 1 ? 'device' : 'devices'} with no approved pending patches`);
         }
         setBulkError(parts.join('. '));
       } else if (queuedCount === 0) {
-        setBulkError('No installable pending patches found for the selected devices');
+        setBulkError('No approved pending patches found for the selected devices');
       }
 
       clearSelection();

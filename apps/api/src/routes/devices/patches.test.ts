@@ -8,6 +8,7 @@ const PATCH_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const USER_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 
 vi.mock('drizzle-orm', () => ({
+  and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
   inArray: (left: unknown, right: unknown) => ({ op: 'inArray', left, right }),
   desc: (value: unknown) => ({ op: 'desc', value })
@@ -45,6 +46,11 @@ vi.mock('../../db/schema', () => ({
     failureCount: 'devicePatches.failureCount',
     lastError: 'devicePatches.lastError',
     deviceId: 'devicePatches.deviceId'
+  },
+  patchApprovals: {
+    orgId: 'patchApprovals.orgId',
+    patchId: 'patchApprovals.patchId',
+    status: 'patchApprovals.status'
   }
 }));
 
@@ -77,7 +83,7 @@ vi.mock('../../services/commandQueue', () => ({
 }));
 
 import { db } from '../../db';
-import { getDeviceWithOrgCheck, getDeviceWithOrgAndSiteCheck } from './helpers';
+import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 
 function selectWhereResult(rows: unknown[]) {
@@ -121,7 +127,8 @@ describe('device patch routes', () => {
 
   it('separates actionable pending patches from missing records', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
-    vi.mocked(db.select).mockReturnValueOnce(selectPatchStatusResult([
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([
       {
         id: 'dp-1',
         patchId: '11111111-1111-4111-8111-111111111111',
@@ -173,7 +180,10 @@ describe('device patch routes', () => {
         releaseDate: '2026-02-03',
         requiresReboot: false
       }
-    ]) as any);
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([
+        { patchId: '11111111-1111-4111-8111-111111111111' }
+      ]) as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
       method: 'GET',
@@ -186,6 +196,7 @@ describe('device patch routes', () => {
     expect(body.data.pending).toHaveLength(1);
     expect(body.data.pending[0].id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.data.pending[0].status).toBe('pending');
+    expect(body.data.pending[0].approvalStatus).toBe('approved');
     expect(body.data.pending[0].externalId).toBe('apple:OS Update A:1.0.1');
     expect(body.data.pending[0].description).toBe('Pending update');
 
@@ -198,10 +209,14 @@ describe('device patch routes', () => {
   });
 
   it('queues install_patches command with patch metadata', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
-    vi.mocked(db.select).mockReturnValueOnce(selectWhereResult([
-      { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
-    ]) as any);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([
+        { patchId: PATCH_ID }
+      ]) as any);
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: {
         id: 'cmd-install-1',
@@ -234,8 +249,29 @@ describe('device patch routes', () => {
     );
   });
 
+  it('rejects install when any requested patch is not approved', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('Only approved patches can be installed');
+    expect(body.unapprovedPatchIds).toEqual([PATCH_ID]);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when install patch IDs do not resolve to patch records', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select).mockReturnValueOnce(selectWhereResult([]) as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
@@ -250,7 +286,7 @@ describe('device patch routes', () => {
   });
 
   it('queues rollback_patches command for a device patch', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
       { id: PATCH_ID, source: 'apple', externalId: 'apple:example', title: 'Example Patch' }
     ]) as any);
