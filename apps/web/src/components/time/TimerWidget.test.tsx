@@ -8,10 +8,12 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 import TimerWidget from './TimerWidget';
 import { TIMER_CHANGED_EVENT } from '../../lib/timerActions';
 
-const running = {
+// Built per-test: a module-load fixture drifts on slow CI runners and breaks
+// the elapsed-time assertion (startedAt ages while earlier tests run).
+const makeRunning = () => ({
   id: 'te-1', ticketId: 'tk-1', startedAt: new Date(Date.now() - 90_000).toISOString(),
   description: null, isBillable: false, ticketNumber: 'T-2026-0042', ticketSubject: 'Printer on fire'
-};
+});
 const jsonRes = (data: unknown, status = 200) =>
   ({ ok: status < 400, status, json: async () => ({ data }) }) as Response;
 
@@ -26,7 +28,7 @@ describe('TimerWidget', () => {
   });
 
   it('shows elapsed time and the ticket number when running', async () => {
-    fetchWithAuth.mockResolvedValue(jsonRes(running));
+    fetchWithAuth.mockResolvedValue(jsonRes(makeRunning()));
     render(<TimerWidget />);
     expect(await screen.findByTestId('timer-widget')).toBeTruthy();
     expect(screen.getByTestId('timer-widget-ticket').textContent).toContain('T-2026-0042');
@@ -34,7 +36,7 @@ describe('TimerWidget', () => {
   });
 
   it('stop popover posts /time-entries/stop with description + billable', async () => {
-    fetchWithAuth.mockResolvedValue(jsonRes(running));
+    fetchWithAuth.mockResolvedValue(jsonRes(makeRunning()));
     render(<TimerWidget />);
     fireEvent.click(await screen.findByTestId('timer-widget-stop'));
     fireEvent.change(screen.getByTestId('timer-stop-description'), { target: { value: 'fixed it' } });
@@ -55,7 +57,7 @@ describe('TimerWidget', () => {
     fetchWithAuth.mockResolvedValue(jsonRes(null));
     render(<TimerWidget />);
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
-    fetchWithAuth.mockResolvedValue(jsonRes(running));
+    fetchWithAuth.mockResolvedValue(jsonRes(makeRunning()));
     act(() => { window.dispatchEvent(new CustomEvent(TIMER_CHANGED_EVENT)); });
     expect(await screen.findByTestId('timer-widget')).toBeTruthy();
   });
