@@ -2,6 +2,17 @@ import { fetchWithAuth } from '../stores/auth';
 import { runAction } from './runAction';
 
 export const TIMER_CHANGED_EVENT = 'breeze:timer-changed';
+export const BILLING_CHANGED_EVENT = 'breeze:billing-changed';
+
+export function broadcastBillingChanged(): void {
+  window.dispatchEvent(new CustomEvent(BILLING_CHANGED_EVENT));
+}
+
+/** Subscribe to billing-affecting changes (parts/time mutations); returns unsubscribe. */
+export function onBillingChanged(cb: () => void): () => void {
+  window.addEventListener(BILLING_CHANGED_EVENT, cb);
+  return () => window.removeEventListener(BILLING_CHANGED_EVENT, cb);
+}
 
 export interface RunningTimer {
   id: string;

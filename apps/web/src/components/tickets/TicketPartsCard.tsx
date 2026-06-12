@@ -2,19 +2,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatMoney } from '../../lib/timeFormat';
+import { broadcastBillingChanged } from '../../lib/timerActions';
 
 interface PartRow {
   id: string;
-  ticketId: string;
   description: string;
-  partNumber: string | null;
-  vendor: string | null;
   quantity: string;
   unitPrice: string;
   costBasis: string | null;
   isBillable: boolean;
-  billingStatus: string;
-  notes: string | null;
 }
 
 export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
@@ -117,6 +113,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
       }
       resetForm();
       await refresh();
+      broadcastBillingChanged();
     } catch (err) {
       handleActionError(err, editingId ? 'Failed to update part.' : 'Failed to add part.');
     } finally {
@@ -133,6 +130,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
         successMessage: 'Part deleted',
       });
       await refresh();
+      broadcastBillingChanged();
     } catch (err) {
       handleActionError(err, 'Failed to delete part.');
     }
@@ -284,6 +282,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
               type="button"
               onClick={resetForm}
               className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+              data-testid="ticket-parts-form-cancel"
             >
               Cancel
             </button>

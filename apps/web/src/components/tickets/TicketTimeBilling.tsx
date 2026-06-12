@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { startTimerAction, onTimerChanged } from '../../lib/timerActions';
+import { startTimerAction, onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatMinutes, formatMoney } from '../../lib/timeFormat';
 
 interface BillingSummary {
@@ -15,9 +15,7 @@ interface EntryRow {
   description: string | null;
   isBillable: boolean;
   userName: string | null;
-  startedAt: string;
   endedAt: string | null;
-  isApproved: boolean;
 }
 
 export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
@@ -44,13 +42,16 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
   useEffect(() => {
     void refresh();
-    return onTimerChanged(() => void refresh());
+    const unsubTimer = onTimerChanged(() => void refresh());
+    const unsubBilling = onBillingChanged(() => void refresh());
+    return () => { unsubTimer(); unsubBilling(); };
   }, [refresh]);
 
   useEffect(() => {
     setQuickAddOpen(false);
     setMinutes('');
     setDescription('');
+    setBillable(true);
   }, [ticketId]);
 
   const startTimer = () => {

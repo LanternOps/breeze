@@ -12,6 +12,7 @@ import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
 import TicketPartsCard from './TicketPartsCard';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 
 interface Props {
   ticketId: string;
@@ -117,6 +118,13 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       .catch(() => { /* degraded mode keeps the unassign-only affordance */ });
     return () => { cancelled = true; };
   }, [assigneesProvided]);
+
+  // Reload the feed (time-entry lines appear) when timer stops or parts/time change.
+  useEffect(() => {
+    const unsubTimer = onTimerChanged(() => void load());
+    const unsubBilling = onBillingChanged(() => void load());
+    return () => { unsubTimer(); unsubBilling(); };
+  }, [load]);
 
   // Returns true on success, false on a swallowed ActionError — callers with
   // form state (resolve/pending) must only close/clear when the POST landed.

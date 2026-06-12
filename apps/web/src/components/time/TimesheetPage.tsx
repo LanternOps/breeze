@@ -441,6 +441,7 @@ export default function TimesheetPage() {
                             aria-label="Rate"
                             placeholder="Rate"
                             className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
+                            data-testid={`timesheet-edit-rate-${entry.id}`}
                           />
                           <button
                             type="button"

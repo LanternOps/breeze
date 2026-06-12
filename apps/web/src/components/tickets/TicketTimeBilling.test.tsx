@@ -1,11 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import TicketTimeBilling from './TicketTimeBilling';
+import { BILLING_CHANGED_EVENT } from '../../lib/timerActions';
 
 const summary = { time: { totalMinutes: 90, billableMinutes: 60, billableAmount: '150.00' }, parts: { partsCount: 2, billableTotal: '49.98' } };
 const entries = [{ id: 'te-1', startedAt: '2026-06-12T09:00:00Z', endedAt: '2026-06-12T09:45:00Z', durationMinutes: 45, description: 'diag', isBillable: true, userName: 'Todd', ticketNumber: null, ticketSubject: null, ticketId: 'tk-1', isApproved: false }];
@@ -47,5 +48,15 @@ describe('TicketTimeBilling', () => {
       expect(body.description).toBe('patched');
       expect(new Date(body.endedAt).getTime() - new Date(body.startedAt).getTime()).toBe(30 * 60_000);
     });
+  });
+
+  it('refetches when breeze:billing-changed fires', async () => {
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    // Wait for the initial load
+    expect(await screen.findByTestId('ticket-billing-time-total')).toBeTruthy();
+    const callsBefore = fetchWithAuth.mock.calls.length;
+    // Dispatch billing-changed event
+    act(() => { window.dispatchEvent(new CustomEvent(BILLING_CHANGED_EVENT)); });
+    await waitFor(() => expect(fetchWithAuth.mock.calls.length).toBeGreaterThan(callsBefore));
   });
 });
