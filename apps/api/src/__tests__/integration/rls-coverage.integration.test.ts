@@ -74,6 +74,10 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // org_id is retained for ops/audit attribution only; the RLS policy uses
   // breeze_current_user_id(), not breeze_has_org_access.
   'account_deletion_requests',
+  // time_entries: partner-axis (Shape 3). org_id is denormalized from the
+  // parent ticket at write time for filtering only — the RLS axis is
+  // partner_id. Spec §8a / Phase 3 plan: deliberately no org/portal policies.
+  'time_entries',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -92,6 +96,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['email_verification_tokens', 'partner_id'],
   ['ticket_categories', 'partner_id'],
   ['partner_ticket_sequences', 'partner_id'],
+  ['time_entries', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
