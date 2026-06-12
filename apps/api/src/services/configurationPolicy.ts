@@ -37,7 +37,7 @@ import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from '.
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access' | 'pam';
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {

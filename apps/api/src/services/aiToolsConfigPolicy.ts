@@ -548,6 +548,7 @@ Inline settings shapes by feature type:
 - sensitive_data: { detectionClasses: ["credential","pci","phi","pii","financial"], includePaths: [], excludePaths: [], fileTypes: [], maxFileSizeBytes: 104857600, workers: 4, timeoutSeconds: 300, scheduleType: "manual"|"interval"|"cron", intervalMinutes?: 60, cron?: "...", timezone: "UTC" }
 - warranty: { enabled: true, warnDays: 90, criticalDays: 30 }
 - helper: { enabled: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" }
+- pam: inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default true when no policy assigns it). PAM rules/approvals are managed separately in the /pam console, not via config policies.
 
 For link-only types, set featurePolicyId instead of inlineSettings:
 - software_policy: featurePolicyId → existing software policy UUID
@@ -566,7 +567,7 @@ For link-only types, set featurePolicyId instead of inlineSettings:
               'patch', 'alert_rule', 'backup', 'security', 'monitoring',
               'maintenance', 'compliance', 'automation', 'event_log',
               'software_policy', 'sensitive_data', 'peripheral_control',
-              'warranty', 'helper',
+              'warranty', 'helper', 'remote_access', 'pam',
             ],
             description: 'Feature type (required for add)',
           },
