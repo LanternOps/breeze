@@ -3,13 +3,39 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
-import { type PamRule, type PamRuleDraft, type PamVerdict, VERDICT_LABELS } from './types';
+import {
+  type ElevationStatus,
+  type PamRule,
+  type PamRuleDraft,
+  type PamVerdict,
+  STATUS_LABELS,
+  VERDICT_LABELS,
+} from './types';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 interface NamedOption {
   id: string;
   name: string;
+}
+
+interface PreviewSampleRow {
+  id: string;
+  requestedAt: string;
+  subjectUsername: string;
+  targetExecutablePath?: string | null;
+  toolName?: string | null;
+  status: string;
+}
+
+interface PreviewResult {
+  success: boolean;
+  totalMatched: number;
+  totalScanned: number;
+  windowDays: number;
+  truncated: boolean;
+  statusBreakdown: Record<string, number>;
+  sample: PreviewSampleRow[];
 }
 
 /**
@@ -81,6 +107,8 @@ export default function PamRuleModal({
   const [siteId, setSiteId] = useState(rule?.siteId ?? seed?.siteId ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   const nameId = useId();
   const descId = useId();
@@ -137,17 +165,44 @@ export default function PamRuleModal({
     }
   }, [windowStart, windowEnd]);
 
+  // A draft change invalidates a stale preview result so the user never reads
+  // a "would match N" line that no longer reflects the on-screen criteria.
+  useEffect(() => {
+    setPreview(null);
+  }, [
+    shape,
+    matchSigner,
+    matchHash,
+    matchPathGlob,
+    matchParentImage,
+    matchUser,
+    matchAdGroup,
+    matchToolName,
+    matchRiskTier,
+    windowStart,
+    windowEnd,
+    windowDays,
+    windowTimezone,
+    siteId,
+  ]);
+
   const toggleDay = (day: number) => {
     setWindowDays((prev) =>
       prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b),
     );
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (submitting) return;
-    setError(null);
-
+  /**
+   * Assemble the active match criteria + time window from the form, applying
+   * the shared shape validation (≥1 criterion, window start/end pairing). On a
+   * validation failure it sets the inline `error` and returns null. Shared by
+   * submit and preview; the tool/verdict 'ignore' check stays submit-only since
+   * preview is verdict-independent.
+   */
+  const buildCriteria = (): {
+    activeCriteria: Record<string, unknown>;
+    timeWindow: Record<string, unknown> | null;
+  } | null => {
     const executable = {
       matchSigner: matchSigner.trim() || null,
       matchHash: matchHash.trim() || null,
@@ -180,15 +235,11 @@ export default function PamRuleModal({
     );
     if (!hasCriterion) {
       setError('At least one match criterion is required.');
-      return;
-    }
-    if (shape === 'tool' && verdict === 'ignore') {
-      setError('Tool-action rules cannot use the Ignore verdict.');
-      return;
+      return null;
     }
     if (Boolean(windowStart) !== Boolean(windowEnd)) {
       setError('Time window start and end must both be set (or both left empty).');
-      return;
+      return null;
     }
 
     // Omit days when none or all are selected — the rule engine treats a
@@ -196,6 +247,58 @@ export default function PamRuleModal({
     const days =
       windowDays.length > 0 && windowDays.length < 7 ? [...windowDays].sort((a, b) => a - b) : undefined;
     const timezone = windowTimezone.trim() || undefined;
+
+    const timeWindow =
+      windowStart && windowEnd
+        ? {
+            start: windowStart,
+            end: windowEnd,
+            ...(days ? { days } : {}),
+            ...(timezone ? { timezone } : {}),
+          }
+        : null;
+
+    return { activeCriteria, timeWindow };
+  };
+
+  const handlePreview = async () => {
+    if (previewing) return;
+    setError(null);
+    const built = buildCriteria();
+    if (!built) return;
+    setPreviewing(true);
+    setPreview(null);
+    try {
+      const res = await fetchWithAuth('/pam/rules/preview', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...built.activeCriteria,
+          timeWindow: built.timeWindow,
+          siteId: siteId || null,
+        }),
+      });
+      if (!res.ok) throw new Error(`Preview failed (HTTP ${res.status})`);
+      setPreview((await res.json()) as PreviewResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Preview failed');
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setError(null);
+
+    const built = buildCriteria();
+    if (!built) return;
+    const { activeCriteria, timeWindow } = built;
+
+    if (shape === 'tool' && verdict === 'ignore') {
+      setError('Tool-action rules cannot use the Ignore verdict.');
+      return;
+    }
 
     const payload: Record<string, unknown> = {
       name: name.trim(),
@@ -208,15 +311,7 @@ export default function PamRuleModal({
       // Create only: the server resolves the org when omitted; multi-org
       // partner users must send an explicit choice. PATCH never carries orgId.
       ...(!isEdit && orgs.length > 1 && selectedOrgId ? { orgId: selectedOrgId } : {}),
-      timeWindow:
-        windowStart && windowEnd
-          ? {
-              start: windowStart,
-              end: windowEnd,
-              ...(days ? { days } : {}),
-              ...(timezone ? { timezone } : {}),
-            }
-          : null,
+      timeWindow,
       approvalDurationMinutes: approvalDuration
         ? Number.parseInt(approvalDuration, 10) || null
         : null,
@@ -501,6 +596,51 @@ export default function PamRuleModal({
             {error}
           </div>
         )}
+
+        <div className="rounded-md border bg-muted/20 p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Preview against recent requests</p>
+            <button
+              type="button"
+              onClick={() => void handlePreview()}
+              disabled={previewing}
+              data-testid="pam-rule-preview-btn"
+              className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+            >
+              {previewing ? 'Previewing…' : 'Preview matches'}
+            </button>
+          </div>
+          {preview && (
+            <div className="mt-2 space-y-2 text-sm" data-testid="pam-rule-preview-result">
+              <p>
+                Would have matched <span className="font-semibold">{preview.totalMatched}</span> of{' '}
+                {preview.totalScanned} requests in the last {preview.windowDays} days
+                {preview.truncated ? ' (newest 5000 scanned)' : ''}.
+              </p>
+              {preview.totalMatched > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {Object.entries(preview.statusBreakdown)
+                    .filter(([, n]) => n > 0)
+                    .map(([s, n]) => `${n} ${STATUS_LABELS[s as ElevationStatus].toLowerCase()}`)
+                    .join(' · ')}
+                </p>
+              )}
+              <ul className="space-y-1">
+                {preview.sample.slice(0, 5).map((s) => (
+                  <li key={s.id} className="truncate text-xs text-muted-foreground">
+                    {new Date(s.requestedAt).toLocaleString()} · {s.subjectUsername} ·{' '}
+                    {s.targetExecutablePath ?? s.toolName ?? '—'}
+                  </li>
+                ))}
+              </ul>
+              {matchAdGroup.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  Note: historical requests don't record AD groups, so group criteria preview as 0.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">
