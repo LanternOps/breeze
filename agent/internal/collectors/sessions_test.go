@@ -124,6 +124,10 @@ func TestRefreshSessionsIdleMinutes(t *testing.T) {
 	if carol.IdleMinutes == nil || *carol.IdleMinutes != 10080 {
 		t.Fatalf("carol IdleMinutes = %v, want 10080 (clamped)", carol.IdleMinutes)
 	}
+	// The clamp bounds the minutes metric only; the timestamp stays honest.
+	if !carol.LastActivityAt.Equal(now.Add(-30 * 24 * time.Hour)) {
+		t.Fatalf("carol LastActivityAt = %v, want now-30d", carol.LastActivityAt)
+	}
 }
 
 func TestUserSessionIdleMinutesJSON(t *testing.T) {
