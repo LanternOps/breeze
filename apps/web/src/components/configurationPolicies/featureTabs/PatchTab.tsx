@@ -9,8 +9,13 @@ import { fetchWithAuth } from '../../../stores/auth';
 
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
+type PatchSourceOption = 'os' | 'third_party';
+type Severity = 'critical' | 'important' | 'moderate' | 'low';
 
 type PatchDeploymentSettings = {
+  sources: PatchSourceOption[];
+  autoApprove: boolean;
+  autoApproveSeverities: Severity[];
   scheduleFrequency: ScheduleFrequency;
   scheduleTime: string;
   scheduleDayOfWeek: string;
@@ -29,12 +34,38 @@ type UpdateRing = {
 };
 
 const defaults: PatchDeploymentSettings = {
+  sources: ['os'],
+  autoApprove: false,
+  autoApproveSeverities: [],
   scheduleFrequency: 'weekly',
   scheduleTime: '02:00',
   scheduleDayOfWeek: 'sun',
   scheduleDayOfMonth: 1,
   rebootPolicy: 'if_required',
 };
+
+const sourceOptions: { value: PatchSourceOption; label: string; description: string }[] = [
+  { value: 'os', label: 'OS updates', description: 'Windows Update, macOS software updates, and Linux package updates.' },
+  { value: 'third_party', label: 'Third-party applications', description: 'Application updates via winget, Chocolatey, and Homebrew.' },
+];
+
+const severityOptions: { value: Severity; label: string }[] = [
+  { value: 'critical', label: 'Critical' },
+  { value: 'important', label: 'Important' },
+  { value: 'moderate', label: 'Moderate' },
+  { value: 'low', label: 'Low' },
+];
+
+const OS_VALUE_ALIASES = new Set(['os', 'microsoft', 'apple', 'linux']);
+const THIRD_PARTY_VALUE_ALIASES = new Set(['third_party', 'custom']);
+
+function normalizeSources(raw: unknown): PatchSourceOption[] {
+  if (!Array.isArray(raw)) return ['os'];
+  const result: PatchSourceOption[] = [];
+  if (raw.some((s) => typeof s === 'string' && OS_VALUE_ALIASES.has(s))) result.push('os');
+  if (raw.some((s) => typeof s === 'string' && THIRD_PARTY_VALUE_ALIASES.has(s))) result.push('third_party');
+  return result.length > 0 ? result : ['os'];
+}
 
 const scheduleOptions: { value: ScheduleFrequency; label: string }[] = [
   { value: 'daily', label: 'Daily' },
@@ -70,10 +101,10 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   const [rings, setRings] = useState<UpdateRing[]>([]);
   const [ringsLoading, setRingsLoading] = useState(false);
 
-  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => ({
-    ...defaults,
-    ...(effectiveLink?.inlineSettings as Partial<PatchDeploymentSettings> | undefined),
-  }));
+  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => {
+    const inline = effectiveLink?.inlineSettings as Partial<PatchDeploymentSettings> | undefined;
+    return { ...defaults, ...inline, sources: normalizeSources(inline?.sources) };
+  });
 
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
@@ -100,12 +131,33 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
       setSelectedRingId(link.featurePolicyId);
     }
     if (link?.inlineSettings) {
-      setSettings((prev) => ({ ...prev, ...(link.inlineSettings as Partial<PatchDeploymentSettings>) }));
+      const inline = link.inlineSettings as Partial<PatchDeploymentSettings>;
+      setSettings((prev) => ({ ...prev, ...inline, sources: normalizeSources(inline.sources) }));
     }
   }, [existingLink, parentLink]);
 
   const update = <K extends keyof PatchDeploymentSettings>(key: K, value: PatchDeploymentSettings[K]) =>
     setSettings((prev) => ({ ...prev, [key]: value }));
+
+  const toggleSource = (value: PatchSourceOption) => {
+    setSettings((prev) => {
+      const has = prev.sources.includes(value);
+      if (has && prev.sources.length === 1) return prev; // validator requires min 1
+      return {
+        ...prev,
+        sources: has ? prev.sources.filter((s) => s !== value) : [...prev.sources, value],
+      };
+    });
+  };
+
+  const toggleSeverity = (value: Severity) => {
+    setSettings((prev) => ({
+      ...prev,
+      autoApproveSeverities: prev.autoApproveSeverities.includes(value)
+        ? prev.autoApproveSeverities.filter((s) => s !== value)
+        : [...prev.autoApproveSeverities, value],
+    }));
+  };
 
   const handleSave = async () => {
     clearError();
@@ -156,8 +208,39 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
       onOverride={isInherited ? handleOverride : undefined}
       onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
     >
-      {/* Approval Ring */}
+      {/* Patch Sources */}
       <div>
+        <h3 className="text-sm font-semibold">Patch Sources</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Which update sources this policy manages on assigned devices.
+        </p>
+        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+          {sourceOptions.map((option) => (
+            <label
+              key={option.value}
+              className={cn(
+                'flex cursor-pointer flex-col gap-1 rounded-md border p-3 text-sm transition',
+                settings.sources.includes(option.value)
+                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  : 'border-muted text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <input
+                type="checkbox"
+                aria-label={option.label}
+                checked={settings.sources.includes(option.value)}
+                onChange={() => toggleSource(option.value)}
+                className="hidden"
+              />
+              <span className="font-medium text-foreground">{option.label}</span>
+              <span className="text-xs text-muted-foreground">{option.description}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Approval Ring */}
+      <div className="mt-6">
         <h3 className="text-sm font-semibold">Approval Ring</h3>
         <p className="mt-1 text-xs text-muted-foreground">
           Select which update ring governs patch approvals for this policy. Leave empty for manual-only approvals.
@@ -187,6 +270,45 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
             <span>Deferral: {selectedRing.deferralDays === 0 ? 'None' : `${selectedRing.deferralDays}d`}</span>
             <span>Deadline: {selectedRing.deadlineDays == null ? 'None' : `${selectedRing.deadlineDays}d`}</span>
             <span>Grace: {selectedRing.gracePeriodHours}h</span>
+          </div>
+        )}
+      </div>
+
+      {/* Automatic Approval */}
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Automatic Approval</h3>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            aria-label="Automatically approve patches by severity"
+            checked={settings.autoApprove}
+            onChange={(e) => update('autoApprove', e.target.checked)}
+            className="h-4 w-4 rounded border"
+          />
+          <span>Automatically approve patches by severity</span>
+        </label>
+        {settings.autoApprove && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {severityOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => toggleSeverity(option.value)}
+                className={cn(
+                  'rounded-full border px-3 py-1 text-xs transition',
+                  settings.autoApproveSeverities.includes(option.value)
+                    ? 'border-primary/40 bg-primary/10 text-primary'
+                    : 'border-muted text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+            {settings.autoApproveSeverities.length === 0 && (
+              <p className="w-full text-xs text-amber-600">
+                Select at least one severity for auto-approval.
+              </p>
+            )}
           </div>
         )}
       </div>
