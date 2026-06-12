@@ -18,6 +18,7 @@
  */
 import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
+import { Hono } from 'hono';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -29,6 +30,11 @@ import {
   organizations,
   partners,
   partnerTicketSequences,
+  partnerUsers,
+  rolePermissions,
+  roles,
+  sites,
+  devices,
 } from '../../db/schema';
 import {
   createTimeEntry,
@@ -38,8 +44,10 @@ import {
   TimeEntryServiceError,
 } from '../../services/timeEntryService';
 import { getTimeEntryEventsQueue } from '../../services/timeEntryEvents';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
+import { createAccessToken } from '../../services/jwt';
+import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 
 // Partner/org ids seeded by this file, for afterAll cleanup.
 const seededPartnerIds: string[] = [];
@@ -176,7 +184,8 @@ afterAll(async () => {
   }
 
   // FK cascade order: time_entries / ticket_parts → tickets →
-  // sequences / categories → users → orgs → partners.
+  // sequences / categories → partner_users / role_permissions / roles →
+  // users → orgs → partners.
   await adminDb.delete(timeEntries).where(sql`${timeEntries.partnerId} IN (${partnerList})`);
   // ticket_parts cascades from tickets (ON DELETE CASCADE) but explicit delete
   // avoids ordering sensitivity.
@@ -192,6 +201,33 @@ afterAll(async () => {
   await adminDb
     .delete(ticketCategories)
     .where(sql`${ticketCategories.partnerId} IN (${partnerList})`);
+  // partner_users and role_permissions (via roles created by setupTestEnvironment)
+  // must be removed before users and partners to avoid FK violations.
+  await adminDb
+    .delete(partnerUsers)
+    .where(sql`${partnerUsers.partnerId} IN (${partnerList})`);
+  // roles created by setupTestEnvironment are partner-scoped; remove their
+  // permission grants first, then the roles themselves.
+  const partnerRoleIds = await adminDb
+    .select({ id: roles.id })
+    .from(roles)
+    .where(sql`${roles.partnerId} IN (${partnerList})`);
+  if (partnerRoleIds.length > 0) {
+    const roleIdList = sql.join(partnerRoleIds.map((r: { id: string }) => sql`${r.id}`), sql`, `);
+    await adminDb
+      .delete(rolePermissions)
+      .where(sql`${rolePermissions.roleId} IN (${roleIdList})`);
+    await adminDb
+      .delete(roles)
+      .where(sql`${roles.id} IN (${roleIdList})`);
+  }
+  // Devices and sites must go before orgs (FK on org_id).
+  // setupTestEnvironment creates a site; our moveOrg fixture creates two more.
+  if (seededOrgIds.length > 0) {
+    const orgList2 = sql.join(seededOrgIds.map((id) => sql`${id}`), sql`, `);
+    await adminDb.delete(devices).where(sql`${devices.orgId} IN (${orgList2})`);
+    await adminDb.delete(sites).where(sql`${sites.orgId} IN (${orgList2})`);
+  }
   await adminDb.delete(users).where(sql`${users.partnerId} IN (${partnerList})`);
   await adminDb
     .delete(organizations)
@@ -408,5 +444,151 @@ describe('approval flow (D1) — real driver', () => {
     await expect(
       approveTimeEntries(['00000000-0000-4000-8000-000000000001'], true, techAActor)
     ).rejects.toMatchObject({ code: 'ADMIN_REQUIRED', status: 403 });
+  });
+});
+
+// ── 6. moveOrg org_id rewrite — real driver (spec §6 checklist) ──────────
+//
+// Verifies that POST /devices/:id/move-org rewrites org_id on tickets,
+// time_entries, and ticket_parts in the same transaction so no row is
+// stranded under the old org's RLS context (moveOrg.ts:166-171).
+//
+// Topology:
+//   partnerA → orgA  → siteA  → deviceA
+//            → orgA2 → siteA2 (move target, same partner → allowed)
+//   ticketA linked to deviceA, org_id=orgA
+//   timeEntryA linked to ticketA, org_id=orgA, partner_id=partnerA
+//   partA linked to ticketA, org_id=orgA
+//
+// After move: tickets.org_id, time_entries.org_id, ticket_parts.org_id
+// all equal orgA2. time_entries.partner_id unchanged (partnerA).
+
+describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
+  it('rewrites tickets, time_entries, and ticket_parts org_id atomically', async () => {
+    const adminDb = getTestDb() as any;
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // ── Seed fixture ────────────────────────────────────────────────────
+    // Use setupTestEnvironment (partner scope) for the primary org/user/role.
+    // This creates: partnerA, orgA, siteA, userA with orgAccess=all role + wildcard perms.
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner: partnerA, organization: orgA, site: siteA, user: userA, role } = env;
+
+    // Second org under the SAME partner (move target).
+    const orgA2 = await createOrganization({ partnerId: partnerA.id });
+    const siteA2 = await createSite({ orgId: orgA2.id });
+
+    // Track for afterAll cleanup.
+    seededPartnerIds.push(partnerA.id);
+    seededOrgIds.push(orgA.id, orgA2.id);
+
+    // Device in orgA.
+    const [deviceA] = await adminDb.insert(devices).values({
+      orgId: orgA.id,
+      siteId: siteA.id,
+      agentId: `move-org-test-agent-${unique}`,
+      hostname: `move-host-${unique}`,
+      osType: 'linux',
+      osVersion: '22.04',
+      architecture: 'x86_64',
+      agentVersion: '0.0.0-test',
+      status: 'offline',
+    }).returning();
+
+    // Ticket linked to deviceA, org_id=orgA.
+    const [ticketA] = await adminDb.insert(tickets).values({
+      orgId: orgA.id,
+      partnerId: partnerA.id,
+      deviceId: deviceA.id,
+      ticketNumber: `MO-A-${unique}`,
+      subject: `MoveOrg RLS ticket ${unique}`,
+      source: 'manual',
+    }).returning();
+
+    // time_entries row: partner-axis RLS, org_id denormalized from ticket.
+    const [timeEntryA] = await adminDb.insert(timeEntries).values({
+      partnerId: partnerA.id,
+      orgId: orgA.id,
+      ticketId: ticketA.id,
+      userId: userA.id,
+      startedAt: new Date(Date.now() - 60_000),
+      endedAt: new Date(),
+      durationMinutes: 1,
+    }).returning();
+
+    // ticket_parts row: org-axis RLS.
+    const [partA] = await adminDb.insert(ticketParts).values({
+      ticketId: ticketA.id,
+      orgId: orgA.id,
+      description: `Test part ${unique}`,
+      quantity: '1.00',
+      unitPrice: '9.99',
+    }).returning();
+
+    // ── Verify pre-move state ───────────────────────────────────────────
+    expect(ticketA.orgId).toBe(orgA.id);
+    expect(timeEntryA.orgId).toBe(orgA.id);
+    expect(timeEntryA.partnerId).toBe(partnerA.id);
+    expect(partA.orgId).toBe(orgA.id);
+
+    // ── Build Hono app and make the HTTP request ────────────────────────
+    // Token: mfa=true required by requireMfa(); scope=partner required by
+    // requireScope('partner','system'). Use a fresh token (the one from
+    // setupTestEnvironment has mfa=false).
+    const token = await createAccessToken({
+      sub: userA.id,
+      email: userA.email,
+      roleId: role.id,
+      orgId: null,         // MSP staff — no single-org pin
+      partnerId: partnerA.id,
+      scope: 'partner',
+      mfa: true,           // satisfies requireMfa() step-up
+    });
+
+    const app = new Hono();
+    app.route('/devices', moveOrgRoutes);
+
+    const res = await app.request(`/devices/${deviceA.id}/move-org`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ orgId: orgA2.id, siteId: siteA2.id }),
+    });
+
+    // Must succeed.
+    const body = await res.json() as any;
+    expect(res.status, `move-org failed: ${JSON.stringify(body)}`).toBe(200);
+    expect(body.success).toBe(true);
+
+    // writeRouteAudit is fire-and-forget (void return). Give the floating
+    // promise a moment to land so audit_logs rows exist before afterAll
+    // tries to clean them via the session_replication_role=replica DELETE.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // ── Assert post-move org_id rewrites ────────────────────────────────
+
+    // tickets.org_id → orgA2
+    const [ticketAfter] = await adminDb
+      .select({ orgId: tickets.orgId })
+      .from(tickets)
+      .where(eq(tickets.id, ticketA.id));
+    expect(ticketAfter?.orgId, 'tickets.org_id not rewritten').toBe(orgA2.id);
+
+    // time_entries.org_id → orgA2; partner_id unchanged
+    const [teAfter] = await adminDb
+      .select({ orgId: timeEntries.orgId, partnerId: timeEntries.partnerId })
+      .from(timeEntries)
+      .where(eq(timeEntries.id, timeEntryA.id));
+    expect(teAfter?.orgId, 'time_entries.org_id not rewritten').toBe(orgA2.id);
+    expect(teAfter?.partnerId, 'time_entries.partner_id must not change').toBe(partnerA.id);
+
+    // ticket_parts.org_id → orgA2
+    const [partAfter] = await adminDb
+      .select({ orgId: ticketParts.orgId })
+      .from(ticketParts)
+      .where(eq(ticketParts.id, partA.id));
+    expect(partAfter?.orgId, 'ticket_parts.org_id not rewritten').toBe(orgA2.id);
   });
 });
