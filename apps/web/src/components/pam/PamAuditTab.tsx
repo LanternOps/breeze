@@ -9,7 +9,7 @@ import {
   FLOW_LABELS,
   type Pagination,
   STATUS_LABELS,
-  decidedByLabel,
+  decisionAttribution,
   requestTarget,
   statusBadgeClass,
 } from './types';
@@ -308,7 +308,7 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const decidedBy = decidedByLabel(r);
+                const attribution = decisionAttribution(r);
                 return (
                 <tr key={r.id} className="border-b last:border-0" data-testid={`pam-audit-row-${r.id}`}>
                   <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
@@ -343,13 +343,13 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
                     >
                       {STATUS_LABELS[r.status]}
                     </span>
-                    {decidedBy && (
+                    {attribution && (
                       <div
                         className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
                         data-testid={`pam-audit-decided-by-${r.id}`}
-                        title={`by ${decidedBy}`}
+                        title={attribution}
                       >
-                        by {decidedBy}
+                        {attribution}
                       </div>
                     )}
                   </td>

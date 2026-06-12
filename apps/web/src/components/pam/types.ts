@@ -46,6 +46,13 @@ export interface ElevationRequest {
   approvedByName?: string | null;
   deniedByName?: string | null;
   revokedByName?: string | null;
+  // Decision provenance joined by the API (#1159 follow-up): which software
+  // policy / PAM rule auto-decided the request, and the kind of decider.
+  softwarePolicyMatchId?: string | null;
+  matchedPolicyName?: string | null;
+  pamRuleId?: string | null;
+  pamRuleName?: string | null;
+  decisionSource?: 'software_policy' | 'pam_rule' | 'human' | null;
 }
 
 export interface PamTimeWindow {
@@ -160,4 +167,28 @@ export function decidedByLabel(r: ElevationRequest): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Who/what decided the request, for display under the status badge.
+ * Auto decisions name their source (software policy / PAM rule); human
+ * decisions defer to decidedByLabel. Null while pending/undecided.
+ *
+ * A human revoke supersedes the original auto-decision for display: an
+ * auto-approved request later revoked by a person keeps decisionSource
+ * 'pam_rule', but the revoker is the more actionable attribution.
+ */
+export function decisionAttribution(r: ElevationRequest): string | null {
+  if (r.status === 'revoked') {
+    const revoker = decidedByLabel(r);
+    if (revoker) return `by ${revoker}`;
+  }
+  if (r.decisionSource === 'software_policy') {
+    return `Policy · ${r.matchedPolicyName ?? 'Software policy'}`;
+  }
+  if (r.decisionSource === 'pam_rule') {
+    return `Rule · ${r.pamRuleName ?? 'PAM rule'}`;
+  }
+  const human = decidedByLabel(r);
+  return human ? `by ${human}` : null;
 }

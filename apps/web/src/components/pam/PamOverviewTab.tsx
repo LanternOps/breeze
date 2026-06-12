@@ -6,7 +6,7 @@ import {
   type ElevationRequest,
   FLOW_LABELS,
   STATUS_LABELS,
-  decidedByLabel,
+  decisionAttribution,
   requestTarget,
   statusBadgeClass,
 } from './types';
@@ -163,7 +163,7 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
         ) : (
           <ul className="divide-y rounded-md border bg-card">
             {data.recent.map((r) => {
-              const decidedBy = decidedByLabel(r);
+              const attribution = decisionAttribution(r);
               return (
                 <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
                   <span className="min-w-0 flex-1 truncate" title={requestTarget(r)}>
@@ -171,12 +171,13 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
                     <span className="text-muted-foreground"> · {r.subjectUsername} · </span>
                     {requestTarget(r)}
                   </span>
-                  {decidedBy && (
+                  {attribution && (
                     <span
                       className="shrink-0 text-xs text-muted-foreground"
                       data-testid={`pam-decided-by-${r.id}`}
+                      title={attribution}
                     >
-                      by {decidedBy}
+                      {attribution}
                     </span>
                   )}
                   <span
