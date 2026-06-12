@@ -60,10 +60,29 @@ describe('listTimeEntriesQuerySchema', () => {
   });
 });
 
+describe('updateTimeEntrySchema', () => {
+  it('rejects empty object (at-least-one-field refine)', () => {
+    expect(updateTimeEntrySchema.safeParse({}).success).toBe(false);
+  });
+
+  it('accepts a single description field', () => {
+    expect(updateTimeEntrySchema.safeParse({ description: 'x' }).success).toBe(true);
+  });
+
+  it('accepts ticketId: null (nullable unlink)', () => {
+    expect(updateTimeEntrySchema.safeParse({ ticketId: null }).success).toBe(true);
+  });
+});
+
 describe('bulkApproveSchema', () => {
   it('requires 1-200 ids', () => {
     expect(bulkApproveSchema.safeParse({ ids: [] }).success).toBe(false);
     expect(bulkApproveSchema.safeParse({ ids: [UUID] }).success).toBe(true);
+  });
+
+  it('rejects 201 ids (upper bound)', () => {
+    const ids = Array.from({ length: 201 }, () => UUID);
+    expect(bulkApproveSchema.safeParse({ ids }).success).toBe(false);
   });
 });
 
@@ -75,6 +94,24 @@ describe('ticketPartSchema', () => {
     expect(ticketPartSchema.safeParse({ description: 'x', quantity: 0 }).success).toBe(false);
     expect(ticketPartSchema.safeParse({ description: 'x', quantity: 1, unitPrice: -1 }).success).toBe(false);
     expect(ticketPartSchema.safeParse({ description: 'x', quantity: 1, costBasis: -1 }).success).toBe(false);
+  });
+});
+
+describe('updateTicketPartSchema', () => {
+  it('rejects empty object (at-least-one-field refine)', () => {
+    expect(updateTicketPartSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('accepts a single quantity field', () => {
+    expect(updateTicketPartSchema.safeParse({ quantity: 2 }).success).toBe(true);
+  });
+
+  it('does not inject the unitPrice default from .partial()', () => {
+    const r = updateTicketPartSchema.safeParse({ quantity: 2 });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect('unitPrice' in r.data).toBe(false);
+    }
   });
 });
 
