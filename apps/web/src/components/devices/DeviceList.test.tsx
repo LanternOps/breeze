@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
 
@@ -166,6 +166,126 @@ describe('DeviceList — advanced filter via serverFilterIds prop (uncapped id s
     expect(screen.getByText('host-aa')).toBeTruthy();
     expect(screen.getByText('host-bb')).toBeTruthy();
     expect(screen.queryByText(/Advanced filter active/i)).toBeNull();
+  });
+});
+
+describe('DeviceList — sortable columns (every column sorts on header click)', () => {
+  // Hostnames of rendered rows, in DOM order. Each fixture uses a unique
+  // hostname so order assertions read naturally.
+  const rowOrder = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('tbody tr td:nth-child(2) span')).map(el => el.textContent);
+
+  const clickHeader = (title: string) => fireEvent.click(screen.getByTitle(title));
+
+  // jsdom in this setup exposes no window.localStorage; install the same
+  // in-memory stub columnVisibility.test.ts uses so column prefs read/write.
+  beforeEach(() => {
+    const data = new Map<string, string>();
+    Object.defineProperty(window, 'localStorage', {
+      value: {
+        get length() {
+          return data.size;
+        },
+        clear: () => data.clear(),
+        getItem: (key: string) => data.get(key) ?? null,
+        setItem: (key: string, value: string) => void data.set(key, String(value)),
+        removeItem: (key: string) => void data.delete(key),
+        key: (i: number) => Array.from(data.keys())[i] ?? null,
+      },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it('sorts a previously-unsortable column (Organization) alphabetically and toggles direction on second click', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-000000000001', hostname: 'host-zeta', orgName: 'Zeta Corp' },
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-000000000002', hostname: 'host-acme', orgName: 'Acme' },
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-000000000003', hostname: 'host-mid', orgName: 'Midway' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by organization');
+    expect(rowOrder(container)).toEqual(['host-acme', 'host-mid', 'host-zeta']);
+
+    clickHeader('Sort by organization');
+    expect(rowOrder(container)).toEqual(['host-zeta', 'host-mid', 'host-acme']);
+  });
+
+  it('sorts hostnames with numeric collation (host-2 before host-10)', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000001', hostname: 'host-10' },
+      { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000002', hostname: 'host-2' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by hostname');
+    expect(rowOrder(container)).toEqual(['host-2', 'host-10']);
+  });
+
+  it('sorts status by operational rank (online → maintenance → offline), not enum alphabetics', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000001', hostname: 'host-off', status: 'offline' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000002', hostname: 'host-on', status: 'online' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000003', hostname: 'host-maint', status: 'maintenance' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by status');
+    expect(rowOrder(container)).toEqual(['host-on', 'host-maint', 'host-off']);
+  });
+
+  it('keeps dash cells last in BOTH directions (offline device has no CPU reading)', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'd1d1d1d1-0000-0000-0000-000000000001', hostname: 'host-no-cpu', status: 'offline', cpuPercent: 0 },
+      { ...baseDevice, id: 'd1d1d1d1-0000-0000-0000-000000000002', hostname: 'host-busy', cpuPercent: 90 },
+      { ...baseDevice, id: 'd1d1d1d1-0000-0000-0000-000000000003', hostname: 'host-idle', cpuPercent: 5 },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by CPU usage');
+    expect(rowOrder(container)).toEqual(['host-idle', 'host-busy', 'host-no-cpu']);
+
+    clickHeader('Sort by CPU usage');
+    expect(rowOrder(container)).toEqual(['host-busy', 'host-idle', 'host-no-cpu']);
+  });
+
+  it('sorts agent versions numerically aware (0.9.0 before 0.10.0) on an opted-in column', () => {
+    // agentVersion is not in DEFAULT_VISIBLE_COLUMNS; opt it in via the same
+    // versioned localStorage shape columnVisibility.ts persists.
+    window.localStorage.setItem(
+      'breeze.devices.columns',
+      JSON.stringify({ v: 1, columns: [{ id: 'agentVersion', visible: true }] }),
+    );
+    const devices: Device[] = [
+      { ...baseDevice, id: 'e1e1e1e1-0000-0000-0000-000000000001', hostname: 'host-ten', agentVersion: '0.10.0' },
+      { ...baseDevice, id: 'e1e1e1e1-0000-0000-0000-000000000002', hostname: 'host-nine', agentVersion: '0.9.0' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by agent version');
+    // agentVersion was stored first, so it renders as the first data column.
+    const hostCol = Array.from(container.querySelectorAll('tbody tr td:nth-child(3) span')).map(el => el.textContent);
+    expect(hostCol).toEqual(['host-nine', 'host-ten']);
+  });
+
+  it('renders every rendered column header as sortable (clickable with a sort hint)', () => {
+    const { container } = render(<DeviceList devices={[baseDevice]} />);
+
+    const headers = Array.from(container.querySelectorAll('thead th'));
+    // First (checkbox) and last (Actions) are structural; everything between
+    // must carry a "Sort by ..." hint wired to handleSort.
+    const dataHeaders = headers.slice(1, -1);
+    expect(dataHeaders.length).toBeGreaterThan(0);
+    for (const th of dataHeaders) {
+      expect(th.getAttribute('title')).toMatch(/^Sort by /);
+      expect(th.className).toContain('cursor-pointer');
+    }
   });
 });
 
