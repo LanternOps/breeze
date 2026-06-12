@@ -451,10 +451,30 @@ const patchSourceValueSchema = z.enum([
   'linux',
 ]);
 
+export const policyAppRuleSchema = z.object({
+  source: z.enum(['third_party', 'custom']),
+  packageId: z.string().min(1).max(256),
+  displayName: z.string().max(255).optional(),
+  action: z.enum(['block', 'pin']),
+  pinnedVersion: z.string().min(1).max(64).optional(),
+}).superRefine((data, ctx) => {
+  if (data.action === 'pin' && !data.pinnedVersion) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['pinnedVersion'],
+      message: 'Pinned version is required for pin rules.',
+    });
+  }
+});
+
+export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
+
 export const patchInlineSettingsSchema = z.object({
   sources: z.array(patchSourceValueSchema).min(1).default(['os']),
   autoApprove: z.boolean().default(false),
   autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).default([]),
+  autoApproveDeferralDays: z.number().int().min(0).max(60).default(0),
+  apps: z.array(policyAppRuleSchema).max(200).default([]),
   scheduleFrequency: z.enum(['daily', 'weekly', 'monthly']).default('weekly'),
   scheduleTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('02:00'),
   scheduleDayOfWeek: z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']).default('sun'),
@@ -467,6 +487,22 @@ export const patchInlineSettingsSchema = z.object({
       path: ['autoApproveSeverities'],
       message: 'Select at least one severity for auto-approval.',
     });
+  }
+
+  const seen = new Set<string>();
+  for (const [i, app] of data.apps.entries()) {
+    // The approval evaluator matches 'third_party' and 'custom' as a single
+    // bucket, so canonicalize the source when deduping to mirror that.
+    const canonicalSource = app.source === 'custom' ? 'third_party' : app.source;
+    const key = `${canonicalSource}|${app.packageId.toLowerCase()}`;
+    if (seen.has(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['apps', i],
+        message: 'Duplicate app rule for the same source and package.',
+      });
+    }
+    seen.add(key);
   }
 });
 
