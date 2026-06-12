@@ -91,6 +91,51 @@ export interface Pagination {
   total: number;
 }
 
+export interface PamRuleDraft {
+  shape: 'executable' | 'tool';
+  name?: string;
+  siteId?: string | null;
+  matchSigner?: string | null;
+  matchHash?: string | null;
+  matchPathGlob?: string | null;
+  matchUser?: string | null;
+  matchToolName?: string | null;
+  matchRiskTier?: number | null;
+}
+
+function baseName(path: string): string {
+  const i = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+  return i >= 0 ? path.slice(i + 1) : path;
+}
+
+/**
+ * Seed a rule draft from a request. Prefers the stable criterion: signer
+ * over hash (hashes churn with updates) over path; tool actions seed
+ * toolName + riskTier; JIT admin seeds the subject user.
+ */
+export function requestToRuleDraft(r: ElevationRequest): PamRuleDraft {
+  if (r.flowType === 'ai_tool_action') {
+    return {
+      shape: 'tool',
+      name: r.toolName ? `Rule for ${r.toolName}` : undefined,
+      siteId: r.siteId ?? null,
+      matchToolName: r.toolName ?? null,
+      matchRiskTier: r.riskTier ?? null,
+    };
+  }
+  if (r.flowType === 'tech_jit_admin') {
+    return { shape: 'executable', siteId: r.siteId ?? null, matchUser: r.subjectUsername };
+  }
+  const name = r.targetExecutablePath ? `Rule for ${baseName(r.targetExecutablePath)}` : undefined;
+  if (r.targetExecutableSigner) {
+    return { shape: 'executable', name, siteId: r.siteId ?? null, matchSigner: r.targetExecutableSigner };
+  }
+  if (r.targetExecutableHash) {
+    return { shape: 'executable', name, siteId: r.siteId ?? null, matchHash: r.targetExecutableHash };
+  }
+  return { shape: 'executable', name, siteId: r.siteId ?? null, matchPathGlob: r.targetExecutablePath ?? null };
+}
+
 export const STATUS_LABELS: Record<ElevationStatus, string> = {
   pending: 'Pending',
   approved: 'Approved',

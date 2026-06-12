@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import PamRespondModal from './PamRespondModal';
 import PamRevokeModal from './PamRevokeModal';
+import PamRuleModal from './PamRuleModal';
 import {
   ACTIVE_STATUSES,
   type ElevationFlowType,
@@ -14,6 +15,7 @@ import {
   STATUS_LABELS,
   decisionAttribution,
   requestTarget,
+  requestToRuleDraft,
   statusBadgeClass,
 } from './types';
 
@@ -39,6 +41,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
   const [error, setError] = useState<string | null>(null);
   const [responding, setResponding] = useState<ElevationRequest | null>(null);
   const [revoking, setRevoking] = useState<ElevationRequest | null>(null);
+  const [ruleDraft, setRuleDraft] = useState<ElevationRequest | null>(null);
 
   const fetchRequests = useCallback(
     async (signal?: AbortSignal) => {
@@ -248,6 +251,15 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                           Revoke
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => setRuleDraft(r)}
+                        data-testid={`pam-create-rule-btn-${r.id}`}
+                        title="Create a PAM rule pre-filled from this request"
+                        className="ml-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                      >
+                        Rule…
+                      </button>
                     </td>
                   </tr>
                 );
@@ -287,6 +299,21 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           onClose={() => setResponding(null)}
           onActioned={() => {
             setResponding(null);
+            void fetchRequests();
+          }}
+          onCreateRule={() => {
+            setRuleDraft(responding);
+            setResponding(null);
+          }}
+        />
+      )}
+      {ruleDraft && (
+        <PamRuleModal
+          rule={null}
+          initial={requestToRuleDraft(ruleDraft)}
+          onClose={() => setRuleDraft(null)}
+          onSaved={() => {
+            setRuleDraft(null);
             void fetchRequests();
           }}
         />

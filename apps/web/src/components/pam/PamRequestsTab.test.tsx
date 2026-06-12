@@ -287,6 +287,54 @@ describe('PamRequestsTab', () => {
     });
   });
 
+  it('shows a Rule… action on every row and opens the rule modal pre-filled', async () => {
+    const signedPending: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-signed',
+      targetExecutableSigner: 'Acme Corp',
+      targetExecutablePath: 'C:\\Temp\\installer.exe',
+    };
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      return listResponse([signedPending]);
+    });
+
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-signed'));
+    // Every row has a create-rule button regardless of status.
+    expect(screen.getByTestId('pam-create-rule-btn-req-signed')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('pam-create-rule-btn-req-signed'));
+    // The rule modal opens in create mode, seeded from the request.
+    await waitFor(() => {
+      expect(screen.getByTestId('pam-rule-submit')).toHaveTextContent('Create rule');
+    });
+    await waitFor(() => {
+      expect((screen.getByTestId('pam-rule-signer') as HTMLInputElement).value).toBe('Acme Corp');
+    });
+  });
+
+  it('offers a create-rule link in the respond modal that swaps to the rule modal', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      return listResponse([pendingRequest]);
+    });
+
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-respond-btn-req-1'));
+    fireEvent.click(screen.getByTestId('pam-respond-btn-req-1'));
+    await waitFor(() => screen.getByTestId('pam-respond-create-rule'));
+
+    fireEvent.click(screen.getByTestId('pam-respond-create-rule'));
+    await waitFor(() => {
+      expect(screen.getByTestId('pam-rule-submit')).toHaveTextContent('Create rule');
+    });
+    // The respond modal is dismissed when switching to the rule modal.
+    expect(screen.queryByTestId('pam-respond-submit')).toBeNull();
+  });
+
   it('revokes an active elevation with a required reason', async () => {
     const active: ElevationRequest = { ...pendingRequest, id: 'req-2', status: 'approved' };
     fetchWithAuthMock

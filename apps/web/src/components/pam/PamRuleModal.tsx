@@ -3,7 +3,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
-import { type PamRule, type PamVerdict, VERDICT_LABELS } from './types';
+import { type PamRule, type PamRuleDraft, type PamVerdict, VERDICT_LABELS } from './types';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
@@ -24,31 +24,45 @@ interface NamedOption {
  */
 export default function PamRuleModal({
   rule,
+  initial,
   onClose,
   onSaved,
 }: {
   rule: PamRule | null;
+  initial?: PamRuleDraft;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const isEdit = rule !== null;
-  const [name, setName] = useState(rule?.name ?? '');
+  // Seed create-mode initializers from a request-derived draft. Only applies
+  // when there's no rule being edited; verdict/priority/timeWindow are left at
+  // their defaults intentionally.
+  const seed = rule === null ? initial : undefined;
+  const [name, setName] = useState(rule?.name ?? seed?.name ?? '');
   const [description, setDescription] = useState(rule?.description ?? '');
   const [priority, setPriority] = useState(String(rule?.priority ?? 100));
   const [verdict, setVerdict] = useState<PamVerdict>(rule?.verdict ?? 'require_approval');
   const [enabled, setEnabled] = useState(rule?.enabled ?? true);
   const [shape, setShape] = useState<'executable' | 'tool'>(
-    rule && (rule.matchToolName || typeof rule.matchRiskTier === 'number') ? 'tool' : 'executable',
+    rule
+      ? rule.matchToolName || typeof rule.matchRiskTier === 'number'
+        ? 'tool'
+        : 'executable'
+      : seed?.shape ?? 'executable',
   );
-  const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? '');
-  const [matchHash, setMatchHash] = useState(rule?.matchHash ?? '');
-  const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? '');
+  const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? seed?.matchSigner ?? '');
+  const [matchHash, setMatchHash] = useState(rule?.matchHash ?? seed?.matchHash ?? '');
+  const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? seed?.matchPathGlob ?? '');
   const [matchParentImage, setMatchParentImage] = useState(rule?.matchParentImage ?? '');
-  const [matchUser, setMatchUser] = useState(rule?.matchUser ?? '');
+  const [matchUser, setMatchUser] = useState(rule?.matchUser ?? seed?.matchUser ?? '');
   const [matchAdGroup, setMatchAdGroup] = useState(rule?.matchAdGroup ?? '');
-  const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? '');
+  const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? seed?.matchToolName ?? '');
   const [matchRiskTier, setMatchRiskTier] = useState(
-    rule?.matchRiskTier !== null && rule?.matchRiskTier !== undefined ? String(rule.matchRiskTier) : '',
+    rule?.matchRiskTier !== null && rule?.matchRiskTier !== undefined
+      ? String(rule.matchRiskTier)
+      : seed?.matchRiskTier !== null && seed?.matchRiskTier !== undefined
+        ? String(seed.matchRiskTier)
+        : '',
   );
   const [windowStart, setWindowStart] = useState(rule?.timeWindow?.start ?? '');
   const [windowEnd, setWindowEnd] = useState(rule?.timeWindow?.end ?? '');
@@ -64,7 +78,7 @@ export default function PamRuleModal({
   const [orgsLoaded, setOrgsLoaded] = useState(false);
   const [selectedOrgId, setSelectedOrgId] = useState('');
   const [sites, setSites] = useState<NamedOption[]>([]);
-  const [siteId, setSiteId] = useState(rule?.siteId ?? '');
+  const [siteId, setSiteId] = useState(rule?.siteId ?? seed?.siteId ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
