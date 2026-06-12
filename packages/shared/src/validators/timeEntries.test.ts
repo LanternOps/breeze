@@ -121,4 +121,12 @@ describe('billablesExportQuerySchema', () => {
     expect(billablesExportQuerySchema.safeParse({ from: '2026-06-01', to: '2026-06-30' }).success).toBe(true);
     expect(billablesExportQuerySchema.safeParse({ from: '2026-06-30', to: '2026-06-01' }).success).toBe(false);
   });
+
+  it('rejects a 2-year range (exceeds 366-day cap)', () => {
+    expect(billablesExportQuerySchema.safeParse({ from: '2024-01-01', to: '2026-01-01' }).success).toBe(false);
+  });
+
+  it('accepts an 11-month range (within 366-day cap)', () => {
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01', to: '2026-12-01' }).success).toBe(true);
+  });
 });
