@@ -21,8 +21,10 @@ import (
 // 30s context timeout, error on non-2xx with capped LimitReader on the
 // error body.
 //
-// Implements the etwlua.HeartbeatPoster interface so etwlua doesn't need
-// to import the heartbeat package.
+// Implements the SendElevationRequest method of the etwlua.HeartbeatPoster
+// interface; IsUACInterceptionEnabled lives in heartbeat.go. Together they
+// satisfy the full interface so etwlua doesn't need to import the heartbeat
+// package.
 func (h *Heartbeat) SendElevationRequest(req etwlua.Event) error {
 	body, err := json.Marshal(req)
 	if err != nil {

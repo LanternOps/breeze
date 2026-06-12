@@ -167,8 +167,11 @@ func TestHandleEventDroppedWhenInterceptionDisabled(t *testing.T) {
 		t.Fatalf("expected 0 posts while interception disabled, got %d", got)
 	}
 
-	// Re-enable: the same event must post — proving the disabled event was
-	// dropped BEFORE the dedupe limiter consumed its slot.
+	// Re-enable: dropping before limiter.Allow means the drop did not
+	// consume a dedupe slot, so this first-occurrence event posts
+	// immediately on re-enable. (An event that ALREADY posted within the
+	// dedupe window before a disable would still be deduped — the guard
+	// guarantees drops are free, not that re-enables always post.)
 	hb.disabled.Store(false)
 	handleEvent(ev, limiter, hb, nil)
 	if got := len(hb.Received()); got != 1 {

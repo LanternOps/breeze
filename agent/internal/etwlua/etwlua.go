@@ -252,7 +252,8 @@ func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queu
 	)
 	// Opportunistic drain on every successful post — quickly catches up
 	// after a network blip.
-	if q != nil {
+	// Mirror the ticker-drain gate: both drain sites must check the policy flag.
+	if q != nil && hb.IsUACInterceptionEnabled() {
 		if _, err := q.Drain(hb); err != nil {
 			log.Debug("etwlua: opportunistic drain failed", "error", err.Error())
 		}
