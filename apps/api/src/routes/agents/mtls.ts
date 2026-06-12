@@ -17,6 +17,7 @@ import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { encryptSecret } from '../../services/secretCrypto';
 import { isPrivateIp } from '../../services/urlSafety';
+import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 
 export const mtlsRoutes = new Hono();
 
@@ -246,6 +247,12 @@ mtlsRoutes.post('/renew-cert', async (c) => {
       details: { reason: 'mtls_cert_expired' },
     });
 
+    // Cut any live remote-control session to this device. Flipping `status`
+    // alone is only checked at connect time, so an in-flight desktop/terminal
+    // session would otherwise keep running against a device we just isolated as
+    // compromised. Best-effort: self-reports failures to Sentry, never throws.
+    await terminateDeviceRemoteSessions(device.id);
+
     return c.json({ error: 'Device quarantined', quarantined: true }, 403);
   }
 
@@ -448,6 +455,9 @@ mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write
     resourceId: device.id,
     resourceName: device.hostname,
   });
+
+  // Tear down any live remote-control session to a device we're decommissioning.
+  await terminateDeviceRemoteSessions(device.id);
 
   return c.json({ success: true });
 });

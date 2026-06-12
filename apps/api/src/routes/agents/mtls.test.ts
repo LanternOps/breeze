@@ -157,6 +157,14 @@ vi.mock('../../services/redis', () => ({
   getRedis: vi.fn(() => redisMock),
 }));
 
+// Boundary mock: the device-teardown service pulls in the agentWs → terminalWs
+// → remoteAccessPolicy chain at module load, which this test's partial schema
+// mock doesn't satisfy. The handler only needs it to be called on
+// quarantine/deny; its internals are covered by remoteSessionTeardown.test.ts.
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  terminateDeviceRemoteSessions: vi.fn().mockResolvedValue(0),
+}));
+
 // Use the real rate-limit helper with the stub above.
 
 // -------------------------------------------------------------------

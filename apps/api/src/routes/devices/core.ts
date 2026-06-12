@@ -48,6 +48,7 @@ import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected } from '../agentWs';
+import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 
@@ -1189,6 +1190,11 @@ coreRoutes.delete(
       resourceId: updated?.id ?? deviceId,
       resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
     });
+
+    // Cut any live remote-control session to the device being decommissioned —
+    // device `status` is only checked at session connect time, so an in-flight
+    // desktop/terminal session would otherwise survive the offboarding.
+    await terminateDeviceRemoteSessions(deviceId);
 
     return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
   }

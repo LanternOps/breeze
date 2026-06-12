@@ -74,6 +74,7 @@ const SITE_GATED_NON_VERIFY_FILES = [
   'aiToolsFleetStatus.ts',
   'aiToolsAgentLogs.ts',
   'aiToolsAlerts.ts',
+  'aiToolsRemote.ts',
   'aiToolsBrowser.ts',
   'aiToolsAnalytics.ts',
   'aiToolsEventLogs.ts',

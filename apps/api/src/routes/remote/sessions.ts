@@ -35,6 +35,7 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
+import { teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 
@@ -127,9 +128,18 @@ sessionRoutes.delete(
       .update(remoteSessions)
       .set({ status: 'disconnected', endedAt: new Date() })
       .where(inArray(remoteSessions.id, scopedSessionIds))
-      .returning({ id: remoteSessions.id });
+      .returning({
+        id: remoteSessions.id,
+        type: remoteSessions.type,
+        deviceId: remoteSessions.deviceId,
+      });
 
-    await Promise.all(result.map((row) => revokeViewerSession(row.id)));
+    // Revoke viewer tokens AND signal each agent to stop the peer-to-peer
+    // WebRTC stream / terminal PTY. Marking the row + revoking the token alone
+    // blocks reconnect but leaves a live Flow-B desktop or terminal running
+    // with the server out of the loop — so a `/stale` sweep of another user's
+    // live session must also push the agent stop. Finding: /stale no-agent-signal.
+    await teardownDisconnectedSessions(result);
 
     return c.json({ cleaned: result.length, ids: result.map(r => r.id) });
   }
@@ -209,12 +219,22 @@ sessionRoutes.post(
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
         ) as unknown as Promise<unknown> & {
-          returning?: (fields: { id: typeof remoteSessions.id }) => Promise<Array<{ id: string }>>;
+          returning?: (fields: {
+            id: typeof remoteSessions.id;
+            type: typeof remoteSessions.type;
+            deviceId: typeof remoteSessions.deviceId;
+          }) => Promise<Array<{ id: string; type: string; deviceId: string }>>;
         };
 
       if (typeof staleUpdate.returning === 'function') {
-        const revoked = await staleUpdate.returning({ id: remoteSessions.id });
-        await Promise.all(revoked.map((row) => revokeViewerSession(row.id)));
+        const revoked = await staleUpdate.returning({
+          id: remoteSessions.id,
+          type: remoteSessions.type,
+          deviceId: remoteSessions.deviceId,
+        });
+        // Revoke viewer tokens AND push the agent stop so a stale row for a
+        // still-live desktop/terminal doesn't leave the stream running.
+        await teardownDisconnectedSessions(revoked);
       } else {
         await staleUpdate;
       }
