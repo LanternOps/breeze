@@ -11,10 +11,12 @@ import {
   Monitor,
   Paintbrush,
   ScrollText,
-  Shield
+  Shield,
+  Ticket
 } from 'lucide-react';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
+import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
@@ -67,6 +69,12 @@ const tabs = [
     label: 'Remote Access',
     description: 'VNC, proxy, and tunnel settings',
     icon: Monitor
+  },
+  {
+    id: 'ticketing',
+    label: 'Ticketing',
+    description: 'SLA overrides and billing defaults',
+    icon: Ticket
   }
 ] as const;
 
@@ -429,6 +437,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <OrgRemoteAccessSettings
             orgId={effectiveOrgId}
             onDirty={handleDirty}
+          />
+        ) : null;
+      case 'ticketing':
+        return effectiveOrgId ? (
+          <OrgTicketSettingsEditor
+            orgId={effectiveOrgId}
+            onDirty={handleDirty}
+            onSave={() => handleSave()}
           />
         ) : null;
       case 'general':
