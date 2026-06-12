@@ -1,3 +1,7 @@
+// This file is intentionally untagged: nrCache and detectPendingRebootLinux
+// are referenced only from reboot_detect_linux.go (//go:build linux), but
+// keeping them untagged lets reboot_detect_unix_test.go run on any dev
+// platform.
 package patching
 
 import (

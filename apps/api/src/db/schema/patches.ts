@@ -246,7 +246,9 @@ export const patchJobResults = pgTable('patch_job_results', {
   rebootedAt: timestamp('rebooted_at'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
-  // Backs the `system.rebootRequired` device-filter field (#968).
+  // Used by patchRebootHandler and the patch-reboot policy machinery.
+  // NOTE: originally backed the `system.rebootRequired` device filter (#968),
+  // which was re-pointed to devices.pending_reboot in 2026-06-11-j.
   rebootPendingIdx: index('idx_patch_job_results_reboot_pending')
     .on(table.deviceId)
     .where(sql`reboot_required = true AND rebooted_at IS NULL`)
