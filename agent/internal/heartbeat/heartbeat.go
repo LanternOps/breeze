@@ -96,6 +96,7 @@ type HeartbeatResponse struct {
 	RenewCert              bool                   `json:"renewCert,omitempty"`
 	RotateToken            bool                   `json:"rotateToken,omitempty"`
 	HelperEnabled          bool                   `json:"helperEnabled,omitempty"`
+	UacInterceptionEnabled *bool                  `json:"uacInterceptionEnabled,omitempty"`
 	HelperSettings         *HelperSettings        `json:"helperSettings,omitempty"`
 	HelperUpgradeTo        string                 `json:"helperUpgradeTo,omitempty"`
 	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
@@ -200,6 +201,12 @@ type Heartbeat struct {
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
+
+	// uacInterceptionDisabled is set when the server's 'pam' config policy
+	// turns UAC capture off for this device. Inverted so the zero value
+	// (enabled) matches the default-ON contract before the first heartbeat
+	// and against older servers that never send the field.
+	uacInterceptionDisabled atomic.Bool
 
 	// Service & process monitoring
 	monitor *monitoring.Monitor
@@ -2341,6 +2348,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Update helper enabled state and apply full settings
 	h.handleHelperEnabled(response.HelperEnabled)
+	h.handleUACInterception(response.UacInterceptionEnabled)
 	if response.HelperSettings != nil {
 		h.helperMgr.Apply(&helper.Settings{
 			Enabled:            response.HelperSettings.Enabled,
@@ -2365,6 +2373,28 @@ func (h *Heartbeat) handleHelperEnabled(enabled bool) {
 			log.Info("helper chat enabled for this device")
 		} else {
 			log.Info("helper chat disabled for this device")
+		}
+	}
+}
+
+// IsUACInterceptionEnabled reports whether etwlua should post UAC elevation
+// events. Default true; only an explicit uacInterceptionEnabled=false from
+// the server's resolved 'pam' config policy disables it.
+func (h *Heartbeat) IsUACInterceptionEnabled() bool {
+	return !h.uacInterceptionDisabled.Load()
+}
+
+// handleUACInterception updates the UAC interception flag from the heartbeat
+// response and logs state transitions. nil (field absent — older server)
+// means enabled.
+func (h *Heartbeat) handleUACInterception(enabled *bool) {
+	disabled := enabled != nil && !*enabled
+	prev := h.uacInterceptionDisabled.Swap(disabled)
+	if prev != disabled {
+		if disabled {
+			log.Info("UAC interception disabled by configuration policy")
+		} else {
+			log.Info("UAC interception enabled by configuration policy")
 		}
 	}
 }
