@@ -728,7 +728,7 @@ describe('patch job executor queueing', () => {
     );
   });
 
-  it('ignores malformed sources with a warning instead of filtering', async () => {
+  it('skips malformed sources with a warning instead of widening the filter', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     vi.mocked(db.select)
@@ -755,10 +755,8 @@ describe('patch job executor queueing', () => {
       })),
     }) as any);
 
-    vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce([]);
-
     createPatchJobDeviceWorker();
-    await shared.processorRefs['patch-job-devices']({
+    const result = await shared.processorRefs['patch-job-devices']({
       data: {
         type: 'execute-patch-job-device',
         patchJobId: 'job-1',
@@ -767,15 +765,13 @@ describe('patch job executor queueing', () => {
       },
     });
 
-    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledWith(
-      'device-1',
-      'org-1',
-      expect.objectContaining({ sources: undefined }),
-    );
+    expect(result).toEqual({ skipped: true, reason: 'Invalid patch source filter' });
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('malformed patches.sources'),
       expect.any(String),
     );
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error));
     warnSpy.mockRestore();
   });
 });

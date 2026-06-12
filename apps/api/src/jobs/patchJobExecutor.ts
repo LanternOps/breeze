@@ -389,22 +389,27 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     deployment?: { rebootPolicy?: string };
   };
 
-  // Distinguish absent sources (legacy job → no filtering) from present-but-malformed
-  // (shape drift / bad write): malformed also falls back to no filtering, but loudly —
-  // silently widening install scope is the dangerous direction.
+  // Distinguish absent sources (legacy job → no filtering) from
+  // present-but-malformed (shape drift / bad write). Present malformed sources
+  // skip execution rather than widening to no filter.
   let jobSources: string[] | undefined;
+  let malformedSources = false;
   if (patchesConfig?.sources !== undefined) {
     const raw = patchesConfig.sources;
     const strings = Array.isArray(raw) ? raw.filter((s): s is string => typeof s === 'string') : [];
     if (!Array.isArray(raw) || strings.length !== raw.length || strings.length === 0) {
-      console.warn(
-        `[PatchJobExecutor] Job ${patchJobId} has malformed patches.sources; ignoring source filter:`,
-        JSON.stringify(raw)
-      );
-      jobSources = undefined;
+      malformedSources = true;
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.sources; skipping device to avoid widening install scope`;
+      console.warn(`${message}:`, JSON.stringify(raw));
+      captureException(new Error(message));
     } else {
       jobSources = strings;
     }
+  }
+
+  if (malformedSources) {
+    await markDeviceSkipped(patchJobId, deviceId, 'invalid_patch_sources');
+    return { skipped: true, reason: 'Invalid patch source filter' };
   }
 
   // Malformed auto-approve config degrades to disabled because silently

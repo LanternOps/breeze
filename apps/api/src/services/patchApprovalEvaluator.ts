@@ -391,21 +391,8 @@ function evaluatePatchApproval(
   if (!ringConfig.ringId) {
     const pa = ringConfig.policyAutoApprove;
     if (pa?.enabled && patch.severity && pa.severities.includes(patch.severity)) {
-      if (pa.deferralDays > 0) {
-        if (!patch.releaseDate) {
-          // Fail closed: with a deferral window configured, a patch without a
-          // release date cannot prove its age — hold it (consistent with the
-          // pin rule's "can't prove version → held" posture).
-          console.warn(
-            `[PatchApproval] patch ${patch.patchId} held: policy deferral of ${pa.deferralDays} day(s) configured but the patch has no releaseDate, so it cannot prove its age`
-          );
-          return null;
-        }
-        const releaseDate = new Date(patch.releaseDate);
-        const deferralEnd = new Date(releaseDate.getTime() + pa.deferralDays * 24 * 60 * 60 * 1000);
-        if (deferralEnd > now) {
-          return null;
-        }
+      if (isHeldByDeferral(patch, pa.deferralDays, now, 'policy')) {
+        return null;
       }
       return 'policy_auto_approve';
     }
@@ -430,12 +417,8 @@ function evaluatePatchApproval(
 
     // Check deferral period
     const deferralDays = rule.deferralDaysOverride ?? ringConfig.deferralDays;
-    if (deferralDays > 0 && patch.releaseDate) {
-      const releaseDate = new Date(patch.releaseDate);
-      const deferralEnd = new Date(releaseDate.getTime() + deferralDays * 24 * 60 * 60 * 1000);
-      if (deferralEnd > now) {
-        return null; // Still in deferral period
-      }
+    if (isHeldByDeferral(patch, deferralDays, now, 'category')) {
+      return null;
     }
 
     return 'category_rule';
@@ -452,6 +435,28 @@ function evaluatePatchApproval(
   }
 
   return null;
+}
+
+function isHeldByDeferral(
+  patch: PatchCandidate,
+  deferralDays: number,
+  now: Date,
+  source: 'policy' | 'category'
+): boolean {
+  if (deferralDays <= 0) return false;
+
+  if (!patch.releaseDate) {
+    // Fail closed: with a deferral window configured, a patch without a
+    // release date cannot prove its age, consistent with pin rules.
+    console.warn(
+      `[PatchApproval] patch ${patch.patchId} held: ${source} deferral of ${deferralDays} day(s) configured but the patch has no releaseDate, so it cannot prove its age`
+    );
+    return true;
+  }
+
+  const releaseDate = new Date(patch.releaseDate);
+  const deferralEnd = new Date(releaseDate.getTime() + deferralDays * 24 * 60 * 60 * 1000);
+  return deferralEnd > now;
 }
 
 interface LegacyAutoApproveConfig {

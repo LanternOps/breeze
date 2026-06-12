@@ -565,6 +565,28 @@ describe('third_party_app category rule', () => {
     expect(approved).toHaveLength(0);
   });
 
+  it('fails closed when a category deferral is configured and releaseDate is missing', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000019', source: 'third_party', category: 'homebrew', releaseDate: null })],
+        []
+      );
+
+      const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+        ...ringWithThirdPartyRule,
+        categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
+      });
+
+      expect(approved).toHaveLength(0);
+      const warning = String(warnSpy.mock.calls[0]?.[0] ?? '');
+      expect(warning).toContain('category deferral');
+      expect(warning).toContain('cannot prove its age');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('matches the third_party_app rule when the patch category is null', async () => {
     mockPendingAndApprovals(
       [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000015', source: 'third_party', category: null })],
