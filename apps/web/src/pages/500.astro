@@ -1,0 +1,37 @@
+---
+import ErrorLayout from '../layouts/ErrorLayout.astro';
+import { captureRenderError } from '../lib/captureRenderError';
+
+Astro.response.status = 500;
+
+const { error } = Astro.props as { error?: unknown };
+const referenceId = captureRenderError(error);
+---
+
+<ErrorLayout title="Something went wrong" statusCode={500}>
+  <h1 class="text-2xl font-semibold tracking-tight text-foreground">Something went wrong</h1>
+  <p class="text-sm text-muted-foreground">
+    An unexpected error occurred on our end. Our team has been notified &mdash; please try
+    again in a moment.
+  </p>
+  {referenceId && (
+    <p class="text-xs text-muted-foreground">
+      Reference ID:
+      <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{referenceId}</code>
+    </p>
+  )}
+  <div class="flex items-center justify-center gap-3">
+    <a
+      href="/"
+      class="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+    >
+      Go to dashboard
+    </a>
+    <a
+      href="/login"
+      class="inline-flex h-10 items-center justify-center rounded-md border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+    >
+      Sign in
+    </a>
+  </div>
+</ErrorLayout>
