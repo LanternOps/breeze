@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
+import { COLUMN_IDS } from './columnVisibility';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -177,9 +178,15 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
 
   const clickHeader = (title: string) => fireEvent.click(screen.getByTitle(title));
 
-  // jsdom in this setup exposes no window.localStorage; install the same
-  // in-memory stub columnVisibility.test.ts uses so column prefs read/write.
+  // Install a fresh in-memory localStorage per test (same stub shape as
+  // columnVisibility.test.ts). The point is isolation: jsdom's storage
+  // persists across tests within a file, so a column-visibility write in
+  // one test (e.g. the agentVersion opt-in below) would leak into later
+  // tests. afterEach restores whatever the environment had, so describe
+  // blocks running after this one keep exercising the real fallback path.
+  let originalLocalStorage: PropertyDescriptor | undefined;
   beforeEach(() => {
+    originalLocalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage');
     const data = new Map<string, string>();
     Object.defineProperty(window, 'localStorage', {
       value: {
@@ -195,6 +202,14 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
       writable: true,
       configurable: true,
     });
+  });
+
+  afterEach(() => {
+    if (originalLocalStorage) {
+      Object.defineProperty(window, 'localStorage', originalLocalStorage);
+    } else {
+      Reflect.deleteProperty(window, 'localStorage');
+    }
   });
 
   it('sorts a previously-unsortable column (Organization) alphabetically and toggles direction on second click', () => {
@@ -225,17 +240,25 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(rowOrder(container)).toEqual(['host-2', 'host-10']);
   });
 
-  it('sorts status by operational rank (online → maintenance → offline), not enum alphabetics', () => {
+  it('sorts status by operational rank, not enum alphabetics, across every co-renderable status', () => {
+    // All statuses except decommissioned, which can never co-render with the
+    // others (the default "all" filter hides it; selecting it shows only it),
+    // so its rank entry is untestable through the rendered table. A dropped
+    // statusSortRank entry for any of these six would produce NaN comparisons
+    // and scramble this expected order.
     const devices: Device[] = [
       { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000001', hostname: 'host-off', status: 'offline' },
-      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000002', hostname: 'host-on', status: 'online' },
-      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000003', hostname: 'host-maint', status: 'maintenance' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000002', hostname: 'host-quar', status: 'quarantined' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000003', hostname: 'host-on', status: 'online' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000004', hostname: 'host-pend', status: 'pending' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000005', hostname: 'host-maint', status: 'maintenance' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000006', hostname: 'host-upd', status: 'updating' },
     ];
 
     const { container } = render(<DeviceList devices={devices} />);
 
     clickHeader('Sort by status');
-    expect(rowOrder(container)).toEqual(['host-on', 'host-maint', 'host-off']);
+    expect(rowOrder(container)).toEqual(['host-on', 'host-upd', 'host-pend', 'host-maint', 'host-quar', 'host-off']);
   });
 
   it('keeps dash cells last in BOTH directions (offline device has no CPU reading)', () => {
@@ -274,18 +297,82 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(hostCol).toEqual(['host-nine', 'host-ten']);
   });
 
-  it('renders every rendered column header as sortable (clickable with a sort hint)', () => {
+  it('renders all 24 catalog columns with a sort hint and pointer cursor when every column is visible', () => {
+    // Default visibility shows only 9 columns, which would let the other 15
+    // silently regress to plain <th> elements. Opt every catalog column in.
+    window.localStorage.setItem(
+      'breeze.devices.columns',
+      JSON.stringify({ v: 1, columns: COLUMN_IDS.map(id => ({ id, visible: true })) }),
+    );
+
     const { container } = render(<DeviceList devices={[baseDevice]} />);
 
     const headers = Array.from(container.querySelectorAll('thead th'));
     // First (checkbox) and last (Actions) are structural; everything between
-    // must carry a "Sort by ..." hint wired to handleSort.
+    // must carry the "Sort by ..." hint and the clickable styling. (The
+    // click-actually-reorders behavior is covered by the row-order tests.)
     const dataHeaders = headers.slice(1, -1);
-    expect(dataHeaders.length).toBeGreaterThan(0);
+    expect(dataHeaders.length).toBe(COLUMN_IDS.length);
     for (const th of dataHeaders) {
       expect(th.getAttribute('title')).toMatch(/^Sort by /);
       expect(th.className).toContain('cursor-pointer');
     }
+  });
+
+  // Seeds hostname first (keeps the rowOrder helper's td:nth-child(2) valid)
+  // plus the named extra column, so default-hidden columns can be sorted.
+  const seedColumns = (...extra: string[]) =>
+    window.localStorage.setItem(
+      'breeze.devices.columns',
+      JSON.stringify({ v: 1, columns: ['hostname', ...extra].map(id => ({ id, visible: true })) }),
+    );
+
+  it('sorts tags by the joined displayed list with untagged rows last in both directions', () => {
+    seedColumns('tags');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'f1f1f1f1-0000-0000-0000-000000000001', hostname: 'host-zulu', tags: ['zulu'] },
+      { ...baseDevice, id: 'f1f1f1f1-0000-0000-0000-000000000002', hostname: 'host-untagged', tags: [] },
+      { ...baseDevice, id: 'f1f1f1f1-0000-0000-0000-000000000003', hostname: 'host-alpha', tags: ['alpha', 'beta'] },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by tags');
+    expect(rowOrder(container)).toEqual(['host-alpha', 'host-zulu', 'host-untagged']);
+
+    clickHeader('Sort by tags');
+    expect(rowOrder(container)).toEqual(['host-zulu', 'host-alpha', 'host-untagged']);
+  });
+
+  it('sorts uptime only for online devices — a non-online device with uptimeSeconds renders a dash and sorts last', () => {
+    seedColumns('uptime');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'a2a2a2a2-0000-0000-0000-000000000001', hostname: 'host-offline-stale', status: 'offline', uptimeSeconds: 999_999 },
+      { ...baseDevice, id: 'a2a2a2a2-0000-0000-0000-000000000002', hostname: 'host-long-up', uptimeSeconds: 50_000 },
+      { ...baseDevice, id: 'a2a2a2a2-0000-0000-0000-000000000003', hostname: 'host-fresh-boot', uptimeSeconds: 100 },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by uptime');
+    expect(rowOrder(container)).toEqual(['host-fresh-boot', 'host-long-up', 'host-offline-stale']);
+  });
+
+  it('treats pendingReboot false/absent as a dash cell: sorts last in both directions, true rows first', () => {
+    seedColumns('pendingReboot');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'b2b2b2b2-0000-0000-0000-000000000001', hostname: 'host-clean', pendingReboot: false },
+      { ...baseDevice, id: 'b2b2b2b2-0000-0000-0000-000000000002', hostname: 'host-needs-reboot', pendingReboot: true },
+      { ...baseDevice, id: 'b2b2b2b2-0000-0000-0000-000000000003', hostname: 'host-old-agent' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by pending reboot');
+    expect(rowOrder(container)).toEqual(['host-needs-reboot', 'host-clean', 'host-old-agent']);
+
+    clickHeader('Sort by pending reboot');
+    expect(rowOrder(container)).toEqual(['host-needs-reboot', 'host-clean', 'host-old-agent']);
   });
 });
 

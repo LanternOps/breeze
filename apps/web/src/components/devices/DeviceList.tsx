@@ -206,7 +206,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   role: d => getDeviceRoleLabel(d.deviceRole ?? 'unknown'),
   isHeadless: d => (typeof d.isHeadless === 'boolean' ? (d.isHeadless ? 1 : 0) : null),
   status: d => statusSortRank[d.status],
-  pendingReboot: d => (d.pendingReboot ? 1 : 0),
+  // false/absent renders as a dash (see the cell), so it maps to null like
+  // isHeadless — keeping the blanks-last invariant consistent for booleans.
+  pendingReboot: d => (d.pendingReboot ? 1 : null),
   cpu: d => (d.status === 'online' ? d.cpuPercent : null),
   ram: d => (d.status === 'online' ? d.ramPercent : null),
   cpuModel: d => d.hardware?.cpuModel || null,
