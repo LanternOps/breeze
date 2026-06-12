@@ -456,6 +456,7 @@ async function decomposeInlineSettings(
     case 'warranty':
     case 'helper':
     case 'remote_access':
+    case 'pam':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -509,6 +510,7 @@ async function deleteNormalizedRows(
     case 'warranty':
     case 'helper':
     case 'remote_access':
+    case 'pam':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -772,6 +774,7 @@ async function assembleInlineSettings(
     case 'warranty':
     case 'helper':
     case 'remote_access':
+    case 'pam':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
