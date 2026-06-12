@@ -253,6 +253,80 @@ describe('safeFetch — SSRF policy', () => {
     expect(pinnedRecords).toEqual([{ address: '8.8.8.8', family: 4 }]);
     requestSpy.mockRestore();
   });
+
+  it('returns a scalar (address, family) when lookup is called in non-all mode', async () => {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+    let pinnedAddress: unknown;
+    let pinnedFamily: unknown;
+    const requestSpy = vi.spyOn(http, 'request').mockImplementation((options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        // Node's default connect path uses options-object mode without `all`.
+        options.lookup(options.host, { all: false }, (err: Error | null, address: string, family: number) => {
+          if (err) {
+            req.emit('error', err);
+            return;
+          }
+          pinnedAddress = address;
+          pinnedFamily = family;
+          const res = new EventEmitter() as any;
+          res.statusCode = 200;
+          res.statusMessage = 'OK';
+          res.headers = {};
+          callback?.(res);
+          res.emit('end');
+        });
+      });
+      return req;
+    });
+
+    const response = await safeFetch('http://tenant.example.test/path');
+
+    expect(response.status).toBe(200);
+    expect(pinnedAddress).toBe('8.8.8.8');
+    expect(pinnedFamily).toBe(4);
+    requestSpy.mockRestore();
+  });
+
+  it('supports the (hostname, callback) lookup overload where options is omitted', async () => {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+    let pinnedAddress: unknown;
+    let pinnedFamily: unknown;
+    const requestSpy = vi.spyOn(http, 'request').mockImplementation((options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        // Two-arg overload: callback is passed in the options position.
+        options.lookup(options.host, (err: Error | null, address: string, family: number) => {
+          if (err) {
+            req.emit('error', err);
+            return;
+          }
+          pinnedAddress = address;
+          pinnedFamily = family;
+          const res = new EventEmitter() as any;
+          res.statusCode = 200;
+          res.statusMessage = 'OK';
+          res.headers = {};
+          callback?.(res);
+          res.emit('end');
+        });
+      });
+      return req;
+    });
+
+    const response = await safeFetch('http://tenant.example.test/path');
+
+    expect(response.status).toBe(200);
+    expect(pinnedAddress).toBe('8.8.8.8');
+    expect(pinnedFamily).toBe(4);
+    requestSpy.mockRestore();
+  });
 });
 
 describe('safeFetch — DNS pinning & rebinding defense', () => {

@@ -21,6 +21,26 @@ function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Res
   } as unknown as Response;
 }
 
+const existingIntegration = {
+  id: 'huntress-1',
+  orgId: '00000000-0000-4000-8000-000000000001',
+  name: 'Existing Huntress',
+  accountId: 'acct-123',
+  apiBaseUrl: 'https://api.huntress.io',
+  isActive: true,
+  lastSyncAt: null,
+  lastSyncStatus: 'success',
+  lastSyncError: null,
+  hasWebhookSecret: false,
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z'
+};
+
+const emptyStatus = {
+  coverage: { totalAgents: 0, mappedAgents: 0, unmappedAgents: 0, offlineAgents: 0 },
+  incidents: { open: 0, bySeverity: [], byStatus: [] }
+};
+
 describe('HuntressIntegration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -103,5 +123,101 @@ describe('HuntressIntegration', () => {
       apiKey: 'hk_14b7a762d4770fe29e47:hs_9d3e49c689f781a453d028374ff665ab',
       isActive: true
     });
+  });
+
+  it('blocks a half-credential (key without secret): shows an error, disables Save, and never POSTs', async () => {
+    const user = userEvent.setup();
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (url === '/huntress/integration') return makeResponse({ data: null });
+      if (url === '/huntress/status') return makeResponse(emptyStatus);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+    await waitFor(() => expect(screen.getByText('Connection')).toBeInTheDocument());
+
+    await user.type(screen.getByPlaceholderText('My Huntress Integration'), 'Production Huntress');
+    await user.type(screen.getByPlaceholderText('hk_...'), 'hk_only_the_key');
+
+    expect(screen.getByText(/Enter both the API Key and API Secret from Huntress/)).toBeInTheDocument();
+
+    const saveButton = screen.getByRole('button', { name: /Save & Connect/i });
+    expect(saveButton).toBeDisabled();
+
+    await user.click(saveButton);
+    expect(
+      fetchWithAuthMock.mock.calls.some(([url, init]) => url === '/huntress/integration' && init?.method === 'POST')
+    ).toBe(false);
+  });
+
+  it('updates an existing integration without re-entering credentials and omits apiKey from the POST', async () => {
+    const user = userEvent.setup();
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url === '/huntress/integration' && init?.method === 'POST') {
+        return makeResponse({ id: 'huntress-1' }, true, 200);
+      }
+      if (url === '/huntress/integration') return makeResponse({ data: existingIntegration });
+      if (url === '/huntress/status') return makeResponse(emptyStatus);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+    await waitFor(() => expect(screen.getByText('Connection')).toBeInTheDocument());
+
+    // Name is prefilled from the existing integration; Update is enabled with no credential input.
+    const updateButton = screen.getByRole('button', { name: /Update/i });
+    expect(updateButton).toBeEnabled();
+    await user.click(updateButton);
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock.mock.calls.some(([url, init]) => url === '/huntress/integration' && init?.method === 'POST')).toBe(true);
+    });
+
+    const postCall = fetchWithAuthMock.mock.calls.find(
+      ([url, init]) => url === '/huntress/integration' && init?.method === 'POST'
+    );
+    const body = JSON.parse(String(postCall?.[1]?.body));
+    expect(body).not.toHaveProperty('apiKey');
+    expect(body).toMatchObject({ name: 'Existing Huntress', isActive: true });
+  });
+
+  it('surfaces a save failure to the user', async () => {
+    const user = userEvent.setup();
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url === '/huntress/integration' && init?.method === 'POST') {
+        return makeResponse({ error: 'Invalid Huntress credentials' }, false, 400);
+      }
+      if (url === '/huntress/integration') return makeResponse({ data: null });
+      if (url === '/huntress/status') return makeResponse(emptyStatus);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+    await waitFor(() => expect(screen.getByText('Connection')).toBeInTheDocument());
+
+    await user.type(screen.getByPlaceholderText('My Huntress Integration'), 'Production Huntress');
+    await user.type(screen.getByPlaceholderText('hk_...'), 'hk_14b7a762d4770fe29e47');
+    await user.type(screen.getByPlaceholderText('hs_...'), 'hs_9d3e49c689f781a453d028374ff665ab');
+    await user.click(screen.getByRole('button', { name: /Save & Connect/i }));
+
+    await waitFor(() => expect(screen.getByText('Invalid Huntress credentials')).toBeInTheDocument());
+  });
+
+  it('warns when live status fails to load instead of rendering an all-clear', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (url === '/huntress/integration') return makeResponse({ data: existingIntegration });
+      if (url === '/huntress/status') return makeResponse({ error: 'upstream error' }, false, 502);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Live Huntress status could not be fully loaded/)).toBeInTheDocument()
+    );
   });
 });

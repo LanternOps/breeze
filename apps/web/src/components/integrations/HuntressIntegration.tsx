@@ -72,6 +72,10 @@ function SeverityBadge({ severity }: { severity: string }) {
 export default function HuntressIntegration() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Live status (coverage + incidents) loads separately from the integration
+  // config. A failure here must NOT be silent: rendering zeroed coverage as if
+  // it were a successful read would mask a monitoring gap as an all-clear.
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [integration, setIntegration] = useState<Integration | null>(null);
   const [coverage, setCoverage] = useState<StatusSummary | null>(null);
   const [incidents, setIncidents] = useState<IncidentSummary | null>(null);
@@ -125,11 +129,15 @@ export default function HuntressIntegration() {
     }
   }, []);
 
+  const LIVE_STATUS_ERROR =
+    'Live Huntress status could not be fully loaded. Coverage and incident data below may be incomplete or out of date — try Sync Now or reload.';
+
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/huntress/status');
       if (!res.ok) {
         console.error(`[HuntressIntegration] Status fetch failed: ${res.status} ${res.statusText}`);
+        setStatusError(LIVE_STATUS_ERROR);
         return;
       }
       const json = await res.json();
@@ -137,6 +145,7 @@ export default function HuntressIntegration() {
       setIncidents(json.incidents);
     } catch (err) {
       console.error('[HuntressIntegration] Failed to fetch status:', err);
+      setStatusError(LIVE_STATUS_ERROR);
     }
   }, []);
 
@@ -145,12 +154,14 @@ export default function HuntressIntegration() {
       const res = await fetchWithAuth('/huntress/incidents?limit=5');
       if (!res.ok) {
         console.error(`[HuntressIntegration] Incidents fetch failed: ${res.status} ${res.statusText}`);
+        setStatusError(LIVE_STATUS_ERROR);
         return;
       }
       const json = await res.json();
       setRecentIncidents(json.data ?? []);
     } catch (err) {
       console.error('[HuntressIntegration] Failed to fetch incidents:', err);
+      setStatusError(LIVE_STATUS_ERROR);
     }
   }, []);
 
@@ -164,6 +175,7 @@ export default function HuntressIntegration() {
     const load = async () => {
       setLoading(true);
       setLoadError(null);
+      setStatusError(null);
       await fetchIntegration();
       await Promise.all([fetchStatus(), fetchRecentIncidents()]);
       setLoading(false);
@@ -220,6 +232,7 @@ export default function HuntressIntegration() {
       setApiKey('');
       setApiSecret('');
       setWebhookSecret('');
+      setStatusError(null);
       await fetchIntegration();
       await Promise.all([fetchStatus(), fetchRecentIncidents()]);
     } catch (err) {
@@ -242,6 +255,7 @@ export default function HuntressIntegration() {
       setSyncState({ status: 'done', message: 'Sync triggered' });
       setTimeout(async () => {
         try {
+          setStatusError(null);
           await fetchIntegration();
           await Promise.all([fetchStatus(), fetchRecentIncidents()]);
         } catch (refreshErr) {
@@ -449,6 +463,13 @@ export default function HuntressIntegration() {
       </div>
 
       {/* Sync Status + Coverage — only shown when integration exists */}
+      {integration && statusError && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{statusError}</span>
+        </div>
+      )}
+
       {integration && (
         <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
           {/* Sync Status */}
