@@ -43,13 +43,16 @@ function requirePartnerId(c: { get: (k: 'auth') => unknown; json: (b: unknown, s
   return auth.partnerId;
 }
 
-function requireAdmin(c: { get: (k: 'auth' | 'permissions') => unknown; json: (b: unknown, s: number) => Response }): true | Response {
+// Middleware version of the admin check — runs after writePerm (which populates
+// c.get('permissions')) and gates mutating routes so a non-admin gets a clear
+// admin-403 rather than a generic permission-denied message.
+const adminMiddleware = async (c: any, next: () => Promise<void>) => {
   const auth = c.get('auth') as AuthContext;
   const perms = c.get('permissions') as UserPermissions | undefined;
   const isAdmin = auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false);
   if (!isAdmin) return c.json({ error: 'Managing ticket configuration requires an admin role' }, 403);
-  return true;
-}
+  return next();
+};
 
 // GET / — full partner ticketing config (statuses + priority settings).
 ticketConfigRoutes.get('/', scopes, readPerm, async (c) => {
@@ -61,9 +64,7 @@ ticketConfigRoutes.get('/', scopes, readPerm, async (c) => {
 
 // Literal paths BEFORE /:id (Hono matching is registration-ordered).
 
-ticketConfigRoutes.post('/statuses/reorder', scopes, writePerm, zValidator('json', reorderTicketStatusesSchema), async (c) => {
-  const admin = requireAdmin(c);
-  if (admin instanceof Response) return admin;
+ticketConfigRoutes.post('/statuses/reorder', scopes, writePerm, adminMiddleware, zValidator('json', reorderTicketStatusesSchema), async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {
@@ -75,9 +76,7 @@ ticketConfigRoutes.post('/statuses/reorder', scopes, writePerm, zValidator('json
   }
 });
 
-ticketConfigRoutes.post('/statuses', scopes, writePerm, zValidator('json', createTicketStatusSchema), async (c) => {
-  const admin = requireAdmin(c);
-  if (admin instanceof Response) return admin;
+ticketConfigRoutes.post('/statuses', scopes, writePerm, adminMiddleware, zValidator('json', createTicketStatusSchema), async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {
@@ -88,9 +87,7 @@ ticketConfigRoutes.post('/statuses', scopes, writePerm, zValidator('json', creat
   }
 });
 
-ticketConfigRoutes.patch('/statuses/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateTicketStatusSchema), async (c) => {
-  const admin = requireAdmin(c);
-  if (admin instanceof Response) return admin;
+ticketConfigRoutes.patch('/statuses/:id', scopes, writePerm, adminMiddleware, zValidator('param', idParam), zValidator('json', updateTicketStatusSchema), async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {
@@ -102,9 +99,7 @@ ticketConfigRoutes.patch('/statuses/:id', scopes, writePerm, zValidator('param',
   }
 });
 
-ticketConfigRoutes.put('/priorities', scopes, writePerm, zValidator('json', prioritySettingsSchema), async (c) => {
-  const admin = requireAdmin(c);
-  if (admin instanceof Response) return admin;
+ticketConfigRoutes.put('/priorities', scopes, writePerm, adminMiddleware, zValidator('json', prioritySettingsSchema), async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {

@@ -232,8 +232,17 @@ const PRIORITIES: TicketPriorityValue[] = ['low', 'normal', 'high', 'urgent'];
 function isUniqueNameViolation(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const code = (err as { code?: unknown }).code;
+  const constraint = (err as { constraint?: unknown }).constraint;
   const message = (err as { message?: unknown }).message;
-  return code === '23505' || (typeof message === 'string' && message.includes('ticket_statuses_partner_name_uq'));
+  // When the driver surfaces a constraint name, only treat it as a name collision
+  // if it specifically targets the name uniqueness index. Other 23505s (e.g.
+  // ticket_statuses_partner_core_status_system_uq) must propagate as-is.
+  if (typeof constraint === 'string') {
+    return constraint === 'ticket_statuses_partner_name_uq';
+  }
+  // No constraint field from the driver: fall back on code + message scan.
+  if (code === '23505') return true;
+  return typeof message === 'string' && message.includes('ticket_statuses_partner_name_uq');
 }
 
 type PriorityConfig = {
@@ -350,8 +359,10 @@ export async function updateTicketStatus(partnerId: string, id: string, input: U
       .set(patch)
       .where(and(eq(ticketStatuses.id, id), eq(ticketStatuses.partnerId, partnerId)))
       .returning();
+    if (!updated) throw new TicketConfigServiceError('Status not found', 404, 'STATUS_NOT_FOUND');
     return updated;
   } catch (err) {
+    if (err instanceof TicketConfigServiceError) throw err;
     if (isUniqueNameViolation(err)) {
       throw new TicketConfigServiceError('A status with this name already exists', 409, 'STATUS_NAME_TAKEN');
     }

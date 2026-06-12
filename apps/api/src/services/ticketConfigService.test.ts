@@ -154,6 +154,18 @@ describe('createTicketStatus', () => {
     await expect(createTicketStatus(PARTNER, { name: 'New', coreStatus: 'new' }))
       .rejects.toMatchObject({ code: 'STATUS_NAME_TAKEN' });
   });
+
+  it('does NOT map a 23505 on a different constraint to STATUS_NAME_TAKEN', async () => {
+    // A 23505 on ticket_statuses_partner_core_status_system_uq is unrelated to name
+    // uniqueness and must be rethrown as-is (not mapped to STATUS_NAME_TAKEN).
+    const err = Object.assign(new Error('dup key'), {
+      code: '23505',
+      constraint: 'ticket_statuses_partner_core_status_system_uq',
+    });
+    dbMocks.insertErrors.push(err);
+    await expect(createTicketStatus(PARTNER, { name: 'New', coreStatus: 'new' }))
+      .rejects.toSatisfy((e: unknown) => !(e instanceof TicketConfigServiceError));
+  });
 });
 
 describe('updateTicketStatus', () => {
@@ -207,6 +219,14 @@ describe('updateTicketStatus', () => {
     }) as any);
     await expect(updateTicketStatus(PARTNER, STATUS_ID, { name: 'New' }))
       .rejects.toMatchObject({ code: 'STATUS_NAME_TAKEN', status: 409 });
+  });
+
+  it('throws STATUS_NOT_FOUND 404 when the UPDATE affects no rows (TOCTOU guard)', async () => {
+    // Row exists at load time but is deleted before the UPDATE executes.
+    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'open', isSystem: false }]);
+    dbMocks.updateResult = []; // UPDATE returns empty — row was deleted between SELECT and UPDATE
+    await expect(updateTicketStatus(PARTNER, STATUS_ID, { name: 'X' }))
+      .rejects.toMatchObject({ status: 404, code: 'STATUS_NOT_FOUND' });
   });
 });
 

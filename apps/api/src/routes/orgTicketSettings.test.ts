@@ -168,4 +168,10 @@ describe('PATCH /organizations/:id/ticket-settings', () => {
     const res = await patch({ defaultBillable: false });
     expect(res.status).toBe(404);
   });
+
+  it('401 when unauthenticated', async () => {
+    authRef.current = null as unknown as typeof authRef.current;
+    const res = await patch({ defaultBillable: true });
+    expect(res.status).toBe(401);
+  });
 });
