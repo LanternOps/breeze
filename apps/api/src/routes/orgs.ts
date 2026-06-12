@@ -23,6 +23,7 @@ import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry'
 import { isAllowedLauncherScheme } from '@breeze/shared';
 import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
+import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
@@ -258,18 +259,24 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
-  const [partner] = await db
-    .insert(partners)
-    .values({
-      name: data.name,
-      slug: data.slug,
-      type: data.type,
-      maxOrganizations: data.maxOrganizations,
-      settings: data.settings,
-      ssoConfig: data.ssoConfig,
-      billingEmail: data.billingEmail
-    })
-    .returning();
+  const [partner] = await db.transaction(async (tx) => {
+    const [newPartner] = await tx
+      .insert(partners)
+      .values({
+        name: data.name,
+        slug: data.slug,
+        type: data.type,
+        maxOrganizations: data.maxOrganizations,
+        settings: data.settings,
+        ssoConfig: data.ssoConfig,
+        billingEmail: data.billingEmail
+      })
+      .returning();
+    if (newPartner) {
+      await seedSystemTicketStatuses(tx, newPartner.id);
+    }
+    return [newPartner];
+  });
 
   writeAuditEvent(c, {
     orgId: auth.orgId,

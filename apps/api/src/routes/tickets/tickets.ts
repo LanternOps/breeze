@@ -453,7 +453,7 @@ ticketsRoutes.post(
     if (!found) return c.json({ error: 'Ticket not found' }, 404);
 
     try {
-      const ticket = await changeTicketStatus(id, 
+      const ticket = await changeTicketStatus(id,
         { status: body.status, statusId: body.statusId },
         { resolutionNote: body.resolutionNote, pendingReason: body.pendingReason },
         actorFrom(c)

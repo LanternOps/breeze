@@ -3,6 +3,7 @@
 import '../config/normalizeNodeEnv';
 import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
+import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { eq, and } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
 
@@ -942,16 +943,19 @@ export async function seedDefaultAdmin() {
     partnerId = existingPartner.id;
     console.log('  Default partner already exists.');
   } else {
-    const [newPartner] = await db
-      .insert(partners)
-      .values({
-        name: 'Default Partner',
-        slug: 'default-partner',
-        type: 'msp',
-        plan: 'enterprise'
-      })
-      .returning();
-    partnerId = newPartner!.id;
+    partnerId = await db.transaction(async (tx) => {
+      const [newPartner] = await tx
+        .insert(partners)
+        .values({
+          name: 'Default Partner',
+          slug: 'default-partner',
+          type: 'msp',
+          plan: 'enterprise'
+        })
+        .returning();
+      await seedSystemTicketStatuses(tx, newPartner!.id);
+      return newPartner!.id;
+    });
     console.log('  Created default partner.');
   }
 

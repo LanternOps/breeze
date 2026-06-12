@@ -362,17 +362,24 @@ export async function changeTicketStatus(
     if (updated.length === 0) {
       throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
     }
-    await db.insert(ticketComments).values({
-      ticketId,
-      userId: actor.userId,
-      authorName: actor.name ?? null,
-      authorType: 'internal',
-      commentType: 'status_change',
-      content: customStatusName ?? '',
-      isPublic: false,
-      oldValue: fromStatus,
-      newValue: toStatus
-    });
+    // Only write a feed entry when there is meaningful content — i.e. the caller
+    // supplied a custom status name (statusId path).  A legacy {status} call that
+    // happens to resolve to the same core value but swaps the statusId back to the
+    // system row produces an empty content and identical oldValue/newValue, which
+    // would be a no-op noise row in the feed.
+    if (customStatusName) {
+      await db.insert(ticketComments).values({
+        ticketId,
+        userId: actor.userId,
+        authorName: actor.name ?? null,
+        authorType: 'internal',
+        commentType: 'status_change',
+        content: customStatusName,
+        isPublic: false,
+        oldValue: fromStatus,
+        newValue: toStatus
+      });
+    }
     // Do NOT emit ticket.status_changed — core status is unchanged; only the
     // custom-status label (statusId) differs.  Emitting with identical from/to
     // would produce noise and confuse downstream consumers.

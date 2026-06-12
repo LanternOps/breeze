@@ -398,6 +398,49 @@ describe('changeTicketStatus', () => {
     expect(setMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
   });
+
+  it('fast path with custom statusId writes a feed entry when customStatusName is present', async () => {
+    // same core 'open' but different statusId → fast path; custom status has a name
+    const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', statusId: 'old-status-id' };
+    dbMocks.selectResult.mockResolvedValue([ticket]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: 'new-status-id', partnerId: 'p-1', coreStatus: 'open', name: 'Waiting on Customer', isActive: true
+    });
+    dbMocks.updateReturning.mockResolvedValue([{ ...ticket, statusId: 'new-status-id' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { statusId: 'new-status-id' }, {}, actor);
+
+    // Feed entry must be written with the custom status name as content
+    const commentPayload = valuesMock.mock.calls[0]![0];
+    expect(commentPayload).toMatchObject({
+      commentType: 'status_change',
+      content: 'Waiting on Customer',
+      oldValue: 'open',
+      newValue: 'open'
+    });
+    // Core status unchanged → no event
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('fast path legacy same-core revert skips feed entry when customStatusName is absent', async () => {
+    // legacy {status} call — resolvedStatusId resolves to the system row but
+    // core status is the same → fast path; no customStatusName → no feed row
+    const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', statusId: 'custom-status-id' };
+    dbMocks.selectResult.mockResolvedValue([ticket]);
+    // getSystemStatusId returns a different id → fast path triggers
+    configMocks.getSystemStatusId.mockResolvedValueOnce('system-status-id');
+    dbMocks.updateReturning.mockResolvedValue([{ ...ticket, statusId: 'system-status-id' }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    // statusId was updated (the update was issued)
+    expect(setMock).toHaveBeenCalled();
+    // But NO feed comment should be written — empty content + identical old/new values
+    expect(valuesMock).not.toHaveBeenCalled();
+    // No event either
+    expect(emitMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('assignTicket', () => {

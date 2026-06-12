@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
@@ -46,7 +47,7 @@ function requirePartnerId(c: { get: (k: 'auth') => unknown; json: (b: unknown, s
 // Middleware version of the admin check — runs after writePerm (which populates
 // c.get('permissions')) and gates mutating routes so a non-admin gets a clear
 // admin-403 rather than a generic permission-denied message.
-const adminMiddleware = async (c: any, next: () => Promise<void>) => {
+const adminMiddleware = async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext;
   const perms = c.get('permissions') as UserPermissions | undefined;
   const isAdmin = auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false);

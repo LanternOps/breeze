@@ -66,10 +66,25 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
-    }))
+    })),
+    // transaction: invoke the callback with a tx proxy that mirrors the db mock
+    transaction: vi.fn(async (fn: (tx: any) => any) => {
+      const tx = {
+        insert: vi.fn(() => ({
+          values: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([]))
+          }))
+        }))
+      };
+      return fn(tx);
+    })
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+}));
+
+vi.mock('../services/ticketConfigService', () => ({
+  seedSystemTicketStatuses: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('../db/schema', () => ({
@@ -145,6 +160,7 @@ import {
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
 import { captureException } from '../services/sentry';
+import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 
 describe('org routes', () => {
   let app: Hono;
@@ -229,12 +245,18 @@ describe('org routes', () => {
   });
 
   describe('POST /orgs/partners', () => {
-    it('should create a partner', async () => {
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'Partner' }])
-        })
-      } as any);
+    it('should create a partner and seed system ticket statuses', async () => {
+      const partner = { id: 'partner-1', name: 'Partner' };
+      vi.mocked(db.transaction).mockImplementation(async (fn: (tx: any) => any) => {
+        const tx = {
+          insert: vi.fn(() => ({
+            values: vi.fn(() => ({
+              returning: vi.fn().mockResolvedValue([partner])
+            }))
+          }))
+        };
+        return fn(tx);
+      });
 
       const res = await app.request('/orgs/partners', {
         method: 'POST',
@@ -248,6 +270,11 @@ describe('org routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe('partner-1');
+      // Verify seedSystemTicketStatuses was called with the new partner's id
+      expect(vi.mocked(seedSystemTicketStatuses)).toHaveBeenCalledWith(
+        expect.anything(), // tx
+        'partner-1'
+      );
     });
   });
 
