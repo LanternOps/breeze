@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 import TicketCategoriesPage from './TicketCategoriesPage';
 import BillablesExportCard from './BillablesExportCard';
 import TicketStatusesTab from './TicketStatusesTab';
+import TicketPrioritiesTab from './TicketPrioritiesTab';
 
 const VALID_TABS = ['statuses', 'priorities', 'categories', 'export'] as const;
 type Tab = (typeof VALID_TABS)[number];
@@ -81,8 +82,7 @@ export default function TicketingSettingsPage() {
 
       {activeTab === 'priorities' && (
         <div data-testid="ticketing-tab-panel-priorities">
-          {/* TicketPrioritiesTab will be wired up in a follow-on task */}
-          <p className="text-sm text-muted-foreground">Priority SLA configuration coming soon.</p>
+          <TicketPrioritiesTab />
         </div>
       )}
 

@@ -11,6 +11,9 @@ vi.mock('./BillablesExportCard', () => ({
 vi.mock('./TicketStatusesTab', () => ({
   default: () => <div data-testid="stub-ticket-statuses-tab">StatusesStub</div>
 }));
+vi.mock('./TicketPrioritiesTab', () => ({
+  default: () => <div data-testid="stub-ticket-priorities-tab">PrioritiesStub</div>
+}));
 
 import TicketingSettingsPage from './TicketingSettingsPage';
 
@@ -53,10 +56,11 @@ describe('TicketingSettingsPage', () => {
     expect(screen.getByTestId('stub-billables-export-card')).toBeInTheDocument();
   });
 
-  it('switching to priorities tab renders the priorities placeholder', () => {
+  it('switching to priorities tab renders TicketPrioritiesTab', () => {
     render(<TicketingSettingsPage />);
     fireEvent.click(screen.getByTestId('ticketing-tab-priorities'));
     expect(screen.getByTestId('ticketing-tab-panel-priorities')).toBeInTheDocument();
+    expect(screen.getByTestId('stub-ticket-priorities-tab')).toBeInTheDocument();
   });
 
   it('tab click updates the URL hash', () => {
@@ -90,6 +94,7 @@ describe('TicketingSettingsPage', () => {
     window.location.hash = '#tab=priorities';
     render(<TicketingSettingsPage />);
     expect(screen.getByTestId('ticketing-tab-panel-priorities')).toBeInTheDocument();
+    expect(screen.getByTestId('stub-ticket-priorities-tab')).toBeInTheDocument();
   });
 
   it('only the active tab mounts (lazy-render)', () => {
