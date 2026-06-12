@@ -10,6 +10,7 @@ import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
+import TicketPartsCard from './TicketPartsCard';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
 
 interface Props {
@@ -348,6 +349,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
+              <TicketPartsCard ticketId={ticket.id} />
               <dl className="space-y-3">
                 <div><dt className="text-xs text-muted-foreground">Requester</dt><dd>{ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}</dd></div>
                 <div><dt className="text-xs text-muted-foreground">Source</dt><dd className="capitalize">{ticket.source}</dd></div>
