@@ -95,7 +95,7 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
             sessionType: session.sessionType,
             osSessionId,
             loginAt,
-            idleMinutes: session.idleMinutes ?? 0,
+            idleMinutes: session.idleMinutes ?? null,
             activityState: session.activityState ?? 'active',
             loginPerformanceSeconds: session.loginPerformanceSeconds ?? null,
             isActive: true,
@@ -108,7 +108,7 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
       await tx
         .update(deviceSessions)
         .set({
-          idleMinutes: session.idleMinutes ?? 0,
+          idleMinutes: session.idleMinutes ?? null,
           activityState: session.activityState ?? 'active',
           loginPerformanceSeconds: session.loginPerformanceSeconds ?? null,
           isActive: true,
