@@ -1,9 +1,13 @@
 // Owns ticketing configuration: custom statuses, priority SLA settings, and org-level overrides — per 2026-06-12 spec.
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc, inArray } from 'drizzle-orm';
 import { ticketStatuses, ticketPrioritySettings, orgTicketSettings } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import type {
+  CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
+  OrgTicketSettingsInput, TicketPriorityValue
+} from '@breeze/shared';
 import type { TicketSlaPriority } from './ticketSla';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -202,4 +206,260 @@ export async function getTicketStatusById(id: string): Promise<{
     )
   );
   return rows[0] ?? null;
+}
+
+// ============================================================================
+// CRUD layer (Task 6). All writes run in the REQUEST DB context (plain `db`):
+// the caller's partner context is set and the partner-axis RLS policy is the
+// real backstop. The system-context config reads above are unchanged.
+// ============================================================================
+
+export type TicketConfigServiceErrorCode =
+  | 'STATUS_NAME_TAKEN'
+  | 'STATUS_NOT_FOUND'
+  | 'SYSTEM_STATUS_IMMUTABLE'
+  | 'SYSTEM_STATUS_REQUIRED';
+
+export class TicketConfigServiceError extends Error {
+  constructor(message: string, public status: 400 | 404 | 409 = 400, public code?: TicketConfigServiceErrorCode) {
+    super(message);
+    this.name = 'TicketConfigServiceError';
+  }
+}
+
+const PRIORITIES: TicketPriorityValue[] = ['low', 'normal', 'high', 'urgent'];
+
+function isUniqueNameViolation(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  const message = (err as { message?: unknown }).message;
+  return code === '23505' || (typeof message === 'string' && message.includes('ticket_statuses_partner_name_uq'));
+}
+
+type PriorityConfig = {
+  label: string | null;
+  responseSlaMinutes: number | null;
+  resolutionSlaMinutes: number | null;
+};
+
+async function readPriorities(partnerId: string): Promise<Record<TicketPriorityValue, PriorityConfig>> {
+  const rows = await db
+    .select({
+      priority: ticketPrioritySettings.priority,
+      label: ticketPrioritySettings.label,
+      responseSlaMinutes: ticketPrioritySettings.responseSlaMinutes,
+      resolutionSlaMinutes: ticketPrioritySettings.resolutionSlaMinutes,
+    })
+    .from(ticketPrioritySettings)
+    .where(eq(ticketPrioritySettings.partnerId, partnerId));
+
+  const byPriority = new Map(rows.map((r) => [r.priority as TicketPriorityValue, r]));
+  const out = {} as Record<TicketPriorityValue, PriorityConfig>;
+  for (const p of PRIORITIES) {
+    const row = byPriority.get(p);
+    out[p] = {
+      label: row?.label ?? null,
+      responseSlaMinutes: row?.responseSlaMinutes ?? null,
+      resolutionSlaMinutes: row?.resolutionSlaMinutes ?? null,
+    };
+  }
+  return out;
+}
+
+/**
+ * Full partner ticketing configuration: every custom + system status (ordered)
+ * and the merged per-priority SLA settings (nulls where unset).
+ */
+export async function getTicketConfig(partnerId: string) {
+  const statuses = await db
+    .select({
+      id: ticketStatuses.id,
+      name: ticketStatuses.name,
+      coreStatus: ticketStatuses.coreStatus,
+      color: ticketStatuses.color,
+      sortOrder: ticketStatuses.sortOrder,
+      isSystem: ticketStatuses.isSystem,
+      isActive: ticketStatuses.isActive,
+    })
+    .from(ticketStatuses)
+    .where(eq(ticketStatuses.partnerId, partnerId))
+    .orderBy(asc(ticketStatuses.sortOrder), asc(ticketStatuses.name));
+
+  const priorities = await readPriorities(partnerId);
+  return { statuses, priorities };
+}
+
+export async function createTicketStatus(partnerId: string, input: CreateTicketStatusInput) {
+  try {
+    const [row] = await db
+      .insert(ticketStatuses)
+      .values({
+        partnerId,
+        name: input.name,
+        coreStatus: input.coreStatus,
+        color: input.color ?? null,
+        sortOrder: input.sortOrder ?? 0,
+        isSystem: false,
+        isActive: true,
+      })
+      .returning();
+    return row;
+  } catch (err) {
+    if (isUniqueNameViolation(err)) {
+      throw new TicketConfigServiceError('A status with this name already exists', 409, 'STATUS_NAME_TAKEN');
+    }
+    throw err;
+  }
+}
+
+export async function updateTicketStatus(partnerId: string, id: string, input: UpdateTicketStatusInput) {
+  const existing = await db
+    .select({
+      id: ticketStatuses.id,
+      coreStatus: ticketStatuses.coreStatus,
+      isSystem: ticketStatuses.isSystem,
+    })
+    .from(ticketStatuses)
+    .where(and(eq(ticketStatuses.id, id), eq(ticketStatuses.partnerId, partnerId)))
+    .limit(1);
+
+  const row = existing[0];
+  if (!row) {
+    throw new TicketConfigServiceError('Status not found', 404, 'STATUS_NOT_FOUND');
+  }
+
+  if (row.isSystem) {
+    if (input.coreStatus !== undefined && input.coreStatus !== row.coreStatus) {
+      throw new TicketConfigServiceError('System statuses cannot be remapped to a different core state', 400, 'SYSTEM_STATUS_IMMUTABLE');
+    }
+    if (input.isActive === false) {
+      throw new TicketConfigServiceError('System statuses cannot be deactivated', 400, 'SYSTEM_STATUS_REQUIRED');
+    }
+  }
+
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (input.name !== undefined) patch.name = input.name;
+  if (input.coreStatus !== undefined) patch.coreStatus = input.coreStatus;
+  if (input.color !== undefined) patch.color = input.color;
+  if (input.sortOrder !== undefined) patch.sortOrder = input.sortOrder;
+  if (input.isActive !== undefined) patch.isActive = input.isActive;
+
+  try {
+    const [updated] = await db
+      .update(ticketStatuses)
+      .set(patch)
+      .where(and(eq(ticketStatuses.id, id), eq(ticketStatuses.partnerId, partnerId)))
+      .returning();
+    return updated;
+  } catch (err) {
+    if (isUniqueNameViolation(err)) {
+      throw new TicketConfigServiceError('A status with this name already exists', 409, 'STATUS_NAME_TAKEN');
+    }
+    throw err;
+  }
+}
+
+/**
+ * Assign sortOrder by array position. Ids that don't belong to the partner are
+ * skipped silently; the WHERE clause keys on (id, partnerId). withDbAccessContext
+ * wraps the request in a transaction, so the sequential updates commit atomically.
+ */
+export async function reorderTicketStatuses(partnerId: string, ids: string[]): Promise<{ updated: number }> {
+  const owned = await db
+    .select({ id: ticketStatuses.id })
+    .from(ticketStatuses)
+    .where(and(inArray(ticketStatuses.id, ids), eq(ticketStatuses.partnerId, partnerId)));
+  const ownedIds = new Set(owned.map((r) => r.id));
+
+  let updated = 0;
+  for (const [index, id] of ids.entries()) {
+    if (!ownedIds.has(id)) continue;
+    await db
+      .update(ticketStatuses)
+      .set({ sortOrder: index, updatedAt: new Date() })
+      .where(and(eq(ticketStatuses.id, id), eq(ticketStatuses.partnerId, partnerId)));
+    updated += 1;
+  }
+  return { updated };
+}
+
+/**
+ * Upsert per-priority SLA settings. Each provided priority is upserted on the
+ * (partner_id, priority) unique index; only fields present in the payload are
+ * written on conflict. Returns the merged priorities map.
+ */
+export async function upsertPrioritySettings(partnerId: string, input: PrioritySettingsInput) {
+  for (const [priority, settings] of Object.entries(input.priorities)) {
+    if (!settings) continue;
+    const setPatch: Record<string, unknown> = { updatedAt: new Date() };
+    if (settings.label !== undefined) setPatch.label = settings.label ?? null;
+    if (settings.responseSlaMinutes !== undefined) setPatch.responseSlaMinutes = settings.responseSlaMinutes ?? null;
+    if (settings.resolutionSlaMinutes !== undefined) setPatch.resolutionSlaMinutes = settings.resolutionSlaMinutes ?? null;
+
+    await db
+      .insert(ticketPrioritySettings)
+      .values({
+        partnerId,
+        priority: priority as TicketPriorityValue,
+        label: settings.label ?? null,
+        responseSlaMinutes: settings.responseSlaMinutes ?? null,
+        resolutionSlaMinutes: settings.resolutionSlaMinutes ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [ticketPrioritySettings.partnerId, ticketPrioritySettings.priority],
+        set: setPatch,
+      });
+  }
+  return readPriorities(partnerId);
+}
+
+function toOrgTicketSettingsResponse(orgId: string, row?: {
+  slaOverrides?: unknown;
+  defaultHourlyRate?: string | null;
+  defaultBillable?: boolean | null;
+}) {
+  return {
+    orgId,
+    slaOverrides: (row?.slaOverrides ?? {}) as Record<string, unknown>,
+    defaultHourlyRate: row?.defaultHourlyRate ?? null,
+    defaultBillable: row?.defaultBillable ?? null,
+  };
+}
+
+export async function getOrgTicketSettings(orgId: string) {
+  const rows = await db
+    .select({
+      slaOverrides: orgTicketSettings.slaOverrides,
+      defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
+      defaultBillable: orgTicketSettings.defaultBillable,
+    })
+    .from(orgTicketSettings)
+    .where(eq(orgTicketSettings.orgId, orgId))
+    .limit(1);
+  return toOrgTicketSettingsResponse(orgId, rows[0]);
+}
+
+/**
+ * Upsert org-level ticket settings on the org_id unique index. slaOverrides is
+ * REPLACED WHOLESALE when provided (not merged) — the client sends the full
+ * desired override map. defaultHourlyRate is a numeric column, so Drizzle wants
+ * a string; we convert with String() (null stays null).
+ */
+export async function upsertOrgTicketSettings(orgId: string, input: OrgTicketSettingsInput) {
+  const fields: Record<string, unknown> = {};
+  if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
+  if (input.defaultHourlyRate !== undefined) {
+    fields.defaultHourlyRate = input.defaultHourlyRate == null ? null : String(input.defaultHourlyRate);
+  }
+  if (input.defaultBillable !== undefined) fields.defaultBillable = input.defaultBillable;
+
+  const [row] = await db
+    .insert(orgTicketSettings)
+    .values({ orgId, ...fields })
+    .onConflictDoUpdate({
+      target: orgTicketSettings.orgId,
+      set: { ...fields, updatedAt: new Date() },
+    })
+    .returning();
+  return toOrgTicketSettingsResponse(orgId, row);
 }
