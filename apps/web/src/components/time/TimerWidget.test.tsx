@@ -32,7 +32,9 @@ describe('TimerWidget', () => {
     render(<TimerWidget />);
     expect(await screen.findByTestId('timer-widget')).toBeTruthy();
     expect(screen.getByTestId('timer-widget-ticket').textContent).toContain('T-2026-0042');
-    expect(screen.getByTestId('timer-widget-elapsed').textContent).toMatch(/01:3\d/);
+    // The first tick lands in an effect after mount — wait for its re-render
+    // (slow CI runners otherwise read the initial 00:00).
+    await waitFor(() => expect(screen.getByTestId('timer-widget-elapsed').textContent).toMatch(/01:3\d/));
   });
 
   it('stop popover posts /time-entries/stop with description + billable', async () => {
