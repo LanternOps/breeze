@@ -64,18 +64,14 @@ function mockDeviceLookup() {
 describe('PUT /agents/:id/sessions', () => {
   let app: Hono;
   let insertedValues: any[];
+  let updatedValues: any[];
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    insertedValues = [];
-    app = new Hono();
-    app.route('/agents', sessionsRoutes);
-
+  function mockTransaction(existingActive: any[] = []) {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
       const tx = {
         select: vi.fn().mockReturnValue({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([]), // no existing active sessions
+            where: vi.fn().mockResolvedValue(existingActive),
           }),
         }),
         insert: vi.fn().mockReturnValue({
@@ -85,13 +81,23 @@ describe('PUT /agents/:id/sessions', () => {
           }),
         }),
         update: vi.fn().mockReturnValue({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue(undefined),
+          set: vi.fn().mockImplementation((vals: any) => {
+            updatedValues.push(vals);
+            return { where: vi.fn().mockResolvedValue(undefined) };
           }),
         }),
       };
       return fn(tx);
     });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    insertedValues = [];
+    updatedValues = [];
+    app = new Hono();
+    app.route('/agents', sessionsRoutes);
+    mockTransaction();
   });
 
   it('stores null idleMinutes when the agent omits it (unknown ≠ 0)', async () => {
@@ -142,5 +148,33 @@ describe('PUT /agents/:id/sessions', () => {
 
     expect(res.status).toBe(200);
     expect(insertedValues[0].idleMinutes).toBe(23);
+  });
+
+  it('stores null idleMinutes on the update path too (existing session, agent omits it)', async () => {
+    mockDeviceLookup();
+    mockTransaction([
+      {
+        id: 'sess-1',
+        username: 'alice',
+        sessionType: 'console',
+        osSessionId: null,
+        loginAt: new Date('2026-06-11T08:00:00Z'),
+      },
+    ]);
+
+    const res = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessions: [{ username: 'alice', sessionType: 'console', isActive: true }],
+        events: [],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(insertedValues).toHaveLength(0);
+    const sessionUpdate = updatedValues.find((v) => 'idleMinutes' in v);
+    expect(sessionUpdate).toBeDefined();
+    expect(sessionUpdate.idleMinutes).toBeNull();
   });
 });
