@@ -5,6 +5,7 @@ import ProfilePage from './ProfilePage';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
+  createPasskeyCredential: vi.fn(),
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
@@ -40,6 +41,12 @@ beforeEach(() => {
 describe('ProfilePage avatar settings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      return undefined as unknown as Response;
+    });
   });
 
   it('does NOT render the old Avatar image URL input', () => {
@@ -60,14 +67,20 @@ describe('ProfilePage avatar settings', () => {
   });
 
   it('uploads a PNG file, updates the avatar, and shows success', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({
-        avatarUrl: '/api/v1/users/user-1/avatar',
-        size: 1234,
-        mime: 'image/png',
-        updatedAt: new Date().toISOString()
-      })
-    );
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/users/me/avatar') {
+        return makeJsonResponse({
+          avatarUrl: '/api/v1/users/user-1/avatar',
+          size: 1234,
+          mime: 'image/png',
+          updatedAt: new Date().toISOString()
+        });
+      }
+      return undefined as unknown as Response;
+    });
 
     render(
       <ProfilePage
@@ -125,7 +138,15 @@ describe('ProfilePage avatar settings', () => {
   });
 
   it('deletes the current avatar via the Remove button', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ avatarUrl: null }));
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/users/me/avatar') {
+        return makeJsonResponse({ avatarUrl: null });
+      }
+      return undefined as unknown as Response;
+    });
 
     render(
       <ProfilePage
@@ -160,6 +181,12 @@ describe('ProfilePage avatar settings', () => {
 describe('ProfilePage MFA setup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      return undefined as unknown as Response;
+    });
   });
 
   // Regression guard for the bug fixed in PR #543: server requires
@@ -168,9 +195,15 @@ describe('ProfilePage MFA setup', () => {
   // server/client schema drift was silent — tsc passed, the page rendered,
   // requests just 400'd in production.
   it('sends currentPassword in the body when starting MFA setup', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' })
-    );
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/auth/mfa/setup') {
+        return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+      }
+      return undefined as unknown as Response;
+    });
 
     render(
       <ProfilePage

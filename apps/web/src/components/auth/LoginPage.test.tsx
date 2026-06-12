@@ -9,6 +9,7 @@ vi.mock('../../stores/auth', () => ({
   ),
   apiLogin: vi.fn(),
   apiVerifyMFA: vi.fn(),
+  apiVerifyPasskeyMFA: vi.fn(),
   apiSendSmsMfaCode: vi.fn(),
   fetchAndApplyPreferences: vi.fn(),
 }));

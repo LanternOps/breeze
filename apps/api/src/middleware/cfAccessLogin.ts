@@ -140,7 +140,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
   // MFA, issue a temp token and require the user to complete TOTP, same
   // shape the password handler uses.
   const trustsMfa = cfAccessTrustsMfa();
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms') && !trustsMfa) {
+  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey') && !trustsMfa) {
     const redis = getRedis();
     if (!redis) {
       console.error('[cf-access-login] redis unavailable; cannot issue MFA temp token, falling through');

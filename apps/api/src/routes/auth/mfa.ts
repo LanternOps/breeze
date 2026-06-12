@@ -166,6 +166,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
     let valid = false;
     let migratedMfaSecret: string | null = null;
+    if (effectiveMethod === 'passkey') {
+      return c.json({ error: 'Use passkey verification for this MFA session' }, 400);
+    }
+
     if (effectiveMethod === 'sms') {
       const phone = user.phoneNumber;
       if (!phone) {

@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
+import type { PasskeyRegistrationOptions } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 
@@ -22,6 +23,13 @@ type User = {
   mfaEnabled?: boolean;
 };
 
+type PasskeySummary = {
+  id: string;
+  name: string;
+  createdAt?: string;
+  lastUsedAt?: string | null;
+};
+
 const ALLOWED_AVATAR_MIMES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 
@@ -29,6 +37,13 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatPasskeyDate(value?: string | null): string {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 type ProfilePageProps = {
@@ -47,6 +62,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [mfaSuccess, setMfaSuccess] = useState<string | undefined>();
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | undefined>();
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | undefined>();
+  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [passkeyName, setPasskeyName] = useState('');
+  const [passkeyPassword, setPasskeyPassword] = useState('');
+  const [passkeyError, setPasskeyError] = useState<string | undefined>();
+  const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
+  const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
+  const [isAddingPasskey, setIsAddingPasskey] = useState(false);
+  const [editingPasskeyId, setEditingPasskeyId] = useState<string | null>(null);
+  const [editingPasskeyName, setEditingPasskeyName] = useState('');
+  const [mutatingPasskeyId, setMutatingPasskeyId] = useState<string | null>(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
@@ -116,6 +141,27 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
     fetchUser();
   }, [initialUser, reset]);
+
+  const loadPasskeys = useCallback(async () => {
+    try {
+      setIsLoadingPasskeys(true);
+      const response = await fetchWithAuth('/auth/passkeys');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error ?? errorData.message ?? 'Failed to load passkeys');
+      }
+      const data = await response.json();
+      setPasskeys(Array.isArray(data) ? data : data.passkeys ?? []);
+    } catch (error) {
+      setPasskeyError(error instanceof Error ? error.message : 'Failed to load passkeys');
+    } finally {
+      setIsLoadingPasskeys(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPasskeys();
+  }, [loadPasskeys]);
 
   const clearMessages = useCallback(() => {
     setProfileError(undefined);
@@ -417,6 +463,114 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
+  const handleAddPasskey = async () => {
+    if (!passkeyPassword || isAddingPasskey) return;
+    setPasskeyError(undefined);
+    setPasskeySuccess(undefined);
+    try {
+      setIsAddingPasskey(true);
+      const label = passkeyName.trim() || 'Passkey';
+      const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword: passkeyPassword, name: label })
+      });
+
+      const optionsData = await optionsResponse.json().catch(() => ({}));
+      if (!optionsResponse.ok) {
+        throw new Error(
+          optionsData.error ?? optionsData.message ?? `Failed to start passkey setup (HTTP ${optionsResponse.status})`
+        );
+      }
+
+      const optionsJSON = (optionsData.options ?? optionsData.optionsJSON) as PasskeyRegistrationOptions;
+      const credential = await createPasskeyCredential(optionsJSON);
+      const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
+        method: 'POST',
+        body: JSON.stringify({ name: label, credential })
+      });
+
+      const verifyData = await verifyResponse.json().catch(() => ({}));
+      if (!verifyResponse.ok) {
+        throw new Error(
+          verifyData.error ?? verifyData.message ?? `Failed to save passkey (HTTP ${verifyResponse.status})`
+        );
+      }
+
+      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+      setPasskeyName('');
+      setPasskeyPassword('');
+      if (Array.isArray(verifyData.recoveryCodes)) {
+        setRecoveryCodes(verifyData.recoveryCodes);
+      }
+      setPasskeySuccess('Passkey added');
+      await loadPasskeys();
+    } catch (error) {
+      if (error instanceof Error && error.name === 'NotAllowedError') {
+        setPasskeyError('Passkey setup was canceled or timed out');
+      } else {
+        setPasskeyError(error instanceof Error ? error.message : 'Failed to add passkey');
+      }
+    } finally {
+      setIsAddingPasskey(false);
+    }
+  };
+
+  const handleRenamePasskey = async (passkeyId: string) => {
+    const name = editingPasskeyName.trim();
+    if (!name || mutatingPasskeyId) return;
+    setPasskeyError(undefined);
+    setPasskeySuccess(undefined);
+    try {
+      setMutatingPasskeyId(passkeyId);
+      const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error ?? data.message ?? `Failed to rename passkey (HTTP ${response.status})`);
+      }
+      setPasskeys(prev => prev.map(passkey => (
+        passkey.id === passkeyId ? { ...passkey, name: data.passkey?.name ?? name } : passkey
+      )));
+      setEditingPasskeyId(null);
+      setEditingPasskeyName('');
+      setPasskeySuccess('Passkey renamed');
+    } catch (error) {
+      setPasskeyError(error instanceof Error ? error.message : 'Failed to rename passkey');
+    } finally {
+      setMutatingPasskeyId(null);
+    }
+  };
+
+  const handleDeletePasskey = async (passkeyId: string) => {
+    if (mutatingPasskeyId) return;
+    setPasskeyError(undefined);
+    setPasskeySuccess(undefined);
+    if (!passkeyPassword) {
+      setPasskeyError('Current password is required to delete a passkey');
+      return;
+    }
+    try {
+      setMutatingPasskeyId(passkeyId);
+      const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ currentPassword: passkeyPassword })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error ?? data.message ?? `Failed to delete passkey (HTTP ${response.status})`);
+      }
+      setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
+      setPasskeyPassword('');
+      setPasskeySuccess('Passkey deleted');
+    } catch (error) {
+      setPasskeyError(error instanceof Error ? error.message : 'Failed to delete passkey');
+    } finally {
+      setMutatingPasskeyId(null);
+    }
+  };
+
   if (isLoadingUser) {
     return (
       <div className="flex min-h-[400px] items-center justify-center">
@@ -607,6 +761,157 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         successMessage={mfaSuccess}
         loading={mfaLoading}
       />
+
+      {/* Passkeys */}
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold">Passkeys</h2>
+          <p className="text-sm text-muted-foreground">
+            Manage passkeys that can be used as multi-factor authentication for your account.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          {isLoadingPasskeys ? (
+            <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+              Loading passkeys...
+            </div>
+          ) : passkeys.length ? (
+            passkeys.map(passkey => (
+              <div key={passkey.id} className="rounded-md border bg-muted/30 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    {editingPasskeyId === passkey.id ? (
+                      <input
+                        type="text"
+                        value={editingPasskeyName}
+                        onChange={event => setEditingPasskeyName(event.target.value)}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                        disabled={mutatingPasskeyId === passkey.id}
+                        autoFocus
+                      />
+                    ) : (
+                      <p className="truncate text-sm font-medium">{passkey.name || 'Passkey'}</p>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      Last used: {formatPasskeyDate(passkey.lastUsedAt)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {editingPasskeyId === passkey.id ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleRenamePasskey(passkey.id)}
+                          disabled={!editingPasskeyName.trim() || mutatingPasskeyId === passkey.id}
+                          className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {mutatingPasskeyId === passkey.id ? 'Saving...' : 'Save'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingPasskeyId(null);
+                            setEditingPasskeyName('');
+                          }}
+                          disabled={mutatingPasskeyId === passkey.id}
+                          className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingPasskeyId(passkey.id);
+                            setEditingPasskeyName(passkey.name || 'Passkey');
+                            setPasskeyError(undefined);
+                            setPasskeySuccess(undefined);
+                          }}
+                          disabled={!!mutatingPasskeyId}
+                          className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePasskey(passkey.id)}
+                          disabled={!!mutatingPasskeyId}
+                          className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {mutatingPasskeyId === passkey.id ? 'Deleting...' : 'Delete'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+              No passkeys are registered for this account.
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-4 rounded-md border p-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">Add passkey</h3>
+            <p className="text-xs text-muted-foreground">
+              Re-enter your account password before adding or deleting a passkey.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="passkey-name">
+              Passkey name
+            </label>
+            <input
+              id="passkey-name"
+              type="text"
+              value={passkeyName}
+              onChange={event => setPasskeyName(event.target.value)}
+              placeholder="MacBook Touch ID"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isAddingPasskey}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="passkey-password">
+              Current password
+            </label>
+            <input
+              id="passkey-password"
+              type="password"
+              autoComplete="current-password"
+              value={passkeyPassword}
+              onChange={event => setPasskeyPassword(event.target.value)}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isAddingPasskey}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={handleAddPasskey}
+            disabled={isAddingPasskey || !passkeyPassword}
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isAddingPasskey ? 'Adding...' : 'Add passkey'}
+          </button>
+        </div>
+
+        {passkeySuccess && (
+          <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">
+            {passkeySuccess}
+          </div>
+        )}
+        {passkeyError && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {passkeyError}
+          </div>
+        )}
+      </div>
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-sm">
