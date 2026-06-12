@@ -5,7 +5,7 @@ import { and, desc, eq } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { devices, securityScans } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { CommandTypes, queueCommand } from '../../services/commandQueue';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import type { AuthContext } from '../../middleware/auth';
@@ -43,6 +43,10 @@ export const scansRoutes = new Hono();
 scansRoutes.post(
   '/scan/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  // requireScope only checks tenancy tier, not the caller's role — a read-only
+  // Org Viewer would otherwise pass. Dispatching an agent security scan is a
+  // device-execute action; matches sensitiveData /scan (DEVICES_EXECUTE).
+  requirePermission('devices', 'execute'),
   zValidator('param', deviceIdParamSchema),
   zValidator('json', scanRequestSchema),
   async (c) => {

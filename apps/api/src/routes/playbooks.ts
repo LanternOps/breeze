@@ -240,6 +240,7 @@ playbookRoutes.post(
   async (c) => {
     const { id: playbookId } = c.req.valid('param');
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const body = c.req.valid('json');
 
     try {
@@ -279,6 +280,7 @@ playbookRoutes.post(
         .select({
           id: devices.id,
           orgId: devices.orgId,
+          siteId: devices.siteId,
           hostname: devices.hostname,
         })
         .from(devices)
@@ -287,6 +289,16 @@ playbookRoutes.post(
 
       if (!device) {
         return c.json({ error: 'Device not found or access denied' }, 404);
+      }
+
+      // Site-scope gate: RLS does not defend the site axis (it is intra-org).
+      // Reject site-restricted callers targeting a device outside their site
+      // allowlist. Mirrors GET /executions in this file.
+      if (
+        perms?.allowedSiteIds &&
+        (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))
+      ) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
       }
 
       if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
@@ -353,6 +365,7 @@ playbookRoutes.patch(
   async (c) => {
     const { id } = c.req.valid('param');
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const body = c.req.valid('json');
 
     try {
@@ -364,13 +377,25 @@ playbookRoutes.patch(
         .select({
           id: playbookExecutions.id,
           status: playbookExecutions.status,
+          deviceSiteId: devices.siteId,
         })
         .from(playbookExecutions)
+        .leftJoin(devices, eq(playbookExecutions.deviceId, devices.id))
         .where(and(...accessConditions))
         .limit(1);
 
       if (!existing) {
         return c.json({ error: 'Execution not found' }, 404);
+      }
+
+      // Site-scope gate: RLS does not defend the site axis (it is intra-org).
+      // Reject site-restricted callers updating an execution whose target
+      // device is outside their site allowlist. Mirrors GET /executions/:id.
+      if (
+        perms?.allowedSiteIds &&
+        (typeof existing.deviceSiteId !== 'string' || !canAccessSite(perms, existing.deviceSiteId))
+      ) {
+        return c.json({ error: 'Execution not found or access denied' }, 403);
       }
 
       const updateData: Partial<typeof playbookExecutions.$inferInsert> = {

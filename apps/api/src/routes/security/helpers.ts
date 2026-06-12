@@ -8,6 +8,7 @@ import {
   securityThreats
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
+import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import { CommandTypes, queueCommand } from '../../services/commandQueue';
 import type { SecurityPostureItem } from '../../services/securityPosture';
 import {
@@ -700,6 +701,14 @@ export function impactFromAffected(affectedDevices: number, totalDevices: number
 
 export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' | 'restore') {
   const auth = c.get('auth') as AuthContext;
+  let userPerms = c.get('permissions') as UserPermissions | undefined;
+  if (!userPerms) {
+    const fetched = await getUserPermissions(auth.user.id, {
+      partnerId: auth.partnerId || undefined,
+      orgId: auth.orgId || undefined,
+    });
+    userPerms = fetched || undefined;
+  }
   const { id } = c.req.valid('param') as { id: string };
 
   const orgCondition = auth.orgCondition(devices.orgId);
@@ -710,6 +719,7 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
     .select({
       id: securityThreats.id,
       deviceId: securityThreats.deviceId,
+      deviceSiteId: devices.siteId,
       provider: securityThreats.provider,
       threatName: securityThreats.threatName,
       threatType: securityThreats.threatType,
@@ -724,6 +734,16 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
 
   if (!threat) {
     return c.json({ error: 'Threat not found' }, 404);
+  }
+
+  // Site-scope gate: RLS does not defend the site axis (it is intra-org).
+  // Reject site-restricted callers acting on a threat whose device is outside
+  // their site allowlist. Mirrors the GET /threats/:deviceId read path.
+  if (
+    userPerms?.allowedSiteIds &&
+    (typeof threat.deviceSiteId !== 'string' || !canAccessSite(userPerms, threat.deviceSiteId))
+  ) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   const commandType = action === 'quarantine'

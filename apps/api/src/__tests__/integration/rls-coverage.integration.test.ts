@@ -159,6 +159,18 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['software_versions', ['software_catalog']],
   ['alert_correlations', ['alerts']],
   ['alert_notifications', ['alerts']],
+  // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and
+  // reach their tenant only through a parent FK. role_permissions' parent
+  // `roles` is dual-axis (org_id/partner_id) — its policy ORs in
+  // breeze_has_partner_access + a system-role carve-out, but still references
+  // breeze_has_org_access and joins through `roles`, so this assertion holds.
+  ['webhook_deliveries', ['webhooks']],
+  ['network_monitor_alert_rules', ['network_monitors']],
+  ['network_monitor_results', ['network_monitors']],
+  ['role_permissions', ['roles']],
+  ['plugin_logs', ['plugin_installations']],
+  ['report_runs', ['reports']],
+  ['maintenance_occurrences', ['maintenance_windows']],
 ]);
 
 // Tables scoped to the calling user via breeze_current_user_id().

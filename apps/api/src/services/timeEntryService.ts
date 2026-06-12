@@ -8,6 +8,7 @@ import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, Billi
 export type TimeEntryServiceErrorCode =
   | 'TICKET_NOT_FOUND'
   | 'TICKET_WRONG_PARTNER'
+  | 'TICKET_ORG_DENIED'
   | 'ENTRY_NOT_FOUND'
   | 'PART_NOT_FOUND'
   | 'NOT_OWN_ENTRY'
@@ -37,6 +38,15 @@ export interface TimeEntryActor {
   partnerId: string | null;
   /** wildcard-permission holders (computed in routes): may manage others' entries + approve */
   manageAll: boolean;
+  /**
+   * auth.accessibleOrgIds — the org-axis allowlist. `null` = system scope
+   * (unrestricted). A partner user with orgAccess='selected' carries only the
+   * granted org ids here, so a ticket in a non-granted org under the same
+   * partner is denied (org-axis check in resolveTicketLink). Threaded from the
+   * route's AuthContext so the system-context ticket read can't be used to
+   * write onto a ticket the caller can't actually see.
+   */
+  accessibleOrgIds: string[] | null;
 }
 
 /** Floored whole minutes — matches the SLA pause-folding convention. */
@@ -104,18 +114,29 @@ async function getCategoryDefaults(categoryId: string): Promise<{ defaultBillabl
 }
 
 /**
- * Validates a ticket link for the acting partner and resolves billing defaults
- * (spec D2: category default + manual override). Returns the denormalization
- * payload for the time-entry/part row.
+ * Validates a ticket link for the acting partner AND org axis, then resolves
+ * billing defaults (spec D2: category default + manual override). Returns the
+ * denormalization payload for the time-entry/part row.
+ *
+ * The ticket is read under system scope (see getTicketForTimeTracking), so the
+ * request's org-axis RLS does NOT gate it. We therefore re-apply the caller's
+ * org-axis allowlist here: a partner user with orgAccess='selected' can target
+ * only tickets in granted orgs, never an arbitrary org under the same partner.
+ * `accessibleOrgIds === null` is system scope (unrestricted) — behavior
+ * unchanged. Mirrors getScopedTicketOr404 / auth.canAccessOrg semantics.
  */
-async function resolveTicketLink(ticketId: string, actorPartnerId: string | null) {
+async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
   const ticket = await getTicketForTimeTracking(ticketId);
   const ticketPartnerId = await resolveTicketPartner(ticket);
   if (!ticketPartnerId) {
     throw new TimeEntryServiceError('Ticket partner is unresolvable', 400, 'PARTNER_UNRESOLVABLE');
   }
-  if (actorPartnerId && ticketPartnerId !== actorPartnerId) {
+  if (actor.partnerId && ticketPartnerId !== actor.partnerId) {
     throw new TimeEntryServiceError('Ticket must belong to the same partner', 400, 'TICKET_WRONG_PARTNER');
+  }
+  // Org-axis gate: non-system callers must have access to the ticket's org.
+  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(ticket.orgId)) {
+    throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_ORG_DENIED');
   }
   const [org, category] = await Promise.all([
     getOrgBillingDefaults(ticket.orgId),
@@ -171,7 +192,7 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
   let defaultRate: string | null = null;
 
   if (input.ticketId) {
-    const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+    const link = await resolveTicketLink(input.ticketId, actor);
     partnerId = link.partnerId;
     orgId = link.ticket.orgId;
     defaultBillable = link.defaultBillable;
@@ -257,7 +278,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   let defaultRate: string | null = null;
 
   if (input.ticketId) {
-    const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+    const link = await resolveTicketLink(input.ticketId, actor);
     partnerId = link.partnerId;
     orgId = link.ticket.orgId;
     defaultBillable = link.defaultBillable;
@@ -391,7 +412,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
       set.ticketId = null;
       set.orgId = null;
     } else {
-      const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+      const link = await resolveTicketLink(input.ticketId, actor);
       if (link.partnerId !== entry.partnerId) {
         throw new TimeEntryServiceError('Ticket must belong to the same partner as the time entry', 400, 'TICKET_WRONG_PARTNER');
       }
@@ -507,7 +528,7 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 // ── Parts ────────────────────────────────────────────────────────────────
 
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
-  const link = await resolveTicketLink(ticketId, actor.partnerId);
+  const link = await resolveTicketLink(ticketId, actor);
   const rows = await db
     .insert(ticketParts)
     .values({

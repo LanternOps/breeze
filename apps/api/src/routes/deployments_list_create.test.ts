@@ -94,7 +94,16 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
+  // The MFA gate added in this PR on create/update/delete. Built once at import
+  // time, so it consults a mutable global flag: tests flip `__denyMfa` to assert
+  // a request without satisfied MFA gets 403. Default (false) keeps the existing
+  // happy-path tests passing.
+  requireMfa: vi.fn(() => async (_c: any, next: any) => {
+    if ((globalThis as any).__denyMfa) {
+      return _c.json({ error: 'MFA required' }, 403);
+    }
+    await next();
+  })
 }));
 
 import { db } from '../db';
@@ -261,6 +270,22 @@ describe('deployment routes', () => {
       const body = await res.json();
       expect(body.data.id).toBe(DEPLOYMENT_ID_1);
       expect(body.data.status).toBe('draft');
+    });
+
+    it('should return 403 when MFA is not satisfied', async () => {
+      (globalThis as any).__denyMfa = true;
+      try {
+        const res = await app.request('/deployments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(validCreatePayload)
+        });
+        expect(res.status).toBe(403);
+        // The MFA gate must run before any DB write.
+        expect(db.insert).not.toHaveBeenCalled();
+      } finally {
+        (globalThis as any).__denyMfa = false;
+      }
     });
 
     it('should reject when org user has no orgId', async () => {
