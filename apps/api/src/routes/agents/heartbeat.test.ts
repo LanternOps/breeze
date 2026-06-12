@@ -939,4 +939,19 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.uacInterceptionEnabled).toBe(false);
   });
+
+  it('fails open to uacInterceptionEnabled=true when the pam resolver throws', async () => {
+    const { buildPamConfigUpdate } = await import('./helpers');
+    vi.mocked(buildPamConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.uacInterceptionEnabled).toBe(true);
+  });
 });
