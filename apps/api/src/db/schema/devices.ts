@@ -65,6 +65,11 @@ export const devices = pgTable('devices', {
   lastUser: varchar('last_user', { length: 255 }),
   uptimeSeconds: integer('uptime_seconds'),
   isHeadless: boolean('is_headless').notNull().default(false),
+  // OS-level pending-reboot flag from the agent heartbeat (Windows registry
+  // checks; Linux reboot-required markers / needs-restarting). Self-clears
+  // on the first post-reboot heartbeat. Backs the system.rebootRequired
+  // filter and the "Reboot pending" UI badge.
+  pendingReboot: boolean('pending_reboot').notNull().default(false),
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),
