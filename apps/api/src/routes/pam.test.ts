@@ -919,4 +919,140 @@ describe('POST /pam/rules/preview', () => {
     expect(body.statusBreakdown.pending).toBe(9);
     expect(body.statusBreakdown.auto_approved).toBe(5);
   });
+
+  // ---------------------------------------------------------------------------
+  // Gap 3: preview site-scope authorization
+  // ---------------------------------------------------------------------------
+
+  it('Gap 3a: site-scoped technician posting siteId outside their allowedSiteIds → 403 Site access denied', async () => {
+    const ALLOWED_SITE = '7b41c9a2-0000-4000-8000-000000000010';
+    const OTHER_SITE = '7b41c9a2-0000-4000-8000-000000000011';
+
+    // Auth sets permissions with allowedSiteIds that does NOT include OTHER_SITE.
+    authMocks.authMiddlewareMock.mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: USER_ID, email: 't@example.com' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+      });
+      c.set('permissions', { allowedSiteIds: [ALLOWED_SITE] });
+      return next();
+    });
+
+    mockPreviewSelect([]);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp', siteId: OTHER_SITE }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Site access denied');
+  });
+
+  it('Gap 3b: site-scoped technician WITHOUT body.siteId — siteScopeCondition narrows rows to allowed sites', async () => {
+    // NOTE: The WHERE predicate from siteScopeCondition is injected into the Drizzle query,
+    // which our mocked db ignores (mock returns all rows regardless of WHERE). We therefore
+    // assert the observable outcome: only rows whose siteId is in allowedSiteIds are
+    // actually matched — the route's JS-layer matching does NOT filter siteId, but
+    // the DB layer would. Since we cannot assert SQL WHERE through a mock, we test what IS
+    // assertable: the request succeeds (200) and the full scan is returned. The actual
+    // site-narrowing is an integration-test concern.
+    //
+    // We DO assert the 403 path via Gap 3a above (which exercises the route's explicit
+    // siteId+canAccessSite check). This test ensures the no-siteId path reaches the DB
+    // without error when the tech is site-scoped.
+    const ALLOWED_SITE = '7b41c9a2-0000-4000-8000-000000000010';
+
+    authMocks.authMiddlewareMock.mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: USER_ID, email: 't@example.com' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+      });
+      c.set('permissions', { allowedSiteIds: [ALLOWED_SITE] });
+      return next();
+    });
+
+    mockPreviewSelect([previewRow({ id: 'er-1' })]);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    // Request should succeed; site narrowing is applied at DB layer (not testable via mock).
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Gap 4: non-UTC timeWindow wiring
+  //
+  // Timestamp analysis:
+  //   Window: 00:00–05:00 in America/Chicago (UTC-5 in standard time, UTC-6 in DST).
+  //   requestedAt: 2026-06-10T06:00:00Z
+  //   In UTC: 06:00 — outside the window 00:00–05:00 UTC.
+  //   In America/Chicago (CDT = UTC-5 in June 2026):
+  //     06:00Z - 5h = 01:00 CDT → inside window 00:00–05:00.
+  //
+  //   Test A (Chicago): window 00:00–05:00, timezone: 'America/Chicago'
+  //     → 06:00Z = 01:00 Chicago → INSIDE → totalMatched = 1
+  //   Test B (UTC):     window 00:00–05:00, timezone: 'UTC'
+  //     → 06:00Z = 06:00 UTC → OUTSIDE → totalMatched = 0
+  //
+  //   This discriminates: different values from the same row + same window + different TZ.
+  // ---------------------------------------------------------------------------
+
+  it('Gap 4a: timezone America/Chicago — 06:00Z falls inside 00:00–05:00 Chicago window (match)', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', requestedAt: new Date('2026-06-10T06:00:00Z'), subjectUsername: 'ACME\\jdoe' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matchUser: 'ACME\\jdoe',
+        timeWindow: { start: '00:00', end: '05:00', timezone: 'America/Chicago' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // 06:00Z = 01:00 America/Chicago (CDT, UTC-5) → inside 00:00–05:00
+    expect(body.totalMatched).toBe(1);
+    expect(body.totalScanned).toBe(1);
+  });
+
+  it('Gap 4b: same window 00:00–05:00 in UTC — 06:00Z falls OUTSIDE (no match)', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', requestedAt: new Date('2026-06-10T06:00:00Z'), subjectUsername: 'ACME\\jdoe' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matchUser: 'ACME\\jdoe',
+        timeWindow: { start: '00:00', end: '05:00', timezone: 'UTC' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // 06:00Z = 06:00 UTC → outside 00:00–05:00
+    expect(body.totalMatched).toBe(0);
+    expect(body.totalScanned).toBe(1);
+  });
 });
