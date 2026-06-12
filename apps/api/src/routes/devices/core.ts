@@ -133,7 +133,7 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
  * can't silently skip both paths. The dedicated statements themselves are
  * covered by behavior tests in moveOrg.test.ts.
  */
-export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links'] as const;
+export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links', 'time_entries', 'ticket_parts'] as const;
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.

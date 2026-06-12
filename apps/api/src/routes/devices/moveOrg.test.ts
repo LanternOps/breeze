@@ -252,10 +252,11 @@ describe('POST /devices/:id/move-org', () => {
       // This is the unit-test proxy for "RLS will read from the new org
       // only post-move": each row in those tables has its org_id rewritten
       // to the new org, so RLS in the OLD org no longer matches it.
-      // CUSTOM_ORG_REWRITE_TABLES (ticket_alert_links — no device_id column,
-      // rewritten via the alert join) follow the generic org loop. The SITE
-      // loop runs last and any table in DEVICE_SITE_DENORMALIZED_TABLES
-      // appears in updatedTables a second time for the site_id rewrite.
+      // CUSTOM_ORG_REWRITE_TABLES (ticket_alert_links, time_entries,
+      // ticket_parts — no device_id column, each rewritten via a ticket_id
+      // or alert_id join) follow the generic org loop. The SITE loop runs
+      // last and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
+      // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
         ...DEVICE_ORG_DENORMALIZED_TABLES,
         ...CUSTOM_ORG_REWRITE_TABLES,
@@ -303,6 +304,68 @@ describe('POST /devices/:id/move-org', () => {
       ).toEqual([
         `UPDATE ticket_alert_links SET org_id = ${TARGET_ORG}::uuid ` +
           `WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+    });
+
+    it('rewrites time_entries org_id via the ticket join inside the transaction', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // time_entries denormalizes org_id for filtering but has NO device_id
+      // column — rewritten via the ticket join (Phase 3 spec §2 / same
+      // stranded-org_id class as ticket_alert_links, #1261).
+      const timeEntryRewrites = statements.filter((s) => s.startsWith('UPDATE time_entries '));
+      expect(
+        timeEntryRewrites,
+        `Expected exactly one time_entries org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE time_entries SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+    });
+
+    it('rewrites ticket_parts org_id via the ticket join inside the transaction', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_parts denormalizes org_id for RLS but has NO device_id column
+      // — rewritten via the ticket join (Phase 3 spec §2 / same
+      // stranded-org_id class as ticket_alert_links, #1261).
+      const partsRewrites = statements.filter((s) => s.startsWith('UPDATE ticket_parts '));
+      expect(
+        partsRewrites,
+        `Expected exactly one ticket_parts org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_parts SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
       ]);
     });
 

@@ -160,6 +160,16 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // Ticket-linked billing rows denormalize org_id from their ticket (Phase 3 spec §2);
+        // tickets bound to this device move org with it, so these must follow —
+        // same stranded-org_id class as ticket_alert_links (#1261).
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // Rewrite denormalized site_id on every device-scoped table that has
         // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
         // in core.ts). Skipping any of these strands rows under the OLD

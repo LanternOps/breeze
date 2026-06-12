@@ -150,6 +150,11 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
     expect(CUSTOM_ORG_REWRITE_TABLES).toContain('ticket_alert_links');
   });
 
+  it('contains time_entries and ticket_parts (Phase 3 billing rows, no device_id column)', () => {
+    expect(CUSTOM_ORG_REWRITE_TABLES).toContain('time_entries');
+    expect(CUSTOM_ORG_REWRITE_TABLES).toContain('ticket_parts');
+  });
+
   it('is disjoint from the generic denorm, device-managed, and intentional-exclusion lists', () => {
     const overlapping = [
       ...DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => customSet.has(t)).map(
