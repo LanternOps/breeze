@@ -1,5 +1,7 @@
 /** Shared shapes for the /pam admin UI (#1159), mirroring routes/pam.ts responses. */
 
+import { Bot, MonitorCog, UserCog, type LucideIcon } from 'lucide-react';
+
 export type ElevationStatus =
   | 'pending'
   | 'approved'
@@ -150,6 +152,13 @@ export const FLOW_LABELS: Record<ElevationFlowType, string> = {
   uac_intercept: 'UAC intercept',
   tech_jit_admin: 'Tech JIT admin',
   ai_tool_action: 'AI tool action',
+};
+
+/** Per-flow lucide glyph, paired with FLOW_LABELS in the Flow cells. */
+export const FLOW_ICONS: Record<ElevationFlowType, LucideIcon> = {
+  uac_intercept: MonitorCog,
+  tech_jit_admin: UserCog,
+  ai_tool_action: Bot,
 };
 
 export const VERDICT_LABELS: Record<PamVerdict, string> = {

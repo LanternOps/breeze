@@ -10,6 +10,7 @@ import {
   type ElevationFlowType,
   type ElevationRequest,
   type ElevationStatus,
+  FLOW_ICONS,
   FLOW_LABELS,
   type Pagination,
   STATUS_LABELS,
@@ -145,7 +146,15 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           <Inbox className="mx-auto h-8 w-8 text-muted-foreground" />
           <p className="mt-2 text-sm font-medium">No elevation requests</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Requests matching the current filters will appear here.
+            {status === 'pending'
+              ? 'Nothing waiting on you. New UAC prompts, JIT admin requests, and AI tool actions queue here.'
+              : 'Requests matching the current filters will appear here.'}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Not seeing expected requests? UAC capture is controlled per device by{' '}
+            <a href="/configuration-policies" className="underline underline-offset-2 hover:text-foreground">
+              Configuration Policies → Privileged Access
+            </a>.
           </p>
         </div>
       ) : (
@@ -208,7 +217,17 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         </div>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2">{FLOW_LABELS[r.flowType]}</td>
+                    <td className="whitespace-nowrap px-3 py-2">
+                      {(() => {
+                        const FlowIcon = FLOW_ICONS[r.flowType];
+                        return (
+                          <span className="inline-flex items-center gap-1.5">
+                            <FlowIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                            {FLOW_LABELS[r.flowType]}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
