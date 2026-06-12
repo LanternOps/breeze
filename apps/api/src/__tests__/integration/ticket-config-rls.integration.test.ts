@@ -187,12 +187,22 @@ describe('ticket_statuses RLS isolation (partner-axis, Shape 3)', () => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     // Insert a row for partnerB via the privileged test pool (bypasses RLS).
-    await adminDb.insert(ticketStatuses).values({
-      partnerId: partnerB.id,
-      name: `B-Status-${unique}`,
-      coreStatus: 'open',
-      isSystem: false,
-    });
+    const [insertedRow] = await adminDb
+      .insert(ticketStatuses)
+      .values({
+        partnerId: partnerB.id,
+        name: `B-Status-${unique}`,
+        coreStatus: 'open',
+        isSystem: false,
+      })
+      .returning({ id: ticketStatuses.id });
+
+    // Confirm the row actually exists (superuser-side) before testing invisibility.
+    const existenceCheck = await adminDb
+      .select({ id: ticketStatuses.id })
+      .from(ticketStatuses)
+      .where(eq(ticketStatuses.id, insertedRow.id));
+    expect(existenceCheck).toHaveLength(1);
 
     // Under partnerA's RLS context (breeze_app), only partnerA rows visible.
     const rows = await withDbAccessContext(partnerAContext, () =>
