@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { inspect } from 'node:util';
 
-const { dbMocks, emitMock } = vi.hoisted(() => {
+const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
   const dbMocks = {
     // queue of results for successive db.select()...where()/limit() terminals
     selectResults: [] as unknown[][],
@@ -12,10 +12,17 @@ const { dbMocks, emitMock } = vi.hoisted(() => {
     updateSetArgs: [] as Record<string, unknown>[],
     whereArgs: [] as unknown[]
   };
-  return { dbMocks, emitMock: vi.fn() };
+  const configMocks = {
+    getOrgBillingDefaults: vi.fn().mockResolvedValue(null),
+  };
+  return { dbMocks, emitMock: vi.fn(), configMocks };
 });
 
 vi.mock('./timeEntryEvents', () => ({ emitTimeEntryEvent: emitMock }));
+
+vi.mock('./ticketConfigService', () => ({
+  getOrgBillingDefaults: (...args: unknown[]) => configMocks.getOrgBillingDefaults(...args),
+}));
 
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -110,6 +117,7 @@ beforeEach(() => {
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
   emitMock.mockClear();
+  configMocks.getOrgBillingDefaults.mockResolvedValue(null);
 });
 
 describe('computeDurationMinutes', () => {
@@ -198,6 +206,67 @@ describe('createTimeEntry', () => {
     );
     expect(dbMocks.insertedValues[0]!.partnerId).toBe('p-1');
   });
+
+  // ── D6: org billing defaults ─────────────────────────────────────────────
+  describe('D6 org billing defaults', () => {
+    it('(a) org defaults win over category defaults when both are present', async () => {
+      // org: rate=150, billable=true; category: rate=100, billable=false → org wins
+      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', defaultBillable: true });
+      dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00' }]);
+      dbMocks.insertResult = [{ id: 'te-d6a', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: true }];
+      await createTimeEntry(
+        { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+        ACTOR
+      );
+      const vals = dbMocks.insertedValues[0]!;
+      expect(vals.isBillable).toBe(true);
+      expect(vals.hourlyRate).toBe('150.00');
+    });
+
+    it('(b) org row exists but both fields null → category values win', async () => {
+      // org row present with nulls; category has defaults → category wins
+      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: null, defaultBillable: null });
+      dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '75.00' }]);
+      dbMocks.insertResult = [{ id: 'te-d6b' }];
+      await createTimeEntry(
+        { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+        ACTOR
+      );
+      const vals = dbMocks.insertedValues[0]!;
+      expect(vals.isBillable).toBe(true);
+      expect(vals.hourlyRate).toBe('75.00');
+    });
+
+    it('(c) no org row → category values apply (existing behavior not regressed)', async () => {
+      // configMocks.getOrgBillingDefaults returns null (default in beforeEach)
+      dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00' }]);
+      dbMocks.insertResult = [{ id: 'te-d6c' }];
+      await createTimeEntry(
+        { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+        ACTOR
+      );
+      const vals = dbMocks.insertedValues[0]!;
+      expect(vals.isBillable).toBe(true);
+      expect(vals.hourlyRate).toBe('125.00');
+    });
+
+    it('(d) explicit input override wins over org AND category defaults', async () => {
+      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', defaultBillable: true });
+      dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '100.00' }]);
+      dbMocks.insertResult = [{ id: 'te-d6d' }];
+      await createTimeEntry(
+        { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'), isBillable: false, hourlyRate: 200 },
+        ACTOR
+      );
+      const vals = dbMocks.insertedValues[0]!;
+      expect(vals.isBillable).toBe(false);
+      expect(vals.hourlyRate).toBe('200.00');
+    });
+  });
 });
 
 describe('startTimer / stopTimer', () => {
@@ -210,6 +279,18 @@ describe('startTimer / stopTimer', () => {
     const vals = dbMocks.insertedValues[0]!;
     expect(vals.endedAt).toBeNull();
     expect(vals.durationMinutes).toBeNull();
+  });
+
+  it('D6 (a) startTimer with ticket uses org billing defaults when org row present', async () => {
+    configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', defaultBillable: true });
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00' }]);
+    dbMocks.updateResult = []; // no running timer to stop
+    dbMocks.insertResult = [{ id: 'te-timer', endedAt: null }];
+    await startTimer({ ticketId: 't-1' }, ACTOR);
+    const vals = dbMocks.insertedValues[0]!;
+    expect(vals.isBillable).toBe(true);
+    expect(vals.hourlyRate).toBe('150.00');
   });
 
   it('stopTimer errors with NO_RUNNING_TIMER when nothing is running', async () => {

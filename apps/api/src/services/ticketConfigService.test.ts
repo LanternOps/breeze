@@ -37,6 +37,8 @@ vi.mock('../db/schema', () => ({
   orgTicketSettings: {
     orgId: 'orgId',
     slaOverrides: 'slaOverrides',
+    defaultHourlyRate: 'defaultHourlyRate',
+    defaultBillable: 'defaultBillable',
   },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketPriorityEnum: { enumValues: ['low', 'normal', 'high', 'urgent'] },
@@ -46,6 +48,7 @@ import {
   getOrgSlaOverride,
   getPartnerPrioritySla,
   getSystemStatusId,
+  getOrgBillingDefaults,
 } from './ticketConfigService';
 
 describe('getOrgSlaOverride', () => {
@@ -164,5 +167,36 @@ describe('getSystemStatusId', () => {
     dbMocks.selectResult.mockResolvedValue([]);
     const result = await getSystemStatusId('p-1', 'new');
     expect(result).toBeNull();
+  });
+});
+
+describe('getOrgBillingDefaults', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResult.mockClear();
+  });
+
+  it('returns defaultHourlyRate and defaultBillable when the org row exists', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      defaultHourlyRate: '150.00',
+      defaultBillable: true,
+    }]);
+    const result = await getOrgBillingDefaults('o-1');
+    expect(result).toEqual({ defaultHourlyRate: '150.00', defaultBillable: true });
+  });
+
+  it('returns null when no org_ticket_settings row exists', async () => {
+    dbMocks.selectResult.mockResolvedValue([]);
+    const result = await getOrgBillingDefaults('o-missing');
+    expect(result).toBeNull();
+  });
+
+  it('returns the row even when both fields are null (row present but fields unset)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      defaultHourlyRate: null,
+      defaultBillable: null,
+    }]);
+    const result = await getOrgBillingDefaults('o-1');
+    expect(result).toEqual({ defaultHourlyRate: null, defaultBillable: null });
   });
 });

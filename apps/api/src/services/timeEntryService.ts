@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
+import { getOrgBillingDefaults } from './ticketConfigService';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -116,12 +117,16 @@ async function resolveTicketLink(ticketId: string, actorPartnerId: string | null
   if (actorPartnerId && ticketPartnerId !== actorPartnerId) {
     throw new TimeEntryServiceError('Ticket must belong to the same partner', 400, 'TICKET_WRONG_PARTNER');
   }
-  const category = ticket.categoryId ? await getCategoryDefaults(ticket.categoryId) : null;
+  const [org, category] = await Promise.all([
+    getOrgBillingDefaults(ticket.orgId),
+    ticket.categoryId ? getCategoryDefaults(ticket.categoryId) : Promise.resolve(null)
+  ]);
   return {
     ticket,
     partnerId: ticketPartnerId,
-    defaultBillable: category?.defaultBillable ?? false,
-    defaultHourlyRate: category?.defaultHourlyRate ?? null
+    // D6: per-entry explicit override (applied by callers) → org default → category default → false/null
+    defaultBillable: org?.defaultBillable ?? category?.defaultBillable ?? false,
+    defaultHourlyRate: org?.defaultHourlyRate ?? category?.defaultHourlyRate ?? null
   };
 }
 

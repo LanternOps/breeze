@@ -154,6 +154,30 @@ export async function getSystemStatusId(
 }
 
 /**
+ * Per-org billing defaults from org_ticket_settings.
+ * System-context read — returns null when no row exists; never throws.
+ * D6: org defaults win over category defaults in the time-entry chain.
+ */
+export async function getOrgBillingDefaults(orgId: string): Promise<{
+  defaultHourlyRate: string | null;
+  defaultBillable: boolean | null;
+} | null> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({
+          defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
+          defaultBillable: orgTicketSettings.defaultBillable,
+        })
+        .from(orgTicketSettings)
+        .where(eq(orgTicketSettings.orgId, orgId))
+        .limit(1)
+    )
+  );
+  return rows[0] ?? null;
+}
+
+/**
  * Look up a ticket_statuses row by id.
  * System-context read — returns null when no row exists; never throws.
  */
