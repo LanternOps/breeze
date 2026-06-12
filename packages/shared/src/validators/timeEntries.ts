@@ -55,6 +55,9 @@ export const listTimeEntriesQuerySchema = z.object({
 export const bulkApproveSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
   approve: z.boolean().default(true)
+}).refine((v) => new Set(v.ids).size === v.ids.length, {
+  message: 'ids must be unique',
+  path: ['ids']
 });
 
 export const timesheetQuerySchema = z.object({

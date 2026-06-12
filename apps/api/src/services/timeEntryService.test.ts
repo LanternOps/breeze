@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { inspect } from 'node:util';
 
 const { dbMocks, emitMock } = vi.hoisted(() => {
   const dbMocks = {
@@ -8,7 +9,8 @@ const { dbMocks, emitMock } = vi.hoisted(() => {
     insertErrors: [] as unknown[],
     updateResult: [] as unknown[],
     insertedValues: [] as Record<string, unknown>[],
-    updateSetArgs: [] as Record<string, unknown>[]
+    updateSetArgs: [] as Record<string, unknown>[],
+    whereArgs: [] as unknown[]
   };
   return { dbMocks, emitMock: vi.fn() };
 });
@@ -23,7 +25,8 @@ vi.mock('../db', () => ({
       from: vi.fn(() => {
         const chain: any = {
           leftJoin: vi.fn(() => chain),
-          where: vi.fn(() => {
+          where: vi.fn((arg: unknown) => {
+            dbMocks.whereArgs.push(arg);
             const result = dbMocks.selectResults.shift() ?? [];
             const terminal: any = {
               limit: vi.fn(() => Promise.resolve(result)),
@@ -98,6 +101,7 @@ beforeEach(() => {
   dbMocks.insertedValues.length = 0;
   dbMocks.updateSetArgs.length = 0;
   dbMocks.insertErrors.length = 0;
+  dbMocks.whereArgs.length = 0;
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
   emitMock.mockClear();
@@ -277,6 +281,17 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
     expect(setArgs.orgId).toBe('o-9');
   });
 
+  it('rejects system-scope relinks that would cross the entry partner boundary', async () => {
+    dbMocks.selectResults.push([baseEntry]);
+    dbMocks.selectResults.push([{ id: 't-cross', partnerId: 'p-OTHER', orgId: 'o-other', categoryId: null }]);
+    await expect(updateTimeEntry(
+      'te-1',
+      { ticketId: 't-cross' },
+      { ...ADMIN, partnerId: null }
+    )).rejects.toMatchObject({ code: 'TICKET_WRONG_PARTNER', status: 400 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
   it('detaches ticket when ticketId null: set ticketId null and orgId null', async () => {
     dbMocks.selectResults.push([{ ...baseEntry, ticketId: 't-5', orgId: 'o-5' }]);
     dbMocks.updateResult = [{ ...baseEntry, ticketId: null, orgId: null }];
@@ -431,6 +446,14 @@ describe('query helpers', () => {
     expect(rows.map((r) => r.kind)).toEqual(['part', 'time']);
     expect(rows[0]).toMatchObject({ kind: 'part', amount: '100.00', isApproved: null });
     expect(rows[1]).toMatchObject({ kind: 'time', quantity: '1.50', amount: '150.00', isApproved: true });
+  });
+
+  it('listBillables excludes running timers from billable time rows', async () => {
+    dbMocks.selectResults.push([]);
+    dbMocks.selectResults.push([]);
+    const rows = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(rows).toEqual([]);
+    expect(inspect(dbMocks.whereArgs[0], { depth: 10 })).toContain('endedAt');
   });
 
   it('listBillables does not emit NaN amounts for corrupt numeric DB strings', async () => {

@@ -333,6 +333,9 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
       set.orgId = null;
     } else {
       const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+      if (link.partnerId !== entry.partnerId) {
+        throw new TimeEntryServiceError('Ticket must belong to the same partner as the time entry', 400, 'TICKET_WRONG_PARTNER');
+      }
       set.ticketId = input.ticketId;
       set.orgId = link.ticket.orgId;
     }
@@ -680,6 +683,7 @@ const toFinite = (v: string | null): number | null => {
 export async function listBillables(from: Date, to: Date, orgId?: string): Promise<BillableRow[]> {
   const timeConditions = [
     eq(timeEntries.isBillable, true),
+    sql`${timeEntries.endedAt} IS NOT NULL`,
     gte(timeEntries.startedAt, from),
     lte(timeEntries.startedAt, to)
   ];

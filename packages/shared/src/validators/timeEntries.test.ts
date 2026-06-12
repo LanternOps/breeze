@@ -84,6 +84,10 @@ describe('bulkApproveSchema', () => {
     const ids = Array.from({ length: 201 }, () => UUID);
     expect(bulkApproveSchema.safeParse({ ids }).success).toBe(false);
   });
+
+  it('rejects duplicate ids', () => {
+    expect(bulkApproveSchema.safeParse({ ids: [UUID, UUID] }).success).toBe(false);
+  });
 });
 
 describe('ticketPartSchema', () => {
