@@ -2297,6 +2297,7 @@ const PAM_CACHE_TTL_SECONDS = 120;
  * Build PAM config update payload for heartbeat response.
  * Resolves pam policy settings via the config policy hierarchy.
  * Falls back to PAM_DEFAULTS (uacInterceptionEnabled: true) if no policy found.
+ * Cached per-device in Redis for 120s — policy changes propagate within ~2min + heartbeat interval.
  */
 export async function buildPamConfigUpdate(deviceId: string): Promise<PamSettings> {
   const redis = getRedis();

@@ -197,6 +197,9 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
       const meta = (r.request.metadata ?? {}) as Record<string, unknown>;
       const pamRuleId = typeof meta.pam_rule_id === 'string' ? meta.pam_rule_id : null;
       const pamRuleName = typeof meta.pam_rule_name === 'string' ? meta.pam_rule_name : null;
+      // Note: revokedByUserId also maps to 'human' — for auto-decided-then-revoked rows the
+      // ORIGINAL decision source is policy/rule (still reflected via softwarePolicyMatchId/metadata);
+      // the web layer prefers the revoker for display.
       const decisionSource = r.request.softwarePolicyMatchId
         ? ('software_policy' as const)
         : pamRuleId
@@ -588,13 +591,10 @@ const timeWindowSchema = z.object({
   timezone: z.string().max(64).optional(),
 });
 
-const ruleBaseSchema = z.object({
-  orgId: z.string().uuid().optional(),
+// Criteria fields shared verbatim between ruleBaseSchema and previewRuleSchema.
+// Spread into both z.object calls so any validator change applies to both.
+const ruleCriteriaValidators = {
   siteId: z.string().uuid().nullable().optional(),
-  name: z.string().min(1).max(255),
-  description: z.string().max(2000).nullable().optional(),
-  enabled: z.boolean().optional(),
-  priority: z.number().int().min(0).max(100000).optional(),
   matchSigner: z.string().min(1).max(255).nullable().optional(),
   matchHash: z
     .string()
@@ -608,6 +608,15 @@ const ruleBaseSchema = z.object({
   matchToolName: z.string().min(1).max(100).nullable().optional(),
   matchRiskTier: z.number().int().min(0).max(4).nullable().optional(),
   timeWindow: timeWindowSchema.nullable().optional(),
+};
+
+const ruleBaseSchema = z.object({
+  orgId: z.string().uuid().optional(),
+  ...ruleCriteriaValidators,
+  name: z.string().min(1).max(255),
+  description: z.string().max(2000).nullable().optional(),
+  enabled: z.boolean().optional(),
+  priority: z.number().int().min(0).max(100000).optional(),
   verdict: z.enum(['auto_approve', 'auto_deny', 'require_approval', 'ignore']),
   approvalDurationMinutes: z
     .number()
@@ -681,29 +690,17 @@ const createRuleSchema = ruleBaseSchema.superRefine((rule, ctx) => {
 // Preview schema: subset of criteria fields (no name/verdict/priority — those
 // are irrelevant to matching), plus windowDays/flowType overrides.
 // Hand-rolled (not .pick) to avoid Zod inference issues with superRefine on
-// a picked object; validators are identical to ruleBaseSchema's counterparts.
+// a picked object; criteria validators are structurally shared via ruleCriteriaValidators.
 const previewRuleSchema = z
   .object({
-    siteId: z.string().uuid().nullable().optional(),
-    matchSigner: z.string().min(1).max(255).nullable().optional(),
-    matchHash: z
-      .string()
-      .regex(/^[0-9a-fA-F]{64}$/, 'must be a sha256 hex digest')
-      .nullable()
-      .optional(),
-    matchPathGlob: z.string().min(1).max(4096).nullable().optional(),
-    matchParentImage: z.string().min(1).max(4096).nullable().optional(),
-    matchUser: z.string().min(1).max(255).nullable().optional(),
-    matchAdGroup: z.string().min(1).max(255).nullable().optional(),
-    matchToolName: z.string().min(1).max(100).nullable().optional(),
-    matchRiskTier: z.number().int().min(0).max(4).nullable().optional(),
-    timeWindow: timeWindowSchema.nullable().optional(),
+    ...ruleCriteriaValidators,
     windowDays: z.number().int().min(1).max(PREVIEW_MAX_WINDOW_DAYS).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
   })
   .superRefine((rule, ctx) => {
     // Same shape rules as create (≥1 criterion, no executable/tool mixing).
-    // verdict is irrelevant to matching; inject a synthetic one for the validator.
+    // validateRuleShape rejects tool-action rules with verdict 'ignore'; inject any
+    // non-'ignore' verdict so that create-only constraint can't fire on previews.
     const err = validateRuleShape({ ...rule, verdict: 'require_approval' });
     if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
   });
@@ -774,8 +771,9 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
 // Pure per-rule matching: "would these criteria match these historical
 // requests". NOT a chain replay (no priority shadowing, no software-policy
 // bridge) — that variant is future work. Known limitation: historical rows
-// don't store AD groups, so matchAdGroup-only drafts report 0 (mirrors the
-// live uac_intercept ingest gap).
+// don't store AD groups, so ANY draft containing matchAdGroup reports 0 matches
+// (criteria are ANDed) — including tech_jit_admin rows where groups matched live
+// but weren't persisted.
 pamRoutes.post(
   '/rules/preview',
   requirePamWrite,

@@ -599,6 +599,7 @@ if (latestHelper) {
     pamSettings = await buildPamConfigUpdate(device.id);
   } catch (err) {
     console.error(`[agents] failed to build pam config update for ${agentId}:`, err);
+    captureException(err);
   }
 
   let mergedConfigUpdate: Record<string, unknown> | null = null;

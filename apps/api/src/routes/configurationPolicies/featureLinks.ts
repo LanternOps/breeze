@@ -3,6 +3,18 @@ import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
+import { z } from 'zod';
+
+// Inline settings for the 'pam' feature type.
+// uacInterceptionEnabled defaults to true on the read side (parsePamSettings),
+// so {} is well-formed. Non-boolean present values are rejected to prevent the
+// silent-inversion bug where "false" (string) gets coerced back to true.
+// .strict() matches the posture of patch/backup: unknown keys are rejected.
+const pamInlineSettingsSchema = z
+  .object({
+    uacInterceptionEnabled: z.boolean().optional(),
+  })
+  .strict();
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -96,6 +108,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'pam' && data.inlineSettings) {
+      const parsed = pamInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          { error: 'Invalid pam settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     try {
       const link = await addFeatureLink(
         id,
@@ -174,6 +197,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             { error: 'Invalid backup settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'pam') {
+        const parsed = pamInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            { error: 'Invalid pam settings', details: parsed.error.flatten(), issues: parsed.error.issues },
             400
           );
         }
