@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'http';
 import { EventEmitter } from 'events';
-import type { AddressInfo } from 'net';
+import type { AddressInfo, LookupAddress } from 'net';
 import {
   safeFetch,
   isPrivateIp,
@@ -214,6 +214,43 @@ describe('safeFetch — SSRF policy', () => {
       Host: 'tenant.example.test',
       'X-Test': 'ok'
     });
+    requestSpy.mockRestore();
+  });
+
+  it('returns the pinned record as an array when Node requests lookup all-mode', async () => {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+    let pinnedRecords: LookupAddress[] | undefined;
+    const requestSpy = vi.spyOn(http, 'request').mockImplementation((options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        options.lookup(options.host, { all: true }, (err: Error | null, addresses: LookupAddress[] | string) => {
+          if (err) {
+            req.emit('error', err);
+            return;
+          }
+          if (!Array.isArray(addresses)) {
+            req.emit('error', new Error(`Invalid IP address: ${(addresses as LookupAddress[])[0]?.address}`));
+            return;
+          }
+          pinnedRecords = addresses;
+          const res = new EventEmitter() as any;
+          res.statusCode = 200;
+          res.statusMessage = 'OK';
+          res.headers = {};
+          callback?.(res);
+          res.emit('end');
+        });
+      });
+      return req;
+    });
+
+    const response = await safeFetch('http://tenant.example.test/path');
+
+    expect(response.status).toBe(200);
+    expect(pinnedRecords).toEqual([{ address: '8.8.8.8', family: 4 }]);
     requestSpy.mockRestore();
   });
 });

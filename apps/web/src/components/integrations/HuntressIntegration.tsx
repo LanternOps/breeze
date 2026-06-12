@@ -12,6 +12,7 @@ import {
   Unplug
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 type Integration = {
   id: string;
@@ -78,16 +79,29 @@ export default function HuntressIntegration() {
 
   const [name, setName] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [apiSecret, setApiSecret] = useState('');
   const [accountId, setAccountId] = useState('');
   const [webhookSecret, setWebhookSecret] = useState('');
 
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showApiSecret, setShowApiSecret] = useState(false);
   const [showWebhookSecret, setShowWebhookSecret] = useState(false);
 
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [syncState, setSyncState] = useState<SyncState>({ status: 'idle' });
 
-  const canSave = name.trim().length > 0 && (apiKey.trim().length > 0 || !!integration);
+  // Huntress integrations are per organization. In "All orgs" scope there is
+  // no single org to load/save, and the API correctly rejects the request.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgStore((s) => s.orgScope);
+  const isAllOrgs = orgScope === 'all';
+
+  const hasCredentialInput = apiKey.trim().length > 0 || apiSecret.trim().length > 0;
+  const hasCompleteCredential = apiKey.trim().length > 0 && apiSecret.trim().length > 0;
+  const canSave = name.trim().length > 0 && (integration ? !hasCredentialInput || hasCompleteCredential : hasCompleteCredential);
+  const credentialPairError = hasCredentialInput && !hasCompleteCredential
+    ? 'Enter both the API Key and API Secret from Huntress, or leave both blank to keep the existing credential.'
+    : null;
 
   const fetchIntegration = useCallback(async () => {
     try {
@@ -104,6 +118,7 @@ export default function HuntressIntegration() {
         setName(data.name);
         setAccountId(data.accountId ?? '');
         setApiKey('');
+        setApiSecret('');
       }
     } catch (err) {
       setLoadError(`Failed to load integration: ${err instanceof Error ? err.message : 'Network error'}`);
@@ -140,20 +155,55 @@ export default function HuntressIntegration() {
   }, []);
 
   useEffect(() => {
+    if (isAllOrgs) {
+      setLoading(false);
+      setLoadError(null);
+      return;
+    }
+
     const load = async () => {
       setLoading(true);
+      setLoadError(null);
       await fetchIntegration();
       await Promise.all([fetchStatus(), fetchRecentIncidents()]);
       setLoading(false);
     };
     load();
-  }, [fetchIntegration, fetchStatus, fetchRecentIncidents]);
+  }, [fetchIntegration, fetchStatus, fetchRecentIncidents, isAllOrgs, currentOrgId]);
+
+  if (isAllOrgs) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Shield className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold">Huntress Integration</h1>
+            <p className="text-sm text-muted-foreground">
+              Connect Huntress managed EDR for agent sync, incident detection, and threat response.
+            </p>
+          </div>
+        </div>
+        <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
+          The Huntress integration is configured per organization. Switch the scope in the top bar
+          from <span className="font-medium text-foreground">All orgs</span> to a single organization
+          to view or edit its connection.
+        </div>
+      </div>
+    );
+  }
 
   const handleSave = async () => {
     setSaveState({ status: 'saving' });
     try {
+      if (credentialPairError) {
+        setSaveState({ status: 'error', message: credentialPairError });
+        return;
+      }
+
       const body: Record<string, unknown> = { name, isActive: true };
-      if (apiKey.trim()) body.apiKey = apiKey;
+      if (hasCompleteCredential) body.apiKey = `${apiKey.trim()}:${apiSecret.trim()}`;
       if (accountId.trim()) body.accountId = accountId;
       if (webhookSecret.trim()) body.webhookSecret = webhookSecret;
 
@@ -168,6 +218,7 @@ export default function HuntressIntegration() {
       }
       setSaveState({ status: 'saved', message: json.syncWarning ?? 'Integration saved' });
       setApiKey('');
+      setApiSecret('');
       setWebhookSecret('');
       await fetchIntegration();
       await Promise.all([fetchStatus(), fetchRecentIncidents()]);
@@ -271,7 +322,7 @@ export default function HuntressIntegration() {
       <div className="rounded-xl border bg-card p-6 shadow-sm">
         <h2 className="text-lg font-semibold">Connection</h2>
         <p className="mb-4 text-sm text-muted-foreground">
-          Configure your Huntress API credentials and webhook secret.
+          Configure your Huntress API Key, API Secret, and webhook secret.
           {!integration && ' Saving requires MFA verification.'}
         </p>
 
@@ -289,19 +340,30 @@ export default function HuntressIntegration() {
 
           <div>
             <label className="mb-1 block text-sm font-medium">
-              API Key
-              {integration && <span className="ml-1 text-xs text-muted-foreground">(leave blank to keep existing)</span>}
+              Account ID <span className="text-xs text-muted-foreground">(optional)</span>
             </label>
+            <input
+              type="text"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              placeholder="Huntress account ID"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium">API Key</label>
             <div className="relative">
               <input
                 type={showApiKey ? 'text' : 'password'}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={integration ? '••••••••••••' : 'Enter API key'}
+                placeholder={integration ? 'hk_••••••••••••' : 'hk_...'}
                 className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
               />
               <button
                 type="button"
+                aria-label={showApiKey ? 'Hide API Key' : 'Show API Key'}
                 onClick={() => setShowApiKey(!showApiKey)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
@@ -312,15 +374,35 @@ export default function HuntressIntegration() {
 
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Account ID <span className="text-xs text-muted-foreground">(optional)</span>
+              API Secret
+              {integration && <span className="ml-1 text-xs text-muted-foreground">(leave key and secret blank to keep existing)</span>}
             </label>
-            <input
-              type="text"
-              value={accountId}
-              onChange={(e) => setAccountId(e.target.value)}
-              placeholder="Huntress account ID"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
+            <div className="relative">
+              <input
+                type={showApiSecret ? 'text' : 'password'}
+                value={apiSecret}
+                onChange={(e) => setApiSecret(e.target.value)}
+                placeholder={integration ? 'hs_••••••••••••' : 'hs_...'}
+                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+              <button
+                type="button"
+                aria-label={showApiSecret ? 'Hide API Secret' : 'Show API Secret'}
+                onClick={() => setShowApiSecret(!showApiSecret)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showApiSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          <div className="md:col-span-2">
+            <p className="text-xs text-muted-foreground">
+              Copy the API Key and API Secret from Huntress. Do not paste the Base 64 encoded version of Key and Secret; Breeze formats the request automatically.
+            </p>
+            {credentialPairError && (
+              <p className="mt-1 text-xs text-red-600">{credentialPairError}</p>
+            )}
           </div>
 
           <div>

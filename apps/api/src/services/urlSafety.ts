@@ -252,9 +252,20 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
 
   // Build a `lookup` that always hands back the validated record, so a DNS
   // rebind between now and the TCP connect cannot redirect us.
-  const pinnedLookup: LookupFunction = (_hn, _opts, cb) => {
-    // Node's LookupFunction callback is overloaded; runtime accepts (err, addr, family)
-    (cb as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
+  const pinnedLookup: LookupFunction = (_hn, opts, cb) => {
+    const callback = (typeof opts === 'function' ? opts : cb) as
+      | ((e: NodeJS.ErrnoException | null, addr: string, family: number) => void)
+      | ((e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)
+      | undefined;
+
+    if (!callback) return;
+
+    if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
+      (callback as (e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)(null, [safeRecord]);
+      return;
+    }
+
+    (callback as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
       null,
       safeRecord.address,
       safeRecord.family
