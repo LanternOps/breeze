@@ -47,6 +47,7 @@ import DeviceBootPerformanceTab from './DeviceBootPerformanceTab';
 import DevicePlaybookHistory from './DevicePlaybookHistory';
 import DevicePeripheralsTab from './DevicePeripheralsTab';
 import DeviceWarrantyCard from './DeviceWarrantyCard';
+import DeviceUserIdleStat from './DeviceUserIdleStat';
 import MacOSPermissionsBanner from './MacOSPermissionsBanner';
 import { navigateTo } from '@/lib/navigation';
 import { OverflowTabs } from '../shared/OverflowTabs';
@@ -288,6 +289,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                 </div>
                 <p className="mt-1 text-lg font-semibold truncate" title={device.lastUser || undefined}>{device.lastUser || '—'}</p>
               </div>
+              <DeviceUserIdleStat deviceId={device.id} />
             </div>
 
             <DevicePerformanceGraphs deviceId={device.id} compact />
