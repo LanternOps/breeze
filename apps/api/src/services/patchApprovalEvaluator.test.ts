@@ -17,13 +17,22 @@ vi.mock('../db/schema', () => ({
 
 import { db } from '../db';
 import {
+  appRuleKey,
   buildAppRuleMap,
   buildAllowedPatchSources,
   comparePatchVersions,
   evaluateAppRule,
   resolveApprovedPatchesForDevice,
+  THIRD_PARTY_PATCH_SOURCES,
+  type ApprovalEvaluationConfig,
   type RingConfig,
 } from './patchApprovalEvaluator';
+
+// Compile-time checks: deprecated alias and exported source list stay usable.
+const _aliasCheck: RingConfig = { ringId: null, categoryRules: [], autoApprove: {}, deferralDays: 0 };
+const _aliasCheck2: ApprovalEvaluationConfig = _aliasCheck;
+void _aliasCheck2;
+void THIRD_PARTY_PATCH_SOURCES;
 
 describe('comparePatchVersions', () => {
   it.each([
@@ -41,6 +50,17 @@ describe('comparePatchVersions', () => {
     expect(comparePatchVersions(null, '1.0')).toBeNull();
     expect(comparePatchVersions('1.0', undefined)).toBeNull();
     expect(comparePatchVersions('  ', '1.0')).toBeNull();
+  });
+});
+
+describe('appRuleKey', () => {
+  it('collapses third_party and custom into one canonical bucket', () => {
+    expect(appRuleKey('third_party', 'Mozilla.Firefox')).toBe('third_party|mozilla.firefox');
+    expect(appRuleKey('custom', 'Mozilla.Firefox')).toBe('third_party|mozilla.firefox');
+  });
+
+  it('keeps non-third-party sources as their own bucket', () => {
+    expect(appRuleKey('microsoft', 'SomeId')).toBe('microsoft|someid');
   });
 });
 
@@ -70,6 +90,18 @@ describe('evaluateAppRule', () => {
 
   it('holds when the patch version is missing', () => {
     expect(evaluateAppRule({ source: 'third_party', packageId: 'VideoLAN.VLC', version: null }, rules)).toBe('held');
+  });
+
+  it('a third_party rule also matches a custom-source patch (unified bucket)', () => {
+    expect(evaluateAppRule({ source: 'custom', packageId: 'Mozilla.Firefox', version: '120.0' }, rules)).toBe('blocked');
+    expect(evaluateAppRule({ source: 'custom', packageId: 'VideoLAN.VLC', version: '3.0.21' }, rules)).toBe('held');
+  });
+
+  it('a custom rule also matches a third_party-source patch (unified bucket)', () => {
+    const customRules = buildAppRuleMap([
+      { source: 'custom', packageId: 'Mozilla.Firefox', action: 'block' },
+    ]);
+    expect(evaluateAppRule({ source: 'third_party', packageId: 'Mozilla.Firefox', version: '120.0' }, customRules)).toBe('blocked');
   });
 });
 
@@ -279,6 +311,71 @@ describe('app rules in resolveApprovedPatchesForDevice', () => {
 
     expect(result.map((r) => r.patchId)).toEqual([P2]);
   });
+
+  it('a third_party block rule excludes a custom-source patch (unified bucket)', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'custom', packageId: 'Mozilla.Firefox', version: '121.0' })],
+      [{ patchId: P1, status: 'approved', ringId: null }]
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: null,
+      categoryRules: [],
+      autoApprove: {},
+      deferralDays: 0,
+      sources: ['third_party'],
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('warns but still approves an otherwise-eligible third-party patch with no packageId', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: P1, source: 'third_party', packageId: null, version: '1.0' })],
+        [{ patchId: P1, status: 'approved', ringId: null }]
+      );
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+        ringId: null,
+        categoryRules: [],
+        autoApprove: {},
+        deferralDays: 0,
+        sources: ['third_party'],
+        apps: [{ source: 'third_party', packageId: 'VideoLAN.VLC', action: 'pin', pinnedVersion: '3.0.20' }],
+      });
+
+      expect(result.map((r) => r.patchId)).toEqual([P1]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('cannot be matched against app rules — missing packageId')
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('applies an app block rule under a linked ring too', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', source: 'third_party', category: 'homebrew', packageId: 'Mozilla.Firefox', version: '121.0' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'third_party', category: 'homebrew', packageId: 'VideoLAN.VLC', version: '3.0.20' }),
+      ],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'third_party_app', autoApprove: true }],
+      autoApprove: {},
+      deferralDays: 0,
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    });
+
+    expect(result.map((r) => r.patchId)).toEqual([P2]);
+    expect(result[0]?.approvalReason).toBe('category_rule');
+  });
 });
 
 describe('policy-level auto-approve (ring-less)', () => {
@@ -334,6 +431,42 @@ describe('policy-level auto-approve (ring-less)', () => {
     });
 
     expect(result).toEqual([]);
+  });
+
+  it('approves a patch whose deferral window has elapsed', async () => {
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: tenDaysAgo })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: null,
+      categoryRules: [],
+      autoApprove: {},
+      deferralDays: 0,
+      policyAutoApprove: { ...policyAutoApprove, deferralDays: 7 },
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('policy_auto_approve');
+  });
+
+  it('fails closed (holds + warns) when deferralDays > 0 and releaseDate is missing', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: null })], []);
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+        ringId: null,
+        categoryRules: [],
+        autoApprove: {},
+        deferralDays: 0,
+        policyAutoApprove: { ...policyAutoApprove, deferralDays: 7 },
+      });
+
+      expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cannot prove its age'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('ignores policyAutoApprove entirely when a ring is linked', async () => {

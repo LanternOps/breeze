@@ -25,13 +25,20 @@ type Props = {
   onChange: (apps: PolicyAppRule[]) => void;
 };
 
-const ruleKey = (rule: { source: string; packageId: string }) => `${rule.source}-${rule.packageId}`;
+// Canonical rule identity used everywhere else in the patch pipeline. The
+// evaluator treats third_party and custom as one bucket, so the UI must dedupe
+// them the same way before validation.
+const ruleKey = (rule: { source: string; packageId: string }) => {
+  const source = rule.source === 'custom' ? 'third_party' : rule.source;
+  return `${source}|${rule.packageId.toLowerCase()}`;
+};
 
 export default function PatchAppRulesSection({ apps, onChange }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [options, setOptions] = useState<AppOption[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [manualPackageId, setManualPackageId] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -46,9 +53,16 @@ export default function PatchAppRulesSection({ apps, onChange }: Props) {
         if (response.ok) {
           const payload = await response.json();
           setOptions(Array.isArray(payload.data) ? payload.data : []);
+          setLoadError(false);
+        } else {
+          console.error('Failed to load application options: HTTP', response.status);
+          setOptions([]);
+          setLoadError(true);
         }
-      } catch {
+      } catch (err) {
+        console.error('Failed to load application options:', err);
         setOptions([]);
+        setLoadError(true);
       } finally {
         setLoading(false);
       }
@@ -60,7 +74,7 @@ export default function PatchAppRulesSection({ apps, onChange }: Props) {
   }, [pickerOpen, search]);
 
   const exists = (source: string, packageId: string) =>
-    apps.some((app) => app.source === source && app.packageId.toLowerCase() === packageId.toLowerCase());
+    apps.some((app) => ruleKey(app) === ruleKey({ source, packageId }));
 
   const addRule = (option: { source: string; packageId: string; displayName?: string }) => {
     if (exists(option.source, option.packageId)) return;
@@ -181,7 +195,12 @@ export default function PatchAppRulesSection({ apps, onChange }: Props) {
                   </button>
                 </li>
               ))}
-            {!loading && options.length === 0 && (
+            {!loading && loadError && (
+              <li className="text-xs text-destructive" data-testid="app-rules-load-error">
+                {"Couldn't load applications — you can still add by package ID below."}
+              </li>
+            )}
+            {!loading && !loadError && options.length === 0 && (
               <li className="text-xs text-muted-foreground">No matches.</li>
             )}
           </ul>
@@ -198,6 +217,7 @@ export default function PatchAppRulesSection({ apps, onChange }: Props) {
               type="button"
               data-testid="app-rules-manual-add"
               disabled={!manualPackageId.trim()}
+              // Manual entries use 'third_party'; the evaluator matches third_party/custom as one bucket, so custom-source patches are still covered.
               onClick={() => addRule({ source: 'third_party', packageId: manualPackageId.trim() })}
               className="h-8 rounded-md border px-3 text-xs hover:bg-muted disabled:opacity-50"
             >

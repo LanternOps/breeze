@@ -7,6 +7,8 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { z } from 'zod';
+import { policyAppRuleSchema } from '@breeze/shared/validators';
 import * as dbModule from '../db';
 import {
   patchJobs,
@@ -27,6 +29,17 @@ import {
 } from '../services/patchApprovalEvaluator';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 import { queueCommandForExecution } from '../services/commandQueue';
+import { captureException } from '../services/sentry';
+
+// Strict shape for patches.policyAutoApprove as stored in the job JSONB.
+// deferralDays must be a valid non-negative integer when present — a malformed
+// value must NOT be coerced to 0, because that silently removes the deferral
+// safety window. Absent deferralDays is fine and defaults to 0.
+const jobPolicyAutoApproveSchema = z.object({
+  enabled: z.boolean(),
+  severities: z.array(z.string()),
+  deferralDays: z.number().int().min(0).optional(),
+});
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -394,79 +407,74 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     }
   }
 
+  // Malformed auto-approve config degrades to disabled because silently
+  // ENABLING auto-approval is the dangerous direction.
   let policyAutoApprove: PolicyAutoApproveConfig | undefined;
   if (patchesConfig?.policyAutoApprove !== undefined) {
-    const raw = patchesConfig.policyAutoApprove as
-      | { enabled?: unknown; severities?: unknown; deferralDays?: unknown }
-      | null;
-    const severities = Array.isArray(raw?.severities)
-      ? raw.severities.filter((s): s is string => typeof s === 'string')
-      : null;
-
-    if (
-      raw &&
-      typeof raw === 'object' &&
-      typeof raw.enabled === 'boolean' &&
-      severities !== null &&
-      severities.length === (raw.severities as unknown[]).length
-    ) {
+    const parsed = jobPolicyAutoApproveSchema.safeParse(patchesConfig.policyAutoApprove);
+    if (parsed.success) {
       policyAutoApprove = {
-        enabled: raw.enabled,
-        severities,
-        deferralDays:
-          typeof raw.deferralDays === 'number' &&
-          Number.isFinite(raw.deferralDays) &&
-          raw.deferralDays >= 0
-            ? raw.deferralDays
-            : 0,
+        enabled: parsed.data.enabled,
+        severities: parsed.data.severities,
+        deferralDays: parsed.data.deferralDays ?? 0,
       };
     } else {
-      console.warn(
-        `[PatchJobExecutor] Job ${patchJobId} has malformed patches.policyAutoApprove; treating as disabled:`,
-        JSON.stringify(patchesConfig.policyAutoApprove)
-      );
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.policyAutoApprove; treating as disabled`;
+      console.warn(`${message}:`, JSON.stringify(patchesConfig.policyAutoApprove));
+      captureException(new Error(message));
     }
   }
 
+  // Malformed-but-identifiable rules coerce to 'block' rather than being
+  // dropped — dropping a block rule would silently widen install scope; only
+  // rules whose identity (source + packageId) is unusable are dropped, loudly.
   let jobApps: PolicyAppRule[] | undefined;
   if (patchesConfig?.apps !== undefined) {
     if (!Array.isArray(patchesConfig.apps)) {
-      console.warn(
-        `[PatchJobExecutor] Job ${patchJobId} has malformed patches.apps; ignoring app rules:`,
-        JSON.stringify(patchesConfig.apps)
-      );
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.apps; ignoring app rules`;
+      console.warn(`${message}:`, JSON.stringify(patchesConfig.apps));
+      captureException(new Error(message));
     } else {
       const valid: PolicyAppRule[] = [];
       for (const entry of patchesConfig.apps) {
-        const e = entry as
-          | { source?: unknown; packageId?: unknown; action?: unknown; pinnedVersion?: unknown }
-          | null;
-        const okBase =
-          e &&
+        const parsed = policyAppRuleSchema.safeParse(entry);
+        if (parsed.success) {
+          // Strip displayName and any other extra fields before handing to the evaluator.
+          const { source, packageId, action, pinnedVersion } = parsed.data;
+          if (action === 'pin' && pinnedVersion) {
+            valid.push({ source, packageId, action: 'pin', pinnedVersion });
+          } else {
+            // action === 'block' (pin without pinnedVersion is rejected by the schema).
+            valid.push({ source, packageId, action: 'block' });
+          }
+          continue;
+        }
+
+        const e = entry as { source?: unknown; packageId?: unknown } | null;
+        const identifiable =
+          e !== null &&
+          typeof e === 'object' &&
           typeof e.source === 'string' &&
           e.source.length > 0 &&
           typeof e.packageId === 'string' &&
           e.packageId.length > 0;
 
-        if (okBase && e.action === 'block') {
-          valid.push({ source: e.source as string, packageId: e.packageId as string, action: 'block' });
-        } else if (
-          okBase &&
-          e.action === 'pin' &&
-          typeof e.pinnedVersion === 'string' &&
-          e.pinnedVersion.length > 0
-        ) {
+        if (identifiable) {
+          // Fail closed: the admin intended to restrict this app; a malformed
+          // restriction (e.g. pin without a version) becomes an outright block.
+          console.warn(
+            `[PatchJobExecutor] Job ${patchJobId} coercing malformed app rule to block (fail-closed):`,
+            JSON.stringify(entry)
+          );
           valid.push({
             source: e.source as string,
             packageId: e.packageId as string,
-            action: 'pin',
-            pinnedVersion: e.pinnedVersion,
+            action: 'block',
           });
         } else {
-          console.warn(
-            `[PatchJobExecutor] Job ${patchJobId} dropping malformed app rule:`,
-            JSON.stringify(entry)
-          );
+          const message = `[PatchJobExecutor] Job ${patchJobId} dropping malformed app rule with unusable identity`;
+          console.warn(`${message}:`, JSON.stringify(entry));
+          captureException(new Error(message));
         }
       }
       jobApps = valid;

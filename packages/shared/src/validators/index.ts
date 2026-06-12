@@ -452,7 +452,7 @@ const patchSourceValueSchema = z.enum([
 ]);
 
 export const policyAppRuleSchema = z.object({
-  source: z.string().min(1).max(64),
+  source: z.enum(['third_party', 'custom']),
   packageId: z.string().min(1).max(256),
   displayName: z.string().max(255).optional(),
   action: z.enum(['block', 'pin']),
@@ -466,6 +466,8 @@ export const policyAppRuleSchema = z.object({
     });
   }
 });
+
+export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
 
 export const patchInlineSettingsSchema = z.object({
   sources: z.array(patchSourceValueSchema).min(1).default(['os']),
@@ -489,7 +491,10 @@ export const patchInlineSettingsSchema = z.object({
 
   const seen = new Set<string>();
   for (const [i, app] of data.apps.entries()) {
-    const key = `${app.source}|${app.packageId.toLowerCase()}`;
+    // The approval evaluator matches 'third_party' and 'custom' as a single
+    // bucket, so canonicalize the source when deduping to mirror that.
+    const canonicalSource = app.source === 'custom' ? 'third_party' : app.source;
+    const key = `${canonicalSource}|${app.packageId.toLowerCase()}`;
     if (seen.has(key)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

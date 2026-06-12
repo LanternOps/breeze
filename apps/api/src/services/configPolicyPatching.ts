@@ -1,7 +1,8 @@
 import { and, eq, isNull, SQL } from 'drizzle-orm';
 import type { z } from 'zod';
-import { patchInlineSettingsSchema } from '@breeze/shared/validators';
+import { patchInlineSettingsSchema, policyAppRuleSchema } from '@breeze/shared/validators';
 import { db } from '../db';
+import { captureException } from './sentry';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -74,6 +75,92 @@ export function tryNormalizePatchInlineSettings(settings: unknown): {
     valid: false,
     settings: normalizePatchInlineSettings({}),
   };
+}
+
+/**
+ * Normalizes the feature link's stored inline JSON for the load path, but —
+ * unlike the bare `tryNormalizePatchInlineSettings` — never *silently*
+ * collapses a corrupt document to defaults. Zod parses the whole document, so
+ * a single malformed field (one bad app entry, a legacy '2:00' scheduleTime)
+ * would otherwise wipe every safety rule (app block/pin rules, deferral) with
+ * nothing in any log, and the executor's fail-closed warnings never fire
+ * because job snapshots are built from this already-sanitized output.
+ *
+ * On whole-document failure this warns + reports to Sentry, then salvages the
+ * JSON-only safety fields per-entry (mirroring the executor's per-entry
+ * posture): each raw `apps` entry that individually passes
+ * `policyAppRuleSchema`, and `autoApproveDeferralDays` when it is a valid
+ * non-negative integer <= 60.
+ */
+function normalizeStoredInlineSettingsWithSalvage(
+  raw: unknown,
+  context: { configPolicyId: string; featureLinkId: string }
+): PatchInlineSettings {
+  const normalized = tryNormalizePatchInlineSettings(raw);
+  if (normalized.valid) return normalized.settings;
+
+  const ident = `config policy ${context.configPolicyId} (feature link ${context.featureLinkId})`;
+  console.warn(
+    `[configPolicyPatching] Stored patch inline settings failed validation for ${ident}; ` +
+      'using defaults and salvaging app rules / deferral per-entry'
+  );
+  captureException(
+    new Error(
+      `Stored patch inline settings failed validation for ${ident}; defaults applied with per-entry salvage`
+    )
+  );
+
+  const settings = normalized.settings;
+  const rawObj: Record<string, unknown> =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+
+  if (Array.isArray(rawObj.apps)) {
+    const salvagedApps: PatchInlineSettings['apps'] = [];
+    // Same canonical dedup key as patchInlineSettingsSchema's superRefine —
+    // duplicates would make the downstream whole-document re-parse throw.
+    const seenAppKeys = new Set<string>();
+    for (const [index, entry] of rawObj.apps.entries()) {
+      const parsedApp = policyAppRuleSchema.safeParse(entry);
+      if (!parsedApp.success) {
+        console.warn(
+          `[configPolicyPatching] Dropping invalid app rule at index ${index} for ${ident}: ` +
+            parsedApp.error.issues.map((issue) => issue.message).join('; ')
+        );
+        continue;
+      }
+      const canonicalSource = parsedApp.data.source === 'custom' ? 'third_party' : parsedApp.data.source;
+      const key = `${canonicalSource}|${parsedApp.data.packageId.toLowerCase()}`;
+      if (seenAppKeys.has(key)) {
+        console.warn(
+          `[configPolicyPatching] Dropping duplicate app rule at index ${index} for ${ident} (${key})`
+        );
+        continue;
+      }
+      if (salvagedApps.length >= 200) {
+        // patchInlineSettingsSchema caps apps at 200; exceeding it would make
+        // the downstream re-parse throw.
+        console.warn(
+          `[configPolicyPatching] Dropping app rule at index ${index} for ${ident}: salvage cap of 200 reached`
+        );
+        continue;
+      }
+      seenAppKeys.add(key);
+      salvagedApps.push(parsedApp.data);
+    }
+    settings.apps = salvagedApps;
+  }
+
+  const rawDeferral = rawObj.autoApproveDeferralDays;
+  if (
+    typeof rawDeferral === 'number' &&
+    Number.isInteger(rawDeferral) &&
+    rawDeferral >= 0 &&
+    rawDeferral <= 60
+  ) {
+    settings.autoApproveDeferralDays = rawDeferral;
+  }
+
+  return settings;
 }
 
 export async function resolvePatchPolicyReference(
@@ -181,7 +268,14 @@ export async function loadPolicyLocalPatchConfig(
 
   if (!row) return null;
 
-  const storedInline = tryNormalizePatchInlineSettings(row.storedInlineSettings).settings;
+  const storedInline = normalizeStoredInlineSettingsWithSalvage(row.storedInlineSettings, {
+    configPolicyId: row.configPolicyId,
+    featureLinkId: row.featureLinkId,
+  });
+  // Constraint: autoApproveDeferralDays and apps have no columns on
+  // config_policy_patch_settings — they live only in the feature link's
+  // inline JSON. The mixed sourcing below (columns for everything else,
+  // storedInline for these two) is therefore intentional, not an oversight.
   const settings = row.patchSettings
     ? normalizePatchInlineSettings({
         sources: row.patchSettings.sources,

@@ -110,6 +110,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
     const inline = effectiveLink?.inlineSettings as Partial<PatchDeploymentSettings> | undefined;
     return { ...defaults, ...inline, sources: normalizeSources(inline?.sources) };
   });
+  const [validationError, setValidationError] = useState<string>();
 
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
@@ -155,8 +156,23 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
     });
   };
 
+  // Client-side mirror of the server-side Zod checks so users get inline
+  // feedback instead of a round-trip rejection.
+  const validateSettings = (): string | null => {
+    if (!selectedRingId && settings.autoApprove && settings.autoApproveSeverities.length === 0) {
+      return 'Select at least one severity for auto-approval.';
+    }
+    if (settings.apps.some((app) => app.action === 'pin' && !app.pinnedVersion?.trim())) {
+      return 'Pinned applications need a version.';
+    }
+    return null;
+  };
+
   const handleSave = async () => {
     clearError();
+    const validation = validateSettings();
+    setValidationError(validation ?? undefined);
+    if (validation) return;
     const result = await save(existingLink?.id ?? null, {
       featureType: 'patch',
       featurePolicyId: selectedRingId || null,
@@ -173,6 +189,9 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
 
   const handleOverride = async () => {
     clearError();
+    const validation = validateSettings();
+    setValidationError(validation ?? undefined);
+    if (validation) return;
     const result = await save(null, {
       featureType: 'patch',
       featurePolicyId: selectedRingId || null,
@@ -197,7 +216,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
       icon={<PackageCheck className="h-5 w-5" />}
       isConfigured={!!existingLink || isInherited}
       saving={saving}
-      error={error}
+      error={validationError ?? error}
       onSave={handleSave}
       onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
       isInherited={isInherited}
@@ -298,6 +317,12 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
           />
           Enable automatic approval
         </label>
+        {/* Spec: policy auto-approval fields are ignored (not cleared) while a ring is linked. */}
+        {!!selectedRingId && settings.autoApprove && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="auto-approve-dormant-note">
+            Saved automatic-approval settings are inactive while a ring is linked.
+          </p>
+        )}
         {settings.autoApprove && !selectedRingId && (
           <div className="mt-2 space-y-2">
             <div className="flex flex-wrap gap-3">

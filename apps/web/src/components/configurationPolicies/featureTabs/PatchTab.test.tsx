@@ -192,4 +192,102 @@ describe('PatchTab patch sources', () => {
     expect(screen.getByTestId('auto-approve-deferral')).toHaveValue(7);
     expect(screen.getAllByText('A.B').length).toBeGreaterThan(0);
   });
+
+  it('blocks save when auto-approve is on with no severities and no ring, then proceeds once fixed', async () => {
+    render(<PatchTab {...baseProps} />);
+
+    fireEvent.click(await screen.findByTestId('auto-approve-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(saveMock).not.toHaveBeenCalled();
+    // Inline hint plus the error banner surfaced through the shell's error path.
+    expect(screen.getAllByText('Select at least one severity for auto-approval.').length).toBe(2);
+
+    fireEvent.click(screen.getByTestId('auto-approve-severity-critical'));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+  });
+
+  it('blocks save when a pinned app rule has no version, then proceeds once fixed', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: {
+            sources: ['os'],
+            apps: [{ source: 'third_party', packageId: 'A.B', action: 'pin', pinnedVersion: '' }],
+          },
+        }}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /save/i }));
+
+    expect(saveMock).not.toHaveBeenCalled();
+    // Inline hint from the app-rules section plus the error banner.
+    expect(screen.getAllByText('Pinned applications need a version.').length).toBe(2);
+
+    fireEvent.change(screen.getByTestId('app-rule-pin-version-third_party|a.b'), {
+      target: { value: '1.2.3' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+  });
+
+  it('blocks override when inherited settings fail validation', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        parentLink={{
+          id: 'parent-link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os'], autoApprove: true, autoApproveSeverities: [] },
+        }}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /override/i }));
+
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(screen.getAllByText('Select at least one severity for auto-approval.').length).toBeGreaterThan(0);
+  });
+
+  it('shows the dormant auto-approve note when a ring is linked and stored autoApprove is true', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: 'ring-1',
+          inlineSettings: { sources: ['os'], autoApprove: true, autoApproveSeverities: ['critical'] },
+        }}
+      />
+    );
+
+    expect(await screen.findByTestId('auto-approve-dormant-note')).toHaveTextContent(
+      /inactive while a ring is linked/i
+    );
+  });
+
+  it('does not show the dormant note when a ring is linked but autoApprove is off', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: 'ring-1',
+          inlineSettings: { sources: ['os'], autoApprove: false, autoApproveSeverities: [] },
+        }}
+      />
+    );
+
+    expect(await screen.findByTestId('auto-approve-ring-notice')).toBeInTheDocument();
+    expect(screen.queryByTestId('auto-approve-dormant-note')).toBeNull();
+  });
 });

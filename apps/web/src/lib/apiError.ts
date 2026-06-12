@@ -19,10 +19,34 @@ function joinZodIssues(issues: unknown): string | null {
   return messages.length > 0 ? messages.join('; ') : null;
 }
 
+// Renders a zod `error.flatten()` payload ({formErrors: string[], fieldErrors:
+// Record<string, string[]>}) — emitted as `details` by some route validators
+// (e.g. configuration-policy feature links).
+function joinZodFlatten(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { formErrors, fieldErrors } = value as { formErrors?: unknown; fieldErrors?: unknown };
+  const parts: string[] = [];
+  if (Array.isArray(formErrors)) {
+    for (const m of formErrors) {
+      if (typeof m === 'string' && m.length > 0) parts.push(m);
+    }
+  }
+  if (fieldErrors && typeof fieldErrors === 'object' && !Array.isArray(fieldErrors)) {
+    for (const [field, messages] of Object.entries(fieldErrors as Record<string, unknown>)) {
+      if (!Array.isArray(messages)) continue;
+      const valid = messages.filter((m): m is string => typeof m === 'string' && m.length > 0);
+      if (valid.length > 0) parts.push(`${field}: ${valid.join('; ')}`);
+    }
+  }
+  return parts.length > 0 ? parts.join('; ') : null;
+}
+
 function detailsToString(details: unknown): string | null {
   if (typeof details === 'string' && details.length > 0) return details;
   const fromIssues = joinZodIssues(details);
   if (fromIssues) return fromIssues;
+  const fromFlatten = joinZodFlatten(details);
+  if (fromFlatten) return fromFlatten;
   return null;
 }
 

@@ -18,6 +18,7 @@ import {
   summarizePatchInventory,
   type PatchRingResolution,
 } from '../../services/configPolicyPatching';
+import { buildPatchesSnapshot } from '../../services/patchJobSnapshot';
 import { enqueuePatchJob } from '../../jobs/patchJobExecutor';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 
@@ -175,23 +176,7 @@ patchJobRoutes.post(
           configPolicyId,
           ringId: policyLocal.ring.ringId,
           name: jobName,
-          patches: {
-            ringId: policyLocal.ring.ringId,
-            ringName: policyLocal.ring.ringName,
-            categoryRules: policyLocal.ring.categoryRules,
-            autoApprove: policyLocal.ring.autoApprove,
-            sources: policyLocal.settings.sources,
-            policyAutoApprove: {
-              enabled: policyLocal.settings.autoApprove ?? false,
-              severities: policyLocal.settings.autoApproveSeverities ?? [],
-              deferralDays: policyLocal.settings.autoApproveDeferralDays ?? 0,
-            },
-            apps: policyLocal.settings.apps ?? [],
-            ringValidation: {
-              classification: policyLocal.ring.classification,
-              valid: policyLocal.ring.valid,
-            },
-          },
+          patches: buildPatchesSnapshot(policyLocal),
           targets: {
             deviceIds,
             configPolicyId,

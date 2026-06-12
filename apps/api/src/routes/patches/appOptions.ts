@@ -3,9 +3,10 @@ import { zValidator } from '@hono/zod-validator';
 import { and, inArray, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
-import { devices, devicePatches, patches, thirdPartyPackageCatalog } from '../../db/schema';
+import { devices, devicePatches, organizations, patches, thirdPartyPackageCatalog } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 
+// Keep in sync with THIRD_PARTY_PATCH_SOURCES in services/patchApprovalEvaluator.ts.
 const THIRD_PARTY_SOURCES = ['third_party', 'custom'] as const;
 
 const appOptionsQuerySchema = z.object({
@@ -21,6 +22,13 @@ type AppOption = {
   displayName: string;
   inCatalog: boolean;
 };
+
+function appOptionKey(source: string, packageId: string): string {
+  const bucket = THIRD_PARTY_SOURCES.includes(source as (typeof THIRD_PARTY_SOURCES)[number])
+    ? 'third_party'
+    : source;
+  return `${bucket}|${packageId.toLowerCase()}`;
+}
 
 export const appOptionsRoutes = new Hono();
 
@@ -38,15 +46,11 @@ appOptionsRoutes.get(
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
-    const catalogRows = await db
-      .select({
-        source: thirdPartyPackageCatalog.source,
-        packageId: thirdPartyPackageCatalog.packageId,
-        vendor: thirdPartyPackageCatalog.vendor,
-        displayName: thirdPartyPackageCatalog.friendlyName,
-      })
-      .from(thirdPartyPackageCatalog);
-
+    // The `patches` table is global (no org_id column, no RLS — tenant
+    // isolation lives on device_patches), so the observed query MUST always
+    // be tenant-scoped for non-system callers. Never run it unconstrained
+    // except for system scope: otherwise any authenticated user could
+    // enumerate third-party software observed across ALL tenants.
     const observedConditions: SQL[] = [
       inArray(patches.source, [...THIRD_PARTY_SOURCES]),
       sql`${patches.packageId} IS NOT NULL`,
@@ -58,7 +62,39 @@ appOptionsRoutes.get(
         INNER JOIN ${devices} d ON d.id = dp.device_id
         WHERE dp.patch_id = ${patches.id} AND d.org_id = ${orgId}
       )`);
+    } else if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      observedConditions.push(sql`EXISTS (
+        SELECT 1 FROM ${devicePatches} dp
+        INNER JOIN ${devices} d ON d.id = dp.device_id
+        WHERE dp.patch_id = ${patches.id} AND d.org_id = ${auth.orgId}
+      )`);
+    } else if (auth.scope === 'partner') {
+      if (!auth.partnerId) {
+        return c.json({ error: 'Partner context required' }, 403);
+      }
+      observedConditions.push(sql`EXISTS (
+        SELECT 1 FROM ${devicePatches} dp
+        INNER JOIN ${devices} d ON d.id = dp.device_id
+        INNER JOIN ${organizations} o ON o.id = d.org_id
+        WHERE dp.patch_id = ${patches.id} AND o.partner_id = ${auth.partnerId}
+      )`);
+    } else if (auth.scope !== 'system') {
+      // Unknown scope — refuse rather than run the observed query unscoped.
+      return c.json({ error: 'Insufficient permissions' }, 403);
     }
+
+    // Curated catalog rows are intentionally global (not tenant data).
+    const catalogRows = await db
+      .select({
+        source: thirdPartyPackageCatalog.source,
+        packageId: thirdPartyPackageCatalog.packageId,
+        vendor: thirdPartyPackageCatalog.vendor,
+        displayName: thirdPartyPackageCatalog.friendlyName,
+      })
+      .from(thirdPartyPackageCatalog);
 
     const observedRows = await db
       .selectDistinct({
@@ -74,7 +110,7 @@ appOptionsRoutes.get(
 
     for (const row of observedRows) {
       if (!row.packageId) continue;
-      merged.set(`${row.source}|${row.packageId.toLowerCase()}`, {
+      merged.set(appOptionKey(row.source, row.packageId), {
         source: row.source,
         packageId: row.packageId,
         vendor: row.vendor,
@@ -84,7 +120,7 @@ appOptionsRoutes.get(
     }
 
     for (const row of catalogRows) {
-      merged.set(`${row.source}|${row.packageId.toLowerCase()}`, {
+      merged.set(appOptionKey(row.source, row.packageId), {
         source: row.source,
         packageId: row.packageId,
         vendor: row.vendor,

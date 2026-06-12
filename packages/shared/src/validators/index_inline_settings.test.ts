@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   patchInlineSettingsSchema,
+  policyAppRuleSchema,
   eventLogInlineSettingsSchema,
   sensitiveDataInlineSettingsSchema,
   monitoringInlineSettingsSchema,
@@ -84,6 +85,42 @@ describe('patchInlineSettingsSchema app rules + deferral', () => {
 
   it('still rejects autoApprove without severities (existing refinement intact)', () => {
     expect(patchInlineSettingsSchema.safeParse({ autoApprove: true, autoApproveSeverities: [] }).success).toBe(false);
+  });
+
+  it('rejects duplicates across the third_party/custom bucket (same packageId, different source)', () => {
+    const result = patchInlineSettingsSchema.safeParse({
+      apps: [
+        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+        { source: 'custom', packageId: 'mozilla.firefox', action: 'pin', pinnedVersion: '120.0' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects apps arrays longer than 200 entries', () => {
+    const apps = Array.from({ length: 201 }, (_, i) => ({
+      source: 'third_party' as const,
+      packageId: `Vendor.App${i}`,
+      action: 'block' as const,
+    }));
+    expect(patchInlineSettingsSchema.safeParse({ apps }).success).toBe(false);
+  });
+
+  it('rejects non-integer autoApproveDeferralDays', () => {
+    expect(patchInlineSettingsSchema.safeParse({ autoApproveDeferralDays: 2.5 }).success).toBe(false);
+  });
+});
+
+describe('policyAppRuleSchema source enum', () => {
+  it('accepts third_party and custom sources', () => {
+    expect(policyAppRuleSchema.safeParse({ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }).success).toBe(true);
+    expect(policyAppRuleSchema.safeParse({ source: 'custom', packageId: 'Internal.Tool', action: 'block' }).success).toBe(true);
+  });
+
+  it('rejects sources outside the third-party bucket enum', () => {
+    expect(policyAppRuleSchema.safeParse({ source: 'winget', packageId: 'Mozilla.Firefox', action: 'block' }).success).toBe(false);
+    expect(policyAppRuleSchema.safeParse({ source: 'Third_Party', packageId: 'Mozilla.Firefox', action: 'block' }).success).toBe(false);
+    expect(policyAppRuleSchema.safeParse({ source: '', packageId: 'Mozilla.Firefox', action: 'block' }).success).toBe(false);
   });
 });
 
