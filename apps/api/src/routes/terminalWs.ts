@@ -430,7 +430,7 @@ function createTerminalWsHandlers(
           // shell relaying input until pong timeout, or indefinitely while the
           // client answers pings. This is the cross-instance backstop to the
           // direct socket close done by `closeTerminalSession`. A revoked socket
-          // closes within at most one ping interval (~30s). Fails CLOSED.
+          // closes within at most one ping interval (PING_INTERVAL_MS). Fails CLOSED.
           void isViewerSessionRevoked(sessionId)
             .then((revoked) => {
               if (revoked && activeTerminalSessions.has(sessionId)) {

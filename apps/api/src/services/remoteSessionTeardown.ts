@@ -111,8 +111,10 @@ export async function teardownDisconnectedSessions(
       // closeTerminalSession also sends `terminal_stop` to the agent and
       // returns true when it closed a local socket. When the socket is NOT
       // local (false — e.g. it lives on another API instance), fall back to
-      // signalling the agent directly so the PTY still dies. Exactly one
-      // `terminal_stop` reaches the agent either way.
+      // signalling the agent directly so the PTY still dies. This dispatches a
+      // single `terminal_stop` per case; any redundant one from a racing
+      // path (e.g. the ping-loop backstop) reuses the same `term-stop-<id>`
+      // command id and is dropped by the agent's command dedup.
       let closedLocally = false;
       try {
         const { closeTerminalSession } = await getTerminalWs();

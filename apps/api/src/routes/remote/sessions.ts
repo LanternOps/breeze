@@ -138,7 +138,7 @@ sessionRoutes.delete(
     // WebRTC stream / terminal PTY. Marking the row + revoking the token alone
     // blocks reconnect but leaves a live Flow-B desktop or terminal running
     // with the server out of the loop — so a `/stale` sweep of another user's
-    // live session must also push the agent stop. Finding: /stale no-agent-signal.
+    // live session must also push the agent stop.
     await teardownDisconnectedSessions(result);
 
     return c.json({ cleaned: result.length, ids: result.map(r => r.id) });

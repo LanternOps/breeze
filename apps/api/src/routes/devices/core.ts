@@ -48,7 +48,7 @@ import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected } from '../agentWs';
-import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
+import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 
@@ -1183,18 +1183,21 @@ coreRoutes.delete(
       .where(eq(devices.id, deviceId))
       .returning();
 
+    // Cut any live remote-control session to the device being decommissioned —
+    // device `status` is only checked at session connect time, so an in-flight
+    // desktop/terminal session would otherwise survive the offboarding. Never
+    // throws; a TEARDOWN_FAILED (already Sentry-reported inside the service) is
+    // recorded in the audit trail so there's a record live control may persist.
+    const teardownResult = await terminateDeviceRemoteSessions(deviceId);
+
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.decommission',
       resourceType: 'device',
       resourceId: updated?.id ?? deviceId,
-      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
+      details: { remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok' },
     });
-
-    // Cut any live remote-control session to the device being decommissioned —
-    // device `status` is only checked at session connect time, so an in-flight
-    // desktop/terminal session would otherwise survive the offboarding.
-    await terminateDeviceRemoteSessions(deviceId);
 
     return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
   }

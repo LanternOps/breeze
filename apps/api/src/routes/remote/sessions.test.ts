@@ -26,6 +26,9 @@ const {
   checkRemoteAccess,
   sendCommandToAgent,
   getPagination,
+  teardownDisconnectedSessions,
+  checkSessionRateLimit,
+  checkUserSessionRateLimit,
 } = vi.hoisted(() => ({
   getDeviceWithOrgCheck: vi.fn(),
   getSessionWithOrgCheck: vi.fn(),
@@ -33,6 +36,9 @@ const {
   checkRemoteAccess: vi.fn(() => Promise.resolve({ allowed: true })),
   sendCommandToAgent: vi.fn(() => true),
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
+  teardownDisconnectedSessions: vi.fn(() => Promise.resolve(undefined)),
+  checkSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
+  checkUserSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
 }));
 
 vi.mock('../../db', () => ({
@@ -112,14 +118,23 @@ vi.mock('./helpers', () => ({
   getDeviceWithOrgCheck,
   getSessionWithOrgCheck,
   hasSessionOrTransferOwnership: vi.fn(() => true),
-  checkSessionRateLimit: vi.fn(),
-  checkUserSessionRateLimit: vi.fn(),
+  checkSessionRateLimit,
+  checkUserSessionRateLimit,
   logSessionAudit: vi.fn(),
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG: 10,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 5,
 }));
 
 vi.mock('../../services/viewerTokenRevocation', () => ({ revokeViewerSession }));
+
+// The stale-sweep (DELETE /sessions/stale) and the in-create sweep (POST
+// /sessions) both push `teardownDisconnectedSessions(rows)` to stop the live
+// agent stream after marking rows disconnected. Mock the service so we can
+// assert the wiring (and so the real one doesn't fire its own extra db.select
+// against this file's mock db).
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  teardownDisconnectedSessions: teardownDisconnectedSessions,
+}));
 
 vi.mock('../../services/remoteAccessPolicy', () => ({
   checkRemoteAccess,
@@ -194,8 +209,11 @@ function rigStaleNarrowing(orgDevices: Array<{ id: string; siteId: string | null
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: staleWhere }) }),
   } as never);
-  // update().set().where().returning()
-  const returning = vi.fn().mockResolvedValue(staleIds.map((id) => ({ id })));
+  // update().set().where().returning() — returns the {id,type,deviceId} shape
+  // that teardownDisconnectedSessions consumes.
+  const returning = vi
+    .fn()
+    .mockResolvedValue(staleIds.map((id) => ({ id, type: 'desktop', deviceId: DEVICE_IN_ALLOWED })));
   vi.mocked(db.update).mockReturnValueOnce({
     set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
   } as never);
@@ -208,7 +226,9 @@ function rigStaleUnrestricted(staleIds: string[]) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: staleWhere }) }),
   } as never);
-  const returning = vi.fn().mockResolvedValue(staleIds.map((id) => ({ id })));
+  const returning = vi
+    .fn()
+    .mockResolvedValue(staleIds.map((id) => ({ id, type: 'desktop', deviceId: DEVICE_IN_ALLOWED })));
   vi.mocked(db.update).mockReturnValueOnce({
     set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
   } as never);
@@ -227,6 +247,10 @@ describe('remote sessions — site-scope enforcement', () => {
     getPagination.mockReturnValue({ page: 1, limit: 50, offset: 0 });
     checkRemoteAccess.mockReturnValue(Promise.resolve({ allowed: true }));
     sendCommandToAgent.mockReturnValue(true);
+    teardownDisconnectedSessions.mockReset();
+    teardownDisconnectedSessions.mockResolvedValue(undefined);
+    checkSessionRateLimit.mockResolvedValue({ allowed: true, currentCount: 0 });
+    checkUserSessionRateLimit.mockResolvedValue({ allowed: true, currentCount: 0 });
     app = new Hono();
     app.route('/remote', sessionRoutes);
   });
@@ -497,6 +521,13 @@ describe('remote sessions — site-scope enforcement', () => {
       // The stale-session select must have been constrained (the device-id
       // narrowing condition was pushed), so the where clause was invoked.
       expect(staleWhere).toHaveBeenCalledTimes(1);
+      // Wiring: the disconnected rows must be handed to the agent-stop teardown,
+      // shaped {id,type,deviceId}. Dropping this call silently reintroduces the
+      // "live stream survives a /stale sweep" vulnerability (PR #1283).
+      expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
+      expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
+        { id: 'sess-allowed', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+      ]);
     });
 
     it('returns {cleaned:0} without touching sessions when caller has no in-scope devices', async () => {
@@ -545,6 +576,89 @@ describe('remote sessions — site-scope enforcement', () => {
       // Only the stale-session select ran — no org-device narrowing query.
       expect(db.select).toHaveBeenCalledTimes(1);
       expect(staleWhere).toHaveBeenCalledTimes(1);
+      // Wiring: even on the unrestricted path the disconnected rows are torn down.
+      expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
+      expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
+        { id: 'sess-1', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+        { id: 'sess-2', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+      ]);
+    });
+
+    it('does not call the agent-stop teardown when no in-scope devices exist', async () => {
+      const deviceWhere = vi
+        .fn()
+        .mockResolvedValue([{ id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE }]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: deviceWhere }),
+      } as never);
+
+      const res = await app.request('/remote/sessions/stale', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cleaned: 0, ids: [] });
+      expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /sessions — in-create stale sweep', () => {
+    // POST /sessions terminates lingering sessions for the device+type before
+    // creating the new one. That sweep marks rows disconnected then must push
+    // teardownDisconnectedSessions(rows) so a still-live desktop/terminal for a
+    // stale row gets the agent stop — not just a DB flip. Wiring guard (PR #1283).
+    function rigCreateSession(staleRows: Array<{ id: string; type: string; deviceId: string }>) {
+      // 1. stale-terminate UPDATE: chain exposes a `.returning()` fn that the
+      //    route detects (typeof === 'function') and awaits.
+      const staleReturning = vi.fn().mockResolvedValue(staleRows);
+      const staleWhere = vi.fn().mockReturnValue({ returning: staleReturning });
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({ where: staleWhere }),
+      } as never);
+
+      // 2. INSERT ... returning() → the created session row.
+      const insertReturning = vi.fn().mockResolvedValue([
+        {
+          id: SESSION_ID,
+          deviceId: DEVICE_IN_ALLOWED,
+          userId: 'user-1',
+          type: 'desktop',
+          status: 'pending',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        },
+      ]);
+      (db as any).insert = vi.fn().mockReturnValue({
+        values: vi.fn().mockReturnValue({ returning: insertReturning }),
+      });
+      return { staleReturning };
+    }
+
+    it('tears down the swept stale sessions before creating the new one', async () => {
+      getDeviceWithOrgCheck.mockResolvedValue({
+        id: DEVICE_IN_ALLOWED,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE,
+        agentId: 'agent-1',
+        hostname: 'host-1',
+        osType: 'linux',
+        status: 'online',
+      });
+      const staleRows = [{ id: 'stale-1', type: 'desktop', deviceId: DEVICE_IN_ALLOWED }];
+      rigCreateSession(staleRows);
+
+      const res = await app.request('/remote/sessions', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_IN_ALLOWED, type: 'desktop' }),
+      });
+
+      expect(res.status).toBe(201);
+      // Wiring: the swept {id,type,deviceId} rows must be handed to the
+      // agent-stop teardown. Dropping this reintroduces the "stale row left a
+      // live stream running" hole.
+      expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
+      expect(teardownDisconnectedSessions).toHaveBeenCalledWith(staleRows);
     });
   });
 

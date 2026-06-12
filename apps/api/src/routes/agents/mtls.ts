@@ -17,7 +17,7 @@ import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { encryptSecret } from '../../services/secretCrypto';
 import { isPrivateIp } from '../../services/urlSafety';
-import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
+import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 
 export const mtlsRoutes = new Hono();
 
@@ -237,6 +237,14 @@ mtlsRoutes.post('/renew-cert', async (c) => {
       })
       .where(eq(devices.id, device.id));
 
+    // Cut any live remote-control session to this device. Flipping `status`
+    // alone is only checked at connect time, so an in-flight desktop/terminal
+    // session would otherwise keep running against a device we just isolated as
+    // compromised. Never throws; a TEARDOWN_FAILED (already Sentry-reported
+    // inside the service) is recorded in the audit trail below so there's a
+    // forensic record that live control may have persisted.
+    const teardownResult = await terminateDeviceRemoteSessions(device.id);
+
     writeAuditEvent(c, {
       orgId: device.orgId,
       actorType: 'agent',
@@ -244,14 +252,11 @@ mtlsRoutes.post('/renew-cert', async (c) => {
       action: 'agent.mtls.quarantined',
       resourceType: 'device',
       resourceId: device.id,
-      details: { reason: 'mtls_cert_expired' },
+      details: {
+        reason: 'mtls_cert_expired',
+        remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok',
+      },
     });
-
-    // Cut any live remote-control session to this device. Flipping `status`
-    // alone is only checked at connect time, so an in-flight desktop/terminal
-    // session would otherwise keep running against a device we just isolated as
-    // compromised. Best-effort: self-reports failures to Sentry, never throws.
-    await terminateDeviceRemoteSessions(device.id);
 
     return c.json({ error: 'Device quarantined', quarantined: true }, 403);
   }
@@ -446,6 +451,10 @@ mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write
     })
     .where(eq(devices.id, device.id));
 
+  // Tear down any live remote-control session to a device we're decommissioning.
+  // Never throws; a TEARDOWN_FAILED is recorded in the audit trail below.
+  const teardownResult = await terminateDeviceRemoteSessions(device.id);
+
   writeAuditEvent(c, {
     orgId: device.orgId,
     actorType: 'user',
@@ -454,10 +463,8 @@ mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write
     resourceType: 'device',
     resourceId: device.id,
     resourceName: device.hostname,
+    details: { remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok' },
   });
-
-  // Tear down any live remote-control session to a device we're decommissioning.
-  await terminateDeviceRemoteSessions(device.id);
 
   return c.json({ success: true });
 });
