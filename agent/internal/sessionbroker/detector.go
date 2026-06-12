@@ -1,6 +1,9 @@
 package sessionbroker
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // SessionEventType identifies login/logout/switch events.
 type SessionEventType string
@@ -33,6 +36,12 @@ type DetectedSession struct {
 	Seat     string `json:"seat,omitempty"`
 	State    string `json:"state,omitempty"` // "active", "online", "closing"
 	Type     string `json:"type,omitempty"`  // "console", "rdp", "services"
+
+	// IdleFor is how long the session has gone without user input. Only
+	// meaningful when IdleKnown is true; platforms that cannot measure input
+	// idle (or fail to) leave IdleKnown false.
+	IdleFor   time.Duration `json:"-"`
+	IdleKnown bool          `json:"-"`
 }
 
 // SessionDetector detects user sessions and monitors login/logout events.
