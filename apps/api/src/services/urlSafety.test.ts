@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'http';
 import { EventEmitter } from 'events';
-import type { AddressInfo, LookupAddress } from 'net';
+import type { AddressInfo } from 'net';
+import type { LookupAddress } from 'dns';
 import {
   safeFetch,
   isPrivateIp,
@@ -232,7 +233,7 @@ describe('safeFetch — SSRF policy', () => {
             return;
           }
           if (!Array.isArray(addresses)) {
-            req.emit('error', new Error(`Invalid IP address: ${(addresses as LookupAddress[])[0]?.address}`));
+            req.emit('error', new Error(`Invalid IP address: ${addresses}`));
             return;
           }
           pinnedRecords = addresses;
