@@ -363,6 +363,7 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     ringId?: string | null;
     categoryRules?: unknown[];
     autoApprove?: unknown;
+    sources?: unknown;
   };
   const targets = patchJob.targets as {
     deployment?: { rebootPolicy?: string };
@@ -375,6 +376,9 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
       : []) as RingConfig['categoryRules'],
     autoApprove: patchesConfig?.autoApprove ?? {},
     deferralDays: 0,
+    sources: Array.isArray(patchesConfig?.sources)
+      ? patchesConfig.sources.filter((s): s is string => typeof s === 'string')
+      : undefined,
   };
 
   // If we have a ringId, load deferralDays from the ring
