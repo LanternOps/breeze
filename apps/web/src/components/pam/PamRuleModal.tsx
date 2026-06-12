@@ -120,6 +120,7 @@ export default function PamRuleModal({
           const data = await res.json();
           const items = (data.data ?? data.sites ?? data ?? []) as NamedOption[];
           setSites(items.map((s) => ({ id: s.id, name: s.name })));
+          setSiteId((prev) => (prev && !items.some((s) => s.id === prev) ? '' : prev));
         }
       })
       .catch(() => {});

@@ -158,8 +158,9 @@ export default function PamRespondModal({
             <button
               type="button"
               onClick={onCreateRule}
+              disabled={submitting}
               data-testid="pam-respond-create-rule"
-              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
             >
               Create rule from this request…
             </button>
