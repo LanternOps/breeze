@@ -285,6 +285,36 @@
       ]
     },
     {
+      "pattern": "apps/web/src/components/automations/AutomationForm.tsx",
+      "docs": [
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/huntress.ts",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/huntressSync.ts",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/sentinelOne.ts",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/s1Sync.ts",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/routes/deployments.ts",
       "docs": [
         "features/deployments.mdx"
