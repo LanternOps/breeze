@@ -360,4 +360,71 @@ describe('createEventWsTicketRoute', () => {
     const identity = await consumeTicket(body.ticket);
     expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-xyz'] });
   });
+
+  // Regression guard (Finding #8): the SITE-scope restriction must be sourced
+  // from the authenticated identity (`auth.allowedSiteIds`, set by
+  // authMiddleware) and threaded into the minted ticket — NOT from
+  // `c.get('permissions')`, which is only populated by `requirePermission` and
+  // never runs on this route. This test exercises the real route handler end to
+  // end (auth context → route → minted ticket → consumed identity), so it goes
+  // red if the handler is reverted to read `permissions` (which would be
+  // undefined here, dropping the restriction).
+  it('threads allowedSiteIds from the authenticated identity into the minted ticket', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: 'org-xyz',
+        // Site restriction lives on the auth identity (authMiddleware), not on
+        // `permissions`. The route MUST read this field.
+        allowedSiteIds: ['site-a'],
+      } as any);
+      // Defensive: even if `permissions` carried a different value, the route
+      // must ignore it. A reverted handler reading `permissions.allowedSiteIds`
+      // would pick up the wrong restriction and fail the assertion below.
+      c.set('permissions', { allowedSiteIds: ['site-WRONG'] } as any);
+      await next();
+    });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const identity = await consumeTicket(body.ticket);
+    expect(identity).toEqual({
+      userId: 'user-abc',
+      orgIds: ['org-xyz'],
+      allowedSiteIds: ['site-a'],
+    });
+  });
+
+  it('mints an unrestricted ticket when the identity carries no allowedSiteIds', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: 'org-xyz',
+        // No allowedSiteIds → unrestricted (full org access).
+      } as any);
+      await next();
+    });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const identity = await consumeTicket(body.ticket);
+    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-xyz'] });
+    expect(identity?.allowedSiteIds).toBeUndefined();
+  });
 });

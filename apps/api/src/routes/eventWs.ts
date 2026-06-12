@@ -5,7 +5,6 @@ import { z } from 'zod';
 import { getRedis } from '../services/redis';
 import { getEventDispatcher, type ClientEntry } from '../services/eventDispatcher';
 import { authMiddleware, resolveOrgAccess } from '../middleware/auth';
-import type { UserPermissions } from '../services/permissions';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -200,10 +199,9 @@ export type ClientMessage = z.infer<typeof clientMessageSchema>;
  *
  * The predicate runs synchronously in the dispatcher's hot path, so it can
  * only inspect fields already on the event message — it cannot do a DB lookup
- * to resolve a device's site. Today the event bus (`eventBus.ts`) publishes a
- * generic `BreezeEvent` whose payload carries `deviceId` for ~62% of events
- * but NEVER a `siteId` (0/56 publishers). Without a `siteId` on the wire there
- * is no synchronous, correct way to attribute an event to a site.
+ * to resolve a device's site. The published `BreezeEvent` (`eventBus.ts`)
+ * carries no `siteId` on the wire — neither top-level nor in `payload` — so
+ * there is no synchronous, correct way to attribute most events to a site.
  *
  * We therefore FAIL CLOSED: a site-restricted client only receives an event we
  * can POSITIVELY attribute to one of its allowed sites — i.e. the event must
@@ -299,8 +297,11 @@ export function createEventWsTicketRoute(): Hono {
     // the ticket. A site-restricted org user must not receive live events for
     // sites outside their allowlist — RLS doesn't defend this and events are
     // pub/sub, not Postgres. `undefined`/empty = unrestricted (full org access).
-    const perms = c.get('permissions') as UserPermissions | undefined;
-    const allowedSiteIds = perms?.allowedSiteIds;
+    // Sourced from `auth.allowedSiteIds` (set by authMiddleware), NOT
+    // `c.get('permissions')` — this route mints a ticket behind authMiddleware
+    // only, and `permissions` is populated solely by requirePermission, which
+    // does not run here.
+    const allowedSiteIds = auth.allowedSiteIds;
 
     const result = await createEventWsTicket(auth.user.id, orgIds, allowedSiteIds);
     return c.json(result);

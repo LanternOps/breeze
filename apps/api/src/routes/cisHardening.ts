@@ -808,7 +808,7 @@ cisHardeningRoutes.post(
       }, 404);
     }
 
-    // Site-scope re-check (FINDING #11): RLS only defends the org axis. A
+    // Site-scope re-check: RLS only defends the org axis. A
     // site-restricted user could otherwise approve/queue pending actions another
     // tech created for devices outside their site allowlist, dispatching CIS
     // hardening/rollback commands to endpoints beyond their authority. Mirror the

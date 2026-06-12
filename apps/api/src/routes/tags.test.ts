@@ -439,6 +439,19 @@ describe('tag routes', () => {
     return where;
   }
 
+  // Serialize the drizzle WHERE condition the handler passes to .where() so we
+  // can assert the constructed SQL actually contains the site-axis narrowing
+  // (the mock DB ignores the WHERE, so an `expect.anything()` check would still
+  // pass even if the `inArray(devices.siteId, ...)` push were removed). Mirrors
+  // the `conditionText` technique in cisHardening_site_scope.test.ts. The
+  // schema mock maps `devices.siteId -> 'siteId'`, so an in-site filter
+  // serializes to include that column token and the site id.
+  function conditionText(value: unknown): string {
+    return JSON.stringify(value, (_key, nested) =>
+      typeof nested === 'function' ? '[function]' : nested
+    );
+  }
+
   describe('site-scope enforcement', () => {
     it('GET /tags narrows the taxonomy to the site allowlist', async () => {
       // Only the allowed-site device's tags come back from the (narrowed) query.
@@ -453,9 +466,13 @@ describe('tag routes', () => {
       const body = await res.json();
       expect(body.total).toBe(1);
       expect(body.data[0].tag).toBe('finance');
-      // The handler must have built a WHERE (org + site narrowing), not run unfiltered.
+      // The handler must have built a WHERE that actually narrows by site —
+      // serialize the condition and assert it carries the site-axis filter
+      // (column + allowed site id), not just "some object".
       expect(where).toHaveBeenCalledTimes(1);
-      expect(where).toHaveBeenCalledWith(expect.anything());
+      const whereText = conditionText(where.mock.calls[0]?.[0]);
+      expect(whereText).toContain('siteId');
+      expect(whereText).toContain(ALLOWED_SITE_ID);
     });
 
     it('GET /tags/devices excludes out-of-site devices via the site allowlist', async () => {
@@ -474,7 +491,9 @@ describe('tag routes', () => {
       expect(body.total).toBe(1);
       expect(body.data[0].id).toBe('dev-a');
       expect(where).toHaveBeenCalledTimes(1);
-      expect(where).toHaveBeenCalledWith(expect.anything());
+      const whereText = conditionText(where.mock.calls[0]?.[0]);
+      expect(whereText).toContain('siteId');
+      expect(whereText).toContain(ALLOWED_SITE_ID);
     });
 
     it('GET /tags emits a never-true (sql`false`) condition when the allowlist is empty', async () => {
@@ -512,6 +531,9 @@ describe('tag routes', () => {
       const body = await res.json();
       expect(body.total).toBe(2);
       expect(where).toHaveBeenCalledTimes(1);
+      // Unset allowlist = full org access: the WHERE must NOT carry a site
+      // filter (only the org-axis condition).
+      expect(conditionText(where.mock.calls[0]?.[0])).not.toContain('siteId');
     });
   });
 });

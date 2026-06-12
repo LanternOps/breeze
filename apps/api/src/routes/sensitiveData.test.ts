@@ -354,6 +354,74 @@ describe('sensitive data routes', () => {
       expect(queueCommand).not.toHaveBeenCalled();
     });
 
+    it('blocks secure_delete (most destructive) for an out-of-site finding (403, no command queued)', async () => {
+      // The destructive-path deny must hold for the most dangerous action too:
+      // a site-restricted user cannot secure_delete a finding on a device
+      // outside their allowed sites. 1) findings lookup, 2) device-site lookup.
+      mockSelectFromWhere([
+        { id: findingId, orgId, deviceId, filePath: '/tmp/secret.txt', status: 'open' }
+      ]);
+      mockDeviceSiteLookup([{ id: deviceId, siteId: forbiddenSite }]);
+
+      const res = await app.request('/sensitive-data/remediate', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+          'x-restrict-site': allowedSite
+        },
+        body: JSON.stringify({
+          findingIds: [findingId],
+          action: 'secure_delete',
+          confirm: true
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site/i);
+      // The most destructive command must NOT be dispatched.
+      expect(queueCommand).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a finding device row does not resolve (dangling deviceId, 403)', async () => {
+      // The site-axis guard loads the distinct finding device ids and rejects if
+      // any device row fails to resolve (findingDevices.length !== deviceIds.length)
+      // — e.g. a dangling / cross-org deviceId. Rig the device lookup to return
+      // FEWER rows than the findings' distinct device ids: two findings on two
+      // distinct devices, but only one device row comes back.
+      const findingId2 = '55555555-5555-5555-5555-555555555555';
+      const deviceId2 = '66666666-6666-6666-6666-666666666666';
+      mockSelectFromWhere([
+        { id: findingId, orgId, deviceId, filePath: '/tmp/secret.txt', status: 'open' },
+        { id: findingId2, orgId, deviceId: deviceId2, filePath: '/tmp/secret2.txt', status: 'open' }
+      ]);
+      // Only ONE of the two distinct device ids resolves (the other is in the
+      // allowed site to prove it's the missing-row check, not a site deny, that
+      // trips the 403).
+      mockDeviceSiteLookup([{ id: deviceId, siteId: allowedSite }]);
+
+      const res = await app.request('/sensitive-data/remediate', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+          'x-restrict-site': allowedSite
+        },
+        body: JSON.stringify({
+          findingIds: [findingId, findingId2],
+          action: 'quarantine',
+          confirm: true
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site/i);
+      // Fail-closed: no command queued when a device row can't be resolved.
+      expect(queueCommand).not.toHaveBeenCalled();
+    });
+
     it('allows remediation when the finding device is within the site allowlist', async () => {
       mockSelectFromWhere([
         { id: findingId, orgId, deviceId, filePath: '/tmp/secret.txt', status: 'open' }

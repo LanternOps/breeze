@@ -31,7 +31,7 @@ function actorFrom(auth: AuthContext) {
  * (getScopedTicketOr404) — build orgCondition-scoped conditions so neither
  * a cross-org nor a cross-partner ticket ID resolves.
  *
- * Site axis (#1047 class): RLS enforces only the org axis, so a site-restricted
+ * Site axis: RLS enforces only the org axis, so a site-restricted
  * org user must also be gated on the SITE axis here. After the org-scoped load,
  * a device-bound ticket is resolved only when its device's site is in the
  * caller's allowlist (deviceInSiteScope); deviceless (org-level) tickets stay

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 
 vi.mock('../../db', () => ({
   db: {
@@ -21,18 +22,36 @@ vi.mock('../../db/schema', () => ({
 
 // Mirror prod gate semantics:
 // - requireScope: tier gate (always passes in these tests)
-// - requirePermission: RBAC gate — returns 403 when the caller lacks the perm
-// - requireMfa: MFA gate — passes here; we exercise the RBAC gap specifically
+// - requirePermission: RBAC gate — returns 403 when the caller lacks the perm.
+//   The mock enforces against the SPECIFIC permission the route wires it with
+//   (devices:execute). A gate mistakenly wired to a different permission
+//   (e.g. devices:read) is treated as an ungranted permission and 403s even
+//   when the caller "has" devices:execute — so the allow-path tests fail,
+//   catching the wrong-permission regression.
+// - requireMfa: MFA gate — controllable via mfaSatisfied; default pass-through.
 let hasPermission = true;
+let mfaSatisfied = true;
+// The single permission the caller is treated as holding when hasPermission is true.
+const GRANTED_PERMISSION = 'devices:execute';
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (!hasPermission) {
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    const required = `${resource}:${action}`;
+    // 403 if the caller lacks the grant OR the gate is wired to a permission
+    // other than the one the caller holds (devices:execute).
+    if (!hasPermission || required !== GRANTED_PERMISSION) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Mirror the real requireMfa(), which throws HTTPException(403) when MFA is
+  // required. Hono's default error handler renders that as a 403 response.
+  requireMfa: vi.fn(() => async (_c: any, next: any) => {
+    if (!mfaSatisfied) {
+      throw new HTTPException(403, { message: 'MFA required' });
+    }
+    return next();
+  }),
 }));
 
 vi.mock('../../services/permissions', () => ({
@@ -85,6 +104,7 @@ describe('patch approvals RBAC gating', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     hasPermission = true;
+    mfaSatisfied = true;
   });
 
   describe('without the devices:execute permission', () => {
@@ -152,6 +172,25 @@ describe('patch approvals RBAC gating', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('approved');
+    });
+  });
+
+  // Guards the requireMfa() gate: with the RBAC permission granted but MFA
+  // unsatisfied, the mutating route must still 403. Drops the requireMfa()
+  // line from the route and this test fails.
+  describe('with the permission but MFA unsatisfied', () => {
+    beforeEach(() => {
+      hasPermission = true;
+      mfaSatisfied = false;
+    });
+
+    it('rejects POST /patches/bulk-approve with 403', async () => {
+      const res = await mountApp().request('/patches/bulk-approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+        body: JSON.stringify({ patchIds: [PATCH_ID] }),
+      });
+      expect(res.status).toBe(403);
     });
   });
 });

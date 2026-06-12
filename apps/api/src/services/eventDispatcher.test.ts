@@ -171,6 +171,94 @@ describe('EventDispatcher', () => {
     dispatcher.unregister('org-1', client);
   });
 
+  // -------------------------------------------------------------------
+  // Per-client `filter` predicate (site-scope authz hook).
+  //
+  // The dispatch loop consults `client.filter` after the subscription-type
+  // match: deliver only when the predicate returns true, and FAIL CLOSED on
+  // throw (drop the event for that client without crashing dispatch or
+  // affecting other clients). Exercised through the real `dispatch()`.
+  // -------------------------------------------------------------------
+
+  it('delivers an event the per-client filter accepts', () => {
+    const dispatcher = getEventDispatcher();
+    const ws = mockWs();
+    const client = {
+      ws,
+      userId: 'user-1',
+      subscribedTypes: new Set(['device.*']),
+      filter: (e: Record<string, unknown>) => (e as any).payload?.siteId === 'site-a',
+    };
+    dispatcher.register('org-1', client);
+
+    (dispatcher as any).dispatch(
+      'org-1',
+      JSON.stringify({ type: 'device.online', orgId: 'org-1', payload: { siteId: 'site-a' } }),
+    );
+    expect(ws.send).toHaveBeenCalledTimes(1);
+
+    dispatcher.unregister('org-1', client);
+  });
+
+  it('drops an event the per-client filter rejects', () => {
+    const dispatcher = getEventDispatcher();
+    const ws = mockWs();
+    const client = {
+      ws,
+      userId: 'user-1',
+      subscribedTypes: new Set(['device.*']),
+      filter: (e: Record<string, unknown>) => (e as any).payload?.siteId === 'site-a',
+    };
+    dispatcher.register('org-1', client);
+
+    // Event subscribed-type matches, but the filter rejects it (wrong site).
+    (dispatcher as any).dispatch(
+      'org-1',
+      JSON.stringify({ type: 'device.online', orgId: 'org-1', payload: { siteId: 'site-b' } }),
+    );
+    expect(ws.send).not.toHaveBeenCalled();
+
+    dispatcher.unregister('org-1', client);
+  });
+
+  it('fails closed when a filter throws: drops the event for that client without affecting others', () => {
+    const dispatcher = getEventDispatcher();
+    const filteredWs = mockWs();
+    const plainWs = mockWs();
+
+    const throwingClient = {
+      ws: filteredWs,
+      userId: 'user-throws',
+      subscribedTypes: new Set(['device.*']),
+      filter: () => {
+        throw new Error('boom');
+      },
+    };
+    // Second client on the SAME org with no filter — must still receive the event.
+    const plainClient = {
+      ws: plainWs,
+      userId: 'user-plain',
+      subscribedTypes: new Set(['device.*']),
+    };
+    dispatcher.register('org-1', throwingClient);
+    dispatcher.register('org-1', plainClient);
+
+    expect(() =>
+      (dispatcher as any).dispatch(
+        'org-1',
+        JSON.stringify({ type: 'device.online', orgId: 'org-1', payload: { siteId: 'site-a' } }),
+      ),
+    ).not.toThrow();
+
+    // Fail closed: the throwing client's event is dropped.
+    expect(filteredWs.send).not.toHaveBeenCalled();
+    // The unfiltered client on the same org is unaffected.
+    expect(plainWs.send).toHaveBeenCalledTimes(1);
+
+    dispatcher.unregister('org-1', throwingClient);
+    dispatcher.unregister('org-1', plainClient);
+  });
+
   it('unsubscribes from Redis when last client for org disconnects', () => {
     const dispatcher = getEventDispatcher();
     const ws = mockWs();

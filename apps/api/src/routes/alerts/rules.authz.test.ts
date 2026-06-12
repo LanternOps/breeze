@@ -85,6 +85,15 @@ describe('alert rules authz (Finding #6)', () => {
     expect(res.status).toBe(403);
   });
 
+  it('403 on PUT /alerts/rules/:id without ALERTS_WRITE', async () => {
+    const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'r' }),
+    });
+    expect(res.status).toBe(403);
+  });
+
   it('403 on DELETE /alerts/rules/:id without ALERTS_WRITE', async () => {
     const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(403);
@@ -99,6 +108,18 @@ describe('alert rules authz (Finding #6)', () => {
     });
     // Past the gate: a zValidator 400 (bad body) proves we are no longer blocked
     // by a permission 403.
+    expect(res.status).not.toBe(403);
+  });
+
+  it('passes the permission gate on PUT when ALERTS_WRITE is granted', async () => {
+    grantedRef.current.add(ALERTS_WRITE);
+    const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'r' }),
+    });
+    // Past the gate: getAlertRuleWithOrgCheck mock returns undefined → 404
+    // (not found), proving we are no longer blocked by a permission 403.
     expect(res.status).not.toBe(403);
   });
 

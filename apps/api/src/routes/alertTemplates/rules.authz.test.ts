@@ -76,6 +76,15 @@ describe('alert-template rules authz (Finding #6)', () => {
     expect(res.status).toBe(403);
   });
 
+  it('403 on PATCH /alert-templates/rules/:id without ALERTS_WRITE', async () => {
+    const res = await makeApp().request(`/alert-templates/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'r' }),
+    });
+    expect(res.status).toBe(403);
+  });
+
   it('403 on DELETE /alert-templates/rules/:id without ALERTS_WRITE', async () => {
     const res = await makeApp().request(`/alert-templates/rules/${RULE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(403);
@@ -96,6 +105,16 @@ describe('alert-template rules authz (Finding #6)', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
+    });
+    expect(res.status).not.toBe(403);
+  });
+
+  it('passes the permission gate on PATCH when ALERTS_WRITE is granted', async () => {
+    grantedRef.current.add(ALERTS_WRITE);
+    const res = await makeApp().request(`/alert-templates/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'r' }),
     });
     expect(res.status).not.toBe(403);
   });
