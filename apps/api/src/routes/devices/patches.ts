@@ -100,6 +100,20 @@ function safeParsePatchResult(result: unknown): unknown {
   return raw;
 }
 
+/**
+ * Resolve which of the given patch IDs carry an explicit org-wide manual-approval
+ * record (`patchApprovals.status = 'approved'`) for the org.
+ *
+ * This is intentionally only the org-wide manual-approval gate. It does NOT consider
+ * the device's effective patch ring or category/auto-approve rules — for the full
+ * ring + category-aware evaluation see `resolveApprovedPatchesForDevice` in
+ * `services/patchApprovalEvaluator.ts`.
+ *
+ * Known limitation: because this gate is org-wide and ring-agnostic, a patch that is
+ * approved for ring A passes this gate for a device in ring B. Wiring the install
+ * endpoint through the full evaluator (`resolveApprovedPatchesForDevice`) is a tracked
+ * follow-up.
+ */
 async function getApprovedPatchIdsForOrg(orgId: string, patchIds: string[]): Promise<Set<string>> {
   if (patchIds.length === 0) return new Set();
 

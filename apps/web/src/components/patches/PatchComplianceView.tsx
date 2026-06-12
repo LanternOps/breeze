@@ -19,7 +19,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatRelativeTime, lastActivity, toNumber, type DevicePatchRow } from './patchHelpers';
 import { usePatchSelection } from './usePatchSelection';
-import { useBulkActions } from './useBulkActions';
+import { useBulkActions, type ResolvedInstallPatchIds } from './useBulkActions';
 
 type ComplianceSummary = {
   totalDevices: number;
@@ -91,7 +91,10 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             lastSeenAt: (n?.lastSeen ?? raw.lastSeenAt) ? String(n?.lastSeen ?? raw.lastSeenAt) : undefined,
             pendingPatches,
             approvedMissing,
-            unapprovedMissing: toNumber(n?.unapprovedMissing ?? Math.max(0, pendingPatches - approvedMissing)),
+            // The compliance API always returns both approved/unapproved counts.
+            // Read it directly rather than synthesizing from (pending - approved),
+            // which produced a misleading count when the field was absent.
+            unapprovedMissing: toNumber(n?.unapprovedMissing ?? 0),
             criticalMissing: toNumber(n?.criticalCount ?? 0),
             importantMissing: toNumber(n?.importantCount ?? 0),
             osMissing: toNumber(n?.osMissing ?? 0),
@@ -151,12 +154,12 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
 
   const hasActiveFilters = searchQuery !== '' || statusFilter !== 'all';
 
-  const resolveInstallPatchIds = useCallback(async (deviceId: string) => {
+  const resolveInstallPatchIds = useCallback(async (deviceId: string): Promise<ResolvedInstallPatchIds> => {
     const response = await fetchWithAuth(`/devices/${deviceId}/patches`);
     if (!response.ok) {
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
-        return [];
+        return { patchIds: [] };
       }
       throw new Error(`Failed to load pending patches for device ${deviceId}`);
     }
@@ -165,14 +168,25 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     const data = payload?.data ?? payload;
     const pending = data?.pending ?? data?.pendingPatches ?? data?.available ?? [];
     if (!Array.isArray(pending)) {
-      return [];
+      return { patchIds: [] };
     }
 
-    return pending.flatMap((patch: unknown) => {
-      if (!patch || typeof patch !== 'object') return [];
+    const patchIds: string[] = [];
+    let skippedPendingApproval = 0;
+    for (const patch of pending) {
+      if (!patch || typeof patch !== 'object') continue;
       const row = patch as { id?: unknown; approvalStatus?: unknown };
-      return row.id && row.approvalStatus === 'approved' ? [String(row.id)] : [];
-    });
+      if (!row.id) continue;
+      if (row.approvalStatus === 'approved') {
+        patchIds.push(String(row.id));
+      } else {
+        // Awaiting approval — drop it, but track so the caller can report it
+        // rather than silently swallowing the patch.
+        skippedPendingApproval += 1;
+      }
+    }
+
+    return { patchIds, skippedPendingApproval };
   }, []);
 
   const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);

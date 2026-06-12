@@ -285,6 +285,52 @@ describe('device patch routes', () => {
     expect(body.error).toContain('No matching patches');
   });
 
+  it('returns 404 with missingPatchIds when only some install patch IDs resolve', async () => {
+    const RESOLVED_PATCH_ID = '11111111-1111-4111-8111-111111111111';
+    const MISSING_PATCH_ID = '22222222-2222-4222-8222-222222222222';
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    // Only the first patch resolves in patchRefs; the second is missing.
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereResult([
+      { id: RESOLVED_PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
+    ]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [RESOLVED_PATCH_ID, MISSING_PATCH_ID] })
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('Some patches were not found');
+    expect(body.missingPatchIds).toEqual([MISSING_PATCH_ID]);
+    // The missing-patch check short-circuits before the approval query and the queue.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('does not issue the approvals query when a device has no patches', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    // Device-patch list resolves to an empty array → patchIds is empty →
+    // getApprovedPatchIdsForOrg short-circuits without a second db.select call.
+    vi.mocked(db.select).mockReturnValueOnce(selectPatchStatusResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.data.pending).toEqual([]);
+    expect(body.data.missing).toEqual([]);
+    expect(body.data.installed).toEqual([]);
+    expect(body.data.compliancePercent).toBe(100);
+    // Only the device-patch list query ran; the approvals query was skipped.
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
   it('queues rollback_patches command for a device patch', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([

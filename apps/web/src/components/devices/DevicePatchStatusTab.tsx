@@ -35,6 +35,7 @@ type PatchItem = {
   installedAt?: string;
   requiresReboot?: boolean;
   isDownloaded?: boolean;
+  approvalStatus?: string;
 };
 
 type PatchPayload = {
@@ -184,6 +185,19 @@ function readPatchIds(patches: PatchItem[]): string[] {
     }
   }
   return [...unique];
+}
+
+// A patch is awaiting approval only when the API explicitly says so. The
+// device-patches endpoint always sends approvalStatus ('approved' | 'pending'),
+// so an absent value (older payloads / tests) is treated as installable.
+function isAwaitingApproval(patch: PatchItem): boolean {
+  return patch.approvalStatus === 'pending';
+}
+
+// Only approved pending patches may be sent to the install endpoint. Mixing in
+// an unapproved id makes the server reject the whole batch with 409.
+function readApprovedPatchIds(patches: PatchItem[]): string[] {
+  return readPatchIds(patches.filter(patch => !isAwaitingApproval(patch)));
 }
 
 function getCategoryBadge(patch: PatchItem, osType: OSType) {
@@ -562,8 +576,12 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     };
   }, [payload, normalizedOsType]);
 
-  const nativePendingIds = useMemo(() => readPatchIds(pendingNative), [pendingNative]);
-  const thirdPartyPendingIds = useMemo(() => readPatchIds(pendingOther), [pendingOther]);
+  // Only approved pending patches are eligible for the batch install buttons;
+  // sending an unapproved id would make the server 409 the entire batch.
+  const nativePendingIds = useMemo(() => readApprovedPatchIds(pendingNative), [pendingNative]);
+  const thirdPartyPendingIds = useMemo(() => readApprovedPatchIds(pendingOther), [pendingOther]);
+  const nativeAwaitingApproval = useMemo(() => pendingNative.filter(isAwaitingApproval).length, [pendingNative]);
+  const thirdPartyAwaitingApproval = useMemo(() => pendingOther.filter(isAwaitingApproval).length, [pendingOther]);
 
   // -------------------------------------------------------------------------
   // Post-install polling: poll every 5s for up to 90s watching pending count
@@ -677,9 +695,18 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         method: 'POST',
         body: JSON.stringify({ patchIds })
       });
-      const body = await response.json().catch(() => ({})) as PatchInstallResponse & { error?: string };
+      const body = await response.json().catch(() => ({})) as PatchInstallResponse & {
+        error?: string;
+        unapprovedPatchIds?: string[];
+        missingPatchIds?: string[];
+      };
       if (!response.ok) {
-        throw new Error(body.error || `Failed to queue ${label.toLowerCase()}`);
+        let message = body.error || `Failed to queue ${label.toLowerCase()}`;
+        const unapprovedCount = Array.isArray(body.unapprovedPatchIds) ? body.unapprovedPatchIds.length : 0;
+        if (response.status === 409 && unapprovedCount > 0) {
+          message += ` (${unapprovedCount} ${unapprovedCount === 1 ? 'patch' : 'patches'} still pending approval - approve them first or refresh)`;
+        }
+        throw new Error(message);
       }
 
       const commandSuffix = body.commandId ? ` (command ${body.commandId})` : '';
@@ -799,6 +826,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           >
             {controlAction === 'install-native' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4 text-green-500" />}
             Install pending OS patches ({nativePendingIds.length})
+            {nativeAwaitingApproval > 0 && (
+              <span className="text-xs font-normal text-muted-foreground">
+                ({nativeAwaitingApproval} pending approval)
+              </span>
+            )}
           </button>
 
           <button
@@ -829,6 +861,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           >
             {controlAction === 'install-third-party' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Package className="h-4 w-4 text-blue-500" />}
             Install 3rd-party patches ({thirdPartyPendingIds.length})
+            {thirdPartyAwaitingApproval > 0 && (
+              <span className="text-xs font-normal text-muted-foreground">
+                ({thirdPartyAwaitingApproval} pending approval)
+              </span>
+            )}
           </button>
         </div>
 

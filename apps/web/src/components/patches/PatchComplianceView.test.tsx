@@ -116,4 +116,171 @@ describe('PatchComplianceView', () => {
 
     expect(await screen.findByText('Patch install queued on 1 device')).toBeTruthy();
   });
+
+  it('sends only approved patch ids when a device has mixed approval state', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/patches/compliance') {
+        return makeJsonResponse({
+          data: {
+            totalDevices: 1,
+            compliantDevices: 0,
+            devicesNeedingPatches: [
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                name: 'Workstation-1',
+                os: 'windows',
+                missingCount: 2,
+                approvedMissing: 1,
+                unapprovedMissing: 1,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 2,
+                thirdPartyMissing: 0,
+                pendingReboot: false,
+                lastSeen: '2026-04-01T18:00:00.000Z',
+              },
+            ],
+          },
+        });
+      }
+
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          devices: [
+            {
+              id: '11111111-1111-1111-1111-111111111111',
+              hostname: 'Workstation-1',
+              osType: 'windows',
+              lastSeenAt: '2026-04-01T18:00:00.000Z',
+            },
+          ],
+        });
+      }
+
+      if (url === '/devices/11111111-1111-1111-1111-111111111111/patches') {
+        return makeJsonResponse({
+          data: {
+            pending: [
+              { id: '22222222-2222-2222-2222-222222222222', title: 'KB5050001', approvalStatus: 'approved' },
+              { id: '33333333-3333-3333-3333-333333333333', title: 'KB5050002', approvalStatus: 'pending' },
+            ],
+          },
+        });
+      }
+
+      if (url === '/devices/11111111-1111-1111-1111-111111111111/patches/install') {
+        return makeJsonResponse({
+          success: true,
+          commandId: 'cmd-install-1',
+          commandStatus: 'sent',
+          patchCount: 1,
+        });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchComplianceView ringId={null} />);
+
+    await screen.findByText('Workstation-1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
+    fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/devices/11111111-1111-1111-1111-111111111111/patches/install',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            patchIds: ['22222222-2222-2222-2222-222222222222'],
+          }),
+        })
+      );
+    });
+
+    // The unapproved patch was dropped — surface that in the result message.
+    expect(
+      await screen.findByText(/skipped pending approval/i)
+    ).toBeTruthy();
+  });
+
+  it('surfaces a distinct message when the install endpoint returns 409 approval failure', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/patches/compliance') {
+        return makeJsonResponse({
+          data: {
+            totalDevices: 1,
+            compliantDevices: 0,
+            devicesNeedingPatches: [
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                name: 'Workstation-1',
+                os: 'windows',
+                missingCount: 1,
+                approvedMissing: 1,
+                unapprovedMissing: 0,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 1,
+                thirdPartyMissing: 0,
+                pendingReboot: false,
+                lastSeen: '2026-04-01T18:00:00.000Z',
+              },
+            ],
+          },
+        });
+      }
+
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          devices: [
+            {
+              id: '11111111-1111-1111-1111-111111111111',
+              hostname: 'Workstation-1',
+              osType: 'windows',
+              lastSeenAt: '2026-04-01T18:00:00.000Z',
+            },
+          ],
+        });
+      }
+
+      if (url === '/devices/11111111-1111-1111-1111-111111111111/patches' && !init) {
+        return makeJsonResponse({
+          data: {
+            pending: [
+              { id: '22222222-2222-2222-2222-222222222222', title: 'KB5050001', approvalStatus: 'approved' },
+            ],
+          },
+        });
+      }
+
+      if (url === '/devices/11111111-1111-1111-1111-111111111111/patches/install') {
+        return makeJsonResponse(
+          {
+            error: 'Only approved patches can be installed',
+            unapprovedPatchIds: ['22222222-2222-2222-2222-222222222222'],
+          },
+          false,
+          409
+        );
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchComplianceView ringId={null} />);
+
+    await screen.findByText('Workstation-1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
+    fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    expect(await screen.findByText(/pending approval/i)).toBeTruthy();
+    expect(screen.queryByText(/^Install failed/)).toBeNull();
+  });
 });

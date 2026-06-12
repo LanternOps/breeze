@@ -2,9 +2,23 @@ import { useState, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
-type UseBulkActionsOptions = {
-  resolveInstallPatchIds?: (deviceId: string) => Promise<string[]>;
+export type ResolvedInstallPatchIds = {
+  /** Patch ids approved for install. */
+  patchIds: string[];
+  /** Count of pending patches dropped because they are awaiting approval. */
+  skippedPendingApproval?: number;
 };
+
+type UseBulkActionsOptions = {
+  resolveInstallPatchIds?: (deviceId: string) => Promise<string[] | ResolvedInstallPatchIds>;
+};
+
+function normalizeResolved(value: string[] | ResolvedInstallPatchIds): ResolvedInstallPatchIds {
+  if (Array.isArray(value)) {
+    return { patchIds: value };
+  }
+  return { patchIds: value.patchIds, skippedPendingApproval: value.skippedPendingApproval };
+}
 
 export function useBulkActions(
   selectedIds: Set<string>,
@@ -50,11 +64,25 @@ export function useBulkActions(
     setBulkSuccess(undefined);
     const failed: string[] = [];
     const skipped: string[] = [];
+    // Devices that hit a 409 approval-state failure on install.
+    const approvalFailed: string[] = [];
+    // Distinct generic (non-approval) error messages read off the response body.
+    const genericErrors = new Set<string>();
+    // Count of patches silently dropped because they were awaiting approval,
+    // and how many devices had at least one such patch dropped.
+    let patchesSkippedPendingApproval = 0;
+    let devicesWithSkippedPatches = 0;
     try {
       for (const deviceId of ids) {
         let patchIds: string[] = [];
         if (resolveInstallPatchIds) {
-          patchIds = await resolveInstallPatchIds(deviceId);
+          const resolved = normalizeResolved(await resolveInstallPatchIds(deviceId));
+          patchIds = resolved.patchIds;
+          const droppedHere = resolved.skippedPendingApproval ?? 0;
+          if (droppedHere > 0) {
+            patchesSkippedPendingApproval += droppedHere;
+            devicesWithSkippedPatches += 1;
+          }
           if (patchIds.length === 0) {
             skipped.push(deviceId);
             continue;
@@ -67,25 +95,46 @@ export function useBulkActions(
         });
         if (!response.ok) {
           if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-          failed.push(deviceId);
+          // Read the error body so we can distinguish an approval-state
+          // rejection (409) from a generic failure. Be defensive: the body
+          // may not be JSON.
+          const body = await response.json().catch(() => null) as
+            | { error?: string; unapprovedPatchIds?: unknown; missingPatchIds?: unknown }
+            | null;
+          if (response.status === 409) {
+            approvalFailed.push(deviceId);
+          } else {
+            failed.push(deviceId);
+            if (body && typeof body.error === 'string' && body.error.trim()) {
+              genericErrors.add(body.error.trim());
+            }
+          }
         }
       }
 
-      const queuedCount = ids.length - failed.length - skipped.length;
+      const queuedCount = ids.length - failed.length - approvalFailed.length - skipped.length;
       if (queuedCount > 0) {
-        setBulkSuccess(`Patch install queued on ${queuedCount} ${queuedCount === 1 ? 'device' : 'devices'}`);
+        let success = `Patch install queued on ${queuedCount} ${queuedCount === 1 ? 'device' : 'devices'}`;
+        if (patchesSkippedPendingApproval > 0) {
+          success += `; ${patchesSkippedPendingApproval} ${patchesSkippedPendingApproval === 1 ? 'patch' : 'patches'} across ${devicesWithSkippedPatches} ${devicesWithSkippedPatches === 1 ? 'device' : 'devices'} skipped pending approval`;
+        }
+        setBulkSuccess(success);
       }
 
-      if (failed.length > 0 || skipped.length > 0) {
+      if (failed.length > 0 || approvalFailed.length > 0 || skipped.length > 0) {
         const parts: string[] = [];
+        if (approvalFailed.length > 0) {
+          parts.push(`${approvalFailed.length} of ${ids.length} devices had patches pending approval, refresh and retry`);
+        }
         if (failed.length > 0) {
-          parts.push(`Install failed on ${failed.length} of ${ids.length} devices`);
+          const detail = genericErrors.size > 0 ? ` (${[...genericErrors].join('; ')})` : '';
+          parts.push(`Install failed on ${failed.length} of ${ids.length} devices${detail}`);
         }
         if (skipped.length > 0) {
           parts.push(`Skipped ${skipped.length} ${skipped.length === 1 ? 'device' : 'devices'} with no approved pending patches`);
         }
         setBulkError(parts.join('. '));
-      } else if (queuedCount === 0) {
+      } else if (queuedCount === 0 && patchesSkippedPendingApproval === 0) {
         setBulkError('No approved pending patches found for the selected devices');
       }
 

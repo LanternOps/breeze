@@ -273,4 +273,97 @@ describe('DevicePatchStatusTab', () => {
     expect((installThirdPartyButton as HTMLButtonElement).disabled).toBe(true);
     await screen.findByText(/1 stale missing records are excluded from pending install counts\./i);
   });
+
+  it('sends only approved pending OS patch ids to the install endpoint', async () => {
+    const patchData = {
+      data: {
+        compliancePercent: 10,
+        pending: [
+          {
+            id: 'approved-1',
+            title: '2026-01 Cumulative Update (KB5050001)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved'
+          },
+          {
+            id: 'pending-1',
+            title: '2026-01 Feature Update (KB5050099)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'pending'
+          }
+        ],
+        installed: []
+      }
+    };
+
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/patches/install')) {
+        return makeJsonResponse({ success: true, commandId: 'cmd-install-1', patchCount: 1 });
+      }
+      return makeJsonResponse(patchData);
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    // Button count reflects only the approved patch, and surfaces the pending one.
+    const installButton = await screen.findByRole('button', { name: /Install pending OS patches \(1\)/i });
+    expect(installButton.textContent).toMatch(/1 pending approval/i);
+
+    fireEvent.click(installButton);
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/devices/${deviceId}/patches/install`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ patchIds: ['approved-1'] })
+        })
+      );
+    });
+  });
+
+  it('surfaces unapproved patch count when install returns 409', async () => {
+    const patchData = {
+      data: {
+        compliancePercent: 10,
+        pending: [
+          {
+            id: 'approved-1',
+            title: '2026-01 Cumulative Update (KB5050001)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved'
+          }
+        ],
+        installed: []
+      }
+    };
+
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/patches/install')) {
+        return makeJsonResponse(
+          {
+            error: 'Only approved patches can be installed',
+            unapprovedPatchIds: ['approved-1']
+          },
+          false,
+          409
+        );
+      }
+      return makeJsonResponse(patchData);
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    const installButton = await screen.findByRole('button', { name: /Install pending OS patches \(1\)/i });
+    fireEvent.click(installButton);
+
+    await screen.findByText(/pending approval/i);
+    expect(screen.queryByText(/Only approved patches can be installed/i)).not.toBeNull();
+  });
 });
