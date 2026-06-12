@@ -6,6 +6,7 @@ import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
 import { resolveSlaTargets } from './ticketSla';
+import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId } from './ticketConfigService';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -216,11 +217,25 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     category = await assertCategoryInPartner(input.categoryId, org.partnerId);
   }
 
+  const priority = input.priority ?? 'normal';
+
+  const [orgSla, partnerSla] = await Promise.all([
+    getOrgSlaOverride(input.orgId, priority),
+    getPartnerPrioritySla(org.partnerId, priority),
+  ]);
+
   const slaTargets = resolveSlaTargets({
     categoryResponseMinutes: category?.responseSlaMinutes ?? null,
     categoryResolutionMinutes: category?.resolutionSlaMinutes ?? null,
-    priority: input.priority ?? 'normal'
+    orgResponseMinutes: orgSla.responseMinutes,
+    orgResolutionMinutes: orgSla.resolutionMinutes,
+    partnerResponseMinutes: partnerSla.responseMinutes,
+    partnerResolutionMinutes: partnerSla.resolutionMinutes,
+    priority
   });
+
+  const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
+  const statusId = await getSystemStatusId(org.partnerId, initialCoreStatus);
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 
@@ -234,10 +249,11 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     description: input.description ?? null,
     deviceId: input.deviceId ?? null,
     categoryId: input.categoryId ?? null,
-    priority: input.priority ?? 'normal',
+    priority,
     dueDate: input.dueDate ?? null,
     assignedTo: input.assigneeId ?? null,
-    status: (input.assigneeId ? 'open' : 'new') as typeof tickets.$inferInsert['status'],
+    status: initialCoreStatus,
+    statusId: statusId ?? null,
     source: input.source,
     submittedBy: isPortal ? input.submittedBy : null,
     // Non-portal tickets show the acting user as the requester NAME only (fixes

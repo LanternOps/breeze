@@ -46,6 +46,11 @@ vi.mock('./ticketEvents', () => ({
 }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: vi.fn().mockResolvedValue('T-2026-C001') }));
+vi.mock('./ticketConfigService', () => ({
+  getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
+  getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
+  getSystemStatusId: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock('../db', () => ({
   withSystemDbAccessContext: hoisted.withSystemDbAccessContextMock,

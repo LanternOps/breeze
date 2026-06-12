@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const valuesMock = vi.fn();
 const setMock = vi.fn();
 
-const { emitMock, auditMock, allocateMock, dbMocks } = vi.hoisted(() => {
+const { emitMock, auditMock, allocateMock, dbMocks, configMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -12,13 +12,23 @@ const { emitMock, auditMock, allocateMock, dbMocks } = vi.hoisted(() => {
     emitMock: vi.fn().mockResolvedValue(undefined),
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
-    dbMocks: { insertReturning, updateReturning, selectResult }
+    dbMocks: { insertReturning, updateReturning, selectResult },
+    configMocks: {
+      getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
+      getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
+      getSystemStatusId: vi.fn().mockResolvedValue(null),
+    }
   };
 });
 
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
+vi.mock('./ticketConfigService', () => ({
+  getOrgSlaOverride: (...args: unknown[]) => configMocks.getOrgSlaOverride(...args),
+  getPartnerPrioritySla: (...args: unknown[]) => configMocks.getPartnerPrioritySla(...args),
+  getSystemStatusId: (...args: unknown[]) => configMocks.getSystemStatusId(...args),
+}));
 
 vi.mock('../db', () => ({
   // Context helpers are passthroughs: the service routes its validation reads
@@ -275,6 +285,32 @@ describe('createTicket', () => {
 
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({ responseSlaMinutes: null, resolutionSlaMinutes: null });
+  });
+
+  it('stamps org override (120) when no category and org has sla override', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+    configMocks.getOrgSlaOverride.mockResolvedValueOnce({ responseMinutes: 120, resolutionMinutes: 480 });
+    configMocks.getPartnerPrioritySla.mockResolvedValueOnce({ responseMinutes: 90, resolutionMinutes: 360 });
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-sla-5', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Org SLA override', source: 'manual', priority: 'urgent' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    // org beats partner: response 120 wins over partner 90
+    expect(insertPayload).toMatchObject({ responseSlaMinutes: 120, resolutionSlaMinutes: 480 });
+  });
+
+  it('stamps partner setting (90) when no category and no org override', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+    configMocks.getOrgSlaOverride.mockResolvedValueOnce({ responseMinutes: null, resolutionMinutes: null });
+    configMocks.getPartnerPrioritySla.mockResolvedValueOnce({ responseMinutes: 90, resolutionMinutes: 360 });
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-sla-6', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Partner SLA', source: 'manual', priority: 'urgent' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    // partner beats hardcoded default (urgent is 60/240): response 90 wins
+    expect(insertPayload).toMatchObject({ responseSlaMinutes: 90, resolutionSlaMinutes: 360 });
   });
 });
 

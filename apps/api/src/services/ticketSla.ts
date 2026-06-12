@@ -1,7 +1,11 @@
-// Pure SLA math for native ticketing Phase 2. No DB access, no IO — keep it
-// trivially unit-testable. The SQL twins of these rules live in
-// jobs/ticketSlaWorker.ts (sweep) and routes/tickets/tickets.ts (filters);
-// change them together.
+// Pure SLA math for native ticketing. No DB access, no IO — keep it trivially
+// unit-testable. The D7 chain (ticket override → category → org → partner →
+// hardcoded default) is implemented here; callers resolve the per-priority numbers
+// via getOrgSlaOverride / getPartnerPrioritySla in ticketConfigService.ts before
+// calling resolveSlaTargets. The SQL twins of the sweep/filter rules live in
+// jobs/ticketSlaWorker.ts and routes/tickets/tickets.ts; stamped
+// response_sla_minutes / resolution_sla_minutes on the ticket row remain the
+// worker's only inputs — the chain here does NOT change those SQL twins.
 
 export type TicketSlaPriority = 'low' | 'normal' | 'high' | 'urgent';
 export type SlaTargetKind = 'response' | 'resolution';
@@ -25,15 +29,21 @@ export interface ResolveSlaTargetsInput {
   overrideResolutionMinutes?: number | null;
   categoryResponseMinutes?: number | null;
   categoryResolutionMinutes?: number | null;
+  orgResponseMinutes?: number | null;       // org_ticket_settings.sla_overrides[priority]
+  orgResolutionMinutes?: number | null;
+  partnerResponseMinutes?: number | null;   // ticket_priority_settings row for this priority
+  partnerResolutionMinutes?: number | null;
   priority: TicketSlaPriority;
 }
 
-/** Spec §3 chain, per target: ticket override → category default → priority default. */
+/** D7 chain, per target: ticket override → category → org override → partner setting → hardcoded default. */
 export function resolveSlaTargets(input: ResolveSlaTargetsInput): { responseMinutes: number | null; resolutionMinutes: number | null } {
   const defaults = PRIORITY_SLA_DEFAULTS[input.priority];
   return {
-    responseMinutes: input.overrideResponseMinutes ?? input.categoryResponseMinutes ?? defaults.responseMinutes,
-    resolutionMinutes: input.overrideResolutionMinutes ?? input.categoryResolutionMinutes ?? defaults.resolutionMinutes
+    responseMinutes: input.overrideResponseMinutes ?? input.categoryResponseMinutes
+      ?? input.orgResponseMinutes ?? input.partnerResponseMinutes ?? defaults.responseMinutes,
+    resolutionMinutes: input.overrideResolutionMinutes ?? input.categoryResolutionMinutes
+      ?? input.orgResolutionMinutes ?? input.partnerResolutionMinutes ?? defaults.resolutionMinutes
   };
 }
 

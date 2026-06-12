@@ -62,3 +62,21 @@ describe('breachedTargets / appendBreachTarget', () => {
 describe('SLA_AT_RISK_RATIO', () => {
   it('is 80% per spec §3', () => expect(SLA_AT_RISK_RATIO).toBe(0.8));
 });
+
+describe('resolveSlaTargets chain (D7)', () => {
+  it('category beats org override', () => {
+    expect(resolveSlaTargets({ categoryResponseMinutes: 30, orgResponseMinutes: 120, priority: 'urgent' }).responseMinutes).toBe(30);
+  });
+  it('org override beats partner setting', () => {
+    expect(resolveSlaTargets({ orgResponseMinutes: 120, partnerResponseMinutes: 90, priority: 'urgent' }).responseMinutes).toBe(120);
+  });
+  it('partner setting beats hardcoded default', () => {
+    expect(resolveSlaTargets({ partnerResponseMinutes: 90, priority: 'urgent' }).responseMinutes).toBe(90);
+  });
+  it('falls through to hardcoded defaults', () => {
+    expect(resolveSlaTargets({ priority: 'urgent' })).toEqual({ responseMinutes: 60, resolutionMinutes: 240 });
+  });
+  it('explicit ticket override still wins over everything', () => {
+    expect(resolveSlaTargets({ overrideResponseMinutes: 5, categoryResponseMinutes: 30, orgResponseMinutes: 120, partnerResponseMinutes: 90, priority: 'low' }).responseMinutes).toBe(5);
+  });
+});
