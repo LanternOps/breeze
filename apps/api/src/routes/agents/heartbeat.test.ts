@@ -870,7 +870,11 @@ describe('pendingReboot persistence', () => {
     });
 
     expect(resp.status).toBe(200);
+    expect(setSpy).toHaveBeenCalled();
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    // Guard that we captured the watchdog update (not a trivially-undefined
+    // arg) before asserting the flag is absent from it.
+    expect(updateArg).toHaveProperty('watchdogStatus');
     expect(updateArg).not.toHaveProperty('pendingReboot');
   });
 });
