@@ -48,6 +48,12 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     return onTimerChanged(() => void refresh());
   }, [refresh]);
 
+  useEffect(() => {
+    setQuickAddOpen(false);
+    setMinutes('');
+    setDescription('');
+  }, [ticketId]);
+
   const handleActionError = (err: unknown, fallback: string) => {
     if (err instanceof ActionError && err.status === 401) return;
     if (!(err instanceof ActionError)) showToast({ type: 'error', message: fallback });
@@ -55,12 +61,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
   const startTimer = () => {
     void startTimerAction({ ticketId })
-      .then(refresh)
       .catch((err) => handleActionError(err, 'Failed to start timer.'));
   };
 
   const submitQuickAdd = async () => {
-    const mins = parseInt(minutes, 10);
+    const mins = Math.round(Number(minutes));
     if (!Number.isFinite(mins) || mins <= 0) return;
     setBusy(true);
     try {
@@ -94,7 +99,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
   return (
     <div className="mt-3 border-t pt-3" data-testid="ticket-time-billing">
-      <p className="text-xs font-medium uppercase text-muted-foreground">Time &amp; Billing</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Time &amp; Billing</p>
 
       {summary && (
         <dl className="mt-2 space-y-1">
@@ -141,6 +146,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           <input
             type="number"
             min={1}
+            step={1}
             value={minutes}
             onChange={(e) => setMinutes(e.target.value)}
             placeholder="Minutes"
