@@ -614,7 +614,30 @@ export default function DeviceList({
                 Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
               </span>
             )}
+            {device.pendingReboot && (
+              <span
+                data-testid={`device-${device.id}-pending-reboot-badge`}
+                title="The OS reports a pending reboot (Windows registry / Linux reboot-required markers)."
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                Reboot pending
+              </span>
+            )}
           </div>
+        </td>
+      ),
+    },
+    pendingReboot: {
+      header: () => <th key="pendingReboot" className="px-3 py-3">Pending Reboot</th>,
+      cell: (device) => (
+        <td key="pendingReboot" className="px-3 py-3 text-sm whitespace-nowrap">
+          {device.pendingReboot ? (
+            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30">
+              Reboot pending
+            </span>
+          ) : (
+            dash
+          )}
         </td>
       ),
     },
