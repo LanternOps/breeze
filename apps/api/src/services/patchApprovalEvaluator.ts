@@ -20,6 +20,25 @@ export interface CategoryRule {
   deferralDaysOverride?: number;
 }
 
+export interface PolicyAutoApproveConfig {
+  enabled: boolean;
+  severities: string[];
+  deferralDays: number;
+}
+
+export interface PolicyAppRule {
+  source: string;
+  packageId: string;
+  action: 'block' | 'pin';
+  pinnedVersion?: string;
+}
+
+export type AppRuleVerdict = 'allowed' | 'blocked' | 'held';
+
+/**
+ * Evaluator input. Despite the name this now carries both ring-level config
+ * and policy-level config: sources, app rules, and ring-less auto-approve.
+ */
 export interface RingConfig {
   ringId: string | null;
   categoryRules: CategoryRule[];
@@ -27,6 +46,10 @@ export interface RingConfig {
   deferralDays: number;
   /** Policy-level source selections ('os', 'third_party', ...). Absent/empty = no filtering (legacy). */
   sources?: string[];
+  /** Policy-level auto-approve, consulted only when ringId is null. Absent means disabled. */
+  policyAutoApprove?: PolicyAutoApproveConfig;
+  /** Policy-level per-app block/pin rules. Applied to every job approval path. */
+  apps?: PolicyAppRule[];
 }
 
 export interface ApprovedPatch {
@@ -37,7 +60,7 @@ export interface ApprovedPatch {
   category: string | null;
   severity: string | null;
   requiresReboot: boolean;
-  approvalReason: 'manual' | 'category_rule' | 'legacy_auto_approve';
+  approvalReason: ApprovalReason;
 }
 
 // ============================================
@@ -84,6 +107,73 @@ export function isThirdPartyPatchSource(source: string | null | undefined): bool
 }
 
 // ============================================
+// Per-app rules (block / pin)
+// ============================================
+
+/**
+ * Tolerant version comparison for winget/homebrew-style versions, not strict
+ * semver. Splits on common separators; numeric segments compare numerically,
+ * non-numeric segments lexicographically, and missing segments count as 0.
+ */
+export function comparePatchVersions(
+  a: string | null | undefined,
+  b: string | null | undefined
+): number | null {
+  const av = (a ?? '').trim();
+  const bv = (b ?? '').trim();
+  if (!av || !bv) return null;
+
+  const as = av.split(/[.\-+_]/);
+  const bs = bv.split(/[.\-+_]/);
+  const len = Math.max(as.length, bs.length);
+
+  for (let i = 0; i < len; i++) {
+    const x = as[i] ?? '0';
+    const y = bs[i] ?? '0';
+    const xNum = /^\d+$/.test(x);
+    const yNum = /^\d+$/.test(y);
+
+    if (xNum && yNum) {
+      const diff = parseInt(x, 10) - parseInt(y, 10);
+      if (diff !== 0) return diff < 0 ? -1 : 1;
+      continue;
+    }
+
+    const cmp = x.localeCompare(y);
+    if (cmp !== 0) return cmp < 0 ? -1 : 1;
+  }
+
+  return 0;
+}
+
+/** Key app rules by source + lowercased packageId for O(1) candidate lookup. */
+export function buildAppRuleMap(apps: PolicyAppRule[] | undefined): Map<string, PolicyAppRule> {
+  const map = new Map<string, PolicyAppRule>();
+  for (const rule of apps ?? []) {
+    map.set(`${rule.source}|${rule.packageId.toLowerCase()}`, rule);
+  }
+  return map;
+}
+
+/**
+ * Verdict for one candidate patch against the policy's app rules.
+ * 'held' means a pin was exceeded, or the version cannot be proven within pin.
+ */
+export function evaluateAppRule(
+  patch: { source: string; packageId: string | null; version: string | null },
+  rules: Map<string, PolicyAppRule>
+): AppRuleVerdict {
+  if (rules.size === 0 || !patch.packageId) return 'allowed';
+  const rule = rules.get(`${patch.source}|${patch.packageId.toLowerCase()}`);
+  if (!rule) return 'allowed';
+  if (rule.action === 'block') return 'blocked';
+
+  const cmp = comparePatchVersions(patch.version, rule.pinnedVersion);
+  if (cmp === null) return 'held';
+  return cmp > 0 ? 'held' : 'allowed';
+}
+
+// ============================================
 // Main evaluator
 // ============================================
 
@@ -106,6 +196,8 @@ export async function resolveApprovedPatchesForDevice(
       releaseDate: patches.releaseDate,
       requiresReboot: patches.requiresReboot,
       source: patches.source,
+      packageId: patches.packageId,
+      version: patches.version,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -131,8 +223,24 @@ export async function resolveApprovedPatchesForDevice(
     return [];
   }
 
+  const appRuleMap = buildAppRuleMap(ringConfig.apps);
+  const finalCandidates = appRuleMap.size > 0
+    ? candidatePatches.filter((p) => {
+        const verdict = evaluateAppRule(p, appRuleMap);
+        if (verdict !== 'allowed') {
+          console.warn(
+            `[PatchApproval] device ${deviceId}: patch ${p.patchId} (${p.source}/${p.packageId ?? '?'} v${p.version ?? '?'}) excluded by app rule (${verdict})`
+          );
+          return false;
+        }
+        return true;
+      })
+    : candidatePatches;
+
+  if (finalCandidates.length === 0) return [];
+
   // 2. Load manual approvals for this org (optionally scoped to ring)
-  const patchIds = candidatePatches.map((p) => p.patchId);
+  const patchIds = finalCandidates.map((p) => p.patchId);
   const manualApprovals = await db
     .select({
       patchId: patchApprovals.patchId,
@@ -172,7 +280,7 @@ export async function resolveApprovedPatchesForDevice(
   const now = new Date();
   const approved: ApprovedPatch[] = [];
 
-  for (const patch of candidatePatches) {
+  for (const patch of finalCandidates) {
     const reason = evaluatePatchApproval(
       patch,
       ringConfig,
@@ -209,7 +317,11 @@ interface PatchCandidate {
   severity: string | null;
   releaseDate: string | null;
   source: string;
+  packageId: string | null;
+  version: string | null;
 }
+
+type ApprovalReason = 'manual' | 'category_rule' | 'legacy_auto_approve' | 'policy_auto_approve';
 
 function evaluatePatchApproval(
   patch: PatchCandidate,
@@ -218,14 +330,26 @@ function evaluatePatchApproval(
   categoryRuleMap: Map<string, CategoryRule>,
   legacyAutoApprove: LegacyAutoApproveConfig,
   now: Date
-): 'manual' | 'category_rule' | 'legacy_auto_approve' | null {
+): ApprovalReason | null {
   // Priority 1: Manual approval
   if (manualApprovalSet.has(patch.patchId)) {
     return 'manual';
   }
 
-  // If no ring linked, only manual approvals count
+  // No ring linked: manual approvals plus policy-level auto-approve. Linked
+  // rings take absolute precedence, so policyAutoApprove is ignored above.
   if (!ringConfig.ringId) {
+    const pa = ringConfig.policyAutoApprove;
+    if (pa?.enabled && patch.severity && pa.severities.includes(patch.severity)) {
+      if (pa.deferralDays > 0 && patch.releaseDate) {
+        const releaseDate = new Date(patch.releaseDate);
+        const deferralEnd = new Date(releaseDate.getTime() + pa.deferralDays * 24 * 60 * 60 * 1000);
+        if (deferralEnd > now) {
+          return null;
+        }
+      }
+      return 'policy_auto_approve';
+    }
     return null;
   }
 

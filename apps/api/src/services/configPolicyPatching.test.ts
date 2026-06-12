@@ -43,12 +43,24 @@ vi.mock('../db/schema', () => ({
 }));
 
 import {
+  loadPolicyLocalPatchConfig,
   normalizePatchInlineSettings,
   tryNormalizePatchInlineSettings,
   summarizePatchInventory,
   type PatchInventoryRow,
   type PatchReferenceClassification,
 } from './configPolicyPatching';
+import { db } from '../db';
+
+function selectJoinLimitRows(rows: unknown[]) {
+  const chain: any = {};
+  chain.from = vi.fn(() => chain);
+  chain.innerJoin = vi.fn(() => chain);
+  chain.leftJoin = vi.fn(() => chain);
+  chain.where = vi.fn(() => chain);
+  chain.limit = vi.fn(() => Promise.resolve(rows));
+  return chain;
+}
 
 describe('normalizePatchInlineSettings', () => {
   it('passes valid input through', () => {
@@ -170,6 +182,48 @@ describe('tryNormalizePatchInlineSettings', () => {
 
     expect(result.valid).toBe(false);
     expect(result.settings.sources).toEqual(['os']);
+  });
+});
+
+describe('loadPolicyLocalPatchConfig', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('preserves JSON-only patch fields when normalized patch settings exist', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
+      configPolicyId: 'policy-1',
+      configPolicyName: 'Policy 1',
+      orgId: 'org-1',
+      featureLinkId: 'link-1',
+      featurePolicyId: null,
+      storedInlineSettings: {
+        sources: ['third_party'],
+        autoApprove: true,
+        autoApproveSeverities: ['critical'],
+        autoApproveDeferralDays: 5,
+        apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+      },
+      patchSettings: {
+        sources: ['os'],
+        autoApprove: false,
+        autoApproveSeverities: [],
+        scheduleFrequency: 'daily',
+        scheduleTime: '03:00',
+        scheduleDayOfWeek: 'mon',
+        scheduleDayOfMonth: 10,
+        rebootPolicy: 'if_required',
+      },
+    }]) as any);
+
+    const result = await loadPolicyLocalPatchConfig('policy-1');
+
+    expect(result?.settings.sources).toEqual(['os']);
+    expect(result?.settings.autoApprove).toBe(false);
+    expect(result?.settings.autoApproveDeferralDays).toBe(5);
+    expect(result?.settings.apps).toEqual([
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+    ]);
   });
 });
 

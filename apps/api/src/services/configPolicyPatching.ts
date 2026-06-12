@@ -181,18 +181,21 @@ export async function loadPolicyLocalPatchConfig(
 
   if (!row) return null;
 
+  const storedInline = tryNormalizePatchInlineSettings(row.storedInlineSettings).settings;
   const settings = row.patchSettings
     ? normalizePatchInlineSettings({
         sources: row.patchSettings.sources,
         autoApprove: row.patchSettings.autoApprove,
         autoApproveSeverities: row.patchSettings.autoApproveSeverities ?? [],
+        autoApproveDeferralDays: storedInline.autoApproveDeferralDays,
+        apps: storedInline.apps,
         scheduleFrequency: row.patchSettings.scheduleFrequency,
         scheduleTime: row.patchSettings.scheduleTime,
         scheduleDayOfWeek: row.patchSettings.scheduleDayOfWeek ?? undefined,
         scheduleDayOfMonth: row.patchSettings.scheduleDayOfMonth ?? undefined,
         rebootPolicy: row.patchSettings.rebootPolicy,
       })
-    : normalizePatchInlineSettings(row.storedInlineSettings);
+    : storedInline;
 
   const ring = await resolvePatchPolicyReference(row.orgId, row.featurePolicyId);
 

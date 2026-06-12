@@ -181,6 +181,12 @@ patchJobRoutes.post(
             categoryRules: policyLocal.ring.categoryRules,
             autoApprove: policyLocal.ring.autoApprove,
             sources: policyLocal.settings.sources,
+            policyAutoApprove: {
+              enabled: policyLocal.settings.autoApprove ?? false,
+              severities: policyLocal.settings.autoApproveSeverities ?? [],
+              deferralDays: policyLocal.settings.autoApproveDeferralDays ?? 0,
+            },
+            apps: policyLocal.settings.apps ?? [],
             ringValidation: {
               classification: policyLocal.ring.classification,
               valid: policyLocal.ring.valid,
@@ -364,6 +370,8 @@ patchJobRoutes.get(
               sources: effective.settings.sources,
               autoApprove: effective.settings.autoApprove,
               autoApproveSeverities: effective.settings.autoApproveSeverities ?? [],
+              autoApproveDeferralDays: effectivePolicyLocal?.settings.autoApproveDeferralDays ?? 0,
+              apps: effectivePolicyLocal?.settings.apps ?? [],
               scheduleFrequency: effective.settings.scheduleFrequency,
               scheduleTime: effective.settings.scheduleTime,
               scheduleDayOfWeek: effective.settings.scheduleDayOfWeek,

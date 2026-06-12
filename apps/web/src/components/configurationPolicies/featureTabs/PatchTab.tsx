@@ -6,13 +6,19 @@ import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 import { fetchWithAuth } from '../../../stores/auth';
+import PatchAppRulesSection, { type PolicyAppRule } from './PatchAppRulesSection';
 
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
 type PatchSourceOption = 'os' | 'third_party';
+type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low';
 
 type PatchDeploymentSettings = {
   sources: PatchSourceOption[];
+  autoApprove: boolean;
+  autoApproveSeverities: PatchSeverity[];
+  autoApproveDeferralDays: number;
+  apps: PolicyAppRule[];
   scheduleFrequency: ScheduleFrequency;
   scheduleTime: string;
   scheduleDayOfWeek: string;
@@ -32,6 +38,10 @@ type UpdateRing = {
 
 const defaults: PatchDeploymentSettings = {
   sources: ['os'],
+  autoApprove: false,
+  autoApproveSeverities: [],
+  autoApproveDeferralDays: 0,
+  apps: [],
   scheduleFrequency: 'weekly',
   scheduleTime: '02:00',
   scheduleDayOfWeek: 'sun',
@@ -42,6 +52,13 @@ const defaults: PatchDeploymentSettings = {
 const sourceOptions: { value: PatchSourceOption; label: string; description: string }[] = [
   { value: 'os', label: 'OS updates', description: 'Windows Update, macOS software updates, and Linux package updates.' },
   { value: 'third_party', label: 'Third-party applications', description: 'Application updates via winget, Chocolatey, and Homebrew.' },
+];
+
+const severityOptions: { value: PatchSeverity; label: string }[] = [
+  { value: 'critical', label: 'Critical' },
+  { value: 'important', label: 'Important' },
+  { value: 'moderate', label: 'Moderate' },
+  { value: 'low', label: 'Low' },
 ];
 
 const OS_VALUE_ALIASES = new Set(['os', 'microsoft', 'apple', 'linux']);
@@ -257,6 +274,74 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
           </div>
         )}
       </div>
+
+      {/* Automatic Approval */}
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Automatic Approval</h3>
+        {selectedRingId ? (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="auto-approve-ring-notice">
+            Automatic approval is governed by the linked update ring
+            {selectedRing ? ` "${selectedRing.name}"` : ''}. These settings apply only when no ring is linked.
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Automatically approve patches by severity when no update ring is linked.
+          </p>
+        )}
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            data-testid="auto-approve-toggle"
+            checked={settings.autoApprove}
+            disabled={!!selectedRingId}
+            onChange={(event) => update('autoApprove', event.target.checked)}
+          />
+          Enable automatic approval
+        </label>
+        {settings.autoApprove && !selectedRingId && (
+          <div className="mt-2 space-y-2">
+            <div className="flex flex-wrap gap-3">
+              {severityOptions.map((option) => (
+                <label key={option.value} className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    data-testid={`auto-approve-severity-${option.value}`}
+                    checked={settings.autoApproveSeverities.includes(option.value)}
+                    onChange={() =>
+                      update(
+                        'autoApproveSeverities',
+                        settings.autoApproveSeverities.includes(option.value)
+                          ? settings.autoApproveSeverities.filter((severity) => severity !== option.value)
+                          : [...settings.autoApproveSeverities, option.value]
+                      )
+                    }
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+            {settings.autoApproveSeverities.length === 0 && (
+              <p className="text-xs text-destructive">Select at least one severity for auto-approval.</p>
+            )}
+            <div>
+              <label className="text-xs text-muted-foreground">Deferral (days after release)</label>
+              <input
+                type="number"
+                min={0}
+                max={60}
+                data-testid="auto-approve-deferral"
+                value={settings.autoApproveDeferralDays}
+                onChange={(event) =>
+                  update('autoApproveDeferralDays', Math.max(0, Math.min(60, Number(event.target.value) || 0)))
+                }
+                className="mt-1 h-9 w-28 rounded-md border bg-background px-2 text-sm"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <PatchAppRulesSection apps={settings.apps} onChange={(apps) => update('apps', apps)} />
 
       {/* Schedule */}
       <div className="mt-6">

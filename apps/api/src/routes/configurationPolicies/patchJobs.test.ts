@@ -254,7 +254,20 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('creates patch job successfully when conditions are met', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
-      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal({
+        settings: {
+          sources: ['third_party'],
+          autoApprove: true,
+          autoApproveSeverities: ['critical'],
+          autoApproveDeferralDays: 5,
+          apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+          scheduleFrequency: 'daily',
+          scheduleTime: '02:00',
+          scheduleDayOfWeek: 'sun',
+          scheduleDayOfMonth: 1,
+          rebootPolicy: 'if_required',
+        },
+      }));
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -264,10 +277,11 @@ describe('configurationPolicies patchJob routes', () => {
 
       checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
 
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
+      });
       vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
-        }),
+        values: insertValuesMock,
       } as any);
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
@@ -279,6 +293,11 @@ describe('configurationPolicies patchJob routes', () => {
       const json = await res.json();
       expect(json.success).toBe(true);
       expect(json.totalDevices).toBe(1);
+      expect(insertValuesMock.mock.calls[0]?.[0]?.patches).toMatchObject({
+        sources: ['third_party'],
+        policyAutoApprove: { enabled: true, severities: ['critical'], deferralDays: 5 },
+        apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+      });
       expect(writeRouteAudit).toHaveBeenCalled();
     });
 

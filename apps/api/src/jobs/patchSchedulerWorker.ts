@@ -382,6 +382,12 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
               categoryRules: policyLocal.ring.categoryRules,
               autoApprove: policyLocal.ring.autoApprove,
               sources: policyLocal.settings.sources,
+              policyAutoApprove: {
+                enabled: policyLocal.settings.autoApprove ?? false,
+                severities: policyLocal.settings.autoApproveSeverities ?? [],
+                deferralDays: policyLocal.settings.autoApproveDeferralDays ?? 0,
+              },
+              apps: policyLocal.settings.apps ?? [],
               ringValidation: {
                 classification: policyLocal.ring.classification,
                 valid: policyLocal.ring.valid,

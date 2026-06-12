@@ -19,7 +19,12 @@ import {
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
-import { resolveApprovedPatchesForDevice, type RingConfig } from '../services/patchApprovalEvaluator';
+import {
+  resolveApprovedPatchesForDevice,
+  type PolicyAppRule,
+  type PolicyAutoApproveConfig,
+  type RingConfig,
+} from '../services/patchApprovalEvaluator';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 import { queueCommandForExecution } from '../services/commandQueue';
 
@@ -364,6 +369,8 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     categoryRules?: unknown[];
     autoApprove?: unknown;
     sources?: unknown;
+    policyAutoApprove?: unknown;
+    apps?: unknown;
   };
   const targets = patchJob.targets as {
     deployment?: { rebootPolicy?: string };
@@ -387,6 +394,85 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     }
   }
 
+  let policyAutoApprove: PolicyAutoApproveConfig | undefined;
+  if (patchesConfig?.policyAutoApprove !== undefined) {
+    const raw = patchesConfig.policyAutoApprove as
+      | { enabled?: unknown; severities?: unknown; deferralDays?: unknown }
+      | null;
+    const severities = Array.isArray(raw?.severities)
+      ? raw.severities.filter((s): s is string => typeof s === 'string')
+      : null;
+
+    if (
+      raw &&
+      typeof raw === 'object' &&
+      typeof raw.enabled === 'boolean' &&
+      severities !== null &&
+      severities.length === (raw.severities as unknown[]).length
+    ) {
+      policyAutoApprove = {
+        enabled: raw.enabled,
+        severities,
+        deferralDays:
+          typeof raw.deferralDays === 'number' &&
+          Number.isFinite(raw.deferralDays) &&
+          raw.deferralDays >= 0
+            ? raw.deferralDays
+            : 0,
+      };
+    } else {
+      console.warn(
+        `[PatchJobExecutor] Job ${patchJobId} has malformed patches.policyAutoApprove; treating as disabled:`,
+        JSON.stringify(patchesConfig.policyAutoApprove)
+      );
+    }
+  }
+
+  let jobApps: PolicyAppRule[] | undefined;
+  if (patchesConfig?.apps !== undefined) {
+    if (!Array.isArray(patchesConfig.apps)) {
+      console.warn(
+        `[PatchJobExecutor] Job ${patchJobId} has malformed patches.apps; ignoring app rules:`,
+        JSON.stringify(patchesConfig.apps)
+      );
+    } else {
+      const valid: PolicyAppRule[] = [];
+      for (const entry of patchesConfig.apps) {
+        const e = entry as
+          | { source?: unknown; packageId?: unknown; action?: unknown; pinnedVersion?: unknown }
+          | null;
+        const okBase =
+          e &&
+          typeof e.source === 'string' &&
+          e.source.length > 0 &&
+          typeof e.packageId === 'string' &&
+          e.packageId.length > 0;
+
+        if (okBase && e.action === 'block') {
+          valid.push({ source: e.source as string, packageId: e.packageId as string, action: 'block' });
+        } else if (
+          okBase &&
+          e.action === 'pin' &&
+          typeof e.pinnedVersion === 'string' &&
+          e.pinnedVersion.length > 0
+        ) {
+          valid.push({
+            source: e.source as string,
+            packageId: e.packageId as string,
+            action: 'pin',
+            pinnedVersion: e.pinnedVersion,
+          });
+        } else {
+          console.warn(
+            `[PatchJobExecutor] Job ${patchJobId} dropping malformed app rule:`,
+            JSON.stringify(entry)
+          );
+        }
+      }
+      jobApps = valid;
+    }
+  }
+
   const ringConfig: RingConfig = {
     ringId: patchesConfig?.ringId ?? null,
     categoryRules: (Array.isArray(patchesConfig?.categoryRules)
@@ -395,6 +481,8 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     autoApprove: patchesConfig?.autoApprove ?? {},
     deferralDays: 0,
     sources: jobSources,
+    policyAutoApprove,
+    apps: jobApps,
   };
 
   // If we have a ringId, load deferralDays from the ring

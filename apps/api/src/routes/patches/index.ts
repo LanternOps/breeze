@@ -4,11 +4,13 @@ import { listRoutes } from './list';
 import { approvalsRoutes } from './approvals';
 import { complianceRoutes } from './compliance';
 import { operationsRoutes } from './operations';
+import { appOptionsRoutes } from './appOptions';
 
 export const patchRoutes = new Hono();
 
 patchRoutes.use('*', authMiddleware);
 
+patchRoutes.route('/', appOptionsRoutes);
 patchRoutes.route('/', operationsRoutes);
 patchRoutes.route('/', complianceRoutes);
 patchRoutes.route('/', approvalsRoutes);

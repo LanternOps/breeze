@@ -41,6 +41,52 @@ describe('patchInlineSettingsSchema', () => {
   });
 });
 
+describe('patchInlineSettingsSchema app rules + deferral', () => {
+  it('defaults autoApproveDeferralDays to 0 and apps to []', () => {
+    const result = patchInlineSettingsSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.autoApproveDeferralDays).toBe(0);
+    expect(result.data.apps).toEqual([]);
+  });
+
+  it('accepts a valid block rule and a valid pin rule', () => {
+    const result = patchInlineSettingsSchema.safeParse({
+      apps: [
+        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+        { source: 'third_party', packageId: 'VideoLAN.VLC', displayName: 'VLC', action: 'pin', pinnedVersion: '3.0.20' },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a pin rule without pinnedVersion', () => {
+    const result = patchInlineSettingsSchema.safeParse({
+      apps: [{ source: 'third_party', packageId: 'VideoLAN.VLC', action: 'pin' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate (source, packageId) entries case-insensitively', () => {
+    const result = patchInlineSettingsSchema.safeParse({
+      apps: [
+        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+        { source: 'third_party', packageId: 'mozilla.firefox', action: 'pin', pinnedVersion: '120.0' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects negative or >60 deferral days', () => {
+    expect(patchInlineSettingsSchema.safeParse({ autoApproveDeferralDays: -1 }).success).toBe(false);
+    expect(patchInlineSettingsSchema.safeParse({ autoApproveDeferralDays: 61 }).success).toBe(false);
+  });
+
+  it('still rejects autoApprove without severities (existing refinement intact)', () => {
+    expect(patchInlineSettingsSchema.safeParse({ autoApprove: true, autoApproveSeverities: [] }).success).toBe(false);
+  });
+});
+
 // ============================================
 // Event Log Inline Settings
 // ============================================
