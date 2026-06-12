@@ -2,6 +2,9 @@
 
 import { ticketStatuses } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
+import { db } from '../db';
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type CoreTicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 
@@ -24,7 +27,7 @@ export const DEFAULT_STATUSES: Array<{
  * transaction object.
  */
 export async function seedSystemTicketStatuses(
-  tx: { insert: any },
+  tx: Tx,
   partnerId: string,
 ): Promise<void> {
   await tx
