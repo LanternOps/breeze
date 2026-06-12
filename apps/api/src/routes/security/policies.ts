@@ -4,7 +4,7 @@ import { and, desc, eq } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { securityPolicies } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import {
   listPoliciesQuerySchema,
   createPolicySchema,
@@ -76,6 +76,11 @@ policiesRoutes.get(
 policiesRoutes.post(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  // requireScope only checks tenancy tier, not role. Security policies are
+  // device-security settings (AV scan schedule, real-time protection,
+  // auto-quarantine, exclusions), so mutating them requires a device-write
+  // permission — matches sensitiveData policy writes (DEVICES_WRITE).
+  requirePermission('devices', 'write'),
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -125,6 +130,8 @@ policiesRoutes.post(
 policiesRoutes.put(
   '/policies/:id',
   requireScope('organization', 'partner', 'system'),
+  // Device-security config mutation requires device-write (see POST /policies).
+  requirePermission('devices', 'write'),
   zValidator('param', policyIdParamSchema),
   zValidator('json', updatePolicySchema),
   async (c) => {

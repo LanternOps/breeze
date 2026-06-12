@@ -274,6 +274,7 @@ deploymentRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
   requireDeploymentWrite,
+  requireMfa(),
   zValidator('json', createDeploymentSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -377,6 +378,7 @@ deploymentRoutes.put(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requireDeploymentWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', updateDeploymentSchema),
   async (c) => {
@@ -436,6 +438,7 @@ deploymentRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requireDeploymentWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');

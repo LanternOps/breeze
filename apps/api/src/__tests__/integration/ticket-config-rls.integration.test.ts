@@ -591,7 +591,7 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
       );
     });
 
-    const actor = { userId: userA.id, partnerId: partnerA.id, manageAll: false as const };
+    const actor = { userId: userA.id, partnerId: partnerA.id, manageAll: false as const, accessibleOrgIds: [orgA.id] };
     let entry: any;
     await withDbAccessContext(partnerAContext, async () => {
       entry = await createTimeEntry(
@@ -649,7 +649,7 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
       );
     });
 
-    const actor = { userId: userA.id, partnerId: partnerA.id, manageAll: false as const };
+    const actor = { userId: userA.id, partnerId: partnerA.id, manageAll: false as const, accessibleOrgIds: [orgA.id] };
     let entry: any;
     await withDbAccessContext(partnerAContext, async () => {
       entry = await createTimeEntry(

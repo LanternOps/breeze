@@ -36,6 +36,7 @@ function timeEntryActorFrom(auth: AuthContext) {
     userId: auth.user.id,
     name: auth.user.name,
     partnerId: auth.partnerId,
+    accessibleOrgIds: auth.accessibleOrgIds,
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
     manageAll: false as const
   };

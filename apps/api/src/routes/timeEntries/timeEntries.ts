@@ -34,6 +34,10 @@ export function timeActorFrom(c: Ctx): TimeEntryActor {
     name: auth.user.name,
     email: auth.user.email,
     partnerId: auth.partnerId,
+    // Org-axis allowlist (null = system scope). Threaded so the service's
+    // system-context ticket read is re-gated against the caller's granted orgs —
+    // closes a cross-org ticket write for orgAccess='selected' partner users.
+    accessibleOrgIds: auth.accessibleOrgIds,
     // v1 admin proxy (plan decision): wildcard-permission roles approve + manage others
     manageAll: auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false)
   };

@@ -66,8 +66,8 @@ interface Fixture {
   techB: { id: string };
   partnerAContext: DbAccessContext;
   orgAContext: DbAccessContext;
-  techAActor: { userId: string; partnerId: string; manageAll: false };
-  adminAActor: { userId: string; partnerId: string; manageAll: true };
+  techAActor: { userId: string; partnerId: string; manageAll: false; accessibleOrgIds: string[] | null };
+  adminAActor: { userId: string; partnerId: string; manageAll: true; accessibleOrgIds: string[] | null };
 }
 
 async function seedFixture(): Promise<Fixture> {
@@ -152,8 +152,8 @@ async function seedFixture(): Promise<Fixture> {
     userId: techA.id,
   };
 
-  const techAActor = { userId: techA.id, partnerId: partnerA.id, manageAll: false as const };
-  const adminAActor = { userId: adminA.id, partnerId: partnerA.id, manageAll: true as const };
+  const techAActor = { userId: techA.id, partnerId: partnerA.id, manageAll: false as const, accessibleOrgIds: [orgA.id] };
+  const adminAActor = { userId: adminA.id, partnerId: partnerA.id, manageAll: true as const, accessibleOrgIds: [orgA.id] };
 
   return {
     partnerA, orgA, categoryA, ticketA, techA, adminA,

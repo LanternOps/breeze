@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { devices } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import {
   listThreatsQuerySchema,
@@ -195,9 +195,14 @@ threatsRoutes.get(
   }
 );
 
+// These dispatch destructive agent commands (quarantine/remove/restore a
+// threat on a device). requireScope only checks tenancy tier, not role — a
+// read-only Org Viewer would otherwise pass. Gate on device-execute, matching
+// sensitiveData /scan and /remediate (DEVICES_EXECUTE).
 threatsRoutes.post(
   '/threats/:id/quarantine',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'execute'),
   zValidator('param', threatIdParamSchema),
   async (c) => queueThreatAction(c, 'quarantine')
 );
@@ -205,6 +210,7 @@ threatsRoutes.post(
 threatsRoutes.post(
   '/threats/:id/remove',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'execute'),
   zValidator('param', threatIdParamSchema),
   async (c) => queueThreatAction(c, 'remove')
 );
@@ -212,6 +218,7 @@ threatsRoutes.post(
 threatsRoutes.post(
   '/threats/:id/restore',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'execute'),
   zValidator('param', threatIdParamSchema),
   async (c) => queueThreatAction(c, 'restore')
 );

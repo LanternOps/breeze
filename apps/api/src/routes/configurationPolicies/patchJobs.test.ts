@@ -69,6 +69,7 @@ vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
     hostname: 'devices.hostname',
   },
 }));
@@ -450,6 +451,83 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.error).toContain('policy organization');
       expect(json.skipped.crossOrgDeviceIds).toEqual([device2]);
       expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    const SITE_ALLOWED = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const SITE_FORBIDDEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    it('denies patch jobs for a device outside the caller site allowlist before any insert', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_FORBIDDEN, hostname: 'host-1' },
+            ]),
+          }),
+        } as any);
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth());
+        c.set('permissions', { allowedSiteIds: [SITE_ALLOWED] } as any);
+        await next();
+      });
+      app.route('/', patchJobRoutes);
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID] }),
+      });
+
+      expect(res.status).toBe(403);
+      const json = await res.json();
+      expect(json.error).toContain('site');
+      expect(json.skipped.siteDeniedDeviceIds).toEqual([DEVICE_ID]);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('allows patch jobs for a device inside the caller site allowlist', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ALLOWED, hostname: 'host-1' },
+            ]),
+          }),
+        } as any);
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
+        }),
+      } as any);
+
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth());
+        c.set('permissions', { allowedSiteIds: [SITE_ALLOWED] } as any);
+        await next();
+      });
+      app.route('/', patchJobRoutes);
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID] }),
+      });
+
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json.success).toBe(true);
+      expect(json.totalDevices).toBe(1);
     });
   });
 

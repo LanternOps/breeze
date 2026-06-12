@@ -105,7 +105,9 @@ import {
   getTimesheet, getTicketBillingSummary, listBillables
 } from './timeEntryService';
 
-const ACTOR = { userId: 'u-1', name: 'Tess', partnerId: 'p-1', manageAll: false };
+// accessibleOrgIds null = unrestricted within partner (orgAccess='all' / system).
+// Existing fixtures use 'o-1'/'o-9' etc., so null keeps prior tests passing.
+const ACTOR = { userId: 'u-1', name: 'Tess', partnerId: 'p-1', manageAll: false, accessibleOrgIds: null as string[] | null };
 const ADMIN = { ...ACTOR, userId: 'u-admin', manageAll: true };
 
 beforeEach(() => {
@@ -266,6 +268,71 @@ describe('createTimeEntry', () => {
       expect(vals.isBillable).toBe(false);
       expect(vals.hourlyRate).toBe('200.00');
     });
+  });
+});
+
+describe('org-axis ticket gate (orgAccess=selected)', () => {
+  // A partner user granted only org o-1 must not write onto a ticket in o-OTHER,
+  // even though both orgs share the same partner (p-1). The ticket is read under
+  // system scope, so the org-axis allowlist is the only thing standing between
+  // the caller and a cross-org ticket write + feed comment.
+  const SELECTED = { ...ACTOR, accessibleOrgIds: ['o-1'] as string[] | null };
+
+  it('createTimeEntry rejects a same-partner ticket in a non-granted org (404 TICKET_ORG_DENIED)', async () => {
+    dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    await expect(createTimeEntry(
+      { ticketId: 't-x', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+      SELECTED
+    )).rejects.toMatchObject({ code: 'TICKET_ORG_DENIED', status: 404 });
+    // No time-entry insert and no feed comment for the denied org.
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry allows a ticket in a granted org', async () => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
+    dbMocks.insertResult = [{ id: 'te-ok', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: false }];
+    const entry = await createTimeEntry(
+      { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+      SELECTED
+    );
+    expect(entry.id).toBe('te-ok');
+    expect(dbMocks.insertedValues[0]!.orgId).toBe('o-1');
+  });
+
+  it('startTimer rejects a same-partner ticket in a non-granted org', async () => {
+    dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    await expect(startTimer({ ticketId: 't-x' }, SELECTED))
+      .rejects.toMatchObject({ code: 'TICKET_ORG_DENIED', status: 404 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('updateTimeEntry rejects relinking to a ticket in a non-granted org', async () => {
+    dbMocks.selectResults.push([{
+      id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: null, userId: 'u-1',
+      startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'),
+      durationMinutes: 30, isApproved: false
+    }]);
+    dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    await expect(updateTimeEntry('te-1', { ticketId: 't-x' }, SELECTED))
+      .rejects.toMatchObject({ code: 'TICKET_ORG_DENIED', status: 404 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('addTicketPart rejects a same-partner ticket in a non-granted org', async () => {
+    dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    await expect(addTicketPart('t-x', { description: 'SSD', quantity: 1, unitPrice: 100 }, SELECTED))
+      .rejects.toMatchObject({ code: 'TICKET_ORG_DENIED', status: 404 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('system scope (accessibleOrgIds null) is unrestricted across orgs', async () => {
+    dbMocks.selectResults.push([{ id: 't-sys', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.insertResult = [{ id: 'te-sys', partnerId: 'p-1', ticketId: 't-sys', userId: 'u-admin', durationMinutes: 30, isBillable: false }];
+    const entry = await createTimeEntry(
+      { ticketId: 't-sys', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+      { ...ADMIN, partnerId: null, accessibleOrgIds: null }
+    );
+    expect(entry.id).toBe('te-sys');
   });
 });
 
