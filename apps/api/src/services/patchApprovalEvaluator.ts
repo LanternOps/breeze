@@ -225,29 +225,33 @@ function evaluatePatchApproval(
     return null;
   }
 
-  // Priority 2: Category rule
-  if (patch.category) {
-    const rule = categoryRuleMap.get(patch.category.toLowerCase());
-    if (rule && rule.autoApprove) {
-      // Check severity filter
-      if (rule.severityFilter && rule.severityFilter.length > 0 && patch.severity) {
-        if (!rule.severityFilter.includes(patch.severity)) {
-          return null; // Severity not in allowed list
-        }
+  // Priority 2: Category rule.
+  // 'third_party_app' is a virtual category — agents report inconsistent
+  // category strings for app updates (application/homebrew/homebrew-cask/...),
+  // so it matches by patch source instead. An exact category rule wins.
+  let rule = patch.category ? categoryRuleMap.get(patch.category.toLowerCase()) : undefined;
+  if (!rule && isThirdPartyPatchSource(patch.source)) {
+    rule = categoryRuleMap.get('third_party_app');
+  }
+  if (rule && rule.autoApprove) {
+    // Check severity filter
+    if (rule.severityFilter && rule.severityFilter.length > 0 && patch.severity) {
+      if (!rule.severityFilter.includes(patch.severity)) {
+        return null; // Severity not in allowed list
       }
-
-      // Check deferral period
-      const deferralDays = rule.deferralDaysOverride ?? ringConfig.deferralDays;
-      if (deferralDays > 0 && patch.releaseDate) {
-        const releaseDate = new Date(patch.releaseDate);
-        const deferralEnd = new Date(releaseDate.getTime() + deferralDays * 24 * 60 * 60 * 1000);
-        if (deferralEnd > now) {
-          return null; // Still in deferral period
-        }
-      }
-
-      return 'category_rule';
     }
+
+    // Check deferral period
+    const deferralDays = rule.deferralDaysOverride ?? ringConfig.deferralDays;
+    if (deferralDays > 0 && patch.releaseDate) {
+      const releaseDate = new Date(patch.releaseDate);
+      const deferralEnd = new Date(releaseDate.getTime() + deferralDays * 24 * 60 * 60 * 1000);
+      if (deferralEnd > now) {
+        return null; // Still in deferral period
+      }
+    }
+
+    return 'category_rule';
   }
 
   // Priority 3: Legacy ring-level auto-approve
