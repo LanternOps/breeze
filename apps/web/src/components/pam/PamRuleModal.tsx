@@ -311,6 +311,7 @@ export default function PamRuleModal({
     setPreviewing(true);
     setPreview(null);
     try {
+      // runaction-exempt: read-only dry-run (POST carries the draft criteria); failures render inline in the modal, no toast
       const res = await fetchWithAuth('/pam/rules/preview', {
         method: 'POST',
         body: JSON.stringify({
