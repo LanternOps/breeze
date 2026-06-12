@@ -7,6 +7,8 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { z } from 'zod';
+import { policyAppRuleSchema } from '@breeze/shared/validators';
 import * as dbModule from '../db';
 import {
   patchJobs,
@@ -19,9 +21,25 @@ import {
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
-import { resolveApprovedPatchesForDevice, type RingConfig } from '../services/patchApprovalEvaluator';
+import {
+  resolveApprovedPatchesForDevice,
+  type PolicyAppRule,
+  type PolicyAutoApproveConfig,
+  type RingConfig,
+} from '../services/patchApprovalEvaluator';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 import { queueCommandForExecution } from '../services/commandQueue';
+import { captureException } from '../services/sentry';
+
+// Strict shape for patches.policyAutoApprove as stored in the job JSONB.
+// deferralDays must be a valid non-negative integer when present — a malformed
+// value must NOT be coerced to 0, because that silently removes the deferral
+// safety window. Absent deferralDays is fine and defaults to 0.
+const jobPolicyAutoApproveSchema = z.object({
+  enabled: z.boolean(),
+  severities: z.array(z.string()),
+  deferralDays: z.number().int().min(0).optional(),
+});
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -363,10 +381,110 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     ringId?: string | null;
     categoryRules?: unknown[];
     autoApprove?: unknown;
+    sources?: unknown;
+    policyAutoApprove?: unknown;
+    apps?: unknown;
   };
   const targets = patchJob.targets as {
     deployment?: { rebootPolicy?: string };
   };
+
+  // Distinguish absent sources (legacy job → no filtering) from
+  // present-but-malformed (shape drift / bad write). Present malformed sources
+  // skip execution rather than widening to no filter.
+  let jobSources: string[] | undefined;
+  let malformedSources = false;
+  if (patchesConfig?.sources !== undefined) {
+    const raw = patchesConfig.sources;
+    const strings = Array.isArray(raw) ? raw.filter((s): s is string => typeof s === 'string') : [];
+    if (!Array.isArray(raw) || strings.length !== raw.length || strings.length === 0) {
+      malformedSources = true;
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.sources; skipping device to avoid widening install scope`;
+      console.warn(`${message}:`, JSON.stringify(raw));
+      captureException(new Error(message));
+    } else {
+      jobSources = strings;
+    }
+  }
+
+  if (malformedSources) {
+    await markDeviceSkipped(patchJobId, deviceId, 'invalid_patch_sources');
+    return { skipped: true, reason: 'Invalid patch source filter' };
+  }
+
+  // Malformed auto-approve config degrades to disabled because silently
+  // ENABLING auto-approval is the dangerous direction.
+  let policyAutoApprove: PolicyAutoApproveConfig | undefined;
+  if (patchesConfig?.policyAutoApprove !== undefined) {
+    const parsed = jobPolicyAutoApproveSchema.safeParse(patchesConfig.policyAutoApprove);
+    if (parsed.success) {
+      policyAutoApprove = {
+        enabled: parsed.data.enabled,
+        severities: parsed.data.severities,
+        deferralDays: parsed.data.deferralDays ?? 0,
+      };
+    } else {
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.policyAutoApprove; treating as disabled`;
+      console.warn(`${message}:`, JSON.stringify(patchesConfig.policyAutoApprove));
+      captureException(new Error(message));
+    }
+  }
+
+  // Malformed-but-identifiable rules coerce to 'block' rather than being
+  // dropped — dropping a block rule would silently widen install scope; only
+  // rules whose identity (source + packageId) is unusable are dropped, loudly.
+  let jobApps: PolicyAppRule[] | undefined;
+  if (patchesConfig?.apps !== undefined) {
+    if (!Array.isArray(patchesConfig.apps)) {
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.apps; ignoring app rules`;
+      console.warn(`${message}:`, JSON.stringify(patchesConfig.apps));
+      captureException(new Error(message));
+    } else {
+      const valid: PolicyAppRule[] = [];
+      for (const entry of patchesConfig.apps) {
+        const parsed = policyAppRuleSchema.safeParse(entry);
+        if (parsed.success) {
+          // Strip displayName and any other extra fields before handing to the evaluator.
+          const { source, packageId, action, pinnedVersion } = parsed.data;
+          if (action === 'pin' && pinnedVersion) {
+            valid.push({ source, packageId, action: 'pin', pinnedVersion });
+          } else {
+            // action === 'block' (pin without pinnedVersion is rejected by the schema).
+            valid.push({ source, packageId, action: 'block' });
+          }
+          continue;
+        }
+
+        const e = entry as { source?: unknown; packageId?: unknown } | null;
+        const identifiable =
+          e !== null &&
+          typeof e === 'object' &&
+          typeof e.source === 'string' &&
+          e.source.length > 0 &&
+          typeof e.packageId === 'string' &&
+          e.packageId.length > 0;
+
+        if (identifiable) {
+          // Fail closed: the admin intended to restrict this app; a malformed
+          // restriction (e.g. pin without a version) becomes an outright block.
+          console.warn(
+            `[PatchJobExecutor] Job ${patchJobId} coercing malformed app rule to block (fail-closed):`,
+            JSON.stringify(entry)
+          );
+          valid.push({
+            source: e.source as string,
+            packageId: e.packageId as string,
+            action: 'block',
+          });
+        } else {
+          const message = `[PatchJobExecutor] Job ${patchJobId} dropping malformed app rule with unusable identity`;
+          console.warn(`${message}:`, JSON.stringify(entry));
+          captureException(new Error(message));
+        }
+      }
+      jobApps = valid;
+    }
+  }
 
   const ringConfig: RingConfig = {
     ringId: patchesConfig?.ringId ?? null,
@@ -375,6 +493,9 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
       : []) as RingConfig['categoryRules'],
     autoApprove: patchesConfig?.autoApprove ?? {},
     deferralDays: 0,
+    sources: jobSources,
+    policyAutoApprove,
+    apps: jobApps,
   };
 
   // If we have a ringId, load deferralDays from the ring

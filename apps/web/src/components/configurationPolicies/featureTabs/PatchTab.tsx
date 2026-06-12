@@ -6,11 +6,19 @@ import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 import { fetchWithAuth } from '../../../stores/auth';
+import PatchAppRulesSection, { type PolicyAppRule } from './PatchAppRulesSection';
 
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
+type PatchSourceOption = 'os' | 'third_party';
+type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low';
 
 type PatchDeploymentSettings = {
+  sources: PatchSourceOption[];
+  autoApprove: boolean;
+  autoApproveSeverities: PatchSeverity[];
+  autoApproveDeferralDays: number;
+  apps: PolicyAppRule[];
   scheduleFrequency: ScheduleFrequency;
   scheduleTime: string;
   scheduleDayOfWeek: string;
@@ -29,12 +37,40 @@ type UpdateRing = {
 };
 
 const defaults: PatchDeploymentSettings = {
+  sources: ['os'],
+  autoApprove: false,
+  autoApproveSeverities: [],
+  autoApproveDeferralDays: 0,
+  apps: [],
   scheduleFrequency: 'weekly',
   scheduleTime: '02:00',
   scheduleDayOfWeek: 'sun',
   scheduleDayOfMonth: 1,
   rebootPolicy: 'if_required',
 };
+
+const sourceOptions: { value: PatchSourceOption; label: string; description: string }[] = [
+  { value: 'os', label: 'OS updates', description: 'Windows Update, macOS software updates, and Linux package updates.' },
+  { value: 'third_party', label: 'Third-party applications', description: 'Application updates via winget, Chocolatey, and Homebrew.' },
+];
+
+const severityOptions: { value: PatchSeverity; label: string }[] = [
+  { value: 'critical', label: 'Critical' },
+  { value: 'important', label: 'Important' },
+  { value: 'moderate', label: 'Moderate' },
+  { value: 'low', label: 'Low' },
+];
+
+const OS_VALUE_ALIASES = new Set(['os', 'microsoft', 'apple', 'linux']);
+const THIRD_PARTY_VALUE_ALIASES = new Set(['third_party', 'custom']);
+
+function normalizeSources(raw: unknown): PatchSourceOption[] {
+  if (!Array.isArray(raw)) return ['os'];
+  const result: PatchSourceOption[] = [];
+  if (raw.some((s) => typeof s === 'string' && OS_VALUE_ALIASES.has(s))) result.push('os');
+  if (raw.some((s) => typeof s === 'string' && THIRD_PARTY_VALUE_ALIASES.has(s))) result.push('third_party');
+  return result.length > 0 ? result : ['os'];
+}
 
 const scheduleOptions: { value: ScheduleFrequency; label: string }[] = [
   { value: 'daily', label: 'Daily' },
@@ -70,10 +106,11 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   const [rings, setRings] = useState<UpdateRing[]>([]);
   const [ringsLoading, setRingsLoading] = useState(false);
 
-  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => ({
-    ...defaults,
-    ...(effectiveLink?.inlineSettings as Partial<PatchDeploymentSettings> | undefined),
-  }));
+  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => {
+    const inline = effectiveLink?.inlineSettings as Partial<PatchDeploymentSettings> | undefined;
+    return { ...defaults, ...inline, sources: normalizeSources(inline?.sources) };
+  });
+  const [validationError, setValidationError] = useState<string>();
 
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
@@ -100,15 +137,42 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
       setSelectedRingId(link.featurePolicyId);
     }
     if (link?.inlineSettings) {
-      setSettings((prev) => ({ ...prev, ...(link.inlineSettings as Partial<PatchDeploymentSettings>) }));
+      const inline = link.inlineSettings as Partial<PatchDeploymentSettings>;
+      setSettings((prev) => ({ ...prev, ...inline, sources: normalizeSources(inline.sources) }));
     }
   }, [existingLink, parentLink]);
 
   const update = <K extends keyof PatchDeploymentSettings>(key: K, value: PatchDeploymentSettings[K]) =>
     setSettings((prev) => ({ ...prev, [key]: value }));
 
+  const toggleSource = (value: PatchSourceOption) => {
+    setSettings((prev) => {
+      const has = prev.sources.includes(value);
+      if (has && prev.sources.length === 1) return prev; // validator requires min 1
+      return {
+        ...prev,
+        sources: has ? prev.sources.filter((s) => s !== value) : [...prev.sources, value],
+      };
+    });
+  };
+
+  // Client-side mirror of the server-side Zod checks so users get inline
+  // feedback instead of a round-trip rejection.
+  const validateSettings = (): string | null => {
+    if (!selectedRingId && settings.autoApprove && settings.autoApproveSeverities.length === 0) {
+      return 'Select at least one severity for auto-approval.';
+    }
+    if (settings.apps.some((app) => app.action === 'pin' && !app.pinnedVersion?.trim())) {
+      return 'Pinned applications need a version.';
+    }
+    return null;
+  };
+
   const handleSave = async () => {
     clearError();
+    const validation = validateSettings();
+    setValidationError(validation ?? undefined);
+    if (validation) return;
     const result = await save(existingLink?.id ?? null, {
       featureType: 'patch',
       featurePolicyId: selectedRingId || null,
@@ -125,6 +189,9 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
 
   const handleOverride = async () => {
     clearError();
+    const validation = validateSettings();
+    setValidationError(validation ?? undefined);
+    if (validation) return;
     const result = await save(null, {
       featureType: 'patch',
       featurePolicyId: selectedRingId || null,
@@ -149,15 +216,51 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
       icon={<PackageCheck className="h-5 w-5" />}
       isConfigured={!!existingLink || isInherited}
       saving={saving}
-      error={error}
+      error={validationError ?? error}
       onSave={handleSave}
       onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
       onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
     >
-      {/* Approval Ring */}
+      {/* Patch Sources */}
       <div>
+        <h3 className="text-sm font-semibold">Patch Sources</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Which update sources this policy manages on assigned devices.
+        </p>
+        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+          {sourceOptions.map((option) => (
+            <label
+              key={option.value}
+              className={cn(
+                'flex cursor-pointer flex-col gap-1 rounded-md border p-3 text-sm transition',
+                settings.sources.includes(option.value)
+                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  : 'border-muted text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <input
+                type="checkbox"
+                aria-label={option.label}
+                checked={settings.sources.includes(option.value)}
+                onChange={() => toggleSource(option.value)}
+                className="hidden"
+              />
+              <span className="font-medium text-foreground">{option.label}</span>
+              <span className="text-xs text-muted-foreground">{option.description}</span>
+            </label>
+          ))}
+        </div>
+        {settings.sources.length === 1 && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            At least one patch source must be selected.
+          </p>
+        )}
+      </div>
+
+      {/* Approval Ring */}
+      <div className="mt-6">
         <h3 className="text-sm font-semibold">Approval Ring</h3>
         <p className="mt-1 text-xs text-muted-foreground">
           Select which update ring governs patch approvals for this policy. Leave empty for manual-only approvals.
@@ -190,6 +293,80 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
           </div>
         )}
       </div>
+
+      {/* Automatic Approval */}
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Automatic Approval</h3>
+        {selectedRingId ? (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="auto-approve-ring-notice">
+            Automatic approval is governed by the linked update ring
+            {selectedRing ? ` "${selectedRing.name}"` : ''}. These settings apply only when no ring is linked.
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Automatically approve patches by severity when no update ring is linked.
+          </p>
+        )}
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            data-testid="auto-approve-toggle"
+            checked={settings.autoApprove}
+            disabled={!!selectedRingId}
+            onChange={(event) => update('autoApprove', event.target.checked)}
+          />
+          Enable automatic approval
+        </label>
+        {/* Spec: policy auto-approval fields are ignored (not cleared) while a ring is linked. */}
+        {!!selectedRingId && settings.autoApprove && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="auto-approve-dormant-note">
+            Saved automatic-approval settings are inactive while a ring is linked.
+          </p>
+        )}
+        {settings.autoApprove && !selectedRingId && (
+          <div className="mt-2 space-y-2">
+            <div className="flex flex-wrap gap-3">
+              {severityOptions.map((option) => (
+                <label key={option.value} className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    data-testid={`auto-approve-severity-${option.value}`}
+                    checked={settings.autoApproveSeverities.includes(option.value)}
+                    onChange={() =>
+                      update(
+                        'autoApproveSeverities',
+                        settings.autoApproveSeverities.includes(option.value)
+                          ? settings.autoApproveSeverities.filter((severity) => severity !== option.value)
+                          : [...settings.autoApproveSeverities, option.value]
+                      )
+                    }
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+            {settings.autoApproveSeverities.length === 0 && (
+              <p className="text-xs text-destructive">Select at least one severity for auto-approval.</p>
+            )}
+            <div>
+              <label className="text-xs text-muted-foreground">Deferral (days after release)</label>
+              <input
+                type="number"
+                min={0}
+                max={60}
+                data-testid="auto-approve-deferral"
+                value={settings.autoApproveDeferralDays}
+                onChange={(event) =>
+                  update('autoApproveDeferralDays', Math.max(0, Math.min(60, Number(event.target.value) || 0)))
+                }
+                className="mt-1 h-9 w-28 rounded-md border bg-background px-2 text-sm"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <PatchAppRulesSection apps={settings.apps} onChange={(apps) => update('apps', apps)} />
 
       {/* Schedule */}
       <div className="mt-6">

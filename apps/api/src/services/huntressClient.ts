@@ -6,9 +6,12 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_PAGINATION_PAGES = 100;
 
 type JsonRecord = Record<string, unknown>;
+type CursorParam = 'cursor' | 'page_token';
 
 export interface HuntressAgentRecord {
   huntressAgentId: string;
+  organizationId: string | null;
+  accountId: string | null;
   hostname: string | null;
   platform: string | null;
   status: string | null;
@@ -18,6 +21,8 @@ export interface HuntressAgentRecord {
 
 export interface HuntressIncidentRecord {
   huntressIncidentId: string;
+  organizationId: string | null;
+  accountId: string | null;
   severity: string | null;
   category: string | null;
   title: string;
@@ -29,6 +34,16 @@ export interface HuntressIncidentRecord {
   huntressAgentId: string | null;
   hostname: string | null;
   details: JsonRecord;
+}
+
+export interface HuntressOrganizationRecord {
+  huntressOrgId: string;
+  accountId: string | null;
+  name: string | null;
+  key: string | null;
+  agentsCount: number;
+  incidentsCount: number;
+  metadata: JsonRecord;
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -44,6 +59,20 @@ function firstString(record: JsonRecord, keys: string[]): string | null {
     // strings. Coerce finite numbers so id-based fields don't resolve to null
     // (which would drop the whole record during normalization).
     if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function nestedRecord(record: JsonRecord, key: string): JsonRecord | null {
+  return asRecord(record[key]);
+}
+
+function firstNestedString(record: JsonRecord, paths: Array<[string, string[]]>): string | null {
+  for (const [key, nestedKeys] of paths) {
+    const nested = nestedRecord(record, key);
+    if (!nested) continue;
+    const value = firstString(nested, nestedKeys);
+    if (value) return value;
   }
   return null;
 }
@@ -139,12 +168,13 @@ function extractArrayFromEnvelope(payload: unknown, keys: string[]): unknown[] {
 
 function extractPaginationState(payload: unknown): {
   nextCursor: string | null;
+  nextCursorParam: CursorParam | null;
   nextPage: number | null;
   hasMore: boolean;
 } {
   const root = asRecord(payload);
   if (!root) {
-    return { nextCursor: null, nextPage: null, hasMore: false };
+    return { nextCursor: null, nextCursorParam: null, nextPage: null, hasMore: false };
   }
 
   const contexts = [
@@ -156,11 +186,22 @@ function extractPaginationState(payload: unknown): {
   ].filter((value): value is JsonRecord => value !== null);
 
   let nextCursor: string | null = null;
+  let nextCursorParam: CursorParam | null = null;
   let nextPage: number | null = null;
   let hasMore = false;
 
   for (const ctx of contexts) {
-    nextCursor = nextCursor ?? firstString(ctx, ['nextCursor', 'next_cursor', 'after', 'next_after']);
+    if (!nextCursor) {
+      const pageToken = firstString(ctx, ['nextPageToken', 'next_page_token', 'pageToken', 'page_token']);
+      const cursor = firstString(ctx, ['nextCursor', 'next_cursor', 'cursor', 'after', 'next_after']);
+      if (pageToken) {
+        nextCursor = pageToken;
+        nextCursorParam = 'page_token';
+      } else if (cursor) {
+        nextCursor = cursor;
+        nextCursorParam = 'cursor';
+      }
+    }
     nextPage = nextPage ?? firstNumber(ctx, ['nextPage', 'next_page']);
 
     if (!nextPage) {
@@ -195,10 +236,17 @@ function extractPaginationState(payload: unknown): {
       continue;
     }
 
-    nextCursor = nextCursor
-      ?? url.searchParams.get('cursor')
-      ?? url.searchParams.get('next_cursor')
-      ?? url.searchParams.get('after');
+    if (!nextCursor) {
+      const pageToken = url.searchParams.get('page_token');
+      const cursor = url.searchParams.get('cursor') ?? url.searchParams.get('next_cursor') ?? url.searchParams.get('after');
+      if (pageToken) {
+        nextCursor = pageToken;
+        nextCursorParam = 'page_token';
+      } else if (cursor) {
+        nextCursor = cursor;
+        nextCursorParam = 'cursor';
+      }
+    }
 
     if (!nextPage) {
       const pageRaw = url.searchParams.get('page');
@@ -212,7 +260,7 @@ function extractPaginationState(payload: unknown): {
     hasMore = true;
   }
 
-  return { nextCursor, nextPage, hasMore };
+  return { nextCursor, nextCursorParam, nextPage, hasMore };
 }
 
 function normalizeAgent(input: unknown): HuntressAgentRecord | null {
@@ -224,6 +272,8 @@ function normalizeAgent(input: unknown): HuntressAgentRecord | null {
 
   return {
     huntressAgentId,
+    organizationId: firstString(row, ['organizationId', 'organization_id']) ?? firstNestedString(row, [['organization', ['id']]]),
+    accountId: firstString(row, ['accountId', 'account_id']) ?? firstNestedString(row, [['account', ['id']]]),
     hostname: firstString(row, ['hostname', 'hostName', 'name', 'computerName']),
     platform: firstString(row, ['platform', 'os', 'operatingSystem', 'osType']),
     status: normalizeAgentStatus(firstString(row, ['status', 'state', 'agentStatus'])),
@@ -242,6 +292,8 @@ function normalizeIncident(input: unknown): HuntressIncidentRecord | null {
   const fallbackTitle = `Huntress incident ${huntressIncidentId}`;
   return {
     huntressIncidentId,
+    organizationId: firstString(row, ['organizationId', 'organization_id']) ?? firstNestedString(row, [['organization', ['id']]]),
+    accountId: firstString(row, ['accountId', 'account_id']) ?? firstNestedString(row, [['account', ['id']]]),
     severity: normalizeSeverity(firstString(row, ['severity', 'priority', 'level'])),
     category: firstString(row, ['category', 'type', 'threatType', 'incidentType']),
     title: firstString(row, ['subject', 'title', 'name', 'summary']) ?? fallbackTitle,
@@ -256,13 +308,32 @@ function normalizeIncident(input: unknown): HuntressIncidentRecord | null {
   };
 }
 
+function normalizeOrganization(input: unknown): HuntressOrganizationRecord | null {
+  const row = asRecord(input);
+  if (!row) return null;
+
+  const huntressOrgId = firstString(row, ['id', 'organizationId', 'organization_id', 'uuid']);
+  if (!huntressOrgId) return null;
+
+  return {
+    huntressOrgId,
+    accountId: firstString(row, ['accountId', 'account_id']) ?? firstNestedString(row, [['account', ['id']]]),
+    name: firstString(row, ['name']),
+    key: firstString(row, ['key', 'slug', 'subdomain']),
+    agentsCount: firstNumber(row, ['agents_count', 'agentsCount']) ?? 0,
+    incidentsCount: firstNumber(row, ['incident_reports_count', 'incidentReportsCount', 'incidents_count', 'incidentsCount']) ?? 0,
+    metadata: row,
+  };
+}
+
 function normalizeWebhookPayload(payload: unknown): {
   accountId: string | null;
   agents: HuntressAgentRecord[];
   incidents: HuntressIncidentRecord[];
 } {
   const root = asRecord(payload) ?? {};
-  const accountId = firstString(root, ['accountId', 'account_id', 'organizationId', 'organization_id']);
+  const accountId = firstString(root, ['accountId', 'account_id'])
+    ?? firstNestedString(root, [['account', ['id']]]);
 
   const incidentCandidates = [
     ...extractArrayFromEnvelope(payload, ['incidents', 'alerts', 'findings', 'data', 'results']),
@@ -422,6 +493,7 @@ export class HuntressClient {
   private async requestPaginated(pathname: string, since: Date | undefined, arrayKeys: string[]): Promise<unknown[]> {
     const items: unknown[] = [];
     let nextCursor: string | null = null;
+    let paginationCursorParam: CursorParam = 'cursor';
     let nextPage: number | null = null;
     const seenPageTokens = new Set<string>();
 
@@ -431,7 +503,7 @@ export class HuntressClient {
         query.since = since.toISOString();
       }
       if (nextCursor) {
-        query.cursor = nextCursor;
+        query[paginationCursorParam] = nextCursor;
       } else if (nextPage && nextPage > 1) {
         query.page = String(nextPage);
       }
@@ -446,6 +518,7 @@ export class HuntressClient {
         if (seenPageTokens.has(token)) break;
         seenPageTokens.add(token);
         nextCursor = pagination.nextCursor;
+        paginationCursorParam = pagination.nextCursorParam ?? 'cursor';
         nextPage = null;
         continue;
       }
@@ -491,6 +564,19 @@ export class HuntressClient {
       );
     }
     return incidents;
+  }
+
+  async listOrganizations(): Promise<HuntressOrganizationRecord[]> {
+    const rows = await this.requestPaginated('/organizations', undefined, ['organizations', 'data', 'items', 'results']);
+    const organizations = rows
+      .map((row) => normalizeOrganization(row))
+      .filter((row): row is HuntressOrganizationRecord => row !== null);
+    if (rows.length > 0 && organizations.length < rows.length) {
+      console.warn(
+        `[HuntressClient] Dropped ${rows.length - organizations.length}/${rows.length} organization records during normalization (missing required fields)`
+      );
+    }
+    return organizations;
   }
 }
 

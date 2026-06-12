@@ -254,7 +254,20 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('creates patch job successfully when conditions are met', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
-      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal({
+        settings: {
+          sources: ['third_party'],
+          autoApprove: true,
+          autoApproveSeverities: ['critical'],
+          autoApproveDeferralDays: 5,
+          apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+          scheduleFrequency: 'daily',
+          scheduleTime: '02:00',
+          scheduleDayOfWeek: 'sun',
+          scheduleDayOfMonth: 1,
+          rebootPolicy: 'if_required',
+        },
+      }));
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -264,10 +277,11 @@ describe('configurationPolicies patchJob routes', () => {
 
       checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
 
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
+      });
       vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
-        }),
+        values: insertValuesMock,
       } as any);
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
@@ -279,6 +293,11 @@ describe('configurationPolicies patchJob routes', () => {
       const json = await res.json();
       expect(json.success).toBe(true);
       expect(json.totalDevices).toBe(1);
+      expect(insertValuesMock.mock.calls[0]?.[0]?.patches).toMatchObject({
+        sources: ['third_party'],
+        policyAutoApprove: { enabled: true, severities: ['critical'], deferralDays: 5 },
+        apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+      });
       expect(writeRouteAudit).toHaveBeenCalled();
     });
 
@@ -466,8 +485,22 @@ describe('configurationPolicies patchJob routes', () => {
 
   describe('GET /:id/resolve-patch-config/:deviceId', () => {
     it('returns resolved patch config for a device', async () => {
+      const appRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
-      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal({
+        settings: {
+          sources: ['os'],
+          autoApprove: true,
+          autoApproveSeverities: ['critical'],
+          autoApproveDeferralDays: 5,
+          apps: appRules,
+          scheduleFrequency: 'daily',
+          scheduleTime: '02:00',
+          scheduleDayOfWeek: 'sun',
+          scheduleDayOfMonth: 1,
+          rebootPolicy: 'if_required',
+        },
+      }));
       resolvePatchConfigDetailsForDeviceMock.mockResolvedValue(makeResolvedPatchConfig());
       vi.mocked(db.select)
         .mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any);
@@ -480,6 +513,69 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.policyLocal.approvalRing.ringId).toBeNull();
       expect(json.effective.settings.scheduleTime).toBe('02:00');
       expect(json.effective.approvalRing).toBeDefined();
+      // New keys sourced from the requested policy (it is also the winning one)
+      expect(json.isWinning).toBe(true);
+      expect(json.effective.settings.autoApproveDeferralDays).toBe(5);
+      expect(json.effective.settings.apps).toEqual(appRules);
+    });
+
+    it('loads the winning policy config when it differs from the requested policy', async () => {
+      const winningPolicyId = '88888888-8888-8888-8888-888888888888';
+      const winningApps = [{ source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' }];
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
+      loadPolicyLocalPatchConfigMock.mockImplementation(async (configPolicyId: string) => {
+        if (configPolicyId === POLICY_ID) {
+          return makePolicyLocal();
+        }
+        return makePolicyLocal({
+          configPolicyId: winningPolicyId,
+          configPolicyName: 'P2',
+          featureLinkId: 'fl-2',
+          settings: {
+            sources: ['os', 'third_party'],
+            autoApprove: true,
+            autoApproveSeverities: ['critical', 'important'],
+            autoApproveDeferralDays: 9,
+            apps: winningApps,
+            scheduleFrequency: 'weekly',
+            scheduleTime: '03:30',
+            scheduleDayOfWeek: 'tue',
+            scheduleDayOfMonth: 1,
+            rebootPolicy: 'never',
+          },
+          ring: {
+            classification: 'valid_ring',
+            valid: true,
+            ringId: 'ring-w',
+            ringName: 'Winning Ring',
+            categoryRules: [],
+            autoApprove: {},
+          },
+        });
+      });
+      resolvePatchConfigDetailsForDeviceMock.mockResolvedValue(makeResolvedPatchConfig({
+        configPolicyId: winningPolicyId,
+        configPolicyName: 'P2',
+        featureLinkId: 'fl-2',
+      }));
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any);
+
+      const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.isWinning).toBe(false);
+      expect(json.effective.configPolicyId).toBe(winningPolicyId);
+      // New keys must come from the *winning* policy's local config
+      expect(json.effective.settings.autoApproveDeferralDays).toBe(9);
+      expect(json.effective.settings.apps).toEqual(winningApps);
+      expect(json.effective.approvalRing.ringId).toBe('ring-w');
+      expect(json.effective.approvalRing.ringName).toBe('Winning Ring');
+      // Requested policy's own config is still returned unchanged
+      expect(json.policyLocal.configPolicyId).toBe(POLICY_ID);
+      expect(loadPolicyLocalPatchConfigMock).toHaveBeenCalledWith(POLICY_ID);
+      expect(loadPolicyLocalPatchConfigMock).toHaveBeenCalledWith(winningPolicyId);
+      expect(loadPolicyLocalPatchConfigMock).toHaveBeenCalledTimes(2);
     });
 
     it('returns 404 when policy not found', async () => {

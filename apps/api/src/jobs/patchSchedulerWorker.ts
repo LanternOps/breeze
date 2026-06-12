@@ -21,6 +21,7 @@ import { and, eq, gte, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 import { enqueuePatchJob } from './patchJobExecutor';
+import { buildPatchesSnapshot } from '../services/patchJobSnapshot';
 import {
   backfillMissingPatchSettings,
   listAllPatchInventory,
@@ -376,17 +377,7 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
             configPolicyId: row.configPolicyId,
             ringId: policyLocal.ring.ringId,
             name: `Scheduled Patch Job - ${row.policyName}`,
-            patches: {
-              ringId: policyLocal.ring.ringId,
-              ringName: policyLocal.ring.ringName,
-              categoryRules: policyLocal.ring.categoryRules,
-              autoApprove: policyLocal.ring.autoApprove,
-              sources: policyLocal.settings.sources,
-              ringValidation: {
-                classification: policyLocal.ring.classification,
-                valid: policyLocal.ring.valid,
-              },
-            },
+            patches: buildPatchesSnapshot(policyLocal),
             targets: {
               deviceIds: eligibleDeviceIds,
               configPolicyId: row.configPolicyId,

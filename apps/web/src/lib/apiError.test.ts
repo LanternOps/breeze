@@ -96,6 +96,47 @@ describe('extractApiError', () => {
   });
 });
 
+describe('extractApiError — zod flatten() details shapes', () => {
+  it('renders fieldErrors from a flatten() details payload', () => {
+    const body = {
+      error: 'Invalid patch settings',
+      details: {
+        formErrors: [],
+        fieldErrors: { apps: ['Duplicate application rule (source + packageId must be unique)'] },
+      },
+    };
+    expect(extractApiError(body, 'fb')).toBe(
+      'Invalid patch settings: apps: Duplicate application rule (source + packageId must be unique)'
+    );
+  });
+
+  it('renders formErrors from a flatten() details payload', () => {
+    const body = { details: { formErrors: ['Too many application rules (max 200)'], fieldErrors: {} } };
+    expect(extractApiError(body, 'fb')).toBe('Too many application rules (max 200)');
+  });
+
+  it('combines formErrors and multiple fieldErrors', () => {
+    const body = {
+      details: {
+        formErrors: ['top-level problem'],
+        fieldErrors: { apps: ['bad rule'], autoApproveSeverities: ['pick one', 'invalid value'] },
+      },
+    };
+    expect(extractApiError(body, 'fb')).toBe(
+      'top-level problem; apps: bad rule; autoApproveSeverities: pick one; invalid value'
+    );
+  });
+
+  it('falls back when the flatten() payload carries no messages', () => {
+    expect(extractApiError({ details: { formErrors: [], fieldErrors: {} } }, 'fb')).toBe('fb');
+  });
+
+  it('prefers issues-style details over flatten when details is an issues array (regression)', () => {
+    const body = { error: 'Validation failed', details: [{ message: 'name is required' }] };
+    expect(extractApiError(body, 'fb')).toBe('Validation failed: name is required');
+  });
+});
+
 describe('isApiFailure', () => {
   it('true when http status >= 400', () => {
     expect(isApiFailure({}, 400)).toBe(true);

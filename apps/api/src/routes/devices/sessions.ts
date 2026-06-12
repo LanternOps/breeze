@@ -60,6 +60,7 @@ sessionsRoutes.get(
         activityState: deviceSessions.activityState,
         loginPerformanceSeconds: deviceSessions.loginPerformanceSeconds,
         lastActivityAt: deviceSessions.lastActivityAt,
+        updatedAt: deviceSessions.updatedAt,
       })
       .from(deviceSessions)
       .where(

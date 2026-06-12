@@ -116,7 +116,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Device-state predicates (virtual EXISTS fields against related tables)
   { key: 'patches.pending', label: 'Has Pending Patches', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has at least one pending patch' },
   { key: 'alerts.critical', label: 'Has Critical Alerts', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an active critical alert' },
-  { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has a completed patch awaiting reboot' },
+  { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device OS reports a reboot is pending' },
 
   // Hierarchy fields
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
@@ -221,7 +221,11 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     } else if (field === 'alerts.critical') {
       inner = sql`EXISTS (SELECT 1 FROM alerts WHERE device_id = ${devices.id} AND status = 'active' AND severity = 'critical')`;
     } else {
-      inner = sql`EXISTS (SELECT 1 FROM patch_job_results WHERE device_id = ${devices.id} AND reboot_required = true AND rebooted_at IS NULL)`;
+      // OS-level flag persisted from the agent heartbeat. Intentionally
+      // broader than the old patch_job_results subquery: matches reboots
+      // from any cause, so the filter agrees with the "Reboot pending"
+      // badge. (Spec 2026-06-11-pending-reboot-indicator-design.md)
+      inner = sql`${devices.pendingReboot} = true`;
     }
     const negative = value === false || value === 'no' || value === 'false';
     const negate = (operator === 'notEquals') !== negative;

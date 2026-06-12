@@ -784,3 +784,97 @@ describe('detectWatchdogStateCollapse (#1121)', () => {
     expect(detectWatchdogStateCollapse('not-an-object', undefined)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------
+// pendingReboot persistence
+// ---------------------------------------------------------------------
+
+describe('pendingReboot persistence', () => {
+  // Device row used across all three tests — minimal fields the handler needs.
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  function setupMocks(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  it('persists pendingReboot=true from the main-agent heartbeat', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, pendingReboot: true }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.pendingReboot).toBe(true);
+  });
+
+  it('clears pendingReboot when the field is absent (old agents / post-reboot)', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    setupMocks(setSpy);
+
+    // minimalHeartbeatBody has no pendingReboot key — simulates old agents and
+    // post-reboot heartbeats where the flag was true before the reboot.
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.pendingReboot).toBe(false);
+  });
+
+  it('watchdog heartbeats never touch pendingReboot', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    // Watchdog device lookup needs lastSeenAt for the silence-detector.
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([{ ...deviceRow, lastSeenAt: new Date() }]),
+    );
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // Include pendingReboot in the payload to prove it is ignored by the
+      // watchdog branch.
+      body: JSON.stringify({ role: 'watchdog', agentVersion: '0.65.10', watchdogState: 'MONITORING', pendingReboot: true }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(setSpy).toHaveBeenCalled();
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    // Guard that we captured the watchdog update (not a trivially-undefined
+    // arg) before asserting the flag is absent from it.
+    expect(updateArg).toHaveProperty('watchdogStatus');
+    expect(updateArg).not.toHaveProperty('pendingReboot');
+  });
+});

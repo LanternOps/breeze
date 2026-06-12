@@ -375,11 +375,11 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
   });
 
   describe('huntress integration save', () => {
-    it('POST /huntress/integration accepts ?orgId= as a fallback for body.orgId', async () => {
+    it('POST /huntress/integration accepts partner-level credentials without orgId', async () => {
       const { huntressRoutes } = await import('./huntress');
       const app = new Hono().route('/huntress', huntressRoutes);
 
-      const res = await app.request(`/huntress/integration?orgId=${ORG_A}`, {
+      const res = await app.request('/huntress/integration', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
         body: JSON.stringify({ name: 'Primary', apiKey: 'k' }),

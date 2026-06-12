@@ -65,7 +65,7 @@ type HeartbeatPayload struct {
 	Status           string                    `json:"status"`
 	AgentVersion     string                    `json:"agentVersion"`
 	IPHistoryUpdate  *IPHistoryUpdate          `json:"ipHistoryUpdate,omitempty"`
-	PendingReboot    bool                      `json:"pendingReboot,omitempty"`
+	PendingReboot    bool                      `json:"pendingReboot"`
 	LastUser         string                    `json:"lastUser,omitempty"`
 	UptimeSeconds    int64                     `json:"uptime,omitempty"`
 	DeviceRole       string                    `json:"deviceRole,omitempty"`

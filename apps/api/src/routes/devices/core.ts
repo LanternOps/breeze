@@ -523,6 +523,7 @@ coreRoutes.get(
         lastUser: devices.lastUser,
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
+        pendingReboot: devices.pendingReboot,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary

@@ -6,12 +6,14 @@ import {
   huntressAgents,
   huntressIncidents,
   huntressIntegrations,
+  huntressOrgMappings,
 } from '../db/schema';
 import {
   HuntressClient,
   parseHuntressWebhookPayload,
   type HuntressAgentRecord,
   type HuntressIncidentRecord,
+  type HuntressOrganizationRecord,
 } from '../services/huntressClient';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
@@ -51,6 +53,9 @@ export interface HuntressSyncResult {
   upsertedAgents: number;
   createdIncidents: number;
   updatedIncidents: number;
+  discoveredOrganizations?: number;
+  skippedUnmappedAgents?: number;
+  skippedUnmappedIncidents?: number;
 }
 
 let huntressSyncQueue: Queue<HuntressSyncJobData> | null = null;
@@ -203,6 +208,149 @@ function collectCandidateHostnames(
   return Array.from(values);
 }
 
+function huntressOrgIdForRecord(record: { organizationId: string | null }): string | null {
+  return record.organizationId?.trim() || null;
+}
+
+function countByOrgId<T extends { organizationId: string | null }>(rows: T[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const orgId = huntressOrgIdForRecord(row);
+    if (!orgId) continue;
+    counts.set(orgId, (counts.get(orgId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function mergeDiscoveredOrganizations(input: {
+  organizations: HuntressOrganizationRecord[];
+  agents: HuntressAgentRecord[];
+  incidents: HuntressIncidentRecord[];
+}): HuntressOrganizationRecord[] {
+  const byOrgId = new Map<string, HuntressOrganizationRecord>();
+  const agentCounts = countByOrgId(input.agents);
+  const incidentCounts = countByOrgId(input.incidents);
+
+  for (const org of input.organizations) {
+    byOrgId.set(org.huntressOrgId, {
+      ...org,
+      agentsCount: agentCounts.get(org.huntressOrgId) ?? org.agentsCount,
+      incidentsCount: incidentCounts.get(org.huntressOrgId) ?? org.incidentsCount,
+    });
+  }
+
+  for (const agent of input.agents) {
+    const orgId = huntressOrgIdForRecord(agent);
+    if (!orgId || byOrgId.has(orgId)) continue;
+    byOrgId.set(orgId, {
+      huntressOrgId: orgId,
+      accountId: agent.accountId,
+      name: null,
+      key: null,
+      agentsCount: agentCounts.get(orgId) ?? 0,
+      incidentsCount: incidentCounts.get(orgId) ?? 0,
+      metadata: { source: 'agent' },
+    });
+  }
+
+  for (const incident of input.incidents) {
+    const orgId = huntressOrgIdForRecord(incident);
+    if (!orgId || byOrgId.has(orgId)) continue;
+    byOrgId.set(orgId, {
+      huntressOrgId: orgId,
+      accountId: incident.accountId,
+      name: null,
+      key: null,
+      agentsCount: agentCounts.get(orgId) ?? 0,
+      incidentsCount: incidentCounts.get(orgId) ?? 0,
+      metadata: { source: 'incident' },
+    });
+  }
+
+  return Array.from(byOrgId.values());
+}
+
+async function upsertDiscoveredOrganizations(params: {
+  integrationId: string;
+  partnerId: string;
+  organizations: HuntressOrganizationRecord[];
+}): Promise<void> {
+  if (params.organizations.length === 0) return;
+
+  const now = new Date();
+  const values = params.organizations.map((org) => ({
+    integrationId: params.integrationId,
+    partnerId: params.partnerId,
+    huntressOrgId: org.huntressOrgId,
+    huntressOrgName: org.name?.slice(0, 255) ?? null,
+    huntressOrgKey: org.key?.slice(0, 120) ?? null,
+    huntressAccountId: org.accountId?.slice(0, 120) ?? null,
+    agentsCount: org.agentsCount,
+    incidentsCount: org.incidentsCount,
+    metadata: org.metadata,
+    lastSeenAt: now,
+    updatedAt: now,
+  }));
+
+  for (const batch of chunk(values, 500)) {
+    await db
+      .insert(huntressOrgMappings)
+      .values(batch)
+      .onConflictDoUpdate({
+        target: [huntressOrgMappings.integrationId, huntressOrgMappings.huntressOrgId],
+        set: {
+          huntressOrgName: sql`excluded.huntress_org_name`,
+          partnerId: sql`excluded.partner_id`,
+          huntressOrgKey: sql`excluded.huntress_org_key`,
+          huntressAccountId: sql`excluded.huntress_account_id`,
+          agentsCount: sql`excluded.agents_count`,
+          incidentsCount: sql`excluded.incidents_count`,
+          metadata: sql`excluded.metadata`,
+          lastSeenAt: sql`excluded.last_seen_at`,
+          updatedAt: sql`excluded.updated_at`,
+        }
+      });
+  }
+}
+
+async function loadMappedOrgIds(integrationId: string): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      huntressOrgId: huntressOrgMappings.huntressOrgId,
+      orgId: huntressOrgMappings.orgId,
+    })
+    .from(huntressOrgMappings)
+    .where(eq(huntressOrgMappings.integrationId, integrationId));
+
+  const mappings = new Map<string, string>();
+  for (const row of rows) {
+    if (row.orgId) mappings.set(row.huntressOrgId, row.orgId);
+  }
+  return mappings;
+}
+
+function groupByMappedOrg<T extends { organizationId: string | null }>(
+  rows: T[],
+  mappings: Map<string, string>
+): { byOrgId: Map<string, T[]>; skipped: number } {
+  const byOrgId = new Map<string, T[]>();
+  let skipped = 0;
+
+  for (const row of rows) {
+    const huntressOrgId = huntressOrgIdForRecord(row);
+    const orgId = huntressOrgId ? mappings.get(huntressOrgId) : undefined;
+    if (!orgId) {
+      skipped += 1;
+      continue;
+    }
+    const group = byOrgId.get(orgId) ?? [];
+    group.push(row);
+    byOrgId.set(orgId, group);
+  }
+
+  return { byOrgId, skipped };
+}
+
 async function publishHuntressEvent(
   type: 'huntress.incident_created' | 'huntress.incident_updated' | 'huntress.agent_offline',
   orgId: string,
@@ -292,6 +440,7 @@ async function upsertAgents(params: {
         .onConflictDoUpdate({
           target: [huntressAgents.integrationId, huntressAgents.huntressAgentId],
           set: {
+            orgId: sql`excluded.org_id`,
             deviceId: sql`excluded.device_id`,
             hostname: sql`excluded.hostname`,
             platform: sql`excluded.platform`,
@@ -488,6 +637,7 @@ async function upsertIncidents(params: {
         .onConflictDoUpdate({
           target: [huntressIncidents.integrationId, huntressIncidents.huntressIncidentId],
           set: {
+            orgId: sql`excluded.org_id`,
             deviceId: sql`excluded.device_id`,
             severity: sql`excluded.severity`,
             category: sql`excluded.category`,
@@ -588,10 +738,12 @@ async function syncIntegrationById(
   }
 
   try {
+    let organizations: HuntressOrganizationRecord[];
     let agents: HuntressAgentRecord[];
     let incidents: HuntressIncidentRecord[];
 
     if (webhookPayload) {
+      organizations = [];
       agents = webhookPayload.agents;
       incidents = webhookPayload.incidents;
     } else {
@@ -616,30 +768,58 @@ async function syncIntegrationById(
         ? new Date(integration.lastSyncAt.getTime() - 60_000)
         : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
 
-      [agents, incidents] = await Promise.all([
+      [organizations, agents, incidents] = await Promise.all([
+        client.listOrganizations(),
         client.listAgents(since),
         client.listIncidents(since),
       ]);
     }
 
-    const devicesByHostname = await mapDevicesByHostname(
-      integration.orgId,
-      collectCandidateHostnames(agents, incidents)
-    );
-    const [agentResult, incidentResult] = await Promise.all([
-      upsertAgents({
-        orgId: integration.orgId,
-        integrationId: integration.id,
-        agents,
-        devicesByHostname,
-      }),
-      upsertIncidents({
-        orgId: integration.orgId,
-        integrationId: integration.id,
-        incidents,
-        devicesByHostname,
-      }),
-    ]);
+    const discoveredOrganizations = mergeDiscoveredOrganizations({ organizations, agents, incidents });
+    await upsertDiscoveredOrganizations({
+      integrationId: integration.id,
+      partnerId: integration.partnerId,
+      organizations: discoveredOrganizations,
+    });
+
+    const mappedOrgIds = await loadMappedOrgIds(integration.id);
+    const groupedAgents = groupByMappedOrg(agents, mappedOrgIds);
+    const groupedIncidents = groupByMappedOrg(incidents, mappedOrgIds);
+    const allMappedOrgIds = Array.from(new Set([
+      ...groupedAgents.byOrgId.keys(),
+      ...groupedIncidents.byOrgId.keys(),
+    ]));
+
+    let upsertedAgents = 0;
+    let createdIncidents = 0;
+    let updatedIncidents = 0;
+
+    for (const orgId of allMappedOrgIds) {
+      const orgAgents = groupedAgents.byOrgId.get(orgId) ?? [];
+      const orgIncidents = groupedIncidents.byOrgId.get(orgId) ?? [];
+      const devicesByHostname = await mapDevicesByHostname(
+        orgId,
+        collectCandidateHostnames(orgAgents, orgIncidents)
+      );
+
+      const [agentResult, incidentResult] = await Promise.all([
+        upsertAgents({
+          orgId,
+          integrationId: integration.id,
+          agents: orgAgents,
+          devicesByHostname,
+        }),
+        upsertIncidents({
+          orgId,
+          integrationId: integration.id,
+          incidents: orgIncidents,
+          devicesByHostname,
+        }),
+      ]);
+      upsertedAgents += agentResult.upserted;
+      createdIncidents += incidentResult.created;
+      updatedIncidents += incidentResult.updated;
+    }
 
     await db
       .update(huntressIntegrations)
@@ -655,9 +835,12 @@ async function syncIntegrationById(
       integrationId: integration.id,
       fetchedAgents: agents.length,
       fetchedIncidents: incidents.length,
-      upsertedAgents: agentResult.upserted,
-      createdIncidents: incidentResult.created,
-      updatedIncidents: incidentResult.updated,
+      upsertedAgents,
+      createdIncidents,
+      updatedIncidents,
+      discoveredOrganizations: discoveredOrganizations.length,
+      skippedUnmappedAgents: groupedAgents.skipped,
+      skippedUnmappedIncidents: groupedIncidents.skipped,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -762,7 +945,7 @@ export async function findHuntressIntegrationByAccount(accountId: string): Promi
     status: 'single';
     integration: {
       id: string;
-      orgId: string;
+      partnerId: string;
       accountId: string | null;
       webhookSecretEncrypted: string | null;
     };
@@ -772,7 +955,7 @@ export async function findHuntressIntegrationByAccount(accountId: string): Promi
     const rows = await db
       .select({
         id: huntressIntegrations.id,
-        orgId: huntressIntegrations.orgId,
+        partnerId: huntressIntegrations.partnerId,
         accountId: huntressIntegrations.accountId,
         webhookSecretEncrypted: huntressIntegrations.webhookSecretEncrypted,
       })

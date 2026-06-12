@@ -7,15 +7,19 @@ import {
   jsonb,
   boolean,
   index,
-  uniqueIndex
+  uniqueIndex,
+  integer,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { sql } from 'drizzle-orm';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 
 export const huntressIntegrations = pgTable('huntress_integrations', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  legacyOrgId: uuid('org_id').references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
   apiKeyEncrypted: text('api_key_encrypted').notNull(),
   accountId: varchar('account_id', { length: 120 }),
@@ -29,7 +33,38 @@ export const huntressIntegrations = pgTable('huntress_integrations', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
-  orgIdx: uniqueIndex('huntress_integrations_org_idx').on(table.orgId),
+  partnerActiveIdx: uniqueIndex('huntress_integrations_partner_active_idx')
+    .on(table.partnerId)
+    .where(sql`${table.isActive} = true`),
+  idPartnerIdx: uniqueIndex('huntress_integrations_id_partner_idx').on(table.id, table.partnerId),
+  legacyOrgIdx: index('huntress_integrations_legacy_org_idx').on(table.legacyOrgId),
+}));
+
+export const huntressOrgMappings = pgTable('huntress_org_mappings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id').notNull(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  huntressOrgId: varchar('huntress_org_id', { length: 128 }).notNull(),
+  huntressOrgName: varchar('huntress_org_name', { length: 255 }),
+  huntressOrgKey: varchar('huntress_org_key', { length: 120 }),
+  huntressAccountId: varchar('huntress_account_id', { length: 120 }),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
+  agentsCount: integer('agents_count').notNull().default(0),
+  incidentsCount: integer('incidents_count').notNull().default(0),
+  metadata: jsonb('metadata'),
+  lastSeenAt: timestamp('last_seen_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  uniqueOrgIdx: uniqueIndex('huntress_org_mappings_integration_org_idx').on(table.integrationId, table.huntressOrgId),
+  orgIdx: index('huntress_org_mappings_org_idx').on(table.orgId),
+  integrationIdx: index('huntress_org_mappings_integration_idx').on(table.integrationId),
+  partnerIdx: index('huntress_org_mappings_partner_idx').on(table.partnerId),
+  integrationPartnerFk: foreignKey({
+    columns: [table.integrationId, table.partnerId],
+    foreignColumns: [huntressIntegrations.id, huntressIntegrations.partnerId],
+    name: 'huntress_org_mappings_integration_partner_fkey',
+  }).onDelete('cascade'),
 }));
 
 export const huntressAgents = pgTable('huntress_agents', {

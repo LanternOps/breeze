@@ -31,7 +31,7 @@ import {
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
-import { normalizePatchInlineSettings } from './configPolicyPatching';
+import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 
 // ============================================
 // Types
@@ -596,6 +596,11 @@ async function assembleInlineSettings(
         .where(eq(configPolicyPatchSettings.featureLinkId, linkId))
         .limit(1);
       if (!row) return null;
+      // NOTE: autoApproveDeferralDays and apps (block/pin rules) are intentionally
+      // absent here — config_policy_patch_settings has no columns for them; they
+      // live ONLY in the feature link's inline JSONB. Callers (listFeatureLinks)
+      // MUST merge them back in from the stored inlineSettings, otherwise reads
+      // come back with apps: [] and the next save destroys every app rule.
       return {
         sources: row.sources,
         autoApprove: row.autoApprove,
@@ -885,10 +890,29 @@ export async function listFeatureLinks(configPolicyId: string) {
     links.map(async (link) => {
       const featureType = link.featureType as ConfigFeatureType;
       const assembled = await assembleInlineSettings(featureType, link.id);
-      const effectiveInlineSettings =
-        featureType === 'patch'
-          ? normalizePatchInlineSettings(assembled ?? link.inlineSettings)
-          : assembled ?? link.inlineSettings;
+      let effectiveInlineSettings: unknown;
+      if (featureType === 'patch') {
+        // CONSTRAINT: autoApproveDeferralDays and apps (block/pin rules) have NO
+        // columns on config_policy_patch_settings — they live ONLY in the feature
+        // link's inline JSONB. They must be merged in even when the relational row
+        // wins, exactly mirroring loadPolicyLocalPatchConfig in configPolicyPatching.ts.
+        // Without this merge every read returns apps: [] / autoApproveDeferralDays: 0,
+        // and the next save writes that emptiness back to the JSONB — permanently
+        // destroying all app rules with no warning (blocked apps then auto-install).
+        // A maintainer "cleaning up" this mixed sourcing must first add columns and
+        // a backfill migration. Malformed stored JSON must not throw; it falls back
+        // to schema defaults for just these fields via tryNormalizePatchInlineSettings.
+        const storedInline = tryNormalizePatchInlineSettings(link.inlineSettings).settings;
+        effectiveInlineSettings = assembled
+          ? normalizePatchInlineSettings({
+              ...(assembled as Record<string, unknown>),
+              autoApproveDeferralDays: storedInline.autoApproveDeferralDays,
+              apps: storedInline.apps,
+            })
+          : storedInline;
+      } else {
+        effectiveInlineSettings = assembled ?? link.inlineSettings;
+      }
       return {
         ...link,
         // Prefer assembled normalized data; fall back to stored JSONB

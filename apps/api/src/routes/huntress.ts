@@ -9,6 +9,8 @@ import {
   huntressAgents,
   huntressIncidents,
   huntressIntegrations,
+  huntressOrgMappings,
+  organizations,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
@@ -37,7 +39,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 export const huntressRoutes = new Hono();
 
-type RouteAuth = Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
+type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
 
 function resolveOrgId(
   auth: RouteAuth,
@@ -70,8 +72,39 @@ function requestedOrgId(c: { req: { query: (key: string) => string | undefined }
   return c.req.query('orgId');
 }
 
+function requestedPartnerId(c: { req: { query: (key: string) => string | undefined } }): string | undefined {
+  return c.req.query('partnerId');
+}
+
+function resolvePartnerId(
+  auth: RouteAuth,
+  requested?: string
+): { partnerId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'partner') {
+    if (!auth.partnerId) return { error: 'Partner context required', status: 403 };
+    if (requested && requested !== auth.partnerId) return { error: 'Access to this partner denied', status: 403 };
+    return { partnerId: auth.partnerId };
+  }
+
+  if (auth.scope === 'organization') {
+    if (!auth.partnerId) return { error: 'Partner context required', status: 403 };
+    if (requested && requested !== auth.partnerId) return { error: 'Access to this partner denied', status: 403 };
+    return { partnerId: auth.partnerId };
+  }
+
+  if (!requested) return { error: 'partnerId is required for system scope', status: 400 };
+  return { partnerId: requested };
+}
+
+function requirePartnerManager(auth: RouteAuth, requested?: string): { partnerId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    return { error: 'Huntress credentials and mappings are managed at partner scope', status: 403 };
+  }
+  return resolvePartnerId(auth, requested);
+}
+
 const upsertIntegrationSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  partnerId: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
   apiKey: z.string().min(1).max(5000).optional(),
   accountId: z.string().min(1).max(120).optional(),
@@ -90,15 +123,28 @@ const upsertIntegrationSchema = z.object({
 });
 
 const syncSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  partnerId: z.string().uuid().optional(),
   integrationId: z.string().uuid().optional(),
 });
 
 const statusQuerySchema = z.object({
+  partnerId: z.string().uuid().optional(),
   orgId: z.string().uuid().optional(),
 });
 
+const organizationsQuerySchema = z.object({
+  partnerId: z.string().uuid().optional(),
+  integrationId: z.string().uuid().optional(),
+});
+
+const organizationMapSchema = z.object({
+  integrationId: z.string().uuid(),
+  huntressOrgId: z.string().min(1).max(128),
+  orgId: z.string().uuid().nullable(),
+});
+
 const listIncidentsQuerySchema = z.object({
+  partnerId: z.string().uuid().optional(),
   orgId: z.string().uuid().optional(),
   integrationId: z.string().uuid().optional(),
   status: z.string().max(30).optional(),
@@ -115,7 +161,7 @@ async function resolveWebhookIntegration(params: {
 }): Promise<
   | {
     id: string;
-    orgId: string;
+    partnerId: string;
     accountId: string | null;
     webhookSecretEncrypted: string | null;
     isActive: boolean;
@@ -127,7 +173,7 @@ async function resolveWebhookIntegration(params: {
       const [row] = await db
         .select({
           id: huntressIntegrations.id,
-          orgId: huntressIntegrations.orgId,
+          partnerId: huntressIntegrations.partnerId,
           accountId: huntressIntegrations.accountId,
           webhookSecretEncrypted: huntressIntegrations.webhookSecretEncrypted,
           isActive: huntressIntegrations.isActive,
@@ -237,21 +283,17 @@ huntressRoutes.use('*', authMiddleware);
 huntressRoutes.get(
   '/integration',
   requireScope('organization', 'partner', 'system'),
+  zValidator('query', statusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveOrgId(auth, requestedOrgId(c));
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
-
-    const conditions: SQL[] = [eq(huntressIntegrations.orgId, orgResult.orgId)];
-    const orgCondition = auth.orgCondition(huntressIntegrations.orgId);
-    if (orgCondition) conditions.push(orgCondition);
+    const query = c.req.valid('query');
+    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     const [integration] = await db
       .select({
         id: huntressIntegrations.id,
-        orgId: huntressIntegrations.orgId,
+        partnerId: huntressIntegrations.partnerId,
         name: huntressIntegrations.name,
         accountId: huntressIntegrations.accountId,
         apiBaseUrl: huntressIntegrations.apiBaseUrl,
@@ -265,11 +307,28 @@ huntressRoutes.get(
         hasWebhookSecret: sql<boolean>`(${huntressIntegrations.webhookSecretEncrypted} is not null)`
       })
       .from(huntressIntegrations)
-      .where(and(...conditions))
+      .where(and(
+        eq(huntressIntegrations.partnerId, partnerResult.partnerId),
+        eq(huntressIntegrations.isActive, true)
+      ))
       .limit(1);
 
     if (!integration) {
       return c.json({ data: null });
+    }
+
+    if (auth.scope === 'organization') {
+      const orgResult = resolveOrgId(auth, query.orgId ?? requestedOrgId(c));
+      if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+      const [mapping] = await db
+        .select({ id: huntressOrgMappings.id })
+        .from(huntressOrgMappings)
+        .where(and(
+          eq(huntressOrgMappings.integrationId, integration.id),
+          eq(huntressOrgMappings.orgId, orgResult.orgId)
+        ))
+        .limit(1);
+      if (!mapping) return c.json({ data: null, mapped: false });
     }
 
     return c.json({ data: integration });
@@ -278,7 +337,7 @@ huntressRoutes.get(
 
 huntressRoutes.post(
   '/integration',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
   zValidator('json', upsertIntegrationSchema),
@@ -286,15 +345,16 @@ huntressRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const orgResult = resolveOrgId(auth, body.orgId ?? requestedOrgId(c));
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const partnerResult = requirePartnerManager(auth, body.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     const [existing] = await db
       .select()
       .from(huntressIntegrations)
-      .where(eq(huntressIntegrations.orgId, orgResult.orgId))
+      .where(and(
+        eq(huntressIntegrations.partnerId, partnerResult.partnerId),
+        eq(huntressIntegrations.isActive, true)
+      ))
       .limit(1);
 
     if (!existing && !body.apiKey) {
@@ -317,7 +377,7 @@ huntressRoutes.post(
       : (existing?.webhookSecretEncrypted ?? null);
 
     const payload = {
-      orgId: orgResult.orgId,
+      partnerId: partnerResult.partnerId,
       name: body.name,
       apiKeyEncrypted,
       accountId: body.accountId ?? existing?.accountId ?? null,
@@ -334,7 +394,7 @@ huntressRoutes.post(
         .where(eq(huntressIntegrations.id, existing.id))
         .returning({
           id: huntressIntegrations.id,
-          orgId: huntressIntegrations.orgId,
+          partnerId: huntressIntegrations.partnerId,
           name: huntressIntegrations.name,
           accountId: huntressIntegrations.accountId,
           apiBaseUrl: huntressIntegrations.apiBaseUrl,
@@ -354,7 +414,7 @@ huntressRoutes.post(
         })
         .returning({
           id: huntressIntegrations.id,
-          orgId: huntressIntegrations.orgId,
+          partnerId: huntressIntegrations.partnerId,
           name: huntressIntegrations.name,
           accountId: huntressIntegrations.accountId,
           apiBaseUrl: huntressIntegrations.apiBaseUrl,
@@ -383,12 +443,13 @@ huntressRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: integration.orgId,
+      orgId: null,
       action: existing ? 'huntress.integration.update' : 'huntress.integration.create',
       resourceType: 'huntress_integration',
       resourceId: integration.id,
       resourceName: integration.name,
       details: {
+        partnerId: integration.partnerId,
         active: integration.isActive,
         syncQueued: Boolean(syncJobId),
       }
@@ -406,29 +467,28 @@ huntressRoutes.post(
 
 huntressRoutes.post(
   '/sync',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
   zValidator('json', syncSchema),
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth, body.orgId ?? requestedOrgId(c));
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const partnerResult = requirePartnerManager(auth, body.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
-    const conditions: SQL[] = [eq(huntressIntegrations.orgId, orgResult.orgId)];
+    const conditions: SQL[] = [
+      eq(huntressIntegrations.partnerId, partnerResult.partnerId),
+      eq(huntressIntegrations.isActive, true),
+    ];
     if (body.integrationId) {
       conditions.push(eq(huntressIntegrations.id, body.integrationId));
     }
-    const orgCondition = auth.orgCondition(huntressIntegrations.orgId);
-    if (orgCondition) conditions.push(orgCondition);
 
     const [integration] = await db
       .select({
         id: huntressIntegrations.id,
-        orgId: huntressIntegrations.orgId,
+        partnerId: huntressIntegrations.partnerId,
         name: huntressIntegrations.name,
         isActive: huntressIntegrations.isActive,
       })
@@ -454,12 +514,12 @@ huntressRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: integration.orgId,
+      orgId: null,
       action: 'huntress.integration.sync',
       resourceType: 'huntress_integration',
       resourceId: integration.id,
       resourceName: integration.name,
-      details: { jobId }
+      details: { partnerId: integration.partnerId, jobId }
     });
 
     return c.json({
@@ -471,25 +531,145 @@ huntressRoutes.post(
 );
 
 huntressRoutes.get(
+  '/organizations',
+  requireScope('partner', 'system'),
+  zValidator('query', organizationsQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const partnerResult = requirePartnerManager(auth, query.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    const integrationConditions: SQL[] = [
+      eq(huntressIntegrations.partnerId, partnerResult.partnerId),
+      eq(huntressIntegrations.isActive, true),
+    ];
+    if (query.integrationId) integrationConditions.push(eq(huntressIntegrations.id, query.integrationId));
+
+    const [integration] = await db
+      .select({ id: huntressIntegrations.id })
+      .from(huntressIntegrations)
+      .where(and(...integrationConditions))
+      .limit(1);
+
+    if (!integration) return c.json({ data: [], integrationId: null });
+
+    const rows = await db
+      .select({
+        huntressOrgId: huntressOrgMappings.huntressOrgId,
+        huntressOrgName: huntressOrgMappings.huntressOrgName,
+        huntressOrgKey: huntressOrgMappings.huntressOrgKey,
+        huntressAccountId: huntressOrgMappings.huntressAccountId,
+        agentsCount: huntressOrgMappings.agentsCount,
+        incidentsCount: huntressOrgMappings.incidentsCount,
+        mappedOrgId: huntressOrgMappings.orgId,
+        mappedOrgName: organizations.name,
+        lastSeenAt: huntressOrgMappings.lastSeenAt,
+        updatedAt: huntressOrgMappings.updatedAt,
+      })
+      .from(huntressOrgMappings)
+      .leftJoin(organizations, eq(huntressOrgMappings.orgId, organizations.id))
+      .where(eq(huntressOrgMappings.integrationId, integration.id))
+      .orderBy(huntressOrgMappings.huntressOrgName, huntressOrgMappings.huntressOrgId);
+
+    return c.json({ data: rows, integrationId: integration.id });
+  }
+);
+
+huntressRoutes.post(
+  '/organizations/map',
+  requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('json', organizationMapSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+
+    const [integration] = await db
+      .select({
+        id: huntressIntegrations.id,
+        partnerId: huntressIntegrations.partnerId,
+      })
+      .from(huntressIntegrations)
+      .where(and(
+        eq(huntressIntegrations.id, body.integrationId),
+        eq(huntressIntegrations.isActive, true)
+      ))
+      .limit(1);
+
+    if (!integration) return c.json({ error: 'Huntress integration not found' }, 404);
+
+    const partnerResult = requirePartnerManager(auth, integration.partnerId);
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    if (body.orgId !== null) {
+      if (!auth.canAccessOrg(body.orgId)) {
+        return c.json({ error: 'Access to target organization denied' }, 403);
+      }
+
+      const [targetOrg] = await db
+        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, body.orgId))
+        .limit(1);
+      if (!targetOrg || targetOrg.partnerId !== integration.partnerId) {
+        return c.json({ error: 'Target organization does not belong to this partner' }, 403);
+      }
+    }
+
+    const updated = await db
+      .update(huntressOrgMappings)
+      .set({ orgId: body.orgId, updatedAt: new Date() })
+      .where(and(
+        eq(huntressOrgMappings.integrationId, body.integrationId),
+        eq(huntressOrgMappings.partnerId, integration.partnerId),
+        eq(huntressOrgMappings.huntressOrgId, body.huntressOrgId)
+      ))
+      .returning({
+        huntressOrgId: huntressOrgMappings.huntressOrgId,
+        mappedOrgId: huntressOrgMappings.orgId,
+      });
+
+    if (updated.length === 0) {
+      return c.json({ error: 'Huntress organization mapping not found. Run sync first to discover organizations.' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId: body.orgId,
+      action: body.orgId ? 'huntress.organization.map' : 'huntress.organization.unmap',
+      resourceType: 'huntress_org_mapping',
+      resourceName: body.huntressOrgId,
+      details: { integrationId: body.integrationId, partnerId: integration.partnerId }
+    });
+
+    return c.json({ data: updated[0] });
+  }
+);
+
+huntressRoutes.get(
   '/status',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', statusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId ?? requestedOrgId(c));
-    if ('error' in orgResult) {
+    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    const requestedOrg = query.orgId ?? requestedOrgId(c);
+    const orgResult = requestedOrg || auth.scope === 'organization'
+      ? resolveOrgId(auth, requestedOrg)
+      : null;
+    if (orgResult && 'error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
-
-    const statusConditions: SQL[] = [eq(huntressIntegrations.orgId, orgResult.orgId)];
-    const statusOrgCondition = auth.orgCondition(huntressIntegrations.orgId);
-    if (statusOrgCondition) statusConditions.push(statusOrgCondition);
+    const scopedOrgId = orgResult && 'orgId' in orgResult ? orgResult.orgId : null;
 
     const [integration] = await db
       .select({
         id: huntressIntegrations.id,
-        orgId: huntressIntegrations.orgId,
+        partnerId: huntressIntegrations.partnerId,
         name: huntressIntegrations.name,
         isActive: huntressIntegrations.isActive,
         lastSyncAt: huntressIntegrations.lastSyncAt,
@@ -497,7 +677,10 @@ huntressRoutes.get(
         lastSyncError: huntressIntegrations.lastSyncError,
       })
       .from(huntressIntegrations)
-      .where(and(...statusConditions))
+      .where(and(
+        eq(huntressIntegrations.partnerId, partnerResult.partnerId),
+        eq(huntressIntegrations.isActive, true)
+      ))
       .limit(1);
 
     if (!integration) {
@@ -517,6 +700,46 @@ huntressRoutes.get(
       });
     }
 
+    if (scopedOrgId) {
+      const [mapping] = await db
+        .select({ id: huntressOrgMappings.id })
+        .from(huntressOrgMappings)
+        .where(and(
+          eq(huntressOrgMappings.integrationId, integration.id),
+          eq(huntressOrgMappings.orgId, scopedOrgId)
+        ))
+        .limit(1);
+      if (!mapping) {
+        return c.json({
+          integration,
+          mapped: false,
+          coverage: {
+            totalAgents: 0,
+            mappedAgents: 0,
+            unmappedAgents: 0,
+            offlineAgents: 0,
+          },
+          incidents: {
+            open: 0,
+            bySeverity: [],
+            byStatus: [],
+          }
+        });
+      }
+    }
+
+    const agentConditions: SQL[] = [eq(huntressAgents.integrationId, integration.id)];
+    const incidentConditions: SQL[] = [eq(huntressIncidents.integrationId, integration.id)];
+    if (scopedOrgId) {
+      agentConditions.push(eq(huntressAgents.orgId, scopedOrgId));
+      incidentConditions.push(eq(huntressIncidents.orgId, scopedOrgId));
+    } else {
+      const agentOrgCondition = auth.orgCondition(huntressAgents.orgId);
+      const incidentOrgCondition = auth.orgCondition(huntressIncidents.orgId);
+      if (agentOrgCondition) agentConditions.push(agentOrgCondition);
+      if (incidentOrgCondition) incidentConditions.push(incidentOrgCondition);
+    }
+
     try {
       const [
         [totalAgents],
@@ -529,17 +752,17 @@ huntressRoutes.get(
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(huntressAgents)
-          .where(eq(huntressAgents.integrationId, integration.id)),
+          .where(and(...agentConditions)),
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(huntressAgents)
-          .where(and(eq(huntressAgents.integrationId, integration.id), isNotNull(huntressAgents.deviceId))),
+          .where(and(...agentConditions, isNotNull(huntressAgents.deviceId))),
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(huntressAgents)
           .where(
             and(
-              eq(huntressAgents.integrationId, integration.id),
+              ...agentConditions,
               sql`coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())})`
             )
           ),
@@ -548,7 +771,7 @@ huntressRoutes.get(
           .from(huntressIncidents)
           .where(
             and(
-              eq(huntressIncidents.integrationId, integration.id),
+              ...incidentConditions,
               sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`
             )
           ),
@@ -558,7 +781,7 @@ huntressRoutes.get(
             count: sql<number>`count(*)::int`
           })
           .from(huntressIncidents)
-          .where(eq(huntressIncidents.integrationId, integration.id))
+          .where(and(...incidentConditions))
           .groupBy(huntressIncidents.severity)
           .orderBy(desc(sql`count(*)`)),
         db
@@ -567,7 +790,7 @@ huntressRoutes.get(
             count: sql<number>`count(*)::int`
           })
           .from(huntressIncidents)
-          .where(eq(huntressIncidents.integrationId, integration.id))
+          .where(and(...incidentConditions))
           .groupBy(huntressIncidents.status)
           .orderBy(desc(sql`count(*)`)),
       ]);
@@ -577,6 +800,7 @@ huntressRoutes.get(
 
       return c.json({
         integration,
+        mapped: true,
         coverage: {
           totalAgents: totalAgentsCount,
           mappedAgents: mappedAgentsCount,
@@ -607,15 +831,50 @@ huntressRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId ?? requestedOrgId(c));
-    if ('error' in orgResult) {
+    const requestedOrg = query.orgId ?? requestedOrgId(c);
+    const orgResult = requestedOrg || auth.scope === 'organization'
+      ? resolveOrgId(auth, requestedOrg)
+      : null;
+    if (orgResult && 'error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
+    }
+    const scopedOrgId = orgResult && 'orgId' in orgResult ? orgResult.orgId : null;
+    const requestedPartner = query.partnerId ?? requestedPartnerId(c);
+    if (requestedPartner && auth.scope === 'organization') {
+      const partnerResult = resolvePartnerId(auth, requestedPartner);
+      if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
     }
 
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
 
-    const conditions: SQL[] = [eq(huntressIncidents.orgId, orgResult.orgId)];
+    const conditions: SQL[] = [];
+    if (scopedOrgId) {
+      conditions.push(eq(huntressIncidents.orgId, scopedOrgId));
+    } else {
+      const orgCondition = auth.orgCondition(huntressIncidents.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+    }
+
+    if (!scopedOrgId && (requestedPartner || auth.scope === 'partner')) {
+      const partnerResult = resolvePartnerId(auth, requestedPartner);
+      if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+      const integrations = await db
+        .select({ id: huntressIntegrations.id })
+        .from(huntressIntegrations)
+        .where(and(
+          eq(huntressIntegrations.partnerId, partnerResult.partnerId),
+          eq(huntressIntegrations.isActive, true)
+        ));
+      const integrationIds = integrations.map((integration) => integration.id);
+      if (integrationIds.length === 0) {
+        return c.json({ data: [], total: 0, limit, offset });
+      }
+      conditions.push(inArray(huntressIncidents.integrationId, integrationIds));
+    } else if (!scopedOrgId && auth.scope === 'system' && !query.integrationId) {
+      return c.json({ error: 'partnerId, orgId, or integrationId is required for system scope' }, 400);
+    }
+
     if (query.integrationId) conditions.push(eq(huntressIncidents.integrationId, query.integrationId));
     if (query.status) conditions.push(eq(huntressIncidents.status, query.status));
     if (query.severity) conditions.push(eq(huntressIncidents.severity, query.severity));
@@ -624,9 +883,6 @@ huntressRoutes.get(
       const pattern = `%${escapeLike(query.search)}%`;
       conditions.push(ilike(huntressIncidents.title, pattern));
     }
-    const orgCondition = auth.orgCondition(huntressIncidents.orgId);
-    if (orgCondition) conditions.push(orgCondition);
-
     // Site is an app-layer-only authz axis — Postgres RLS does NOT defend it.
     // A site-restricted caller (org user with `permissions.allowedSiteIds`)
     // must not read incident detail/hostnames for devices in sites outside
@@ -634,11 +890,11 @@ huntressRoutes.get(
     // device-bound), so we keep null-device rows visible and only exclude rows
     // attributed to foreign-site devices. Mirrors browserSecurity.ts (PR #864/#868).
     const perms = c.get('permissions') as UserPermissions | undefined;
-    if (perms?.allowedSiteIds) {
+    if (perms?.allowedSiteIds && scopedOrgId) {
       const orgDevices = await db
         .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
-        .where(eq(devices.orgId, orgResult.orgId));
+        .where(eq(devices.orgId, scopedOrgId));
       const allowedDeviceIds = orgDevices
         .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
         .map((d) => d.id);
@@ -658,7 +914,7 @@ huntressRoutes.get(
       );
     }
 
-    const where = and(...conditions);
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     try {
       const [rows, [countRow]] = await Promise.all([

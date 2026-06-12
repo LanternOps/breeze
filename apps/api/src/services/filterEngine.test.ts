@@ -91,11 +91,10 @@ describe('filterEngine virtual EXISTS fields (#968)', () => {
       expect(sql).toMatch(/severity = 'critical'/i);
     });
 
-    it('system.rebootRequired → patch_job_results reboot pending', () => {
+    it('system.rebootRequired → devices.pending_reboot column', () => {
       const sql = render({ field: 'system.rebootRequired', operator: 'equals', value: 'yes' });
-      expect(sql).toMatch(/from patch_job_results/i);
-      expect(sql).toMatch(/reboot_required = true/i);
-      expect(sql).toMatch(/rebooted_at is null/i);
+      expect(sql).toMatch(/pending_reboot/i);
+      expect(sql).not.toMatch(/patch_job_results/i);
     });
   });
 

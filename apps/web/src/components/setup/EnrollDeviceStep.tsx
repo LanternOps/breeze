@@ -3,6 +3,7 @@ import { Check, Copy, Loader2, Download, Link, ArrowLeft, Info } from 'lucide-re
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
+import { buildInstallCommands } from '@/lib/installCommands';
 import { showToast } from '../shared/Toast';
 
 type Platform = 'windows' | 'macos' | 'linux';
@@ -462,16 +463,14 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
           {/* Commands */}
           {(() => {
-            const apiUrl = (import.meta.env.PUBLIC_API_URL || window.location.origin).replace(/\/$/, '');
-            const ghBase = (import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL || 'https://github.com/lanternops/breeze/releases/latest/download').replace(/\/$/, '');
-            const token = onboardingToken || '<TOKEN>';
-            const secretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
-
-            const commands: Record<Platform, string> = {
-              windows: `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe service install; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}; .\\breeze-agent.exe service start`,
-              macos: `curl -fsSL -o /tmp/breeze-agent.pkg "${apiUrl}/api/v1/agents/download/darwin/$(uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/')/pkg" && sudo installer -pkg /tmp/breeze-agent.pkg -target / && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo launchctl kickstart -k system/com.breeze.agent`,
-              linux: `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-linux-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo mv breeze-agent /usr/local/bin/ && sudo breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`,
-            };
+            const commands: Record<Platform, string> = buildInstallCommands({
+              apiUrl: import.meta.env.PUBLIC_API_URL || window.location.origin,
+              ghBase:
+                import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL ||
+                'https://github.com/lanternops/breeze/releases/latest/download',
+              token: onboardingToken || '<TOKEN>',
+              enrollmentSecret: enrollmentSecret || undefined,
+            });
 
             return (
               <div>

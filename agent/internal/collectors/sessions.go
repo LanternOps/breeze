@@ -12,6 +12,7 @@ import (
 
 const (
 	sessionRefreshInterval = 5 * time.Minute
+	maxIdleMinutes         = 10080 // submitSessionsSchema caps idleMinutes at 7 days
 )
 
 type UserSession struct {
@@ -19,7 +20,7 @@ type UserSession struct {
 	SessionType             string    `json:"sessionType"`
 	SessionID               string    `json:"sessionId,omitempty"`
 	LoginAt                 time.Time `json:"loginAt"`
-	IdleMinutes             int       `json:"idleMinutes,omitempty"`
+	IdleMinutes             *int      `json:"idleMinutes,omitempty"`
 	ActivityState           string    `json:"activityState,omitempty"`
 	LoginPerformanceSeconds int       `json:"loginPerformanceSeconds,omitempty"`
 	IsActive                bool      `json:"isActive"`
@@ -176,19 +177,38 @@ func (c *SessionCollector) refreshSessions(now time.Time) {
 			loginAt = existing.LoginAt
 		}
 
+		idleMinutes, lastActivityAt := idleFields(detected, now)
 		next[key] = UserSession{
 			Username:       detected.Username,
 			SessionType:    inferSessionType(detected),
 			SessionID:      detected.Session,
 			LoginAt:        loginAt,
-			IdleMinutes:    0,
+			IdleMinutes:    idleMinutes,
 			ActivityState:  mapDetectedState(detected.State),
 			IsActive:       true,
-			LastActivityAt: now,
+			LastActivityAt: lastActivityAt,
 		}
 	}
 
 	c.sessions = next
+}
+
+// idleFields converts a detected session's idle measurement into the wire
+// representation: a nil pointer when unknown (so old agents and unmeasurable
+// platforms read as "no data", never "0 minutes"), and a LastActivityAt
+// anchored to the actual last input rather than the refresh tick.
+func idleFields(detected sessionbroker.DetectedSession, now time.Time) (*int, time.Time) {
+	if !detected.IdleKnown {
+		return nil, now
+	}
+	minutes := int(detected.IdleFor / time.Minute)
+	if minutes < 0 {
+		minutes = 0
+	}
+	if minutes > maxIdleMinutes {
+		minutes = maxIdleMinutes
+	}
+	return &minutes, now.Add(-detected.IdleFor)
 }
 
 func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time.Time) {
@@ -216,7 +236,6 @@ func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time
 			SessionType:    sessionType,
 			SessionID:      event.Session,
 			LoginAt:        loginAt,
-			IdleMinutes:    0,
 			ActivityState:  "active",
 			IsActive:       true,
 			LastActivityAt: now,

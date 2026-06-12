@@ -37,13 +37,17 @@ The Huntress integration syncs agent inventory and incident reports from your Hu
 ### Setting Up Huntress
 
 <Steps>
-1. In the Breeze dashboard, navigate to **Settings > Integrations > Huntress**.
+1. In the Breeze dashboard, navigate to **Integrations**, open the **Security** tab, and select **Huntress**.
 2. Provide a **name** for the integration (e.g., "Production Huntress").
-3. Enter your **Huntress API key**. This is encrypted at rest using AES before being stored.
-4. Optionally provide your **Huntress account ID** and **API base URL** (defaults to `https://api.huntress.io/v1`).
+3. Enter your **Huntress API Key** and **API Secret** as shown in the Huntress portal. Paste each value into its own field — do not paste a Base64-encoded combination of the two; Breeze formats the API request automatically. Both values are encrypted at rest using AES before being stored.
+4. Optionally provide your **Huntress account ID**. (A custom API base URL can be set via the Breeze API; the default is `https://api.huntress.io/v1`.)
 5. Optionally provide a **webhook secret** for signature verification on incoming webhook payloads.
-6. Click **Save**. An initial sync is automatically scheduled.
+6. Click **Save & Connect**. An initial sync is automatically scheduled.
 </Steps>
+
+<Aside>
+  The Huntress integration is configured per organization. If your scope selector is set to **All orgs**, switch to a single organization before configuring or viewing the integration.
+</Aside>
 
 <Aside>
   Creating or updating a Huntress integration requires the `orgs:write` permission and MFA verification.
@@ -150,7 +154,7 @@ The SentinelOne integration provides deeper operational capabilities beyond data
 ### Setting Up SentinelOne
 
 <Steps>
-1. In the Breeze dashboard, navigate to **Settings > Integrations > SentinelOne**.
+1. In the Breeze dashboard, navigate to **Integrations**, open the **Security** tab, and select **SentinelOne**.
 2. Provide a **name** for the integration.
 3. Enter your **SentinelOne management console URL** (e.g., `https://usea1.sentinelone.net`).
 4. Enter your **SentinelOne API token**. This is encrypted at rest before being stored.
@@ -363,6 +367,21 @@ All endpoints require authentication with `organization`, `partner`, or `system`
 | `POST` | `/sync` | Yes | Trigger a manual SentinelOne sync |
 | `GET` | `/sites` | Yes | List SentinelOne sites with agent counts and org mappings |
 | `POST` | `/sites/map` | Yes | Map or unmap a SentinelOne site to a Breeze organization |
+
+---
+
+## Automation Events
+
+Both integrations emit platform events that can trigger [automations](/features/automations/) and outbound webhooks. Select these event types in the automation builder (**Automations > Create > Event** trigger) to react to security activity — for example, creating a ticket when a critical incident is reported, or notifying the on-call channel when an endpoint is isolated.
+
+| Event type | Fires when |
+|------------|------------|
+| `huntress.incident_created` | A new Huntress incident is synced or received via webhook |
+| `huntress.incident_updated` | An existing incident changes severity, status, or resolution |
+| `huntress.agent_offline` | A Huntress agent transitions from online to offline |
+| `s1.threat_detected` | A new SentinelOne threat is detected |
+| `s1.device_isolated` | A device isolation initiated from Breeze completes in SentinelOne |
+| `s1.threat_action_completed` | A threat action initiated from Breeze (kill, quarantine, rollback) completes |
 
 ---
 

@@ -17,7 +17,10 @@ vi.mock('../../services/binarySource', () => ({
   },
 }));
 
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadRoutes } from './download';
@@ -169,5 +172,257 @@ describe('public agent .pkg downloads — per-arch serving', () => {
       expect.stringContaining('[pkg-download] S3 presign failed'),
       expect.anything(),
     );
+  });
+});
+
+describe('GET /install.sh — generated installer script', () => {
+  async function fetchScript(): Promise<string> {
+    const res = await downloadRoutes.request('/install.sh');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    return res.text();
+  }
+
+  it('is valid bash (bash -n syntax check)', async () => {
+    const script = await fetchScript();
+    const tmp = mkdtempSync(join(tmpdir(), 'breeze-install-sh-'));
+    const file = join(tmp, 'install.sh');
+    try {
+      writeFileSync(file, script);
+      // Throws (failing the test) on any syntax error.
+      execFileSync('bash', ['-n', file]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a --token argument for enrollment-key based enrollment', async () => {
+    const script = await fetchScript();
+    // Argument parser handles --token and forwards it to `enroll` as the
+    // positional enrollment key (the flow the Add Device UI uses).
+    expect(script).toContain('--token)');
+    expect(script.match(/ENROLL_ARGS=\(enroll\)/g)).toHaveLength(2);
+    // The token and conditional secret must be appended in BOTH the darwin
+    // and linux branches — a single match means one platform lost enrollment.
+    expect(script.match(/ENROLL_ARGS\+=\("\$BREEZE_ENROLL_TOKEN"\)/g)).toHaveLength(2);
+    expect(
+      script.match(/ENROLL_ARGS\+=\(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"\)/g),
+    ).toHaveLength(2);
+  });
+
+  it('requires a token OR an enrollment secret, not unconditionally the secret', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('Pass --token TOKEN or --enrollment-secret SECRET');
+    // The old unconditional secret check must be gone.
+    expect(script).not.toContain('BREEZE_ENROLLMENT_SECRET is required');
+  });
+
+  it('pre-flights server connectivity via /health before downloading anything', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('/health"');
+    expect(script).toContain('Cannot reach the Breeze server');
+  });
+
+  it('diagnoses TLS failures distinctly from generic unreachability', async () => {
+    const script = await fetchScript();
+    // curl exit 60 (cert verify) / 35 (handshake) are the signature of both
+    // self-signed-cert misconfigurations and TLS-intercepting middleboxes —
+    // "check DNS/firewall" would be the wrong advice for either.
+    expect(script).toContain('TLS problem connecting to');
+  });
+
+  it('flags intercepted responses (captive portal / wrong responder) distinctly', async () => {
+    const script = await fetchScript();
+    // A 200 whose body is not Breeze's health JSON almost always means an
+    // intercepting device answered (captive portal, router, web filter) —
+    // the guest-VLAN field report behind this feature. The message must say
+    // so instead of letting `installer` fail cryptically.
+    expect(script).toContain('captive portal');
+  });
+
+  it('documents --token usage in the script header', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('--token YOUR_ENROLLMENT_TOKEN');
+  });
+});
+
+describe('install.sh functional pre-flight behavior', () => {
+  // Runs the real generated script with bash. An `id` PATH shim (always
+  // prints 0, emulating `id -u` under root) makes the script's root check
+  // pass so execution reaches the connectivity pre-flight. If the root check
+  // ever stops using `id`, these tests fail on the root-check fatal — update
+  // the shim to match.
+  let tmp: string;
+  let scriptFile: string;
+  let shimDir: string;
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'breeze-install-fn-'));
+    scriptFile = join(tmp, 'install.sh');
+    shimDir = join(tmp, 'bin');
+    const res = await downloadRoutes.request('/install.sh');
+    writeFileSync(scriptFile, await res.text());
+    mkdirSync(shimDir);
+    writeFileSync(join(shimDir, 'id'), '#!/bin/sh\necho 0\n', { mode: 0o755 });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function runScript(
+    args: string[],
+  ): Promise<{ code: number; killed: boolean; output: string }> {
+    return new Promise((resolve) => {
+      execFile(
+        'bash',
+        [scriptFile, ...args],
+        {
+          env: {
+            ...process.env,
+            PATH: `${shimDir}:${process.env.PATH}`,
+            // curl must hit 127.0.0.1 directly — a developer/CI proxy would
+            // turn "connection refused" into a proxy response.
+            no_proxy: '*',
+            NO_PROXY: '*',
+          },
+          timeout: 30_000,
+        },
+        (err, stdout, stderr) => {
+          const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0;
+          // A timeout kill also lands here with code mapped to 1 — expose it
+          // so "fails fast" tests can't pass on a script that printed the
+          // right message but then hung.
+          const killed = Boolean(err && (err.killed || err.signal));
+          resolve({ code, killed, output: `${stdout}${stderr}` });
+        },
+      );
+    });
+  }
+
+  it('fails fast with a clear message when the server is unreachable', async () => {
+    // Port 1 on localhost → immediate connection refused.
+    const { code, killed, output } = await runScript([
+      '--server',
+      'http://127.0.0.1:1',
+      '--token',
+      'tok',
+    ]);
+    expect(killed).toBe(false);
+    expect(code).not.toBe(0);
+    expect(output).toContain('Cannot reach the Breeze server');
+    expect(output).toContain('no response');
+  });
+
+  it('flags a captive portal that answers 200 with a non-Breeze body', async () => {
+    // The guest-VLAN field report: an intercepting device returns 200 HTML,
+    // which previously sailed past `curl -f` and died inside `installer`.
+    const portal = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body>Guest network portal</body></html>');
+    });
+    await new Promise<void>((resolve) => portal.listen(0, '127.0.0.1', resolve));
+    const { port } = portal.address() as AddressInfo;
+    try {
+      const { code, killed, output } = await runScript([
+        '--server',
+        `http://127.0.0.1:${port}`,
+        '--token',
+        'tok',
+      ]);
+      expect(killed).toBe(false);
+      expect(code).not.toBe(0);
+      expect(output).toContain('captive portal');
+      expect(output).not.toContain('Downloading');
+    } finally {
+      portal.close();
+    }
+  });
+
+  it('attributes an intercepted download to the network when /health is clean', async () => {
+    // A path-selective middlebox (web filter allowlisting /health, or a
+    // portal that whitelists short URLs) passes the pre-flight and then
+    // serves HTML where the pkg/metadata should be. The failure must still
+    // point at interception — not at Gatekeeper or "missing checksum".
+    const filter = createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', version: 'test', uptime: 1 }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><body>Filtered</body></html>');
+      }
+    });
+    await new Promise<void>((resolve) => filter.listen(0, '127.0.0.1', resolve));
+    const { port } = filter.address() as AddressInfo;
+    try {
+      const { code, killed, output } = await runScript([
+        '--server',
+        `http://127.0.0.1:${port}`,
+        '--token',
+        'tok',
+      ]);
+      expect(killed).toBe(false);
+      expect(code).not.toBe(0);
+      expect(output).toContain('Breeze server is reachable');
+      // Both platform branches must blame the network: darwin downloads the
+      // HTML as a .pkg (caught by the xar magic check), linux gets HTML as
+      // release metadata (caught before the checksum-extraction error).
+      expect(output).toContain('intercepting');
+      expect(output).not.toContain('Gatekeeper');
+    } finally {
+      filter.close();
+    }
+  });
+
+  it('rejects a missing enrollment credential with guidance', async () => {
+    const { code, output } = await runScript(['--server', 'http://127.0.0.1:1']);
+    expect(code).not.toBe(0);
+    expect(output).toContain('Pass --token TOKEN or --enrollment-secret SECRET');
+  });
+
+  it('accepts --enrollment-secret alone (legacy flow) past credential validation', async () => {
+    const { code, output } = await runScript([
+      '--server',
+      'http://127.0.0.1:1',
+      '--enrollment-secret',
+      'sec',
+    ]);
+    // Dies at the connectivity pre-flight (nothing listening), proving the
+    // token-OR-secret check let the secret-only invocation through.
+    expect(code).not.toBe(0);
+    expect(output).not.toContain('enrollment credential is required');
+    expect(output).toContain('Cannot reach the Breeze server');
+  });
+
+  it('proceeds past the pre-flight when /health returns the real Breeze body', async () => {
+    // Guards the cross-file contract between the script's grep and the
+    // GET /health payload in apps/api/src/index.ts: if either side drifts,
+    // a pre-flight that ALWAYS fails would still pass the failure-oriented
+    // tests above while bricking every real install.
+    const breeze = createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        // Mirrors the exact body shape of GET /health in index.ts.
+        res.end(JSON.stringify({ status: 'ok', version: 'test', uptime: 1 }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      }
+    });
+    await new Promise<void>((resolve) => breeze.listen(0, '127.0.0.1', resolve));
+    const { port } = breeze.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(output).toContain('Breeze server is reachable');
+      expect(output).not.toContain('Cannot reach the Breeze server');
+      expect(output).not.toContain('captive portal');
+      // It then fails at the download step (the fake server 404s everything
+      // else) — beyond the pre-flight under test, but proof it got there.
+      expect(code).not.toBe(0);
+      expect(output).toContain('Failed to');
+    } finally {
+      breeze.close();
+    }
   });
 });

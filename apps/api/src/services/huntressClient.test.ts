@@ -170,6 +170,50 @@ describe('HuntressClient', () => {
     expect(calls[0]!.init.timeoutMs!).toBeGreaterThan(0);
   });
 
+  it('continues cursor pagination with cursor when Huntress returns next_cursor', async () => {
+    const calls: Captured[] = [];
+    safeFetchMock.mockImplementation(async (url: string, init?: unknown) => {
+      calls.push({ url, init: (init ?? {}) as Captured['init'] });
+      const requested = new URL(url);
+      if (!requested.searchParams.has('cursor')) {
+        return fakeResponse(200, {
+          agents: [{ id: 1, hostname: 'HOST-1' }],
+          pagination: { next_cursor: 'cursor-2' },
+        });
+      }
+      return fakeResponse(200, onePage('agents', [{ id: 2, hostname: 'HOST-2' }]));
+    });
+
+    const client = new HuntressClient({ apiKey: 'k:s' });
+    const agents = await client.listAgents();
+
+    expect(agents.map((agent) => agent.huntressAgentId)).toEqual(['1', '2']);
+    expect(new URL(calls[1]!.url).searchParams.get('cursor')).toBe('cursor-2');
+    expect(new URL(calls[1]!.url).searchParams.get('page_token')).toBeNull();
+  });
+
+  it('continues token pagination with page_token when Huntress returns next_page_token', async () => {
+    const calls: Captured[] = [];
+    safeFetchMock.mockImplementation(async (url: string, init?: unknown) => {
+      calls.push({ url, init: (init ?? {}) as Captured['init'] });
+      const requested = new URL(url);
+      if (!requested.searchParams.has('page_token')) {
+        return fakeResponse(200, {
+          organizations: [{ id: 'org-1', name: 'Acme' }],
+          pagination: { next_page_token: 'token-2' },
+        });
+      }
+      return fakeResponse(200, onePage('organizations', [{ id: 'org-2', name: 'Beta' }]));
+    });
+
+    const client = new HuntressClient({ apiKey: 'k:s' });
+    const organizations = await client.listOrganizations();
+
+    expect(organizations.map((org) => org.huntressOrgId)).toEqual(['org-1', 'org-2']);
+    expect(new URL(calls[1]!.url).searchParams.get('page_token')).toBe('token-2');
+    expect(new URL(calls[1]!.url).searchParams.get('cursor')).toBeNull();
+  });
+
   // The per-request host re-assertion in request() is defense-in-depth. The
   // constructor already rejects any non-HTTPS / non-*.huntress.io base URL, and
   // pathname/query joined onto a validated base cannot change the origin, so we

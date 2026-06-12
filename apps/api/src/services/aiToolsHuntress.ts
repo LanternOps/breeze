@@ -18,7 +18,6 @@ import { eq, and, desc, sql, ilike, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
-import { resolveWritableToolOrgId } from './aiTools';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { scheduleHuntressSync } from '../jobs/huntressSync';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
@@ -55,16 +54,14 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
       }
 
       const conditions: SQL[] = [];
-      const orgCondition = auth.orgCondition(huntressIntegrations.orgId);
-      if (orgCondition) conditions.push(orgCondition);
-      if (requestedOrgId) conditions.push(eq(huntressIntegrations.orgId, requestedOrgId));
+      if (auth.partnerId) conditions.push(eq(huntressIntegrations.partnerId, auth.partnerId));
       if (typeof input.integrationId === 'string') conditions.push(eq(huntressIntegrations.id, input.integrationId));
       const where = conditions.length > 0 ? and(...conditions) : undefined;
 
       const integrations = await db
         .select({
           id: huntressIntegrations.id,
-          orgId: huntressIntegrations.orgId,
+          partnerId: huntressIntegrations.partnerId,
           name: huntressIntegrations.name,
           isActive: huntressIntegrations.isActive,
           lastSyncAt: huntressIntegrations.lastSyncAt,
@@ -97,6 +94,16 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
       }
 
       const integrationIds = integrations.map((integration) => integration.id);
+      const agentScopedConditions: SQL[] = [inArray(huntressAgents.integrationId, integrationIds)];
+      const incidentScopedConditions: SQL[] = [inArray(huntressIncidents.integrationId, integrationIds)];
+      const agentOrgCondition = auth.orgCondition(huntressAgents.orgId);
+      const incidentOrgCondition = auth.orgCondition(huntressIncidents.orgId);
+      if (agentOrgCondition) agentScopedConditions.push(agentOrgCondition);
+      if (incidentOrgCondition) incidentScopedConditions.push(incidentOrgCondition);
+      if (requestedOrgId) {
+        agentScopedConditions.push(eq(huntressAgents.orgId, requestedOrgId));
+        incidentScopedConditions.push(eq(huntressIncidents.orgId, requestedOrgId));
+      }
       const [[integrationCount], [summaryAgentCounts], [summaryIncidentCounts], agentCounts, incidentCounts, severityCounts] = await Promise.all([
         db
           .select({
@@ -112,14 +119,14 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
           })
           .from(huntressAgents)
           .innerJoin(huntressIntegrations, eq(huntressAgents.integrationId, huntressIntegrations.id))
-          .where(where),
+          .where(and(...agentScopedConditions, ...(conditions.length > 0 ? conditions : []))),
         db
           .select({
             openIncidents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())}) then 1 else 0 end), 0)::int`,
           })
           .from(huntressIncidents)
           .innerJoin(huntressIntegrations, eq(huntressIncidents.integrationId, huntressIntegrations.id))
-          .where(where),
+          .where(and(...incidentScopedConditions, ...(conditions.length > 0 ? conditions : []))),
         db
           .select({
             integrationId: huntressAgents.integrationId,
@@ -128,7 +135,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
             offlineAgents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())}) then 1 else 0 end), 0)::int`,
           })
           .from(huntressAgents)
-          .where(inArray(huntressAgents.integrationId, integrationIds))
+          .where(and(...agentScopedConditions))
           .groupBy(huntressAgents.integrationId),
         db
           .select({
@@ -136,7 +143,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
             openIncidents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())}) then 1 else 0 end), 0)::int`,
           })
           .from(huntressIncidents)
-          .where(inArray(huntressIncidents.integrationId, integrationIds))
+          .where(and(...incidentScopedConditions))
           .groupBy(huntressIncidents.integrationId),
         db
           .select({
@@ -145,8 +152,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
             count: sql<number>`count(*)::int`,
           })
           .from(huntressIncidents)
-          .where(inArray(huntressIncidents.integrationId, integrationIds))
-          .groupBy(huntressIncidents.integrationId, huntressIncidents.severity),
+          .where(and(...incidentScopedConditions))
+	          .groupBy(huntressIncidents.integrationId, huntressIncidents.severity),
       ]);
 
       const agentCountByIntegration = new Map(agentCounts.map((row) => [row.integrationId, row]));
@@ -324,38 +331,29 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     definition: {
       name: 'sync_huntress_data',
-      description: 'Trigger a manual Huntress sync for an accessible integration.',
+      description: 'Trigger a manual Huntress sync for a partner-level integration.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          orgId: { type: 'string', description: 'Optional organization UUID to resolve the integration' },
-          integrationId: { type: 'string', description: 'Optional integration UUID. If omitted, the org integration is used.' },
+          integrationId: { type: 'string', description: 'Optional integration UUID. If omitted, the active partner integration is used.' },
         }
       }
     },
     handler: async (input, auth) => {
-      const requestedOrgId = typeof input.orgId === 'string' ? input.orgId : undefined;
       const requestedIntegrationId = typeof input.integrationId === 'string' ? input.integrationId : undefined;
+      if (auth.scope === 'organization') {
+        return JSON.stringify({ error: 'Huntress sync is managed at partner scope' });
+      }
 
       const conditions: SQL[] = [];
-      const orgCondition = auth.orgCondition(huntressIntegrations.orgId);
-      if (orgCondition) conditions.push(orgCondition);
-      if (requestedOrgId) {
-        if (!auth.canAccessOrg(requestedOrgId)) {
-          return JSON.stringify({ error: 'Access denied to this organization' });
-        }
-        conditions.push(eq(huntressIntegrations.orgId, requestedOrgId));
-      } else if (!requestedIntegrationId) {
-        const resolved = resolveWritableToolOrgId(auth);
-        if (resolved.error) return JSON.stringify({ error: resolved.error });
-        if (resolved.orgId) conditions.push(eq(huntressIntegrations.orgId, resolved.orgId));
-      }
+      if (auth.partnerId) conditions.push(eq(huntressIntegrations.partnerId, auth.partnerId));
+      conditions.push(eq(huntressIntegrations.isActive, true));
       if (requestedIntegrationId) conditions.push(eq(huntressIntegrations.id, requestedIntegrationId));
 
       const [integration] = await db
         .select({
           id: huntressIntegrations.id,
-          orgId: huntressIntegrations.orgId,
+          partnerId: huntressIntegrations.partnerId,
           name: huntressIntegrations.name,
           isActive: huntressIntegrations.isActive,
         })
@@ -375,7 +373,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         queued: true,
         jobId,
         integrationId: integration.id,
-        orgId: integration.orgId,
+        partnerId: integration.partnerId,
         name: integration.name,
       });
     }

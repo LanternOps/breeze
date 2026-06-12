@@ -132,7 +132,13 @@ const eventTypeOptions = [
   { value: 'alert.resolved', label: 'Alert Resolved' },
   { value: 'script.completed', label: 'Script Completed' },
   { value: 'script.failed', label: 'Script Failed' },
-  { value: 'policy.violation', label: 'Policy Violation' }
+  { value: 'policy.violation', label: 'Policy Violation' },
+  { value: 'huntress.incident_created', label: 'Huntress Incident Created' },
+  { value: 'huntress.incident_updated', label: 'Huntress Incident Updated' },
+  { value: 'huntress.agent_offline', label: 'Huntress Agent Offline' },
+  { value: 's1.threat_detected', label: 'SentinelOne Threat Detected' },
+  { value: 's1.device_isolated', label: 'SentinelOne Device Isolated' },
+  { value: 's1.threat_action_completed', label: 'SentinelOne Threat Action Completed' }
 ];
 
 const conditionTypeOptions = [

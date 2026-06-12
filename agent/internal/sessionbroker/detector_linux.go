@@ -57,9 +57,11 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 		// Query session properties
 		propCtx, propCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 		propOut, propErr := exec.CommandContext(propCtx, "loginctl", "show-session", sessionID,
-			"--property=Type,Remote,Display,Seat,State").Output()
+			"--property=Type,Remote,Display,Seat,State,IdleHint,IdleSinceHint").Output()
 		propCancel()
 		if propErr == nil {
+			var idleHint bool
+			var idleSinceRaw string
 			propScanner := newDetectorScanner(string(propOut))
 			for propScanner.Scan() {
 				parts := strings.SplitN(strings.TrimSpace(propScanner.Text()), "=", 2)
@@ -77,10 +79,23 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 					sess.Seat = parts[1]
 				case "State":
 					sess.State = parts[1]
+				case "IdleHint":
+					idleHint = parts[1] == "yes"
+				case "IdleSinceHint":
+					idleSinceRaw = parts[1]
 				}
 			}
 			if err := propScanner.Err(); err != nil {
 				return nil, fmt.Errorf("parse loginctl show-session output for %s: %w", sessionID, err)
+			}
+			// Idle is only reported when the DE actively asserts IdleHint=yes.
+			// IdleHint=no must stay unknown, not "active": most DEs and all
+			// headless sessions never call SetIdleHint, so "no" is
+			// indistinguishable from "nobody reports it".
+			if idleHint {
+				if since, ok := parseIdleSinceHint(idleSinceRaw); ok {
+					sess.IdleFor, sess.IdleKnown = idleSince(time.Now(), since)
+				}
 			}
 		}
 

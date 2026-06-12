@@ -168,3 +168,32 @@ describe('DeviceList — advanced filter via serverFilterIds prop (uncapped id s
     expect(screen.queryByText(/Advanced filter active/i)).toBeNull();
   });
 });
+
+describe('DeviceList — pending reboot badge', () => {
+  it('renders the amber badge when pendingReboot is true', () => {
+    const device: Device = {
+      ...baseDevice,
+      id: '33333333-3333-3333-3333-333333333333',
+      hostname: 'host-needs-reboot',
+      pendingReboot: true,
+    };
+
+    render(<DeviceList devices={[device]} />);
+
+    const badge = screen.getByTestId(`device-${device.id}-pending-reboot-badge`);
+    expect(badge.textContent).toMatch(/Reboot pending/i);
+  });
+
+  it('renders no badge when pendingReboot is false or absent', () => {
+    const explicitFalse: Device = {
+      ...baseDevice,
+      id: '44444444-4444-4444-4444-444444444444',
+      pendingReboot: false,
+    };
+
+    render(<DeviceList devices={[explicitFalse, baseDevice]} />);
+
+    expect(screen.queryByTestId(`device-${explicitFalse.id}-pending-reboot-badge`)).toBeNull();
+    expect(screen.queryByTestId(`device-${baseDevice.id}-pending-reboot-badge`)).toBeNull();
+  });
+});

@@ -310,15 +310,20 @@ function generateInstallScript(serverUrl: string): string {
 # ============================================
 # Breeze RMM Agent - One-Line Installer
 # ============================================
-# Usage:
+# Usage (enrollment token from the Add Device dialog):
+#   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash -s -- \\
+#     --server ${serverUrl} \\
+#     --token YOUR_ENROLLMENT_TOKEN
+#
+# Or with an org enrollment secret:
 #   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash -s -- \\
 #     --server ${serverUrl} \\
 #     --enrollment-secret YOUR_SECRET
 #
-# Or with environment variables:
-#   export BREEZE_SERVER="${serverUrl}"
-#   export BREEZE_ENROLLMENT_SECRET="YOUR_SECRET"
-#   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash
+# Or with environment variables — pass them through sudo, since a plain
+# \`export\` is stripped by sudo's env_reset:
+#   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | \\
+#     sudo BREEZE_SERVER="${serverUrl}" BREEZE_ENROLLMENT_SECRET="YOUR_SECRET" bash
 # ============================================
 
 set -euo pipefail
@@ -338,6 +343,7 @@ fatal()   { error "$*"; exit 1; }
 
 # ----- Parse arguments -----
 BREEZE_SERVER="\${BREEZE_SERVER:-}"
+BREEZE_ENROLL_TOKEN="\${BREEZE_ENROLL_TOKEN:-}"
 BREEZE_ENROLLMENT_SECRET="\${BREEZE_ENROLLMENT_SECRET:-}"
 BREEZE_SITE_ID="\${BREEZE_SITE_ID:-}"
 BREEZE_DEVICE_ROLE="\${BREEZE_DEVICE_ROLE:-}"
@@ -346,6 +352,8 @@ while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --server)
       BREEZE_SERVER="\$2"; shift 2 ;;
+    --token)
+      BREEZE_ENROLL_TOKEN="\$2"; shift 2 ;;
     --enrollment-secret)
       BREEZE_ENROLLMENT_SECRET="\$2"; shift 2 ;;
     --site-id)
@@ -362,8 +370,8 @@ if [[ -z "\$BREEZE_SERVER" ]]; then
   fatal "BREEZE_SERVER is required. Pass --server URL or export BREEZE_SERVER."
 fi
 
-if [[ -z "\$BREEZE_ENROLLMENT_SECRET" ]]; then
-  fatal "BREEZE_ENROLLMENT_SECRET is required. Pass --enrollment-secret SECRET or export BREEZE_ENROLLMENT_SECRET."
+if [[ -z "\$BREEZE_ENROLL_TOKEN" && -z "\$BREEZE_ENROLLMENT_SECRET" ]]; then
+  fatal "An enrollment credential is required. Pass --token TOKEN or --enrollment-secret SECRET (or pass BREEZE_ENROLL_TOKEN / BREEZE_ENROLLMENT_SECRET through sudo)."
 fi
 
 # Strip trailing slash from server URL
@@ -421,6 +429,43 @@ if ! command -v curl &>/dev/null; then
   fatal "curl is required but not installed. Install it and try again."
 fi
 
+# ----- Pre-flight: verify this machine can actually reach the Breeze server -----
+# Catches split-connectivity setups (guest VLANs, no NAT hairpinning, web
+# filters) up front, instead of letting a later step fail with a cryptic
+# OS-level error after downloading garbage.
+info "Checking connectivity to \$BREEZE_SERVER..."
+HEALTH_FILE="$(mktemp)"
+trap 'rm -f "\$HEALTH_FILE"' EXIT
+CURL_RC=0
+HEALTH_CODE="$(curl -fsSL -m 20 -w '%{http_code}' -o "\$HEALTH_FILE" "\$BREEZE_SERVER/health" 2>/dev/null)" || CURL_RC=\$?
+HEALTH_CODE="\${HEALTH_CODE:-000}"
+
+if [[ "\$HEALTH_CODE" != "200" ]]; then
+  # curl's exit code names the transport failure precisely — branch on the
+  # ones whose remediation differs from generic "check your network".
+  case "\$CURL_RC" in
+    35|60)
+      fatal "TLS problem connecting to \$BREEZE_SERVER — the server certificate could not be verified, or something is intercepting HTTPS on this network." ;;
+    28)
+      fatal "Connection to \$BREEZE_SERVER timed out. Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions." ;;
+  esac
+  if [[ "\$HEALTH_CODE" == "000" ]]; then
+    fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions."
+  fi
+  fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (HTTP \$HEALTH_CODE). Verify the server URL is correct and this machine has network access to it."
+fi
+
+# NOTE: stays in lockstep with GET /health in apps/api/src/index.ts — the
+# body must contain "status":"ok". If that payload changes, healthy installs
+# would start failing with the (misleading) interception message below.
+if ! grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "\$HEALTH_FILE"; then
+  fatal "Got an unexpected response from \$BREEZE_SERVER/health — something other than the Breeze server answered. A captive portal, router, or web filter may be intercepting traffic on this network."
+fi
+
+rm -f "\$HEALTH_FILE"
+trap - EXIT
+success "Breeze server is reachable"
+
 sha256_file() {
   if command -v sha256sum &>/dev/null; then
     sha256sum "$1" | awk '{print $1}'
@@ -471,6 +516,14 @@ if [[ "\$OS" == "darwin" ]]; then
 
   success "Downloaded installer package ($(wc -c < "\$TMPPKG" | tr -d ' ') bytes)"
 
+  # A path-selective middlebox can pass the /health pre-flight and still
+  # intercept the download path. macOS .pkg files are xar archives — anything
+  # else (typically a portal's HTML) must be blamed on the network, not on
+  # Gatekeeper below.
+  if [[ "$(head -c 4 "\$TMPPKG")" != 'xar!' ]]; then
+    fatal "Downloaded file is not a macOS installer package — something on this network may be intercepting requests to \$BREEZE_SERVER (captive portal, proxy, or web filter)."
+  fi
+
   # Verify Apple notarization/signature before installing as root — the installer
   # CLI does not enforce Gatekeeper on its own, so a tampered/MITM'd download
   # would otherwise be installed with full privileges.
@@ -489,11 +542,14 @@ if [[ "\$OS" == "darwin" ]]; then
 
   # Enroll agent
   info "Enrolling agent with Breeze server..."
-  ENROLL_ARGS=(
-    enroll
-    --server "\$BREEZE_SERVER"
-    --enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"
-  )
+  ENROLL_ARGS=(enroll)
+  if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
+    ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
+  fi
+  ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
+  if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
+    ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
+  fi
   if [[ -n "\$BREEZE_SITE_ID" ]]; then
     ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
   fi
@@ -529,6 +585,12 @@ trap 'rm -f "\$METADATA_FILE"' EXIT
 METADATA_HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$METADATA_FILE" "\$VERSION_METADATA_URL" 2>/dev/null)" || true
 if [[ "\$METADATA_HTTP_CODE" != "200" ]]; then
   fatal "Failed to fetch release integrity metadata (HTTP \$METADATA_HTTP_CODE). Refusing to install without a trusted checksum."
+fi
+
+# Same path-selective interception guard as the macOS branch: a 200 whose
+# body is HTML is a middlebox answering for the metadata endpoint.
+if grep -qiE '<html|<!doctype' "\$METADATA_FILE"; then
+  fatal "Got a web page instead of release metadata from \$BREEZE_SERVER — something on this network may be intercepting requests (captive portal, proxy, or web filter)."
 fi
 
 EXPECTED_SHA256="$(extract_checksum "\$METADATA_FILE")"
@@ -580,11 +642,14 @@ success "Config directory ready"
 
 # ----- Enroll agent -----
 info "Enrolling agent with Breeze server..."
-ENROLL_ARGS=(
-  enroll
-  --server "\$BREEZE_SERVER"
-  --enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"
-)
+ENROLL_ARGS=(enroll)
+if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
+  ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
+fi
+ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
+if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
+  ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
+fi
 if [[ -n "\$BREEZE_SITE_ID" ]]; then
   ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
 fi

@@ -76,7 +76,11 @@ featureLinkRoutes.post(
     if (data.featureType === 'patch') {
       const parsed = patchInlineSettingsSchema.safeParse(data.inlineSettings ?? {});
       if (!parsed.success) {
-        return c.json({ error: 'Invalid patch settings', details: parsed.error.flatten() }, 400);
+        // `issues` included so the web client (extractApiError) can render the messages.
+        return c.json(
+          { error: 'Invalid patch settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          400
+        );
       }
       data.inlineSettings = parsed.data;
     }
@@ -84,7 +88,10 @@ featureLinkRoutes.post(
     if (data.featureType === 'backup' && data.inlineSettings) {
       const parsed = backupInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
-        return c.json({ error: 'Invalid backup settings', details: parsed.error.flatten() }, 400);
+        return c.json(
+          { error: 'Invalid backup settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          400
+        );
       }
       data.inlineSettings = parsed.data;
     }
@@ -155,14 +162,20 @@ featureLinkRoutes.patch(
       if (existingLink.featureType === 'patch') {
         const parsed = patchInlineSettingsSchema.safeParse(data.inlineSettings ?? {});
         if (!parsed.success) {
-          return c.json({ error: 'Invalid patch settings', details: parsed.error.flatten() }, 400);
+          return c.json(
+            { error: 'Invalid patch settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            400
+          );
         }
         data.inlineSettings = parsed.data;
       }
       if (existingLink.featureType === 'backup') {
         const parsed = backupInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
-          return c.json({ error: 'Invalid backup settings', details: parsed.error.flatten() }, 400);
+          return c.json(
+            { error: 'Invalid backup settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            400
+          );
         }
         data.inlineSettings = parsed.data;
       }

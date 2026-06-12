@@ -33,6 +33,7 @@ const (
 	wtsUserName            = 5
 	wtsDomainName          = 7
 	wtsClientProtocolType  = 16
+	wtsSessionInfoEx       = 25 // WTSInfoClass: WTSSessionInfoEx
 
 	wtsDisconnected = 4 // WTS_CONNECTSTATE_CLASS: WTSDisconnected
 )
@@ -41,6 +42,65 @@ type wtsSessionInfo struct {
 	SessionID      uint32
 	WinStationName *uint16
 	State          uint32
+}
+
+// wtsInfoExLevel1 mirrors WTSINFOEX_LEVEL1_W from wtsapi32.h. Field order and
+// the explicit padding before LogonTime must match the C layout exactly:
+// 12 bytes of DWORDs + 72 UTF-16 chars (144 bytes) = 156, padded to 160 so the
+// LARGE_INTEGER block is 8-aligned.
+type wtsInfoExLevel1 struct {
+	SessionID               uint32
+	SessionState            int32
+	SessionFlags            int32
+	WinStationName          [33]uint16
+	UserName                [21]uint16
+	DomainName              [18]uint16
+	_                       [4]byte
+	LogonTime               int64
+	ConnectTime             int64
+	DisconnectTime          int64
+	LastInputTime           int64 // FILETIME; 0 = no input recorded
+	CurrentTime             int64
+	IncomingBytes           uint32
+	OutgoingBytes           uint32
+	IncomingFrames          uint32
+	OutgoingFrames          uint32
+	IncomingCompressedBytes uint32
+	OutgoingCompressedBytes uint32
+}
+
+// wtsInfoEx mirrors WTSINFOEXW: a DWORD level then a union whose only level-1
+// member is 8-aligned, so Data sits at offset 8.
+type wtsInfoEx struct {
+	Level uint32
+	_     [4]byte
+	Data  wtsInfoExLevel1
+}
+
+// querySessionLastInput returns the time of last user input for a session via
+// WTSSessionInfoEx. ok=false when the query fails or returns a short/unknown
+// payload. A zero LastInputTime yields the zero time (treated as unknown by
+// idleSince) — this is the documented console-session quirk.
+func (d *windowsDetector) querySessionLastInput(sessionID uint32) (time.Time, bool) {
+	var buf *wtsInfoEx
+	var bytesReturned uint32
+
+	r1, _, _ := procWTSQuerySessionInfo.Call(
+		wtsCurrentServerHandle,
+		uintptr(sessionID),
+		wtsSessionInfoEx,
+		uintptr(unsafe.Pointer(&buf)),
+		uintptr(unsafe.Pointer(&bytesReturned)),
+	)
+	if r1 == 0 || buf == nil {
+		return time.Time{}, false
+	}
+	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
+
+	if uintptr(bytesReturned) < unsafe.Sizeof(wtsInfoEx{}) || buf.Level != 1 {
+		return time.Time{}, false
+	}
+	return filetimeToTime(uint64(buf.Data.LastInputTime)), true
 }
 
 func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
@@ -93,6 +153,11 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 			State:    wtsStateString(info.State),
 			Display:  "windows",
 			Type:     sessionType,
+		}
+		if sessionType != "services" {
+			if lastInput, ok := d.querySessionLastInput(info.SessionID); ok {
+				session.IdleFor, session.IdleKnown = idleSince(time.Now(), lastInput)
+			}
 		}
 		var err error
 		session.Session, err = sanitizeDetectedField(session.Session, true)

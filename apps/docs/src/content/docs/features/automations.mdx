@@ -223,6 +223,12 @@ Fires when a matching platform event is emitted. The `eventType` field is case-s
 | `device.offline` | A device stops sending heartbeats |
 | `device.enrolled` | A new device completes enrollment |
 | `patch.failed` | A patch deployment fails on a device |
+| `huntress.incident_created` | A new Huntress incident is reported (see [EDR Integrations](/features/edr-integrations/)) |
+| `huntress.incident_updated` | A Huntress incident changes severity, status, or resolution |
+| `huntress.agent_offline` | A Huntress agent goes offline |
+| `s1.threat_detected` | A new SentinelOne threat is detected |
+| `s1.device_isolated` | A Breeze-initiated SentinelOne isolation completes |
+| `s1.threat_action_completed` | A Breeze-initiated SentinelOne threat action completes |
 
 ### Webhook
 
