@@ -489,28 +489,33 @@ export interface ListTimeEntriesFilters {
   offset: number;
 }
 
-const entrySelection = {
-  id: timeEntries.id,
-  partnerId: timeEntries.partnerId,
-  orgId: timeEntries.orgId,
-  ticketId: timeEntries.ticketId,
-  userId: timeEntries.userId,
-  startedAt: timeEntries.startedAt,
-  endedAt: timeEntries.endedAt,
-  durationMinutes: timeEntries.durationMinutes,
-  description: timeEntries.description,
-  isBillable: timeEntries.isBillable,
-  hourlyRate: timeEntries.hourlyRate,
-  billingStatus: timeEntries.billingStatus,
-  isApproved: timeEntries.isApproved,
-  approvedBy: timeEntries.approvedBy,
-  approvedAt: timeEntries.approvedAt,
-  createdAt: timeEntries.createdAt,
-  // decorations (additive, Phase 1b pattern)
-  ticketNumber: tickets.internalNumber,
-  ticketSubject: tickets.subject,
-  userName: users.name
-};
+/** Lazy column-selection factory — avoids module-scope Drizzle column derefs
+ *  that crash any test file mocking db/schema without a timeEntries stub.
+ *  Pattern: portalSettingsColumns() in orgPortalSettings.ts. */
+function entrySelection() {
+  return {
+    id: timeEntries.id,
+    partnerId: timeEntries.partnerId,
+    orgId: timeEntries.orgId,
+    ticketId: timeEntries.ticketId,
+    userId: timeEntries.userId,
+    startedAt: timeEntries.startedAt,
+    endedAt: timeEntries.endedAt,
+    durationMinutes: timeEntries.durationMinutes,
+    description: timeEntries.description,
+    isBillable: timeEntries.isBillable,
+    hourlyRate: timeEntries.hourlyRate,
+    billingStatus: timeEntries.billingStatus,
+    isApproved: timeEntries.isApproved,
+    approvedBy: timeEntries.approvedBy,
+    approvedAt: timeEntries.approvedAt,
+    createdAt: timeEntries.createdAt,
+    // decorations (additive, Phase 1b pattern)
+    ticketNumber: tickets.internalNumber,
+    ticketSubject: tickets.subject,
+    userName: users.name
+  };
+}
 
 function listConditions(filters: ListTimeEntriesFilters) {
   const conditions = [];
@@ -530,7 +535,7 @@ function listConditions(filters: ListTimeEntriesFilters) {
 export async function listTimeEntries(filters: ListTimeEntriesFilters) {
   const conditions = listConditions(filters);
   const entries = await db
-    .select(entrySelection)
+    .select(entrySelection())
     .from(timeEntries)
     .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
     .leftJoin(users, eq(timeEntries.userId, users.id))
@@ -549,7 +554,7 @@ export async function listTimeEntries(filters: ListTimeEntriesFilters) {
 
 export async function getRunningTimer(userId: string) {
   const rows = await db
-    .select(entrySelection)
+    .select(entrySelection())
     .from(timeEntries)
     .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
     .leftJoin(users, eq(timeEntries.userId, users.id))
@@ -568,7 +573,7 @@ export interface TimesheetDay {
 export async function getTimesheet(userId: string, weekStart: Date) {
   const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60_000);
   const entries = await db
-    .select(entrySelection)
+    .select(entrySelection())
     .from(timeEntries)
     .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
     .leftJoin(users, eq(timeEntries.userId, users.id))
