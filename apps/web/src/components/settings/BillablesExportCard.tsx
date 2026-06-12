@@ -2,12 +2,15 @@ import { useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 
+function localDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 function firstOfMonth(): string {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  return localDateStr(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localDateStr(new Date());
 }
 
 export default function BillablesExportCard() {

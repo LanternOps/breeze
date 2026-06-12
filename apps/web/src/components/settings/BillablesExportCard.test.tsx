@@ -34,6 +34,7 @@ describe('BillablesExportCard', () => {
     fireEvent.change(screen.getByTestId('billables-export-org'), { target: { value: 'o-1' } });
     fireEvent.click(screen.getByTestId('billables-export-download'));
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(expect.stringMatching(/^\/tickets\/export\/billables\.csv\?from=2026-06-01&to=2026-06-12&orgId=o-1$/)));
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
   });
 
   it('shows an error toast when the export fails', async () => {
