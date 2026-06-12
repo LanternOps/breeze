@@ -563,4 +563,34 @@ describe('time_entry feed comments', () => {
     expect(String(commentVals.content)).toContain('removed a');
     expect(String(commentVals.content)).toContain('45m');
   });
+
+  it('deleting a running (null-duration) entry produces "removed a time entry" with no duration', async () => {
+    dbMocks.selectResults.push([{ id: 'te-5', userId: 'u-1', isApproved: false, partnerId: 'p-1', ticketId: 't-4', durationMinutes: null }]);
+    await deleteTimeEntry('te-5', ACTOR);
+    const commentVals = dbMocks.insertedValues[0]!;
+    expect(String(commentVals.content)).toBe('Tess removed a time entry');
+  });
+
+  it('a feed-comment insert failure does not reject createTimeEntry and the event is still emitted', async () => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
+    dbMocks.insertResult = [{ id: 'te-6', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: false }];
+    // Make the ticketComments insert fail (first insert uses insertResult, second rejects).
+    // We push null for the timeEntries returning() call (null is falsy → falls through to insertResult),
+    // then the actual error for the ticketComments returning() call.
+    const feedError = new Error('DB connection lost');
+    dbMocks.insertErrors.push(null as unknown as Error, feedError);
+    // createTimeEntry must not reject even though the feed comment insert fails;
+    // if it rejects this line itself will throw and the test fails appropriately.
+    const entry = await createTimeEntry(
+      { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+      ACTOR
+    );
+    expect(entry.id).toBe('te-6');
+    // Event must still be emitted after the swallowed feed-comment failure
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'time_entry.created' }));
+    // Both values() calls were made (timeEntries + ticketComments) confirming the insert was attempted
+    expect(dbMocks.insertedValues).toHaveLength(2);
+    expect(dbMocks.insertedValues[0]!.billingStatus).toBe('not_billed'); // timeEntries row
+    expect(dbMocks.insertedValues[1]!.commentType).toBe('time_entry'); // ticketComments row attempted
+  });
 });

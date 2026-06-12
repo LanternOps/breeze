@@ -134,24 +134,29 @@ function fmtMinutes(minutes: number | null): string {
   return rest === 0 ? `${h}h` : `${h}h ${rest}m`;
 }
 
-/** D4: internal-only system feed line; never isPublic. No-op without a ticket. */
+/** D4: internal-only system feed line; never isPublic. No-op without a ticket.
+ *  Swallows insert errors so a failed comment never rolls back a committed mutation. */
 async function insertTimeEntryFeedComment(
   ticketId: string | null,
   actor: TimeEntryActor,
   content: string
 ): Promise<void> {
   if (!ticketId) return;
-  await db.insert(ticketComments).values({
-    ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
-    commentType: 'time_entry',
-    content,
-    isPublic: false,
-    oldValue: null,
-    newValue: null
-  });
+  try {
+    await db.insert(ticketComments).values({
+      ticketId,
+      userId: actor.userId,
+      authorName: actor.name ?? null,
+      authorType: 'internal',
+      commentType: 'time_entry',
+      content,
+      isPublic: false,
+      oldValue: null,
+      newValue: null
+    });
+  } catch (err) {
+    console.error('[timeEntryService] feed comment insert failed', err);
+  }
 }
 
 export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEntryActor) {
@@ -422,7 +427,7 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
   await insertTimeEntryFeedComment(
     entry.ticketId,
     actor,
-    `${actor.name ?? 'Technician'} removed a ${fmtMinutes(entry.durationMinutes)} time entry`
+    `${actor.name ?? 'Technician'} removed a${entry.durationMinutes != null ? ` ${fmtMinutes(entry.durationMinutes)}` : ''} time entry`
   );
 
   await emitTimeEntryEvent({
