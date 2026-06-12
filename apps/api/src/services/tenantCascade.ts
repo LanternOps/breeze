@@ -149,6 +149,8 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'group_membership_log',
   'huntress_agents',
   'huntress_incidents',
+  'huntress_integrations',
+  'huntress_org_mappings',
   'hyperv_vms',
   'incident_actions',
   'incident_evidence',
