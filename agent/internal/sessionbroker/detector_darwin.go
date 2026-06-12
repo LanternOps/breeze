@@ -3,9 +3,10 @@
 package sessionbroker
 
 /*
-#cgo LDFLAGS: -framework SystemConfiguration -framework CoreFoundation
+#cgo LDFLAGS: -framework SystemConfiguration -framework CoreFoundation -framework IOKit
 #include <SystemConfiguration/SystemConfiguration.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 
 // getConsoleUser returns the current console user's username and UID.
 static int getConsoleUser(char *buf, int bufsize, unsigned int *uid) {
@@ -14,6 +15,24 @@ static int getConsoleUser(char *buf, int bufsize, unsigned int *uid) {
     Boolean ok = CFStringGetCString(username, buf, bufsize, kCFStringEncodingUTF8);
     CFRelease(username);
     return ok ? 1 : 0;
+}
+
+// getHIDIdleNanos reads the system-wide HID idle time (nanoseconds since last
+// keyboard/mouse input) from the IOHIDSystem registry entry. Returns 0 on
+// failure, 1 on success. Passing 0 as the master port targets the default
+// port on all supported macOS versions.
+static int getHIDIdleNanos(long long *ns) {
+    io_service_t svc = IOServiceGetMatchingService(0, IOServiceMatching("IOHIDSystem"));
+    if (!svc) return 0;
+    CFTypeRef prop = IORegistryEntryCreateCFProperty(svc, CFSTR("HIDIdleTime"), kCFAllocatorDefault, 0);
+    IOObjectRelease(svc);
+    if (!prop) return 0;
+    int ok = 0;
+    if (CFGetTypeID(prop) == CFNumberGetTypeID()) {
+        ok = CFNumberGetValue((CFNumberRef)prop, kCFNumberSInt64Type, ns);
+    }
+    CFRelease(prop);
+    return ok;
 }
 */
 import "C"
@@ -54,6 +73,12 @@ func (d *darwinDetector) ListSessions() ([]DetectedSession, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	var idleNs C.longlong
+	if C.getHIDIdleNanos(&idleNs) != 0 && idleNs >= 0 {
+		session.IdleFor = time.Duration(idleNs)
+		session.IdleKnown = true
 	}
 
 	return []DetectedSession{session}, nil
