@@ -106,9 +106,11 @@ export function _resetLegacyMcpWriteWarningsForTests() {
  * loses RLS GUCs (e.g. a worker, a misconfigured pool, a DELETE from a
  * privileged side-channel).
  *
- * This mirrors `computeAccessibleOrgIds` in middleware/auth.ts but is kept
- * inline here to avoid widening that file's export surface and to keep the
- * OAuth fast path cohesive. Returns `string[]` (never null) so the resulting
+ * This is the canonical shared partner→org resolver: it is consumed both by
+ * the OAuth/bearer path here and by routes/mcpServer.ts (which dropped its own
+ * duplicate copy in favor of this export). It mirrors `computeAccessibleOrgIds`
+ * in middleware/auth.ts but lives here rather than there to avoid widening that
+ * file's export surface. Returns `string[]` (never null) so the resulting
  * `accessibleOrgIds` always carries an explicit allowlist; an empty list
  * correctly produces "no rows match" rather than "all rows".
  *

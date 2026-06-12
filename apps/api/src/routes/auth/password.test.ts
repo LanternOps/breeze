@@ -8,6 +8,7 @@ const {
   getEligibilityMock,
   getEligibilityForUserMock,
   revokeOauthArtifactsMock,
+  revokeAllUserTokensMock,
 } = vi.hoisted(() => ({
   sendPasswordResetMock: vi.fn(async () => undefined),
   setexMock: vi.fn(async () => 'OK'),
@@ -16,6 +17,7 @@ const {
   getEligibilityMock: vi.fn(),
   getEligibilityForUserMock: vi.fn(),
   revokeOauthArtifactsMock: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 })),
+  revokeAllUserTokensMock: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../db', () => ({
@@ -49,7 +51,7 @@ vi.mock('../../services', () => ({
     getdel: getdelMock,
   })),
   invalidateAllUserSessions: vi.fn(async () => undefined),
-  revokeAllUserTokens: vi.fn(async () => undefined),
+  revokeAllUserTokens: revokeAllUserTokensMock,
 }));
 
 vi.mock('../../services/email', () => ({
@@ -139,6 +141,10 @@ describe('password reset eligibility (#719)', () => {
     updateWhereMock.mockReset();
     getEligibilityMock.mockReset();
     getEligibilityForUserMock.mockReset();
+    revokeOauthArtifactsMock.mockReset();
+    revokeOauthArtifactsMock.mockResolvedValue({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 });
+    revokeAllUserTokensMock.mockReset();
+    revokeAllUserTokensMock.mockResolvedValue(undefined);
   });
 
   describe('POST /forgot-password', () => {
@@ -294,6 +300,50 @@ describe('password reset eligibility (#719)', () => {
       );
     });
 
+    it('still revokes OAuth artifacts when the JWT revoke throws (ordering bug)', async () => {
+      getdelMock.mockResolvedValue('u-pending');
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-pending',
+        email: 'pending3@x.com',
+      });
+      // Redis blip: JWT revoke rejects. The OAuth revoke must NOT be
+      // short-circuited — it closes the (up to 14-day) stolen-refresh-token
+      // window and is the more durable threat.
+      revokeAllUserTokensMock.mockRejectedValue(new Error('redis down'));
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-pending');
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
+    });
+
+    it('still returns success when the OAuth revoke itself throws (best-effort)', async () => {
+      getdelMock.mockResolvedValue('u-pending');
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-pending',
+        email: 'pending4@x.com',
+      });
+      revokeOauthArtifactsMock.mockRejectedValue(new Error('oauth store down'));
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
+    });
+
     it('does not revoke OAuth artifacts when the reset is denied', async () => {
       getdelMock.mockResolvedValue('u-suspended');
       getEligibilityForUserMock.mockResolvedValue({
@@ -397,6 +447,37 @@ describe('password reset eligibility (#719)', () => {
       expect(body.success).toBe(true);
       // A previously authorized MCP OAuth refresh token must be revoked on a
       // password change, not just first-party JWTs.
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
+    });
+
+    it('still revokes OAuth artifacts when the JWT revoke throws (ordering bug)', async () => {
+      // Redis blip: JWT revoke rejects. The OAuth revoke must NOT be
+      // short-circuited — it's the more durable threat.
+      revokeAllUserTokensMock.mockRejectedValue(new Error('redis down'));
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-1');
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
+    });
+
+    it('still returns success when the OAuth revoke itself throws (best-effort)', async () => {
+      revokeOauthArtifactsMock.mockRejectedValue(new Error('oauth store down'));
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
       expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
     });
   });

@@ -89,7 +89,7 @@ vi.mock('../services/aiTools', () => ({
 }));
 
 vi.mock('../services/aiGuardrails', () => ({
-  checkGuardrails: () => ({ allowed: true }),
+  checkGuardrails: () => ({ allowed: true, tier: 1 }),
   checkToolPermission: async () => null,
   checkToolRateLimit: async () => null,
 }));

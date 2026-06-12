@@ -924,11 +924,22 @@ async function handleToolsCall(
   }
 
   // Effective tier = max of the tool's static base tier and any per-action
-  // escalation from guardrails. Guard against a guardrail result without a
-  // numeric tier (Number.isFinite) so the gates never silently fall through on
-  // a malformed/partial check.
-  const escalatedTier = Number.isFinite(guardrailCheck.tier) ? guardrailCheck.tier : baseTier;
-  const tier = Math.max(baseTier, escalatedTier);
+  // escalation from guardrails. checkGuardrails can also DOWNGRADE a sub-action
+  // (a read-only action on a high-base-tier tool returns tier 1 via
+  // TIER1_ACTIONS); Math.max DELIBERATELY ignores those downgrades so a
+  // sub-action can never weaken the scope requirement below the tool's static
+  // base tier. Do not "fix" this to honor the guardrail tier directly — that
+  // would silently weaken the gate.
+  //
+  // Fail CLOSED on a malformed guardrail tier: if checkGuardrails ever returns
+  // a non-finite tier (unreachable given current types, but a security gate
+  // must not fall through to the permissive base tier on a partial result),
+  // DENY rather than silently dropping to baseTier.
+  if (!Number.isFinite(guardrailCheck.tier)) {
+    console.error('[MCP] Guardrail check returned a non-finite tier for tool:', toolName, guardrailCheck.tier);
+    return jsonRpcError(id, -32000, 'Unable to evaluate tool guardrails');
+  }
+  const tier = Math.max(baseTier, guardrailCheck.tier);
 
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();

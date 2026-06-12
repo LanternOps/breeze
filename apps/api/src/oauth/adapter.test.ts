@@ -42,6 +42,22 @@ function mockUpdateChain() {
   return { set, where };
 }
 
+function collectSqlStrings(value: unknown): string {
+  if (!value || typeof value !== 'object') return '';
+  const chunks = (value as { queryChunks?: unknown[] }).queryChunks;
+  const stringValue = (value as { value?: unknown }).value;
+  let out = '';
+  if (Array.isArray(stringValue)) {
+    out += stringValue.join('');
+  }
+  if (Array.isArray(chunks)) {
+    for (const chunk of chunks) {
+      out += collectSqlStrings(chunk);
+    }
+  }
+  return out;
+}
+
 function mockSelectRows(rows: unknown[]) {
   const where = vi.fn(async () => rows);
   const from = vi.fn(() => ({ where }));
@@ -144,6 +160,16 @@ describe('BreezeOidcAdapter', () => {
       consumedAt: expect.any(Date),
       payload: expect.anything(),
     }));
+    // Tighten: the `payload` update must be the jsonb_set that stamps the
+    // '{consumed}' key (an epoch int). expect.anything() above would pass even
+    // if the consumed stamp were dropped — a refactor that drops it re-opens the
+    // replay-revoke gap (find() would surface a payload with no `consumed`, so
+    // oidc-provider's `if (code.consumed)` revoke branch never fires). Assert
+    // the SQL fragment so that regression fails here.
+    const consumeSetArg = (chain.set.mock.calls[0] as unknown[])[0] as { payload?: unknown };
+    const payloadSql = collectSqlStrings(consumeSetArg.payload);
+    expect(payloadSql).toContain('jsonb_set');
+    expect(payloadSql).toContain('{consumed}');
     expect(chain.where).toHaveBeenCalled();
   });
 

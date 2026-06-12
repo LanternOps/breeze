@@ -17,8 +17,9 @@ vi.mock('../services/mcpToolExecutionLedger', () => ({
   completeMcpToolExecutionLedger: (...args: any[]) => ledgerComplete(...args),
 }));
 
+const writeAuditEvent = vi.fn();
 vi.mock('../services/auditEvents', () => ({
-  writeAuditEvent: vi.fn(),
+  writeAuditEvent: (...args: any[]) => writeAuditEvent(...args),
   requestLikeFromSnapshot: vi.fn(),
 }));
 
@@ -73,6 +74,7 @@ beforeEach(() => {
   vi.resetModules();
   ledgerBegin.mockClear();
   ledgerComplete.mockClear();
+  writeAuditEvent.mockClear();
 });
 
 afterEach(() => {
@@ -135,13 +137,85 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
       withSystemDbAccessContext: vi.fn(),
       runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     }));
-    // registry_operations is base tier 1; run_script is base tier 3.
+    // registry_operations / manage_processes / manage_patches are base tier 1;
+    // run_script is base tier 3; security_scan is base tier 2 (its
+    // action:'vulnerabilities' downgrades to tier 1 in guardrails — used by the
+    // downgrade-clamp test to prove Math.max ignores the downgrade).
     vi.doMock('../services/aiTools', () => ({
       getToolDefinitions: () => [],
       executeTool: vi.fn(async () => JSON.stringify({ ok: true })),
       getToolTier: (name: string) =>
-        name === 'run_script' ? 3 : name === 'registry_operations' ? 1 : name === 'manage_processes' ? 1 : undefined,
+        name === 'run_script'
+          ? 3
+          : name === 'security_scan'
+            ? 2
+            : name === 'registry_operations' ||
+                name === 'manage_processes' ||
+                name === 'manage_patches'
+              ? 1
+              : undefined,
     }));
+  });
+
+  // C1 — tier-2 escalation: manage_patches is base tier 1, action:'approve'
+  // escalates to tier 2 (TIER2_ACTIONS). An ai:read-only key is denied with a
+  // message naming ai:write; an ai:write key (no ai:execute) succeeds.
+  it('C1: ai:read key calling base-tier-1 manage_patches {approve} is denied (requires ai:write)', async () => {
+    const res = await callTool(['ai:read'], 'manage_patches', { action: 'approve', patchId: 'p1' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32603);
+    expect(body.error?.message).toContain('requires ai:write');
+  });
+
+  it('C1: ai:write key (no ai:execute) calling manage_patches {approve} succeeds', async () => {
+    const res = await callTool(['ai:read', 'ai:write'], 'manage_patches', { action: 'approve', patchId: 'p1' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    expect(body.result?.content?.[0]?.text).toContain('ok');
+  });
+
+  // C3 — the audit event records the EFFECTIVE (escalated) tier, not the base
+  // tier. registry_operations base tier 1 + action:'delete_key' → tier 3; the
+  // ledger already asserts tier:3 (in the existing ledger test), so here we
+  // assert the audit-event payload carries details.tier === 3.
+  it('C3: audit event records the escalated effective tier (3), not base tier (1)', async () => {
+    const res = await callTool(
+      ['ai:read', 'ai:execute'],
+      'registry_operations',
+      { action: 'delete_key', key: 'HKLM\\foo' },
+    );
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    // The route writes two audit events: a request-level 'mcp_request' and the
+    // tool-level 'mcp_tool_execution'. Select the tool-level one and assert it
+    // records the EFFECTIVE (escalated) tier 3, not the base tier 1.
+    const toolAudit = writeAuditEvent.mock.calls
+      .map((call: any[]) => call[1])
+      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
+    expect(toolAudit).toBeDefined();
+    expect(toolAudit.action).toBe('mcp.tool.registry_operations');
+    expect(toolAudit.details.tier).toBe(3);
+  });
+
+  // Downgrade-clamp: security_scan base tier 2 + action:'vulnerabilities'
+  // downgrades to tier 1 in guardrails, but Math.max(baseTier, guardrailTier)
+  // clamps the effective tier back to 2 — so an ai:read-only key is still
+  // denied (tier 2 requires ai:write). Pins the behavior the comment documents.
+  // (Split into two tests: callTool can only mint one apiKey mock per imported
+  // module instance — calling it twice in one test reuses the first scopes.)
+  it('downgrade-clamp: ai:read on a TIER1 action of a base-tier-2 tool is still denied (tier 2)', async () => {
+    const denied = await callTool(['ai:read'], 'security_scan', { action: 'vulnerabilities' });
+    const deniedBody = await denied.json();
+    expect(deniedBody.error?.code).toBe(-32603);
+    expect(deniedBody.error?.message).toContain('requires ai:write');
+  });
+
+  it('downgrade-clamp: ai:write on a TIER1 action of a base-tier-2 tool succeeds (gated at tier 2)', async () => {
+    const ok = await callTool(['ai:read', 'ai:write'], 'security_scan', { action: 'vulnerabilities' });
+    const okBody = await ok.json();
+    expect(okBody.error).toBeUndefined();
   });
 
   it('ai:read key calling a tier-1 tool with a destructive action is DENIED', async () => {
@@ -332,5 +406,174 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     // The device-list query must have received a site-narrowing condition
     // (in addition to the org condition) — proves the route applied the axis.
     expect(capturedDeviceListConds.length).toBeGreaterThan(0);
+  });
+
+  // C4 — alerts list site axis. Alert a-a is on site-A device d-a; a-b is on
+  // site-B device d-b. A site-A-restricted caller must see a-a but not a-b. We
+  // model the route's inArray(alerts.deviceId, [d-a]) narrowing by returning
+  // only a-a from the alert list query.
+  it('C4: site-restricted caller does not see site-B alerts via resources/read', async () => {
+    vi.doMock('../services/permissions', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../services/permissions')>();
+      return {
+        ...actual,
+        getUserPermissions: vi.fn(async () => ({
+          permissions: [],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-1',
+          scope: 'organization' as const,
+          allowedSiteIds: ['site-A'],
+        })),
+      };
+    });
+
+    const capturedAlertConds: any[] = [];
+    vi.doMock('../db', () => ({
+      db: {
+        select: (_cols?: any) => ({
+          from: (_table: any) => {
+            const builder: any = {
+              where(cond: any) {
+                capturedAlertConds.push(cond);
+                return this;
+              },
+              limit(_n: number) {
+                // alert list path — return only the site-A alert to model the
+                // inArray(alerts.deviceId,[d-a]) narrowing the route applied.
+                return Promise.resolve([
+                  { id: 'a-a', title: 'alert-a', severity: 'high', status: 'active', deviceId: 'd-a', triggeredAt: null },
+                ]);
+              },
+              orderBy() {
+                return this;
+              },
+              then(resolve: any) {
+                // resolveSiteAllowedDeviceIds path (awaited without limit).
+                resolve([
+                  { id: 'd-a', siteId: 'site-A' },
+                  { id: 'd-b', siteId: 'site-B' },
+                ]);
+              },
+            };
+            return builder;
+          },
+        }),
+      },
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+
+    mockApiKey(['ai:read']);
+    const mod = await import('./mcpServer');
+    const res = await mod.mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'resources/read',
+        params: { uri: 'breeze://alerts' },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const text = body.result?.contents?.[0]?.text ?? '';
+    expect(text).toContain('a-a');
+    expect(text).not.toContain('a-b');
+    // The alert-list query must have received a site-narrowing condition.
+    expect(capturedAlertConds.length).toBeGreaterThan(0);
+  });
+
+  // C4 — single-device read breeze://devices/{id}. A site-A-restricted caller
+  // reading an out-of-site device id (d-b on site-B) gets 'Device not found'
+  // (-32602, fail-closed via deviceSiteDenied); an in-site id (d-a) returns the
+  // safe projection. UUID-shaped ids are required by the route's URI regex.
+  const D_A = '11111111-1111-1111-1111-111111111111';
+  const D_B = '22222222-2222-2222-2222-222222222222';
+
+  function mockSingleDeviceDb(returnedDevice: any) {
+    vi.doMock('../db', () => ({
+      db: {
+        select: (_cols?: any) => ({
+          from: (_table: any) => {
+            const builder: any = {
+              where() {
+                return this;
+              },
+              limit(_n: number) {
+                return Promise.resolve(returnedDevice ? [returnedDevice] : []);
+              },
+              then(resolve: any) {
+                resolve([
+                  { id: D_A, siteId: 'site-A' },
+                  { id: D_B, siteId: 'site-B' },
+                ]);
+              },
+            };
+            return builder;
+          },
+        }),
+      },
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+  }
+
+  function restrictToSiteA() {
+    vi.doMock('../services/permissions', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../services/permissions')>();
+      return {
+        ...actual,
+        getUserPermissions: vi.fn(async () => ({
+          permissions: [],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-1',
+          scope: 'organization' as const,
+          allowedSiteIds: ['site-A'],
+        })),
+      };
+    });
+  }
+
+  async function readDevice(id: string) {
+    mockApiKey(['ai:read']);
+    const mod = await import('./mcpServer');
+    return mod.mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'resources/read',
+        params: { uri: `breeze://devices/${id}` },
+      }),
+    });
+  }
+
+  it('C4: single-device read of an out-of-site id returns Device not found (-32602)', async () => {
+    restrictToSiteA();
+    // The DB returns the (site-B) device row; deviceSiteDenied must reject it.
+    mockSingleDeviceDb({ id: D_B, siteId: 'site-B', hostname: 'host-b', status: 'online' });
+    const res = await readDevice(D_B);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32602);
+    expect(body.error?.message).toContain('Device not found');
+  });
+
+  it('C4: single-device read of an in-site id returns the projection', async () => {
+    restrictToSiteA();
+    mockSingleDeviceDb({ id: D_A, siteId: 'site-A', hostname: 'host-a', status: 'online' });
+    const res = await readDevice(D_A);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    const text = body.result?.contents?.[0]?.text ?? '';
+    expect(text).toContain(D_A);
+    expect(text).toContain('host-a');
   });
 });

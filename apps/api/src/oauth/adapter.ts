@@ -301,8 +301,11 @@ export class BreezeOidcAdapter {
       if (this.model === 'AuthorizationCode') {
         const [row] = await db.select().from(oauthAuthorizationCodes).where(eq(oauthAuthorizationCodes.id, id));
         if (!row) return undefined;
-        // Truly-expired rows stay invisible (defense in depth — the library
-        // also rejects via code.isExpired). But a CONSUMED row must surface
+        // Truly-expired non-consumed rows stay invisible via our own
+        // `expiresAt >= new Date()` filter below — and that filter is the only
+        // thing rejecting them: the grant calls find() with
+        // ignoreExpiration:true, so the library will not reject them for us.
+        // But a CONSUMED row must surface
         // its payload (with `consumed` stamped by consume()) rather than
         // returning undefined: oidc-provider's authorization_code grant calls
         // find() with ignoreExpiration:true, and its own
