@@ -150,6 +150,7 @@ export interface Device {
   enrolledBy: string | null;
   tags: string[];
   isHeadless: boolean;
+  pendingReboot: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
