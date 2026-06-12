@@ -10,12 +10,9 @@ import { fetchWithAuth } from '../../../stores/auth';
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
 type PatchSourceOption = 'os' | 'third_party';
-type Severity = 'critical' | 'important' | 'moderate' | 'low';
 
 type PatchDeploymentSettings = {
   sources: PatchSourceOption[];
-  autoApprove: boolean;
-  autoApproveSeverities: Severity[];
   scheduleFrequency: ScheduleFrequency;
   scheduleTime: string;
   scheduleDayOfWeek: string;
@@ -35,8 +32,6 @@ type UpdateRing = {
 
 const defaults: PatchDeploymentSettings = {
   sources: ['os'],
-  autoApprove: false,
-  autoApproveSeverities: [],
   scheduleFrequency: 'weekly',
   scheduleTime: '02:00',
   scheduleDayOfWeek: 'sun',
@@ -47,13 +42,6 @@ const defaults: PatchDeploymentSettings = {
 const sourceOptions: { value: PatchSourceOption; label: string; description: string }[] = [
   { value: 'os', label: 'OS updates', description: 'Windows Update, macOS software updates, and Linux package updates.' },
   { value: 'third_party', label: 'Third-party applications', description: 'Application updates via winget, Chocolatey, and Homebrew.' },
-];
-
-const severityOptions: { value: Severity; label: string }[] = [
-  { value: 'critical', label: 'Critical' },
-  { value: 'important', label: 'Important' },
-  { value: 'moderate', label: 'Moderate' },
-  { value: 'low', label: 'Low' },
 ];
 
 const OS_VALUE_ALIASES = new Set(['os', 'microsoft', 'apple', 'linux']);
@@ -150,15 +138,6 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
     });
   };
 
-  const toggleSeverity = (value: Severity) => {
-    setSettings((prev) => ({
-      ...prev,
-      autoApproveSeverities: prev.autoApproveSeverities.includes(value)
-        ? prev.autoApproveSeverities.filter((s) => s !== value)
-        : [...prev.autoApproveSeverities, value],
-    }));
-  };
-
   const handleSave = async () => {
     clearError();
     const result = await save(existingLink?.id ?? null, {
@@ -237,6 +216,11 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
             </label>
           ))}
         </div>
+        {settings.sources.length === 1 && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            At least one patch source must be selected.
+          </p>
+        )}
       </div>
 
       {/* Approval Ring */}
@@ -270,45 +254,6 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
             <span>Deferral: {selectedRing.deferralDays === 0 ? 'None' : `${selectedRing.deferralDays}d`}</span>
             <span>Deadline: {selectedRing.deadlineDays == null ? 'None' : `${selectedRing.deadlineDays}d`}</span>
             <span>Grace: {selectedRing.gracePeriodHours}h</span>
-          </div>
-        )}
-      </div>
-
-      {/* Automatic Approval */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">Automatic Approval</h3>
-        <label className="mt-2 flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            aria-label="Automatically approve patches by severity"
-            checked={settings.autoApprove}
-            onChange={(e) => update('autoApprove', e.target.checked)}
-            className="h-4 w-4 rounded border"
-          />
-          <span>Automatically approve patches by severity</span>
-        </label>
-        {settings.autoApprove && (
-          <div className="mt-2 flex flex-wrap gap-2">
-            {severityOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => toggleSeverity(option.value)}
-                className={cn(
-                  'rounded-full border px-3 py-1 text-xs transition',
-                  settings.autoApproveSeverities.includes(option.value)
-                    ? 'border-primary/40 bg-primary/10 text-primary'
-                    : 'border-muted text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-            {settings.autoApproveSeverities.length === 0 && (
-              <p className="w-full text-xs text-amber-600">
-                Select at least one severity for auto-approval.
-              </p>
-            )}
           </div>
         )}
       </div>

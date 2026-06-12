@@ -66,18 +66,6 @@ describe('PatchTab patch sources', () => {
     expect(screen.getByLabelText(/os updates/i)).toBeChecked();
   });
 
-  it('reveals severity selection when auto-approve is enabled and saves it', async () => {
-    render(<PatchTab {...baseProps} />);
-    fireEvent.click(await screen.findByLabelText(/automatically approve/i));
-    fireEvent.click(screen.getByRole('button', { name: /critical/i }));
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-
-    await waitFor(() => expect(saveMock).toHaveBeenCalled());
-    const [, payload] = saveMock.mock.calls[0];
-    expect(payload.inlineSettings.autoApprove).toBe(true);
-    expect(payload.inlineSettings.autoApproveSeverities).toEqual(['critical']);
-  });
-
   it('hydrates sources from an existing link', async () => {
     render(
       <PatchTab
@@ -92,5 +80,56 @@ describe('PatchTab patch sources', () => {
     );
     expect(await screen.findByLabelText(/third-party applications/i)).toBeChecked();
     expect(screen.getByLabelText(/os updates/i)).not.toBeChecked();
+  });
+
+  it('hydrates legacy alias source values', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['microsoft', 'custom'] },
+        }}
+      />
+    );
+    expect(await screen.findByLabelText(/os updates/i)).toBeChecked();
+    expect(screen.getByLabelText(/third-party applications/i)).toBeChecked();
+  });
+
+  it('hydrates sources from an inherited parent link', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        parentLink={{
+          id: 'parent-link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['third_party'] },
+        }}
+      />
+    );
+    expect(await screen.findByLabelText(/third-party applications/i)).toBeChecked();
+    expect(screen.getByLabelText(/os updates/i)).not.toBeChecked();
+  });
+
+  it('preserves unrelated stored settings across a save', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os'], autoApprove: true, autoApproveSeverities: ['critical'] },
+        }}
+      />
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /save/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0];
+    expect(payload.inlineSettings.autoApprove).toBe(true);
+    expect(payload.inlineSettings.autoApproveSeverities).toEqual(['critical']);
   });
 });
