@@ -15,7 +15,7 @@ const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'partner' as string,
-      user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
+      user: { id: '1f2f1d8e-0001-4000-8000-000000000001', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
       partnerId: 'p-1' as string | null,
       orgId: null as string | null,
       accessibleOrgIds: null as string[] | null,
@@ -69,17 +69,17 @@ describe('GET /time-entries', () => {
 
   it('forces userId=self for non-admin callers (D5)', async () => {
     serviceMocks.listTimeEntries.mockResolvedValue({ entries: [], total: 0 });
-    const res = await timeEntriesRoutes.request('/?userId=u-OTHER');
+    const res = await timeEntriesRoutes.request('/?userId=1f2f1d8e-0001-4000-8000-000000000002');
     expect(res.status).toBe(200);
-    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-1' }));
+    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ userId: '1f2f1d8e-0001-4000-8000-000000000001' }));
   });
 
   it('lets wildcard-permission admins query any user', async () => {
     permsRef.current = ADMIN_PERMS;
     serviceMocks.listTimeEntries.mockResolvedValue({ entries: [], total: 0 });
-    const res = await timeEntriesRoutes.request('/?userId=u-OTHER');
+    const res = await timeEntriesRoutes.request('/?userId=1f2f1d8e-0001-4000-8000-000000000002');
     expect(res.status).toBe(200);
-    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-OTHER' }));
+    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ userId: '1f2f1d8e-0001-4000-8000-000000000002' }));
   });
 });
 
@@ -94,7 +94,7 @@ describe('timer endpoints', () => {
     expect(res.status).toBe(201);
     expect(serviceMocks.startTimer).toHaveBeenCalledWith(
       expect.objectContaining({ ticketId: '3f2f1d8e-1111-4222-8333-444455556666' }),
-      expect.objectContaining({ userId: 'u-1', partnerId: 'p-1', manageAll: false })
+      expect.objectContaining({ userId: '1f2f1d8e-0001-4000-8000-000000000001', partnerId: 'p-1', manageAll: false })
     );
   });
 
@@ -134,7 +134,7 @@ describe('POST /bulk-approve', () => {
 
 describe('GET /timesheet', () => {
   it("403s a non-admin requesting someone else's timesheet", async () => {
-    const res = await timeEntriesRoutes.request('/timesheet?userId=u-OTHER&weekStart=2026-06-08');
+    const res = await timeEntriesRoutes.request('/timesheet?userId=1f2f1d8e-0001-4000-8000-000000000002&weekStart=2026-06-08');
     expect(res.status).toBe(403);
   });
 
@@ -142,6 +142,6 @@ describe('GET /timesheet', () => {
     serviceMocks.getTimesheet.mockResolvedValue({ weekStart: '2026-06-08', days: [], totals: { totalMinutes: 0, billableMinutes: 0 } });
     const res = await timeEntriesRoutes.request('/timesheet?weekStart=2026-06-08');
     expect(res.status).toBe(200);
-    expect(serviceMocks.getTimesheet).toHaveBeenCalledWith('u-1', expect.any(Date));
+    expect(serviceMocks.getTimesheet).toHaveBeenCalledWith('1f2f1d8e-0001-4000-8000-000000000001', expect.any(Date));
   });
 });

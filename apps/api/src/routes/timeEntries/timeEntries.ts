@@ -82,42 +82,22 @@ timeEntriesApiRoutes.post('/bulk-approve', scopes, writePerm, zValidator('json',
   }
 });
 
-timeEntriesApiRoutes.get('/timesheet', scopes, readPerm, async (c) => {
+timeEntriesApiRoutes.get('/timesheet', scopes, readPerm, zValidator('query', timesheetQuerySchema), async (c) => {
+  const q = c.req.valid('query');
   const actor = timeActorFrom(c);
-  const rawQuery = c.req.query();
-
-  // Auth check BEFORE schema validation: a non-admin requesting another user's
-  // timesheet gets 403, not 400 (even if the userId isn't a valid UUID).
-  const requestedUserId = rawQuery.userId;
-  if (requestedUserId && requestedUserId !== actor.userId && !actor.manageAll) {
+  const targetUserId = q.userId ?? actor.userId;
+  if (targetUserId !== actor.userId && !actor.manageAll) {
     return c.json({ error: 'Viewing other timesheets requires an admin role' }, 403);
   }
-
-  const parsed = timesheetQuerySchema.safeParse(rawQuery);
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid query parameters', details: parsed.error.flatten() }, 400);
-  }
-  const q = parsed.data;
-  const targetUserId = q.userId ?? actor.userId;
   const timesheet = await getTimesheet(targetUserId, q.weekStart);
   return c.json({ data: timesheet });
 });
 
-timeEntriesApiRoutes.get('/', scopes, readPerm, async (c) => {
+timeEntriesApiRoutes.get('/', scopes, readPerm, zValidator('query', listTimeEntriesQuerySchema), async (c) => {
+  const q = c.req.valid('query');
   const actor = timeActorFrom(c);
-  const rawQuery = c.req.query();
-
-  // D5: non-admins see only their own entries. Parse userId separately and
-  // outside the schema (schema validates uuid format; admins may pass any string
-  // as a forwarded id; non-admins always get self regardless of what they pass).
-  const { userId: _rawUserId, ...restQuery } = rawQuery;
-  const parsed = listTimeEntriesQuerySchema.omit({ userId: true }).safeParse(restQuery);
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid query parameters', details: parsed.error.flatten() }, 400);
-  }
-  const q = parsed.data;
-  const userId = actor.manageAll ? (_rawUserId || undefined) : actor.userId;
-  const filters = { ...q, userId };
+  // D5: non-admins see only their own entries through the standalone list.
+  const filters = { ...q, userId: actor.manageAll ? q.userId : actor.userId };
   const { entries, total } = await listTimeEntries(filters);
   return c.json({ data: entries, total, limit: q.limit, offset: q.offset });
 });
