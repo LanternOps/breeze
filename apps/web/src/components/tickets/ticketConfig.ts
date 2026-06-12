@@ -7,6 +7,10 @@ export interface TicketSummary {
   internalNumber: string | null;
   subject: string;
   status: TicketStatus;
+  // Custom-status decoration from the API (null for legacy tickets). `status`
+  // remains the core state; `statusName`/`statusColor` describe the custom row.
+  statusName?: string | null;
+  statusColor?: string | null;
   priority: TicketPriority;
   source: string;
   orgId: string;

@@ -12,6 +12,7 @@ import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
 import TicketPartsCard from './TicketPartsCard';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+import { fetchTicketConfig, statusLabel, priorityLabel, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 
 interface Props {
@@ -39,7 +40,13 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   const [resolutionNote, setResolutionNote] = useState('');
   const [pendingOpen, setPendingOpen] = useState<'pending' | 'on_hold' | null>(null);
   const [pendingReason, setPendingReason] = useState('');
+  // When the user picks a custom-status row (config path), its id is stashed so
+  // the gated resolve/pending POST sends {statusId}; null means the core path.
+  const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
   const [railOpen] = useState(true);
+  // Ticket configuration (custom statuses + priority labels). null = not loaded
+  // or fetch failed; every render falls back to the static core config.
+  const [config, setConfig] = useState<TicketConfig | null>(null);
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
   const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
@@ -95,6 +102,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     setResolutionNote('');
     setPendingOpen(null);
     setPendingReason('');
+    setPendingStatusId(null);
   }, [ticketId]);
 
   // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens the resolution-note form)
@@ -118,6 +126,16 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       .catch(() => { /* degraded mode keeps the unassign-only affordance */ });
     return () => { cancelled = true; };
   }, [assigneesProvided]);
+
+  // Fetch ticket config once (module-cached across islands). Failure leaves
+  // config null, which keeps the six-core-status fallback select fully working.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchTicketConfig().then((c) => {
+      if (!cancelled && c) setConfig(c);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // Reload the feed (time-entry lines appear) when timer stops or parts/time change.
   useEffect(() => {
@@ -145,28 +163,50 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     }
   }, [ticketId, load, onChanged]);
 
+  // Fallback path: option values are the six core enums; POST {status}.
   const onStatusChange = useCallback(async (status: TicketStatus) => {
+    setPendingStatusId(null);
     if (status === 'resolved') { setResolveOpen(true); return; }
     if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); return; }
     await mutate('/status', { status }, 'Status updated');
   }, [mutate]);
 
+  // Config path: option values are custom-status row ids; the chosen row's
+  // coreStatus drives the same resolve/pending forms, and the POST sends
+  // {statusId} so resolved/pending custom statuses behave like their core peers.
+  const onCustomStatusChange = useCallback(async (statusId: string) => {
+    const row = config?.statuses.find((s) => s.id === statusId);
+    if (!row) return;
+    if (row.coreStatus === 'resolved') { setPendingStatusId(statusId); setResolveOpen(true); return; }
+    if (row.coreStatus === 'pending' || row.coreStatus === 'on_hold') {
+      setPendingStatusId(statusId);
+      setPendingOpen(row.coreStatus);
+      return;
+    }
+    setPendingStatusId(null);
+    await mutate('/status', { statusId }, 'Status updated');
+  }, [config, mutate]);
+
   const submitResolve = useCallback(async () => {
     if (!resolutionNote.trim()) return;
-    const ok = await mutate('/status', { status: 'resolved', resolutionNote: resolutionNote.trim() }, 'Ticket resolved');
+    const target = pendingStatusId ? { statusId: pendingStatusId } : { status: 'resolved' as const };
+    const ok = await mutate('/status', { ...target, resolutionNote: resolutionNote.trim() }, 'Ticket resolved');
     if (!ok) return; // keep the form open and the typed note intact on failure
     setResolveOpen(false);
     setResolutionNote('');
-  }, [mutate, resolutionNote]);
+    setPendingStatusId(null);
+  }, [mutate, resolutionNote, pendingStatusId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
     const reason = pendingReason.trim();
-    const ok = await mutate('/status', { status: pendingOpen, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated');
+    const target = pendingStatusId ? { statusId: pendingStatusId } : { status: pendingOpen };
+    const ok = await mutate('/status', { ...target, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated');
     if (!ok) return; // keep the form open and the typed reason intact on failure
     setPendingOpen(null);
     setPendingReason('');
-  }, [mutate, pendingOpen, pendingReason]);
+    setPendingStatusId(null);
+  }, [mutate, pendingOpen, pendingReason, pendingStatusId]);
 
   const sendComment = useCallback(async (content: string, isPublic: boolean) => {
     await runAction({
@@ -199,6 +239,16 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     );
   }
 
+  // Which option is selected in the config-path select: the active row whose
+  // name matches the ticket's custom status within its core state, else the
+  // system row for that core state (so legacy/null statusName tickets land on
+  // the built-in option rather than showing an empty select).
+  const selectedStatusId = config
+    ? (config.statuses.find((s) => s.coreStatus === ticket.status && s.isActive && ticket.statusName && s.name === ticket.statusName)
+        ?? config.statuses.find((s) => s.coreStatus === ticket.status && s.isSystem))?.id ?? null
+    : null;
+  const headerStatusColor = ticket.statusColor ?? config?.statuses.find((s) => s.id === selectedStatusId)?.color ?? null;
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading || undefined}>
       {/* Header */}
@@ -229,15 +279,38 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
           )}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <select
-            value={ticket.status}
-            onChange={(e) => void onStatusChange(e.target.value as TicketStatus)}
-            className={cn('rounded-md border px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
-            data-testid="ticket-workbench-status"
-            aria-label="Status"
-          >
-            {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{statusConfig[s].label}</option>)}
-          </select>
+          {config ? (
+            // Config path: optgroup per core state with the active custom statuses
+            // (option value = row id). The selected value is the row matching the
+            // ticket's custom status name within its core state, falling back to
+            // the system row for that core state.
+            <select
+              value={selectedStatusId ?? ''}
+              onChange={(e) => void onCustomStatusChange(e.target.value)}
+              className={cn('rounded-md border border-l-4 px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
+              style={headerStatusColor ? { borderLeftColor: headerStatusColor } : undefined}
+              data-testid="ticket-workbench-status"
+              aria-label="Status"
+            >
+              {activeStatusesByCore(config).map(({ coreStatus, statuses }) =>
+                statuses.length > 0 ? (
+                  <optgroup key={coreStatus} label={statusConfig[coreStatus].label}>
+                    {statuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </optgroup>
+                ) : null
+              )}
+            </select>
+          ) : (
+            <select
+              value={ticket.status}
+              onChange={(e) => void onStatusChange(e.target.value as TicketStatus)}
+              className={cn('rounded-md border px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
+              data-testid="ticket-workbench-status"
+              aria-label="Status"
+            >
+              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{statusConfig[s].label}</option>)}
+            </select>
+          )}
           <select
             value={ticket.priority}
             onChange={(e) => {
@@ -251,7 +324,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
             data-testid="ticket-workbench-priority"
             aria-label="Priority"
           >
-            {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{priorityConfig[p].label}</option>)}
+            {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{priorityLabel(config, p)}</option>)}
           </select>
           {assignees !== null ? (
             <select
@@ -298,7 +371,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
               data-testid="ticket-workbench-resolve-note"
             />
             <div className="mt-1.5 flex justify-end gap-2">
-              <button type="button" onClick={() => setResolveOpen(false)} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">Cancel</button>
+              <button type="button" onClick={() => { setResolveOpen(false); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">Cancel</button>
               <button
                 type="button"
                 onClick={() => void submitResolve()}
@@ -324,7 +397,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
               data-testid="ticket-workbench-pending-reason"
             />
             <div className="mt-1.5 flex justify-end gap-2">
-              <button type="button" onClick={() => { setPendingOpen(null); setPendingReason(''); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">Cancel</button>
+              <button type="button" onClick={() => { setPendingOpen(null); setPendingReason(''); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">Cancel</button>
               <button
                 type="button"
                 onClick={() => void submitPending()}
