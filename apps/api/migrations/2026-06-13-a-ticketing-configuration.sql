@@ -83,7 +83,7 @@ DECLARE n integer;
 BEGIN
   WITH defaults(core_status, name, sort_order) AS (
     VALUES ('new'::ticket_status, 'New', 0), ('open'::ticket_status, 'Open', 1),
-           ('pending'::ticket_status, 'Pending', 2), ('on_hold'::ticket_status, 'On Hold', 3),
+           ('pending'::ticket_status, 'Pending', 2), ('on_hold'::ticket_status, 'On hold', 3),
            ('resolved'::ticket_status, 'Resolved', 4), ('closed'::ticket_status, 'Closed', 5)
   ), ins AS (
     INSERT INTO ticket_statuses (partner_id, name, core_status, sort_order, is_system)
