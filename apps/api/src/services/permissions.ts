@@ -264,6 +264,10 @@ export const PERMISSIONS = {
   TICKETS_READ: { resource: 'tickets', action: 'read' },
   TICKETS_WRITE: { resource: 'tickets', action: 'write' },
 
+  // Time entries (ticketing Phase 3)
+  TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
+  TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },
+
   // Users
   USERS_READ: { resource: 'users', action: 'read' },
   USERS_WRITE: { resource: 'users', action: 'write' },
