@@ -58,6 +58,11 @@ export const scriptSchema = z.object({
         seen.add(row.exitCode);
       });
     }),
+  // Who this script is available to when creating. Only relevant on create for
+  // partner-scope users with >1 org; backend ignores it for org-scope users.
+  availability: z.enum(['org', 'partner']).optional(),
+  // orgId for the "specific organization" case (availability: 'org').
+  orgId: z.string().optional(),
 });
 
 export type ScriptFormValues = z.infer<typeof scriptSchema>;
@@ -73,6 +78,8 @@ export type ExitCodeSeverityMapping = Record<string, Severity | null>;
 
 export type ScriptSubmitValues = Omit<ScriptFormValues, 'exitCodeSeverityMapping'> & {
   exitCodeSeverityMapping?: ExitCodeSeverityMapping;
+  availability?: 'org' | 'partner';
+  orgId?: string | null;
 };
 
 export function rowsToMapping(rows: ExitCodeSeverityRow[] | undefined): ExitCodeSeverityMapping | undefined {
