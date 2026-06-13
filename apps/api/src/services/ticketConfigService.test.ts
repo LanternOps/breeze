@@ -144,13 +144,15 @@ describe('createTicketStatus', () => {
   });
 
   it('maps a 23505 unique violation to STATUS_NAME_TAKEN 409', async () => {
-    dbMocks.insertErrors.push(Object.assign(new Error('dup'), { code: '23505' }));
+    dbMocks.insertErrors.push(Object.assign(new Error('dup'), { code: '23505', constraint: 'ticket_statuses_partner_name_uq' }));
     await expect(createTicketStatus(PARTNER, { name: 'New', coreStatus: 'new' }))
       .rejects.toMatchObject({ status: 409, code: 'STATUS_NAME_TAKEN' });
   });
 
-  it('maps a constraint-name violation to STATUS_NAME_TAKEN', async () => {
-    dbMocks.insertErrors.push(new Error('violates ticket_statuses_partner_name_uq'));
+  it('maps a constraint-name violation surfaced only in the message to STATUS_NAME_TAKEN', async () => {
+    // postgres.js sets code 23505 but some wrappers drop the discrete .constraint
+    // field — the helper then falls back to scanning the message.
+    dbMocks.insertErrors.push(Object.assign(new Error('violates unique constraint "ticket_statuses_partner_name_uq"'), { code: '23505' }));
     await expect(createTicketStatus(PARTNER, { name: 'New', coreStatus: 'new' }))
       .rejects.toMatchObject({ code: 'STATUS_NAME_TAKEN' });
   });
@@ -213,7 +215,7 @@ describe('updateTicketStatus', () => {
     vi.mocked(db.update).mockImplementationOnce(() => ({
       set: vi.fn(() => ({
         where: vi.fn(() => ({
-          returning: vi.fn(() => Promise.reject(Object.assign(new Error('dup'), { code: '23505' }))),
+          returning: vi.fn(() => Promise.reject(Object.assign(new Error('dup'), { code: '23505', constraint: 'ticket_statuses_partner_name_uq' }))),
         })),
       })),
     }) as any);

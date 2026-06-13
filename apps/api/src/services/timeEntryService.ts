@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -267,17 +268,9 @@ async function stopRunningEntry(
   return rows[0] ?? null;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  // postgres.js raises a PostgresError with code '23505', but Drizzle wraps it
-  // in a DrizzleQueryError whose own `.code` is undefined — the PG code lives on
-  // `.cause`. Walk the cause chain so the retry/409 path actually fires.
-  let cur: unknown = err;
-  for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {
-    if ((cur as { code?: string }).code === '23505') return true;
-    cur = (cur as { cause?: unknown }).cause;
-  }
-  return false;
-}
+// Unwraps the DrizzleQueryError `.cause` so the retry/409 path actually fires
+// (a bare `err.code` check missed every wrapped insert). See utils/pgErrors.
+const isUniqueViolation = (err: unknown): boolean => isPgUniqueViolation(err);
 
 export async function startTimer(input: { ticketId?: string; description?: string }, actor: TimeEntryActor) {
   let partnerId = actor.partnerId;

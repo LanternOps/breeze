@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -233,8 +234,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           message: `Policy "${policy.name}" assigned to ${input.level} ${input.targetId}`,
           assignmentId: assignment.id,
         });
-      } catch (err: any) {
-        if (err?.code === '23505') {
+      } catch (err: unknown) {
+        if (isPgUniqueViolation(err)) {
           return JSON.stringify({ error: 'This policy is already assigned to this target at this level' });
         }
         throw err;
@@ -602,8 +603,8 @@ For link-only types, set featurePolicyId instead of inlineSettings:
             input.inlineSettings ?? null
           );
           return JSON.stringify({ success: true, featureLink: link });
-        } catch (err: any) {
-          if (err?.code === '23505') {
+        } catch (err: unknown) {
+          if (isPgUniqueViolation(err)) {
             return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
           }
           throw err;

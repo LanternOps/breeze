@@ -8,6 +8,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
+import { pgErrorCode } from '../utils/pgErrors';
 import {
   automationPolicies,
   automationPolicyCompliance,
@@ -84,7 +85,7 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
       return await fn(input, auth);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
-      const code = (err as { code?: string }).code;
+      const code = pgErrorCode(err);
       console.error(`[fleet:${toolName}]`, input.action, message, err);
 
       // Surface specific DB constraint errors instead of generic "Operation failed"

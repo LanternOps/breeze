@@ -31,7 +31,11 @@ function hashFor(tab: Tab): string {
 }
 
 export default function TicketingSettingsPage() {
-  const [activeTab, setActiveTab] = useState<Tab>(parseHash);
+  // Seed the SSR-safe default ('statuses') so the first client render matches the
+  // server (which has no hash); the deep-linked #tab= is applied in the mount
+  // effect below. Reading the hash directly into useState caused a hydration
+  // mismatch on `/settings/ticketing#tab=export` (same class as the login #418).
+  const [activeTab, setActiveTab] = useState<Tab>('statuses');
 
   const switchTab = (tab: Tab) => {
     history.replaceState(null, '', hashFor(tab));
@@ -39,6 +43,7 @@ export default function TicketingSettingsPage() {
   };
 
   useEffect(() => {
+    setActiveTab(parseHash());
     const onHashChange = () => setActiveTab(parseHash());
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);

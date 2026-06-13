@@ -11,6 +11,7 @@
 
 import { isIP } from 'node:net';
 import { db } from '../db';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   devices,
   deviceIpHistory,
@@ -340,8 +341,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
         return JSON.stringify({ success: true, baselineId: created.id, action: 'created' });
       } catch (error) {
-        const pgError = error as { code?: string };
-        if (pgError.code === '23505') {
+        if (isPgUniqueViolation(error)) {
           return JSON.stringify({ error: 'Baseline already exists for this org/site/subnet' });
         }
         throw error;
