@@ -55,6 +55,11 @@ func TestUnitNeedsReconcile(t *testing.T) {
 		// is recreated at boot independent of the tmpfiles.d snippet.
 		{"v2 on disk -> reconcile to v3", "# breeze-unit-version: 2\n", 3, true},
 		{"v3 on disk -> skip", "# breeze-unit-version: 3\n", 3, false},
+		// v4 adds RuntimeDirectoryPreserve=yes (#1297 follow-up): a host on the
+		// v3 unit (which lacks it) must reconcile up to v4 so an agent restart
+		// no longer removes /run/breeze out from under the hardened watchdog.
+		{"v3 on disk -> reconcile to v4", "# breeze-unit-version: 3\n", 4, true},
+		{"v4 on disk -> skip", "# breeze-unit-version: 4\n", 4, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -164,6 +169,29 @@ func TestUnitDeclaresRuntimeDirectory(t *testing.T) {
 	if !strings.Contains(linuxUnit, "RuntimeDirectoryMode=0770") {
 		t.Error("linuxUnit must declare RuntimeDirectoryMode=0770 so the breeze group " +
 			"can traverse /run/breeze to the IPC socket")
+	}
+}
+
+// TestUnitDeclaresRuntimeDirectoryPreserve guards the #1297 follow-up: on a
+// partially-upgraded host the still-hardened breeze-watchdog binds /run/breeze
+// via ReadWritePaths, so an agent restart must NOT remove the directory out
+// from under it. RuntimeDirectoryPreserve defaults to 'no' (remove on stop), so
+// the directive must be set explicitly.
+func TestUnitDeclaresRuntimeDirectoryPreserve(t *testing.T) {
+	if !strings.Contains(linuxUnit, "RuntimeDirectoryPreserve=yes") {
+		t.Error("linuxUnit must declare RuntimeDirectoryPreserve=yes so an agent restart " +
+			"does not remove /run/breeze out from under a still-hardened watchdog (#1297)")
+	}
+}
+
+// TestUnitDoesNotClaimRuntimeChown guards against the false comment that was
+// corrected: the agent does NOT re-chown /run/breeze to root:breeze at runtime
+// (broker_unix.go setupSocket relaxes it to 0755, never chowns). If a future
+// edit re-introduces that claim without the implementation, this catches it.
+func TestUnitDoesNotClaimRuntimeChown(t *testing.T) {
+	if strings.Contains(linuxUnit, "re-chowns it to root:breeze") {
+		t.Error("linuxUnit comment claims the agent re-chowns /run/breeze to root:breeze at " +
+			"runtime, but setupSocket only chmods it to 0755 — the comment is false (#1297)")
 	}
 }
 

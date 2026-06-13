@@ -44,8 +44,13 @@ RestartSec=15
 # counts the directory across breeze-agent + breeze-watchdog, so the directory
 # survives as long as either unit is active (issue #1297). RuntimeDirectory is
 # not a sandbox restriction, so it does not relax the hardening below.
+# RuntimeDirectoryPreserve=yes keeps /run/breeze across a single unit's
+# stop/restart so a restart of THIS unit does not remove the directory out from
+# under a still-running breeze-agent on a partially-upgraded host (RemoveOnStop
+# defaults to 'no'/remove, which would re-wedge the agent at 226/NAMESPACE).
 RuntimeDirectory=breeze
 RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=yes
 
 # Security hardening
 ProtectSystem=strict

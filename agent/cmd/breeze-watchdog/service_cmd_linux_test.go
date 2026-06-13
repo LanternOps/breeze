@@ -30,6 +30,13 @@ func TestWatchdogUnitDeclaresRuntimeDirectory(t *testing.T) {
 	if !strings.Contains(watchdogUnit, "RuntimeDirectoryMode=0770") {
 		t.Error("watchdogUnit must declare RuntimeDirectoryMode=0770 to match the agent unit")
 	}
+	// RuntimeDirectoryPreserve defaults to 'no' (remove on stop). Without it, a
+	// watchdog restart on a partially-upgraded host would remove /run/breeze out
+	// from under a still-running breeze-agent, re-wedging it at 226/NAMESPACE.
+	if !strings.Contains(watchdogUnit, "RuntimeDirectoryPreserve=yes") {
+		t.Error("watchdogUnit must declare RuntimeDirectoryPreserve=yes so a watchdog restart " +
+			"does not remove /run/breeze out from under a still-running agent (#1297)")
+	}
 }
 
 // TestWatchdogUnitStillReferencesRunBreeze documents the invariant that makes the

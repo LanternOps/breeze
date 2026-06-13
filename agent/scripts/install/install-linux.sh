@@ -52,15 +52,22 @@ elif [ -f "breeze-watchdog" ]; then
     chmod 755 /usr/local/bin/breeze-watchdog
 fi
 
-# Install watchdog systemd unit if not already present
+# (Re)install the watchdog systemd unit on EVERY install/upgrade.
+#
+# `breeze-watchdog service install` always rewrites the unit file (and runs
+# daemon-reload + enable). Re-running it on an existing host is how unit changes
+# — e.g. the RuntimeDirectory=breeze / RuntimeDirectoryPreserve=yes additions
+# for #1297 — reach already-deployed watchdogs. The old "rewrite only when
+# absent, else just restart" path silently skipped those edits, so an upgraded
+# host kept its stale watchdog unit and stayed one reboot away from a
+# 226/NAMESPACE wedge. `service install` is idempotent, so always calling it is
+# safe. It stops the service while writing the unit but does not start it, so we
+# (re)start explicitly afterward.
 if [ -f "/usr/local/bin/breeze-watchdog" ]; then
-    if [ ! -f "/etc/systemd/system/breeze-watchdog.service" ]; then
-        echo "Registering watchdog service..."
-        /usr/local/bin/breeze-watchdog service install
-    else
-        echo "Restarting watchdog service..."
-        systemctl restart breeze-watchdog || true
-    fi
+    echo "Registering watchdog service..."
+    /usr/local/bin/breeze-watchdog service install
+    echo "Starting watchdog service..."
+    systemctl restart breeze-watchdog || true
 fi
 
 # Install systemd unit

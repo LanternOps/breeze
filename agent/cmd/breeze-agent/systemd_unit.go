@@ -14,7 +14,12 @@ import (
 // Version 3 adds RuntimeDirectory=breeze so systemd recreates /run/breeze on
 // every boot, independent of the tmpfiles.d snippet (issue #1297). Hosts still
 // on v2 pick this up on the next agent start via reconcileServiceUnitIfNeeded.
-const currentUnitVersion = 3
+// Version 4 adds RuntimeDirectoryPreserve=yes so an agent restart on a
+// partially-upgraded host does NOT remove /run/breeze out from under a still-
+// hardened breeze-watchdog (which would re-wedge it at 226/NAMESPACE), and
+// corrects a comment that wrongly claimed the agent re-chowns the directory to
+// root:breeze at runtime (it relaxes it to 0755 instead).
+const currentUnitVersion = 4
 
 const unitVersionPrefix = "# breeze-unit-version:"
 
@@ -30,21 +35,28 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-# breeze-unit-version: 3
+# breeze-unit-version: 4
 Type=simple
 ExecStart=/usr/local/bin/breeze-agent start
 WorkingDirectory=/etc/breeze
 Restart=on-failure
 
 # RuntimeDirectory makes systemd create /run/breeze (root:root 0770) before
-# every ExecStart and remove it on stop. /run is tmpfs and wiped on reboot;
-# this guarantees the IPC socket directory exists at boot WITHOUT depending on
-# the tmpfiles.d snippet being present (issue #1297 / regression of #502). The
-# agent re-chowns it to root:breeze at runtime so the user helper can connect.
+# every ExecStart. /run is tmpfs and wiped on reboot; this guarantees the IPC
+# socket directory exists at boot WITHOUT depending on the tmpfiles.d snippet
+# being present (issue #1297 / regression of #502). The running agent's broker
+# relaxes the directory to 0755 (world-traversable) at runtime so the per-user
+# helper can traverse it to the socket; the socket itself is 0660 and gated by
+# peer-credential + binary-path verification.
+# RuntimeDirectoryPreserve=yes keeps /run/breeze across a single unit's
+# stop/restart so a restart of this unit does NOT remove the directory out from
+# under a still-running, still-hardened breeze-watchdog (which binds it via
+# ReadWritePaths and would otherwise wedge at 226/NAMESPACE).
 # NOTE: RuntimeDirectory is NOT a sandbox directive — it does not restrict
 # child processes — so it does not violate the unsandboxed invariant below.
 RuntimeDirectory=breeze
 RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=yes
 # 30s cooldown spreads respawn across a fleet that crashes simultaneously
 # (e.g. correlated network blip). Combined with StartLimitBurst=5 over
 # StartLimitIntervalSec=60, a misbehaving host backs off entirely instead
