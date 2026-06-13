@@ -11,7 +11,10 @@ import (
 // startup reconcile rewrites any on-disk unit older than this.
 // Version 1 is the legacy unversioned/hardened unit (any unit without a marker
 // is treated as pre-v2).
-const currentUnitVersion = 2
+// Version 3 adds RuntimeDirectory=breeze so systemd recreates /run/breeze on
+// every boot, independent of the tmpfiles.d snippet (issue #1297). Hosts still
+// on v2 pick this up on the next agent start via reconcileServiceUnitIfNeeded.
+const currentUnitVersion = 3
 
 const unitVersionPrefix = "# breeze-unit-version:"
 
@@ -27,11 +30,21 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-# breeze-unit-version: 2
+# breeze-unit-version: 3
 Type=simple
 ExecStart=/usr/local/bin/breeze-agent start
 WorkingDirectory=/etc/breeze
 Restart=on-failure
+
+# RuntimeDirectory makes systemd create /run/breeze (root:root 0770) before
+# every ExecStart and remove it on stop. /run is tmpfs and wiped on reboot;
+# this guarantees the IPC socket directory exists at boot WITHOUT depending on
+# the tmpfiles.d snippet being present (issue #1297 / regression of #502). The
+# agent re-chowns it to root:breeze at runtime so the user helper can connect.
+# NOTE: RuntimeDirectory is NOT a sandbox directive — it does not restrict
+# child processes — so it does not violate the unsandboxed invariant below.
+RuntimeDirectory=breeze
+RuntimeDirectoryMode=0770
 # 30s cooldown spreads respawn across a fleet that crashes simultaneously
 # (e.g. correlated network blip). Combined with StartLimitBurst=5 over
 # StartLimitIntervalSec=60, a misbehaving host backs off entirely instead

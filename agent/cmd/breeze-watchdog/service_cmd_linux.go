@@ -35,6 +35,18 @@ Restart=always
 # cover an agent crash, but 5s was unnecessarily aggressive.
 RestartSec=15
 
+# RuntimeDirectory makes systemd create /run/breeze before this unit's mount
+# namespace is built. The watchdog stays sandboxed (ProtectSystem=strict +
+# ReadWritePaths=/var/run/breeze below), so without this it hit the SAME
+# 226/NAMESPACE wedge as the pre-#1197 agent: /run is tmpfs, wiped on reboot,
+# and a missing tmpfiles.d snippet left /run/breeze absent, so the bind mount
+# for ReadWritePaths failed and the watchdog could not start. systemd reference-
+# counts the directory across breeze-agent + breeze-watchdog, so the directory
+# survives as long as either unit is active (issue #1297). RuntimeDirectory is
+# not a sandbox restriction, so it does not relax the hardening below.
+RuntimeDirectory=breeze
+RuntimeDirectoryMode=0770
+
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only

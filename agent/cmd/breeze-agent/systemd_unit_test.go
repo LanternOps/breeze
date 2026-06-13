@@ -50,6 +50,11 @@ func TestUnitNeedsReconcile(t *testing.T) {
 		{"equal -> skip", "# breeze-unit-version: 2\n", 2, false},
 		{"newer -> skip (no downgrade)", "# breeze-unit-version: 3\n", 2, false},
 		{"garbage -> reconcile", "# breeze-unit-version: x\n", 2, true},
+		// v3 adds RuntimeDirectory=breeze (#1297): a host still on the v2 unit
+		// (which lacks RuntimeDirectory) must reconcile up to v3 so /run/breeze
+		// is recreated at boot independent of the tmpfiles.d snippet.
+		{"v2 on disk -> reconcile to v3", "# breeze-unit-version: 2\n", 3, true},
+		{"v3 on disk -> skip", "# breeze-unit-version: 3\n", 3, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,6 +147,23 @@ func TestUnitIsNotReHardened(t *testing.T) {
 	}
 	if v, _ := parseUnitVersion(linuxUnit); v != currentUnitVersion {
 		t.Errorf("linuxUnit marker version != currentUnitVersion (%d)", currentUnitVersion)
+	}
+}
+
+// TestUnitDeclaresRuntimeDirectory guards the #1297 fix: the agent unit must
+// declare RuntimeDirectory=breeze so systemd recreates /run/breeze before every
+// ExecStart. /run is tmpfs and wiped on reboot; without this a host whose
+// tmpfiles.d snippet is missing wedges at 226/NAMESPACE on the next reboot
+// (regression of #502). RuntimeDirectory is not a sandbox directive, so it does
+// not conflict with TestUnitIsNotReHardened.
+func TestUnitDeclaresRuntimeDirectory(t *testing.T) {
+	if !strings.Contains(linuxUnit, "RuntimeDirectory=breeze") {
+		t.Error("linuxUnit must declare RuntimeDirectory=breeze so systemd recreates " +
+			"/run/breeze at boot independent of the tmpfiles.d snippet (#1297)")
+	}
+	if !strings.Contains(linuxUnit, "RuntimeDirectoryMode=0770") {
+		t.Error("linuxUnit must declare RuntimeDirectoryMode=0770 so the breeze group " +
+			"can traverse /run/breeze to the IPC socket")
 	}
 }
 
