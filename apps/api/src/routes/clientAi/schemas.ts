@@ -55,6 +55,35 @@ export const putPolicySchema = z
   .strict();
 
 // ============================================
+// Session-loop schemas (Plan 2)
+// ============================================
+
+/** Per-message workbook context chip (spec §11): the user controls data egress. */
+export const workbookContextSchema = z.object({
+  kind: z.enum(['selection', 'sheet', 'none']),
+  address: z.string().max(100).optional(),
+  sheetName: z.string().max(255).optional(),
+  /** Row-major cell values. Caps mirror the DLP engine's fail-closed limits
+   *  (Plan 3: 50k cells / 32,767 chars per cell). */
+  cells: z
+    .array(z.array(z.union([z.string().max(32767), z.number(), z.boolean(), z.null()])).max(500))
+    .max(5000)
+    .optional(),
+});
+
+export const sendClientMessageSchema = z.object({
+  content: z.string().min(1).max(20000),
+  workbookContext: workbookContextSchema.optional(),
+});
+
+/** Body of POST /sessions/:id/tool-results (pinned bridge contract). */
+export const clientToolResultSchema = z.object({
+  toolUseId: z.string().min(1).max(100),
+  status: z.enum(['success', 'error', 'rejected']),
+  output: z.unknown().optional(),
+});
+
+// ============================================
 // Types
 // ============================================
 
