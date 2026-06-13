@@ -12,6 +12,7 @@ import { getOrgPolicy } from '../../services/clientAiPolicy';
 import { putPolicySchema, putTenantMappingSchema } from './schemas';
 import { clientAiAdminOrgRoutes } from './adminOrgs';
 import { clientAiAdminSessionRoutes } from './adminSessions';
+import { clientAiAdminUsageRoutes } from './adminUsage';
 
 /**
  * MSP-facing admin surface for Breeze AI for Office (spec §9, consumed by the
@@ -214,3 +215,4 @@ clientAiAdminRoutes.put(
 // ── Plan-4 dashboard sub-routers (inherit group auth + dark-gate above) ──────
 clientAiAdminRoutes.route('/', clientAiAdminOrgRoutes);
 clientAiAdminRoutes.route('/', clientAiAdminSessionRoutes);
+clientAiAdminRoutes.route('/', clientAiAdminUsageRoutes);
