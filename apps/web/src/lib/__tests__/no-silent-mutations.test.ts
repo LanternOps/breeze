@@ -56,6 +56,7 @@ const TARGET_GLOBS = [
   'src/components/clientAi/OrgsTab.tsx',
   'src/components/clientAi/PolicyEditor.tsx',
   'src/components/clientAi/SessionsTab.tsx',
+  'src/components/clientAi/TemplatesTab.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -247,7 +248,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(28);
+    expect(absoluteFiles.length).toBe(29);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
