@@ -166,6 +166,8 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
       orgId: device.orgId,
       accessibleOrgIds: [device.orgId],
       accessiblePartnerIds: [device.partnerId],
+      // Own partner — read-visibility of partner-wide catalog rows.
+      currentPartnerId: device.partnerId ?? null,
     },
     async () => {
       await next();

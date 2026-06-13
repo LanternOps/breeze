@@ -417,6 +417,7 @@ describe('bearerTokenAuthMiddleware', () => {
         accessibleOrgIds: [orgId],
         accessiblePartnerIds: [partnerId],
         userId,
+        currentPartnerId: partnerId,
       },
       expect.any(Function)
     );
@@ -511,6 +512,7 @@ describe('bearerTokenAuthMiddleware', () => {
         accessibleOrgIds: [orgA, orgB],
         accessiblePartnerIds: [partnerId],
         userId,
+        currentPartnerId: partnerId,
       },
       expect.any(Function)
     );

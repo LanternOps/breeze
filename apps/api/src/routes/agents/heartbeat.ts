@@ -102,6 +102,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     orgId: agent.orgId,
     accessibleOrgIds: [agent.orgId],
     accessiblePartnerIds: [],
+    // Agent path; no partner in scope and agents don't browse the catalog
+    // as org users. null disables the partner-wide read branch (safe).
+    currentPartnerId: null,
   };
 
   const scoped = await withDbAccessContext(
