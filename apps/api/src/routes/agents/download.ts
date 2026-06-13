@@ -553,9 +553,9 @@ if [[ "\$OS" == "darwin" ]]; then
   # Enroll agent
   info "Enrolling agent with Breeze server..."
   ENROLL_ARGS=(enroll)
-  if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
-    ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
-  fi
+  # The token is mandatory and already validated above as non-empty, so append
+  # it unconditionally — there is no token-less enroll path.
+  ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
   ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
   if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
     ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
@@ -653,9 +653,9 @@ success "Config directory ready"
 # ----- Enroll agent -----
 info "Enrolling agent with Breeze server..."
 ENROLL_ARGS=(enroll)
-if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
-  ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
-fi
+# The token is mandatory and already validated above as non-empty, so append
+# it unconditionally — there is no token-less enroll path.
+ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
 ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
 if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
   ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
@@ -668,7 +668,7 @@ if [[ -n "\$BREEZE_DEVICE_ROLE" ]]; then
 fi
 
 if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
-  fatal "Enrollment failed. Check the server URL and enrollment secret."
+  fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
 fi
 success "Agent enrolled successfully"
 
