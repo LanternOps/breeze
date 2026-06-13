@@ -14,6 +14,14 @@
  */
 
 import { z } from 'zod';
+import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { db, withDbAccessContext, runOutsideDbContext } from '../db';
+import { aiMessages, aiToolExecutions } from '../db/schema';
+import type { ActiveSession } from './streamingSessionManager';
+import { requestClientToolExecution } from './clientAiToolBridge';
+import { applyDlp, type DlpRedactionEvent } from './clientAiDlp';
+import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { captureException } from './sentry';
 
 const addressSchema = z
   .string()
@@ -151,4 +159,275 @@ export function clientMcpToolNamesForWriteMode(writeMode: 'readwrite' | 'readonl
   return CLIENT_TOOL_NAMES.filter(
     (name) => writeMode === 'readwrite' || !CLIENT_TOOL_REGISTRY[name].mutating,
   ).map((name) => `${CLIENT_MCP_TOOL_PREFIX}${name}`);
+}
+
+// ============================================
+// Handlers — the server side of the tool round-trip (spec §5)
+// ============================================
+
+export type ClientToolHandlerResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  isError?: boolean;
+};
+
+function textResult(text: string, isError = false): ClientToolHandlerResult {
+  return { content: [{ type: 'text' as const, text }], isError };
+}
+
+function extractErrorText(output: unknown): string {
+  if (output && typeof output === 'object' && typeof (output as { error?: unknown }).error === 'string') {
+    return (output as { error: string }).error;
+  }
+  if (typeof output === 'string' && output.length > 0) return output;
+  return 'Tool execution failed in the add-in.';
+}
+
+/**
+ * DLP chokepoint (b): every tool_result payload is scanned before the model
+ * sees it (spec §6). Two passes:
+ *  1. If the output carries a `cells` matrix (read_range/read_selection/
+ *     search_workbook shapes), scan it cell-by-cell for cell-level redaction.
+ *  2. The whole (post-pass-1) output is scanned as JSON text — catches
+ *     addresses, found-value strings, error text etc. If a redaction breaks
+ *     JSON syntax (e.g. a bare numeric value replaced by a token), the result
+ *     degrades to { redacted: <text> } rather than leaking the original.
+ * Pass 2 re-sees pass-1 tokens, which is safe: [REDACTED:*] re-scans to zero
+ * findings (Plan 3 idempotency contract).
+ */
+export async function applyDlpToToolOutput(
+  output: unknown,
+  orgId: string,
+  dlpConfig: unknown,
+): Promise<{ blocked: string | null; output: unknown; redactions: DlpRedactionEvent[] }> {
+  const redactions: DlpRedactionEvent[] = [];
+  let working: unknown = output ?? null;
+
+  if (working && typeof working === 'object' && Array.isArray((working as { cells?: unknown }).cells)) {
+    const cells = (working as { cells: unknown[][] }).cells;
+    const cellResult = await applyDlp({ cells, dlpConfig, orgId });
+    if (cellResult.action === 'block') {
+      return { blocked: cellResult.blockReason ?? 'dlp_blocked', output: null, redactions: cellResult.redactions };
+    }
+    redactions.push(...cellResult.redactions);
+    working = { ...(working as Record<string, unknown>), cells: cellResult.cells };
+  }
+
+  const asText = JSON.stringify(working ?? null);
+  const textResultDlp = await applyDlp({ text: asText, dlpConfig, orgId });
+  if (textResultDlp.action === 'block') {
+    return {
+      blocked: textResultDlp.blockReason ?? 'dlp_blocked',
+      output: null,
+      redactions: [...redactions, ...textResultDlp.redactions],
+    };
+  }
+  redactions.push(...textResultDlp.redactions);
+
+  let finalOutput: unknown = working;
+  if (textResultDlp.text !== undefined && textResultDlp.text !== asText) {
+    try {
+      finalOutput = JSON.parse(textResultDlp.text);
+    } catch {
+      finalOutput = { redacted: textResultDlp.text };
+    }
+  }
+
+  return { blocked: null, output: finalOutput, redactions };
+}
+
+interface PersistParams {
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  output: unknown;
+  status: 'completed' | 'failed' | 'rejected';
+  durationMs: number;
+  errorMessage: string | null;
+  redactions: DlpRedactionEvent[];
+}
+
+/** Persist the REDACTED tool result (spec §6 redact-before-log) + execution audit row. */
+async function persistClientToolResult(session: ActiveSession, params: PersistParams): Promise<void> {
+  try {
+    await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      async () => {
+        await db.insert(aiMessages).values({
+          sessionId: session.breezeSessionId,
+          role: 'tool_result',
+          toolName: params.toolName,
+          toolUseId: params.toolUseId,
+          toolOutput: (params.output ?? null) as Record<string, unknown>,
+          contentBlocks:
+            params.redactions.length > 0
+              ? ([{ type: 'dlp_redactions', redactions: params.redactions }] as unknown as Record<string, unknown>[])
+              : null,
+        });
+        await db.insert(aiToolExecutions).values({
+          sessionId: session.breezeSessionId,
+          toolName: params.toolName,
+          toolInput: params.input,
+          toolOutput: (params.output ?? null) as Record<string, unknown>,
+          status: params.status,
+          durationMs: params.durationMs,
+          errorMessage: params.errorMessage,
+          completedAt: new Date(),
+        });
+      },
+    );
+  } catch (err) {
+    captureException(err);
+    console.error(`[client-ai] Failed to persist tool result for ${params.toolName}:`, err);
+  }
+}
+
+function auditClientTool(
+  session: ActiveSession,
+  action: 'ai.client_session.tool_execute' | 'ai.client_session.tool_reject',
+  params: {
+    toolUseId: string;
+    toolName: string;
+    result: 'success' | 'failure' | 'denied';
+    details?: Record<string, unknown>;
+  },
+): void {
+  // No Hono context in the SDK callback chain — rebuild a RequestLike from the
+  // session's audit snapshot (streamingSessionManager AuditSnapshot +
+  // requestLikeFromSnapshot, auditEvents.ts:18). Actor convention matches
+  // Plan 1's exchange route: actorType 'user' + principalType 'portal_user'.
+  writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
+    orgId: session.orgId,
+    action,
+    resourceType: 'ai_tool_execution',
+    resourceId: params.toolUseId,
+    actorType: 'user',
+    actorId: session.auth.user.id,
+    actorEmail: session.auth.user.email,
+    result: params.result,
+    details: {
+      principalType: 'portal_user',
+      sessionId: session.breezeSessionId,
+      toolName: params.toolName,
+      toolUseId: params.toolUseId,
+      ...(params.details ?? {}),
+    },
+  });
+}
+
+export function makeClientToolHandler(toolName: ClientToolName, getSession: () => ActiveSession) {
+  const entry: ClientWorkbookTool = CLIENT_TOOL_REGISTRY[toolName];
+
+  return async (args: Record<string, unknown>): Promise<ClientToolHandlerResult> => {
+    // Escape any inherited AsyncLocalStorage DB context from the SDK callback
+    // chain (the makeHandler precedent, aiAgentSdkTools.ts — stale-transaction hangs).
+    return runOutsideDbContext(async () => {
+      const session = getSession();
+      // Correlate with the model's tool_use block id: the background processor
+      // pushes ids on content_block_start (streamingSessionManager.ts:611) and
+      // the technician path drains them in createSessionPostToolUse
+      // (aiAgentSdk.ts:640). Client handlers bypass that callback, so drain here.
+      const toolUseId = session.toolUseIdQueue.shift() ?? crypto.randomUUID();
+      const startTime = Date.now();
+
+      // Server-side write-mode enforcement (pinned contract): 'readonly'
+      // strips mutating tools from the toolset at session start AND rejects
+      // them here if invoked anyway (e.g. resumed SDK process).
+      if (entry.mutating && session.clientWriteMode === 'readonly') {
+        const error =
+          'Workbook writes are disabled for this organization (read-only policy). Offer the change as formula text or step-by-step instructions instead.';
+        await persistClientToolResult(session, {
+          toolUseId, toolName, input: args, output: { error },
+          status: 'rejected', durationMs: 0, errorMessage: error, redactions: [],
+        });
+        auditClientTool(session, 'ai.client_session.tool_reject', {
+          toolUseId, toolName, result: 'denied', details: { reason: 'readonly_policy' },
+        });
+        session.eventBus.publish({ type: 'tool_completed', toolUseId, toolName, status: 'rejected' });
+        return textResult(JSON.stringify({ error }), true);
+      }
+
+      const result = await requestClientToolExecution(session, toolUseId, toolName, args, entry.mutating);
+      const durationMs = Date.now() - startTime;
+
+      if (result.status === 'rejected') {
+        const error =
+          'The user rejected this action in the task pane. Do not retry the same change — adjust your approach or ask what they would prefer.';
+        await persistClientToolResult(session, {
+          toolUseId, toolName, input: args, output: { error },
+          status: 'rejected', durationMs, errorMessage: error, redactions: [],
+        });
+        auditClientTool(session, 'ai.client_session.tool_reject', {
+          toolUseId, toolName, result: 'denied', details: { reason: 'user_rejected' },
+        });
+        session.eventBus.publish({ type: 'tool_completed', toolUseId, toolName, status: 'rejected' });
+        return textResult(JSON.stringify({ error }), true);
+      }
+
+      if (result.status !== 'success') {
+        // 'error' (add-in reported failure) or 'timeout' (bridge timer fired)
+        const error = extractErrorText(result.output);
+        await persistClientToolResult(session, {
+          toolUseId, toolName, input: args, output: { error },
+          status: 'failed', durationMs, errorMessage: error, redactions: [],
+        });
+        auditClientTool(session, 'ai.client_session.tool_execute', {
+          toolUseId, toolName, result: 'failure', details: { reason: result.status, durationMs },
+        });
+        session.eventBus.publish({ type: 'tool_completed', toolUseId, toolName, status: result.status });
+        return textResult(JSON.stringify({ error }), true);
+      }
+
+      // DLP chokepoint (b): scan before the model sees the payload (spec §6).
+      const dlp = await applyDlpToToolOutput(result.output, session.orgId, session.clientDlpConfig ?? {});
+      if (dlp.blocked) {
+        const error = `Result blocked by your organization's data protection policy (${dlp.blocked}).`;
+        await persistClientToolResult(session, {
+          toolUseId, toolName, input: args, output: { error },
+          status: 'failed', durationMs, errorMessage: error, redactions: dlp.redactions,
+        });
+        auditClientTool(session, 'ai.client_session.tool_execute', {
+          toolUseId, toolName, result: 'denied', details: { reason: 'dlp_blocked', blockReason: dlp.blocked },
+        });
+        session.eventBus.publish({
+          type: 'tool_completed', toolUseId, toolName, status: 'error',
+          blockReason: dlp.blocked, redactions: dlp.redactions,
+        });
+        return textResult(JSON.stringify({ error }), true);
+      }
+
+      await persistClientToolResult(session, {
+        toolUseId, toolName, input: args, output: dlp.output,
+        status: 'completed', durationMs, errorMessage: null, redactions: dlp.redactions,
+      });
+      auditClientTool(session, 'ai.client_session.tool_execute', {
+        toolUseId, toolName, result: 'success',
+        details: { durationMs, redactionCount: dlp.redactions.length },
+      });
+      session.eventBus.publish({
+        type: 'tool_completed', toolUseId, toolName, status: 'success', redactions: dlp.redactions,
+      });
+      return textResult(typeof dlp.output === 'string' ? dlp.output : JSON.stringify(dlp.output ?? null));
+    });
+  };
+}
+
+/**
+ * SDK MCP server for a client session — constructed ONLY from
+ * CLIENT_TOOL_REGISTRY (hard isolation; registry.test.ts). Plugged into
+ * streamingSessionManager.getOrCreate via the mcpServerFactory parameter
+ * (the scriptAi.ts:211-215 precedent).
+ */
+export function createClientWorkbookMcpServer(getSession: () => ActiveSession) {
+  return createSdkMcpServer({
+    name: CLIENT_MCP_SERVER_NAME,
+    version: '1.0.0',
+    tools: CLIENT_TOOL_NAMES.map((name) =>
+      tool(
+        name,
+        CLIENT_TOOL_REGISTRY[name].description,
+        CLIENT_TOOL_REGISTRY[name].inputSchema,
+        makeClientToolHandler(name, getSession),
+      ),
+    ),
+  });
 }
