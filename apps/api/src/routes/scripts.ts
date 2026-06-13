@@ -168,56 +168,29 @@ scriptRoutes.get(
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
-      // Include org scripts and system scripts
-      if (query.includeSystem === 'true') {
-        conditions.push(
-          or(
-            eq(scripts.orgId, auth.orgId),
-            eq(scripts.isSystem, true)
-          ) as ReturnType<typeof eq>
-        );
-      } else {
-        conditions.push(eq(scripts.orgId, auth.orgId));
-      }
+      // Include org scripts, partner-wide scripts, and (optionally) system scripts
+      const ors = [eq(scripts.orgId, auth.orgId)];
+      if (auth.partnerId) ors.push(eq(scripts.partnerId, auth.partnerId));
+      if (query.includeSystem === 'true') ors.push(eq(scripts.isSystem, true));
+      conditions.push(or(...ors) as ReturnType<typeof eq>);
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
         const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        if (query.includeSystem === 'true') {
-          conditions.push(
-            or(
-              eq(scripts.orgId, query.orgId),
-              eq(scripts.isSystem, true)
-            ) as ReturnType<typeof eq>
-          );
-        } else {
-          conditions.push(eq(scripts.orgId, query.orgId));
-        }
+        const ors = [eq(scripts.orgId, query.orgId)];
+        if (auth.partnerId) ors.push(eq(scripts.partnerId, auth.partnerId));
+        if (query.includeSystem === 'true') ors.push(eq(scripts.isSystem, true));
+        conditions.push(or(...ors) as ReturnType<typeof eq>);
       } else {
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0 && query.includeSystem !== 'true') {
-          return c.json({
-            data: [],
-            pagination: { page, limit, total: 0 }
-          });
-        }
-
-        if (query.includeSystem === 'true') {
-          if (orgIds.length > 0) {
-            conditions.push(
-              or(
-                inArray(scripts.orgId, orgIds),
-                eq(scripts.isSystem, true)
-              ) as ReturnType<typeof eq>
-            );
-          } else {
-            conditions.push(eq(scripts.isSystem, true));
-          }
-        } else {
-          conditions.push(inArray(scripts.orgId, orgIds));
-        }
+        const ors: ReturnType<typeof eq>[] = [];
+        if (orgIds.length > 0) ors.push(inArray(scripts.orgId, orgIds) as ReturnType<typeof eq>);
+        if (auth.partnerId) ors.push(eq(scripts.partnerId, auth.partnerId) as ReturnType<typeof eq>);
+        if (query.includeSystem === 'true') ors.push(eq(scripts.isSystem, true) as ReturnType<typeof eq>);
+        if (ors.length === 0) return c.json({ data: [], pagination: { page, limit, total: 0 } });
+        conditions.push(or(...ors) as ReturnType<typeof eq>);
       }
     } else if (auth.scope === 'system') {
       if (query.orgId) {
