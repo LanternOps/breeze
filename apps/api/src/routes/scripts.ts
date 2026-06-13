@@ -108,7 +108,8 @@ const createScriptSchema = z.object({
   timeoutSeconds: z.number().int().min(1).max(86400).default(300),
   runAs: z.enum(['system', 'user', 'elevated']).default('system'),
   isSystem: z.boolean().optional(),
-  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional()
+  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional(),
+  availability: z.enum(['org', 'partner']).optional()
 });
 
 const updateScriptSchema = z.object({
@@ -401,27 +402,34 @@ scriptRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Determine orgId
-    let orgId = data.orgId;
+    // Determine orgId and partnerId
+    let orgId: string | null = data.orgId ?? null;
+    let partnerId: string | null = null;
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
       orgId = auth.orgId;
+      partnerId = auth.partnerId ?? null; // denormalized for RLS
     } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        // Auto-select if partner only has one org
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
-        } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+      if (data.availability === 'partner') {
+        orgId = null;
+        partnerId = auth.partnerId ?? null;
+        if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
+      } else {
+        if (!orgId) {
+          const singleOrg = auth.accessibleOrgIds?.[0];
+          if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+            orgId = singleOrg;
+          } else {
+            return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+          }
         }
-      }
-      const hasAccess = ensureOrgAccess(orgId!, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
+        if (!ensureOrgAccess(orgId!, auth)) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+        partnerId = auth.partnerId ?? null;
       }
     }
     // System scope can create system scripts without orgId or specify any orgId
@@ -433,6 +441,7 @@ scriptRoutes.post(
       .insert(scripts)
       .values({
         orgId: isSystem && !orgId ? null : orgId,
+        partnerId,
         name: data.name,
         description: data.description,
         category: data.category,
@@ -488,9 +497,13 @@ scriptRoutes.put(
       return c.json({ error: 'Script not found' }, 404);
     }
 
+    // Partner-wide records belong to the MSP: only partner/system scope may edit.
+    if (script.orgId === null && script.partnerId !== null && auth.scope === 'organization') {
+      return c.json({ error: 'This script is shared across your organization and is read-only here' }, 403);
+    }
     // Cannot edit system scripts unless system scope
     if (script.isSystem && auth.scope !== 'system') {
-      return c.json({ error: 'Cannot modify system scripts' }, 403);
+      return c.json({ error: 'System scripts are read-only' }, 403);
     }
 
     // Build updates object
@@ -550,9 +563,13 @@ scriptRoutes.delete(
       return c.json({ error: 'Script not found' }, 404);
     }
 
+    // Partner-wide records belong to the MSP: only partner/system scope may delete.
+    if (script.orgId === null && script.partnerId !== null && auth.scope === 'organization') {
+      return c.json({ error: 'This script is shared across your organization and is read-only here' }, 403);
+    }
     // Cannot delete system scripts unless system scope
     if (script.isSystem && auth.scope !== 'system') {
-      return c.json({ error: 'Cannot delete system scripts' }, 403);
+      return c.json({ error: 'System scripts are read-only' }, 403);
     }
 
     // Check for active executions
