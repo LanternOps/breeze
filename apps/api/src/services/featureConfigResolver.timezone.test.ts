@@ -88,6 +88,16 @@ describe('resolveDeviceTimezone (#1318 partner fallback)', () => {
     expect(await resolveDeviceTimezone('dev-1')).toBe('Asia/Tokyo');
   });
 
+  it('treats a non-canonical lowercase utc column as the default and consults the legacy settings key', async () => {
+    mockRow = {
+      siteTimezone: null,
+      orgSettings: {},
+      partnerTimezone: 'utc',
+      partnerSettings: { timezone: 'Asia/Tokyo' },
+    };
+    expect(await resolveDeviceTimezone('dev-1')).toBe('Asia/Tokyo');
+  });
+
   it('returns UTC as the last resort when nothing resolves', async () => {
     mockRow = {
       siteTimezone: null,

@@ -40,6 +40,19 @@ export function normalizeTimezone(
   return isValidIanaTimezone(fallback) ? fallback : UTC_TIMEZONE;
 }
 
+// Canonicalize a tz string on write. Intl treats UTC case-insensitively, so a
+// caller can persist 'utc' / 'Utc' — but the 'UTC' sentinel logic elsewhere
+// (e.g. `partnerTimezoneFrom`, which uses `column !== 'UTC'` to tell "still at
+// the default" from "explicitly set") does an exact string compare and would
+// mistake a stored 'utc' for a real, non-default candidate. Fold every casing
+// of the UTC sentinel back to the canonical 'UTC' so that comparison holds.
+// Returns null for a value that is not a valid IANA zone, so callers can reject
+// or skip it rather than persisting garbage.
+export function canonicalizeTimezone(tz: unknown): string | null {
+  if (!isValidIanaTimezone(tz)) return null;
+  return tz.toUpperCase() === UTC_TIMEZONE ? UTC_TIMEZONE : tz;
+}
+
 export interface EffectiveTimezoneInput {
   /** A tz explicitly stored on the entity (maintenance window, automation, …). */
   explicit?: string | null;

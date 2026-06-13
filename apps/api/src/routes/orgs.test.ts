@@ -341,6 +341,83 @@ describe('org routes', () => {
       expect(body.name).toBe('Updated');
     });
 
+    // #1318: a system-scoped wholesale settings write must mirror
+    // settings.timezone into the first-class `partners.timezone` column the same
+    // way PATCH /partners/me does, or resolveEffectiveTimezone (which reads the
+    // column first) would silently desync.
+    it('mirrors settings.timezone into the partners.timezone column on a system-scope write', async () => {
+      const currentPartner = { id: 'partner-1', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { timezone: 'America/New_York' } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.timezone).toBe('America/New_York');
+      expect(capturedUpdateData.settings.timezone).toBe('America/New_York');
+    });
+
+    // #1318 cosmetic: a lowercase 'utc' settings value canonicalizes to the
+    // 'UTC' sentinel so the column never holds a non-canonical default.
+    it('canonicalizes a lowercase utc settings tz to the UTC sentinel in the column', async () => {
+      const currentPartner = { id: 'partner-1', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { timezone: 'utc' } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.timezone).toBe('UTC');
+    });
+
     it('revokes tenant access (including the agent fleet) when a partner is suspended', async () => {
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canonicalizeTimezone,
   isValidIanaTimezone,
   normalizeTimezone,
   resolveEffectiveTimezone,
@@ -47,6 +48,27 @@ describe('normalizeTimezone', () => {
 
   it('ignores an invalid custom fallback and uses UTC', () => {
     expect(normalizeTimezone(null, 'not-a-zone')).toBe('UTC');
+  });
+});
+
+describe('canonicalizeTimezone', () => {
+  it('folds every casing of the UTC sentinel to the canonical "UTC"', () => {
+    expect(canonicalizeTimezone('utc')).toBe('UTC');
+    expect(canonicalizeTimezone('Utc')).toBe('UTC');
+    expect(canonicalizeTimezone('UTC')).toBe('UTC');
+  });
+
+  it('preserves canonical casing for region zones', () => {
+    expect(canonicalizeTimezone('America/New_York')).toBe('America/New_York');
+    expect(canonicalizeTimezone('Europe/London')).toBe('Europe/London');
+  });
+
+  it('returns null for invalid or non-string values', () => {
+    expect(canonicalizeTimezone('garbage')).toBeNull();
+    expect(canonicalizeTimezone('')).toBeNull();
+    expect(canonicalizeTimezone(null)).toBeNull();
+    expect(canonicalizeTimezone(undefined)).toBeNull();
+    expect(canonicalizeTimezone(42)).toBeNull();
   });
 });
 

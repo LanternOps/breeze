@@ -19,7 +19,7 @@ import {
   sites,
 } from '../db/schema';
 import { and, eq, gte, inArray } from 'drizzle-orm';
-import { resolveEffectiveTimezone } from '@breeze/shared';
+import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 import { enqueuePatchJob } from './patchJobExecutor';
@@ -92,11 +92,14 @@ function parseOrgTimezone(settings: unknown): string | null {
 
 // Partner tz with the column as source of truth and the legacy
 // `settings.timezone` JSONB key as a non-destructive fallback (issue #1318).
+// canonicalizeTimezone folds a non-canonical stored 'utc' to the 'UTC' sentinel
+// so it is treated as "still at the default" rather than an explicit choice.
 function parsePartnerTimezone(column: string | null | undefined, settings: unknown): string | null {
-  if (typeof column === 'string' && column.length > 0 && column !== 'UTC') return column;
+  const canonicalColumn = canonicalizeTimezone(column);
+  if (canonicalColumn !== null && canonicalColumn !== 'UTC') return canonicalColumn;
   const fromSettings = parseOrgTimezone(settings);
   if (fromSettings) return fromSettings;
-  return typeof column === 'string' && column.length > 0 ? column : null;
+  return canonicalColumn;
 }
 
 function normalizeTimezone(timezone: string | null | undefined): string {
@@ -259,6 +262,13 @@ async function loadDeviceSchedulingContexts(deviceIds: string[]): Promise<Device
     // explicit (n/a) -> site -> org -> partner -> UTC (issue #1318). The
     // resolver IANA-validates each candidate, so normalizeTimezone here just
     // guards the (already-valid) result for the older call shape.
+    //
+    // BEHAVIORAL CHANGE (intended): adding the `partner` branch means an
+    // existing device under a partner that has set a non-UTC tz now has its
+    // patch window evaluated in partner-LOCAL time instead of UTC — so its
+    // scheduled patch occurrence effectively shifts on upgrade. This is the
+    // explicit intent of #1318 (partner tz is the default), not a regression.
+    // Partners left at the 'UTC' default are unaffected.
     timezone: normalizeTimezone(
       resolveEffectiveTimezone({
         siteTz: row.siteTimezone,

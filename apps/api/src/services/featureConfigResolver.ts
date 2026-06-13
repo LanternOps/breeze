@@ -17,7 +17,7 @@ import {
   softwarePolicies,
 } from '../db/schema';
 import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
-import { resolveEffectiveTimezone } from '@breeze/shared';
+import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
 
@@ -355,8 +355,12 @@ function partnerTimezoneFrom(
   column: string | null | undefined,
   settings: unknown,
 ): string | null {
-  if (typeof column === 'string' && column.length > 0 && column !== 'UTC') {
-    return column;
+  // Canonicalize the column so a non-canonical stored 'utc' (e.g. a row that
+  // predates the canonicalize-on-write fix) folds to the 'UTC' sentinel and is
+  // correctly treated as "still at the default" rather than an explicit choice.
+  const canonicalColumn = canonicalizeTimezone(column);
+  if (canonicalColumn !== null && canonicalColumn !== 'UTC') {
+    return canonicalColumn;
   }
   const fromSettings =
     settings && typeof settings === 'object'
@@ -367,7 +371,7 @@ function partnerTimezoneFrom(
   }
   // Column defaults to 'UTC'; surface it so the resolver can use it as a
   // genuine (if last-resort) candidate rather than treating it as unset.
-  return typeof column === 'string' && column.length > 0 ? column : null;
+  return canonicalColumn;
 }
 
 export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
@@ -391,6 +395,16 @@ export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
       : null;
 
   // explicit (n/a for a device — devices have no own tz) -> site -> org -> partner -> UTC
+  //
+  // BEHAVIORAL CHANGE (issue #1318, intended): the historical chain stopped at
+  // site -> org -> UTC with no partner branch, so any device whose site/org had
+  // no tz resolved to UTC. Inserting `partner` between org and the UTC floor
+  // means an existing device under a partner that has set a non-UTC
+  // `partners.timezone` now resolves patch/backup/maintenance schedules in
+  // partner-LOCAL time instead of UTC. Patch/maintenance windows for those
+  // devices effectively shift on upgrade — this is the explicit intent of
+  // #1318 (default to the partner tz), NOT a regression. Partners left at the
+  // 'UTC' default are unaffected (UTC stays the resolved value).
   return resolveEffectiveTimezone({
     siteTz: row?.siteTimezone,
     orgTz: typeof orgTimezone === 'string' ? orgTimezone : null,
