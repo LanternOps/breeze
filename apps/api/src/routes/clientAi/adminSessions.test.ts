@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { dbSelectMock, dbUpdateMock, writeRouteAuditMock } = vi.hoisted(() => ({
+const { dbSelectMock, dbUpdateMock, writeRouteAuditMock, orgConditionMock } = vi.hoisted(() => ({
   dbSelectMock: vi.fn(),
   dbUpdateMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
+  orgConditionMock: vi.fn(() => ({ __scope: 'caller-orgs' })),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -16,6 +17,7 @@ vi.mock('../../middleware/auth', () => ({
       orgId: null,
       accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
       canAccessOrg: (id: string) => id === '0c0c0c0c-1111-4222-8333-444455556666',
+      orgCondition: orgConditionMock,
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
     });
     return next();
@@ -108,6 +110,19 @@ describe('GET /client-ai/admin/sessions', () => {
     });
     expect(body.data[0].startedAt).toBeDefined();
     expect(body.pagination).toMatchObject({ total: 1, limit: 50, offset: 0 });
+  });
+
+  it('scopes the unfiltered list to the caller at the app layer (defense-in-depth)', async () => {
+    let call = 0;
+    dbSelectMock.mockImplementation(() => {
+      call++;
+      return call === 1 ? chain([SESSION_ROW]) : chain([{ n: 1 }]);
+    });
+    const res = await buildApp().request('/client-ai/admin/sessions', { headers: AUTHED });
+    expect(res.status).toBe(200);
+    // With no orgId param, the list MUST restrict to the caller's accessible orgs
+    // at the app layer (agreeing with forced RLS) via auth.orgCondition(aiSessions.orgId).
+    expect(orgConditionMock).toHaveBeenCalled();
   });
 
   it('404s an orgId filter outside the caller scope (no existence oracle)', async () => {

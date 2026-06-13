@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { dbSelectMock } = vi.hoisted(() => ({ dbSelectMock: vi.fn() }));
+const { dbSelectMock, orgConditionMock } = vi.hoisted(() => ({
+  dbSelectMock: vi.fn(),
+  orgConditionMock: vi.fn(() => ({ __scope: 'caller-orgs' })),
+}));
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -11,6 +14,7 @@ vi.mock('../../middleware/auth', () => ({
       partnerId: 'f0f0f0f0-1111-4222-8333-444455556666',
       orgId: null,
       accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
+      orgCondition: orgConditionMock,
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
     });
     return next();
@@ -104,6 +108,17 @@ describe('GET /client-ai/admin/orgs', () => {
       currentMonthCostCents: 1234.5,
       currentMonthMessages: 87,
     });
+  });
+
+  it('scopes the org list to the caller at the app layer (defense-in-depth vs cross-partner IDOR)', async () => {
+    setupOrgListDb();
+    const res = await buildApp().request('/client-ai/admin/orgs', { headers: AUTHED });
+    expect(res.status).toBe(200);
+    // The /orgs list MUST restrict to the caller's accessible orgs at the app layer
+    // (agreeing with forced RLS, not relying on it alone) — proven by the org-status
+    // select invoking auth.orgCondition(organizations.id). Removing the .where(...)
+    // scope filter would fail this and regress the cross-partner org-list exposure.
+    expect(orgConditionMock).toHaveBeenCalled();
   });
 
   it("derives consentStatus 'unknown' when unmapped and 'pending' when mapped without entra users", async () => {

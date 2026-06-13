@@ -87,6 +87,12 @@ clientAiAdminSessionRoutes.get(
       const orgId = resolveScopedOrgId(auth, q.orgId);
       if (!orgId) return c.json({ error: 'Organization not found' }, 404);
       conditions.push(eq(aiSessions.orgId, orgId));
+    } else {
+      // Defense-in-depth: with no specific org requested, restrict the list to the
+      // caller's accessible orgs at the app layer so it agrees with forced RLS
+      // (system scope → undefined → unfiltered). Mirrors the org-list endpoint.
+      const scope = auth.orgCondition?.(aiSessions.orgId);
+      if (scope) conditions.push(scope);
     }
     if (q.clientUserId) conditions.push(eq(aiSessions.clientUserId, q.clientUserId));
     if (q.from) conditions.push(gte(aiSessions.createdAt, new Date(q.from)));

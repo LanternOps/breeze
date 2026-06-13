@@ -73,11 +73,18 @@ export function buildClientAiConsentUrl(params: {
 //   1 organizations  2 tenant mappings  3 policies  4 entra-user counts
 //   5 current-month usage  6 m365 connections  7 delegant connections
 clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
+  const auth = c.get('auth');
   const orgFilter = c.req.query('orgId') || null;
 
+  // Defense-in-depth: scope the org list to the caller's accessible orgs at the
+  // app layer so it agrees with forced RLS (and survives any future RLS regression,
+  // or this pattern being copied to a not-yet-RLS'd table), matching the
+  // resolveScopedOrgId convention the sibling :orgId routes already use. For
+  // system scope orgCondition returns undefined → unfiltered (correct).
   const orgs = await db
     .select({ id: organizations.id, name: organizations.name })
     .from(organizations)
+    .where(auth.orgCondition?.(organizations.id))
     .orderBy(asc(organizations.name));
 
   const mappings = await db
