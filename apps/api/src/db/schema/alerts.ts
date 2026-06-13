@@ -13,7 +13,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 
@@ -24,6 +24,7 @@ export const notificationChannelTypeEnum = pgEnum('notification_channel_type', N
 export const alertTemplates = pgTable('alert_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 200 }).notNull(),
   description: text('description'),
   category: varchar('category', { length: 100 }),

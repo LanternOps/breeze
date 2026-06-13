@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 
@@ -17,6 +17,7 @@ export type ScriptExitCodeSeverityMapping = Record<string, 'critical' | 'high' |
 export const scripts = pgTable('scripts', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   category: varchar('category', { length: 100 }),
@@ -45,6 +46,7 @@ export const scripts = pgTable('scripts', {
 export const scriptCategories = pgTable('script_categories', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 100 }).notNull(),
   description: text('description'),
   icon: varchar('icon', { length: 50 }),
@@ -74,6 +76,7 @@ export const scriptVersions = pgTable('script_versions', {
 export const scriptTags = pgTable('script_tags', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 50 }).notNull(),
   color: varchar('color', { length: 7 })
 }, (table) => ({
