@@ -316,11 +316,14 @@ jobs:
       - name: Build Web
         run: pnpm build --filter=@breeze/web
 
-      # Guard against CSP script-src hash drift (#1232): boots the freshly-built
-      # server bundle and asserts every emitted inline <script> hash is covered
-      # by the served script-src. Catches stale hand-pinned hashes in
-      # astro.config.mjs before they break Astro/React hydration in production.
-      - name: Check CSP hash drift
+      # Partial guard against CSP script-src hash drift (#1232): boots the
+      # freshly-built server bundle and asserts every inline <script> hash in the
+      # *initial SSR HTML* is covered by the served script-src. Catches drift in
+      # Astro's build-time auto-hashed scripts. NOTE: it does NOT cover the two
+      # hand-pinned <ClientRouter> runtime-swap hashes in astro.config.mjs (that
+      # script is injected during client-side navigation, never in a GET) — the
+      # remaining real fix is tracked on #1232.
+      - name: Check CSP hash drift (partial)
         run: pnpm --filter @breeze/web run check:csp
 
       - name: Upload Web artifact

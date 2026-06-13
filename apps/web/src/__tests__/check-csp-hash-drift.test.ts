@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractDirective,
+  handPinnedScriptHashes,
   inlineScriptBodies,
   sha256Base64,
 } from '../../scripts/check-csp-hash-drift';
 
-// Unit coverage for the pure parsing/hashing helpers that back the CSP hash
-// drift guard (#1232). The full build-and-boot guard runs in CI
+// Unit coverage for the pure parsing/hashing helpers that back the partial CSP
+// hash drift guard (#1232). The full build-and-boot guard runs in CI
 // (`pnpm --filter @breeze/web run check:csp`); these tests pin the logic that
-// decides which scripts get hashed and how a served script-src is parsed.
+// decides which scripts get hashed, how a served script-src is parsed, and how
+// the hand-pinned hashes are read back out of astro.config.mjs for the
+// verified/unverified cross-check. NOTE: the guard only covers inline scripts in
+// the *initial* SSR HTML — it cannot exercise the <ClientRouter> runtime swap
+// script, so the two runtime hand-pins are reported UNVERIFIED, not asserted.
 
 describe('inlineScriptBodies', () => {
   it('collects bodies of inline scripts that have no src', () => {
@@ -64,6 +69,51 @@ describe('extractDirective', () => {
     const withGranular = "script-src 'self'; script-src-attr 'none'";
     expect(extractDirective(withGranular, 'script-src')).toBe("'self'");
     expect(extractDirective(withGranular, 'script-src-attr')).toBe("'none'");
+  });
+});
+
+describe('handPinnedScriptHashes', () => {
+  // A trimmed shape of astro.config.mjs scriptDirective/styleDirective.
+  const config = `
+    security: {
+      csp: {
+        scriptDirective: {
+          resources: [
+            "'self'",
+            'https://static.cloudflareinsights.com',
+            "'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0='",
+            "'sha256-6wgjuQN80bYuvy8C2/v+mFX1HAEgrfvSs+beElRyx+8='"
+          ]
+        },
+        styleDirective: {
+          resources: ["'self'", "'sha256-STYLEHASHdoNotPickThis0000000000000000000='"]
+        }
+      }
+    }`;
+
+  it('extracts only the sha256 hashes inside scriptDirective.resources', () => {
+    expect(handPinnedScriptHashes(config)).toEqual([
+      'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0=',
+      'sha256-6wgjuQN80bYuvy8C2/v+mFX1HAEgrfvSs+beElRyx+8=',
+    ]);
+  });
+
+  it('does not pick up hashes from a later styleDirective', () => {
+    expect(handPinnedScriptHashes(config)).not.toContain(
+      'sha256-STYLEHASHdoNotPickThis0000000000000000000='
+    );
+  });
+
+  it('returns an empty list when there are no hand-pinned hashes', () => {
+    const noHashes = `scriptDirective: { resources: ["'self'", 'https://cdn.example.com'] }`;
+    expect(handPinnedScriptHashes(noHashes)).toEqual([]);
+  });
+
+  it('de-duplicates a hash pinned more than once', () => {
+    const dupe = `scriptDirective: { resources: [
+      "'sha256-AAAA='", "'sha256-AAAA='"
+    ] }`;
+    expect(handPinnedScriptHashes(dupe)).toEqual(['sha256-AAAA=']);
   });
 });
 

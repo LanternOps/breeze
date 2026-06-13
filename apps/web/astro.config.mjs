@@ -73,10 +73,16 @@ export default defineConfig({
         // update.  Hash-chasing here is a known-fragile workaround --
         // longer-term we should migrate to a nonce-based CSP.
         //
-        // Drift guard (#1232): `pnpm --filter @breeze/web run check:csp` boots
-        // the built server and fails if any emitted inline <script> hash is
-        // missing from the served script-src.  CI runs it in the build-web job,
-        // so a stale pin here breaks CI instead of breaking hydration in prod.
+        // Partial drift guard (#1232): `pnpm --filter @breeze/web run check:csp`
+        // boots the built server and fails if any inline <script> in the
+        // *initial SSR HTML* has a hash missing from the served script-src.  CI
+        // runs it in the build-web job.  IMPORTANT: it does NOT cover the two
+        // hand-pins below — the <ClientRouter> swap script is injected at
+        // runtime during client-side navigation, never in an initial GET, so a
+        // fetch-based guard can't see it (it reports these pins as UNVERIFIED).
+        // Deleting either pin here will NOT fail the guard but WILL break view
+        // transitions in the browser.  The real fix is to eliminate these
+        // runtime hand-pins via a nonce-based CSP — see #1232.
         resources: [
           "'self'",
           'https://static.cloudflareinsights.com',

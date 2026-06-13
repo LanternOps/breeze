@@ -1,21 +1,44 @@
 /**
- * CSP script-src hash drift guard (issue #1232).
+ * CSP script-src regression guard (partial — issue #1232).
  *
  * The web app emits inline <script> blocks at build time (Astro's hydration
- * bootstrap, the <ClientRouter> view-transition swap script — issue #618 — and
- * the per-island loader).  Their sha256 hashes are pinned in the `script-src`
- * directive: Astro auto-hashes most of them, and `astro.config.mjs` hand-pins
- * two more under `scriptDirective.resources`.  When those hand-pinned hashes
- * drift from the scripts the build actually emits (typically after an Astro
- * version bump), the browser blocks the inline script and React fails to
- * hydrate (React #418), but nothing in CI catches it because the build still
- * succeeds.
+ * bootstrap and the per-island loader).  Their sha256 hashes are pinned in the
+ * `script-src` directive: Astro 6's `security.csp` auto-hashes the ones it can
+ * see at build time, and `astro.config.mjs` hand-pins a couple more under
+ * `scriptDirective.resources`.  When a pinned hash drifts from the script the
+ * build actually emits (typically after an Astro version bump), the browser
+ * blocks the inline script and React fails to hydrate (React #418), but the
+ * build still succeeds, so nothing in CI catches it.
  *
- * This guard boots the freshly-built server bundle, fetches a set of
- * server-rendered routes, and for every inline <script> in the rendered HTML
- * asserts that its sha256 hash is present in the served `script-src`.  It is
- * deliberately black-box (no Astro-internal reverse engineering) so it stays
- * correct across Astro versions — it tests the exact thing the browser tests.
+ * SCOPE — what this guard does and does NOT cover (read before trusting it):
+ *
+ *   COVERS: every inline <script> present in the *initial server-rendered HTML*
+ *   of the probed routes.  It boots the freshly-built server bundle, fetches
+ *   those routes, sha256-hashes each inline script, and asserts the hash is in
+ *   the served `script-src`.  This catches drift in Astro's build-time
+ *   auto-hashed scripts and in any hand-pin that backs an initial-SSR script.
+ *
+ *   DOES NOT COVER: the <ClientRouter> view-transition *swap* script (issue
+ *   #618).  That script is injected at runtime via `insertAdjacentHTML` during
+ *   client-side navigation (see astro/dist/transitions/router.js) — it never
+ *   appears in an initial GET response, so a pure fetch-based guard can never
+ *   observe it.  The hand-pinned `scriptDirective.resources` hashes that exist
+ *   *only* to cover that runtime swap script are therefore NOT verified here.
+ *   Removing such a pin from astro.config.mjs would still pass this guard while
+ *   breaking view transitions in a real browser.  Closing that gap needs either
+ *   a browser-driven navigation in the guard (heavy — no Playwright in the build
+ *   job) or eliminating the runtime hand-pins via a nonce-based CSP.  Tracked as
+ *   the remaining real fix on #1232; this guard is the partial backstop.
+ *
+ * To keep that limitation honest rather than silent, the guard cross-checks the
+ * hand-pinned hashes in astro.config.mjs against what it actually observed: any
+ * pin it could NOT exercise from an initial-SSR script is reported as
+ * UNVERIFIED (not a failure — it may legitimately back the runtime swap script),
+ * and any pin not present in the served script-src at all is a hard failure.
+ *
+ * It is deliberately black-box (no Astro-internal reverse engineering) so the
+ * SSR-coverage half stays correct across Astro versions — it tests the exact
+ * thing the browser tests on first paint.
  *
  * Run after `pnpm --filter @breeze/web build`:
  *   node --experimental-strip-types scripts/check-csp-hash-drift.ts
@@ -24,11 +47,12 @@
  */
 import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const WEB_ROOT = join(import.meta.dirname, '..');
 const SERVER_ENTRY = join(WEB_ROOT, 'dist', 'server', 'entry.mjs');
+const ASTRO_CONFIG = join(WEB_ROOT, 'astro.config.mjs');
 
 /**
  * Server-rendered routes that emit inline scripts without requiring auth.
@@ -71,6 +95,29 @@ export function inlineScriptBodies(html: string): string[] {
     bodies.push(body);
   }
   return bodies;
+}
+
+/**
+ * sha256 hashes hand-pinned in `scriptDirective.resources` of astro.config.mjs.
+ * These are the manually-maintained supplements (not Astro's auto-hashes) that
+ * #1232 flags as drift-prone.  We parse them textually so the guard can report
+ * which pins it was actually able to verify against an emitted inline script.
+ */
+export function handPinnedScriptHashes(configSource: string): string[] {
+  // Narrow to the scriptDirective.resources array, then pull sha256 tokens.
+  const start = configSource.indexOf('scriptDirective');
+  const slice = start === -1 ? configSource : configSource.slice(start);
+  const resourcesIdx = slice.indexOf('resources');
+  const region = resourcesIdx === -1 ? slice : slice.slice(resourcesIdx);
+  const hashes: string[] = [];
+  const re = /sha256-[A-Za-z0-9+/]+=*/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(region)) !== null) {
+    // Stop once we leave the resources array (next directive block).
+    if (region.slice(0, match.index).includes('styleDirective')) break;
+    hashes.push(match[0]);
+  }
+  return Array.from(new Set(hashes));
 }
 
 async function waitForServer(baseUrl: string, timeoutMs: number): Promise<void> {
@@ -131,6 +178,8 @@ async function main(): Promise<number> {
   let routesWithHtml = 0;
   /** Hashes the build actually emitted inline, across all probed routes. */
   const emittedHashes = new Set<string>();
+  /** The served `script-src` token list per route, for the hand-pin cross-check. */
+  const servedScriptSrcByRoute = new Map<string, string>();
 
   try {
     for (const route of ROUTES) {
@@ -161,6 +210,7 @@ async function main(): Promise<number> {
       }
 
       const scriptSrc = extractDirective(csp, 'script-src');
+      servedScriptSrcByRoute.set(route, scriptSrc);
       for (const body of inline) {
         totalInlineScripts += 1;
         const hash = sha256Base64(body);
@@ -204,10 +254,45 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  // Cross-check the hand-pinned hashes against what we actually observed, so the
+  // guard's coverage gap is reported rather than silently passed over.  A pin
+  // that the served script-src no longer contains at all is a hard failure (a
+  // genuinely dead/typo'd pin); a pin we could not tie to any initial-SSR inline
+  // script is reported as UNVERIFIED — it may legitimately back the runtime
+  // <ClientRouter> swap script, which this fetch-based guard cannot exercise.
+  let configSource = '';
+  try {
+    configSource = readFileSync(ASTRO_CONFIG, 'utf8');
+  } catch {
+    // If the config can't be read we simply skip the cross-check.
+  }
+  const handPins = configSource ? handPinnedScriptHashes(configSource) : [];
+  const servedScriptSrcs = Array.from(servedScriptSrcByRoute.values());
+  const unverifiedPins: string[] = [];
+  for (const pin of handPins) {
+    const emittedFromSsr = emittedHashes.has(`sha256-${pin.replace(/^sha256-/, '')}`);
+    const servedSomewhere = servedScriptSrcs.some((s) => s.includes(pin));
+    if (!servedSomewhere) {
+      console.error(
+        `[csp-drift] hand-pinned hash 'sha256-…' (${pin}) is NOT in any served ` +
+          `script-src — it is dead config. Remove it from astro.config.mjs or fix the pin.`
+      );
+      return 1;
+    }
+    if (!emittedFromSsr) unverifiedPins.push(pin);
+  }
+
   console.log(
-    `[csp-drift] OK — ${totalInlineScripts} inline script(s) across ${routesWithHtml} route(s); ` +
-      `all ${emittedHashes.size} unique hash(es) covered by script-src.`
+    `[csp-drift] OK (partial) — ${totalInlineScripts} inline script(s) across ${routesWithHtml} ` +
+      `route(s); all ${emittedHashes.size} initial-SSR hash(es) covered by script-src.`
   );
+  if (unverifiedPins.length > 0) {
+    console.log(
+      `[csp-drift] NOTE — ${unverifiedPins.length} hand-pinned hash(es) could not be verified ` +
+        `against an initial-SSR inline script (likely the <ClientRouter> runtime swap script, ` +
+        `which this guard cannot exercise — see #1232): ${unverifiedPins.join(', ')}`
+    );
+  }
   return 0;
 }
 
