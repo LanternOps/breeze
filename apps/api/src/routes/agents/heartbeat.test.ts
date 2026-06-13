@@ -95,6 +95,9 @@ vi.mock('./helpers', () => ({
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
+  // Permissive default (staged + no window = upgrade anytime) so the upgrade
+  // gating is transparent to tests that don't care about the org policy.
+  getOrgAgentUpdatePolicy: vi.fn(async () => ({ policy: 'staged', maintenanceWindow: null })),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -953,5 +956,96 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.uacInterceptionEnabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Org > General > Agent update policy: the heartbeat handler must gate the
+// agent `upgradeTo` it hands back based on the org's resolved policy. Before
+// this wiring the setting was stored but never consulted (agents ignored it).
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — org agent update policy gating', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+    architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: null,
+    lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    runOutsideDbContextMock.mockClear();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  async function postAgentHeartbeat() {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.65.10', metrics: minimalHeartbeatBody.metrics }),
+    });
+  }
+
+  it('manual policy → withholds agent upgradeTo even when a newer version exists', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1); // latest > reported
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    const resp = await postAgentHeartbeat();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBeFalsy();
+  });
+
+  it('auto policy with no maintenance window → offers agent upgradeTo when newer exists', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    const resp = await postAgentHeartbeat();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBe('0.66.0');
+  });
+
+  it('staged policy outside the maintenance window → withholds agent upgradeTo', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    // A window on a different UTC day than "now" guarantees we're outside it.
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const otherDay = days[(new Date().getUTCDay() + 3) % 7];
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'staged', maintenanceWindow: `${otherDay} 02:00-04:00` });
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    const resp = await postAgentHeartbeat();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBeFalsy();
+  });
+
+  it('fails open (offers upgrade) when the policy lookup throws', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    const resp = await postAgentHeartbeat();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBe('0.66.0');
   });
 });
