@@ -75,6 +75,14 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((_c: unknown, next: () => unknown) => next()),
 }));
 
+// NOTE: auditUserLoginFailure is NOT a bare vi.fn() here. The real helper
+// (apps/api/src/routes/auth/helpers.ts) feeds the anomaly metric by calling
+// recordFailedLogin() exactly once internally. If we stubbed it out, the
+// login handler could re-add its own recordFailedLogin() call on the same
+// path and we'd never notice the double-count. The mock below mirrors the
+// real helper's SINGLE internal emission, so the "called exactly once"
+// assertions in the inactive-tenant/account tests will fail if anyone
+// reintroduces a redundant recordFailedLogin() in login.ts (#719 regression).
 vi.mock('./helpers', () => ({
   getClientIP: vi.fn(() => '203.0.113.10'),
   getClientRateLimitKey: vi.fn(() => 'test-client'),
@@ -95,7 +103,13 @@ vi.mock('./helpers', () => ({
     orgId: null,
     scope: 'partner',
   })),
-  auditUserLoginFailure: vi.fn(),
+  auditUserLoginFailure: vi.fn(
+    async (_c: unknown, opts: { reason: string }) => {
+      // Faithful stand-in for the real helper's single internal emission.
+      const { recordFailedLogin } = await import('../../services/anomalyMetrics');
+      recordFailedLogin(opts.reason);
+    },
+  ),
   auditLogin: vi.fn(),
   userRequiresSetup: vi.fn(() => false),
 }));
@@ -268,6 +282,10 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     expect(body).toMatchObject({ error: 'Invalid email or password' });
     expect(JSON.stringify(body)).not.toContain('suspended');
     expect(recordFailedLogin).toHaveBeenCalledWith('account_inactive');
+    // Exactly once — a single inactive-account attempt must not double-count.
+    // The metric is emitted ONLY via auditUserLoginFailure's internal
+    // recordFailedLogin call; login.ts must not add its own (#719 regression).
+    expect(recordFailedLogin).toHaveBeenCalledTimes(1);
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 
@@ -297,6 +315,10 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ error: 'Invalid email or password' });
     expect(recordFailedLogin).toHaveBeenCalledWith('tenant_inactive');
+    // Exactly once — a single inactive-tenant attempt must not double-count.
+    // The metric is emitted ONLY via auditUserLoginFailure's internal
+    // recordFailedLogin call; login.ts must not add its own (#719 regression).
+    expect(recordFailedLogin).toHaveBeenCalledTimes(1);
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 });
