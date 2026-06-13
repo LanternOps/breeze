@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu } from 'lucide-react';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
@@ -31,8 +31,27 @@ import { OSIcon } from './osIcons';
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
 export type OSType = 'windows' | 'macos' | 'linux';
 
+/**
+ * Presentation-level discriminator for the unified Devices list (#1322).
+ * `agent` = an enrolled endpoint running the Go agent (devices table).
+ * `network` = a discovered network device (printer/router/switch/…) from
+ * discovered_assets that is approved and not linked to an agent. Agent-only
+ * columns (CPU/RAM, agent version, OS build) render blank for `network` rows.
+ */
+export type DeviceClass = 'agent' | 'network';
+
 export type Device = {
   id: string;
+  /** Defaults to 'agent' when absent (older API / agent-only rows). */
+  deviceClass?: DeviceClass;
+  /** discovered_asset_type for network devices; reuses the deviceRole value space. */
+  assetType?: DeviceRole;
+  /** Network-device fields — null/undefined for agent rows. */
+  manufacturer?: string | null;
+  model?: string | null;
+  responseTimeMs?: number | null;
+  /** Whether SNMP/network monitoring is configured for a network device. */
+  monitoringEnabled?: boolean;
   hostname: string;
   os: OSType;
   osVersion: string;
@@ -198,6 +217,8 @@ export default function DeviceList({
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const [query, setQuery] = useState('');
+  // Unified-list class facet (#1322): All / Agent-managed / Network.
+  const [classFilter, setClassFilter] = useState<'all' | 'agent' | 'network'>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [osFilter, setOsFilter] = useState<string>('all');
   const [roleFilter, setRoleFilter] = useState<string>('all');
@@ -338,6 +359,9 @@ export default function DeviceList({
         return false;
       }
 
+      const deviceClass = device.deviceClass ?? 'agent';
+      const matchesClass = classFilter === 'all' ? true : deviceClass === classFilter;
+
       const matchesQuery = normalizedQuery.length === 0
         ? true
         : device.hostname.toLowerCase().includes(normalizedQuery) ||
@@ -345,7 +369,11 @@ export default function DeviceList({
       const matchesStatus = statusFilter === 'all'
         ? device.status !== 'decommissioned'
         : device.status === statusFilter;
-      const matchesOs = osFilter === 'all' ? true : device.os === osFilter;
+      // OS is an agent-only attribute; an active OS facet narrows agent rows
+      // but never filters out network devices (they have no OS).
+      const matchesOs = osFilter === 'all'
+        ? true
+        : deviceClass === 'network' ? true : device.os === osFilter;
       const matchesRole = roleFilter === 'all' ? true : device.deviceRole === roleFilter;
       const matchesOrg = orgFilter === 'all' ? true : device.orgId === orgFilter;
       const matchesSite = siteFilter === 'all' ? true : device.siteId === siteFilter;
@@ -353,9 +381,9 @@ export default function DeviceList({
         ? true
         : groupFilter.some(gId => groupMembershipMap.get(gId)?.has(device.id));
 
-      return matchesQuery && matchesStatus && matchesOs && matchesRole && matchesOrg && matchesSite && matchesGroup;
+      return matchesClass && matchesQuery && matchesStatus && matchesOs && matchesRole && matchesOrg && matchesSite && matchesGroup;
     });
-  }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, groupFilter, groupMembershipMap, serverFilterIds]);
+  }, [devices, query, classFilter, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, groupFilter, groupMembershipMap, serverFilterIds]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -365,6 +393,13 @@ export default function DeviceList({
       setSortDirection('asc');
     }
   };
+
+  // Show the class facet only once a network device is present in the list,
+  // so agent-only fleets aren't cluttered with an inert control.
+  const hasNetworkDevices = useMemo(
+    () => devices.some(d => (d.deviceClass ?? 'agent') === 'network'),
+    [devices],
+  );
 
   const sortedDevices = useMemo(() => {
     if (!sortField) return filteredDevices;
@@ -504,6 +539,10 @@ export default function DeviceList({
   // and pick from this table, so adding a new column means adding one
   // entry here plus the corresponding id to COLUMN_IDS / COLUMN_LABELS.
   const dash = <span className="text-muted-foreground">&mdash;</span>;
+  // Agent-only columns render "—" for network devices (#1322): the
+  // attribute doesn't exist for a printer/router, so don't imply 0/blank.
+  const agentCell = (device: Device, node: React.ReactNode): React.ReactNode =>
+    (device.deviceClass ?? 'agent') === 'network' ? dash : node;
   const columnDefs: Record<ColumnId, { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }> = {
     hostname: {
       header: () => sortHeader('hostname', 'Hostname', 'hostname', 'Sort by hostname'),
@@ -512,6 +551,48 @@ export default function DeviceList({
           <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
         </td>
       ),
+    },
+    class: {
+      header: () => <th key="class" className="px-3 py-3">Class</th>,
+      cell: (device) => {
+        const deviceClass = device.deviceClass ?? 'agent';
+        const isNetwork = deviceClass === 'network';
+        return (
+          <td key="class" className="px-3 py-3 text-sm">
+            <span
+              data-testid={`device-${device.id}-class-badge`}
+              title={isNetwork ? 'Network-discovered device' : 'Agent-managed endpoint'}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                isNetwork
+                  ? 'bg-info/15 text-info border-info/30'
+                  : 'bg-primary/10 text-primary border-primary/30'
+              }`}
+            >
+              {isNetwork ? <Network className="h-3 w-3" /> : <Cpu className="h-3 w-3" />}
+              {isNetwork ? 'Network' : 'Agent'}
+            </span>
+          </td>
+        );
+      },
+    },
+    type: {
+      header: () => <th key="type" className="px-3 py-3">Type</th>,
+      cell: (device) => {
+        // Network rows carry assetType; agent rows fall back to deviceRole.
+        const typeValue = (device.deviceClass ?? 'agent') === 'network'
+          ? (device.assetType ?? 'unknown')
+          : (device.deviceRole ?? 'unknown');
+        const TypeIcon = getDeviceRoleIcon(typeValue);
+        const typeLabel = getDeviceRoleLabel(typeValue);
+        return (
+          <td key="type" className="px-3 py-3 text-sm whitespace-nowrap">
+            <span className="inline-flex items-center gap-1.5 text-muted-foreground" title={typeLabel}>
+              <TypeIcon className="h-3.5 w-3.5" />
+              <span className="truncate">{typeLabel}</span>
+            </span>
+          </td>
+        );
+      },
     },
     organization: {
       header: () => <th key="organization" className="px-3 py-3">Organization</th>,
@@ -533,7 +614,7 @@ export default function DeviceList({
       header: () => <th key="os" className="px-3 py-3">OS</th>,
       cell: (device) => (
         <td key="os" className="px-3 py-3 text-sm">
-          <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />
+          {agentCell(device, <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />)}
         </td>
       ),
     },
@@ -638,13 +719,13 @@ export default function DeviceList({
     cpu: {
       header: () => sortHeader('cpu', 'CPU %', 'cpuPercent', 'Sort by CPU usage'),
       cell: (device) => (
-        <td key="cpu" className="px-3 py-3 text-sm">{metricBar(device.cpuPercent, device.status === 'online')}</td>
+        <td key="cpu" className="px-3 py-3 text-sm">{agentCell(device, metricBar(device.cpuPercent, device.status === 'online'))}</td>
       ),
     },
     ram: {
       header: () => sortHeader('ram', 'RAM %', 'ramPercent', 'Sort by RAM usage'),
       cell: (device) => (
-        <td key="ram" className="px-3 py-3 text-sm">{metricBar(device.ramPercent, device.status === 'online')}</td>
+        <td key="ram" className="px-3 py-3 text-sm">{agentCell(device, metricBar(device.ramPercent, device.status === 'online'))}</td>
       ),
     },
     cpuModel: {
@@ -778,6 +859,37 @@ export default function DeviceList({
             )}
           </p>
           <div className="flex flex-wrap items-center gap-2">
+            {hasNetworkDevices && (
+              <div
+                role="group"
+                aria-label="Filter by device class"
+                className="inline-flex h-10 items-center rounded-md border bg-background p-0.5 text-sm"
+              >
+                {([
+                  ['all', 'All'],
+                  ['agent', 'Agent'],
+                  ['network', 'Network'],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    data-testid={`device-class-filter-${value}`}
+                    aria-pressed={classFilter === value}
+                    onClick={() => {
+                      setClassFilter(value);
+                      setCurrentPage(1);
+                    }}
+                    className={`h-full rounded px-3 font-medium transition ${
+                      classFilter === value
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
@@ -1186,6 +1298,21 @@ export default function DeviceList({
                   </td>
                   {renderedColumns.map(id => columnDefs[id].cell(device))}
                   <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                    {(device.deviceClass ?? 'agent') === 'network' ? (
+                      // Network devices have no agent — none of the remote
+                      // actions (desktop/terminal/scripts/reboot) apply.
+                      // Phase 1 routes to the existing Discovery view.
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          data-testid={`device-${device.id}-open-network`}
+                          onClick={() => onSelect?.(device)}
+                          className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+                        >
+                          View
+                        </button>
+                      </div>
+                    ) : (
                     <div className="flex items-center justify-end gap-1">
                       <ConnectDesktopButton
                         deviceId={device.id}
@@ -1317,6 +1444,7 @@ export default function DeviceList({
                         )}
                       </div>
                     </div>
+                    )}
                   </td>
                 </tr>
               ))

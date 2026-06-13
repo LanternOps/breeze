@@ -4,7 +4,7 @@ import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
-import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
+import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
@@ -16,7 +16,7 @@ import { FilterChipBar } from './FilterChipBar';
 import { QuickAddChips } from './QuickAddChips';
 import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices } from '../../lib/devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
@@ -126,7 +126,7 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
-      const [devicesResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
+      const [devicesResult, networkResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
           signal,
@@ -142,6 +142,14 @@ export default function DevicesPage() {
               duration: 8000
             });
           }
+        }),
+        // Network arm of the unified list (#1322) — approved, unlinked
+        // discovered_assets. Best-effort: a fetch failure here must not blank
+        // the agent fleet, so we degrade to an empty network set.
+        fetchAllNetworkDevices({ signal }).catch((err) => {
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          console.warn('Failed to fetch network devices:', err);
+          return { data: [], total: 0, pagesWalked: 0 };
         }),
         fetchWithAuth('/orgs', { signal }),
         fetchWithAuth('/orgs/sites', { signal }),
@@ -197,6 +205,35 @@ export default function DevicesPage() {
         };
       });
 
+      // Network arm (#1322): normalize discovered_assets rows into the same
+      // Device shape so they render in one list. Agent-only fields stay blank.
+      const transformedNetworkDevices: Device[] = networkResult.data.map((d: Record<string, unknown>) => ({
+        id: d.id as string,
+        deviceClass: (d.deviceClass as DeviceClass) ?? 'network',
+        assetType: (d.assetType as DeviceRole | undefined) ?? 'unknown',
+        hostname: (d.hostname ?? d.displayName ?? 'Unknown') as string,
+        // No OS for a network device; the OS column renders "—" for network rows.
+        os: '' as OSType,
+        osVersion: '',
+        status: (d.status ?? 'offline') as DeviceStatus,
+        cpuPercent: 0,
+        ramPercent: 0,
+        lastSeen: (d.lastSeenAt ?? '') as string,
+        orgId: (d.orgId ?? '') as string,
+        orgName: '',
+        siteId: (d.siteId ?? '') as string,
+        siteName: '',
+        agentVersion: '',
+        tags: (d.tags ?? []) as string[],
+        manufacturer: (d.manufacturer ?? null) as string | null,
+        model: (d.model ?? null) as string | null,
+        responseTimeMs: typeof d.responseTimeMs === 'number' ? d.responseTimeMs : null,
+        monitoringEnabled: d.monitoringEnabled === true,
+        enrolledAt: d.enrolledAt as string | undefined,
+      }));
+
+      const allTransformed = [...transformedDevices, ...transformedNetworkDevices];
+
       // Fetch orgs for org name lookup
       let orgsList: Org[] = [];
       if (orgsResponse.ok) {
@@ -219,8 +256,8 @@ export default function DevicesPage() {
       const orgMap = new Map(orgsList.map((o: Org) => [o.id, o.name]));
       const siteMap = new Map(sitesList.map((s: Site) => [s.id, s.name]));
 
-      // Assign org and site names to devices
-      const devicesWithNames = transformedDevices.map(device => ({
+      // Assign org and site names to devices (agent + network arms).
+      const devicesWithNames = allTransformed.map(device => ({
         ...device,
         orgName: orgMap.get(device.orgId) ?? 'Unknown Org',
         siteName: siteMap.get(device.siteId) ?? 'Unknown Site'
@@ -318,6 +355,13 @@ export default function DevicesPage() {
   }, [advancedFilter, filtersV2]);
 
   const handleSelectDevice = (device: Device) => {
+    // Network-discovered devices have no agent device-detail page yet
+    // (per-type overview pages are deferred to a #1322 follow-up). Route to
+    // the existing Discovery asset view, deep-linked to this asset.
+    if ((device.deviceClass ?? 'agent') === 'network') {
+      void navigateTo(`/discovery?tab=assets&asset=${device.id}`);
+      return;
+    }
     void navigateTo(`/devices/${device.id}`);
   };
 

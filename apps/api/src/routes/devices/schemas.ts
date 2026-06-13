@@ -67,6 +67,24 @@ export const listDevicesSchema = z.object({
   search: z.string().optional()
 });
 
+// GET /devices/network — the network arm of the unified Devices list
+// (#1322). Surfaces approved, unlinked discovered_assets. Offset paginated;
+// keyset-across-union is deferred (see network.ts route doc).
+export const listNetworkDevicesSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  includeTotal: boolStr,
+
+  orgId: z.string().uuid().optional(),
+  siteId: z.string().uuid().optional(),
+  orgIds: csvUuidList,
+  siteIds: csvUuidList,
+
+  // discovered_asset_type enum.
+  assetType: z.enum(DEVICE_ROLES).optional(),
+  search: z.string().optional(),
+});
+
 export const updateDeviceSchema = z.object({
   // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
   // can unset the name; the devices.display_name column is nullable. See PR #787.

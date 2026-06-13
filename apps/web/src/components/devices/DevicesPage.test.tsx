@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices } from '../../lib/devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 
 // ---------------------------------------------------------------------------
 // Mocks — keep DevicesPage's own logic (including the real useAdvancedFilterIds
@@ -16,6 +16,7 @@ vi.mock('../../stores/auth', () => ({
 
 vi.mock('../../lib/devicesFetch', () => ({
   fetchAllDevices: vi.fn(),
+  fetchAllNetworkDevices: vi.fn(),
 }));
 
 vi.mock('../../hooks/useEventStream', () => ({
@@ -117,6 +118,10 @@ beforeEach(() => {
   vi.mocked(fetchAllDevices).mockResolvedValue({
     data: [rawDevice(DEV_1, 'host-alpha'), rawDevice(DEV_2, 'host-beta'), rawDevice(DEV_3, 'host-gamma')],
   } as never);
+
+  // Network arm (#1322) defaults to empty so existing assertions over the
+  // agent fleet are unaffected.
+  vi.mocked(fetchAllNetworkDevices).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
 
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
     if (url.startsWith('/filters/preview')) {
