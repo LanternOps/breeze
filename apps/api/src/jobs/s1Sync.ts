@@ -579,7 +579,14 @@ async function syncThreatsForIntegration(
   };
 }
 
-async function processSyncIntegration(data: SyncIntegrationJobData) {
+// Exported for focused catch-block coverage (#1035 item 2): a unit test mocks
+// the S1 client to throw a SentinelOneHttpError carrying a distinctive upstream
+// body marker and asserts that the tenant-visible `s1_integrations.lastSyncError`
+// column receives only the body-free status line (no marker), while the full
+// (redacted) body is logged server-side. A regression swapping the column write
+// back to `redactLogMessage(error.responseBody)` would otherwise pass every
+// existing helper-level test.
+export async function processSyncIntegration(data: SyncIntegrationJobData) {
   const [integration] = await db
     .select({
       id: s1Integrations.id,
