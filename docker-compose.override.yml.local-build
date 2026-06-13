@@ -34,7 +34,6 @@ services:
       args:
         PUBLIC_API_URL: ""
         PUBLIC_APP_VERSION: ${BREEZE_VERSION:-dev}
-        PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-false}
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       interval: 30s
