@@ -20,7 +20,7 @@ const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion:
 
 const DEFAULT_PRICING = { inputPerMillion: 300, outputPerMillion: 1500 };
 
-async function checkBillingCredits(orgId: string): Promise<string | null> {
+export async function checkBillingCredits(orgId: string): Promise<string | null> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
   if (!billingUrl || !billingKey) return null;
