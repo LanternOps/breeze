@@ -15,6 +15,7 @@
 
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { streamSSE } from 'hono/streaming';
 import { zValidator } from '@hono/zod-validator';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
@@ -47,9 +48,14 @@ import {
   clientMcpToolNamesForWriteMode,
   createClientWorkbookMcpServer,
 } from '../../services/clientAiTools';
-import { failPendingForSession } from '../../services/clientAiToolBridge';
+import { failPendingForSession, resolveClientToolResult } from '../../services/clientAiToolBridge';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
-import { sendClientMessageSchema, type ClientAiAuthContext } from './schemas';
+import {
+  clientToolResultSchema,
+  sendClientMessageSchema,
+  type ClientAiAuthContext,
+} from './schemas';
+import { CLIENT_AI_SSE_PING_INTERVAL_MS, toClientSseEvent } from './sse';
 
 export const clientAiSessionRoutes = new Hono();
 
@@ -440,6 +446,105 @@ clientAiSessionRoutes.post(
 
     // The turn streams over GET /:id/events — see sse.ts for the event names.
     return c.json({ accepted: true }, 202);
+  },
+);
+
+// ============================================
+// GET /:id/events — the persistent SSE channel (spec §4)
+//
+// Preferred client: fetch-based SSE with the Authorization header. EventSource
+// fallback: ?token= (GET-only, clientAiAuthMiddleware). The stream does NOT
+// end on turn_complete — it persists across turns until the client
+// disconnects or the session is evicted/closed (the bus subscription closes).
+//
+// NOTE on DB access: loadClientSession runs inside the middleware's
+// org-scoped request context; the streaming callback itself does NO DB work
+// (it runs after the request transaction commits — the #1105 lesson).
+// ============================================
+
+clientAiSessionRoutes.get('/:id/events', async (c) => {
+  const auth = c.get('clientAiAuth');
+  const policy = c.get('clientAiPolicy');
+  const sessionId = c.req.param('id')!;
+
+  const session = await loadClientSession(sessionId, auth);
+  if (!session) return c.json({ error: 'Session not found' }, 404);
+  if (session.status !== 'active') {
+    return c.json({ error: 'Session is no longer active' }, 410);
+  }
+
+  // Create the in-memory session if absent so the add-in can connect the
+  // stream immediately after POST /sessions, before the first message.
+  const activeSession =
+    streamingSessionManager.get(sessionId) ??
+    (await ensureActiveClientSession(c, session, auth, policy));
+
+  const subscriptionId = crypto.randomUUID();
+
+  return streamSSE(c, async (stream) => {
+    const events = activeSession.eventBus.subscribe(subscriptionId);
+
+    const ping = setInterval(() => {
+      stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
+        /* client gone — the abort handler tears down */
+      });
+    }, CLIENT_AI_SSE_PING_INTERVAL_MS);
+
+    stream.onAbort(() => {
+      clearInterval(ping);
+      activeSession.eventBus.unsubscribe(subscriptionId);
+    });
+
+    try {
+      for await (const event of events) {
+        const sse = toClientSseEvent(event);
+        if (sse) {
+          await stream.writeSSE(sse);
+        }
+        // Deliberately NO break on 'done' — the channel persists across turns.
+      }
+    } catch (err) {
+      console.error('[client-ai] SSE stream error:', err);
+      await stream
+        .writeSSE({ event: 'session_error', data: JSON.stringify({ message: 'Stream failed' }) })
+        .catch(() => {});
+    } finally {
+      clearInterval(ping);
+      activeSession.eventBus.unsubscribe(subscriptionId);
+    }
+  });
+});
+
+// ============================================
+// POST /:id/tool-results — the add-in reports a tool outcome (spec §5 step 2)
+//
+// Execution/rejection audit + persistence + tool_completed publishing happen
+// in the MCP handler (services/clientAiTools.ts) once this resolution lands —
+// the route only authenticates, access-checks, and resolves the bridge.
+// ============================================
+
+clientAiSessionRoutes.post(
+  '/:id/tool-results',
+  zValidator('json', clientToolResultSchema),
+  async (c) => {
+    const auth = c.get('clientAiAuth');
+    const sessionId = c.req.param('id')!;
+
+    const session = await loadClientSession(sessionId, auth);
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+
+    const { toolUseId, status, output } = c.req.valid('json');
+
+    const resolved = resolveClientToolResult(sessionId, toolUseId, {
+      status,
+      output: output ?? null,
+    });
+    if (!resolved) {
+      // Unknown id, already resolved/timed out, or owned by another session.
+      return c.json({ error: 'unknown_tool_request' }, 404);
+    }
+
+    return c.json({ ok: true });
   },
 );
 
