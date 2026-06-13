@@ -17,6 +17,8 @@ import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
@@ -67,6 +69,7 @@ export default function PatchesPage() {
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
   const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
   const [scanLoading, setScanLoading] = useState(false);
+  const [pendingScan, setPendingScan] = useState<{ deviceIds: string[]; orgNames: string[] } | null>(null);
 
   const tabs = useMemo(
     () => [
@@ -225,6 +228,9 @@ export default function PatchesPage() {
     if (failed.length > 0) throw new Error(`Failed to decline ${failed.length} patches`);
   };
 
+  // Gather device IDs across all pages, then surface a scope-naming confirmation
+  // before POSTing /patches/scan. The pagination pass is read-only GETs so it
+  // is safe to run before the user confirms.
   const handleScan = async () => {
     setScanLoading(true);
     try {
@@ -258,6 +264,30 @@ export default function PatchesPage() {
       const deviceIds = [...ids];
       if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
+      // Derive org names for the confirmation message. On the global (all-orgs)
+      // page currentOrgId is null, so we list all accessible orgs. On a scoped
+      // page we show only the current org.
+      const orgNames =
+        currentOrgId && currentOrg
+          ? [currentOrg.name]
+          : organizations.map(o => o.name);
+
+      setPendingScan({ deviceIds, orgNames });
+    } catch (err) {
+      // Pre-scan errors only (device-list fetch failure, no devices).
+      showToast({
+        message: err instanceof Error ? err.message : 'Patch scan failed',
+        type: 'error',
+      });
+    } finally {
+      setScanLoading(false);
+    }
+  };
+
+  const executeScan = async (deviceIds: string[]) => {
+    setPendingScan(null);
+    setScanLoading(true);
+    try {
       // /patches/scan is an AGGREGATE / partial-success endpoint: a body
       // `success:false` can still mean "most devices were queued", and skipped
       // (missing / inaccessible) devices do NOT flip `success` at all. runAction's
@@ -323,9 +353,8 @@ export default function PatchesPage() {
       }
       await fetchPatches();
     } catch (err) {
-      // Pre-scan errors only (device-list fetch failure, no devices). The scan
-      // call above surfaces its own outcome and never throws; a 401 from the
-      // device-paging GET already redirected and returned before reaching here.
+      // The scan call above surfaces its own outcome and never throws; a 401
+      // from the scan POST already redirected and returned before reaching here.
       showToast({
         message: err instanceof Error ? err.message : 'Patch scan failed',
         type: 'error',
@@ -527,6 +556,27 @@ export default function PatchesPage() {
           setSelectedPatch(null);
         }}
         onSubmit={handleApprovalSubmit}
+      />
+
+      {/* Scan confirmation — names the scope before POSTing /patches/scan */}
+      <ConfirmDialog
+        open={pendingScan !== null}
+        onClose={() => setPendingScan(null)}
+        onConfirm={() => { if (pendingScan) void executeScan(pendingScan.deviceIds); }}
+        title="Confirm patch scan"
+        message={
+          pendingScan
+            ? scopeConfirmMessage({
+                action: 'Scan for patches',
+                deviceCount: pendingScan.deviceIds.length,
+                orgNames: pendingScan.orgNames,
+              })
+            : ''
+        }
+        confirmLabel="Scan"
+        variant="warning"
+        isLoading={scanLoading}
+        confirmTestId="confirm-fleet-action"
       />
 
       {/* Create / Edit Ring modal */}

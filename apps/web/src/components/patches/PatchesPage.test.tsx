@@ -13,9 +13,24 @@ vi.mock('../../stores/auth', () => ({
 }));
 
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(() => ({ currentOrgId: null, organizations: [] }), {
-    getState: () => ({ currentOrgId: null, organizations: [] })
-  })
+  useOrgStore: Object.assign(
+    () => ({
+      currentOrgId: null,
+      organizations: [
+        { id: 'org-1', name: 'Acme Corp' },
+        { id: 'org-2', name: 'Globex' },
+      ],
+    }),
+    {
+      getState: () => ({
+        currentOrgId: null,
+        organizations: [
+          { id: 'org-1', name: 'Acme Corp' },
+          { id: 'org-2', name: 'Globex' },
+        ],
+      }),
+    }
+  ),
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -103,6 +118,57 @@ describe('PatchesPage', () => {
     expect(screen.getAllByRole('button', { name: 'Review' })).toHaveLength(1);
   });
 
+  it('does NOT fire the scan POST until the confirm button is clicked', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', hostname: 'Workstation-1' }],
+          pagination: { page: 1, limit: 100, total: 1 },
+        });
+      }
+
+      if (url === '/patches/scan') {
+        return makeJsonResponse({ queuedCommandIds: ['cmd-1'] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+
+    // Click "Run Scan" — this should NOT yet fire the POST
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // The confirmation dialog must appear with a message naming the organizations.
+    // scopeConfirmMessage formats multi-org as "across N organizations (Acme Corp, Globex)?"
+    const confirmMsg = await screen.findByText(/Scan for patches on \d+ device/i);
+    expect(confirmMsg).toBeTruthy();
+    expect(confirmMsg.textContent).toMatch(/Acme Corp|Globex|organizations/i);
+
+    // Scan POST must NOT have been called yet
+    expect(fetchMock).not.toHaveBeenCalledWith('/patches/scan', expect.anything());
+
+    // Now click the confirm button
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/scan',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ deviceIds: ['device-1'] }),
+        })
+      );
+    });
+  });
+
   it('queues scans for every device page instead of only the first 100 devices', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
@@ -157,6 +223,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/patches/scan',
@@ -204,6 +274,10 @@ describe('PatchesPage', () => {
 
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
@@ -323,6 +397,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/patches/scan',
@@ -366,6 +444,10 @@ describe('PatchesPage', () => {
 
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
@@ -411,6 +493,10 @@ describe('PatchesPage', () => {
     render(<PatchesPage />);
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
@@ -464,6 +550,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -508,6 +598,10 @@ describe('PatchesPage', () => {
     render(<PatchesPage />);
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
