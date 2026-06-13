@@ -106,6 +106,10 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['time_entries', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
+  ['scripts', 'partner_id'],
+  ['script_categories', 'partner_id'],
+  ['script_tags', 'partner_id'],
+  ['alert_templates', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -1550,4 +1554,90 @@ describe('script_execution_batches RLS — denormalized org_id', () => {
       expect(message).toMatch(/new row violates row-level security policy for table "script_execution_batches"/);
     },
   );
+});
+
+// ===========================================================================
+// scripts RLS — partner-wide cross-partner forge enforcement (dual-axis)
+//
+// The pg_catalog assertion for the PARTNER_TENANT_TABLES list proves that
+// a policy referencing breeze_has_partner_access exists per DML command.
+// It does NOT prove Postgres actually rejects a cross-partner write — a
+// missing second axis (the custom_field_definitions blind spot) would pass
+// the catalog check but silently let partner B act on partner A's partner-
+// wide scripts. This block forges cross-partner reads/writes as `breeze_app`
+// under real partner contexts and asserts the dual-axis policy is enforced
+// in practice. Self-contained (no setup.ts / no TRUNCATE): fixtures seeded
+// via withSystemDbAccessContext and torn down by id in an afterAll.
+// ===========================================================================
+describe('scripts RLS — partner-wide cross-partner forge enforcement (dual-axis)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let partnerAId: string;
+  let partnerBId: string;
+  let scriptAId: string | null = null;
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const seeded = await db.insert(partners).values([
+        { name: `RLS Scripts A ${runSuffix}`, slug: `rls-scripts-a-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+        { name: `RLS Scripts B ${runSuffix}`, slug: `rls-scripts-b-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+      ]).returning({ id: partners.id });
+      partnerAId = seeded[0]!.id;
+      partnerBId = seeded[1]!.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      if (scriptAId) await db.delete(scripts).where(eq(scripts.id, scriptAId!));
+      if (partnerAId) await db.delete(partners).where(eq(partners.id, partnerAId));
+      if (partnerBId) await db.delete(partners).where(eq(partners.id, partnerBId));
+    });
+  });
+
+  function partnerContext(partnerId: string) {
+    return { scope: 'partner' as const, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partnerId], userId: null };
+  }
+
+  it('partner A can INSERT and SELECT a partner-wide (org_id NULL) script', async () => {
+    await ensureFixtures();
+    const inserted = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.insert(scripts).values({
+        orgId: null, partnerId: partnerAId, name: `forge-${runSuffix}`,
+        osTypes: ['windows'], language: 'powershell', content: 'echo hi',
+      }).returning({ id: scripts.id })
+    );
+    expect(inserted).toHaveLength(1);
+    scriptAId = inserted[0]!.id;
+
+    const visibleToA = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visibleToA.map((r) => r.id)).toEqual([scriptAId]);
+  });
+
+  it('partner B cannot SELECT partner A\'s partner-wide script', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    const visibleToB = await withDbAccessContext(partnerContext(partnerBId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visibleToB).toEqual([]);
+  });
+
+  it('partner B INSERT forging partner A\'s partner_id is rejected by WITH CHECK', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(partnerContext(partnerBId), async () =>
+        db.insert(scripts).values({
+          orgId: null, partnerId: partnerAId, name: `forge-x-${runSuffix}`,
+          osTypes: ['windows'], language: 'powershell', content: 'echo x',
+        })
+      );
+    } catch (err) { caught = err; }
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "scripts"/);
+  });
 });
