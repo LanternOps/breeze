@@ -2,10 +2,15 @@ import { sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { writeRouteAudit, type AuthContext } from '../../services/auditEvents';
 
-// Max rows the patches list endpoint will return in a single page. Raised from
+// Max rows a patches list endpoint will return in a single page. Raised from
 // 100 to 200 so the web patches table's "200" page-size option is actually
 // honored server-side (issue #1316). The patches catalog is a global vendor
 // list, so a 200-row page is a bounded, index-friendly scan.
+//
+// Blast radius: getPagination is shared, so this 200 cap also applies to
+// GET /patches/approvals (operations via patch_approvals) and GET /patches/jobs.
+// That is intentional and benign — both are tenant-scoped, indexed list queries
+// (filtered by org_id), so a higher page cap stays bounded and index-friendly.
 export const MAX_PAGE_LIMIT = 200;
 
 export function getPagination(query: { page?: string; limit?: string }) {

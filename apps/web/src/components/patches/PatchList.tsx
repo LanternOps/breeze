@@ -77,6 +77,16 @@ const DEFAULT_PAGE_SIZE = 25;
 
 // Semantic ordering for severity / approval so a sort reflects priority rather
 // than raw alphabetical order of the enum value.
+//
+// WARNING (sort divergence): this client-side severity sort uses SEMANTIC
+// priority (critical=0 … low=3), whereas the API sorts severity ALPHABETICALLY
+// (asc(patches.severity) in routes/patches/list.ts). These currently never
+// disagree because the web does 100% client-side sort/paginate over a fixed
+// `limit=200` fetch and never sends sortBy/sortDir. Whoever later pushes
+// sorting down to the server (via fetchPatches) MUST reconcile the two or
+// severity ordering will silently change. Note also that `os` and
+// `approvalStatus` are SortKeys here with no matching column in the API's
+// PATCH_SORT_COLUMNS — they can't be pushed down without server-side support.
 const severityRank: Record<PatchSeverity, number> = {
   critical: 0,
   important: 1,
