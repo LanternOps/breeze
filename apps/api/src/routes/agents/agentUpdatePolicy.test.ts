@@ -40,6 +40,11 @@ describe('parseMaintenanceWindow', () => {
     expect(parseMaintenanceWindow('  mON  22:30 - 23:45 ')).toEqual({ day: 1, startMin: 1350, endMin: 1425 });
   });
 
+  it('accepts single-digit hours (regex allows \\d{1,2}, UI may not zero-pad)', () => {
+    expect(parseMaintenanceWindow('2:00-4:00')).toEqual({ day: null, startMin: 120, endMin: 240 });
+    expect(parseMaintenanceWindow('Sun 2:00-4:00')).toEqual({ day: 0, startMin: 120, endMin: 240 });
+  });
+
   it('returns null for empty / non-string / malformed input', () => {
     expect(parseMaintenanceWindow('')).toBeNull();
     expect(parseMaintenanceWindow('   ')).toBeNull();

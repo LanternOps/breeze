@@ -1048,4 +1048,126 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     const body = await resp.json() as { upgradeTo?: string | null };
     expect(body.upgradeTo).toBe('0.66.0');
   });
+
+  // A dev-push build (dev-*) must never be auto-upgraded back to a release,
+  // regardless of policy. This pins the precedence of the dev-build short
+  // circuit relative to the `updateGateAllows` branch (heartbeat.ts:508-511).
+  it('dev- agent build is never upgraded even under auto policy', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: 'dev-local', metrics: minimalHeartbeatBody.metrics }),
+    });
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBeFalsy();
+  });
+});
+
+// ---------------------------------------------------------------------
+// The same gate also governs the helper and watchdog upgrade channels, and
+// must NOT block bootstrap (first-install of a component a device is missing).
+// These channels live in separate `if` blocks from the agent upgrade, so they
+// get their own coverage — without it a refactor could silently drop the gate
+// from one channel (re-introducing the bug this PR fixes) or, conversely,
+// start gating bootstrap (stranding devices that never receive a component).
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => {
+  // Device already running a (non-dev) watchdog, so the watchdog path takes the
+  // gated version-to-version branch rather than the ungated bootstrap branch.
+  const deviceWithWatchdog = {
+    id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+    architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.0',
+    lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+  // Fresh device missing both helper and watchdog — both take the bootstrap
+  // branch, which must fire regardless of policy.
+  const deviceNeedingBootstrap = {
+    id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+    architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: null,
+    lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    runOutsideDbContextMock.mockClear();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  // Reports an installed helperVersion so the helper path takes the gated
+  // version-to-version branch (not the ungated `!data.helperVersion` bootstrap).
+  async function postWithInstalledComponents(deviceRow: typeof deviceWithWatchdog) {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1); // latest > reported, all components
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        role: 'agent', agentVersion: '0.65.10', helperVersion: '0.65.0',
+        metrics: minimalHeartbeatBody.metrics,
+      }),
+    });
+  }
+
+  it('manual policy → withholds helper and watchdog version-to-version upgrades', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+
+    const resp = await postWithInstalledComponents(deviceWithWatchdog);
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { helperUpgradeTo?: string | null; watchdogUpgradeTo?: string | null };
+    expect(body.helperUpgradeTo).toBeFalsy();
+    expect(body.watchdogUpgradeTo).toBeFalsy();
+  });
+
+  it('auto policy → offers helper and watchdog version-to-version upgrades', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+
+    const resp = await postWithInstalledComponents(deviceWithWatchdog);
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { helperUpgradeTo?: string | null; watchdogUpgradeTo?: string | null };
+    expect(body.helperUpgradeTo).toBe('0.66.0');
+    expect(body.watchdogUpgradeTo).toBe('0.66.0');
+  });
+
+  it('manual policy → STILL bootstraps a missing helper and watchdog (bootstrap is ungated)', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceNeedingBootstrap]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    // No helperVersion in the body → helper bootstrap branch; watchdogVersion
+    // null on the device → watchdog bootstrap branch. Both must fire under manual.
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.65.10', metrics: minimalHeartbeatBody.metrics }),
+    });
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as {
+      upgradeTo?: string | null; helperUpgradeTo?: string | null; watchdogUpgradeTo?: string | null;
+    };
+    expect(body.upgradeTo).toBeFalsy(); // agent version-to-version IS gated → withheld
+    expect(body.helperUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite manual
+    expect(body.watchdogUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite manual
+  });
 });
