@@ -10,7 +10,8 @@
 - **D1 — Scope:** full loop + autoresponder (inbound pipeline + threaded outbound replies + one-time acknowledgement on email-created tickets).
 - **D2 — Provider:** build a provider-agnostic inbound abstraction, ship **one** concrete impl (Mailgun Routes). Second provider (Resend Inbound) is interface-only this phase.
 - **D3 — Unknown senders:** quarantine for review — do NOT auto-create a ticket from a sender that doesn't match a known portal user. Surface in a dead-letter/review queue with a Convert-to-ticket action.
-- **D4 — Addressing:** per-partner subdomain token — hosted `{partner-slug}@tickets.<domain>`; self-hosted a per-partner configured address. Partner resolved strictly from the recipient (To/envelope); sender untrusted.
+- **D4 — Addressing (Model A in v1):** a single shared **platform** receiving domain on the one global Mailgun account; each partner gets `{partner-slug}@tickets.<platform-domain>` (self-hosted: a per-partner configured address). Partners who want their own customer-facing address **forward** their support mailbox to it — no per-partner DNS/Mailgun automation in v1. Partner resolved strictly from the recipient (To/envelope); sender untrusted.
+- **D5 — Custom branded domains (Model B) deferred, seam built now:** per-partner branded inbound domains (`tickets.theirmsp.com`) with a Mailgun-domain provisioning + DNS-verification wizard are **out of scope for v1**. But the `partner_inbound_domains` table and the `resolvePartnerByRecipient()` resolver are built now (empty/platform-only in v1) so Model B is a pure add-on that never touches the webhook or worker (see §2, §10, §11).
 
 ---
 
@@ -78,7 +79,9 @@ Indexes: unique `(partner_id, provider_message_id)`; `(partner_id, parse_status,
 }
 ```
 
-New config/env: `TICKETS_INBOUND_DOMAIN` (e.g. `tickets.example.com`), `MAILGUN_INBOUND_SIGNING_KEY` (HMAC verification key for inbound routes — distinct from the outbound `MAILGUN_API_KEY`).
+New config/env: `TICKETS_INBOUND_DOMAIN` (e.g. `tickets.example.com` — the shared platform receiving domain), `MAILGUN_INBOUND_SIGNING_KEY` (HMAC verification key for inbound routes — distinct from the outbound `MAILGUN_API_KEY`).
+
+**Model-B seam — new table `partner_inbound_domains` — Shape 3 (partner-axis).** Built in v1 (RLS + allowlist) but written/managed only by the deferred custom-domain wizard; in v1 it stays empty and the resolver falls back to the platform slug address. Columns: `id`, `partner_id` (not null → partners, RLS axis), `domain` (unique — e.g. `tickets.theirmsp.com`), `provider`, `provider_domain_id` (Mailgun domain handle), `verification_status` (`'pending' \| 'active' \| 'failed'`), `dns_records` jsonb (records to display for verification), `created_at`, `verified_at` nullable. Indexes: unique `(domain)`, `(partner_id)`. Existence of this table is what lets `resolvePartnerByRecipient()` (§4) check custom domains first, then the platform slug — so Model B drops in without a worker/webhook change.
 
 ## 3. Inbound Provider Abstraction
 
@@ -114,11 +117,13 @@ interface InboundEmailProvider {
 
 ## 4. Matching, Reopen & Attribution
 
-- **Partner resolution:** recipient address (`to` / envelope-to) → match against `partners.settings.ticketing.inbound.address` (or derived `{slug}@TICKETS_INBOUND_DOMAIN`). No match → `parse_status='ignored'`. Sender is never used to infer partner/org.
-- **Thread key:** prefer `In-Reply-To` / `References` matched against `tickets.email_thread_key`; fallback to a `[T-YYYY-NNNN]` token in the subject. No match → unmatched path.
+All matching/resolution happens through **`resolvePartnerByRecipient(recipient) → partnerId | null`** — the single chokepoint that establishes tenant identity. Everything downstream is scoped to that one `partnerId`; **every** resolution query below carries an explicit `partner_id = :resolvedPartnerId` predicate (see §6 for why app-scoping is mandatory here, not optional).
+
+- **Partner resolution:** recipient address (`to` / envelope-to) → `resolvePartnerByRecipient`: (1) exact match in `partner_inbound_domains` (Model-B seam; empty in v1), then (2) the platform slug address `{slug}@TICKETS_INBOUND_DOMAIN`. Resolves to **exactly one** partner or null → `parse_status='ignored'`. Sender is never used to infer partner/org.
+- **Thread key (partner-scoped):** prefer `In-Reply-To` / `References` matched against `tickets.email_thread_key` **filtered to the resolved `partner_id`**; fallback to a `[T-YYYY-NNNN]` subject token, also resolved **within the partner** (ticket numbers are per-partner sequences, so `T-2026-0001` exists for every partner — an unscoped token match would hit the wrong tenant). The matched ticket's `partner_id` is re-asserted before any write; a mismatch is treated as no-match, never a cross-tenant append.
 - **Reopen rules (carried from parent §4):** matched reply to a `resolved` ticket reopens it to `open`; a `closed` ticket is immutable — create a new ticket **linked** to the old one instead.
-- **Org resolution for new tickets (known sender):** sender email → `portal_users` lookup → that user's org. (The `defaultTriageOrgId` setting exists for a future "accept unknown into triage" mode but is NOT used to auto-create in v1 — unknown senders quarantine per D3.)
-- **Attribution:** sender matched to a portal user → comment/ticket attributed to that user. Accepted-but-unknown senders (only reachable on the *matched-reply* path, where the partner+ticket are already trusted) → `author_name` = display name, `author_type = 'email'`.
+- **Org resolution for new tickets (known sender):** sender email → `portal_users` lookup **scoped to the resolved partner** → that user's org; the resolved org's `partner_id` is re-asserted to equal the resolved partner. (A portal user with the same email under a *different* partner must not match.) The `defaultTriageOrgId` setting exists for a future "accept unknown into triage" mode but is NOT used to auto-create in v1 — unknown senders quarantine per D3.
+- **Attribution:** sender matched to a (partner-scoped) portal user → comment/ticket attributed to that user. Accepted-but-unknown senders (only reachable on the *matched-reply* path, where the partner+ticket are already trusted) → `author_name` = display name, `author_type = 'email'`.
 - **Internal-note safety:** email-sourced comments are ALWAYS `is_public = true`. Email can never create an internal note.
 
 ## 5. Outbound: Threading, Autoresponder, Loop Prevention
@@ -132,14 +137,18 @@ interface InboundEmailProvider {
   - Drop mail whose sender is our own `tickets.<domain>` (self-loop guard).
   - Per-sender autoresponse rate cap (Redis sliding window) to bound runaway exchanges.
 
-## 6. Security & Tenancy
+## 6. Security & Multi-Tenant Isolation
 
-- Webhook is HMAC-verified, no session auth, rate-limited (reuse the existing rate-limit helper). Raw body is read before parsing for signature stability in Hono.
-- **Partner resolved strictly from the recipient; all sender-supplied data untrusted** — no partner/org inference from `From`.
-- `(partner_id, provider_message_id)` uniqueness = idempotency against provider retries and at-least-once queue delivery.
-- Quarantine (D3) is the abuse backstop: a stranger emailing a valid partner address cannot create a ticket, only a reviewable `quarantined` row.
-- Worker runs **outside request DB context** — `runOutsideDbContext(() => withSystemDbAccessContext(...))` for cross-boundary lookups, honoring the txn pool-poison rule (`project_dbcontext_txn_pool_poison`). Writes go through `ticketService` under a partner-scoped context.
-- Internal-note leak regression test extended to the outbound composer (an internal comment must never appear in an outbound email).
+**Why this section is load-bearing:** inbound email is untrusted external input arriving on a path with **no session/JWT**, so the request-context RLS scoping the rest of Breeze relies on does not apply automatically. The worker's lookups use `withSystemDbAccessContext`, which **bypasses RLS entirely**. Isolation therefore depends on two things being correct *together*: (a) app-level partner-scoping on every resolution query, and (b) an RLS backstop on the write path. Neither alone is sufficient.
+
+- **Webhook edge:** HMAC-verified, no session auth, rate-limited (reuse the existing rate-limit helper). Raw body read before parsing for signature stability in Hono.
+- **Tenant identity from recipient only:** partner is established solely by `resolvePartnerByRecipient` (§4); all sender-supplied data (`From`, `In-Reply-To`, `References`, subject token) is untrusted and used only *within* the already-resolved partner. No partner/org is ever inferred from sender data.
+- **Mandatory partner-scoped write context (the RLS backstop):** after resolving `partnerId`, ALL writes (`createTicket`, `addTicketComment`, status changes, the `ticket_email_inbound` row, `partner_inbound_domains`) run inside **`withDbAccessContext` scoped to that `partnerId`** — NOT `withSystemDbAccessContext`. System context is used *only* for the read-side resolution lookups, each of which carries an explicit `partner_id` predicate (§4). Consequence: even if a resolution bug picks the wrong ticket/org, the partner-scoped write context makes RLS reject a cross-partner write (`new row violates row-level security policy`) — forged `References`/subject-token headers cannot append to or reopen another tenant's ticket.
+- **Idempotency:** `(partner_id, provider_message_id)` uniqueness guards against provider retries and at-least-once queue delivery.
+- **Quarantine (D3)** is the abuse backstop: a stranger emailing a valid partner address cannot create a ticket, only a reviewable `quarantined` row.
+- **DB-context hygiene:** worker honors the txn pool-poison rule (`project_dbcontext_txn_pool_poison`) — `runOutsideDbContext` before establishing a context, no slow work (HTTP/Redis loops) held inside a write transaction.
+- **Leak regression:** internal-note leak test extended to the outbound composer (an internal comment must never appear in an outbound email or autoresponse).
+- **Contract-test blindspot awareness:** `rls-coverage` only checks that *a* policy exists, not that scoping is correct (cf. the dual-axis / FK-child blindspots). So both new tables get **functional cross-partner forge tests** as `breeze_app` (§9), and the worker gets a **cross-partner integration test** (forge an inbound email whose `References`/subject token point at partner B's ticket while addressed to partner A → must NOT touch B's ticket; must create/quarantine under A only).
 
 ## 7. Settings UI
 
@@ -158,18 +167,19 @@ No new AI tools this phase. Inbound processing is an event-driven backend path, 
 ## 9. Testing
 
 Per `breeze-testing` conventions:
-- **Integration (real driver):** worker parse pipeline across all five `parse_status` paths (matched / created / quarantined / failed / ignored); idempotency on duplicate `(partner_id, provider_message_id)`; concurrent ticket-number sequence allocation on burst inbound; RLS coverage for `ticket_email_inbound` (forged cross-partner insert as `breeze_app` must fail).
-- **Unit:** Mailgun HMAC verify (valid/invalid/expired timestamp); thread-key extraction (header path + subject-token fallback); loop-prevention header logic (each suppression rule); autoresponder one-time guard.
+- **Integration (real driver):** worker parse pipeline across all five `parse_status` paths (matched / created / quarantined / failed / ignored); idempotency on duplicate `(partner_id, provider_message_id)`; concurrent ticket-number sequence allocation on burst inbound.
+- **Tenant isolation (functional, as `breeze_app` — not just contract):** forged cross-partner insert on `ticket_email_inbound` AND `partner_inbound_domains` must fail with an RLS violation (the contract test only proves a policy exists — cf. dual-axis/FK-child blindspots, §6). Plus a **cross-partner worker test**: an inbound email addressed to partner A whose `References`/subject token reference partner B's ticket must NOT append to, reopen, or read B's ticket — it resolves within A only (create or quarantine), and the partner-scoped write context would reject a B write outright.
+- **Unit:** Mailgun HMAC verify (valid/invalid/expired timestamp); `resolvePartnerByRecipient` (custom-domain hit, platform-slug hit, no-match→ignored, same-slug-different-partner isolation); thread-key extraction (header path + subject-token fallback, both partner-scoped); loop-prevention header logic (each suppression rule); autoresponder one-time guard.
 - **Regression:** internal-note leak on the outbound composer; portal route never exposes email-sourced internal data (none should exist, but assert).
 
 ## 10. Explicitly Out of Scope (v1)
 
-Second inbound provider (Resend) beyond the interface; attachment **storage** into ticket file storage (v1 records attachment metadata only — storage is a separate sub-project touching the files layer); HTML→markdown rich rendering (store raw HTML, render plain text); per-org inbound addresses; "accept unknown senders into triage org" auto-create mode (the `defaultTriageOrgId` plumbing is laid but gated off); customer-satisfaction surveys; native↔PSA bidirectional sync. All have §8a-compatible extension paths and none require core-table changes later.
+**Model B — per-partner branded custom inbound domains** (Mailgun-domain provisioning via the Admin API, DNS-record display, verify-polling wizard, Route lifecycle per domain): the `partner_inbound_domains` table + `resolvePartnerByRecipient` seam ship in v1, but the wizard, Mailgun Admin API integration, and self-hosted account story are a **separate follow-up phase**. Also out of scope: second inbound provider (Resend) beyond the interface; attachment **storage** into ticket file storage (v1 records attachment metadata only — storage is a separate sub-project touching the files layer); HTML→markdown rich rendering (store raw HTML, render plain text); per-org inbound addresses; "accept unknown senders into triage org" auto-create mode (the `defaultTriageOrgId` plumbing is laid but gated off); customer-satisfaction surveys; native↔PSA bidirectional sync. All have §8a-compatible extension paths and none require core-table changes later.
 
 ## 11. Implementation Phasing (PR chain)
 
-1. **Schema + provider abstraction** — `ticket_email_inbound` migration + RLS + allowlist; `services/inboundEmail/` interface + `MailgunInboundProvider` + unit tests.
-2. **Webhook route + worker** — `POST /webhooks/tickets/email-inbound`, `inboundEmailWorker`, partner/thread resolution, matched/created/quarantined dispatch, idempotency; integration tests.
+1. **Schema + provider abstraction** — `ticket_email_inbound` + `partner_inbound_domains` (Model-B seam) migration + RLS + allowlist + functional cross-partner forge tests; `services/inboundEmail/` interface + `MailgunInboundProvider` + `resolvePartnerByRecipient` + unit tests.
+2. **Webhook route + worker** — `POST /webhooks/tickets/email-inbound`, `inboundEmailWorker`, partner-scoped thread/org resolution, mandatory partner-scoped write context, matched/created/quarantined dispatch, idempotency; integration + cross-partner isolation tests.
 3. **Outbound threading + autoresponder** — threading headers in the notify-worker email, autoresponder, loop-prevention suppression rules; regression tests.
 4. **Settings UI** — Inbound Email card + review/dead-letter queue + Convert-to-ticket; `no-silent-mutations` enrollment.
 
@@ -181,4 +191,5 @@ Second inbound provider (Resend) beyond the interface; attachment **storage** in
 - Ticket service: `apps/api/src/services/ticketService.ts` (`createTicket`, `addTicketComment`)
 - Notify worker (outbound hook): `apps/api/src/jobs/ticketNotifyWorker.ts`, events in `apps/api/src/services/ticketEvents.ts`
 - Schema: `apps/api/src/db/schema/portal.ts` (tickets/comments), `apps/api/src/db/schema/orgs.ts` (partners.slug/settings)
-- RLS contract: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
+- DB context helpers (partner-scoped write context + system-context reads): `apps/api/src/db/index.ts` (`withDbAccessContext`, `withSystemDbAccessContext`, `runOutsideDbContext`)
+- RLS contract + tenancy shapes: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`; tenancy-shape reference in `CLAUDE.md` (Shape 3 partner-axis)
