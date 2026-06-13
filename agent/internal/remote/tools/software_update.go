@@ -15,11 +15,26 @@ import (
 // parallel type so the runner code can stay shared.
 type updateAttempt = uninstallAttempt
 
-// UpdateSoftware upgrades a named package to the latest version available via
-// the platform's native package manager. Like UninstallSoftware it accepts
-// {name, version?} payload; version is currently only used by winget on
-// Windows (passes through as --version target). On macOS and Linux version
-// is ignored — package managers always upgrade to the newest available.
+// UpdateSoftware upgrades a named package via the platform's native package
+// manager. Like UninstallSoftware it accepts {name, version?} payload.
+//
+// Version pinning (a non-empty version) is treated as a control/compliance
+// constraint, not a hint: every platform either honors the exact version or
+// fails loudly. It is never silently dropped (the bug in #993):
+//
+//   - Windows: winget `--version <v>` (already supported).
+//   - Linux:   package managers that accept an exact-version selector
+//     (apt `pkg=ver`, dnf/yum `pkg-ver`, zypper `pkg=ver`) honor the pin.
+//     Managers that cannot install an arbitrary repo version (pacman) are
+//     excluded from a pinned upgrade, and if no version-capable manager is
+//     present the attempt fails with "no supported update command".
+//   - macOS:   Homebrew cannot upgrade a cask/formula to an arbitrary prior
+//     version, so a pinned macOS update is rejected up front with an explicit
+//     "version pinning unsupported" error rather than silently jumping to the
+//     newest available.
+//
+// When no version is supplied behavior is unchanged: upgrade to the newest
+// available on every platform.
 //
 // This is intentionally NOT a download-arbitrary-payload path. Anything that
 // can't be expressed as a package-manager upgrade (e.g. an app installed by
@@ -66,9 +81,9 @@ func updateSoftwareOS(name, version, packageID string) error {
 	case "windows":
 		return updateSoftwareWindows(name, version, packageID)
 	case "darwin":
-		return updateSoftwareMacOS(name)
+		return updateSoftwareMacOS(name, version)
 	case "linux":
-		return updateSoftwareLinux(name)
+		return updateSoftwareLinux(name, version)
 	default:
 		return fmt.Errorf("software update unsupported on %s", runtime.GOOS)
 	}
@@ -126,7 +141,20 @@ func buildWindowsUpdateAttempts(name, version, packageID string) []updateAttempt
 	return attempts
 }
 
-func updateSoftwareMacOS(name string) error {
+// errMacOSVersionPinUnsupported is returned when a macOS update is asked to pin
+// an exact version. Homebrew has no first-class "upgrade to this specific prior
+// version" command for casks/formulae (`brew upgrade` always targets the latest
+// available), so honoring the pin is not possible. Failing loudly is preferable
+// to silently upgrading past the requested version (#993).
+var errMacOSVersionPinUnsupported = fmt.Errorf(
+	"version pinning is not supported for software updates on macOS (Homebrew always upgrades to the latest available); " +
+		"omit the version to upgrade to latest")
+
+func updateSoftwareMacOS(name, version string) error {
+	if version != "" {
+		return errMacOSVersionPinUnsupported
+	}
+
 	// brew upgrade on a cask name fails with "No available formula" before
 	// it tries the cask form, so try cask first. Plain formula second.
 	attempts := []updateAttempt{
@@ -137,7 +165,7 @@ func updateSoftwareMacOS(name string) error {
 	return runUpdateAttempts(name, attempts)
 }
 
-func updateSoftwareLinux(name string) error {
+func updateSoftwareLinux(name, version string) error {
 	// Reuse the protected-package guard from uninstall: upgrading
 	// systemd/glibc/kernel through this path is just as risky as
 	// removing them, and the typical breakage (interrupted boot,
@@ -146,7 +174,42 @@ func updateSoftwareLinux(name string) error {
 		return fmt.Errorf("refusing to update protected package %q", name)
 	}
 
-	attempts := []updateAttempt{
+	return runUpdateAttempts(name, buildLinuxUpdateAttempts(name, version))
+}
+
+// buildLinuxUpdateAttempts returns the ordered package-manager attempts for a
+// Linux update. The first whose binary is present and whose invocation succeeds
+// wins (see runUpdateAttempts).
+//
+// Without a version pin every manager upgrades to the newest available, as
+// before. With a version pin we switch to each manager's exact-version selector
+// so the pin is actually honored rather than silently ignored (#993):
+//
+//   - apt-get: `install --only-upgrade pkg=version`
+//   - dnf:     `upgrade pkg-version` (also installs an exact NEVRA)
+//   - yum:     `update pkg-version`
+//   - zypper:  `install --oldpackage pkg=version` (--oldpackage permits a
+//     downgrade to the pinned version if the installed one is newer)
+//
+// pacman is intentionally omitted from a pinned upgrade: it can only install the
+// single version currently in the synced repos, so it cannot honor an arbitrary
+// pin. When a version is requested and none of the version-capable managers are
+// present, runUpdateAttempts reports "no supported update command" — a loud
+// failure, never a silent upgrade to latest.
+func buildLinuxUpdateAttempts(name, version string) []updateAttempt {
+	if version != "" {
+		aptTarget := name + "=" + version
+		rpmTarget := name + "-" + version
+		zypperTarget := name + "=" + version
+		return []updateAttempt{
+			{command: "apt-get", args: []string{"install", "--only-upgrade", "-y", aptTarget}},
+			{command: "dnf", args: []string{"upgrade", "-y", rpmTarget}},
+			{command: "yum", args: []string{"update", "-y", rpmTarget}},
+			{command: "zypper", args: []string{"install", "-y", "--oldpackage", zypperTarget}},
+		}
+	}
+
+	return []updateAttempt{
 		// apt-get install --only-upgrade is the documented way to bump
 		// a single package; plain `upgrade` is whole-system.
 		{command: "apt-get", args: []string{"install", "--only-upgrade", "-y", name}},
@@ -156,8 +219,6 @@ func updateSoftwareLinux(name string) error {
 		// pacman -S is the upgrade-or-install verb on Arch.
 		{command: "pacman", args: []string{"-S", "--noconfirm", name}},
 	}
-
-	return runUpdateAttempts(name, attempts)
 }
 
 func runUpdateAttempts(softwareName string, attempts []updateAttempt) error {
