@@ -217,3 +217,32 @@ describe('applyDlp — idempotency', () => {
     expect(second.text).toBe(first.text);
   });
 });
+
+describe('applyDlp — redact-before-log contract (spec §6)', () => {
+  it('the persisted form (result.text) never contains the raw sensitive values', async () => {
+    const raw = `Card ${VISA_SPACED}, key ${SK_KEY}, acct ${IBAN}`;
+    const result = await applyDlp({ text: raw, dlpConfig: {}, orgId: ORG });
+
+    // Plan 2's persistence path MUST store result.text + result.redactions —
+    // never input.text. This is the unit-level proof; the integration
+    // assertion lives in Plan 2's session-route test (the ai_messages insert
+    // mock receives result.text).
+    expect(result.action).toBe('allow');
+    expect(result.text).not.toContain(VISA_SPACED);
+    expect(result.text).not.toContain(SK_KEY);
+    expect(result.text).not.toContain(IBAN);
+    expect(result.text).toContain('[REDACTED:creditCard]');
+    expect(result.text).toContain('[REDACTED:apiKey]');
+    expect(result.text).toContain('[REDACTED:iban]');
+
+    // The events persisted alongside are value-free: rule/count/location only.
+    for (const event of result.redactions) {
+      expect(Object.keys(event).sort()).toEqual(['count', 'location', 'rule']);
+    }
+
+    // And storing the redacted form is stable: re-scanning it finds nothing.
+    const second = await applyDlp({ text: result.text!, dlpConfig: {}, orgId: ORG });
+    expect(second.redactions).toEqual([]);
+    expect(second.text).toBe(result.text);
+  });
+});
