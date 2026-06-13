@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -227,6 +228,194 @@ func TestBuildLinuxUpdateAttemptsVersionPinExcludesPacman(t *testing.T) {
 		t.Fatalf("did not expect pacman in a version-pinned upgrade, got %+v", attempts)
 	}
 }
+
+// argsHaveFlag reports whether the attempt's args contain the given flag token
+// anywhere (e.g. "--allow-downgrades", "downgrade").
+func argsHaveFlag(a updateAttempt, flag string) bool {
+	for _, arg := range a.args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// findAttempt returns the first attempt matching command + a required arg token,
+// and whether it was found. Used to assert a specific verb (e.g. apt-get's
+// downgrade attempt) exists in addition to the upgrade attempt.
+func findAttempt(attempts []updateAttempt, command, requiredArg string) (updateAttempt, bool) {
+	for _, a := range attempts {
+		if a.command == command && argsHaveFlag(a, requiredArg) {
+			return a, true
+		}
+	}
+	return updateAttempt{}, false
+}
+
+func TestBuildLinuxUpdateAttemptsVersionPinIncludesDowngradePath(t *testing.T) {
+	t.Parallel()
+	// A pin can be OLDER than the installed build (an intentional downgrade/hold).
+	// The plain upgrade/update verbs can't perform that, so each manager must also
+	// offer a downgrade-capable attempt for the same pinned spec (#993).
+	attempts := buildLinuxUpdateAttempts("firefox", "131.0")
+
+	// apt-get: must have both --only-upgrade and --allow-downgrades for the pin.
+	if _, ok := findAttempt(attempts, "apt-get", "--only-upgrade"); !ok {
+		t.Fatalf("expected apt-get --only-upgrade pinned attempt, got %+v", attempts)
+	}
+	apt, ok := findAttempt(attempts, "apt-get", "--allow-downgrades")
+	if !ok {
+		t.Fatalf("expected apt-get --allow-downgrades pinned attempt, got %+v", attempts)
+	}
+	if !argsContain(apt, "firefox=131.0") {
+		t.Fatalf("expected apt-get downgrade to target firefox=131.0, got %v", apt.args)
+	}
+
+	// dnf/yum: must have both the upgrade/update verb and a downgrade verb.
+	for _, mgr := range []string{"dnf", "yum"} {
+		dn, ok := findAttempt(attempts, mgr, "downgrade")
+		if !ok {
+			t.Fatalf("expected %s downgrade pinned attempt, got %+v", mgr, attempts)
+		}
+		if !argsContain(dn, "firefox-131.0") {
+			t.Fatalf("expected %s downgrade to target firefox-131.0, got %v", mgr, dn.args)
+		}
+	}
+	if _, ok := findAttempt(attempts, "dnf", "upgrade"); !ok {
+		t.Fatalf("expected dnf upgrade pinned attempt, got %+v", attempts)
+	}
+	if _, ok := findAttempt(attempts, "yum", "update"); !ok {
+		t.Fatalf("expected yum update pinned attempt, got %+v", attempts)
+	}
+
+	// zypper --oldpackage handles both directions in one shot.
+	if _, ok := findAttempt(attempts, "zypper", "--oldpackage"); !ok {
+		t.Fatalf("expected zypper --oldpackage pinned attempt, got %+v", attempts)
+	}
+}
+
+func TestInstalledVersionMatchesPin(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		installed string
+		pin       string
+		want      bool
+	}{
+		{"exact match", "131.0", "131.0", true},
+		{"apt epoch prefix", "1:131.0", "131.0", true},
+		{"rpm release suffix", "131.0-1.fc39", "131.0", true},
+		{"apt epoch and rpm release", "2:131.0-1.el9", "131.0", true},
+		{"release-bearing pin exact", "131.0-1", "131.0-1", true},
+		{"release-bearing pin with epoch", "1:131.0-1", "131.0-1", true},
+		{"mismatch newer installed", "132.0", "131.0", false},
+		{"mismatch older installed", "130.0", "131.0", false},
+		{"release-bearing pin must not loosen", "131.0-2", "131.0-1", false},
+		{"prefix is not a match", "131.0.1", "131.0", false},
+		{"empty installed", "", "131.0", false},
+		{"whitespace trimmed", " 131.0 ", "131.0", true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := installedVersionMatchesPin(tc.installed, tc.pin); got != tc.want {
+				t.Fatalf("installedVersionMatchesPin(%q, %q) = %v, want %v", tc.installed, tc.pin, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyLinuxPinnedVersion(t *testing.T) {
+	t.Parallel()
+	const pin = "131.0"
+
+	cases := []struct {
+		name        string
+		query       linuxVersionQuery
+		wantErr     bool
+		errContains string
+	}{
+		{
+			// pin == installed: the upgrade/update verb already had it; verify passes.
+			name:    "pin equals installed",
+			query:   func(string) (string, error) { return "131.0", nil },
+			wantErr: false,
+		},
+		{
+			// pin > installed (an upgrade): after a successful upgrade the installed
+			// version is the pin; verify passes.
+			name:    "pin newer than installed, now applied",
+			query:   func(string) (string, error) { return "131.0", nil },
+			wantErr: false,
+		},
+		{
+			// pin < installed and the downgrade did NOT take (apt said "already the
+			// newest version", runUpdateAttempts mapped it to success): the installed
+			// version is still the newer build, so verify must FAIL loudly — this is
+			// the silent-drop hole #993 is about, on Linux.
+			name:        "pin older than installed, still newer installed",
+			query:       func(string) (string, error) { return "132.0", nil },
+			wantErr:     true,
+			errContains: "version pin not honored",
+		},
+		{
+			// pin < installed and the downgrade DID take: installed is now the pin.
+			name:    "pin older than installed, downgrade applied",
+			query:   func(string) (string, error) { return "131.0", nil },
+			wantErr: false,
+		},
+		{
+			// apt epoch decoration must not produce a false mismatch.
+			name:    "installed reports apt epoch",
+			query:   func(string) (string, error) { return "1:131.0", nil },
+			wantErr: false,
+		},
+		{
+			// rpm release decoration must not produce a false mismatch.
+			name:    "installed reports rpm release",
+			query:   func(string) (string, error) { return "131.0-1.fc39", nil },
+			wantErr: false,
+		},
+		{
+			// Can't determine the installed version → can't prove the pin held →
+			// fail loudly rather than assume success.
+			name:        "installed version unknown",
+			query:       func(string) (string, error) { return "", nil },
+			wantErr:     true,
+			errContains: "could not determine",
+		},
+		{
+			// Query tool error → fail loudly.
+			name:        "query error",
+			query:       func(string) (string, error) { return "", errTestQuery },
+			wantErr:     true,
+			errContains: "could not verify",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := verifyLinuxPinnedVersion("firefox", pin, tc.query)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got nil")
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Fatalf("expected error to contain %q, got %q", tc.errContains, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+var errTestQuery = fmt.Errorf("dpkg-query exploded")
 
 func TestUpdateSoftwareMacOSRejectsVersionPin(t *testing.T) {
 	t.Parallel()
