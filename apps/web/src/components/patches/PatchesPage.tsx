@@ -113,11 +113,13 @@ export default function PatchesPage() {
     try {
       setPatchesLoading(true);
       setPatchesError(undefined);
-      const params = new URLSearchParams();
-      if (selectedRingId) params.set('ringId', selectedRingId);
+      // Request a large page so the patches-table page-size selector (up to 200)
+      // is actually populated. The API caps limit at 200 and paginates/sorts the
+      // already-loaded array client-side (issue #1316). Ring-scoped patches use a
+      // dedicated endpoint that returns its own bounded set.
       const url = selectedRingId
         ? `/update-rings/${selectedRingId}/patches`
-        : '/patches';
+        : '/patches?limit=200';
       const response = await fetchWithAuth(url);
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }

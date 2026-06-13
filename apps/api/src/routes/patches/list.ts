@@ -1,11 +1,21 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc, type SQL } from 'drizzle-orm';
+import { and, eq, sql, asc, desc, type SQL, type Column } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
 import { getPagination, inferPatchOs } from './helpers';
+
+// Whitelist mapping sort keys (validated by listPatchesSchema) to real columns.
+// Never pass raw user input into orderBy — only keys present here are honored.
+const PATCH_SORT_COLUMNS: Record<string, Column> = {
+  title: patches.title,
+  severity: patches.severity,
+  source: patches.source,
+  releaseDate: patches.releaseDate,
+  createdAt: patches.createdAt
+};
 
 export const listRoutes = new Hono();
 
@@ -57,6 +67,14 @@ listRoutes.get(
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
+    // Resolve sort column/direction from the whitelisted map. Defaults preserve
+    // the prior newest-first behavior when no sort params are supplied. The
+    // `?? createdAt` fallback is defensive — query.sortBy is already constrained
+    // to the whitelist keys by listPatchesSchema, so the lookup never misses.
+    const sortColumn = (query.sortBy && PATCH_SORT_COLUMNS[query.sortBy]) || patches.createdAt;
+    const sortDirection = query.sortDir ?? (query.sortBy ? 'asc' : 'desc');
+    const orderByClause = sortDirection === 'asc' ? asc(sortColumn) : desc(sortColumn);
+
     // Get patches with optional approval status for the org
     const patchList = await db
       .select({
@@ -86,7 +104,7 @@ listRoutes.get(
       })
       .from(patches)
       .where(whereClause)
-      .orderBy(desc(patches.createdAt))
+      .orderBy(orderByClause)
       .limit(limit)
       .offset(offset);
 
