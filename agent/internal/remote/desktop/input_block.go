@@ -183,6 +183,15 @@ func (m *InputBlockManager) unblockLocked() error {
 
 // runWatchdog auto-releases the block after maxDuration as a safety net for a
 // wedged-but-alive agent. Exits early when stop is closed (normal release).
+//
+// Refcount-safe overlap handling: the watchdog reclaims exactly ONE reference
+// (the wedged session that armed it) rather than unconditionally zeroing the
+// refcount. If other sessions still legitimately hold the block, the OS-level
+// block stays engaged for them and a fresh watchdog is armed to bound their
+// duration too; only when the reclaimed reference was the last one does the
+// watchdog perform the actual OS unblock. This prevents a wedged session's
+// 4h watchdog from yanking input back from a second session that engaged later
+// and is still well within its own window.
 func (m *InputBlockManager) runWatchdog(stop chan struct{}) {
 	timer := time.NewTimer(m.maxDuration)
 	defer timer.Stop()
@@ -198,11 +207,28 @@ func (m *InputBlockManager) runWatchdog(stop chan struct{}) {
 		if m.watchdogStop != stop || !m.engaged {
 			return
 		}
-		slog.Warn("Local-input block exceeded max duration, force-releasing for safety",
-			"maxDuration", m.maxDuration.String())
-		// Force a full release regardless of refcount — the watchdog firing means
-		// the controlling logic is wedged and refcount bookkeeping is untrustworthy.
-		m.refCount = 0
+		slog.Warn("Local-input block exceeded max duration, reclaiming one reference for safety",
+			"maxDuration", m.maxDuration.String(), "refCount", m.refCount)
+
+		// Reclaim only this wedged engagement's reference.
+		if m.refCount > 0 {
+			m.refCount--
+		}
+
+		if m.refCount > 0 {
+			// Other sessions still hold the block — leave it engaged for them but
+			// re-arm a fresh watchdog so their duration is bounded as well. The
+			// old stop channel is replaced so a later normal release targets the
+			// new watchdog, not this expiring one.
+			m.watchdogStop = make(chan struct{})
+			go m.runWatchdog(m.watchdogStop)
+			slog.Warn("Local-input block kept engaged for remaining sessions after watchdog",
+				"refCount", m.refCount)
+			return
+		}
+
+		// Last reference reclaimed — perform the actual OS unblock.
+		slog.Warn("Local-input block force-released after max duration", "maxDuration", m.maxDuration.String())
 		_ = m.unblockLocked()
 	}
 }

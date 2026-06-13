@@ -5,7 +5,6 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -89,9 +88,10 @@ type WindowsInputHandler struct {
 	cachedCH     int
 	metricsValid bool
 
-	// Secure desktop support: the input handler goroutine must be on the
-	// same desktop as the active input desktop for SendInput to work.
-	threadLocked    bool
+	// Secure desktop support: the pinned input serializer thread must be on the
+	// same desktop as the active input desktop for SendInput to work. Thread
+	// pinning is owned by the input serializer (input_thread_windows.go), so no
+	// per-handler threadLocked flag is needed here anymore.
 	lastDesktopSync time.Time
 	currentDesktop  uintptr
 }
@@ -100,6 +100,22 @@ type WindowsInputHandler struct {
 func NewInputHandler(_ string) InputHandler {
 	return &WindowsInputHandler{}
 }
+
+// Input thread-affinity (issue #966)
+//
+// Every user32 input syscall this handler makes MUST run on the single pinned
+// input serializer thread (input_thread_windows.go), because while a
+// local-input block is engaged Windows only honours SendInput from the thread
+// that called BlockInput(TRUE). The public InputHandler methods below are thin
+// wrappers that submit their entire body to that thread via runOnInputThread;
+// each "...OnThread" worker does the real syscalls and may freely call sibling
+// workers directly (they are already on the input thread, so they must NOT
+// re-submit — that would deadlock the single-worker queue).
+//
+// ensureInputDesktopOnThread runs on the serializer thread and therefore no
+// longer needs its own runtime.LockOSThread(): the serializer goroutine is
+// permanently locked to its OS thread, so the SetThreadDesktop it performs
+// sticks to the same thread that later injects input and (un)blocks.
 
 // InputAvailable always returns true on Windows — SendInput works in all
 // desktop contexts including the Winlogon/UAC secure desktop.
@@ -115,10 +131,16 @@ func (h *WindowsInputHandler) SetDisplayOffset(x, y int) {
 func (h *WindowsInputHandler) SetAtLoginWindow(_ bool) {}
 
 func (h *WindowsInputHandler) SendMouseMove(x, y int) error {
+	var err error
+	runOnInputThread(func() { err = h.sendMouseMoveOnThread(x, y) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendMouseMoveOnThread(x, y int) error {
 	// Ensure we're on the active input desktop. Without this, SendInput from
 	// a standalone InputHandler (e.g., computer_action) is silently dropped
 	// by Windows for DWM-managed elements (title bar, Start, taskbar).
-	h.ensureInputDesktop()
+	h.ensureInputDesktopOnThread()
 
 	h.mu.Lock()
 	dragging := h.buttonDown
@@ -176,9 +198,15 @@ func (h *WindowsInputHandler) screenToAbsolute(x, y int) (absX, absY int32, ok b
 }
 
 func (h *WindowsInputHandler) SendMouseClick(x, y int, button string) error {
+	var err error
+	runOnInputThread(func() { err = h.sendMouseClickOnThread(x, y, button) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendMouseClickOnThread(x, y int, button string) error {
 	// Ensure we're on the active input desktop so DWM-managed elements
 	// (title bar buttons, Start menu, taskbar) receive the click.
-	h.ensureInputDesktop()
+	h.ensureInputDesktopOnThread()
 
 	// Ensure screen metrics are cached for coordinate conversion.
 	h.mu.Lock()
@@ -233,16 +261,22 @@ func (h *WindowsInputHandler) SendMouseClick(x, y int, button string) error {
 	}
 
 	// Fallback: SetCursorPos + separate events
-	if err := h.SendMouseMove(x, y); err != nil {
+	if err := h.sendMouseMoveOnThread(x, y); err != nil {
 		return err
 	}
-	if err := h.SendMouseDown(x, y, button); err != nil {
+	if err := h.sendMouseDownOnThread(x, y, button); err != nil {
 		return err
 	}
-	return h.SendMouseUp(x, y, button)
+	return h.sendMouseUpOnThread(x, y, button)
 }
 
 func (h *WindowsInputHandler) SendMouseDown(x, y int, button string) error {
+	var err error
+	runOnInputThread(func() { err = h.sendMouseDownOnThread(x, y, button) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendMouseDownOnThread(x, y int, button string) error {
 	h.mu.Lock()
 	h.buttonDown = true
 	h.refreshScreenMetrics() // cache once per drag — avoid 4 syscalls per move
@@ -251,7 +285,7 @@ func (h *WindowsInputHandler) SendMouseDown(x, y int, button string) error {
 	// Position cursor before pressing — without this, the button press fires
 	// at the previous cursor location and drag-select operations start from
 	// the wrong origin (e.g. terminal text selection fails).
-	if err := h.SendMouseMove(x, y); err != nil {
+	if err := h.sendMouseMoveOnThread(x, y); err != nil {
 		return err
 	}
 
@@ -278,9 +312,15 @@ func (h *WindowsInputHandler) SendMouseDown(x, y int, button string) error {
 }
 
 func (h *WindowsInputHandler) SendMouseUp(x, y int, button string) error {
+	var err error
+	runOnInputThread(func() { err = h.sendMouseUpOnThread(x, y, button) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendMouseUpOnThread(x, y int, button string) error {
 	// Position cursor before releasing — ensures the release lands at the
 	// correct end-of-drag coordinate (e.g. for text selection).
-	if err := h.SendMouseMove(x, y); err != nil {
+	if err := h.sendMouseMoveOnThread(x, y); err != nil {
 		return err
 	}
 
@@ -311,7 +351,13 @@ func (h *WindowsInputHandler) SendMouseUp(x, y int, button string) error {
 }
 
 func (h *WindowsInputHandler) SendMouseScroll(x, y int, delta int) error {
-	if err := h.SendMouseMove(x, y); err != nil {
+	var err error
+	runOnInputThread(func() { err = h.sendMouseScrollOnThread(x, y, delta) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendMouseScrollOnThread(x, y int, delta int) error {
+	if err := h.sendMouseMoveOnThread(x, y); err != nil {
 		return err
 	}
 
@@ -328,21 +374,27 @@ func (h *WindowsInputHandler) SendMouseScroll(x, y int, delta int) error {
 }
 
 func (h *WindowsInputHandler) SendKeyPress(key string, modifiers []string) error {
-	h.ensureInputDesktop()
+	var err error
+	runOnInputThread(func() { err = h.sendKeyPressOnThread(key, modifiers) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendKeyPressOnThread(key string, modifiers []string) error {
+	h.ensureInputDesktopOnThread()
 	// Press modifiers
 	for _, mod := range modifiers {
 		h.sendModifierKey(mod, false)
 	}
 
 	// Press and release key
-	if err := h.SendKeyDown(key); err != nil {
+	if err := h.sendKeyDownOnThread(key); err != nil {
 		// Still release modifiers before returning
 		for i := len(modifiers) - 1; i >= 0; i-- {
 			h.sendModifierKey(modifiers[i], true)
 		}
 		return err
 	}
-	h.SendKeyUp(key)
+	h.sendKeyUpOnThread(key)
 
 	// Release modifiers (in reverse order)
 	for i := len(modifiers) - 1; i >= 0; i-- {
@@ -352,6 +404,9 @@ func (h *WindowsInputHandler) SendKeyPress(key string, modifiers []string) error
 	return nil
 }
 
+// sendModifierKey injects a modifier key event. Always called from a
+// "...OnThread" worker, so it makes its syscall directly (already on the
+// pinned input thread).
 func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 	var vk uint16
 	switch strings.ToLower(mod) {
@@ -415,7 +470,13 @@ func isExtendedKey(vk uint16) bool {
 }
 
 func (h *WindowsInputHandler) SendKeyDown(key string) error {
-	h.ensureInputDesktop()
+	var err error
+	runOnInputThread(func() { err = h.sendKeyDownOnThread(key) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendKeyDownOnThread(key string) error {
+	h.ensureInputDesktopOnThread()
 	vk := charToVK(key)
 	if vk == 0 {
 		slog.Warn("Unknown key — no VK mapping, input dropped", "key", key)
@@ -441,6 +502,12 @@ func (h *WindowsInputHandler) SendKeyDown(key string) error {
 // This bypasses VK code mapping entirely and works for any character
 // including ":", "!", "@", non-ASCII, emoji, etc.
 func (h *WindowsInputHandler) TypeChar(ch rune) error {
+	var err error
+	runOnInputThread(func() { err = h.typeCharOnThread(ch) })
+	return err
+}
+
+func (h *WindowsInputHandler) typeCharOnThread(ch rune) error {
 	down := input{inputType: INPUT_KEYBOARD}
 	ki := (*keybdInput)(unsafe.Pointer(&down.mi))
 	ki.wVk = 0
@@ -461,6 +528,12 @@ func (h *WindowsInputHandler) TypeChar(ch rune) error {
 }
 
 func (h *WindowsInputHandler) SendKeyUp(key string) error {
+	var err error
+	runOnInputThread(func() { err = h.sendKeyUpOnThread(key) })
+	return err
+}
+
+func (h *WindowsInputHandler) sendKeyUpOnThread(key string) error {
 	vk := charToVK(key)
 	if vk == 0 {
 		return fmt.Errorf("unknown key: %s", key)
@@ -482,10 +555,16 @@ func (h *WindowsInputHandler) SendKeyUp(key string) error {
 	return nil
 }
 
-// ensureInputDesktop switches the input handler's thread to the active input
+// ensureInputDesktopOnThread switches the input thread to the active input
 // desktop so that SendInput works on the Winlogon/UAC secure desktop.
 // Only re-checks every 500ms to avoid overhead on every input event.
-func (h *WindowsInputHandler) ensureInputDesktop() {
+//
+// MUST be called from a "...OnThread" worker, i.e. while running on the pinned
+// input serializer thread. That goroutine is already permanently locked to its
+// OS thread (runtime.LockOSThread in input_thread_windows.go), so the
+// SetThreadDesktop performed here sticks to the same thread that injects input
+// and (un)blocks — no per-handler LockOSThread is needed or wanted.
+func (h *WindowsInputHandler) ensureInputDesktopOnThread() {
 	h.mu.Lock()
 	now := time.Now()
 	if now.Sub(h.lastDesktopSync) < 500*time.Millisecond {
@@ -493,16 +572,7 @@ func (h *WindowsInputHandler) ensureInputDesktop() {
 		return
 	}
 	h.lastDesktopSync = now
-	needsLock := !h.threadLocked
 	h.mu.Unlock()
-
-	// LockOSThread must be called outside the mutex to avoid scheduler issues.
-	if needsLock {
-		runtime.LockOSThread()
-		h.mu.Lock()
-		h.threadLocked = true
-		h.mu.Unlock()
-	}
 
 	hDesk, _, _ := procOpenInputDesktop.Call(0, 0, uintptr(desktopGenericAll))
 	if hDesk == 0 {
@@ -528,8 +598,17 @@ func (h *WindowsInputHandler) ensureInputDesktop() {
 }
 
 func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
+	// Run the whole event on the single pinned input thread so it shares a
+	// thread with BlockInput — see input_thread.go. One submission per event;
+	// the workers below must NOT re-submit (they call the "...OnThread" path).
+	var err error
+	runOnInputThread(func() { err = h.handleEventOnThread(event) })
+	return err
+}
+
+func (h *WindowsInputHandler) handleEventOnThread(event InputEvent) error {
 	// Ensure we're on the active input desktop (handles Winlogon/UAC switch).
-	h.ensureInputDesktop()
+	h.ensureInputDesktopOnThread()
 
 	// Translate viewer-relative coordinates to virtual screen coordinates.
 	h.mu.Lock()
@@ -539,21 +618,21 @@ func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
 
 	switch event.Type {
 	case "mouse_move":
-		return h.SendMouseMove(event.X, event.Y)
+		return h.sendMouseMoveOnThread(event.X, event.Y)
 	case "mouse_click":
-		return h.SendMouseClick(event.X, event.Y, event.Button)
+		return h.sendMouseClickOnThread(event.X, event.Y, event.Button)
 	case "mouse_down":
-		return h.SendMouseDown(event.X, event.Y, event.Button)
+		return h.sendMouseDownOnThread(event.X, event.Y, event.Button)
 	case "mouse_up":
-		return h.SendMouseUp(event.X, event.Y, event.Button)
+		return h.sendMouseUpOnThread(event.X, event.Y, event.Button)
 	case "mouse_scroll":
-		return h.SendMouseScroll(event.X, event.Y, event.Delta)
+		return h.sendMouseScrollOnThread(event.X, event.Y, event.Delta)
 	case "key_press":
-		return h.SendKeyPress(event.Key, event.Modifiers)
+		return h.sendKeyPressOnThread(event.Key, event.Modifiers)
 	case "key_down":
-		return h.SendKeyDown(event.Key)
+		return h.sendKeyDownOnThread(event.Key)
 	case "key_up":
-		return h.SendKeyUp(event.Key)
+		return h.sendKeyUpOnThread(event.Key)
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
 	}

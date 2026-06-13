@@ -211,6 +211,62 @@ func TestInputBlock_WatchdogForceReleases(t *testing.T) {
 	}
 }
 
+func TestInputBlock_WatchdogReclaimsOneRefKeepsOverlap(t *testing.T) {
+	// Two sessions overlap. The single watchdog (armed on the 0->1 engage) fires
+	// at maxDuration. It must reclaim only ONE reference, leave the OS block
+	// engaged for the still-active second session, and re-arm a fresh watchdog —
+	// NOT unconditionally zero the refcount and unblock everyone.
+	backend := &stubInputBlockBackend{supported: true}
+	mgr := &InputBlockManager{
+		backend: backend,
+		now:     time.Now,
+		// Generous enough that, after the first watchdog reclaims one ref and
+		// re-arms, the test has ample time to assert and release the survivor
+		// before the second watchdog cycle could fire.
+		maxDuration: 60 * time.Millisecond,
+	}
+
+	mgr.Engage() // refCount 1, watchdog armed
+	mgr.Engage() // refCount 2, overlapping session
+
+	// Wait for the watchdog to reclaim exactly one reference, then immediately
+	// release the survivor (canceling the re-armed watchdog) and assert.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		rc := mgr.refCount
+		mgr.mu.Unlock()
+		if rc < 2 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	mgr.mu.Lock()
+	rc := mgr.refCount
+	mgr.mu.Unlock()
+	if rc != 1 {
+		t.Fatalf("watchdog must reclaim exactly one reference, got refCount=%d", rc)
+	}
+	if !mgr.IsEngaged() {
+		t.Fatal("block must stay engaged while a second session still holds it")
+	}
+	if _, u := backend.counts(); u != 0 {
+		t.Fatalf("watchdog must NOT unblock while another session holds the block, got %d unblocks", u)
+	}
+
+	// The surviving session releases normally — now the block actually lifts.
+	if err := mgr.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if mgr.IsEngaged() {
+		t.Fatal("block should lift after the last session releases")
+	}
+	if _, u := backend.counts(); u != 1 {
+		t.Fatalf("expected exactly 1 Unblock after final release, got %d", u)
+	}
+}
+
 func TestInputBlock_NormalReleaseStopsWatchdog(t *testing.T) {
 	backend := &stubInputBlockBackend{supported: true}
 	mgr := &InputBlockManager{

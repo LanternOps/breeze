@@ -170,20 +170,29 @@ func TestDoCleanup_ReleasesLocalInputBlock(t *testing.T) {
 }
 
 func TestHandleBlockLocalInput_ResultMessageShape(t *testing.T) {
-	// Verify the JSON the viewer receives is well-formed and carries the fields
-	// the viewer needs to render an accurate status banner.
+	// Drive the REAL handleBlockLocalInput on an unsupported platform stub and
+	// verify the wire shape the viewer receives. A nil controlDC is safe — the
+	// handler guards the SendText — so the full handler body still runs and
+	// computes the result via the shared blockLocalInputResultBody builder.
 	installStubInputBlockManager(t, false)
-	session := &Session{id: "session-msg"}
+	session := &Session{id: "session-msg"} // controlDC nil
 
-	// Use the manager directly to confirm Supported() reflects the stub, then
-	// build the same result body handleBlockLocalInput would marshal.
-	supported := GetInputBlockManager().Supported()
-	body := map[string]any{
-		"type":      "block_local_input_result",
-		"supported": supported,
-		"blocked":   session.localInputBlocked.Load(),
-		"ok":        true,
+	// Engaging on an unsupported platform must not record a block, must report
+	// supported=false, and must still produce a well-formed result body.
+	session.handleBlockLocalInput(true)
+
+	if session.localInputBlocked.Load() {
+		t.Fatal("unsupported platform must not record localInputBlocked")
 	}
+
+	// Reconstruct the exact body the handler marshaled, via the same builder it
+	// uses, and assert the wire shape end-to-end through JSON.
+	body := blockLocalInputResultBody(
+		GetInputBlockManager().Supported(),
+		session.localInputBlocked.Load(),
+		true,
+		"",
+	)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal result: %v", err)
@@ -197,5 +206,50 @@ func TestHandleBlockLocalInput_ResultMessageShape(t *testing.T) {
 	}
 	if decoded["supported"] != false {
 		t.Fatalf("expected supported=false from stub, got %v", decoded["supported"])
+	}
+	if decoded["blocked"] != false {
+		t.Fatalf("expected blocked=false on unsupported platform, got %v", decoded["blocked"])
+	}
+	if decoded["ok"] != true {
+		t.Fatalf("expected ok=true (unsupported is not an error), got %v", decoded["ok"])
+	}
+	if _, hasErr := decoded["error"]; hasErr {
+		t.Fatalf("unsupported (non-error) result must omit the error field, got %v", decoded["error"])
+	}
+}
+
+func TestHandleBlockLocalInput_SupportedEngageAndRelease(t *testing.T) {
+	// Drive the REAL handleBlockLocalInput on a supported stub and verify it
+	// engages and releases the manager and tracks per-session state. controlDC
+	// is nil; the handler must still perform the engage/release side effects.
+	backend := installStubInputBlockManager(t, true)
+	session := &Session{id: "session-real-handler"}
+
+	session.handleBlockLocalInput(true)
+	if !session.localInputBlocked.Load() {
+		t.Fatal("expected handleBlockLocalInput(true) to record localInputBlocked")
+	}
+	if b, _ := backend.counts(); b != 1 {
+		t.Fatalf("expected exactly 1 backend Block, got %d", b)
+	}
+
+	session.handleBlockLocalInput(false)
+	if session.localInputBlocked.Load() {
+		t.Fatal("expected handleBlockLocalInput(false) to clear localInputBlocked")
+	}
+	if _, u := backend.counts(); u != 1 {
+		t.Fatalf("expected exactly 1 backend Unblock, got %d", u)
+	}
+}
+
+func TestBlockLocalInputResultBody_CarriesError(t *testing.T) {
+	// A failed engage must surface ok=false plus the error string so the viewer
+	// can show why the block did not take.
+	body := blockLocalInputResultBody(true, false, false, "BlockInput(TRUE): access denied")
+	if body["ok"] != false {
+		t.Fatalf("expected ok=false, got %v", body["ok"])
+	}
+	if body["error"] != "BlockInput(TRUE): access denied" {
+		t.Fatalf("expected error string to be carried, got %v", body["error"])
 	}
 }

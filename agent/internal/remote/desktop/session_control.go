@@ -198,15 +198,7 @@ func (s *Session) handleBlockLocalInput(block bool) {
 
 	// blocked reflects the resulting per-session state the viewer should show.
 	blocked := s.localInputBlocked.Load()
-	body := map[string]any{
-		"type":      "block_local_input_result",
-		"supported": supported,
-		"blocked":   blocked,
-		"ok":        ok,
-	}
-	if errMsg != "" {
-		body["error"] = errMsg
-	}
+	body := blockLocalInputResultBody(supported, blocked, ok, errMsg)
 	resp, err := json.Marshal(body)
 	if err != nil {
 		slog.Warn("Failed to marshal block_local_input_result", "session", s.id, "error", err.Error())
@@ -220,6 +212,22 @@ func (s *Session) handleBlockLocalInput(block bool) {
 			slog.Debug("Failed to send block_local_input_result", "session", s.id, "error", err.Error())
 		}
 	}
+}
+
+// blockLocalInputResultBody builds the block_local_input_result control message
+// the viewer uses to render an accurate status banner. Extracted so the exact
+// wire shape is unit-testable without standing up a real DataChannel.
+func blockLocalInputResultBody(supported, blocked, ok bool, errMsg string) map[string]any {
+	body := map[string]any{
+		"type":      "block_local_input_result",
+		"supported": supported,
+		"blocked":   blocked,
+		"ok":        ok,
+	}
+	if errMsg != "" {
+		body["error"] = errMsg
+	}
+	return body
 }
 
 // handleControlMessage processes control messages (bitrate, quality changes)

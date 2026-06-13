@@ -13,6 +13,14 @@ var procBlockInput = user32.NewProc("BlockInput")
 // windowsInputBlockBackend blocks local physical input via the Win32 BlockInput
 // API.
 //
+// THREAD AFFINITY (critical): BlockInput(TRUE), the operator's SendInput
+// injection, and BlockInput(FALSE) must ALL run on the same OS thread, because
+// Windows only honours injection / unblock from the thread that blocked input.
+// Both Block and Unblock below therefore funnel their syscall through
+// runOnInputThread (the single pinned input serializer), and the operator's
+// injection path is routed through the same serializer in input_windows.go.
+// See input_thread.go for the full rationale.
+//
 // BlockInput(TRUE) blocks all physical keyboard and mouse input. Two properties
 // make it the right v1 primitive for issue #966:
 //
@@ -51,24 +59,35 @@ func newInputBlockBackend() inputBlockBackend {
 func (b *windowsInputBlockBackend) Supported() bool { return true }
 
 func (b *windowsInputBlockBackend) Block() error {
-	// BlockInput(TRUE)
-	ret, _, err := procBlockInput.Call(1)
+	// BlockInput(TRUE) — must run on the single pinned input thread so the same
+	// thread can later inject the operator's input and lift the block.
+	var ret uintptr
+	var callErr error
+	runOnInputThread(func() {
+		ret, _, callErr = procBlockInput.Call(1)
+	})
 	if ret == 0 {
 		// A zero return means input is already blocked by ANOTHER thread, or the
 		// caller lacks the required privilege. Surface it so Engage() can roll
 		// back the refcount and the viewer learns the block did not take.
-		return fmt.Errorf("BlockInput(TRUE): %w", err)
+		return fmt.Errorf("BlockInput(TRUE): %w", callErr)
 	}
 	return nil
 }
 
 func (b *windowsInputBlockBackend) Unblock() error {
-	// BlockInput(FALSE). Best-effort: a zero return here typically means input
-	// was already unblocked (e.g. Windows released it on a secure-desktop
-	// switch), which is a benign no-op for our purposes.
-	ret, _, err := procBlockInput.Call(0)
+	// BlockInput(FALSE) — routed through the SAME pinned input thread that
+	// called BlockInput(TRUE); a release from any other thread is a silent
+	// no-op. Best-effort: a zero return here typically means input was already
+	// unblocked (e.g. Windows released it on a secure-desktop switch), which is
+	// a benign no-op for our purposes.
+	var ret uintptr
+	var callErr error
+	runOnInputThread(func() {
+		ret, _, callErr = procBlockInput.Call(0)
+	})
 	if ret == 0 {
-		return fmt.Errorf("BlockInput(FALSE): %w", err)
+		return fmt.Errorf("BlockInput(FALSE): %w", callErr)
 	}
 	return nil
 }
