@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fetchWithAuth, registerOrgIdProvider } from './auth';
+import { isGlobalScopeRoute } from '../lib/routeScope';
 
 export interface Partner {
   id: string;
@@ -27,24 +28,10 @@ export interface Site {
   createdAt: string;
 }
 
-/**
- * Global org-scope toggle. When `current`, every fetch is narrowed to
- * `currentOrgId` via the auto-injection chokepoint in `stores/auth.ts`.
- * When `all`, the auto-injection is skipped and the server returns data
- * across every accessible org for the caller's partner JWT.
- *
- * This is the single source of truth for "which orgs am I looking at" —
- * pages that need to render scope-aware UI (badges, summary tiles, etc.)
- * should read `orgScope` from this store instead of carrying their own
- * per-page toggle state.
- */
-export type OrgScope = 'current' | 'all';
-
 interface OrgState {
   currentPartnerId: string | null;
   currentOrgId: string | null;
   currentSiteId: string | null;
-  orgScope: OrgScope;
   partners: Partner[];
   organizations: Organization[];
   sites: Site[];
@@ -55,7 +42,6 @@ interface OrgState {
   setPartner: (partnerId: string) => void;
   setOrganization: (orgId: string) => void;
   setSite: (siteId: string | null) => void;
-  setOrgScope: (scope: OrgScope) => void;
   fetchPartners: () => Promise<void>;
   fetchOrganizations: () => Promise<void>;
   fetchSites: () => Promise<void>;
@@ -68,7 +54,6 @@ export const useOrgStore = create<OrgState>()(
       currentPartnerId: null,
       currentOrgId: null,
       currentSiteId: null,
-      orgScope: 'current',
       partners: [],
       organizations: [],
       sites: [],
@@ -99,10 +84,6 @@ export const useOrgStore = create<OrgState>()(
 
       setSite: (siteId) => {
         set({ currentSiteId: siteId });
-      },
-
-      setOrgScope: (scope) => {
-        set({ orgScope: scope });
       },
 
       fetchPartners: async () => {
@@ -230,24 +211,21 @@ export const useOrgStore = create<OrgState>()(
       partialize: (state) => ({
         currentPartnerId: state.currentPartnerId,
         currentOrgId: state.currentOrgId,
-        currentSiteId: state.currentSiteId,
-        orgScope: state.orgScope
+        currentSiteId: state.currentSiteId
       })
     }
   )
 );
 
-// Wire up org context so fetchWithAuth auto-injects orgId on every request.
-// When orgScope is 'all', return null so the auto-injection is skipped and
-// the server responds with data across every accessible org for the caller's
-// partner JWT. This is the chokepoint that flips global "Current org" vs
-// "All orgs" behavior for every page that doesn't opt out via
-// `skipOrgIdInjection: true` (widget-level filter-preview helpers do).
-registerOrgIdProvider(() =>
-  useOrgStore.getState().orgScope === 'all'
-    ? null
-    : useOrgStore.getState().currentOrgId
-);
+// Page-aware org scoping: on a global (catalog) route the selector does not
+// apply, so inject no orgId; on a scoped route inject the selected org. The
+// pathname is read at call time so it tracks Astro client-side navigation.
+registerOrgIdProvider(() => {
+  if (typeof window !== 'undefined' && isGlobalScopeRoute(window.location.pathname)) {
+    return null;
+  }
+  return useOrgStore.getState().currentOrgId;
+});
 
 // Helper to get current organization details
 export function getCurrentOrganization(): Organization | null {
