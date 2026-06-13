@@ -19,6 +19,7 @@ func TestParseAppleWarrantyPlist(t *testing.T) {
 		wantEnd      string
 		wantStart    string
 		wantType     string
+		wantKind     string
 		wantNil      bool
 		wantErr      bool
 	}{
@@ -41,6 +42,43 @@ func TestParseAppleWarrantyPlist(t *testing.T) {
 			wantEnd:   "2027-06-15",
 			wantStart: "2024-06-15",
 			wantType:  "AppleCare+",
+			wantKind:  "", // no expiration label ⇒ kind stays empty (heartbeat omits it)
+		},
+		{
+			name: "plist with Renews expiration label derives subscription kind",
+			plistContent: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>coverageEndDate</key>
+	<string>2027-06-15</string>
+	<key>coverageType</key>
+	<string>AppleCare+</string>
+	<key>coverageExpirationLabel</key>
+	<string>Renews June 15, 2027</string>
+</dict>
+</plist>`,
+			wantEnd:  "2027-06-15",
+			wantType: "AppleCare+",
+			wantKind: coverageKindSubscription,
+		},
+		{
+			name: "plist with Expires expiration label derives fixed kind",
+			plistContent: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>coverageEndDate</key>
+	<string>2027-06-15</string>
+	<key>coverageType</key>
+	<string>Limited Warranty</string>
+	<key>coverageExpirationLabel</key>
+	<string>Expires June 15, 2027</string>
+</dict>
+</plist>`,
+			wantEnd:  "2027-06-15",
+			wantType: "Limited Warranty",
+			wantKind: coverageKindFixed,
 		},
 		{
 			name: "plist with RFC3339 date",
@@ -115,6 +153,9 @@ func TestParseAppleWarrantyPlist(t *testing.T) {
 			}
 			if tt.wantType != "" && info.CoverageType != tt.wantType {
 				t.Errorf("CoverageType: got %q, want %q", info.CoverageType, tt.wantType)
+			}
+			if info.CoverageKind != tt.wantKind {
+				t.Errorf("CoverageKind: got %q, want %q", info.CoverageKind, tt.wantKind)
 			}
 		})
 	}

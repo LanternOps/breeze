@@ -263,6 +263,10 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
  * Auto-resolve existing warranty alerts for a device
  */
 async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
+  // Resolve every non-terminal state the dedupe gate (line ~207) considers
+  // "open", including 'suppressed' — otherwise a stale suppressed expiry alert
+  // on a now-subscription/no-longer-expiring device would never clear yet still
+  // block a fresh alert from being created (#1320).
   const openAlerts = await db
     .select()
     .from(alerts)
@@ -270,7 +274,7 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
       and(
         eq(alerts.deviceId, deviceId),
         eq(alerts.configItemName, 'warranty_expiry'),
-        inArray(alerts.status, ['active', 'acknowledged'])
+        inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
       )
     );
 

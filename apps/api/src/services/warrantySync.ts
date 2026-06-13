@@ -175,9 +175,11 @@ export interface AgentWarrantyData {
    * Coverage kind from the macOS NDO label verb: 'subscription' ("Renews ...")
    * vs 'fixed' ("Expires ..."). For a subscription, coverageEndDate is the next
    * renewal date, not a true expiry — status is recorded as 'subscription_active'
-   * and the expiry alert is suppressed downstream.
+   * and the expiry alert is suppressed downstream. An empty string ('') means
+   * the verb couldn't be classified (timestamp-only/labelless/localized/plist
+   * fallback, or an older agent); it's treated as 'fixed' for back-compat.
    */
-  coverageKind?: 'subscription' | 'fixed' | null;
+  coverageKind?: 'subscription' | 'fixed' | '' | null;
 }
 
 /** Return the date string if it parses to a valid Date, otherwise null. */

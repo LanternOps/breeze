@@ -1098,8 +1098,14 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 		"coverageEndDate":   info.CoverageEndDate,
 		"coverageStartDate": info.CoverageStartDate,
 		"coverageType":      info.CoverageType,
-		"coverageKind":      info.CoverageKind,
 		"deviceName":        info.DeviceName,
+	}
+	// Only include coverageKind when derivable. The API schema rejects an empty
+	// string (invalid_enum_value) and a 400 there silently drops the entire
+	// warranty-info update, so omit it for timestamp-only/labelless/localized/
+	// plist-fallback coverage where the verb can't be classified (#1320).
+	if info.CoverageKind != "" {
+		payload["coverageKind"] = info.CoverageKind
 	}
 	h.sendInventoryData("warranty-info", payload, "apple warranty")
 }

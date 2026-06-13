@@ -190,4 +190,34 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(selectMock).toHaveBeenCalledTimes(1);
     expect(insertMock).not.toHaveBeenCalled();
   });
+
+  it('auto-resolves a STALE SUPPRESSED expiry alert when the device is now a subscription (#1320)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    updateMock.mockReturnValue({ set });
+
+    // 1: warranty row flagged as a subscription → short-circuits to autoResolve
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ ...baseWarranty, status: 'subscription_active', isSubscription: true, warrantyEndDate: inDays(28) }])
+    );
+    // 2: autoResolveWarrantyAlerts open-alert select → a stale SUPPRESSED alert.
+    // Before the fix this status was excluded, so it would never clear yet still
+    // block a fresh alert via the dedupe gate.
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ id: 'alert-suppressed-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'suppressed' }])
+    );
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBeNull();
+    // The suppressed alert was updated to resolved.
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'resolved' })
+    );
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'alert.resolved',
+      ORG_ID,
+      expect.objectContaining({ alertId: 'alert-suppressed-1' }),
+      expect.any(String)
+    );
+  });
 });

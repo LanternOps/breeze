@@ -102,4 +102,22 @@ describe('upsertAgentWarranty coverage-kind mapping', () => {
       expect.objectContaining({ status: 'expiring', isSubscription: false })
     );
   });
+
+  it("treats an empty-string coverage kind as fixed-term (the value the agent actually sends for unclassified labels)", async () => {
+    const { values } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_plist',
+      manufacturer: 'Apple',
+      serialNumber: 'XYZ789',
+      coverageEndDate: inDays(10), // within warn window ⇒ expiring
+      coverageStartDate: inDays(-100),
+      coverageType: 'Limited Warranty',
+      coverageKind: '', // timestamp-only / labelless / localized / plist fallback
+    });
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'expiring', isSubscription: false })
+    );
+  });
 });

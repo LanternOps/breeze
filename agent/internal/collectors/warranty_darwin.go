@@ -339,6 +339,17 @@ func parseAppleWarrantyPlist(path string) (*AppleWarrantyInfo, error) {
 			if s, ok := val.(string); ok {
 				info.CoverageType = truncateCollectorString(s)
 			}
+		case lower == "coverageexpirationlabel" || lower == "coverage_expiration_label" || lower == "expirationlabel":
+			// Derive the coverage kind from a "Renews ..."/"Expires ..." verb if
+			// the plist happens to carry the NDO expiration label. Most legacy
+			// plists do NOT — in that case CoverageKind stays "" (the heartbeat
+			// omits it and the API treats absence as fixed-term, which is the
+			// safe default since plist fallbacks lack subscription metadata).
+			if s, ok := val.(string); ok {
+				if k := coverageKindFromLabel(s); k != "" {
+					info.CoverageKind = k
+				}
+			}
 		}
 	}
 
