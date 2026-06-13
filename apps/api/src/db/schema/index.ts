@@ -80,3 +80,4 @@ export * from './refreshTokenFamilies';
 export * from './tickets';
 export * from './ticketConfig';
 export * from './timeTracking';
+export * from './clientAi';
