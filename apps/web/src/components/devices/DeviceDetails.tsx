@@ -32,6 +32,7 @@ import DeviceSoftwareInventory from './DeviceSoftwareInventory';
 import DevicePatchStatusTab from './DevicePatchStatusTab';
 import DeviceSecurityTab from './DeviceSecurityTab';
 import DeviceAlertHistory from './DeviceAlertHistory';
+import DeviceActivityFeed from './DeviceActivityFeed';
 import DeviceScriptHistory from './DeviceScriptHistory';
 import DevicePerformanceGraphs from './DevicePerformanceGraphs';
 import DeviceEventLogViewer from './DeviceEventLogViewer';
@@ -241,43 +242,55 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       {activeTab === 'overview' && (
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2 space-y-6">
-            <div className="flex flex-wrap gap-x-8 gap-y-3 rounded-lg border bg-card px-5 py-4">
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <Cpu className="h-3.5 w-3.5" />
-                  CPU
+            {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
+                User/Idle) — divided on ≥sm. Stats are content-sized (flex, not
+                an equal-width grid) with non-wrapping labels and values so e.g.
+                "14d 13h 24m" and "Logged-in User" stay on one line; only the
+                username (arbitrary length) is allowed to truncate. */}
+            <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 sm:flex-row sm:gap-6">
+              <div className="flex flex-1 gap-x-6">
+                <div className="shrink-0">
+                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+                    <Cpu className="h-3.5 w-3.5" />
+                    CPU
+                  </div>
+                  <p className="mt-1 text-lg font-semibold tabular-nums">{device.cpuPercent.toFixed(1)}%</p>
                 </div>
-                <p className="mt-1 text-lg font-semibold tabular-nums">{device.cpuPercent.toFixed(1)}%</p>
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <MemoryStick className="h-3.5 w-3.5" />
-                  RAM
+                <div className="shrink-0">
+                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+                    <MemoryStick className="h-3.5 w-3.5" />
+                    RAM
+                  </div>
+                  <p className="mt-1 text-lg font-semibold tabular-nums">{device.ramPercent.toFixed(1)}%</p>
                 </div>
-                <p className="mt-1 text-lg font-semibold tabular-nums">{device.ramPercent.toFixed(1)}%</p>
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <Clock className="h-3.5 w-3.5" />
-                  Last Seen
+                <div className="shrink-0">
+                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+                    <Clock className="h-3.5 w-3.5" />
+                    Uptime
+                  </div>
+                  <p className="mt-1 whitespace-nowrap text-lg font-semibold">{formatUptime(device.uptimeSeconds)}</p>
                 </div>
-                <p className="mt-1 text-lg font-semibold">{formatLastSeen(device.lastSeen, effectiveTimezone)}</p>
               </div>
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <Clock className="h-3.5 w-3.5" />
-                  Uptime
+              <div className="hidden w-px self-stretch bg-border sm:block" aria-hidden="true" />
+              <div className="flex min-w-0 flex-1 gap-x-6">
+                <div className="shrink-0">
+                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+                    <Clock className="h-3.5 w-3.5" />
+                    Last Seen
+                  </div>
+                  <p className="mt-1 whitespace-nowrap text-lg font-semibold">{formatLastSeen(device.lastSeen, effectiveTimezone)}</p>
                 </div>
-                <p className="mt-1 text-lg font-semibold">{formatUptime(device.uptimeSeconds)}</p>
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <User className="h-3.5 w-3.5" />
-                  Logged-in User
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+                    <User className="h-3.5 w-3.5" />
+                    Logged-in User
+                  </div>
+                  <p className="mt-1 truncate text-lg font-semibold" title={device.lastUser || undefined}>{device.lastUser || '—'}</p>
                 </div>
-                <p className="mt-1 text-lg font-semibold truncate" title={device.lastUser || undefined}>{device.lastUser || '—'}</p>
+                <div className="shrink-0">
+                  <DeviceUserIdleStat deviceId={device.id} />
+                </div>
               </div>
-              <DeviceUserIdleStat deviceId={device.id} />
             </div>
 
             <DevicePerformanceGraphs deviceId={device.id} compact />
@@ -285,7 +298,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             <DeviceWarrantyCard deviceId={device.id} compact />
           </div>
 
-          <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} showFilters={false} limit={4} />
+          <DeviceActivityFeed deviceId={device.id} timezone={effectiveTimezone} />
         </div>
       )}
 
