@@ -115,7 +115,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
     try {
-      const response = await fetchWithAuth('/update-rings', { skipOrgIdInjection: true });
+      const response = await fetchWithAuth('/update-rings');
       if (response.ok) {
         const payload = await response.json();
         setRings(Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : []);

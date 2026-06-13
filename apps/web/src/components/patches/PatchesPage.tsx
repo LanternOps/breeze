@@ -11,7 +11,6 @@ import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
 import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
@@ -85,10 +84,6 @@ export default function PatchesPage() {
       })),
     [rings]
   );
-  const selectedRingOrgId = useMemo(
-    () => rings.find((ring) => ring.id === selectedRingId)?.orgId ?? null,
-    [rings, selectedRingId]
-  );
 
   // ---- Data Fetching ----
 
@@ -96,7 +91,7 @@ export default function PatchesPage() {
     try {
       setRingsLoading(true);
       setRingsError(undefined);
-      const response = await fetchWithAuth('/update-rings', { skipOrgIdInjection: true });
+      const response = await fetchWithAuth('/update-rings');
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to fetch update rings');
@@ -123,7 +118,7 @@ export default function PatchesPage() {
       const url = selectedRingId
         ? `/update-rings/${selectedRingId}/patches`
         : '/patches';
-      const response = await fetchWithAuth(url, { skipOrgIdInjection: true });
+      const response = await fetchWithAuth(url);
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to fetch patches');
@@ -178,7 +173,6 @@ export default function PatchesPage() {
     // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
       method: 'POST',
-      skipOrgIdInjection: true,
       body: JSON.stringify({
         patchIds,
         ringId: selectedRingId ?? undefined
@@ -210,7 +204,6 @@ export default function PatchesPage() {
       // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
       const response = await fetchWithAuth(`/patches/${id}/decline`, {
         method: 'POST',
-        skipOrgIdInjection: true,
         body: JSON.stringify({ ringId: selectedRingId ?? undefined })
       });
       if (!response.ok) {
@@ -235,9 +228,7 @@ export default function PatchesPage() {
       let totalPages = 1;
 
       while (page <= totalPages) {
-        const devResponse = await fetchWithAuth(`/devices?limit=${DEVICE_SCAN_PAGE_LIMIT}&page=${page}`, {
-          skipOrgIdInjection: true
-        });
+        const devResponse = await fetchWithAuth(`/devices?limit=${DEVICE_SCAN_PAGE_LIMIT}&page=${page}`);
         if (!devResponse.ok) {
           if (devResponse.status === 401) { void navigateTo('/login', { replace: true }); return; }
           throw new Error('Failed to load devices for scan');
@@ -273,7 +264,6 @@ export default function PatchesPage() {
       // runaction-exempt: aggregate/partial-success — explicit breakdown toast below
       const scanRes = await fetchWithAuth('/patches/scan', {
         method: 'POST',
-        skipOrgIdInjection: true,
         body: JSON.stringify({ deviceIds }),
       });
       if (scanRes.status === 401) { void navigateTo('/login', { replace: true }); return; }
@@ -345,24 +335,18 @@ export default function PatchesPage() {
     const isEditing = !!editingRing;
     try {
       const url = isEditing ? `/update-rings/${editingRing.id}` : '/update-rings';
-      const currentOrgId = useOrgStore.getState().currentOrgId;
-      const body: Record<string, unknown> = {
-        name: values.name,
-        description: values.description,
-        ringOrder: values.ringOrder,
-        deferralDays: values.deferralDays,
-        deadlineDays: values.deadlineDays,
-        gracePeriodHours: values.gracePeriodHours,
-        categoryRules: values.categoryRules,
-      };
-      if (!isEditing && currentOrgId) {
-        body.orgId = currentOrgId;
-      }
       // runaction-exempt: inline ringsError UI (see NOTE above)
       const response = await fetchWithAuth(url, {
         method: isEditing ? 'PATCH' : 'POST',
-        skipOrgIdInjection: true,
-        body: JSON.stringify(body)
+        body: JSON.stringify({
+          name: values.name,
+          description: values.description,
+          ringOrder: values.ringOrder,
+          deferralDays: values.deferralDays,
+          deadlineDays: values.deadlineDays,
+          gracePeriodHours: values.gracePeriodHours,
+          categoryRules: values.categoryRules,
+        })
       });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
@@ -381,10 +365,7 @@ export default function PatchesPage() {
   const handleRingDelete = async (ring: UpdateRingItem) => {
     try {
       // runaction-exempt: inline ringsError UI (see NOTE above)
-      const response = await fetchWithAuth(`/update-rings/${ring.id}`, {
-        method: 'DELETE',
-        skipOrgIdInjection: true
-      });
+      const response = await fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to delete ring');
@@ -526,7 +507,7 @@ export default function PatchesPage() {
       )}
 
       {/* Compliance tab — merged device view with summary */}
-      {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} ringOrgId={selectedRingOrgId} />}
+      {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
 
       {/* Approval modal — passes ringId */}
       <PatchApprovalModal

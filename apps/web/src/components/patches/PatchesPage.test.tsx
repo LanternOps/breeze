@@ -12,12 +12,6 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(() => ({ currentOrgId: 'org-1' }), {
-    getState: () => ({ currentOrgId: 'org-1' }),
-  }),
-}));
-
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

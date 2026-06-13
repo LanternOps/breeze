@@ -40,7 +40,6 @@ export function useBulkActions(
     try {
       const response = await fetchWithAuth('/patches/scan', {
         method: 'POST',
-        skipOrgIdInjection: true,
         body: JSON.stringify({ deviceIds: ids })
       });
       if (!response.ok) {
@@ -92,7 +91,6 @@ export function useBulkActions(
 
         const response = await fetchWithAuth(`/devices/${deviceId}/patches/install`, {
           method: 'POST',
-          skipOrgIdInjection: true,
           body: JSON.stringify({ patchIds })
         });
         if (!response.ok) {

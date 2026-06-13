@@ -26,7 +26,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth(`/scripts/${scriptId}`, { skipOrgIdInjection: true });
+      const response = await fetchWithAuth(`/scripts/${scriptId}`);
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -72,8 +72,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
 
       const response = await fetchWithAuth(url, {
         method,
-        body: JSON.stringify(payload),
-        skipOrgIdInjection: true
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {

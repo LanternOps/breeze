@@ -20,7 +20,6 @@ export type CategoryRule = {
 
 export type UpdateRingItem = {
   id: string;
-  orgId?: string | null;
   name: string;
   description?: string | null;
   enabled: boolean;

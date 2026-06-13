@@ -72,7 +72,7 @@ export default function ScriptPickerModal({
       setLoading(true);
       setError(undefined);
 
-      const response = await fetchWithAuth('/scripts?includeSystem=true', { skipOrgIdInjection: true });
+      const response = await fetchWithAuth('/scripts?includeSystem=true');
       if (!response.ok) {
         throw new Error('Failed to fetch scripts');
       }

@@ -97,7 +97,6 @@ export default function PatchApprovalModal({
 
       const response = await fetchWithAuth(`/patches/${patch.id}/${endpoint}`, {
         method: 'POST',
-        skipOrgIdInjection: true,
         body: JSON.stringify(body)
       });
 

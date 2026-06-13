@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import OrgSwitcher, { getOrgSwitchRedirect, isFixedGlobalScopeRoute } from './OrgSwitcher';
+import OrgSwitcher, { getOrgSwitchRedirect } from './OrgSwitcher';
 
 const {
   setOrganizationMock,
@@ -75,20 +75,6 @@ describe('getOrgSwitchRedirect', () => {
     expect(getOrgSwitchRedirect('/alerts/abc123')).toBeNull();
     expect(getOrgSwitchRedirect('/scripts/abc123')).toBeNull();
     expect(getOrgSwitchRedirect('/settings/organizations/abc123')).toBeNull();
-  });
-});
-
-describe('isFixedGlobalScopeRoute', () => {
-  it('marks patch and script library routes as fixed global scope', () => {
-    expect(isFixedGlobalScopeRoute('/patches')).toBe(true);
-    expect(isFixedGlobalScopeRoute('/patches/')).toBe(true);
-    expect(isFixedGlobalScopeRoute('/scripts')).toBe(true);
-    expect(isFixedGlobalScopeRoute('/scripts/new')).toBe(true);
-    expect(isFixedGlobalScopeRoute('/scripts/script-1')).toBe(true);
-  });
-
-  it('does not mark script execution history as fixed global scope', () => {
-    expect(isFixedGlobalScopeRoute('/scripts/script-1/executions')).toBe(false);
   });
 });
 
@@ -225,21 +211,5 @@ describe('OrgSwitcher org change navigation', () => {
 
     expect(setOrgScopeMock).not.toHaveBeenCalled();
     expect(reloadMock).not.toHaveBeenCalled();
-  });
-
-  it('hides the scope pill on fixed-global pages', () => {
-    stubLocation('/patches');
-
-    render(<OrgSwitcher />);
-
-    expect(screen.queryByTestId('org-scope-pill')).toBeNull();
-  });
-
-  it('keeps the scope pill on script execution history', () => {
-    stubLocation('/scripts/script-1/executions');
-
-    render(<OrgSwitcher />);
-
-    expect(screen.getByTestId('org-scope-pill')).toBeInTheDocument();
   });
 });

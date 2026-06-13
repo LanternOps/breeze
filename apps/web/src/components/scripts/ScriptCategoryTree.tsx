@@ -175,7 +175,7 @@ export default function ScriptCategoryTree({
       setLoading(true);
       setError(undefined);
 
-      const response = await fetchWithAuth('/scripts?includeSystem=true', { skipOrgIdInjection: true });
+      const response = await fetchWithAuth('/scripts?includeSystem=true');
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -294,7 +294,6 @@ export default function ScriptCategoryTree({
           try {
             await fetchWithAuth(`/scripts/${script.id}`, {
               method: 'PUT',
-              skipOrgIdInjection: true,
               body: JSON.stringify({ category: renameValue.trim() })
             });
           } catch {

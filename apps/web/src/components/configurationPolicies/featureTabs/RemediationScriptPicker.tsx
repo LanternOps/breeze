@@ -57,7 +57,7 @@ export default function RemediationScriptPicker({
       setLoading(true);
       setError(undefined);
 
-      const response = await fetchWithAuth('/scripts', { skipOrgIdInjection: true });
+      const response = await fetchWithAuth('/scripts');
       if (!response.ok) {
         throw new Error('Failed to fetch scripts');
       }
