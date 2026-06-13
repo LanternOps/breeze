@@ -223,6 +223,11 @@ export interface ActiveSession {
    * is always set, even for system/partner-scoped users who own the session.
    */
   readonly orgId: string;
+  /**
+   * Model id this session runs with (from the aiSessions row). Used to price
+   * tokens for cost tracking when the SDK fails to report total_cost_usd.
+   */
+  readonly model: string;
   sdkSessionId: string | null;
   query: Query;
   abortController: AbortController;
@@ -358,6 +363,7 @@ export class StreamingSessionManager {
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
+      model: dbSession.model,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
       abortController,
@@ -711,6 +717,8 @@ export class StreamingSessionManager {
                 output_tokens: resultMsg.usage?.output_tokens ?? 0,
               },
               num_turns: resultMsg.num_turns ?? 0,
+              // Model id for token-based cost fallback when the SDK reports $0.
+              model: session.model,
             };
 
             if (!resultMsg.usage || (!resultMsg.usage.input_tokens && !resultMsg.usage.output_tokens)) {
