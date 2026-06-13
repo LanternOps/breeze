@@ -9,6 +9,7 @@ import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
+import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 
@@ -44,7 +45,8 @@ export default function ScriptsPage() {
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategoryFilter, setLibraryCategoryFilter] = useState<string>('all');
 
-  const { organizations } = useOrgStore();
+  const { organizations, currentOrgId } = useOrgStore();
+  const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
 
   const fetchScripts = useCallback(async () => {
     try {
@@ -348,6 +350,7 @@ export default function ScriptsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Script Library</h1>
+          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/scripts'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">Manage and execute scripts across your devices.</p>
         </div>
         <div className="flex items-center gap-2">

@@ -48,6 +48,12 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: Object.assign(() => ({ currentOrgId: null, organizations: [] }), {
+    getState: () => ({ currentOrgId: null, organizations: [] })
+  })
+}));
+
 // The advanced filter is seeded from the URL hash; stub it to an active filter
 // so the page mounts with `advancedFilter` set (v2 chip bar enabled).
 const activeFilter = {

@@ -17,6 +17,8 @@ import { QuickAddChips } from './QuickAddChips';
 import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices } from '../../lib/devicesFetch';
+import { useOrgStore } from '../../stores/orgStore';
+import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
@@ -44,6 +46,9 @@ type DeviceGroup = {
 };
 
 export default function DevicesPage() {
+  const { organizations: orgStoreOrgs, currentOrgId } = useOrgStore();
+  const currentOrg = orgStoreOrgs.find(o => o.id === currentOrgId) ?? null;
+
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -698,6 +703,7 @@ export default function DevicesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
+          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/devices'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">
             Manage and monitor your fleet.
           </p>

@@ -12,6 +12,8 @@ import RingSelector, { type UpdateRing } from './RingSelector';
 import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useOrgStore } from '../../stores/orgStore';
+import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
@@ -40,6 +42,9 @@ function setTabInUrl(tab: TabKey) {
 const DEVICE_SCAN_PAGE_LIMIT = 100;
 
 export default function PatchesPage() {
+  const { organizations, currentOrgId } = useOrgStore();
+  const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
+
   const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
@@ -383,6 +388,7 @@ export default function PatchesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Patch Management</h1>
+          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/patches'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">Manage update rings, approvals, compliance, and patch deployments.</p>
         </div>
         <div className="flex items-center gap-3">
