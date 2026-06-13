@@ -200,6 +200,7 @@ import { saveFilesystemSnapshot } from '../services/filesystemAnalysis';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
+import { agentAuthMiddleware } from '../middleware/agentAuth';
 
 describe('agent routes', () => {
   let app: Hono;
@@ -220,6 +221,22 @@ describe('agent routes', () => {
   });
 
   describe('GET /agents/install.sh', () => {
+    it('serves public install and uninstall scripts without agent-token auth', async () => {
+      const installRes = await app.request('/agents/install.sh');
+      const uninstallRes = await app.request('/agents/uninstall.sh');
+
+      expect(installRes.status).toBe(200);
+      expect(uninstallRes.status).toBe(200);
+      expect(await uninstallRes.text()).toContain('case "$uname_s"');
+      expect(agentAuthMiddleware).not.toHaveBeenCalled();
+    });
+
+    it('does not apply script auth bypasses to nested paths', async () => {
+      await app.request('/agents/install.sh/heartbeat');
+
+      expect(agentAuthMiddleware).toHaveBeenCalledTimes(1);
+    });
+
     it('requires Linux agent checksum metadata verification before install', async () => {
       const res = await app.request('/agents/install.sh');
 

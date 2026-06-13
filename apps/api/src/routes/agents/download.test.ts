@@ -17,7 +17,7 @@ vi.mock('../../services/binarySource', () => ({
   },
 }));
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -243,6 +243,51 @@ describe('GET /install.sh — generated installer script', () => {
   it('documents --token usage in the script header', async () => {
     const script = await fetchScript();
     expect(script).toContain('--token YOUR_ENROLLMENT_TOKEN');
+  });
+});
+
+describe('GET /uninstall.sh — generated uninstaller script', () => {
+  async function fetchScript(): Promise<string> {
+    const res = await downloadRoutes.request('/uninstall.sh');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    expect(res.headers.get('content-disposition')).toBeNull();
+    return res.text();
+  }
+
+  it('is valid bash (bash -n syntax check)', async () => {
+    const script = await fetchScript();
+    const tmp = mkdtempSync(join(tmpdir(), 'breeze-uninstall-sh-'));
+    const file = join(tmp, 'uninstall.sh');
+    try {
+      writeFileSync(file, script);
+      execFileSync('bash', ['-n', file]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('detects macOS and Linux instead of relying on separate scripts', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('Darwin*) uninstall_macos');
+    expect(script).toContain('Linux*) uninstall_linux');
+    expect(script).toContain('launchctl bootout system/com.breeze.agent');
+    expect(script).toContain('systemctl stop breeze-agent');
+  });
+
+  it('matches the checked-in web and agent script copies', async () => {
+    const script = await fetchScript();
+    const webScript = readFileSync(
+      join(import.meta.dirname, '../../../../web/public/scripts/uninstall.sh'),
+      'utf8',
+    );
+    const agentScript = readFileSync(
+      join(import.meta.dirname, '../../../../../agent/scripts/install/uninstall.sh'),
+      'utf8',
+    );
+
+    expect(script).toBe(webScript);
+    expect(agentScript).toBe(webScript);
   });
 });
 
