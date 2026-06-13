@@ -162,6 +162,12 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
   const settings = await resolveWarrantySettings(deviceId);
 
   if (!settings.enabled) {
+    // Warranty alerting is opt-in (#1320). When it resolves to disabled (no/inactive
+    // policy, or an explicitly-disabled link) we must still clear any existing open
+    // warranty alert — otherwise a device that had an alert created under the old
+    // enabled-by-default behavior keeps it stranded active/acknowledged/suppressed
+    // forever, because no later evaluation reaches the auto-resolve paths below.
+    await autoResolveWarrantyAlerts(deviceId);
     return null;
   }
 

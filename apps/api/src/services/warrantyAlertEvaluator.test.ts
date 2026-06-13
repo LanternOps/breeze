@@ -95,6 +95,7 @@ describe('evaluateWarrantyAlerts gating', () => {
   });
 
   it('does NOT fire when no warranty policy is assigned (opt-in default, #1320 Bug 1)', async () => {
+    stubAutoResolve();
     // 1: warranty row (expiring, fixed-term) → passes the unknown/no-date/subscription guards
     selectMock.mockReturnValueOnce(queueSelect([baseWarranty]));
     // 2: device row (evaluate)
@@ -104,6 +105,8 @@ describe('evaluateWarrantyAlerts gating', () => {
     // 4: device group memberships → none
     selectMock.mockReturnValueOnce(queueSelect([]));
     // 5: warranty feature links → NONE assigned ⇒ DISABLED_SETTINGS ⇒ gate trips
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 6: disabled path now auto-resolves; open-alert select → none
     selectMock.mockReturnValueOnce(queueSelect([]));
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
@@ -174,11 +177,50 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(
       queueSelect([{ inlineSettings: { enabled: false, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
     );
+    // 6: disabled path now auto-resolves; open-alert select → none
+    selectMock.mockReturnValueOnce(queueSelect([]));
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
 
     expect(result).toBeNull();
     expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('auto-resolves a STRANDED open expiry alert when settings now resolve to disabled (#1320)', async () => {
+    // Regression: warranty alerting is now opt-in, so a device with an open alert
+    // created under the old enabled-by-default behavior must have it auto-resolved
+    // once it resolves to disabled — otherwise the gate at `if (!settings.enabled)`
+    // returns BEFORE the cleanup and the alert is stranded active forever.
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    updateMock.mockReturnValue({ set });
+
+    // 1: warranty row (expiring, fixed-term) → reaches policy resolution
+    selectMock.mockReturnValueOnce(queueSelect([baseWarranty]));
+    // 2: device row (evaluate)
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    // 3: device row (resolveWarrantySettings)
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    // 4: device group memberships → none
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 5: warranty feature links → NONE assigned ⇒ DISABLED_SETTINGS ⇒ gate trips
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 6: autoResolveWarrantyAlerts open-alert select → an existing open (active) alert
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ id: 'alert-stranded-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active' }])
+    );
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBeNull();
+    expect(insertMock).not.toHaveBeenCalled();
+    // The stranded alert was updated to resolved.
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'resolved' }));
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'alert.resolved',
+      ORG_ID,
+      expect.objectContaining({ alertId: 'alert-stranded-1' }),
+      expect.any(String)
+    );
   });
 
   it('returns null and never resolves policy when there is no warranty record', async () => {
