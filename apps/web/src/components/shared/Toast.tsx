@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { AlertTriangle, CheckCircle, X, Undo2, XCircle } from 'lucide-react';
 
 interface ToastData {
@@ -8,6 +8,16 @@ interface ToastData {
   onUndo?: () => void;
   duration?: number;
 }
+
+// Identical toasts (same type+message) emitted within this window collapse into
+// one. This kills the "double success toast" papercut (#1301) regardless of the
+// emit source — a double-mounted/view-transition-overlapped container, a
+// StrictMode double-invoke, or a caller that fires twice — without suppressing
+// legitimately-repeated actions (e.g. clicking "Save" again seconds later, which
+// users expect to re-confirm). Undo toasts are never collapsed: they carry a
+// distinct per-invocation onUndo callback, so two "Decommissioning…" toasts
+// genuinely target two different rows and must both stay actionable.
+const DEDUPE_WINDOW_MS = 1000;
 
 let addToastFn: ((toast: Omit<ToastData, 'id'>) => void) | null = null;
 const pendingToasts: Array<Omit<ToastData, 'id'>> = [];
@@ -28,8 +38,32 @@ export function _resetToastQueueForTests() {
 
 export default function ToastContainer() {
   const [toasts, setToasts] = useState<ToastData[]>([]);
+  // Tracks the last time each (type|message) key was shown, so we can collapse a
+  // burst of identical toasts. A ref (not state) keeps this out of the render
+  // cycle and survives across addToast calls without re-subscribing the effect.
+  const recentToastsRef = useRef<Map<string, number>>(new Map());
 
   const addToast = useCallback((toast: Omit<ToastData, 'id'>) => {
+    // Undo toasts always render — each carries a unique onUndo for a distinct
+    // target row and must stay individually actionable.
+    if (toast.type !== 'undo') {
+      const key = `${toast.type}|${toast.message}`;
+      const now = Date.now();
+      const last = recentToastsRef.current.get(key);
+      if (last !== undefined && now - last < DEDUPE_WINDOW_MS) {
+        recentToastsRef.current.set(key, now);
+        return; // identical toast already shown moments ago — drop the duplicate
+      }
+      recentToastsRef.current.set(key, now);
+      // Opportunistically prune stale keys so the map can't grow unbounded over a
+      // long-lived session.
+      if (recentToastsRef.current.size > 50) {
+        for (const [k, t] of recentToastsRef.current) {
+          if (now - t >= DEDUPE_WINDOW_MS) recentToastsRef.current.delete(k);
+        }
+      }
+    }
+
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setToasts(prev => [...prev, { ...toast, id }]);
     setTimeout(() => {

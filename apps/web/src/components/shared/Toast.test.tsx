@@ -142,6 +142,72 @@ describe('ToastContainer', () => {
     expect(toast).toHaveTextContent('heads up');
   });
 
+  it('collapses two identical success toasts fired in quick succession into one (#1301 double-toast papercut)', () => {
+    render(<ToastContainer />);
+
+    act(() => {
+      showToast({ type: 'success', message: 'Timer started' });
+      showToast({ type: 'success', message: 'Timer started' });
+    });
+
+    // A double-emit (double-mounted container / view-transition overlap / a
+    // caller firing twice) must surface exactly one toast, not two.
+    const toasts = screen.getAllByTestId('toast');
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toHaveTextContent('Timer started');
+  });
+
+  it('does NOT collapse toasts with different messages or types fired together', () => {
+    render(<ToastContainer />);
+
+    act(() => {
+      showToast({ type: 'success', message: 'Status created' });
+      showToast({ type: 'success', message: 'Status updated' }); // different message
+      showToast({ type: 'error', message: 'Status created' }); // same message, different type
+    });
+
+    const toasts = screen.getAllByTestId('toast');
+    expect(toasts).toHaveLength(3);
+  });
+
+  it('re-shows an identical toast once the dedupe window has elapsed (legitimate repeat action)', () => {
+    vi.useFakeTimers();
+    try {
+      render(<ToastContainer />);
+
+      act(() => {
+        showToast({ type: 'success', message: 'Saved' });
+      });
+      expect(screen.getAllByTestId('toast')).toHaveLength(1);
+
+      // Advance past the dedupe window (and the duplicate inside it is dropped).
+      act(() => {
+        showToast({ type: 'success', message: 'Saved' }); // within window → dropped
+        vi.advanceTimersByTime(1001);
+        showToast({ type: 'success', message: 'Saved' }); // after window → shown again
+      });
+
+      // First toast hasn't auto-dismissed yet (5000ms), so both the original and
+      // the post-window repeat are present — two toasts, not one.
+      expect(screen.getAllByTestId('toast')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never collapses undo toasts — each targets a distinct row with its own onUndo', () => {
+    render(<ToastContainer />);
+    const onUndoA = vi.fn();
+    const onUndoB = vi.fn();
+
+    act(() => {
+      showToast({ type: 'undo', message: 'Decommissioning...', onUndo: onUndoA });
+      showToast({ type: 'undo', message: 'Decommissioning...', onUndo: onUndoB });
+    });
+
+    expect(screen.getAllByTestId('toast')).toHaveLength(2);
+  });
+
   it('auto-dismisses after the default 5000ms', async () => {
     vi.useFakeTimers();
     try {
