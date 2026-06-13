@@ -571,6 +571,52 @@ describe('PatchesPage', () => {
     );
   });
 
+  it('names the devices\' true orgs in the scan confirmation — not the stale shell selection (multi-org regression)', async () => {
+    // The user shell has currentOrgId=null (global view). Devices belong to two
+    // different orgs. The scan confirmation must name both orgs and must NOT name
+    // a single stale org from currentOrgId.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [
+            { id: 'device-1', hostname: 'W1', orgId: 'org-1' },
+            { id: 'device-2', hostname: 'W2', orgId: 'org-2' },
+          ],
+          pagination: { page: 1, limit: 100, total: 2 },
+        });
+      }
+
+      if (url === '/patches/scan') {
+        return makeJsonResponse({ queuedCommandIds: ['cmd-1', 'cmd-2'] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Confirmation must reflect the two actual target orgs
+    const confirmDialog = await screen.findByTestId('confirm-fleet-action');
+    const dialogText = confirmDialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
+    // Must mention multiple organizations (scopeConfirmMessage: "across N organizations (Acme Corp, Globex)")
+    expect(dialogText).toMatch(/across \d+ organizations/i);
+    expect(dialogText).toMatch(/Acme Corp/i);
+    expect(dialogText).toMatch(/Globex/i);
+    // Must NOT name a single org that was stale from the shell selection
+    // (currentOrgId is null in this mock, so neither should appear alone)
+    expect(dialogText).not.toMatch(/^.*in Acme Corp\?.*$/);
+
+    // Cancel — don't actually scan in this assertion-focused test
+    const cancelButton = screen.getAllByRole('button').find(b => b.textContent === 'Cancel');
+    if (cancelButton) fireEvent.click(cancelButton);
+  });
+
   it('reports total failure with skipped breakdown when zero devices queued', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

@@ -235,6 +235,10 @@ export default function PatchesPage() {
     setScanLoading(true);
     try {
       const ids = new Set<string>();
+      // Collect the distinct orgIds reported by the device payloads so the
+      // confirmation message names the action's TRUE targets, not the shell
+      // selection (currentOrgId is stale on the global /patches route).
+      const seenOrgIds = new Set<string>();
       let page = 1;
       let totalPages = 1;
 
@@ -253,6 +257,8 @@ export default function PatchesPage() {
           const id = rawId ? String(rawId) : '';
           if (id) {
             ids.add(id);
+            const rawOrgId = rawDevice?.orgId ?? rawDevice?.org_id;
+            if (rawOrgId) seenOrgIds.add(String(rawOrgId));
           }
         }
 
@@ -264,13 +270,20 @@ export default function PatchesPage() {
       const deviceIds = [...ids];
       if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
-      // Derive org names for the confirmation message. On the global (all-orgs)
-      // page currentOrgId is null, so we list all accessible orgs. On a scoped
-      // page we show only the current org.
-      const orgNames =
-        currentOrgId && currentOrg
-          ? [currentOrg.name]
-          : organizations.map(o => o.name);
+      // Derive org names from the actual device payloads so the confirmation
+      // always names the true scope. Map known orgIds to store names; if an
+      // orgId has no match (e.g. store not yet loaded) we still count it so
+      // scopeConfirmMessage falls through to "across N organizations (...)".
+      const orgNamesFromDevices: string[] = [];
+      for (const oid of seenOrgIds) {
+        const org = organizations.find(o => o.id === oid);
+        orgNamesFromDevices.push(org ? org.name : oid);
+      }
+      // If the device API didn't expose orgId fields at all (older API), fall
+      // back to listing all accessible orgs — still better than a stale single org.
+      const orgNames = orgNamesFromDevices.length > 0
+        ? orgNamesFromDevices
+        : organizations.map(o => o.name);
 
       setPendingScan({ deviceIds, orgNames });
     } catch (err) {

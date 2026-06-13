@@ -114,6 +114,9 @@ export type DevicePatchRow = {
   lastInstalledAt?: string;
   lastScannedAt?: string;
   pendingReboot: boolean;
+  /** The org this device belongs to, as returned by the /devices API. Used to
+   *  derive the true target scope for bulk-action confirmation messages. */
+  orgId?: string;
 };
 
 export function formatRelativeTime(isoString: string): string {
