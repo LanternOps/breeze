@@ -102,7 +102,7 @@ Go to **Settings > Ticketing** to manage ticket categories.
 Categories also carry SLA targets (response and resolution times) and billing defaults. When a ticket's resolution target is running out, an **at-risk** chip appears in the queue, turning to **breached** once the target has passed -- and the **Breaching soon** tab collects all of them in one place.
 
 <Aside>
-  Today the SLA targets drive the at-risk and breached chips in the queue. The full automated SLA engine -- enforcement, escalations, and business-hours schedules -- arrives in a later release.
+  The automated SLA engine is live. Breeze tracks each ticket against its category's response and resolution targets, pauses the clock while a ticket is **On Hold**, monitors for breaches, and notifies the assignee (and escalates to the configured contacts) as a target approaches or is missed.
 </Aside>
 
 ## Custom Statuses & SLA Configuration

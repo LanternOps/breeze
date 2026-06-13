@@ -1,0 +1,157 @@
+---
+title: Identity Console
+description: Connect a customer's Google Workspace and Microsoft 365 tenant, view identity posture, and run AI-assisted identity actions with approval gating.
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Identity Console connects a customer's Google Workspace domain and Microsoft 365 tenant to Breeze so your technicians can run real helpdesk identity work -- looking up users, checking security posture, resetting passwords, suspending accounts, managing groups and licenses, and offboarding leavers -- directly from the in-app AI assistant. Connect a tenant once, and from then on a technician can describe what they need in plain language. Credentials are verified against the live provider before they are stored, encrypted at rest, and never returned to the browser. Read-only lookups run automatically; anything that changes an account is gated behind a human approval step with a mandatory reason and a full audit trail.
+
+<Aside type="caution" title="Off by default">
+  The Identity Console is feature-flagged off by default. A host operator must enable `GOOGLE_WORKSPACE_ENABLED` (Google Workspace) and/or `M365_ENABLED` (Microsoft 365) before the connectors appear. While a flag is off, the connector is completely dark -- its screens and AI actions are unavailable. Even with the flag on, an organization must have a verified connection before any identity action will run.
+</Aside>
+
+<Aside type="note" title="Not the same as Cloud-to-Cloud Backup">
+  The Identity Console performs **live administration** of a customer's identity directory -- it reads posture and acts on accounts in real time. It does **not** copy or store mailbox or file data. That is a separate product, **Cloud-to-Cloud Backup**, which schedules backup and restore of the customer's Google and Microsoft 365 *data*. One feature manages accounts now; the other protects data over time.
+</Aside>
+
+---
+
+## Connecting a Tenant
+
+Both connectors live in the organization's **Integrations** area as dedicated cards -- one for Google Workspace and one for Microsoft 365. Each card shows a **Connected / Not connected** status, an inline walkthrough for gathering the required credentials, the connection form, and (once connected) a read-only details summary. There is one connection per organization for each provider.
+
+<Tabs>
+  <TabItem label="Google Workspace">
+    To connect a Google Workspace domain you provide:
+
+    | Field | Description |
+    |---|---|
+    | **Primary domain** | The customer's domain, e.g. `example.com` |
+    | **Super-admin email** | A super-admin account in the domain that the integration impersonates |
+    | **Service-account key** | The full service-account JSON key, pasted into a masked field |
+
+    The card walks you through creating a Google Cloud service account, downloading its JSON key, enabling the required Google APIs (Admin SDK, Gmail, Calendar, Enterprise License Manager), and authorizing **domain-wide delegation** with the exact OAuth scopes Breeze displays for you to copy into the Google Admin console.
+
+    On save, Breeze makes a **live Directory API call** to confirm the key works and that domain-wide delegation is correctly authorized. The connection is only stored if that check succeeds.
+  </TabItem>
+  <TabItem label="Microsoft 365">
+    To connect a Microsoft 365 tenant you provide:
+
+    | Field | Description |
+    |---|---|
+    | **Tenant (Directory) ID** | The tenant **GUID** (the `contoso.onmicrosoft.com` form is rejected) |
+    | **Application (client) ID** | The client ID of an Entra (Azure AD) app registration |
+    | **Client secret** | The app's client secret, entered in a masked field |
+
+    The card covers creating the Entra app registration, copying the tenant and client IDs, generating a client secret, and granting **admin consent** for the required Microsoft Graph permissions. It also maps which permissions back which capabilities -- reads need directory and audit-log read scopes, while disabling a user or resetting a password additionally require user read/write and the **User Administrator** role.
+
+    On save, Breeze acquires a token and makes a **live Microsoft Graph call** to confirm the credentials and admin consent are in place before storing anything.
+  </TabItem>
+</Tabs>
+
+<Aside type="tip">
+  Connecting or disconnecting a tenant requires MFA and an organization-write permission, and every connect or disconnect is written to the audit log. Stored secrets are encrypted at rest and never returned -- when you re-save a connection, the secret field shows a "stored, encrypted -- leave blank to keep" placeholder.
+</Aside>
+
+---
+
+## Viewing Identity Posture
+
+Once a tenant is connected, technicians can ask the AI assistant to read identity data. These lookups are read-only and run automatically.
+
+### Google Workspace
+
+| View | What you see |
+|---|---|
+| **User lookup** | Full name, suspended status, super-admin flag, 2-step-verification enrollment, last login, org-unit path, aliases |
+| **Group membership** | Every group a user belongs to |
+| **License assignments** | Who holds a given product or SKU |
+| **Security drift report** | A domain-wide posture scan that buckets users into: no 2-step verification, super-admins, suspended, never logged in, and stale (no login past a threshold, default 90 days) |
+
+The security drift report can be viewed in the chat or emailed. Emailed reports are locked to the connection's own admin address so directory data cannot be sent elsewhere.
+
+### Microsoft 365
+
+| View | What you see |
+|---|---|
+| **User lookup** | The user's profile |
+| **Recent sign-in activity** | A user's recent sign-ins |
+| **Group memberships** | The groups a user belongs to in the tenant |
+
+---
+
+## AI-Assisted Identity Actions
+
+Every identity action carries one of two tiers:
+
+| Tier | Behavior |
+|---|---|
+| **Read** | Runs automatically -- lookups and reports that do not change anything |
+| **Mutating** | Requires a human approval step plus a mandatory reason, and is recorded in the audit log |
+
+<Aside type="caution">
+  Mutating actions will not run without a reason, and every one flows through Breeze's AI approval gate. They are never executed silently.
+</Aside>
+
+### Google Workspace actions
+
+**Read (automatic):** user lookup, list a user's groups, list license assignments, security-drift scan, email the drift report.
+
+**Mutating (approval + reason required):**
+
+- Reset password (temporary password, force-change at next sign-in)
+- Suspend or restore (un-suspend) a user
+- Sign a user out of all sessions
+- Set or disable mail forwarding; set an out-of-office responder
+- Update a user (name, recovery email/phone, aliases); rename a user (change primary email)
+- Add to or remove from a group
+- Move a user to a different org unit
+- Reset (turn off) 2-step verification for a user who lost their second factor
+- Add or remove a mailbox delegate
+- Assign or remove a license
+- Share a calendar
+- **Guided offboarding** -- a best-effort sequence over a departing user: set out-of-office and forwarding, revoke third-party OAuth grants, remove from all groups, perform a BYOD-safe wipe of corporate mobile data only, sign out of all sessions, then suspend. Each step reports success or failure, and a partial failure is surfaced as a failure
+- **Stolen-device remote wipe** -- a full factory reset of a user's enrolled mobile devices, kept separate from offboarding and intended for lost or stolen hardware only
+
+### Microsoft 365 actions
+
+**Read (automatic):** user lookup, recent sign-in activity, group memberships.
+
+**Mutating (approval + reason required):**
+
+- Disable a user (block sign-in)
+- Reset a password (temporary password, force-change at next sign-in)
+
+<Aside type="note">
+  Microsoft 365 mutating actions are intentionally limited to disabling a user and resetting a password. The Google Workspace action set is much broader -- the two providers are not at parity.
+</Aside>
+
+---
+
+## Fix with AI
+
+**Fix with AI** opens the AI assistant bound to a specific device: it sets that device as the session context, starts a fresh chat, and creates a device-scoped session for the technician to type an instruction into. It is the bridge between the Identity Console and on-device remediation -- you start an AI session already pointed at the device in question. Site-level access scoping is respected, so a site-restricted technician cannot bind to a device outside their site.
+
+<Aside type="note">
+  Fix with AI is being introduced as the device-task dispatch foundation. The session-binding behavior is in place; expect it to surface more prominently in the device experience in a later release.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**The Google Workspace or Microsoft 365 card does not appear.**
+The connector is feature-flagged off by default. Ask your host operator to enable `GOOGLE_WORKSPACE_ENABLED` or `M365_ENABLED`. While the flag is off, the connector and its AI actions are unavailable.
+
+**The connection fails to save with a credentials error.**
+Both providers verify credentials live before storing them. For Google Workspace, confirm the service-account key is valid and that domain-wide delegation has been authorized with the exact scopes shown on the card. For Microsoft 365, confirm the tenant ID is the GUID (not the `.onmicrosoft.com` form), the client secret has not expired, and admin consent has been granted for the required Graph permissions.
+
+**A mutating action will not run.**
+Mutating actions require a reason and a human approval step. Supply a reason and approve the action when prompted. Confirm the connected service account or app registration has the write permissions and admin role required for that action.
+
+**I connected a tenant but identity actions still do not work.**
+A verified connection is required in addition to the feature flag being on. Re-open the connector card and confirm it shows **Connected**. If it shows **Not connected**, re-enter and save the credentials.
+
+**Is mailbox or file data backed up by this feature?**
+No. The Identity Console only administers accounts in real time. To back up and restore Google or Microsoft 365 data, use the separate Cloud-to-Cloud Backup feature.

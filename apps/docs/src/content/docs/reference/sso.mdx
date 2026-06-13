@@ -210,11 +210,11 @@ The OIDC login flow follows the Authorization Code + PKCE pattern:
 <Steps>
 1. **User visits login page.** The frontend calls `GET /api/v1/sso/check/:orgId` to determine if SSO is enabled for the organization.
 2. **User clicks "Sign in with SSO".** The browser navigates to `GET /api/v1/sso/login/:orgId`.
-3. **Breeze generates PKCE challenge and state.** A cryptographic `state`, `nonce`, and PKCE `codeVerifier`/`codeChallenge` pair are generated and stored in the `sso_sessions` table with a 10-minute TTL.
+3. **Breeze generates PKCE challenge and state.** A cryptographic `state`, `nonce`, and PKCE `codeVerifier`/`codeChallenge` pair are generated. The PKCE verifier, nonce, and redirect path are stored server-side in the `sso_sessions` table (10-minute TTL); the `state` is additionally bound to the initiating browser via a signed, HttpOnly cookie (`breeze_sso_state`, `SameSite=Lax`, `Secure` in production, scoped to the callback path, 10-minute Max-Age). The cookie carries an HMAC-SHA256 signature of the state (keyed on `APP_ENCRYPTION_KEY`/`SECRET_ENCRYPTION_KEY`, distinct from the JWT secret).
 4. **Redirect to IdP.** Breeze redirects the user to the IdP's authorization endpoint with the PKCE challenge, state, nonce, and redirect URI.
 5. **User authenticates at IdP.** The user signs in at the identity provider.
 6. **IdP redirects back.** The IdP redirects to `GET /api/v1/sso/callback` with an authorization `code` and `state` parameter.
-7. **Breeze validates state.** The `state` is matched against the `sso_sessions` table to prevent CSRF.
+7. **Breeze validates the browser binding, then claims the state.** The `state` returned by the IdP is verified against the `breeze_sso_state` cookie using a constant-time comparison (`crypto.timingSafeEqual`) before anything else runs — a callback that did not originate from the same browser that started the flow is rejected. Only after the binding check does Breeze atomically consume the session row (`DELETE ... RETURNING` on a matching, non-expired `state`), which makes each state strictly single-use and immune to replay.
 8. **Code exchange.** Breeze exchanges the authorization code for tokens at the IdP's token endpoint, including the PKCE `codeVerifier`.
 9. **ID token verification.** If an ID token is returned, Breeze verifies the issuer, audience, expiration, and nonce claims.
 10. **User info retrieval.** Breeze calls the IdP's UserInfo endpoint to get the user's profile.
@@ -408,12 +408,16 @@ When `enforceSSO` is set to `true` on a provider, the organization's login page 
 |--------|------|-------------|
 | `id` | `uuid` | Primary key. |
 | `provider_id` | `uuid` | SSO provider (foreign key). |
-| `state` | `varchar(64)` | CSRF protection state parameter (unique). |
+| `state` | `varchar(64)` | Login-flow state parameter (unique). Used to look up and atomically consume the session; CSRF protection is enforced by binding this value to the initiating browser via the signed `breeze_sso_state` cookie (see [SSO Login Flow](#sso-login-flow)). |
 | `nonce` | `varchar(64)` | ID token nonce. |
 | `code_verifier` | `varchar(128)` | PKCE code verifier. |
 | `redirect_url` | `varchar(500)` | Post-login redirect path. |
 | `expires_at` | `timestamp` | Session expiration (10 minutes from creation). |
 | `created_at` | `timestamp` | Creation timestamp. |
+
+<Aside type="note">
+  The `nonce`, `code_verifier`, and `redirect_url` are intentionally kept server-side in this table and are never placed in the browser cookie — only the `state`-binding HMAC travels to the client. The session row is consumed (deleted) atomically on the first valid callback, so it cannot be replayed even within the TTL window.
+</Aside>
 
 ---
 
@@ -489,7 +493,7 @@ Breeze could not fetch the `.well-known/openid-configuration` document from the 
 
 ### "session_expired" redirect
 
-The SSO session (state parameter) has expired. SSO sessions are valid for 10 minutes. The user should retry the login flow. If this happens frequently, check for clock skew between the Breeze server and the IdP.
+The SSO session (state parameter) has expired, or the callback could not be matched to the browser that started the flow. SSO sessions are valid for 10 minutes, and the `breeze_sso_state` cookie that binds the flow to the originating browser shares that lifetime. The user should retry the login flow in the same browser. If this happens frequently, check for clock skew between the Breeze server and the IdP, and confirm the browser is not stripping the `SameSite=Lax` callback cookie (for example, when the IdP redirect crosses an unexpected origin).
 
 ### "domain_not_allowed" redirect
 
