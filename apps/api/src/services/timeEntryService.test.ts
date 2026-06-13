@@ -380,6 +380,37 @@ describe('startTimer / stopTimer', () => {
       consoleSpy.mockRestore();
     }
   });
+
+  // Regression: real postgres.js/Drizzle errors nest the PG code under `.cause`
+  // (the top-level DrizzleQueryError has no `.code`). A flat `{ code: '23505' }`
+  // mock hid this — in production the unique-violation guard never matched and a
+  // raw 500 leaked instead of the retry/409 path. isUniqueViolation must unwrap.
+  it('detects a unique violation wrapped in a DrizzleQueryError cause (no top-level code)', async () => {
+    const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+    const wrapped = Object.assign(new Error('Failed query: insert into "time_entries" ...'), { cause: pgError }); // no .code on the wrapper
+    dbMocks.insertErrors.push(wrapped, wrapped);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(startTimer({ description: 'race' }, ACTOR))
+        .rejects.toMatchObject({ code: 'ENTRY_RUNNING', status: 409 });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('retries once and succeeds when only the first start hits a wrapped unique violation', async () => {
+    const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+    const wrapped = Object.assign(new Error('Failed query: insert ...'), { cause: pgError });
+    dbMocks.updateResult = []; // no running timer to stop
+    dbMocks.insertErrors.push(wrapped); // first attempt fails, retry uses insertResult
+    dbMocks.insertResult = [{ id: 'te-retry', endedAt: null }];
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(startTimer({ description: 'race' }, ACTOR)).resolves.toMatchObject({ id: 'te-retry' });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
 });
 
 describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {

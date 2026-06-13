@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { startTimerAction, onTimerChanged, onBillingChanged } from '../../lib/timerActions';
+import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
 import { formatMinutes, formatMoney } from '../../lib/timeFormat';
 
 interface BillingSummary {
@@ -26,6 +26,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   const [description, setDescription] = useState('');
   const [billable, setBillable] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [startingTimer, setStartingTimer] = useState(false);
 
   const refresh = useCallback(async () => {
     const [sumRes, listRes] = await Promise.all([
@@ -55,8 +56,14 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   }, [ticketId]);
 
   const startTimer = () => {
+    // Guard against double-fire: a start request takes a beat server-side, and
+    // overlapping starts race the one-running-timer unique index. Disabling the
+    // button in flight keeps the happy path single-shot.
+    if (startingTimer) return;
+    setStartingTimer(true);
     void startTimerAction({ ticketId })
-      .catch((err) => handleActionError(err, 'Failed to start timer.'));
+      .catch((err) => handleActionError(err, 'Failed to start timer.'))
+      .finally(() => setStartingTimer(false));
   };
 
   const submitQuickAdd = async () => {
@@ -85,6 +92,10 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
       setMinutes('');
       setDescription('');
       await refresh();
+      // Notify the workbench feed (and other billing listeners) so the new
+      // time-entry line appears without a manual reload — mirrors the timer
+      // start/stop and parts-mutation paths.
+      broadcastBillingChanged();
     } catch (err) {
       handleActionError(err, 'Failed to log time.');
     } finally {
@@ -121,10 +132,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         <button
           type="button"
           onClick={startTimer}
-          className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+          disabled={startingTimer}
+          className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-billing-start-timer"
         >
-          Start timer
+          {startingTimer ? 'Starting…' : 'Start timer'}
         </button>
         <button
           type="button"

@@ -50,6 +50,38 @@ describe('TicketTimeBilling', () => {
     });
   });
 
+  it('broadcasts billing-changed after a quick-add so the workbench feed live-refreshes', async () => {
+    const onBillingChanged = vi.fn();
+    window.addEventListener(BILLING_CHANGED_EVENT, onBillingChanged);
+    try {
+      render(<TicketTimeBilling ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+      fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '15' } });
+      fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+      await waitFor(() => expect(onBillingChanged).toHaveBeenCalled());
+    } finally {
+      window.removeEventListener(BILLING_CHANGED_EVENT, onBillingChanged);
+    }
+  });
+
+  it('disables the start-timer button while a start is in flight', async () => {
+    let resolveStart: (v: Response) => void = () => {};
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/time-entries/start') return new Promise<Response>((res) => { resolveStart = res; });
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    const btn = await screen.findByTestId('ticket-billing-start-timer');
+    fireEvent.click(btn);
+    await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(true));
+    // A second click while disabled must not fire a second start request.
+    fireEvent.click(btn);
+    const startCalls = fetchWithAuth.mock.calls.filter((a) => a[0] === '/time-entries/start').length;
+    expect(startCalls).toBe(1);
+    act(() => resolveStart({ ok: true, status: 201, json: async () => ({ data: { id: 'te-x' } }) } as Response));
+    await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(false));
+  });
+
   it('refetches when breeze:billing-changed fires', async () => {
     render(<TicketTimeBilling ticketId="tk-1" />);
     // Wait for the initial load

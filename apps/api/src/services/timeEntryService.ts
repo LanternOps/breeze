@@ -268,7 +268,15 @@ async function stopRunningEntry(
 }
 
 function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
+  // postgres.js raises a PostgresError with code '23505', but Drizzle wraps it
+  // in a DrizzleQueryError whose own `.code` is undefined — the PG code lives on
+  // `.cause`. Walk the cause chain so the retry/409 path actually fires.
+  let cur: unknown = err;
+  for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {
+    if ((cur as { code?: string }).code === '23505') return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 export async function startTimer(input: { ticketId?: string; description?: string }, actor: TimeEntryActor) {
