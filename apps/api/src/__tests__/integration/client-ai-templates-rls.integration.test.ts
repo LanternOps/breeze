@@ -3,43 +3,33 @@
  *
  * Migration under test: 2026-06-12-b-client-ai-foundation.sql (§5).
  *
- * A template is either org-scoped (org_id set, partner_id NULL) or partner-wide
- * (partner_id set, org_id NULL) — enforced by the scope CHECK
- * (num_nonnulls(org_id, partner_id) = 1). The table carries an org_id column, so
- * the generic org-tenant auto-discovery in rls-coverage.integration.test.ts
- * already picks it up (its policy string contains breeze_has_org_access). That
- * contract check therefore CANNOT catch a missing/broken partner-axis branch —
- * exactly the dual-axis blindspot recorded in MEMORY
- * (rls_dual_axis_contract_test_blindspot) and called out in spec §10:
- * breeze_has_org_access(NULL) = FALSE, so the partner branch is load-bearing,
- * not decorative.
- *
- * These tests run through the REAL postgres.js driver (the db pool connects as
- * the unprivileged breeze_app role) inside withDbAccessContext, so they exercise
- * actual RLS enforcement on the partner axis — the only guard the migration
- * header (§5) promised. No Drizzle schema object exists for this table yet
- * (added in a later task), so all DML goes through raw sql`` via db.execute /
- * getTestDb().execute.
+ * Partner-wide template rows carry org_id NULL + partner_id set — exactly the
+ * custom_field_definitions failure mode (fixed 2026-06-11-i), where org-only
+ * Shape-1 policies made every partner-wide row structurally uncreatable
+ * (breeze_has_org_access(NULL) = FALSE → 42501 on INSERT). The rls-coverage
+ * contract test does NOT catch a missing second axis, so this functional test
+ * through the REAL postgres.js driver (breeze_app role) is the required guard
+ * (spec §10).
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { eq } from 'drizzle-orm';
+import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { clientAiPromptTemplates } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
-import { getTestDb } from './setup';
 
 const created: string[] = [];
 
 afterEach(async () => {
-  // Clean up rows the tests leave behind. Under system scope both access
-  // helpers short-circuit to TRUE, so one system-context pass deletes every
-  // tracked row regardless of its original partner/org axis.
   if (created.length === 0) return;
-  await withSystemDbAccessContext(async () => {
-    for (const id of created) {
-      await db.execute(sql`DELETE FROM client_ai_prompt_templates WHERE id = ${id}`);
-    }
-  });
+  await withDbAccessContext(
+    { scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null },
+    async () => {
+      for (const id of created) {
+        await db.delete(clientAiPromptTemplates).where(eq(clientAiPromptTemplates.id, id));
+      }
+    },
+  );
   created.length = 0;
 });
 
@@ -63,134 +53,164 @@ function orgContext(orgId: string): DbAccessContext {
   };
 }
 
-/** Insert a partner-wide template (org_id NULL) as that partner, returning its id. */
-async function insertPartnerTemplate(
-  ctx: DbAccessContext,
-  partnerId: string,
-  name: string,
-): Promise<string | undefined> {
-  const rows = (await withDbAccessContext(ctx, () =>
-    db.execute(sql`
-      INSERT INTO client_ai_prompt_templates (org_id, partner_id, name, prompt_body)
-      VALUES (NULL, ${partnerId}, ${name}, 'body')
-      RETURNING id, org_id, partner_id
-    `),
-  )) as unknown as Array<{ id: string; org_id: string | null; partner_id: string | null }>;
-  return rows[0]?.id;
+async function seedPartnerTemplate(partnerId: string, track = true): Promise<string> {
+  const rows = await withDbAccessContext(partnerContext(partnerId, []), () =>
+    db
+      .insert(clientAiPromptTemplates)
+      .values({
+        orgId: null,
+        partnerId,
+        name: 'Seed template',
+        promptBody: 'Summarize the selected range.',
+        category: 'finance',
+      })
+      .returning(),
+  );
+  const id = rows[0]!.id;
+  if (track) created.push(id);
+  return id;
 }
 
 describe('client_ai_prompt_templates RLS — dual-axis (2026-06-12-b migration)', () => {
-  it('(a) a same-partner partner-axis insert (org_id NULL, partner_id set) SUCCEEDS', async () => {
+  it('partner scope can INSERT a partner-wide template (org_id NULL, partner_id set)', async () => {
     const partner = await createPartner();
 
-    const rows = (await withDbAccessContext(partnerContext(partner.id, []), () =>
-      db.execute(sql`
-        INSERT INTO client_ai_prompt_templates (org_id, partner_id, name, prompt_body)
-        VALUES (NULL, ${partner.id}, 'Summarize Email', 'Summarize the following email thread.')
-        RETURNING id, org_id, partner_id
-      `),
-    )) as unknown as Array<{ id: string; org_id: string | null; partner_id: string | null }>;
+    const rows = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .insert(clientAiPromptTemplates)
+        .values({
+          orgId: null,
+          partnerId: partner.id,
+          name: 'Quarterly variance walkthrough',
+          promptBody: 'Explain the variance between the selected columns.',
+        })
+        .returning(),
+    );
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.org_id).toBeNull();
-    expect(rows[0]?.partner_id).toBe(partner.id);
+    expect(rows[0]?.orgId).toBeNull();
+    expect(rows[0]?.partnerId).toBe(partner.id);
     if (rows[0]) created.push(rows[0].id);
   });
 
-  it('(b) a cross-partner insert FAILS with an RLS violation', async () => {
+  it('partner scope can SELECT back its own partner-wide template', async () => {
+    const partner = await createPartner();
+    const id = await seedPartnerTemplate(partner.id);
+
+    const visible = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .select({ id: clientAiPromptTemplates.id })
+        .from(clientAiPromptTemplates)
+        .where(eq(clientAiPromptTemplates.partnerId, partner.id)),
+    );
+
+    expect(visible.map((r) => r.id)).toContain(id);
+  });
+
+  it('a different partner can neither see nor forge a template attributed to the first partner', async () => {
     const partnerA = await createPartner();
     const partnerB = await createPartner();
+    const id = await seedPartnerTemplate(partnerA.id);
 
-    // partnerB attempts to forge a row attributed to partnerA. WITH CHECK denies
-    // it. Drizzle/postgres.js surfaces the RLS signal as Postgres code 42501
-    // (insufficient_privilege) on the underlying cause.
+    const visibleToB = await withDbAccessContext(partnerContext(partnerB.id, []), () =>
+      db
+        .select({ id: clientAiPromptTemplates.id })
+        .from(clientAiPromptTemplates)
+        .where(eq(clientAiPromptTemplates.id, id)),
+    );
+    expect(visibleToB).toEqual([]);
+
+    // WITH CHECK denies the forge. Drizzle wraps the driver error, so the RLS
+    // signal is Postgres code 42501 on the cause (custom-fields-rls precedent).
     await expect(
       withDbAccessContext(partnerContext(partnerB.id, []), () =>
-        db.execute(sql`
-          INSERT INTO client_ai_prompt_templates (org_id, partner_id, name, prompt_body)
-          VALUES (NULL, ${partnerA.id}, 'Forged', 'body')
-        `),
+        db
+          .insert(clientAiPromptTemplates)
+          .values({ orgId: null, partnerId: partnerA.id, name: 'Forged', promptBody: 'x' })
+          .returning(),
       ),
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  it('(c) a cross-org row is not visible via SELECT', async () => {
-    // Two orgs under DIFFERENT partners so neither axis grants cross access.
-    const partnerA = await createPartner();
-    const partnerB = await createPartner();
-    const orgA = await createOrganization({ partnerId: partnerA.id });
-    const orgB = await createOrganization({ partnerId: partnerB.id });
+  it('org scope can INSERT and SELECT an org-scoped template', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
 
-    const insertedA = (await withDbAccessContext(orgContext(orgA.id), () =>
-      db.execute(sql`
-        INSERT INTO client_ai_prompt_templates (org_id, partner_id, name, prompt_body)
-        VALUES (${orgA.id}, NULL, 'OrgA Template', 'body')
-        RETURNING id, org_id
-      `),
-    )) as unknown as Array<{ id: string; org_id: string | null }>;
-    const idA = insertedA[0]?.id;
-    expect(idA).toBeDefined();
-    if (idA) created.push(idA);
-    expect(insertedA[0]?.org_id).toBe(orgA.id);
+    const inserted = await withDbAccessContext(orgContext(org.id), () =>
+      db
+        .insert(clientAiPromptTemplates)
+        .values({ orgId: org.id, partnerId: null, name: 'Org template', promptBody: 'y' })
+        .returning(),
+    );
+    if (inserted[0]) created.push(inserted[0].id);
 
-    // orgB (different partner) cannot see orgA's org-scoped template.
-    const visibleToB = (await withDbAccessContext(orgContext(orgB.id), () =>
-      db.execute(sql`
-        SELECT id FROM client_ai_prompt_templates WHERE id = ${idA}
-      `),
-    )) as unknown as Array<{ id: string }>;
-    expect(visibleToB).toEqual([]);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]?.orgId).toBe(org.id);
 
-    // The owning org can still see it — confirms the row exists and the empty
-    // result above is RLS hiding, not a missing insert.
-    const visibleToA = (await withDbAccessContext(orgContext(orgA.id), () =>
-      db.execute(sql`
-        SELECT id FROM client_ai_prompt_templates WHERE id = ${idA}
-      `),
-    )) as unknown as Array<{ id: string }>;
-    expect(visibleToA.map((r) => r.id)).toContain(idA);
+    const visible = await withDbAccessContext(orgContext(org.id), () =>
+      db
+        .select({ id: clientAiPromptTemplates.id })
+        .from(clientAiPromptTemplates)
+        .where(eq(clientAiPromptTemplates.id, inserted[0]!.id)),
+    );
+    expect(visible.map((r) => r.id)).toContain(inserted[0]?.id);
   });
 
-  it('a different partner cannot SELECT the first partner\'s partner-wide template', async () => {
+  it('partner scope can UPDATE and DELETE its own partner-wide template', async () => {
+    const partner = await createPartner();
+    const id = await seedPartnerTemplate(partner.id, false);
+
+    const updated = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .update(clientAiPromptTemplates)
+        .set({ name: 'Renamed' })
+        .where(eq(clientAiPromptTemplates.id, id))
+        .returning(),
+    );
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.name).toBe('Renamed');
+
+    const deleted = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .delete(clientAiPromptTemplates)
+        .where(eq(clientAiPromptTemplates.id, id))
+        .returning(),
+    );
+    expect(deleted).toHaveLength(1);
+  });
+
+  it('a different partner UPDATE/DELETE silently match zero rows', async () => {
     const partnerA = await createPartner();
     const partnerB = await createPartner();
-    const idA = await insertPartnerTemplate(partnerContext(partnerA.id, []), partnerA.id, 'PartnerA Template');
-    expect(idA).toBeDefined();
-    if (idA) created.push(idA);
+    const id = await seedPartnerTemplate(partnerA.id);
 
-    const visibleToB = (await withDbAccessContext(partnerContext(partnerB.id, []), () =>
-      db.execute(sql`SELECT id FROM client_ai_prompt_templates WHERE id = ${idA}`),
-    )) as unknown as Array<{ id: string }>;
-    expect(visibleToB).toEqual([]);
+    const updatedByB = await withDbAccessContext(partnerContext(partnerB.id, []), () =>
+      db
+        .update(clientAiPromptTemplates)
+        .set({ name: 'Hijacked' })
+        .where(eq(clientAiPromptTemplates.id, id))
+        .returning(),
+    );
+    expect(updatedByB).toEqual([]);
+
+    const deletedByB = await withDbAccessContext(partnerContext(partnerB.id, []), () =>
+      db
+        .delete(clientAiPromptTemplates)
+        .where(eq(clientAiPromptTemplates.id, id))
+        .returning(),
+    );
+    expect(deletedByB).toEqual([]);
   });
 
   it('stays fail-closed without a DB access context (scope "none")', async () => {
-    // With no withDbAccessContext, breeze.scope is unset
-    // (breeze_current_scope() = 'none'), so both helpers return FALSE and a
-    // partner-wide row must be invisible on the bare pool. Seed under system
-    // scope so the insert itself succeeds.
     const partner = await createPartner();
-    const seeded = (await withSystemDbAccessContext(() =>
-      db.execute(sql`
-        INSERT INTO client_ai_prompt_templates (org_id, partner_id, name, prompt_body)
-        VALUES (NULL, ${partner.id}, 'Fail Closed', 'body')
-        RETURNING id
-      `),
-    )) as unknown as Array<{ id: string }>;
-    const id = seeded[0]?.id;
-    expect(id).toBeDefined();
-    if (id) created.push(id);
+    const id = await seedPartnerTemplate(partner.id);
 
-    // Verify via the superuser pool the row really landed (RLS-bypassing read).
-    const realRows = (await getTestDb().execute(sql`
-      SELECT id FROM client_ai_prompt_templates WHERE id = ${id}
-    `)) as unknown as Array<{ id: string }>;
-    expect(realRows).toHaveLength(1);
+    const rows = await db
+      .select({ id: clientAiPromptTemplates.id })
+      .from(clientAiPromptTemplates)
+      .where(eq(clientAiPromptTemplates.id, id));
 
-    // The bare breeze_app pool (no context) must NOT see it.
-    const bare = (await db.execute(sql`
-      SELECT id FROM client_ai_prompt_templates WHERE id = ${id}
-    `)) as unknown as Array<{ id: string }>;
-    expect(bare).toEqual([]);
+    expect(rows).toEqual([]);
   });
 });
