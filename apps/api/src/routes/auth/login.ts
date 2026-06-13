@@ -340,6 +340,10 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       result: 'denied',
       details: { accountStatus: user.status, method: 'password' }
     });
+    // #719 residual 2: feed the anomaly metric so repeated inactive-account /
+    // inactive-tenant login denials are alertable. Server-side counter only —
+    // the response stays a generic 401, so this leaks nothing to the client.
+    recordFailedLogin('account_inactive');
     await floorPromise;
     return c.json(genericAuthError(), 401);
   }
@@ -351,14 +355,21 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     await assertPasswordAuthAllowedBySso(context);
   } catch (err) {
     if (!(err instanceof TenantInactiveError) && !(err instanceof SsoPasswordAuthRequiredError)) throw err;
+    const inactiveTenant = err instanceof TenantInactiveError;
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
       name: user.name,
-      reason: err instanceof SsoPasswordAuthRequiredError ? 'sso_required' : 'tenant_inactive',
+      reason: inactiveTenant ? 'tenant_inactive' : 'sso_required',
       result: 'denied',
       details: { method: 'password' }
     });
+    // #719 residual 2: count inactive-tenant login denials so a sudden spike
+    // (e.g. a billing-state change trapping a cohort of users) is alertable.
+    // Metric only — the client still gets the generic 401.
+    if (inactiveTenant) {
+      recordFailedLogin('tenant_inactive');
+    }
     await floorPromise;
     return c.json(genericAuthError(), 401);
   }

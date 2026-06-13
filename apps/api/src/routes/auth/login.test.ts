@@ -127,6 +127,9 @@ import { loginRoutes } from './login';
 import { db } from '../../db';
 import { createTokenPair } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
+import { recordFailedLogin } from '../../services/anomalyMetrics';
+import { TenantInactiveError } from '../../services/tenantStatus';
+import { resolveCurrentUserTokenContext } from './helpers';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -228,5 +231,72 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
     expect(body.user.isPlatformAdmin).toBe(false);
+  });
+});
+
+// #719 residual 2: inactive-account and inactive-tenant login denials must
+// emit an anomaly-metric signal (so a spike is alertable) WITHOUT changing the
+// generic 401 the client sees (so nothing leaks for enumeration).
+describe('POST /login — inactive-tenant observability signal (#719)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+  });
+
+  it('counts an inactive-account denial as account_inactive and still returns a generic 401', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'sus@msp.com',
+      name: 'Suspended User',
+      passwordHash: 'password-hash',
+      status: 'suspended',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+
+    const res = await postLogin({ email: 'sus@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, unknown>;
+    // Generic body — no account/tenant status leaks.
+    expect(body).toMatchObject({ error: 'Invalid email or password' });
+    expect(JSON.stringify(body)).not.toContain('suspended');
+    expect(recordFailedLogin).toHaveBeenCalledWith('account_inactive');
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('counts an inactive-tenant denial as tenant_inactive and still returns a generic 401', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'trapped@msp.com',
+      name: 'Trapped User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    // The user is active, but their tenant (partner/org) is not — the context
+    // resolver throws TenantInactiveError, which the handler maps to a generic
+    // 401 plus the tenant_inactive metric.
+    vi.mocked(resolveCurrentUserTokenContext).mockRejectedValueOnce(
+      new TenantInactiveError('Partner is not active'),
+    );
+
+    const res = await postLogin({ email: 'trapped@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ error: 'Invalid email or password' });
+    expect(recordFailedLogin).toHaveBeenCalledWith('tenant_inactive');
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 });
