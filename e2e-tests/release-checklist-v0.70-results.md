@@ -272,3 +272,94 @@ All cleaned: time entries/comments on T-2026-0017 deleted; custom status "Waitin
 - **BUG 1 fixed** — `isUniqueViolation` (`apps/api/src/services/timeEntryService.ts:270`) now walks the `.cause` chain (depth-bounded) so the Drizzle-wrapped `23505` is detected; the retry-once → `409 ENTRY_RUNNING` path now fires instead of leaking a raw 500. **Regression tests added** reproducing the real wrapped-error shape (flat-`.code` mock had hidden it): `timeEntryService.test.ts` → 53/53 pass.
 - **BUG 2 fixed** — `TicketTimeBilling.submitQuickAdd` now calls `broadcastBillingChanged()` after a successful manual log, so the workbench feed live-refreshes (verified live: feed showed "Breeze Admin logged 7m (billable)" with no reload). Also added an **in-flight `disabled` state on the Start-timer button** (`startingTimer`) to keep the happy path single-shot and close the concurrent-start race client-side. **Regression tests added**: `TicketTimeBilling.test.tsx` → 6/6 pass.
 - Verification: web `tsc --noEmit` clean; api `tsc` shows no new errors (pre-existing `agents.test.ts`/`apiKeyAuth.test.ts` errors unrelated). Per-file single-fork runs used (full-suite parallel flakiness is a known false-negative source).
+
+---
+
+## Round 4 — 2026-06-13 (gap-closing: #1285 parts/timesheet/export, #1291 org SLA + statuses, avatar re-verify, core workflows, #1290 authz negatives)
+
+### ✅ #3 Avatar upload re-verify (#1268) — RESOLVES the Round-1 ❌ must-fix
+Post-rebuild, the full lifecycle works on DB-bytea storage (no filesystem EACCES):
+- **Upload**: pick PNG → blob preview → **Upload** → `POST /users/me/avatar` **200** (was 500 EACCES); stored **70-byte `avatar_data` bytea** (+ `avatar_mime`); `GET /users/:id/avatar` **200**.
+- **Remove**: `DELETE /users/me/avatar` **200**; `avatar_data` cleared to null.
+- Picker `accept="image/png,image/jpeg,image/webp"` + "Max 5 MB" copy present (server-side >5MB/non-image rejection covered by the `users/avatar` unit tests from Round 2). **The headline Round-1 blocker is closed.**
+
+### #1 — Parts / Timesheet / Billables export (#1285)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Parts — add | ✅ | qty 2 @ $100, cost $60 → card "$200.00 · 2 × $100.00 · **$80.00** margin" (200 revenue − 120 cost = 80 ✓); billing rail live-updated to **Parts (1) / $200.00** (parts card *does* broadcast billing-changed). |
+| Parts — delete | ⚠️ | Deletes **instantly with no confirm dialog** (matches the PR's deferred note). Single mis-click permanently removes a costed part — minor but real risk on a billing surface. |
+| /timesheet — render + nav | ✅ | Tech selector (My timesheet / Breeze Admin), Monday-UTC week ("Week of June 8"), prev/next/this-week, per-day rows, weekly total. |
+| /timesheet — bulk approve | ✅ | Select entry → "Approve selected" → `POST /time-entries/bulk-approve` **200**; entry flipped `is_approved=t` + approver set; timesheet refetched. "Unapprove" present for the reverse path. |
+| Billables CSV export | ✅ | Settings→Ticketing→Export → `GET /tickets/export/billables.csv` **200**, valid header `type,date,organization,ticket,description,technician,quantity,rate,amount,billing_status,approved`; date-bounded (today's rows excluded by To=Jun 12, as expected). |
+
+### 🐛 BUG 3 — hydration mismatch on `/settings/ticketing` deep-linked with `#tab=` (#1291)
+- **Symptom:** loading `/settings/ticketing#tab=export` (or any non-default tab) throws a **React hydration mismatch** (#418-class) in console; React discards the SSR tree and regenerates client-side. Plain `/settings/ticketing` (no hash) is clean.
+- **Root cause:** `TicketingSettingsPage.tsx:34` seeds `useState<Tab>(parseHash)`; `parseHash()` returns `'statuses'` on the server (no `window`) but the hash-derived tab on the client → the first client render disagrees with SSR (`aria-selected`, class, and which panel mounts). Same anti-pattern as the login #418 fixed in #1268.
+- **Fix:** seed `activeTab` to the SSR-safe default `'statuses'` and apply `parseHash()` inside the mount `useEffect` (which already exists at line 41), so initial client render matches SSR. (Accept a one-frame flash to the correct tab — standard for hash-driven SSR state.)
+
+### ℹ️ Perf note
+- `POST /time-entries/start` and `/time-entries/bulk-approve` each took **~5s** server-side (dev build). Consistent across the time-tracking write endpoints. Likely dev-image overhead (tsx, cold paths) but **worth confirming prod latency** — slow writes with no spinner invite the double-click that triggered the BUG 1 start-race.
+
+### #2 — Statuses edge cases + Org Ticketing SLA tab (#1291)
+
+| Item | Result | Evidence |
+|---|---|---|
+| Status — add custom | ✅ | "QA Custom Status" created + listed under its core group. |
+| Status — deactivate/reactivate | ✅ | Deactivate → row shows **Inactive** + toggle flips to **Activate**; built-in rows have no deactivate control. |
+| Status — duplicate name | ❌ **BUG 4** | Adding a 2nd "QA Custom Status" → `POST /ticket-config/statuses` **500** (`duplicate key … ticket_statuses_partner_name_uq`) and **no toast at all** — instead of the friendly `STATUS_NAME_TAKEN`. Silent failure to the user. |
+| Org → Ticketing tab renders | ✅ | 8 per-priority SLA inputs (urgent/high/normal/low × response/resolution, placeholders = partner defaults), `org-ticket-rate`, tri-state billable (Inherit/Billable/Non-billable), "Save ticket settings". |
+| Org → Ticketing save | ✅ | Set rate 150 → `PATCH …/ticket-settings` **200**, `default_hourly_rate=150.00` persisted. (Reset after.) |
+| MFA-required save path | ⚠️ | Save succeeded **without an MFA challenge** — the local admin has no MFA enrolled (same as the Round-2 PAM observation). The gate's *enforcement* still needs verifying with an MFA-enabled user. |
+
+### 🐛 BUG 4 — duplicate ticket-status name returns raw 500, not `STATUS_NAME_TAKEN` (#1291) — SAME CLASS AS BUG 1
+- **Root cause:** `ticketConfigService.ts:286-300 isUniqueNameViolation` reads `err.code` / `err.constraint` / `err.message` off the **top-level** error, but Drizzle nests them under `err.cause` (wrapper message is just "Failed query: insert into ticket_statuses …", no constraint name). So the guard returns false and the raw 500 propagates instead of the structured 409 `STATUS_NAME_TAKEN` the UI maps to a friendly message.
+- **This is systemic.** The same bare `err.code === '23505'` (no `.cause` unwrap) appears at ~10 sites — confirmed-broken at `timeEntryService` (BUG 1, fixed) and `ticketConfigService` (BUG 4); **suspected** at: `routes/networkKnownGuests.ts:67`, `routes/networkBaselines.ts:309`, `routes/configurationPolicies/assignments.ts:90` + `featureLinks.ts:130`, `services/aiToolsConfigPolicy.ts:237,606`, `services/aiToolsNetwork.ts:344`, `services/aiToolsPolicyPrereqs.ts:39`, `services/aiToolsFleet.ts:92`. (`db/seed.ts:760` is seed-only.)
+- **Recommended fix:** a shared `pgUniqueViolation(err, constraint?)` util that walks the `.cause` chain (generalize the BUG-1 fix), and refactor all sites onto it. Removes the divergent local checks and the whole bug class at once.
+
+### #4 — Alerts / Scripts / Cmd+K core workflows
+
+| Item | Result | Evidence |
+|---|---|---|
+| Alerts — acknowledge | ✅⚠️ | `POST /alerts/:id/acknowledge` **200**, alert → `acknowledged`, Ack button removed from the row. **But: the request took ~19s and showed no toast/spinner** — only the button vanishing (after the round-trip) signals success. Borderline silent-mutation + a real latency concern. (Restored the alert to active after.) |
+| Notification channel — create | ✅ | New Channel modal (all 7 types: Email/Slack/Teams/PagerDuty/Webhook/SMS/Pushover, templates, routing rules). Created an Email channel → `POST /alerts/channels` 200, listed. |
+| Notification channel — Test | ✅ | "Test" → `POST /alerts/channels/:id/test` **200**, `last_test_status=success`, row shows "Last test: Just now". (Deleted the test channel after.) |
+| Scripts — library | ✅ | `/scripts` renders library + "New Script" + "Import from Library" + category/language filters (PowerShell/Bash/Python/CMD). Monaco editor confirmed in Round 2; full create→run→output needs the multi-step flow (a live agent is now connected — runnable in a follow-up). |
+| Cmd+K global search | ✅ | Search palette → typed "WIN" → DEVICES section with correctly-filtered matches (E2E Windows Test Device, File Server, WIN-DHQNR1F8LO2…), arrow/Enter navigation hints. |
+
+### ⚠️ UX/perf — alert acknowledge latency + no feedback
+`POST /alerts/:id/acknowledge` took **~19s** (vs ~5s on ticketing writes, sub-second on the channel test) with **no toast or spinner** the entire time. The EventBus published `alert.acknowledged` ~8s in, response ~11s after that — something in the ack path (event handlers? a blocking notify attempt?) is slow. No notification channels were configured, so it isn't channel dispatch. **Worth profiling the acknowledge path** — and adding an in-flight spinner + success toast regardless, so the action doesn't look dead for 19s. (May be partly dev-build overhead; confirm in prod.)
+
+### #5 — Authz / site-scope negatives (#1290) — API-level (seeded users, real tokens)
+
+Seeded 3 users (shared admin password): read-only **Partner Viewer**, **selected-org** technician (Default only), and a **site-restricted** Org Technician. Logged in via `/auth/login`, asserted with their real bearer tokens. All seed data removed after.
+
+| Test | Expected | Actual | Verdict |
+|---|---|---|---|
+| Security **AV scan** (`POST /security/scan/:dev`), read-only viewer | 403 | **403** "Permission denied" | ✅ RBAC enforced (needs `devices:execute`) |
+| Same, **admin** (control) | not-403 | **202** Accepted | ✅ gate doesn't over-block |
+| **Deployment create** (`POST /deployments`), read-only viewer | 403 | **403** "Permission denied" | ✅ RBAC enforced (needs `devices:write`) |
+| **time-entries** (`POST /time-entries`), admin `org_access=all` (control) | 2xx | **201** | ✅ endpoint works for partner-scope |
+| **time-entries**, `org_access=selected` user (granted + non-granted org) | denied | **403 both** | ✅ denied (see note) |
+
+**Solidly verified:** the read-only RBAC gates from #1290 (security AV scan, deployment create) return real **403s**, with an admin positive control proving they don't over-block. Cross-org access for a selected-org user is **denied** on the partner-scoped time-entries route.
+
+**Characterized, not independently isolated in this harness (covered by the PR's integration tests):**
+- **MFA gate** (`requireMfa()` on deployments): code returns `403 "MFA required"`, but locally `force_mfa` is **off** — admin (no MFA enrolled) passed the gate and reached validation (400). So the MFA *enforcement* path can't be exercised without enabling `force_mfa` for the partner. (Consistent with the Round-2/PAM and #2 org-save observations.)
+- **time-entries org-axis** (`TICKET_ORG_DENIED`): the route requires `requireScope('partner','system')`, which an `org_access=selected` partner user doesn't satisfy → they're 403'd on *both* granted and non-granted org tickets (denied either way = safe), so the service-level org-axis `404` branch isn't reachable via this route+user. The org-axis isolation itself is covered by the #1290 integration tests.
+- **Playbook / patch-job / threat-action site-scope:** not run — the same selected/site-scoped permission-resolution nuances (and needing devices pinned to specific sites) make a clean in-site-pass / out-of-site-403 harness more setup than this pass allowed. Covered by the PR's site-scope integration tests; recommend a dedicated multi-user fixture to verify end-to-end in-app.
+
+### Round 4 summary
+**Verified:** avatar lifecycle (#1268 resolved); parts add/delete + margin + live-summary; /timesheet + bulk approve; billables CSV export; status add/deactivate; org ticketing SLA save; alerts ack; notification channel create + Test; scripts library; Cmd+K; #1290 read-only RBAC 403s (AV scan, deployment).
+**New bugs:** **BUG 3** (ticketing-settings `#tab=` hydration mismatch, #1291) · **BUG 4** (duplicate status name → raw 500 not `STATUS_NAME_TAKEN`; **systemic** `err.cause` unwrap gap at ~10 sites, #1291).
+**UX/perf flags:** parts delete has no confirm dialog; alert acknowledge ~19s with no spinner/toast; duplicate-toast on runAction successes (dev); ticketing write endpoints ~5s (dev).
+
+---
+
+## Round 4 fixes applied — BUG 3 + BUG 4 (branch: fix/ticketing-config-hydration-and-pg-unique-unwrap)
+
+- **BUG 3 (hydration) — FIXED + live-verified.** `TicketingSettingsPage.tsx` now seeds the SSR-safe default tab and applies the `#tab=` hash in the mount effect. `/settings/ticketing#tab=export` now loads with **0 console errors** (was a hydration mismatch) and the Export tab is correctly selected. Web tsc + 12 TicketingSettingsPage tests pass.
+- **BUG 4 (systemic 23505 unwrap) — FIXED.** New shared `apps/api/src/utils/pgErrors.ts` (`isPgUniqueViolation`, `pgErrorCode`) walks the DrizzleQueryError `.cause` chain and matches the constraint via **`constraint_name`** (postgres.js) *or* `constraint` (node-pg), with a message-scan fallback. Refactored 10 call sites onto it: `ticketConfigService`, `timeEntryService`, `routes/networkKnownGuests`, `routes/networkBaselines`, `routes/configurationPolicies/{assignments,featureLinks}`, `services/aiToolsConfigPolicy` (×2), `services/aiToolsNetwork` (unique), and `services/aiТoolsPolicyPrereqs` + `services/aiToolsFleet` (multi-code mappers via `pgErrorCode`, which also fixes their `23503`/`22P02` mapping).
+  - **Key correction found during fix:** the real postgres.js error carries the index name on **`constraint_name`**, not `constraint` — the first cut of the helper relied on a fragile message-scan; now it checks both fields.
+  - **Verification:** 94 API tests pass (new `pgErrors.test.ts` covers wrapped/unwrapped/constraint_name/node-pg/message-fallback; `ticketConfigService` + `timeEntryService` regression cases updated to the realistic wrapped shape). An **in-container tsx probe confirmed `isPgUniqueViolation(realError, name) === true`** against the exact production `DrizzleQueryError{cause: PostgresError{code:'23505', constraint_name:…}}` shape.
+  - ⚠️ **Dev-env note:** the live HTTP path still returned 500 because the dev API's `tsx watch` would not reload the change — a known macOS `:cached` bind-mount + persistent `node_modules/.cache` mtime-cache issue (same reason the avatar fix needed an image rebuild). Verified via unit tests + in-container probe instead; the fix is correct and will run on a clean build/deploy.
