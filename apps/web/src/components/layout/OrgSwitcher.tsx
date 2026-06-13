@@ -49,6 +49,32 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
   return null;
 }
 
+export function isFixedGlobalScopeRoute(pathname: string): boolean {
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  if (normalized === '/patches') return true;
+  if (normalized === '/scripts' || normalized === '/scripts/new') return true;
+  // Script detail/edit is library-scoped; execution history remains org-scoped.
+  return /^\/scripts\/[^/]+$/.test(normalized);
+}
+
+function useCurrentPathname(): string {
+  const [pathname, setPathname] = useState(() =>
+    typeof window === 'undefined' ? '/' : window.location.pathname
+  );
+
+  useEffect(() => {
+    const update = () => setPathname(window.location.pathname);
+    document.addEventListener('astro:after-swap', update);
+    window.addEventListener('popstate', update);
+    return () => {
+      document.removeEventListener('astro:after-swap', update);
+      window.removeEventListener('popstate', update);
+    };
+  }, []);
+
+  return pathname;
+}
+
 const statusColors: Record<string, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
   trial: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
@@ -172,7 +198,7 @@ function OrgMenuItem({
  *
  * Hidden when the user has access to only one org (toggle would be a no-op).
  */
-function OrgScopePill() {
+function OrgScopePill({ pathname }: { pathname: string }) {
   const orgScope = useOrgStore((s) => s.orgScope);
   const setOrgScope = useOrgStore((s) => s.setOrgScope);
   const organizationsCount = useOrgStore((s) => s.organizations.length);
@@ -196,7 +222,7 @@ function OrgScopePill() {
     window.location.reload();
   };
 
-  if (organizationsCount <= 1) return null;
+  if (organizationsCount <= 1 || isFixedGlobalScopeRoute(pathname)) return null;
 
   return (
     <div
@@ -259,6 +285,7 @@ export default function OrgSwitcher() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const pathname = useCurrentPathname();
 
   const {
     currentOrgId,
@@ -359,7 +386,7 @@ export default function OrgSwitcher() {
 
   return (
     <div className="flex min-w-0 items-center gap-1 sm:gap-2">
-      <OrgScopePill />
+      <OrgScopePill pathname={pathname} />
       <div className="relative" ref={dropdownRef}>
         <button
           ref={triggerRef}

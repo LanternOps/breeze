@@ -1,5 +1,6 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
+import { patchPolicies } from '../../db/schema';
 import { writeRouteAudit, type AuthContext } from '../../services/auditEvents';
 
 export function getPagination(query: { page?: string; limit?: string }) {
@@ -136,6 +137,37 @@ export function resolvePatchApprovalOrgId(
   }
 
   return { error: 'Organization context required', status: 400 };
+}
+
+export async function resolvePatchApprovalOrgIdForRing(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    accessibleOrgIds: string[] | null;
+    canAccessOrg: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string,
+  ringId?: string | null
+): Promise<{ orgId: string } | { error: string; status: 400 | 403 | 404 }> {
+  if (!ringId) {
+    return resolvePatchApprovalOrgId(auth, requestedOrgId);
+  }
+
+  const [ring] = await db
+    .select({ orgId: patchPolicies.orgId })
+    .from(patchPolicies)
+    .where(eq(patchPolicies.id, ringId))
+    .limit(1);
+
+  if (!ring) {
+    return { error: 'Update ring not found', status: 404 };
+  }
+
+  if (!auth.canAccessOrg(ring.orgId)) {
+    return { error: 'Access denied to this update ring', status: 403 };
+  }
+
+  return { orgId: ring.orgId };
 }
 
 export function resolvePatchReportOrgId(

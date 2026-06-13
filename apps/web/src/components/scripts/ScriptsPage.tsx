@@ -48,7 +48,7 @@ export default function ScriptsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/scripts');
+      const response = await fetchWithAuth('/scripts', { skipOrgIdInjection: true });
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -116,7 +116,7 @@ export default function ScriptsPage() {
   const handleRun = async (script: Script) => {
     // Fetch full script details including parameters
     try {
-      const response = await fetchWithAuth(`/scripts/${script.id}`);
+      const response = await fetchWithAuth(`/scripts/${script.id}`, { skipOrgIdInjection: true });
       if (response.ok) {
         const data = await response.json();
         setSelectedScript(data.script ?? data);
@@ -234,7 +234,8 @@ export default function ScriptsPage() {
       if (cancelled) return;
       try {
         const response = await fetchWithAuth(`/scripts/${scriptToDelete.id}`, {
-          method: 'DELETE'
+          method: 'DELETE',
+          skipOrgIdInjection: true
         });
 
         if (!response.ok) {
@@ -255,7 +256,7 @@ export default function ScriptsPage() {
     setLibraryCategoryFilter('all');
     setLoadingLibrary(true);
     try {
-      const response = await fetchWithAuth('/scripts/system-library');
+      const response = await fetchWithAuth('/scripts/system-library', { skipOrgIdInjection: true });
       if (response.ok) {
         const data = await response.json();
         setSystemScripts(data.data ?? []);
@@ -273,6 +274,7 @@ export default function ScriptsPage() {
       const currentOrgId = useOrgStore.getState().currentOrgId;
       const response = await fetchWithAuth(`/scripts/import/${systemScript.id}`, {
         method: 'POST',
+        skipOrgIdInjection: true,
         body: JSON.stringify(currentOrgId ? { orgId: currentOrgId } : {})
       });
 

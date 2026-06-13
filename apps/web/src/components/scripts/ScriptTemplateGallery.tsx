@@ -37,7 +37,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
     setError(null);
 
     try {
-      const response = await fetchWithAuth('/scripts/templates');
+      const response = await fetchWithAuth('/scripts/templates', { skipOrgIdInjection: true });
 
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
@@ -65,7 +65,8 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
     try {
       // Track template usage
       await fetchWithAuth(`/scripts/templates/${template.id}/use`, {
-        method: 'POST'
+        method: 'POST',
+        skipOrgIdInjection: true
       });
     } catch {
       // Continue even if tracking fails

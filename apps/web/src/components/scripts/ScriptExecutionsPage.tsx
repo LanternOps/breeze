@@ -31,7 +31,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   const fetchScript = useCallback(async () => {
     try {
-      const response = await fetchWithAuth(`/scripts/${scriptId}`);
+      const response = await fetchWithAuth(`/scripts/${scriptId}`, { skipOrgIdInjection: true });
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });

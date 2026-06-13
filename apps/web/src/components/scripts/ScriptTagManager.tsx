@@ -47,7 +47,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
       setError(undefined);
 
       // Fetch scripts - tags would typically be stored on scripts or in a separate endpoint
-      const scriptsResponse = await fetchWithAuth('/scripts?includeSystem=true');
+      const scriptsResponse = await fetchWithAuth('/scripts?includeSystem=true', { skipOrgIdInjection: true });
       if (!scriptsResponse.ok) {
         if (scriptsResponse.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -240,6 +240,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
         // Update script with new tags
         const response = await fetchWithAuth(`/scripts/${scriptId}`, {
           method: 'PUT',
+          skipOrgIdInjection: true,
           body: JSON.stringify({ tags: tagNames })
         });
 

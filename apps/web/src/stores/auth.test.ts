@@ -8,6 +8,7 @@ import {
   apiResetPassword,
   apiVerifyMFA,
   fetchWithAuth,
+  registerOrgIdProvider,
   restoreAccessTokenFromCookie,
   useAuthStore,
   waitForPendingRefresh
@@ -45,6 +46,7 @@ describe('auth store fetchWithAuth', () => {
       mfaPending: false,
       mfaTempToken: null
     });
+    registerOrgIdProvider(() => null);
   });
 
   it('adds auth and json headers to authenticated requests', async () => {
@@ -112,6 +114,24 @@ describe('auth store fetchWithAuth', () => {
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toBe('/api/v1/users/user-9/avatar');
     expect(url).not.toContain('/v1/v1/');
+  });
+
+  it('can opt out of selected-org query injection for global resources', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    registerOrgIdProvider(() => 'org-1');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ ok: true }))
+      .mockResolvedValueOnce(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/scripts');
+    await fetchWithAuth('/scripts', { skipOrgIdInjection: true });
+
+    const [firstUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [secondUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(firstUrl).toBe('/api/v1/scripts?orgId=org-1');
+    expect(secondUrl).toBe('/api/v1/scripts');
   });
 
   it('refreshes and retries when access token is expired', async () => {
@@ -254,6 +274,7 @@ describe('auth API helpers', () => {
       mfaPending: false,
       mfaTempToken: null
     });
+    registerOrgIdProvider(() => null);
   });
 
   it('apiLogin returns MFA challenge payload when required', async () => {

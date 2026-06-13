@@ -31,9 +31,10 @@ type ComplianceSummary = {
 
 type PatchComplianceViewProps = {
   ringId?: string | null;
+  ringOrgId?: string | null;
 };
 
-export default function PatchComplianceView({ ringId }: PatchComplianceViewProps) {
+export default function PatchComplianceView({ ringId, ringOrgId }: PatchComplianceViewProps) {
   const [devices, setDevices] = useState<DevicePatchRow[]>([]);
   const [summary, setSummary] = useState<ComplianceSummary>({ totalDevices: 0, compliantDevices: 0, criticalPatches: 0, pendingPatches: 0, rebootPending: 0 });
   const [loading, setLoading] = useState(true);
@@ -50,11 +51,15 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       setError(undefined);
       const params = new URLSearchParams();
       if (ringId) params.set('ringId', ringId);
+      if (ringOrgId) params.set('orgId', ringOrgId);
       const complianceUrl = params.toString() ? `/patches/compliance?${params}` : '/patches/compliance';
+      const devicesUrl = ringOrgId
+        ? `/devices?limit=200&orgId=${encodeURIComponent(ringOrgId)}`
+        : '/devices?limit=200';
 
       const [complianceRes, devicesRes] = await Promise.all([
-        fetchWithAuth(complianceUrl),
-        fetchWithAuth('/devices?limit=200')
+        fetchWithAuth(complianceUrl, { skipOrgIdInjection: true }),
+        fetchWithAuth(devicesUrl, { skipOrgIdInjection: true })
       ]);
       if (!complianceRes.ok || !devicesRes.ok) {
         if (complianceRes.status === 401 || devicesRes.status === 401) {
@@ -122,7 +127,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     } finally {
       setLoading(false);
     }
-  }, [ringId]);
+  }, [ringId, ringOrgId]);
 
   useEffect(() => {
     fetchData();
@@ -155,7 +160,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const hasActiveFilters = searchQuery !== '' || statusFilter !== 'all';
 
   const resolveInstallPatchIds = useCallback(async (deviceId: string): Promise<ResolvedInstallPatchIds> => {
-    const response = await fetchWithAuth(`/devices/${deviceId}/patches`);
+    const response = await fetchWithAuth(`/devices/${deviceId}/patches`, { skipOrgIdInjection: true });
     if (!response.ok) {
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
@@ -205,8 +210,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       setBulkSuccess(undefined);
       const params = new URLSearchParams();
       if (ringId) params.set('ringId', ringId);
+      if (ringOrgId) params.set('orgId', ringOrgId);
       params.set('format', 'csv');
-      const response = await fetchWithAuth(`/patches/compliance/report?${params}`);
+      const response = await fetchWithAuth(`/patches/compliance/report?${params}`, { skipOrgIdInjection: true });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to generate report');
@@ -222,7 +228,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
 
         reportPollTimerRef.current = setInterval(async () => {
           try {
-            const statusResponse = await fetchWithAuth(`/patches/compliance/report/${reportId}`);
+            const statusResponse = await fetchWithAuth(`/patches/compliance/report/${reportId}`, { skipOrgIdInjection: true });
             if (!statusResponse.ok) {
               throw new Error('Failed to check report status');
             }
@@ -260,7 +266,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     } finally {
       setExporting(false);
     }
-  }, [ringId, setBulkError, setBulkSuccess]);
+  }, [ringId, ringOrgId, setBulkError, setBulkSuccess]);
 
   const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {

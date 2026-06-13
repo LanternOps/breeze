@@ -135,6 +135,14 @@ export function registerOrgIdProvider(fn: () => string | null) {
   _getOrgId = fn;
 }
 
+export type FetchWithAuthOptions = RequestInit & {
+  /**
+   * Some resources are partner/global surfaces and must not be narrowed by the
+   * app-shell org selector. Keep those opt-outs explicit at the call site.
+   */
+  skipOrgIdInjection?: boolean;
+};
+
 // API helper functions
 // In development, set PUBLIC_API_URL=http://localhost:3001. In production behind a
 // reverse proxy (Caddy), leave it empty so requests use relative paths (/api/v1/...).
@@ -403,11 +411,13 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
   return true;
 }
 
-export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
+export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOptions = {}): Promise<Response> {
+  const { skipOrgIdInjection = false, ...fetchOptions } = options;
+
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
   const orgId = _getOrgId?.();
-  if (orgId && !url.includes('orgId=')) {
+  if (!skipOrgIdInjection && orgId && !url.includes('orgId=')) {
     const separator = url.includes('?') ? '&' : '?';
     url = `${url}${separator}orgId=${orgId}`;
   }
@@ -426,7 +436,7 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     }
   }
 
-  const headers = new Headers(options.headers);
+  const headers = new Headers(fetchOptions.headers);
 
   if (tokens?.accessToken) {
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
@@ -435,19 +445,19 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   // Don't force a JSON content-type on FormData uploads — the browser must set
   // `multipart/form-data` itself so it can append the boundary. Forcing JSON
   // here strips the boundary and the server can't parse the body (avatar upload).
-  if (!(options.body instanceof FormData)) {
+  if (!(fetchOptions.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
 
   // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
-  const externalSignal = options.signal;
+  const externalSignal = fetchOptions.signal;
   const controller = !externalSignal ? new AbortController() : null;
   const timeout = controller ? setTimeout(() => controller.abort(), 30_000) : null;
   const signal = externalSignal ?? controller!.signal;
 
   let response: Response;
   try {
-    response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+    response = await fetch(buildApiUrl(url), { ...fetchOptions, headers, credentials: 'include', signal });
   } catch (err) {
     if (timeout) clearTimeout(timeout);
     throw err;
@@ -462,13 +472,13 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
 
       // Retry original request with new token
       headers.set('Authorization', `Bearer ${newTokens.accessToken}`);
-      response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+      response = await fetch(buildApiUrl(url), { ...fetchOptions, headers, credentials: 'include' });
     } else {
       // If another in-flight request already refreshed state, retry once with latest token.
       const latestToken = useAuthStore.getState().tokens?.accessToken;
       if (latestToken && latestToken !== previousAccessToken) {
         headers.set('Authorization', `Bearer ${latestToken}`);
-        response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+        response = await fetch(buildApiUrl(url), { ...fetchOptions, headers, credentials: 'include' });
       } else {
         // Refresh failed and no newer token exists; logout.
         logout();

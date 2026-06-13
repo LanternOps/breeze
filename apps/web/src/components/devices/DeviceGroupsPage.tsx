@@ -306,7 +306,7 @@ export default function DeviceGroupsPage() {
 
   const fetchScripts = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/scripts');
+      const response = await fetchWithAuth('/scripts', { skipOrgIdInjection: true });
       if (response.ok) {
         const data = await response.json();
         setScripts(data.scripts ?? data ?? []);

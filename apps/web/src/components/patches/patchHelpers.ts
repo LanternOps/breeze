@@ -86,6 +86,7 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
 export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
   return {
     id: String(raw.id ?? ''),
+    orgId: raw.orgId || raw.org_id ? String(raw.orgId ?? raw.org_id) : null,
     name: String(raw.name ?? 'Untitled'),
     description: raw.description ? String(raw.description) : null,
     enabled: raw.enabled !== false,

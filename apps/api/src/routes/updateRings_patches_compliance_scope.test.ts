@@ -407,13 +407,23 @@ describe('updateRings routes', () => {
       });
     });
 
-    it('should require orgId for system scope list', async () => {
+    it('should list rings without orgId for system scope', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([makeRing()])
+          })
+        })
+      } as any);
+
       const res = await app.request('/update-rings', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
     });
   });
 

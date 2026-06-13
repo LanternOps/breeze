@@ -80,7 +80,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
 
       // Note: The API currently returns the script with its current version.
       // When a versions endpoint is available, update to: /scripts/${scriptId}/versions
-      const response = await fetchWithAuth(`/scripts/${scriptId}`);
+      const response = await fetchWithAuth(`/scripts/${scriptId}`, { skipOrgIdInjection: true });
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -148,6 +148,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
       // Rollback by updating the script content to the selected version
       const response = await fetchWithAuth(`/scripts/${scriptId}`, {
         method: 'PUT',
+        skipOrgIdInjection: true,
         body: JSON.stringify({
           content: rollbackTarget.content
         })

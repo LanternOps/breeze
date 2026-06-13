@@ -13,6 +13,7 @@ import {
   patchApprovals,
   patchComplianceReports,
   devices,
+  patchPolicies,
   OUTSTANDING_DEVICE_PATCH_STATUSES
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
@@ -38,15 +39,30 @@ complianceRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
 
-    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+    let effectiveOrgId = query.orgId ?? null;
+    if (query.ringId) {
+      const [ring] = await db
+        .select({ orgId: patchPolicies.orgId })
+        .from(patchPolicies)
+        .where(eq(patchPolicies.id, query.ringId))
+        .limit(1);
+
+      if (!ring) {
+        return c.json({ error: 'Update ring not found' }, 404);
+      }
+      if (!auth.canAccessOrg(ring.orgId)) {
+        return c.json({ error: 'Access denied to this update ring' }, 403);
+      }
+      effectiveOrgId = ring.orgId;
+    } else if (effectiveOrgId && !auth.canAccessOrg(effectiveOrgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
     // Get devices scoped to org (or all accessible orgs for partner/system)
     const deviceConditions = [];
     const perms = c.get('permissions') as UserPermissions | undefined;
-    if (query.orgId) {
-      deviceConditions.push(eq(devices.orgId, query.orgId));
+    if (effectiveOrgId) {
+      deviceConditions.push(eq(devices.orgId, effectiveOrgId));
     } else {
       const orgCond = auth.orgCondition(devices.orgId);
       if (orgCond) {
@@ -95,13 +111,13 @@ complianceRoutes.get(
 
     // If ringId specified, scope to ring-approved patches only
     let ringPatchScope: string[] | null = null;
-    if (query.ringId && query.orgId) {
+    if (query.ringId && effectiveOrgId) {
       const ringApprovedPatches = await db
         .select({ patchId: patchApprovals.patchId })
         .from(patchApprovals)
         .where(
           and(
-            eq(patchApprovals.orgId, query.orgId),
+            eq(patchApprovals.orgId, effectiveOrgId),
             eq(patchApprovals.ringId, query.ringId),
             eq(patchApprovals.status, 'approved')
           )
