@@ -190,7 +190,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         silenceDurationSeconds: device.lastSeenAt
           ? Math.round((now.getTime() - device.lastSeenAt.getTime()) / 1000)
           : null,
-      }, 'heartbeat-watchdog-branch', { priority: 'high' }).catch((err) => {
+      }, 'heartbeat-watchdog-branch', { priority: 'high', siteId: device.siteId }).catch((err) => {
         console.error('[heartbeat] device.main_agent_silent publish failed:', err);
       });
     }
@@ -375,7 +375,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       deviceId: device.id,
       fields: ['agentVersion'],
       agentVersion: data.agentVersion,
-    }, 'heartbeat').catch(err => {
+    }, 'heartbeat', { siteId: device.siteId }).catch(err => {
       console.error('[Heartbeat] Failed to publish device.updated:', err);
       captureException(err);
     });
@@ -738,7 +738,8 @@ heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024,
             'monitoring.check_failed',
             device.orgId,
             { deviceId: device.id, name: result.name, watchType: result.watchType, status: result.status, consecutiveFailures: count },
-            'agent-monitoring'
+            'agent-monitoring',
+            { siteId: device.siteId }
           );
         } catch (err) {
           console.warn(`[monitoring] Redis failure counter error for ${device.id}/${result.name}:`, err);
@@ -755,7 +756,8 @@ heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024,
               'monitoring.check_recovered',
               device.orgId,
               { deviceId: device.id, name: result.name, watchType: result.watchType, previousFailures: Number(prevCount) },
-              'agent-monitoring'
+              'agent-monitoring',
+              { siteId: device.siteId }
             );
           }
         } catch (err) {
