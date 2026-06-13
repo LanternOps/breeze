@@ -178,6 +178,31 @@ retained.
   (partner staff sees it, single-org user doesn't); pill removal.
 - **Migration:** idempotent re-apply is a no-op; backfill populates `partner_id` correctly.
 
+## Scope legibility & safety (from impeccable critique, 2026-06-13)
+
+A UX critique of the selector scored the build competent (clean slop detector) but flagged
+that scope is only legible in the far top-right control and is never reaffirmed at the point
+of action — a real safety gap in an RMM where actions touch live customer endpoints. Three
+additions make "what's going on" explicit and prevent wrong-tenant mistakes:
+
+1. **Scope-naming confirmations (P0, safety).** Every destructive / fleet-affecting action —
+   patch install, patch scan, patch approve, script run, and bulk actions — must surface a
+   confirmation that *names the target scope and count* before firing, e.g. "Approve 12 patches
+   for **Acme Corp**?" or "Run **Restart-Spooler** on **142 devices** in **Acme Corp**?". Uses
+   the existing `apps/web/src/components/shared/ConfirmDialog.tsx`. The org is derived from the
+   action's own context (selected ring's org, target device's org), never silently from the
+   shell selector.
+2. **Page-header scope affordance.** A small, calm indicator in each page header that states the
+   page's scope: on global routes "Shared across all organizations"; on scoped routes the active
+   org name ("· Acme Corp"). Driven by `routeScope` + the org store. Makes the global-vs-scoped
+   rule *visible* rather than inferred from a missing widget.
+3. **Scope badges on catalog records.** In catalog lists and detail/edit headers, each record
+   shows its scope: `Partner-wide` / `{Org name}` / `System`. Keeps a record's audience visible
+   after creation (otherwise the "Available to" choice becomes invisible immediately).
+
+These are calm, on-brand (no loud banners), and consistent with the "calm control,
+instantly-scannable" design principles.
+
 ## Out of scope (incremental follow-ups)
 
 - Other pages the user may surface later (e.g. Network Discovery). The `routeScope` map +

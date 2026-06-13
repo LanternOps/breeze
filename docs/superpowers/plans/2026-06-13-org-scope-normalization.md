@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make catalog scope an explicit, visible property of each record (partner-wide / org-specific / system), make the org selector page-aware, and close the RLS gap that partner-wide (`org_id NULL`) records open — without new architecture or a nav re-org.
+**Goal:** Make catalog scope an explicit, visible property of each record (partner-wide / org-specific / system), make the org selector page-aware, close the RLS gap that partner-wide (`org_id NULL`) records open, and make scope legible + safe at the point of action (page-header scope indicator, record scope badges, and scope-naming confirmations on fleet actions) — without new architecture or a nav re-org.
 
 **Architecture:** A new `partner_id` axis + dual-axis RLS on the catalog tables (`scripts`, `script_categories`, `script_tags`, `alert_templates`) so "available to all my orgs" is tenant-safe. A single `routeScope` map in the web app drives a page-aware org-id provider (global routes inject no `orgId`; scoped routes inject the selected org), replacing the Current/All pill. Patch approvals/compliance derive their org from the selected update ring (backend logic preserved from the prior branch work).
 
@@ -29,6 +29,9 @@
 **Web — created:**
 - `apps/web/src/lib/routeScope.ts` — single source of truth for global vs scoped routes.
 - `apps/web/src/lib/routeScope.test.ts` — unit tests.
+- `apps/web/src/components/shared/ScopeBadge.tsx` (+ test) — record audience badge (partner-wide / org / system).
+- `apps/web/src/components/layout/PageScopeIndicator.tsx` (+ test) — page-header scope affordance.
+- `apps/web/src/lib/scopeConfirmMessage.ts` (+ test) — scope-naming message for fleet-action confirmations.
 
 **Web — modified:**
 - `apps/web/src/stores/orgStore.ts` — remove `orgScope`; page-aware provider.
@@ -1007,6 +1010,333 @@ Start dev (`PUBLIC_API_URL=http://localhost`), log in as a partner user with >1 
 git status   # clean
 git log --oneline origin/main..HEAD   # review the phased commits
 ```
+
+---
+
+## Phase 7 — Scope legibility (badges + page-header affordance)
+
+### Task 12: `ScopeBadge` component
+
+**Files:**
+- Create: `apps/web/src/components/shared/ScopeBadge.tsx`
+- Test: `apps/web/src/components/shared/ScopeBadge.test.tsx`
+
+- [ ] **Step 1: Write the failing test**
+
+```tsx
+// apps/web/src/components/shared/ScopeBadge.test.tsx
+import { render, screen } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { ScopeBadge } from './ScopeBadge';
+
+describe('ScopeBadge', () => {
+  it('renders Partner-wide for org-NULL + partner-set records', () => {
+    render(<ScopeBadge orgId={null} partnerId="p1" isSystem={false} />);
+    expect(screen.getByText(/partner-wide/i)).toBeInTheDocument();
+  });
+  it('renders System for system records', () => {
+    render(<ScopeBadge orgId={null} partnerId={null} isSystem />);
+    expect(screen.getByText(/system/i)).toBeInTheDocument();
+  });
+  it('renders the org name for org-scoped records', () => {
+    render(<ScopeBadge orgId="o1" partnerId="p1" isSystem={false} orgName="Acme Corp" />);
+    expect(screen.getByText('Acme Corp')).toBeInTheDocument();
+  });
+});
+```
+
+- [ ] **Step 2: Verify it fails**
+
+Run: `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/components/shared/ScopeBadge.test.tsx`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Implement**
+
+```tsx
+// apps/web/src/components/shared/ScopeBadge.tsx
+import { Building2, Globe, Layers } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+// One quiet badge that states a catalog record's audience. Calm, not loud —
+// muted surface, brand accent only for the partner-wide case (the one a tech
+// most needs to notice: "this is shared across all my customers").
+export function ScopeBadge({
+  orgId,
+  partnerId,
+  isSystem,
+  orgName,
+  className,
+}: {
+  orgId: string | null;
+  partnerId: string | null;
+  isSystem: boolean;
+  orgName?: string;
+  className?: string;
+}) {
+  let icon = <Building2 className="h-3 w-3" />;
+  let label = orgName ?? 'Organization';
+  let tone = 'bg-muted text-muted-foreground';
+
+  if (isSystem) {
+    icon = <Layers className="h-3 w-3" />;
+    label = 'System';
+  } else if (orgId === null && partnerId !== null) {
+    icon = <Globe className="h-3 w-3" />;
+    label = 'Partner-wide';
+    tone = 'bg-primary/10 text-primary';
+  }
+
+  return (
+    <span
+      data-testid="scope-badge"
+      className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', tone, className)}
+    >
+      {icon}
+      {label}
+    </span>
+  );
+}
+```
+
+- [ ] **Step 4: Verify it passes**
+
+Run: `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/components/shared/ScopeBadge.test.tsx`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/web/src/components/shared/ScopeBadge.tsx apps/web/src/components/shared/ScopeBadge.test.tsx
+git commit -m "feat(web): ScopeBadge — partner-wide / org / system record audience"
+```
+
+### Task 13: Wire `ScopeBadge` into the scripts list + edit header
+
+**Files:**
+- Modify: `apps/web/src/components/scripts/ScriptsPage.tsx` (list rows)
+- Modify: `apps/web/src/components/scripts/ScriptEditPage.tsx` (detail/edit header)
+
+- [ ] **Step 1: Render a `ScopeBadge` per script row**
+
+In the scripts list row (read `ScriptsPage.tsx` to find the row render), add next to the script name:
+
+```tsx
+<ScopeBadge orgId={script.orgId} partnerId={script.partnerId} isSystem={script.isSystem}
+  orgName={organizations.find((o) => o.id === script.orgId)?.name} />
+```
+
+(Import `ScopeBadge`; `organizations` is available via `useOrgStore` — add the selector if not already present. If the script type lacks `partnerId`, extend the script TS type to include it.)
+
+- [ ] **Step 2: Render it in the edit/detail header**
+
+In `ScriptEditPage.tsx`, when editing an existing script, show the same `ScopeBadge` next to the title so the audience stays visible.
+
+- [ ] **Step 3: Verify + commit**
+
+```bash
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec tsc --noEmit 2>&1 | grep -i script | head
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/components/scripts
+git add apps/web/src/components/scripts/
+git commit -m "feat(web): show scope badge on script list rows and edit header"
+```
+
+### Task 14: `PageScopeIndicator` — page-header scope affordance
+
+**Files:**
+- Create: `apps/web/src/components/layout/PageScopeIndicator.tsx`
+- Test: `apps/web/src/components/layout/PageScopeIndicator.test.tsx`
+- Modify: page headers for `/scripts`, `/patches` (global) and `/devices` (scoped) as exemplars.
+
+- [ ] **Step 1: Write the failing test**
+
+```tsx
+// apps/web/src/components/layout/PageScopeIndicator.test.tsx
+import { render, screen } from '@testing-library/react';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { PageScopeIndicator } from './PageScopeIndicator';
+
+describe('PageScopeIndicator', () => {
+  it('says shared across all organizations on a global route', () => {
+    render(<PageScopeIndicator pathname="/scripts" orgName="Acme Corp" />);
+    expect(screen.getByText(/shared across all organizations/i)).toBeInTheDocument();
+  });
+  it('shows the active org on a scoped route', () => {
+    render(<PageScopeIndicator pathname="/devices" orgName="Acme Corp" />);
+    expect(screen.getByText(/acme corp/i)).toBeInTheDocument();
+  });
+});
+```
+
+- [ ] **Step 2: Verify it fails**
+
+Run: `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/components/layout/PageScopeIndicator.test.tsx`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Implement**
+
+```tsx
+// apps/web/src/components/layout/PageScopeIndicator.tsx
+import { Globe, Building2 } from 'lucide-react';
+import { isGlobalScopeRoute } from '../../lib/routeScope';
+
+// Calm, page-level scope cue. Sits in the page header next to the title so the
+// "whose data is this?" answer lives next to the content, not only in the
+// far-away top-right switcher.
+export function PageScopeIndicator({ pathname, orgName }: { pathname: string; orgName?: string | null }) {
+  const global = isGlobalScopeRoute(pathname);
+  return (
+    <span
+      data-testid="page-scope-indicator"
+      className="inline-flex items-center gap-1.5 text-sm text-muted-foreground"
+    >
+      {global ? <Globe className="h-3.5 w-3.5" /> : <Building2 className="h-3.5 w-3.5" />}
+      {global ? 'Shared across all organizations' : (orgName ?? 'All organizations')}
+    </span>
+  );
+}
+```
+
+- [ ] **Step 4: Verify it passes; wire into exemplar page headers**
+
+Run the test (expect PASS). Then in `ScriptsPage.tsx`, `PatchesPage.tsx`, and `DevicesPage.tsx`, render `<PageScopeIndicator pathname={window.location.pathname} orgName={currentOrg?.name} />` near the page `<h1>` (read each to place it consistently; pull `currentOrg` from `useOrgStore`).
+
+- [ ] **Step 5: Verify + commit**
+
+```bash
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/components/layout/PageScopeIndicator.test.tsx
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec tsc --noEmit 2>&1 | grep -iE "scripts|patches|devices" | head
+git add apps/web/src/components/layout/PageScopeIndicator.tsx apps/web/src/components/layout/PageScopeIndicator.test.tsx apps/web/src/components/scripts/ScriptsPage.tsx apps/web/src/components/patches/PatchesPage.tsx apps/web/src/components/devices/DevicesPage.tsx
+git commit -m "feat(web): page-header scope indicator (global vs active org)"
+```
+
+---
+
+## Phase 8 — Scope-naming confirmations (P0 safety)
+
+### Task 15: Scope-naming confirm helper
+
+**Files:**
+- Create: `apps/web/src/lib/scopeConfirmMessage.ts`
+- Test: `apps/web/src/lib/scopeConfirmMessage.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// apps/web/src/lib/scopeConfirmMessage.test.ts
+import { describe, it, expect } from 'vitest';
+import { scopeConfirmMessage } from './scopeConfirmMessage';
+
+describe('scopeConfirmMessage', () => {
+  it('names a single org and device count', () => {
+    expect(scopeConfirmMessage({ action: 'Install 12 patches', deviceCount: 142, orgNames: ['Acme Corp'] }))
+      .toBe('Install 12 patches on 142 devices in Acme Corp?');
+  });
+  it('warns when the action spans multiple organizations', () => {
+    expect(scopeConfirmMessage({ action: 'Scan for patches', deviceCount: 300, orgNames: ['Acme Corp', 'Globex', 'Initech'] }))
+      .toBe('Scan for patches on 300 devices across 3 organizations (Acme Corp, Globex, Initech)?');
+  });
+});
+```
+
+- [ ] **Step 2: Verify it fails**
+
+Run: `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/lib/scopeConfirmMessage.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```typescript
+// apps/web/src/lib/scopeConfirmMessage.ts
+//
+// Composes a confirmation message that always names the target scope and count,
+// so a tech can never fire a fleet action without seeing WHO it hits. The
+// multi-org phrasing is intentionally heavier — acting across customers should
+// read as a bigger deal.
+export function scopeConfirmMessage({
+  action,
+  deviceCount,
+  orgNames,
+}: {
+  action: string;
+  deviceCount: number;
+  orgNames: string[];
+}): string {
+  const devices = `${deviceCount} device${deviceCount === 1 ? '' : 's'}`;
+  if (orgNames.length <= 1) {
+    const org = orgNames[0] ?? 'the selected organization';
+    return `${action} on ${devices} in ${org}?`;
+  }
+  return `${action} on ${devices} across ${orgNames.length} organizations (${orgNames.join(', ')})?`;
+}
+```
+
+- [ ] **Step 4: Verify it passes**
+
+Run: `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/lib/scopeConfirmMessage.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/web/src/lib/scopeConfirmMessage.ts apps/web/src/lib/scopeConfirmMessage.test.ts
+git commit -m "feat(web): scopeConfirmMessage — name target scope + count for fleet actions"
+```
+
+### Task 16: Gate destructive/fleet actions behind a scope-naming `ConfirmDialog`
+
+**Files (action sites — read each before editing):**
+- `apps/web/src/components/patches/useBulkActions.ts` — `/patches/scan`, `/devices/:id/patches/install`
+- `apps/web/src/components/patches/PatchApprovalModal.tsx` — approve
+- The script-run entry point (find via `grep -rn "/run\|runScript\|executeScript" apps/web/src/components/scripts apps/web/src/components/devices`)
+
+- [ ] **Step 1: Write the failing test (one representative site)**
+
+For the bulk patch install/scan flow, add a test asserting the action does NOT fire until the user confirms a dialog whose message contains the org name and device count (use the existing `useBulkActions.test.ts` harness; read it first).
+
+- [ ] **Step 2: Verify it fails**
+
+Run: `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/components/patches/useBulkActions.test.ts`
+Expected: FAIL (action currently fires without a confirm).
+
+- [ ] **Step 3: Implement at each site**
+
+Pattern (using the existing `ConfirmDialog` + the helper from Task 15): hold the pending action in state, render `ConfirmDialog` with:
+
+```tsx
+<ConfirmDialog
+  open={pending !== null}
+  onClose={() => setPending(null)}
+  onConfirm={() => { void runPendingAction(); }}
+  title="Confirm fleet action"
+  variant="warning"
+  confirmLabel="Run"
+  confirmTestId="confirm-fleet-action"
+  message={scopeConfirmMessage({
+    action: pending.action,             // e.g. 'Install 12 patches'
+    deviceCount: pending.deviceCount,
+    orgNames: pending.orgNames,         // derived from selected devices / ring org — NOT the shell selector
+  })}
+/>
+```
+
+Derive `orgNames` from the action's own targets (selected devices' orgs, or the ring's org for approvals). For patch approval, `action` = `Approve N patches`, `orgNames` = `[ring.orgName]`, `deviceCount` from the ring's target device count if available (else omit the count by passing the affected patch count phrasing — keep the org name mandatory).
+
+- [ ] **Step 4: Verify the representative test passes; type-check**
+
+```bash
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec vitest run src/components/patches
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter=@breeze/web exec tsc --noEmit 2>&1 | grep -iE "patches|scripts" | head
+```
+Expected: PASS; no new type errors.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/web/src/components/patches/ apps/web/src/components/scripts/
+git commit -m "feat(web): scope-naming confirmations on patch/script/bulk fleet actions"
+```
+
+> **Phase 8 checkpoint (P0 safety):** no destructive or fleet-affecting action fires without a confirmation that names the target organization(s) and count.
 
 ---
 
