@@ -22,9 +22,17 @@ vi.mock('../../db/schema', async (importOriginal) => {
 
 let accessibleOrgIds: string[] = ['org-1'];
 
+// The mocked auth stack faithfully models the REAL dependency that the
+// production bug violated: `requireScope`/`requirePermission` read
+// `c.get('auth')`, which ONLY `authMiddleware` establishes. So our mocked
+// `requireScope` does NOT fabricate the auth context out of thin air — it
+// reads the context flag that the mocked `authMiddleware` sets and 401s if
+// authMiddleware never ran. This means the suite will fail with a 401 the
+// moment `networkRoutes.use('*', authMiddleware)` is removed again, closing
+// the blind spot where the old mock injected auth itself (#1322 review).
 vi.mock('../../middleware/auth', () => ({
-  authMiddleware: vi.fn((c: any, next: any) => next()),
-  requireScope: vi.fn(() => async (c: any, next: any) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
+    // Stand-in for the real middleware establishing the request auth context.
     c.set('auth', {
       user: { id: 'user-1', email: 'a@b.c', name: 'A' },
       scope: 'organization',
@@ -35,11 +43,10 @@ vi.mock('../../middleware/auth', () => ({
       orgCondition: () => undefined,
       token: { mfa: false },
     });
-    return next();
-  }),
-  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     c.set('permissions', {
-      permissions: [{ resource, action }],
+      permissions: [
+        { resource: 'devices', action: 'read' },
+      ],
       partnerId: null,
       orgId: 'org-1',
       roleId: 'role-1',
@@ -48,11 +55,23 @@ vi.mock('../../middleware/auth', () => ({
     });
     return next();
   }),
+  requireScope: vi.fn(() => async (c: any, next: any) => {
+    // Mirror the real requireScope: bail 401 when authMiddleware never ran.
+    if (!c.get('auth')) return c.json({ error: 'Not authenticated' }, 401);
+    return next();
+  }),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (!c.get('auth')) return c.json({ error: 'Not authenticated' }, 401);
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { networkRoutes } from './network';
+import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { listNetworkDevicesSchema } from './schemas';
 import { db } from '../../db';
+import { zValidator } from '@hono/zod-validator';
 
 /**
  * Rig the two query shapes the route uses:
@@ -220,5 +239,57 @@ describe('GET /devices/network — unified-list network arm (#1322)', () => {
       headers: { Authorization: 'Bearer t' },
     });
     expect(res.status).toBe(400);
+  });
+
+  // --- Auth-context guard (#1322 review: missing authMiddleware) -----------
+  // The shipped route forgot `networkRoutes.use('*', authMiddleware)`, so
+  // every real request 401'd because requireScope read an `auth` context that
+  // nothing established. The handler-logic tests above all passed because the
+  // old mock had requireScope inject the auth itself — a false-confidence
+  // blind spot. These two tests close it.
+
+  it('applies authMiddleware on the real route chain (returns 200, not 401)', async () => {
+    // Routed through the ACTUAL `networkRoutes` (which self-applies
+    // authMiddleware). If `networkRoutes.use('*', authMiddleware)` is removed,
+    // the mocked authMiddleware never runs, no auth context is set, and the
+    // mocked requireScope 401s — flipping this assertion red.
+    expect(vi.mocked(authMiddleware)).toHaveBeenCalledTimes(0);
+    rigNetworkRows([]);
+
+    const res = await app.request('/devices/network', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    // Prove the route's middleware stack actually invoked authMiddleware —
+    // this is what establishes the auth context the handler depends on.
+    expect(vi.mocked(authMiddleware)).toHaveBeenCalled();
+  });
+
+  it('401s when authMiddleware is NOT in the chain (proves the guard bites)', async () => {
+    // Build the same handler stack as network.ts but DELIBERATELY omit
+    // `use('*', authMiddleware)`. This reproduces the original bug: with no
+    // authMiddleware, requireScope finds no auth context and 401s. This test
+    // fails (200 instead of 401) if requireScope ever stops depending on the
+    // auth context authMiddleware sets — i.e. it locks the dependency in place.
+    rigNetworkRows([]);
+    const bare = new Hono();
+    bare.get(
+      '/network',
+      requireScope('organization', 'partner', 'system'),
+      requirePermission('devices', 'read'),
+      zValidator('query', listNetworkDevicesSchema),
+      (c) => c.json({ data: [], pagination: { page: 1, limit: 500 } }),
+    );
+    const app2 = new Hono();
+    app2.route('/devices', bare);
+
+    const res = await app2.request('/devices/network', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(401);
   });
 });

@@ -1,10 +1,19 @@
 import { z } from 'zod';
 import { DEVICES_SORT_KEYS } from './cursor';
+import { discoveredAssetTypeEnum } from '../../db/schema/discovery';
 
 const DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',
   'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
 ] as const;
+
+/**
+ * Asset types for the network arm of the unified Devices list, sourced
+ * directly from the `discovered_asset_type` Postgres enum so the query
+ * validator can never silently drift from the column it filters against
+ * (the previous `z.enum(DEVICE_ROLES)` only coincidentally matched).
+ */
+const DISCOVERED_ASSET_TYPES = discoveredAssetTypeEnum.enumValues;
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
@@ -80,8 +89,9 @@ export const listNetworkDevicesSchema = z.object({
   orgIds: csvUuidList,
   siteIds: csvUuidList,
 
-  // discovered_asset_type enum.
-  assetType: z.enum(DEVICE_ROLES).optional(),
+  // Validated against the discovered_asset_type enum directly so it cannot
+  // drift from the discoveredAssets.assetType column (see DISCOVERED_ASSET_TYPES).
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).optional(),
   search: z.string().optional(),
 });
 

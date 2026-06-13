@@ -7,11 +7,13 @@ import {
   snmpDevices,
   networkMonitors,
 } from '../../db/schema';
-import { requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { listNetworkDevicesSchema } from './schemas';
 
 export const networkRoutes = new Hono();
+
+networkRoutes.use('*', authMiddleware);
 
 /**
  * GET /devices/network — the "network" arm of the unified Devices list

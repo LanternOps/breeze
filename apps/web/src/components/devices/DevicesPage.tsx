@@ -144,10 +144,17 @@ export default function DevicesPage() {
           }
         }),
         // Network arm of the unified list (#1322) — approved, unlinked
-        // discovered_assets. Best-effort: a fetch failure here must not blank
-        // the agent fleet, so we degrade to an empty network set.
+        // discovered_assets. Best-effort: a transient/absent-endpoint failure
+        // here must not blank the agent fleet, so we degrade to an empty
+        // network set. A 401, however, is a real auth failure and must NOT be
+        // masked — re-throw it so it propagates to the outer catch and gets the
+        // same auth-redirect/logout handling as the agent arm (fetchWithAuth
+        // already triggered logout). Swallowing it would leave the user on a
+        // half-rendered, silently-broken page. (The endpoint-absent case is
+        // a 404, already degraded to empty inside fetchAllNetworkDevices.)
         fetchAllNetworkDevices({ signal }).catch((err) => {
           if (err instanceof Error && err.name === 'AbortError') throw err;
+          if (err instanceof Response && err.status === 401) throw err;
           console.warn('Failed to fetch network devices:', err);
           return { data: [], total: 0, pagesWalked: 0 };
         }),

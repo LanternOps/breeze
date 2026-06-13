@@ -184,3 +184,42 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
     expect(vi.mocked(fetchWithAuth).mock.calls.some(([url]) => String(url).startsWith('/filters/preview'))).toBe(false);
   });
 });
+
+// #1322 review fix (silent failure): the network-arm fetch must NOT mask a
+// real auth failure. A 401 has to surface to the normal error/auth-redirect
+// path (fetchWithAuth already logs the user out); only a non-auth failure
+// (transient, or a legitimately-absent endpoint) degrades to an empty set so
+// the agent fleet still renders.
+describe('DevicesPage — network-arm fetch failure handling (#1322)', () => {
+  it('surfaces a 401 from the network fetch instead of swallowing it to empty', async () => {
+    // The web fetcher throws the raw Response on a non-OK status (after
+    // fetchWithAuth has already attempted refresh + logout). A 401 must escape
+    // the best-effort `.catch()` so the page renders the session-expired UI.
+    // Use a real Response so the `err instanceof Response` guard in DevicesPage
+    // matches exactly as it would at runtime.
+    const unauthorized = new Response(null, { status: 401 });
+    vi.mocked(fetchAllNetworkDevices).mockRejectedValueOnce(unauthorized);
+
+    render(<DevicesPage />);
+
+    // The error banner maps a 401 Response to "Session expired" (errorMessages).
+    expect(await screen.findByText('Session expired')).toBeTruthy();
+    // And the agent list/grid must NOT be rendered as if load succeeded.
+    expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
+  });
+
+  it('still degrades a non-401 network-fetch failure to an empty network set', async () => {
+    // A transient/non-auth failure keeps the graceful degrade: the agent
+    // fleet renders, no error banner.
+    vi.mocked(fetchAllNetworkDevices).mockRejectedValueOnce(new Error('boom'));
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);
+
+    render(<DevicesPage />);
+
+    // Agent devices still load; no session-expired / error banner.
+    expect(await screen.findByTestId('device-list')).toBeTruthy();
+    expect(screen.queryByText('Session expired')).toBeNull();
+    expect(screen.queryByText('Failed to load')).toBeNull();
+  });
+});
