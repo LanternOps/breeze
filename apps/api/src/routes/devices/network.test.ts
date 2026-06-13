@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Tests for the network arm of the unified Devices list (issue #1322,
 // phase 1): GET /devices/network surfaces approved, unlinked
@@ -21,6 +22,12 @@ vi.mock('../../db/schema', async (importOriginal) => {
 });
 
 let accessibleOrgIds: string[] = ['org-1'];
+// Site-allowlist for the mocked caller. `undefined` = unrestricted (sees all
+// sites in accessible orgs); a real array = a site-restricted caller whose
+// list-level site-scoping branch in network.ts MUST be exercised (the most
+// isolation-critical code, previously never reached because the mock hard-set
+// this to `undefined`). #1322 specialist-panel fix.
+let allowedSiteIds: string[] | undefined = undefined;
 
 // The mocked auth stack faithfully models the REAL dependency that the
 // production bug violated: `requireScope`/`requirePermission` read
@@ -51,7 +58,9 @@ vi.mock('../../middleware/auth', () => ({
       orgId: 'org-1',
       roleId: 'role-1',
       scope: 'organization',
-      allowedSiteIds: undefined,
+      // Mirrors the real permissions object: `allowedSiteIds` is the site
+      // allowlist the route's site-scoping branch keys off. Driven per-test.
+      allowedSiteIds,
     });
     return next();
   }),
@@ -81,7 +90,12 @@ import { zValidator } from '@hono/zod-validator';
  * chaining. We disambiguate by returning a thenable from `.where()` that
  * also carries `.orderBy`.
  */
+// Captures the WHERE condition the row query is built with so site-scoping
+// tests can serialize it to SQL and assert the narrowing/lockout predicate.
+let capturedRowWhere: unknown;
+
 function rigNetworkRows(rows: unknown[], total?: number) {
+  capturedRowWhere = undefined;
   const offset = vi.fn().mockResolvedValue(rows);
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
@@ -92,7 +106,10 @@ function rigNetworkRows(rows: unknown[], total?: number) {
     const isCount = arg && typeof arg === 'object' && 'count' in arg && Object.keys(arg).length === 1;
     const where = isCount
       ? vi.fn().mockResolvedValue([{ count: total ?? rows.length }])
-      : vi.fn().mockReturnValue({ orderBy });
+      : vi.fn().mockImplementation((cond: unknown) => {
+          capturedRowWhere = cond;
+          return { orderBy };
+        });
     const from = vi.fn().mockReturnValue({ where });
     return { from } as never;
   }) as never);
@@ -104,6 +121,7 @@ describe('GET /devices/network — unified-list network arm (#1322)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     accessibleOrgIds = ['org-1'];
+    allowedSiteIds = undefined;
     app = new Hono();
     app.route('/devices', networkRoutes);
   });
@@ -239,6 +257,119 @@ describe('GET /devices/network — unified-list network arm (#1322)', () => {
       headers: { Authorization: 'Bearer t' },
     });
     expect(res.status).toBe(400);
+  });
+
+  // --- Site-isolation branch (#1322 specialist-panel HIGH) -----------------
+  // The list-level site-scoping in network.ts (403 on an out-of-scope site,
+  // narrow via inArray(discoveredAssets.siteId, effectiveSiteIds), and the
+  // empty-allowlist lockout via sql`false`) is the most isolation-critical
+  // code in the route. It only runs when the caller is site-restricted
+  // (`permissions.allowedSiteIds` is a real array). Every test above ran with
+  // `allowedSiteIds === undefined`, so this branch was NEVER exercised — a
+  // site-restricted user could have seen every site's network assets and
+  // nothing would have caught it. These tests drive a restricted caller.
+
+  const SITE_A = '11111111-1111-4111-8111-111111111111'; // in the allowlist
+  const SITE_B = '22222222-2222-4222-8222-222222222222'; // in the allowlist
+  const SITE_OUT = '99999999-9999-4999-8999-999999999999'; // NOT allowed
+
+  it('403s a site-restricted caller requesting a site outside their allowlist', async () => {
+    allowedSiteIds = [SITE_A, SITE_B];
+    rigNetworkRows([]);
+
+    const res = await app.request(`/devices/network?siteId=${SITE_OUT}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/site denied/i);
+    // The query must never have been built — the 403 short-circuits first.
+    expect(capturedRowWhere).toBeUndefined();
+  });
+
+  it('narrows results to the caller\'s allowed sites when no explicit site filter is given', async () => {
+    allowedSiteIds = [SITE_A, SITE_B];
+    rigNetworkRows([]);
+
+    const res = await app.request('/devices/network', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(capturedRowWhere).toBeDefined();
+    const sqlText = new PgDialect().sqlToQuery(capturedRowWhere as never).sql.toLowerCase();
+    const params = new PgDialect().sqlToQuery(capturedRowWhere as never).params;
+    // Effective site filter is an `IN (...)` over the allowlist — both allowed
+    // sites are bound; no all-rows-allowed and no `false` lockout.
+    expect(sqlText).toMatch(/site_id" in \(/);
+    expect(params).toContain(SITE_A);
+    expect(params).toContain(SITE_B);
+    expect(sqlText).not.toContain('false');
+  });
+
+  it('narrows to the requested site only when it is inside the allowlist', async () => {
+    allowedSiteIds = [SITE_A, SITE_B];
+    rigNetworkRows([]);
+
+    const res = await app.request(`/devices/network?siteId=${SITE_A}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const built = new PgDialect().sqlToQuery(capturedRowWhere as never);
+    // Only the requested in-allowlist site is bound — NOT the caller's whole
+    // allowlist (a restricted user asking for SITE_A must not leak SITE_B rows
+    // they didn't ask for, and must never widen past their allowlist).
+    expect(built.params).toContain(SITE_A);
+    expect(built.params).not.toContain(SITE_B);
+    expect(built.params).not.toContain(SITE_OUT);
+  });
+
+  it('locks an empty-allowlist caller out of every row (sql`false`)', async () => {
+    // A site-restricted caller whose allowlist is empty must see NOTHING — not
+    // every org row. The route encodes this as an unconditional `false`
+    // predicate. If this regresses to "no site filter", the caller would see
+    // all accessible-org assets (a cross-site isolation breach).
+    allowedSiteIds = [];
+    rigNetworkRows([
+      {
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        orgId: 'org-1',
+        siteId: 'site-x',
+        assetType: 'printer',
+        hostname: 'should-not-leak',
+        label: null,
+        ipAddress: '10.0.0.5',
+        macAddress: null,
+        manufacturer: null,
+        model: null,
+        isOnline: true,
+        responseTimeMs: null,
+        openPorts: null,
+        lastSeenAt: new Date('2026-06-13T10:00:00.000Z'),
+        firstSeenAt: new Date('2026-06-01T10:00:00.000Z'),
+        tags: null,
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+      },
+    ]);
+
+    const res = await app.request('/devices/network', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(capturedRowWhere).toBeDefined();
+    const sqlText = new PgDialect().sqlToQuery(capturedRowWhere as never).sql.toLowerCase();
+    // The unconditional false lockout must be present.
+    expect(sqlText).toContain('false');
+    // And it must NOT have degraded into an `IN (...)` site narrowing.
+    expect(sqlText).not.toMatch(/site_id" in \(/);
   });
 
   // --- Auth-context guard (#1322 review: missing authMiddleware) -----------

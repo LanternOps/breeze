@@ -43,6 +43,15 @@ type DeviceGroup = {
   deviceIds?: string[];
 };
 
+// Compact, bounded summary of which devices failed in a per-item bulk loop, so
+// a 50-device batch with failures yields one readable toast (not 50 toasts or
+// an opaque "some failed"). Caps the named list to avoid an unbounded string.
+function summarizeFailedDevices(names: string[]): string {
+  const shown = names.slice(0, 3);
+  const rest = names.length - shown.length;
+  return rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ');
+}
+
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -564,8 +573,31 @@ export default function DevicesPage() {
     }
   };
 
-  const handleBulkAction = async (action: string, selectedDevices: Device[]) => {
-    if (actionInProgress || selectedDevices.length === 0) return;
+  const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
+    if (actionInProgress || allSelectedDevices.length === 0) return;
+
+    // Every bulk action below talks to an enrolled agent (reboot/shutdown/lock,
+    // maintenance, decommission, wake, run-script, deploy-software). A network
+    // row's `id` is a `discovered_assets.id`, NOT a `devices.id` — feeding it
+    // into an agent-only endpoint 404s (e.g. PATCH /devices/:id/maintenance),
+    // and an unhandled throw mid-loop would silently skip every real device
+    // after it. So drop network rows up front for these actions and tell the
+    // user, rather than letting them flow into the per-device loops (#1322).
+    const selectedDevices = allSelectedDevices.filter(d => (d.deviceClass ?? 'agent') === 'agent');
+    const skippedNetworkCount = allSelectedDevices.length - selectedDevices.length;
+    if (selectedDevices.length === 0) {
+      showToast({
+        type: 'error',
+        message: 'This action applies to agent devices only. Network devices have no agent and were skipped.',
+      });
+      return;
+    }
+    if (skippedNetworkCount > 0) {
+      showToast({
+        type: 'warning',
+        message: `${skippedNetworkCount} network device${skippedNetworkCount === 1 ? '' : 's'} skipped — this action applies to agent devices only.`,
+      });
+    }
 
     const deviceIds = selectedDevices.map(d => d.id);
     const deviceCount = selectedDevices.length;
@@ -610,32 +642,35 @@ export default function DevicesPage() {
           break;
         }
 
-        case 'maintenance-on': {
-          const mOnLabel = 'Enabling maintenance mode';
-          setBulkProgress({ current: 0, total: deviceCount, label: mOnLabel });
-          let mOnDone = 0;
-          for (const device of selectedDevices) {
-            await toggleMaintenanceMode(device.id, true);
-            mOnDone++;
-            setBulkProgress({ current: mOnDone, total: deviceCount, label: mOnLabel });
-          }
-          setBulkProgress(null);
-          showToast({ type: 'success', message: `${deviceCount} devices put into maintenance mode` });
-          await fetchDevices();
-          break;
-        }
-
+        case 'maintenance-on':
         case 'maintenance-off': {
-          const mOffLabel = 'Disabling maintenance mode';
-          setBulkProgress({ current: 0, total: deviceCount, label: mOffLabel });
-          let mOffDone = 0;
+          const enabling = action === 'maintenance-on';
+          const mLabel = enabling ? 'Enabling maintenance mode' : 'Disabling maintenance mode';
+          setBulkProgress({ current: 0, total: deviceCount, label: mLabel });
+          let mDone = 0;
+          const mFailed: string[] = [];
+          // Per-device try/catch: one device 404'ing/erroring must NOT abort
+          // the batch and silently skip every device after it. Collect the
+          // failures and report them in a single summary toast (#1322).
           for (const device of selectedDevices) {
-            await toggleMaintenanceMode(device.id, false);
-            mOffDone++;
-            setBulkProgress({ current: mOffDone, total: deviceCount, label: mOffLabel });
+            try {
+              await toggleMaintenanceMode(device.id, enabling);
+            } catch {
+              mFailed.push(device.hostname || device.id);
+            }
+            mDone++;
+            setBulkProgress({ current: mDone, total: deviceCount, label: mLabel });
           }
           setBulkProgress(null);
-          showToast({ type: 'success', message: `${deviceCount} devices taken out of maintenance mode` });
+          const mSucceeded = deviceCount - mFailed.length;
+          const mVerb = enabling ? 'put into' : 'taken out of';
+          if (mFailed.length === 0) {
+            showToast({ type: 'success', message: `${mSucceeded} device${mSucceeded === 1 ? '' : 's'} ${mVerb} maintenance mode` });
+          } else if (mSucceeded === 0) {
+            showToast({ type: 'error', message: `Failed to update maintenance mode for all ${mFailed.length} device${mFailed.length === 1 ? '' : 's'}: ${summarizeFailedDevices(mFailed)}` });
+          } else {
+            showToast({ type: 'error', message: `${mSucceeded} device${mSucceeded === 1 ? '' : 's'} ${mVerb} maintenance mode; ${mFailed.length} failed: ${summarizeFailedDevices(mFailed)}` });
+          }
           await fetchDevices();
           break;
         }
