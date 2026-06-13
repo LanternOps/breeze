@@ -13,6 +13,7 @@ import { putPolicySchema, putTenantMappingSchema } from './schemas';
 import { clientAiAdminOrgRoutes } from './adminOrgs';
 import { clientAiAdminSessionRoutes } from './adminSessions';
 import { clientAiAdminUsageRoutes } from './adminUsage';
+import { clientAiAdminTemplateRoutes } from './adminTemplates';
 
 /**
  * MSP-facing admin surface for Breeze AI for Office (spec §9, consumed by the
@@ -216,3 +217,4 @@ clientAiAdminRoutes.put(
 clientAiAdminRoutes.route('/', clientAiAdminOrgRoutes);
 clientAiAdminRoutes.route('/', clientAiAdminSessionRoutes);
 clientAiAdminRoutes.route('/', clientAiAdminUsageRoutes);
+clientAiAdminRoutes.route('/', clientAiAdminTemplateRoutes);
