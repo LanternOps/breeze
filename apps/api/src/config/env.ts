@@ -17,6 +17,12 @@ export const GOOGLE_WORKSPACE_ENABLED = envFlag('GOOGLE_WORKSPACE_ENABLED', fals
 // registration (aiAgentSdkTools.ts) and the connect routes.
 export const M365_ENABLED = envFlag('M365_ENABLED', false);
 
+// Breeze AI for Office (Excel add-in / client AI). The Entra application
+// (client) ID of the multi-tenant add-in app registration. Empty = the whole
+// /client-ai surface is dark (exchange and admin routes return 404), mirroring
+// the M365_ENABLED gating style.
+export const CLIENT_AI_ENTRA_CLIENT_ID = process.env.CLIENT_AI_ENTRA_CLIENT_ID?.trim() ?? '';
+
 // Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
 export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
