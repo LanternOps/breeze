@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { dlpConfigSchema } from '@breeze/shared/validators';
+import { dlpConfigSchema, DEFAULT_DLP_CONFIG } from '@breeze/shared/validators';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
 
 // ============================================
@@ -55,6 +55,74 @@ export const putPolicySchema = z
     branding: z.record(z.unknown()).optional(),
   })
   .strict();
+
+// ============================================
+// DLP config (spec §6) — THE cross-plan contract shape.
+// Plan 3 already shipped the canonical schema in @breeze/shared/validators
+// (dlpConfigSchema, DEFAULT_DLP_CONFIG). We re-export aliases so Plan-4
+// route tasks/tests have stable client-ai-namespaced names without
+// duplicating (and diverging from) the shared definition. putPolicySchema
+// above already consumes dlpConfigSchema directly.
+// ============================================
+
+export const clientAiDlpConfigSchema = dlpConfigSchema;
+export type ClientAiDlpConfig = z.infer<typeof clientAiDlpConfigSchema>;
+
+/** Spec §6 defaults: redact for financial/credential types; email/phone off. */
+export const CLIENT_AI_DLP_DEFAULT_BUILTINS = DEFAULT_DLP_CONFIG.builtins;
+
+// ============================================
+// Plan-4 admin query/body schemas
+// ============================================
+
+export const USAGE_MONTH_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+export const adminUsageQuerySchema = z
+  .object({
+    from: z.string().regex(USAGE_MONTH_REGEX, 'must be YYYY-MM'),
+    to: z.string().regex(USAGE_MONTH_REGEX, 'must be YYYY-MM'),
+    orgId: z.string().uuid().optional(),
+  })
+  .refine((q) => q.from <= q.to, { message: 'from must be <= to' });
+
+const parsableDate = z
+  .string()
+  .refine((v) => !Number.isNaN(Date.parse(v)), 'must be a parsable date');
+
+export const adminSessionListQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  clientUserId: z.string().uuid().optional(),
+  from: parsableDate.optional(),
+  to: parsableDate.optional(),
+  flagged: z.enum(['true', 'false']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+export const flagSessionSchema = z
+  .object({ reason: z.string().max(1000).optional() })
+  .optional();
+
+export const templateBodySchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).nullable().optional(),
+    promptBody: z.string().min(1).max(20000),
+    category: z.string().max(100).nullable().optional(),
+    /** null/absent ⇒ partner-wide row (org_id NULL, partner_id set). */
+    orgId: z.string().uuid().nullable().optional(),
+  })
+  .strict();
+
+export const templateUpdateSchema = templateBodySchema
+  .omit({ orgId: true })
+  .partial()
+  .strict();
+
+export const templateListQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  scope: z.enum(['partner', 'org']).optional(),
+});
 
 // ============================================
 // Session-loop schemas (Plan 2)
