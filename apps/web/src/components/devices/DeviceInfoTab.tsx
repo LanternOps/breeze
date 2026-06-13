@@ -5,6 +5,7 @@ import MacOSPermissionsCard from './MacOSPermissionsCard';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
 import { runAction, ActionError } from '../../lib/runAction';
+import { formatOsVersionForDisplay } from '../../lib/deviceUtils';
 import {
   DEVICE_ROLES,
   getDeviceRoleLabel,
@@ -95,12 +96,6 @@ const osTypeLabels: Record<string, string> = {
 function formatOsType(raw: string | null | undefined): string {
   if (!raw) return '—';
   return osTypeLabels[raw.toLowerCase()] ?? raw;
-}
-
-function formatOsVersionForDisplay(raw: string | null | undefined): string {
-  if (!raw) return '—';
-  // Strip kernel name prefix (e.g. "darwin 26.3.1" → "26.3.1")
-  return raw.replace(/^(darwin|linux)\s+/i, '');
 }
 
 function formatDesktopAccessMode(mode: DesktopAccessState['mode'] | undefined): string {

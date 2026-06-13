@@ -237,3 +237,41 @@ describe('DeviceInfoTab — role + custom-field mutations also use runAction', (
     });
   });
 });
+
+describe('DeviceInfoTab — OS Version display (issue #1302)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('strips the embedded build from a Windows OS Version, keeping it only in OS Build', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          hostname: 'TST-LAPTOP-01',
+          osType: 'windows',
+          osVersion: 'Microsoft Windows 11 Pro 10.0.22631 Build 22631',
+          osBuild: '22631',
+          tags: [],
+          status: 'online',
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('TST-LAPTOP-01');
+
+    // OS Version row shows the clean marketing name, NOT the embedded build.
+    const osVersionRow = screen.getByText('OS Version').closest('div') as HTMLElement;
+    expect(osVersionRow).toHaveTextContent('Microsoft Windows 11 Pro');
+    expect(osVersionRow).not.toHaveTextContent('22631');
+    expect(osVersionRow).not.toHaveTextContent(/Build/i);
+
+    // OS Build row still carries the build number.
+    const osBuildRow = screen.getByText('OS Build').closest('div') as HTMLElement;
+    expect(osBuildRow).toHaveTextContent('22631');
+  });
+});

@@ -6,6 +6,7 @@ import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
 import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
+import { formatOsVersionForDisplay } from '@/lib/deviceUtils';
 import {
   PAGE_SIZE_OPTIONS,
   readPageSizePreference,
@@ -541,7 +542,7 @@ export default function DeviceList({
       header: () => <th key="osVersion" className="px-3 py-3">OS Version</th>,
       cell: (device) => (
         <td key="osVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-          {device.osVersion || dash}
+          {device.osVersion ? formatOsVersionForDisplay(device.osVersion) : dash}
         </td>
       ),
     },

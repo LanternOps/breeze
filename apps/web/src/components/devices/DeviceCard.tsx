@@ -3,7 +3,7 @@ import { Monitor, MoreVertical, Terminal, RotateCcw, FileCode, Settings, Trash2 
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatLastSeen } from '@/lib/formatTime';
-import { asRecord, toPercentNullable } from '@/lib/deviceUtils';
+import { asRecord, toPercentNullable, formatOsVersionForDisplay } from '@/lib/deviceUtils';
 
 type DeviceCardProps = {
   device: Device;
@@ -169,7 +169,7 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
               <span className={`h-2 w-2 rounded-full ${statusColors[device.status]}`} aria-hidden="true" />
               <span className="sr-only">{device.status.charAt(0).toUpperCase() + device.status.slice(1)}</span>
             </div>
-            <p className="text-xs text-muted-foreground">{device.osVersion}</p>
+            <p className="text-xs text-muted-foreground">{formatOsVersionForDisplay(device.osVersion, '')}</p>
           </div>
         </div>
         <div className="relative">
