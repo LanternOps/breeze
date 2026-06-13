@@ -388,7 +388,10 @@ export default function TicketsPage() {
 
   const filterSelectClass = (active: boolean) =>
     cn(
-      'h-8 max-w-[180px] rounded-md border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
+      // py-1 + leading-tight overrides the @tailwindcss/forms base padding
+      // (0.5rem) + 1.5rem line-height that otherwise overflow the fixed h-8
+      // box and clip descenders on the displayed value (e.g. "All categories").
+      'h-8 max-w-[180px] rounded-md border bg-background px-2 py-1 text-sm leading-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
       active ? 'text-foreground' : 'text-muted-foreground'
     );
 
@@ -570,7 +573,7 @@ export default function TicketsPage() {
                     onChange={(e) => { setBulkAssignee(e.target.value); if (e.target.value) setBulkStatus(''); }}
                     aria-label="Bulk assign to"
                     data-testid="tickets-bulk-assignee"
-                    className="h-8 max-w-[150px] rounded-md border bg-background px-2 text-sm"
+                    className="h-8 max-w-[150px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
                   >
                     <option value="">Assign to…</option>
                     <option value="unassign">Unassign</option>
@@ -583,7 +586,7 @@ export default function TicketsPage() {
                     onChange={(e) => { setBulkStatus(e.target.value); if (e.target.value) setBulkAssignee(''); }}
                     aria-label="Bulk set status"
                     data-testid="tickets-bulk-status"
-                    className="h-8 max-w-[130px] rounded-md border bg-background px-2 text-sm"
+                    className="h-8 max-w-[130px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
                   >
                     <option value="">Set status…</option>
                     {BULK_STATUSES.map((s) => (

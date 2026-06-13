@@ -7,8 +7,20 @@ export default function HelpPanel() {
   const { isOpen, docsUrl, label, toggle, close } = useHelpStore();
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [iframeError, setIframeError] = useState(false);
+  // Only mount the docs iframe once the panel has actually been opened. The
+  // panel is always rendered (it slides in/out via CSS transform), but a
+  // mounted iframe loads docs.breezermm.com (+ its Cloudflare RUM beacon) on
+  // every page — those external requests trip the app CSP and spam
+  // report-only violations into the console on every navigation. Latching on
+  // first open means zero docs traffic until the user asks for help, and it
+  // stays mounted afterwards so reopening on the same page is instant.
+  const [hasOpened, setHasOpened] = useState(isOpen);
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
   const canEmbedDocs = currentOrigin ? isDocsEmbeddableOrigin(currentOrigin) : true;
+
+  useEffect(() => {
+    if (isOpen) setHasOpened(true);
+  }, [isOpen]);
 
   // Keyboard shortcut: Cmd+Shift+H to toggle
   useEffect(() => {
@@ -78,7 +90,7 @@ export default function HelpPanel() {
         </div>
 
         <div className="relative flex flex-1">
-          {canEmbedDocs && !iframeLoaded && !iframeError && (
+          {canEmbedDocs && hasOpened && !iframeLoaded && !iframeError && (
             <div className="absolute inset-0 flex items-center justify-center bg-card">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
@@ -105,7 +117,7 @@ export default function HelpPanel() {
             </div>
           )}
 
-          {canEmbedDocs && (
+          {canEmbedDocs && hasOpened && (
             <iframe
               key={docsUrl}
               src={docsUrl}

@@ -17,7 +17,10 @@ import {
   BookOpen,
   Menu,
   LifeBuoy,
-  CreditCard
+  CreditCard,
+  Rows3,
+  Rows4,
+  AlignJustify
 } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
@@ -32,10 +35,15 @@ import { useFeaturesStore } from '../../stores/featuresStore';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '../../lib/navigation';
 import { useAvatarBlobUrl } from '../../lib/avatarBlobCache';
+import { readDensity, writeDensity, subscribeDensity, type Density } from '../../lib/density';
 
 export default function Header() {
   const [mounted, setMounted] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
+  // Interface density: account-wide preference (breeze.density) shared with
+  // any table that opts in. The control lives in this theme/display submenu;
+  // changing it re-skins the whole app via <html data-density> (globals.css).
+  const [density, setDensity] = useState<Density>('comfortable');
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showThemeMenu, setShowThemeMenu] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
@@ -64,7 +72,12 @@ export default function Header() {
     const raw = localStorage.getItem('theme');
     const stored = (raw === 'light' || raw === 'dark' || raw === 'system') ? raw : null;
     setTheme(stored || 'system');
+    // Hydrate density from storage and stay in sync if another component
+    // (e.g. a table toolbar) ever flips it.
+    setDensity(readDensity());
   }, []);
+
+  useEffect(() => subscribeDensity(setDensity), []);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -177,6 +190,13 @@ export default function Header() {
         body: JSON.stringify({ preferences: { theme: next } })
       }).catch((err) => console.warn('[theme] Failed to persist preference:', err));
     }
+  };
+
+  // writeDensity persists the choice, mirrors data-density onto <html> so the
+  // page-level CSS in globals.css applies app-wide, and notifies subscribers
+  // (subscribeDensity above keeps this menu's checkmark in sync).
+  const applyDensity = (next: Density) => {
+    writeDensity(next);
   };
 
   // Listen for OS theme changes when in system mode
@@ -327,7 +347,8 @@ export default function Header() {
           </button>
 
           {showThemeMenu && (
-            <div ref={themePanelRef} className="absolute right-0 top-full z-50 mt-2 w-36 rounded-lg border bg-popover py-1 shadow-lg">
+            <div ref={themePanelRef} className="absolute right-0 top-full z-50 mt-2 w-52 rounded-lg border bg-popover py-1 shadow-lg">
+              <p className="px-3 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Theme</p>
               {([
                 { value: 'light' as const, label: 'Light', Icon: Sun },
                 { value: 'dark' as const, label: 'Dark', Icon: Moon },
@@ -344,6 +365,28 @@ export default function Header() {
                   {theme === value && <Check className="h-4 w-4 text-primary" />}
                 </button>
               ))}
+
+              {/* Interface density — account-wide; applies across the whole app. */}
+              <div className="my-1 border-t" />
+              <p className="px-3 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Interface density</p>
+              {([
+                { value: 'comfortable' as const, label: 'Comfortable', Icon: Rows3 },
+                { value: 'compact' as const, label: 'Compact', Icon: Rows4 },
+                { value: 'dense' as const, label: 'Dense', Icon: AlignJustify },
+              ]).map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => applyDensity(value)}
+                  aria-label={`${label} interface density`}
+                  className="flex w-full items-center gap-3 px-3 py-2 text-sm transition hover:bg-muted"
+                >
+                  <Icon className="h-4 w-4 text-muted-foreground" />
+                  <span className="flex-1 text-left">{label}</span>
+                  {density === value && <Check className="h-4 w-4 text-primary" />}
+                </button>
+              ))}
+              <p className="px-3 pb-1.5 pt-1 text-[11px] leading-snug text-muted-foreground">Applies across the entire app.</p>
             </div>
           )}
         </div>

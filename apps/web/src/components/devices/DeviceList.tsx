@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Rows3, Rows4, AlignJustify } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3 } from 'lucide-react';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
@@ -21,11 +21,9 @@ import {
   type ColumnId,
 } from './columnVisibility';
 import {
-  DENSITY_OPTIONS,
   densityTableClasses,
   readDensity,
   subscribeDensity,
-  writeDensity,
   type Density,
 } from '@/lib/density';
 import { OSIcon } from './osIcons';
@@ -222,15 +220,11 @@ export default function DeviceList({
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => readColumnOrder());
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
-  // Table density preference (account-wide via localStorage). Subscribe so
-  // a sibling instance on the same page that flips density updates this
-  // one without a reload.
+  // Table density reflects the account-wide preference (breeze.density),
+  // which is now set from the top-bar theme/display menu. Subscribe so the
+  // table re-renders when it changes, without a reload.
   const [density, setDensity] = useState<Density>(() => readDensity());
   useEffect(() => subscribeDensity(setDensity), []);
-  const handleDensityChange = (next: Density) => {
-    setDensity(next);
-    writeDensity(next);
-  };
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
@@ -839,32 +833,10 @@ export default function DeviceList({
                 </span>
               )}
             </button>
-            {/* Density toggle: comfortable / compact / dense. Single
-                account-wide preference (breeze.density in localStorage),
-                applied to descendant td/th via Tailwind arbitrary
-                variants on the table element. */}
-            <div className="inline-flex h-10 items-center rounded-md border" role="group" aria-label="Row density">
-              {DENSITY_OPTIONS.map((opt, idx) => {
-                const Icon = opt === 'comfortable' ? Rows3 : opt === 'compact' ? Rows4 : AlignJustify;
-                const label = opt.charAt(0).toUpperCase() + opt.slice(1);
-                const isActive = density === opt;
-                return (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => handleDensityChange(opt)}
-                    aria-pressed={isActive}
-                    aria-label={`${label} row density`}
-                    title={`${label} row density`}
-                    className={`flex h-full items-center justify-center px-2.5 text-sm transition ${
-                      isActive ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60'
-                    } ${idx === 0 ? 'rounded-l-md' : ''} ${idx === DENSITY_OPTIONS.length - 1 ? 'rounded-r-md' : 'border-r'}`}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </button>
-                );
-              })}
-            </div>
+            {/* Interface density is now an account-wide control in the
+                top-bar theme/display menu (Header.tsx). The table still
+                reflects the saved preference via densityTableClasses +
+                subscribeDensity below. */}
             <div className="relative" ref={columnsMenuRef}>
               <button
                 type="button"
