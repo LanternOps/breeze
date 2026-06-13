@@ -26,7 +26,14 @@ import {
  */
 export async function clientAiAuthMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  let token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token && c.req.method === 'GET') {
+    // EventSource cannot set request headers, so GET endpoints (the SSE
+    // stream) accept ?token= as a fallback. Header always wins; non-GET
+    // requests are header-only. Prefer fetch-based SSE with the Authorization
+    // header (Plan 5's client) — query tokens can land in proxy access logs.
+    token = c.req.query('token') || null;
+  }
   if (!token) {
     return c.json({ error: 'Missing or invalid authorization header' }, 401);
   }
