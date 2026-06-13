@@ -620,12 +620,27 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
       // same mirroring PATCH /partners/me does (issue #1318). Without this, a
       // platform-admin settings write would update the JSONB key but leave the
       // column stale, and resolveEffectiveTimezone reads the column first, so
-      // the partner-tz default would silently desync. canonicalizeTimezone
-      // folds 'utc' -> 'UTC' and rejects garbage (returns null -> skip).
+      // the partner-tz default would silently desync.
+      //
+      // updatePartnerSchema uses `settings: z.any()`, so unlike /partners/me
+      // there is no zod IANA refine here. Validate the tz on the system path
+      // too: an invalid value (e.g. 'Mars/Olympus_Mons') must be REJECTED, not
+      // silently dropped — otherwise canonicalizeTimezone(null) skips the column
+      // write while the garbage persists in the JSONB, the exact column<->
+      // settings desync #1318 exists to prevent. canonicalizeTimezone folds any
+      // UTC casing ('utc' -> 'UTC') and returns null for a non-IANA value.
       // Read the value BEFORE encryption (settings is plaintext here).
-      const rawTz = (updates.settings as Record<string, unknown>).timezone;
-      const canonicalTz = canonicalizeTimezone(rawTz);
-      if (canonicalTz !== null) {
+      const settingsObj = updates.settings as Record<string, unknown>;
+      const rawTz = settingsObj.timezone;
+      if (rawTz !== undefined && rawTz !== null) {
+        const canonicalTz = canonicalizeTimezone(rawTz);
+        if (canonicalTz === null) {
+          return c.json({ error: 'Invalid IANA timezone in settings.timezone' }, 400);
+        }
+        // Write the canonical form back into settings so the JSONB and the
+        // column hold the identical value (e.g. 'utc' is normalized to 'UTC' in
+        // both places, never one casing in JSONB and another in the column).
+        settingsObj.timezone = canonicalTz;
         updates.timezone = canonicalTz;
       }
     }

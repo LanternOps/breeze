@@ -384,7 +384,17 @@ export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
     })
     .from(devices)
     .innerJoin(organizations, eq(devices.orgId, organizations.id))
-    .innerJoin(partners, eq(organizations.partnerId, partners.id))
+    // leftJoin (not inner) on partners: the partners SELECT RLS policy is
+    // breeze_has_partner_access(id), which is FALSE for an ORG-scoped request
+    // (computeAccessiblePartnerIds returns [] for org scope). An inner join
+    // would make the partner row RLS-invisible and drop the ENTIRE device row,
+    // sending resolveDeviceTimezone down its missing-row branch -> 'UTC', a
+    // regression of the prior site->org->UTC behavior. With a left join the
+    // device row survives, partnerTimezone is simply null, and
+    // resolveEffectiveTimezone falls through site -> org -> UTC. For
+    // system/partner-scoped requests the partner row is visible and contributes
+    // to the chain as intended (#1318).
+    .leftJoin(partners, eq(organizations.partnerId, partners.id))
     .leftJoin(sites, eq(devices.siteId, sites.id))
     .where(eq(devices.id, deviceId))
     .limit(1);

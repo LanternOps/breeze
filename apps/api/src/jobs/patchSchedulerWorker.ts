@@ -252,7 +252,14 @@ async function loadDeviceSchedulingContexts(deviceIds: string[]): Promise<Device
     })
     .from(devices)
     .innerJoin(organizations, eq(devices.orgId, organizations.id))
-    .innerJoin(partners, eq(organizations.partnerId, partners.id))
+    // leftJoin (not inner) on partners: the partners SELECT RLS policy is
+    // breeze_has_partner_access(id), which is FALSE for an org-scoped request,
+    // so an inner join would drop the entire device row when the partner row is
+    // RLS-invisible. This worker runs under system scope (partners visible), but
+    // a left join is the correct, defensive shape: if the partner row is ever
+    // invisible the device still gets a context, with partnerTimezone null so
+    // resolveEffectiveTimezone falls through site -> org -> UTC (#1318).
+    .leftJoin(partners, eq(organizations.partnerId, partners.id))
     .leftJoin(sites, eq(devices.siteId, sites.id))
     .where(inArray(devices.id, deviceIds));
 
@@ -532,3 +539,9 @@ export async function shutdownPatchSchedulerWorker(): Promise<void> {
     schedulerQueue = null;
   }
 }
+
+// Exported for unit tests of the partner-tz scheduling-context resolution
+// (#1318). Internal helper, not part of the worker's public surface.
+export const __testOnly = {
+  loadDeviceSchedulingContexts,
+};

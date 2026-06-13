@@ -418,6 +418,42 @@ describe('org routes', () => {
       expect(capturedUpdateData.timezone).toBe('UTC');
     });
 
+    // #1318: updatePartnerSchema uses `settings: z.any()`, so an invalid IANA
+    // settings.timezone is NOT caught by zod here (unlike /partners/me). It must
+    // be rejected with a 400 rather than silently persisted into the JSONB while
+    // the column write is skipped — that is the column<->settings desync this PR
+    // exists to prevent.
+    it('rejects an invalid IANA settings.timezone on a system-scope write (no JSONB desync)', async () => {
+      const currentPartner = { id: 'partner-1', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([currentPartner])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { timezone: 'Mars/Olympus_Mons' } })
+      });
+
+      expect(res.status).toBe(400);
+      // The garbage tz must never reach the DB: no update should be issued.
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
     it('revokes tenant access (including the agent fleet) when a partner is suspended', async () => {
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({

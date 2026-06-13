@@ -6,13 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let mockRow: Record<string, unknown> | undefined;
 
+// Join chain mirrors resolveDeviceTimezone's query exactly:
+//   from(devices).innerJoin(organizations).leftJoin(partners).leftJoin(sites)
+//     .where(...).limit(1)
+// The partners join is a LEFT join (#1318 review) so an RLS-invisible partner
+// row under org scope leaves the device row intact instead of dropping it.
 vi.mock('../db', () => {
   const limit = vi.fn(() => Promise.resolve(mockRow ? [mockRow] : []));
   const where = vi.fn(() => ({ limit }));
-  const leftJoin = vi.fn(() => ({ where }));
-  const innerJoin2 = vi.fn(() => ({ leftJoin }));
-  const innerJoin1 = vi.fn(() => ({ innerJoin: innerJoin2 }));
-  const from = vi.fn(() => ({ innerJoin: innerJoin1 }));
+  const leftJoinSites = vi.fn(() => ({ where }));
+  const leftJoinPartners = vi.fn(() => ({ leftJoin: leftJoinSites }));
+  const innerJoinOrgs = vi.fn(() => ({ leftJoin: leftJoinPartners }));
+  const from = vi.fn(() => ({ innerJoin: innerJoinOrgs }));
   const select = vi.fn(() => ({ from }));
   return { db: { select } };
 });
@@ -96,6 +101,30 @@ describe('resolveDeviceTimezone (#1318 partner fallback)', () => {
       partnerSettings: { timezone: 'Asia/Tokyo' },
     };
     expect(await resolveDeviceTimezone('dev-1')).toBe('Asia/Tokyo');
+  });
+
+  it('org-scoped (partner RLS-invisible): still resolves the org tz, not UTC', async () => {
+    // Under an org-scoped request the partners SELECT policy is false, so the
+    // leftJoin yields null partner columns. The device row must survive (left
+    // join, not inner) and resolve through site -> org. An inner join here would
+    // drop the row entirely and regress to 'UTC'.
+    mockRow = {
+      siteTimezone: null,
+      orgSettings: { timezone: 'America/Denver' },
+      partnerTimezone: null,
+      partnerSettings: null,
+    };
+    expect(await resolveDeviceTimezone('dev-1')).toBe('America/Denver');
+  });
+
+  it('org-scoped (partner RLS-invisible): still resolves the site tz, not UTC', async () => {
+    mockRow = {
+      siteTimezone: 'America/Chicago',
+      orgSettings: {},
+      partnerTimezone: null,
+      partnerSettings: null,
+    };
+    expect(await resolveDeviceTimezone('dev-1')).toBe('America/Chicago');
   });
 
   it('returns UTC as the last resort when nothing resolves', async () => {
