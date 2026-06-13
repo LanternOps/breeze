@@ -276,9 +276,15 @@ async function hasExistingOccurrenceJob(
   });
 }
 
-async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }> {
+async function scanAndCreateJobs(): Promise<{ created: number; scanned: number; enqueueJobIds: string[] }> {
   const now = new Date();
   let created = 0;
+  // Job ids to enqueue to Redis AFTER the system DB access-context transaction
+  // closes. Enqueuing inside it held the pooled connection idle-in-transaction
+  // across BullMQ/Redis round-trips — a contributor to the #1105 pool-poisoning
+  // pattern (txn around slow non-DB work). DB writes stay in the context; the
+  // Redis enqueue happens outside it (see the worker processor).
+  const enqueueJobIds: string[] = [];
 
   const patchPoliciesWithSchedules = await db
     .select({
@@ -394,7 +400,7 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
           .returning();
 
         if (job) {
-          await enqueuePatchJob(job.id);
+          enqueueJobIds.push(job.id);
           created += 1;
           console.log(
             `[PatchScheduler] Created job ${job.id} for config policy ${row.configPolicyId} (${eligibleDeviceIds.length} devices, ${group.timezone}, ${group.occurrenceKey})`
@@ -409,14 +415,14 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
     }
   }
 
-  return { created, scanned: patchPoliciesWithSchedules.length };
+  return { created, scanned: patchPoliciesWithSchedules.length, enqueueJobIds };
 }
 
 function createSchedulerWorker(): Worker {
   return new Worker(
     QUEUE_NAME,
     async (_job: Job) => {
-      return runWithSystemDbAccess(async () => {
+      const result = await runWithSystemDbAccess(async () => {
         try {
           return await scanAndCreateJobs();
         } catch (error: unknown) {
@@ -425,11 +431,31 @@ function createSchedulerWorker(): Worker {
               _configPolicyTableWarningLogged = true;
               console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
             }
-            return { created: 0, scanned: 0 };
+            return { created: 0, scanned: 0, enqueueJobIds: [] };
           }
           throw error;
         }
       });
+
+      // Enqueue OUTSIDE the system DB access-context transaction (#1105). All
+      // DB writes (incl. the patch_jobs inserts) committed when the context
+      // above returned; doing the Redis enqueue here keeps the pooled
+      // connection from sitting idle-in-transaction across BullMQ round-trips.
+      // A job that fails to enqueue is logged (its row already exists) and is
+      // skipped by the occurrence-idempotency guard on the next scan — same
+      // outcome as the prior in-transaction failure path.
+      for (const jobId of result.enqueueJobIds) {
+        try {
+          await enqueuePatchJob(jobId);
+        } catch (err) {
+          console.error(
+            `[PatchScheduler] Failed to enqueue patch job ${jobId}:`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
+
+      return { created: result.created, scanned: result.scanned };
     },
     {
       connection: getBullMQConnection(),
