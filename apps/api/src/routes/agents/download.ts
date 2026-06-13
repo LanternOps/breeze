@@ -315,15 +315,19 @@ function generateInstallScript(serverUrl: string): string {
 #     --server ${serverUrl} \\
 #     --token YOUR_ENROLLMENT_TOKEN
 #
-# Or with an org enrollment secret:
+# The enrollment token is REQUIRED — it identifies the org/site to enroll into.
+# An org enrollment secret (--enrollment-secret) is an OPTIONAL extra gate that
+# the server can require IN ADDITION to the token; it is never a substitute for
+# it. Pass both when your server is configured with AGENT_ENROLLMENT_SECRET:
 #   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash -s -- \\
 #     --server ${serverUrl} \\
+#     --token YOUR_ENROLLMENT_TOKEN \\
 #     --enrollment-secret YOUR_SECRET
 #
 # Or with environment variables — pass them through sudo, since a plain
 # \`export\` is stripped by sudo's env_reset:
 #   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | \\
-#     sudo BREEZE_SERVER="${serverUrl}" BREEZE_ENROLLMENT_SECRET="YOUR_SECRET" bash
+#     sudo BREEZE_SERVER="${serverUrl}" BREEZE_ENROLL_TOKEN="YOUR_ENROLLMENT_TOKEN" bash
 # ============================================
 
 set -euo pipefail
@@ -370,8 +374,14 @@ if [[ -z "\$BREEZE_SERVER" ]]; then
   fatal "BREEZE_SERVER is required. Pass --server URL or export BREEZE_SERVER."
 fi
 
-if [[ -z "\$BREEZE_ENROLL_TOKEN" && -z "\$BREEZE_ENROLLMENT_SECRET" ]]; then
-  fatal "An enrollment credential is required. Pass --token TOKEN or --enrollment-secret SECRET (or pass BREEZE_ENROLL_TOKEN / BREEZE_ENROLLMENT_SECRET through sudo)."
+# The enrollment token is mandatory end-to-end: the agent's \`enroll\` command
+# takes it as a required positional arg, and the server resolves the org/site
+# from it. --enrollment-secret is only a supplementary gate, never a standalone
+# credential — accepting it alone here used to pass validation and then die at
+# the very last step with cobra's "accepts 1 arg(s), received 0". Fail at the
+# first step instead, with actionable guidance.
+if [[ -z "\$BREEZE_ENROLL_TOKEN" ]]; then
+  fatal "An enrollment token is required. Pass --token TOKEN (or BREEZE_ENROLL_TOKEN through sudo). Generate one from the Add Device dialog. --enrollment-secret is an optional extra gate, not a replacement for the token."
 fi
 
 # Strip trailing slash from server URL
@@ -558,7 +568,7 @@ if [[ "\$OS" == "darwin" ]]; then
   fi
 
   if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
-    fatal "Enrollment failed. Check the server URL and enrollment secret."
+    fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
   fi
   success "Agent enrolled successfully"
 
