@@ -715,6 +715,11 @@ export class StreamingSessionManager {
               usage: {
                 input_tokens: resultMsg.usage?.input_tokens ?? 0,
                 output_tokens: resultMsg.usage?.output_tokens ?? 0,
+                // Cache tokens are billed separately (read ~0.1x input, write ~1.25x
+                // input). Capture them so the token-based fallback doesn't undercount
+                // cost on cached requests when the SDK reports $0.
+                cache_read_input_tokens: resultMsg.usage?.cache_read_input_tokens ?? 0,
+                cache_creation_input_tokens: resultMsg.usage?.cache_creation_input_tokens ?? 0,
               },
               num_turns: resultMsg.num_turns ?? 0,
               // Model id for token-based cost fallback when the SDK reports $0.

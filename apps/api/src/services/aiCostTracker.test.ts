@@ -155,6 +155,25 @@ describe('calculateCostCents', () => {
   it('returns 0 when there are no tokens', () => {
     expect(calculateCostCents('claude-opus-4-8', 0, 0)).toBe(0);
   });
+
+  it('prices cache read (0.1x input) and cache creation (1.25x input) tokens', () => {
+    // sonnet-4-6 input rate = 300 cents/MTok.
+    // 1M cache-read  → 300 * 0.1  = 30 cents.
+    // 1M cache-write → 300 * 1.25 = 375 cents.
+    // No input/output tokens, so the total is purely the cache cost.
+    expect(calculateCostCents('claude-sonnet-4-6', 0, 0, 1_000_000, 0)).toBe(30);
+    expect(calculateCostCents('claude-sonnet-4-6', 0, 0, 0, 1_000_000)).toBe(375);
+  });
+
+  it('adds cache cost on top of input+output (cached request costs more)', () => {
+    // sonnet-4-6: 1M in + 1M out = 1800 cents (baseline, no cache).
+    const baseline = calculateCostCents('claude-sonnet-4-6', 1_000_000, 1_000_000);
+    // Same in/out plus 1M cache-read (+30) and 1M cache-write (+375) = 2205.
+    const withCache = calculateCostCents('claude-sonnet-4-6', 1_000_000, 1_000_000, 1_000_000, 1_000_000);
+    expect(baseline).toBe(1800);
+    expect(withCache).toBe(2205);
+    expect(withCache).toBeGreaterThan(baseline);
+  });
 });
 
 // ============================================
@@ -174,6 +193,54 @@ describe('recordUsageFromSdkResult', () => {
 
     // 1M/1M on sonnet-4-6 → 1800 cents, NOT 0.
     expect(recordedCostCents(captured.sessionSet)).toBe(1800);
+  });
+
+  it('includes cache tokens in the fallback cost (cached request priced higher than in+out alone)', async () => {
+    // First: in+out only → 1800 cents on sonnet-4-6 (1M/1M).
+    const baselineCapture = setupDbMocks(null);
+    await recordUsageFromSdkResult('sess-cache-base', 'org-1', {
+      total_cost_usd: 0,
+      usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+    expect(recordedCostCents(baselineCapture.sessionSet)).toBe(1800);
+
+    // Now the same in+out PLUS cache tokens. cache-read 1M (+30) and
+    // cache-write 1M (+375) must be added on top → 2205 cents.
+    const cachedCapture = setupDbMocks(null);
+    await recordUsageFromSdkResult('sess-cache', 'org-1', {
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        cache_creation_input_tokens: 1_000_000,
+      },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+    const cachedCost = recordedCostCents(cachedCapture.sessionSet);
+    expect(cachedCost).toBe(2205);
+    expect(cachedCost).toBeGreaterThan(1800);
+  });
+
+  it('prices a $0 result that only has cache tokens (no uncached in/out)', async () => {
+    // Fully-cached follow-up turn: input_tokens/output_tokens can be ~0 while the
+    // real spend is entirely cache reads. Must NOT record $0.
+    const captured = setupDbMocks(null);
+    await recordUsageFromSdkResult('sess-cache-only', 'org-1', {
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 1_000_000, // sonnet-4-6: 300 * 0.1 = 30 cents
+        cache_creation_input_tokens: 0,
+      },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+    expect(recordedCostCents(captured.sessionSet)).toBe(30);
   });
 
   it('falls back to the session-row model when result.model is absent', async () => {
