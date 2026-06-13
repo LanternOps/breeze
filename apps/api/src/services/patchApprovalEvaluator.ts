@@ -5,7 +5,7 @@
  * resolves the set of pending patches a job is allowed to install, covering:
  *  - manual approvals (org-wide or ring-scoped)
  *  - ring category rules (including the virtual 'third_party_app' category)
- *  - legacy ring-level auto-approve
+ *  - ring-level auto-approve (enabled + severities + deferral window) — #1317
  *  - ring-less policy-level auto-approve (severity list + deferral window)
  *  - policy source filtering ('os' vs 'third_party', ...)
  *  - per-app block/pin rules
@@ -69,7 +69,15 @@ export interface ApprovalEvaluationConfig {
 /** @deprecated Use ApprovalEvaluationConfig — kept for existing importers. */
 export type RingConfig = ApprovalEvaluationConfig;
 
-export type ApprovalReason = 'manual' | 'category_rule' | 'legacy_auto_approve' | 'policy_auto_approve';
+// 'ring_auto_approve' is the #1317 ring-owned auto-approval reason (enabled +
+// severities + deferral). The historical 'legacy_auto_approve' name is kept as
+// an alias so already-stored job rows / callers reading this string still work.
+export type ApprovalReason =
+  | 'manual'
+  | 'category_rule'
+  | 'ring_auto_approve'
+  | 'legacy_auto_approve'
+  | 'policy_auto_approve';
 
 export interface ApprovedPatch {
   patchId: string;
@@ -325,8 +333,9 @@ export async function resolveApprovedPatchesForDevice(
     }
   }
 
-  // 4. Parse legacy auto-approve config
-  const legacyAutoApprove = parseLegacyAutoApprove(ringConfig.autoApprove);
+  // 4. Parse ring-level auto-approve config (#1317): enabled + severities +
+  //    deferral. Backward-compatible with the legacy boolean / no-deferral shapes.
+  const ringAutoApprove = parseRingAutoApprove(ringConfig.autoApprove);
 
   const now = new Date();
   const approved: ApprovedPatch[] = [];
@@ -337,7 +346,7 @@ export async function resolveApprovedPatchesForDevice(
       ringConfig,
       manualApprovalSet,
       categoryRuleMap,
-      legacyAutoApprove,
+      ringAutoApprove,
       now
     );
 
@@ -377,7 +386,7 @@ function evaluatePatchApproval(
   ringConfig: ApprovalEvaluationConfig,
   manualApprovalSet: Set<string>,
   categoryRuleMap: Map<string, CategoryRule>,
-  legacyAutoApprove: LegacyAutoApproveConfig,
+  ringAutoApprove: RingAutoApproveConfig,
   now: Date
 ): ApprovalReason | null {
   // Priority 1: Manual approval
@@ -424,14 +433,21 @@ function evaluatePatchApproval(
     return 'category_rule';
   }
 
-  // Priority 3: Legacy ring-level auto-approve
-  if (legacyAutoApprove.enabled) {
-    if (legacyAutoApprove.severities.length > 0 && patch.severity) {
-      if (!legacyAutoApprove.severities.includes(patch.severity)) {
+  // Priority 3: Ring-level auto-approve (#1317). The ring now owns approval, so
+  // this honors the configured severities AND a deferral window (held, not
+  // approved, until the patch ages past it) — consistent with the policy-level
+  // and category deferral semantics. An empty severities list with deferral 0
+  // preserves the legacy "approve all" boolean-shorthand behavior.
+  if (ringAutoApprove.enabled) {
+    if (ringAutoApprove.severities.length > 0 && patch.severity) {
+      if (!ringAutoApprove.severities.includes(patch.severity)) {
         return null;
       }
     }
-    return 'legacy_auto_approve';
+    if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
+      return null;
+    }
+    return 'ring_auto_approve';
   }
 
   return null;
@@ -441,7 +457,7 @@ function isHeldByDeferral(
   patch: PatchCandidate,
   deferralDays: number,
   now: Date,
-  source: 'policy' | 'category'
+  source: 'policy' | 'category' | 'ring'
 ): boolean {
   if (deferralDays <= 0) return false;
 
@@ -459,19 +475,33 @@ function isHeldByDeferral(
   return deferralEnd > now;
 }
 
-interface LegacyAutoApproveConfig {
+interface RingAutoApproveConfig {
   enabled: boolean;
   severities: string[];
+  /**
+   * Deferral window in days for the ring auto-approve gate (#1317). 0 = no
+   * deferral. A patch whose release date is within this window is held, not
+   * approved, mirroring the policy-level / category deferral semantics.
+   */
+  deferralDays: number;
 }
 
-function parseLegacyAutoApprove(autoApprove: unknown): LegacyAutoApproveConfig {
+/**
+ * Parse a ring's `autoApprove` JSONB into a typed config. Tolerant of every
+ * historical shape so already-stored rings keep working after #1317:
+ *  - boolean `true`  → enabled, no severity filter, no deferral (legacy "all")
+ *  - `{ enabled: true, severities: [...] }` (no deferralDays) → deferral 0
+ *  - `{ enabled: true, severities: [...], deferralDays: N }` → typed shape
+ * Anything else (missing, `{}`, malformed) fails closed to disabled.
+ */
+function parseRingAutoApprove(autoApprove: unknown): RingAutoApproveConfig {
   // Support boolean true shorthand
   if (autoApprove === true) {
-    return { enabled: true, severities: [] };
+    return { enabled: true, severities: [], deferralDays: 0 };
   }
 
   if (!autoApprove || typeof autoApprove !== 'object') {
-    return { enabled: false, severities: [] };
+    return { enabled: false, severities: [], deferralDays: 0 };
   }
 
   const config = autoApprove as Record<string, unknown>;
@@ -480,8 +510,13 @@ function parseLegacyAutoApprove(autoApprove: unknown): LegacyAutoApproveConfig {
     const severities = Array.isArray(config.severities)
       ? config.severities.filter((s): s is string => typeof s === 'string')
       : [];
-    return { enabled: true, severities };
+    const rawDeferral = config.deferralDays;
+    const deferralDays =
+      typeof rawDeferral === 'number' && Number.isInteger(rawDeferral) && rawDeferral > 0
+        ? rawDeferral
+        : 0;
+    return { enabled: true, severities, deferralDays };
   }
 
-  return { enabled: false, severities: [] };
+  return { enabled: false, severities: [], deferralDays: 0 };
 }

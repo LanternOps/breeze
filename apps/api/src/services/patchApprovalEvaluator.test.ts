@@ -633,3 +633,112 @@ describe('third_party_app category rule', () => {
     expect(approved.map((p) => p.patchId)).toEqual(['aaaaaaaa-0000-0000-0000-000000000018']);
   });
 });
+
+// ---- Ring-level auto-approve (#1317): enabled + severities + deferral ----
+describe('ring-level auto-approve', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('approves a matching-severity patch with reason ring_auto_approve', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical', 'important'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('does not approve a severity outside the ring list', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'low' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical', 'important'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('holds a matching patch inside the ring deferral window', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: yesterday })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 7 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('approves once the ring deferral window has elapsed', async () => {
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: tenDaysAgo })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 7 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('fails closed (holds + warns) when ring deferral > 0 and releaseDate is missing', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: null })], []);
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+        ringId: RING_ID,
+        categoryRules: [],
+        autoApprove: { enabled: true, severities: ['critical'], deferralDays: 7 },
+        deferralDays: 0,
+      });
+
+      expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cannot prove its age'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('boolean true shorthand still approves everything (backward compat)', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'low' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: true,
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('disabled ring auto-approve approves nothing without a manual approval', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+});

@@ -345,6 +345,7 @@ export default function PatchesPage() {
           deferralDays: values.deferralDays,
           deadlineDays: values.deadlineDays,
           gracePeriodHours: values.gracePeriodHours,
+          autoApprove: values.autoApprove,
           categoryRules: values.categoryRules,
         })
       });
@@ -548,6 +549,7 @@ export default function PatchesPage() {
                 deferralDays: editingRing.deferralDays,
                 deadlineDays: editingRing.deadlineDays,
                 gracePeriodHours: editingRing.gracePeriodHours,
+                autoApprove: editingRing.autoApprove ?? { enabled: false, severities: [], deferralDays: 0 },
                 categoryRules: editingRing.categoryRules,
               } : undefined}
             />

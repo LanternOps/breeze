@@ -469,6 +469,37 @@ export const policyAppRuleSchema = z.object({
 
 export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
 
+/**
+ * Typed shape for an Update Ring's `patch_policies.autoApprove` JSONB column.
+ *
+ * Part of issue #1317 (move patch approval rules from Config Policy to Update
+ * Rings). The ring owns the WHAT-installs auto-approval gate: an enabled flag,
+ * the severities that auto-approve, and a deferral window (days after a patch's
+ * release before it is eligible to auto-approve). Empty `severities` while
+ * `enabled` means "nothing auto-approves" (fail-closed) — auto-approval must
+ * always be an explicit opt-in to a specific severity set.
+ *
+ * The legacy/dormant `autoApprove` JSONB values (`{}`, `true`,
+ * `{ enabled: true, severities: [...] }` without `deferralDays`) all still
+ * parse downstream in patchApprovalEvaluator's `parseRingAutoApprove`, so this
+ * stricter writer schema does not break already-stored rings.
+ */
+export const ringAutoApproveSchema = z.object({
+  enabled: z.boolean().default(false),
+  severities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).default([]),
+  deferralDays: z.number().int().min(0).max(365).default(0),
+}).superRefine((data, ctx) => {
+  if (data.enabled && data.severities.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['severities'],
+      message: 'Select at least one severity for auto-approval.',
+    });
+  }
+});
+
+export type RingAutoApprove = z.infer<typeof ringAutoApproveSchema>;
+
 export const patchInlineSettingsSchema = z.object({
   sources: z.array(patchSourceValueSchema).min(1).default(['os']),
   autoApprove: z.boolean().default(false),

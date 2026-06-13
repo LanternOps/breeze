@@ -317,6 +317,45 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(403);
     });
+
+    // #1317: ring update accepts the typed auto-approve gate.
+    it('should update a ring autoApprove gate', async () => {
+      const autoApprove = { enabled: true, severities: ['critical'], deferralDays: 3 };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID }])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([makeRing({ autoApprove })])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ autoApprove })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.autoApprove).toEqual(autoApprove);
+    });
+
+    it('should reject a PATCH autoApprove enabled with no severities', async () => {
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ autoApprove: { enabled: true, severities: [], deferralDays: 0 } })
+      });
+
+      expect(res.status).toBe(400);
+    });
   });
 
   // ----------------------------------------------------------------
