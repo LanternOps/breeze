@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+           xsi:type="TaskPaneApp">
+  <Id>{{ADDIN_ID}}</Id>
+  <Version>0.1.0</Version>
+  <ProviderName>Breeze</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Breeze AI"/>
+  <Description DefaultValue="AI assistant for Excel, governed by your IT provider."/>
+  <IconUrl DefaultValue="{{BASE_URL}}/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="{{BASE_URL}}/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="{{SUPPORT_URL}}"/>
+  <AppDomains>
+    <AppDomain>{{API_BASE_URL}}</AppDomain>
+    <AppDomain>https://login.microsoftonline.com</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Workbook"/>
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="{{BASE_URL}}/taskpane.html"/>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="Breeze.Group">
+                <Label resid="Breeze.GroupLabel"/>
+                <Icon>
+                  <bt:Image size="16" resid="Breeze.Icon16"/>
+                  <bt:Image size="32" resid="Breeze.Icon32"/>
+                  <bt:Image size="80" resid="Breeze.Icon80"/>
+                </Icon>
+                <Control xsi:type="Button" id="Breeze.TaskpaneButton">
+                  <Label resid="Breeze.TaskpaneButton.Label"/>
+                  <Supertip>
+                    <Title resid="Breeze.TaskpaneButton.Label"/>
+                    <Description resid="Breeze.TaskpaneButton.Tooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Breeze.Icon16"/>
+                    <bt:Image size="32" resid="Breeze.Icon32"/>
+                    <bt:Image size="80" resid="Breeze.Icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>Breeze.Taskpane</TaskpaneId>
+                    <SourceLocation resid="Breeze.Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Breeze.Icon16" DefaultValue="{{BASE_URL}}/assets/icon-16.png"/>
+        <bt:Image id="Breeze.Icon32" DefaultValue="{{BASE_URL}}/assets/icon-32.png"/>
+        <bt:Image id="Breeze.Icon80" DefaultValue="{{BASE_URL}}/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Breeze.Taskpane.Url" DefaultValue="{{BASE_URL}}/taskpane.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Breeze.GroupLabel" DefaultValue="Breeze AI"/>
+        <bt:String id="Breeze.TaskpaneButton.Label" DefaultValue="Breeze AI"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Breeze.TaskpaneButton.Tooltip" DefaultValue="Open the Breeze AI assistant for this workbook."/>
+      </bt:LongStrings>
+    </Resources>
+    <WebApplicationInfo>
+      <Id>{{CLIENT_AI_ENTRA_CLIENT_ID}}</Id>
+      <Resource>api://{{BASE_HOST}}/{{CLIENT_AI_ENTRA_CLIENT_ID}}</Resource>
+      <Scopes>
+        <Scope>openid</Scope>
+        <Scope>profile</Scope>
+        <Scope>access_as_user</Scope>
+      </Scopes>
+    </WebApplicationInfo>
+  </VersionOverrides>
+</OfficeApp>

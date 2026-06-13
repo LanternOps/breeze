@@ -1,0 +1,5 @@
+node_modules
+dist
+manifest.xml
+public/assets/
+.env

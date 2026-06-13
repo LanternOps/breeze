@@ -1,0 +1,134 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  ApiError,
+  createSession,
+  decodeStreamFrame,
+  getTemplates,
+  sendMessage,
+  streamEvents,
+} from './client';
+import { clearSession, getSessionToken, reExchange } from '../auth/session';
+import type { ClientAiStreamEvent } from './types';
+
+vi.mock('../auth/session', async () => {
+  const actual = await vi.importActual<typeof import('../auth/session')>('../auth/session');
+  return {
+    ...actual,
+    getSessionToken: vi.fn(() => 'breeze-token'),
+    reExchange: vi.fn(async () => ({}) as never),
+    clearSession: vi.fn(),
+  };
+});
+
+const getSessionTokenMock = vi.mocked(getSessionToken);
+const reExchangeMock = vi.mocked(reExchange);
+const clearSessionMock = vi.mocked(clearSession);
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+const encoder = new TextEncoder();
+
+function sseResponse(frames: string, opts: { keepOpen?: boolean } = {}): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(frames));
+      if (!opts.keepOpen) controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+beforeEach(() => {
+  getSessionTokenMock.mockReturnValue('breeze-token');
+  reExchangeMock.mockClear();
+  clearSessionMock.mockClear();
+});
+
+describe('apiFetch wrappers', () => {
+  it('attaches the Authorization bearer header and returns the sessionId (201)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(201, { sessionId: 'sess-1' }));
+    await expect(createSession(fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-1');
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('/client-ai/sessions');
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer breeze-token');
+    expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+  });
+
+  it('on 401 runs the single-flight re-exchange and retries once', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, { error: 'invalid_token' }))
+      .mockResolvedValueOnce(jsonResponse(201, { sessionId: 'sess-2' }));
+    await expect(createSession(fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-2');
+    expect(reExchangeMock).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates a 401 that survives the re-exchange and clears the session', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(401, { error: 'invalid_token' }));
+    const err = await createSession(fetchImpl as unknown as typeof fetch).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(401);
+    expect(clearSessionMock).toHaveBeenCalled();
+  });
+
+  it('surfaces server rejection codes (budget_exceeded) as ApiError', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(403, { error: 'budget_exceeded' }));
+    const err = await sendMessage('sess-1', { content: 'hi' }, fetchImpl as unknown as typeof fetch).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('budget_exceeded');
+  });
+
+  it('getTemplates accepts both the pinned bare array and a {data:[...]} envelope', async () => {
+    const template = { id: 't1', name: 'T', description: null, category: null, body: 'B' };
+    const bare = vi.fn(async () => jsonResponse(200, [template]));
+    await expect(getTemplates(bare as unknown as typeof fetch)).resolves.toEqual([template]);
+    const wrapped = vi.fn(async () => jsonResponse(200, { data: [template] }));
+    await expect(getTemplates(wrapped as unknown as typeof fetch)).resolves.toEqual([template]);
+  });
+});
+
+describe('decodeStreamFrame', () => {
+  it('types known events, passes ping without payload, and skips unknown names', () => {
+    expect(decodeStreamFrame({ event: 'message_delta', data: '{"text":"hi"}' })).toEqual({
+      type: 'message_delta',
+      text: 'hi',
+    });
+    expect(decodeStreamFrame({ event: 'ping', data: '{}' })).toEqual({ type: 'ping' });
+    expect(decodeStreamFrame({ event: 'turn_complete', data: '{"usage":null}' })).toEqual({
+      type: 'turn_complete',
+      usage: null,
+    });
+    expect(decodeStreamFrame({ event: 'some_future_event', data: '{}' })).toBeNull();
+  });
+});
+
+describe('streamEvents', () => {
+  it('reconnects after a dropped stream with backoff and calls onReconnect', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(sseResponse('event: message_delta\ndata: {"text":"a"}\n\n'))
+      .mockResolvedValueOnce(
+        sseResponse('event: message_delta\ndata: {"text":"b"}\n\n', { keepOpen: true }),
+      );
+    const events: ClientAiStreamEvent[] = [];
+    const onReconnect = vi.fn();
+    const handle = streamEvents(
+      'sess-1',
+      { onEvent: (e) => events.push(e), onReconnect },
+      fetchImpl as unknown as typeof fetch,
+      [10], // test-only backoff schedule
+    );
+    await vi.waitFor(() => expect(events).toHaveLength(2));
+    expect(events.map((e) => (e.type === 'message_delta' ? e.text : ''))).toEqual(['a', 'b']);
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+    handle.stop();
+  });
+});
