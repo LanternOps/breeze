@@ -72,6 +72,11 @@ export default defineConfig({
         // It is constant per Astro version; if you bump astro, re-verify and
         // update.  Hash-chasing here is a known-fragile workaround --
         // longer-term we should migrate to a nonce-based CSP.
+        //
+        // Drift guard (#1232): `pnpm --filter @breeze/web run check:csp` boots
+        // the built server and fails if any emitted inline <script> hash is
+        // missing from the served script-src.  CI runs it in the build-web job,
+        // so a stale pin here breaks CI instead of breaking hydration in prod.
         resources: [
           "'self'",
           'https://static.cloudflareinsights.com',

@@ -316,6 +316,13 @@ jobs:
       - name: Build Web
         run: pnpm build --filter=@breeze/web
 
+      # Guard against CSP script-src hash drift (#1232): boots the freshly-built
+      # server bundle and asserts every emitted inline <script> hash is covered
+      # by the served script-src. Catches stale hand-pinned hashes in
+      # astro.config.mjs before they break Astro/React hydration in production.
+      - name: Check CSP hash drift
+        run: pnpm --filter @breeze/web run check:csp
+
       - name: Upload Web artifact
         uses: actions/upload-artifact@v7
         with:
