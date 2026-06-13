@@ -153,8 +153,7 @@ export default function HuntressIntegration() {
   const [mappingError, setMappingError] = useState<string | null>(null);
 
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const orgScope = useOrgStore((s) => s.orgScope);
-  const isPartnerView = orgScope === 'all';
+  const isPartnerView = !currentOrgId;
 
   const hasCredentialInput = apiKey.trim().length > 0 || apiSecret.trim().length > 0;
   const hasCompleteCredential = apiKey.trim().length > 0 && apiSecret.trim().length > 0;

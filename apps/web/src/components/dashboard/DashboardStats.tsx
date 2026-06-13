@@ -31,11 +31,10 @@ export default function DashboardStats() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [updatedText, setUpdatedText] = useState('');
 
-  // Re-fetch when the global org scope toggle (or selected org) changes so the
-  // tiles track the All-orgs / Current view like the rest of the app. Without
-  // these in the fetch effect's deps the stats are stale after a toggle.
+  // Re-fetch when the selected org changes so the tiles track the All-orgs /
+  // Current view like the rest of the app. Without this in the fetch effect's
+  // deps the stats are stale after a scope change.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const orgScope = useOrgStore((s) => s.orgScope);
 
   useEffect(() => { setGreeting(getGreeting()); }, []);
 
@@ -81,7 +80,7 @@ export default function DashboardStats() {
     };
 
     fetchStats();
-  }, [retryCount, currentOrgId, orgScope]);
+  }, [retryCount, currentOrgId]);
 
   // Auto-refresh every 60 seconds
   useEffect(() => {

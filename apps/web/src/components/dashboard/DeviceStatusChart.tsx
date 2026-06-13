@@ -23,7 +23,6 @@ export default function DeviceStatusChart() {
   const [error, setError] = useState<unknown>(null);
   const [retryCount, setRetryCount] = useState(0);
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const orgScope = useOrgStore((s) => s.orgScope);
 
   useEffect(() => {
     const fetchDeviceStatus = async () => {
@@ -59,7 +58,7 @@ export default function DeviceStatusChart() {
     };
 
     fetchDeviceStatus();
-  }, [retryCount, currentOrgId, orgScope]);
+  }, [retryCount, currentOrgId]);
 
   // Auto-refresh every 60 seconds
   useEffect(() => {

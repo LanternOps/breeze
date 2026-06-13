@@ -14,7 +14,7 @@ function memoryStorage(): Storage {
   };
 }
 
-describe('orgStore — orgScope global toggle', () => {
+describe('orgStore — page-aware orgId provider', () => {
   beforeEach(() => {
     Object.defineProperty(globalThis, 'localStorage', {
       value: memoryStorage(),
@@ -33,32 +33,69 @@ describe('orgStore — orgScope global toggle', () => {
     vi.restoreAllMocks();
   });
 
-  it('defaults orgScope to "current"', async () => {
-    const { useOrgStore } = await import('./orgStore');
-    expect(useOrgStore.getState().orgScope).toBe('current');
-  });
+  it('on a global route (/scripts) the provider returns null regardless of currentOrgId', async () => {
+    // Stub the pathname to a global catalog route before importing so the
+    // provider reads it at call-time.
+    Object.defineProperty(globalThis.window, 'location', {
+      value: { pathname: '/scripts' },
+      writable: true,
+      configurable: true,
+    });
 
-  it('setOrgScope("all") flips the scope and persists it', async () => {
-    const { useOrgStore } = await import('./orgStore');
-    useOrgStore.getState().setOrgScope('all');
-    expect(useOrgStore.getState().orgScope).toBe('all');
-  });
-
-  it('the registered orgId provider returns currentOrgId when scope is current', async () => {
-    // The provider is registered as a side-effect of importing orgStore.
-    // We grab a reference to it via auth.ts's exported registrar.
     const { useOrgStore } = await import('./orgStore');
     const auth = await import('./auth');
 
-    useOrgStore.setState({ currentOrgId: 'org-current-1', orgScope: 'current' });
+    useOrgStore.setState({ currentOrgId: 'org-123' });
 
-    // Probe the chokepoint behavior: fetchWithAuth builds the URL by
-    // calling the provider. We inspect the provider directly by reading
-    // private state — instead, exercise via a fake fetch.
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
     );
-    // fetchWithAuth requires an access token; stub to make the call go through.
+    auth.useAuthStore.setState({ tokens: { accessToken: 't', expiresAt: Date.now() + 60_000 } as any, user: { id: 'u', email: 'e' } as any, isAuthenticated: true });
+
+    await auth.fetchWithAuth('/scripts');
+    const calledUrl = fetchSpy.mock.calls[0]?.[0] as string;
+    expect(calledUrl).not.toContain('orgId=');
+    fetchSpy.mockRestore();
+  });
+
+  it('on a global route (/patches) the provider returns null even when currentOrgId is set', async () => {
+    Object.defineProperty(globalThis.window, 'location', {
+      value: { pathname: '/patches' },
+      writable: true,
+      configurable: true,
+    });
+
+    const { useOrgStore } = await import('./orgStore');
+    const auth = await import('./auth');
+
+    useOrgStore.setState({ currentOrgId: 'org-abc' });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    auth.useAuthStore.setState({ tokens: { accessToken: 't', expiresAt: Date.now() + 60_000 } as any, user: { id: 'u', email: 'e' } as any, isAuthenticated: true });
+
+    await auth.fetchWithAuth('/patches/approvals');
+    const calledUrl = fetchSpy.mock.calls[0]?.[0] as string;
+    expect(calledUrl).not.toContain('orgId=');
+    fetchSpy.mockRestore();
+  });
+
+  it('on a scoped route (/devices) the provider returns currentOrgId', async () => {
+    Object.defineProperty(globalThis.window, 'location', {
+      value: { pathname: '/devices' },
+      writable: true,
+      configurable: true,
+    });
+
+    const { useOrgStore } = await import('./orgStore');
+    const auth = await import('./auth');
+
+    useOrgStore.setState({ currentOrgId: 'org-current-1' });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    );
     auth.useAuthStore.setState({ tokens: { accessToken: 't', expiresAt: Date.now() + 60_000 } as any, user: { id: 'u', email: 'e' } as any, isAuthenticated: true });
 
     await auth.fetchWithAuth('/devices');
@@ -67,11 +104,17 @@ describe('orgStore — orgScope global toggle', () => {
     fetchSpy.mockRestore();
   });
 
-  it('the registered orgId provider returns null when scope is "all", so no orgId is injected', async () => {
+  it('on a scoped route with currentOrgId null, no orgId is injected', async () => {
+    Object.defineProperty(globalThis.window, 'location', {
+      value: { pathname: '/devices' },
+      writable: true,
+      configurable: true,
+    });
+
     const { useOrgStore } = await import('./orgStore');
     const auth = await import('./auth');
 
-    useOrgStore.setState({ currentOrgId: 'org-current-1', orgScope: 'all' });
+    useOrgStore.setState({ currentOrgId: null });
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })

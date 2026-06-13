@@ -78,12 +78,11 @@ export default function SecurityIntegration() {
   const [siteMapSaving, setSiteMapSaving] = useState<Record<string, boolean>>({});
   const [siteMapError, setSiteMapError] = useState<string | null>(null);
 
-  // The SentinelOne integration is per organization. Under the "All orgs" scope
-  // toggle there is no single org to load, and the API returns a 400; show a
+  // The SentinelOne integration is per organization. When no org is selected
+  // (null) there is no single org to load, and the API returns a 400; show a
   // prompt instead of firing a doomed call.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const orgScope = useOrgStore((s) => s.orgScope);
-  const isAllOrgs = orgScope === 'all';
+  const isAllOrgs = !currentOrgId;
 
   const fetchIntegration = useCallback(async () => {
     try {
@@ -164,7 +163,7 @@ export default function SecurityIntegration() {
       setIsLoading(false);
     };
     load();
-  }, [fetchIntegration, fetchStatus, fetchSites, fetchOrgs, isAllOrgs, currentOrgId]);
+  }, [fetchIntegration, fetchStatus, fetchSites, fetchOrgs, currentOrgId]);
 
   const handleSave = async () => {
     setSaveState({ status: 'saving' });

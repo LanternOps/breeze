@@ -189,12 +189,11 @@ export default function MonitoringIntegration() {
   const [newWebhookName, setNewWebhookName] = useState('');
   const [newWebhookUrl, setNewWebhookUrl] = useState('');
 
-  // Monitoring settings are per organization. When the global scope toggle is
-  // on "All orgs" there is no single org to load/save, and the API rejects the
-  // request with a 400; show a prompt instead of firing a doomed call.
+  // Monitoring settings are per organization. When no org is selected (null)
+  // there is no single org to load/save, and the API rejects the request with
+  // a 400; show a prompt instead of firing a doomed call.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const orgScope = useOrgStore((s) => s.orgScope);
-  const isAllOrgs = orgScope === 'all';
+  const isAllOrgs = !currentOrgId;
 
   const selectedMetricsCount = settings.metrics.selected.length;
 
@@ -255,7 +254,7 @@ export default function MonitoringIntegration() {
       return;
     }
     fetchSettings();
-  }, [fetchSettings, isAllOrgs, currentOrgId]);
+  }, [fetchSettings, currentOrgId]);
 
   function updateSection<K extends keyof MonitoringSettings>(key: K, updates: Partial<MonitoringSettings[K]>) {
     setSettings(prev => ({
