@@ -29,10 +29,10 @@ export interface CategoryRule {
 }
 
 /**
- * Policy-level auto-approve (ring-less path). Note the inverted
- * empty-severities semantics vs legacy ring auto-approve: legacy empty
- * severities = approve all; policy-level empty severities = approve none
- * (fail-closed).
+ * Policy-level auto-approve (ring-less path). Empty severities while enabled =
+ * approve none (fail-closed). The ring auto-approve path is now fail-closed the
+ * same way (see evaluatePatchApproval Priority 3), so the two paths share the
+ * "enabled but no severities means approve nothing" invariant.
  */
 export interface PolicyAutoApproveConfig {
   enabled: boolean;
@@ -417,10 +417,13 @@ function evaluatePatchApproval(
     rule = categoryRuleMap.get('third_party_app');
   }
   if (rule && rule.autoApprove) {
-    // Check severity filter
-    if (rule.severityFilter && rule.severityFilter.length > 0 && patch.severity) {
-      if (!rule.severityFilter.includes(patch.severity)) {
-        return null; // Severity not in allowed list
+    // Check severity filter. When a non-empty filter is set, a patch whose
+    // severity is null cannot satisfy it and must NOT auto-approve — same
+    // fail-closed posture as the policy and ring paths. (Previously a
+    // null-severity patch short-circuited the filter and fell through.)
+    if (rule.severityFilter && rule.severityFilter.length > 0) {
+      if (!patch.severity || !rule.severityFilter.includes(patch.severity)) {
+        return null; // Severity null, or not in allowed list
       }
     }
 
@@ -436,13 +439,23 @@ function evaluatePatchApproval(
   // Priority 3: Ring-level auto-approve (#1317). The ring now owns approval, so
   // this honors the configured severities AND a deferral window (held, not
   // approved, until the patch ages past it) — consistent with the policy-level
-  // and category deferral semantics. An empty severities list with deferral 0
-  // preserves the legacy "approve all" boolean-shorthand behavior.
+  // and category deferral semantics.
+  //
+  // FAIL-CLOSED at the read boundary (mirrors the write-side Zod refinement in
+  // ringAutoApproveSchema): auto-approval requires an explicit, non-empty
+  // severity set AND a patch severity that is in it. We must NOT trust that the
+  // stored row went through the route schema — the manage_update_rings AI tool
+  // and legacy boolean `true` rows can both produce `enabled` with empty
+  // severities, which previously fell through and auto-approved EVERY pending
+  // patch (auto-approve-all). A null-severity patch likewise never auto-approves
+  // under a restricted list, matching the policy path above.
   if (ringAutoApprove.enabled) {
-    if (ringAutoApprove.severities.length > 0 && patch.severity) {
-      if (!ringAutoApprove.severities.includes(patch.severity)) {
-        return null;
-      }
+    if (ringAutoApprove.severities.length === 0) {
+      // Enabled but no severities selected = approve nothing (fail-closed).
+      return null;
+    }
+    if (!patch.severity || !ringAutoApprove.severities.includes(patch.severity)) {
+      return null;
     }
     if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
       return null;
@@ -489,13 +502,22 @@ interface RingAutoApproveConfig {
 /**
  * Parse a ring's `autoApprove` JSONB into a typed config. Tolerant of every
  * historical shape so already-stored rings keep working after #1317:
- *  - boolean `true`  → enabled, no severity filter, no deferral (legacy "all")
+ *  - boolean `true`  → enabled, EMPTY severity set, no deferral
  *  - `{ enabled: true, severities: [...] }` (no deferralDays) → deferral 0
  *  - `{ enabled: true, severities: [...], deferralDays: N }` → typed shape
  * Anything else (missing, `{}`, malformed) fails closed to disabled.
+ *
+ * NOTE: this parser is deliberately permissive about SHAPE but the approval
+ * decision is fail-closed about MEANING. `enabled` with an empty severity set
+ * (the legacy boolean `true`, an AI-tool-written `{ enabled: true }`, etc.)
+ * auto-approves NOTHING — evaluatePatchApproval requires a non-empty severity
+ * set before it will return 'ring_auto_approve'. This matches the write-side
+ * Zod refinement (ringAutoApproveSchema) so the read path cannot become more
+ * permissive than the writer, regardless of who wrote the row.
  */
 function parseRingAutoApprove(autoApprove: unknown): RingAutoApproveConfig {
-  // Support boolean true shorthand
+  // Boolean `true` shorthand: enabled but no explicit severities. Because the
+  // read boundary fails closed on an empty severity set, this approves nothing.
   if (autoApprove === true) {
     return { enabled: true, severities: [], deferralDays: 0 };
   }

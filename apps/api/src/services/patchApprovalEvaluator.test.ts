@@ -188,10 +188,15 @@ function mockPendingAndApprovals(pendingRows: PendingRow[], approvalRows: Array<
     .mockReturnValueOnce(approvalChain);
 }
 
+// Ring auto-approve fails closed on an empty severity set, so the shared
+// fixture must name explicit severities to exercise the approve path. The
+// default pendingRow severity is 'critical'; include the others these suites
+// vary to so source/app-rule filtering (not the severity gate) is what's under
+// test.
 const baseRing: RingConfig = {
   ringId: RING_ID,
   categoryRules: [],
-  autoApprove: { enabled: true, severities: [] },
+  autoApprove: { enabled: true, severities: ['critical', 'important', 'moderate', 'low'] },
   deferralDays: 0,
 };
 
@@ -550,6 +555,22 @@ describe('third_party_app category rule', () => {
     expect(approved).toHaveLength(0);
   });
 
+  it('does NOT auto-approve a null-severity patch under a category severity filter', async () => {
+    // Mirrors the ring/policy fail-closed posture: a null-severity patch must
+    // not slip past a non-empty category severityFilter.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-00000000001a', source: 'third_party', category: 'homebrew', severity: null })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...ringWithThirdPartyRule,
+      categoryRules: [{ category: 'third_party_app', autoApprove: true, severityFilter: ['critical'] }],
+    });
+
+    expect(approved).toHaveLength(0);
+  });
+
   it('applies the deferral window on the third_party_app rule', async () => {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     mockPendingAndApprovals(
@@ -715,8 +736,18 @@ describe('ring-level auto-approve', () => {
     }
   });
 
-  it('boolean true shorthand still approves everything (backward compat)', async () => {
-    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'low' })], []);
+  it('legacy boolean true shorthand approves NOTHING (fail-closed, not approve-all)', async () => {
+    // A legacy `autoApprove: true` row carries no severity set. The read
+    // boundary must NOT treat that as "approve every pending patch" — that was
+    // the auto-approve-all fail-open. With no explicit severities, it approves
+    // nothing, mirroring the write-side ringAutoApproveSchema refinement.
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', severity: 'low' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', severity: 'critical' }),
+      ],
+      []
+    );
 
     const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
       ringId: RING_ID,
@@ -725,7 +756,52 @@ describe('ring-level auto-approve', () => {
       deferralDays: 0,
     });
 
-    expect(result).toHaveLength(1);
+    expect(result).toEqual([]);
+  });
+
+  it('enabled with an EMPTY severity set approves NOTHING (fail-closed at read boundary)', async () => {
+    // Reproduces the auto-approve-all hole: a row written outside the route Zod
+    // schema (e.g. the manage_update_rings AI tool) can persist enabled with no
+    // severities. The reader must approve nothing, never every pending patch.
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', severity: 'critical' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', severity: 'low' }),
+      ],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('does NOT auto-approve a null-severity patch under a restricted severity list', async () => {
+    // Asymmetry bug: a patch with severity:null short-circuited the severity
+    // filter and fell through to ring_auto_approve even though the ring
+    // restricted to ['critical']. It must be held, matching the policy path.
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', severity: null }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', severity: 'critical' }),
+      ],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    // Only the critical patch auto-approves; the null-severity one is held.
+    expect(result.map((r) => r.patchId)).toEqual([P2]);
     expect(result[0]?.approvalReason).toBe('ring_auto_approve');
   });
 

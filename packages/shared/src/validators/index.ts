@@ -482,7 +482,11 @@ export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
  * The legacy/dormant `autoApprove` JSONB values (`{}`, `true`,
  * `{ enabled: true, severities: [...] }` without `deferralDays`) all still
  * parse downstream in patchApprovalEvaluator's `parseRingAutoApprove`, so this
- * stricter writer schema does not break already-stored rings.
+ * stricter writer schema does not crash on already-stored rings. Note the read
+ * path is fail-closed to MATCH this writer: an `enabled` ring with an empty
+ * severity set (including the legacy boolean `true`) auto-approves NOTHING, so
+ * a row that bypassed this schema (e.g. the manage_update_rings AI tool) can
+ * never become more permissive than an explicitly-written one.
  */
 export const ringAutoApproveSchema = z.object({
   enabled: z.boolean().default(false),
