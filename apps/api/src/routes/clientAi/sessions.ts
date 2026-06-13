@@ -15,6 +15,7 @@
 
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { zValidator } from '@hono/zod-validator';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
@@ -38,7 +39,9 @@ import {
   buildClientAuthContext,
   buildExcelClientSystemPrompt,
   checkClientRateLimits,
+  generateClientSessionTitle,
 } from '../../services/clientAiSessions';
+import { applyDlp, type DlpRedactionEvent } from '../../services/clientAiDlp';
 import {
   CLIENT_MCP_SERVER_NAME,
   clientMcpToolNamesForWriteMode,
@@ -46,7 +49,7 @@ import {
 } from '../../services/clientAiTools';
 import { failPendingForSession } from '../../services/clientAiToolBridge';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
-import { type ClientAiAuthContext } from './schemas';
+import { sendClientMessageSchema, type ClientAiAuthContext } from './schemas';
 
 export const clientAiSessionRoutes = new Hono();
 
@@ -292,6 +295,153 @@ clientAiSessionRoutes.post('/:id/close', async (c) => {
 
   return c.json({ success: true });
 });
+
+// ============================================
+// POST /:id/messages — message ingress (spec §4 pre-flight per message;
+// DLP chokepoint (a) + workbookContext cells; redact-before-log)
+// ============================================
+
+function dlpBlockedResponse(
+  c: Context,
+  auth: ClientAiAuthContext,
+  sessionId: string,
+  blockReason: string | undefined,
+): Response {
+  const reason = blockReason ?? 'dlp_blocked';
+  const message = `Your message was blocked by your organization's data protection policy (${reason}).`;
+  // Surface on the SSE channel too (pinned contract) when the session is live.
+  const active = streamingSessionManager.get(sessionId);
+  if (active) {
+    active.eventBus.publish({ type: 'error', message });
+  }
+  auditClient(c, auth, {
+    action: 'ai.client_session.message',
+    resourceId: sessionId,
+    result: 'denied',
+    details: { reason },
+  });
+  return c.json({ error: 'dlp_blocked', reason, message }, 400);
+}
+
+clientAiSessionRoutes.post(
+  '/:id/messages',
+  zValidator('json', sendClientMessageSchema),
+  async (c) => {
+    const auth = c.get('clientAiAuth');
+    const policy = c.get('clientAiPolicy');
+    const sessionId = c.req.param('id')!;
+    const body = c.req.valid('json');
+
+    const session = await loadClientSession(sessionId, auth);
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+    if (session.status !== 'active') {
+      return c.json({ error: 'Session is no longer active' }, 410);
+    }
+
+    const rejection = await runClientPreflight(c, auth, policy);
+    if (rejection) return rejection;
+
+    // ── DLP chokepoint (a): the user prompt (templates ride inside it in v1) ──
+    const textResult = await applyDlp({
+      text: body.content,
+      dlpConfig: policy.dlpConfig,
+      orgId: auth.orgId,
+    });
+    if (textResult.action === 'block') {
+      return dlpBlockedResponse(c, auth, sessionId, textResult.blockReason);
+    }
+
+    // ── workbookContext cells leave Breeze for the provider too — same chokepoint ──
+    const redactions: DlpRedactionEvent[] = [...textResult.redactions];
+    const wb = body.workbookContext;
+    let contextCells: unknown[][] | undefined;
+    if (wb && wb.kind !== 'none' && wb.cells) {
+      const cellsResult = await applyDlp({
+        cells: wb.cells,
+        dlpConfig: policy.dlpConfig,
+        orgId: auth.orgId,
+      });
+      if (cellsResult.action === 'block') {
+        return dlpBlockedResponse(c, auth, sessionId, cellsResult.blockReason);
+      }
+      redactions.push(...cellsResult.redactions);
+      contextCells = cellsResult.cells;
+    }
+
+    const redactedContent = textResult.text ?? body.content;
+    let modelContent = redactedContent;
+    if (wb && wb.kind !== 'none') {
+      const label =
+        wb.kind === 'selection'
+          ? `Current selection${wb.address ? ` (${wb.address})` : ''}`
+          : `Sheet "${wb.sheetName ?? 'unknown'}"`;
+      modelContent += `\n\n[Workbook context — ${label}]\n${
+        contextCells ? JSON.stringify(contextCells) : '(no cell data provided)'
+      }`;
+    }
+
+    const activeSession = await ensureActiveClientSession(c, session, auth, policy);
+
+    // Concurrent message guard — atomic check-and-set (ai.ts:467 convention).
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      return c.json({ error: 'A message is already being processed for this session' }, 409);
+    }
+
+    // Persist the REDACTED form only: result.text + result.redactions
+    // (spec §6; Plan 3 Task 6 contract — the raw input is never stored).
+    const contentBlocks: Record<string, unknown>[] = [];
+    if (redactions.length > 0) {
+      contentBlocks.push({ type: 'dlp_redactions', redactions });
+    }
+    if (wb && wb.kind !== 'none') {
+      contentBlocks.push({
+        type: 'workbook_context',
+        kind: wb.kind,
+        address: wb.address ?? null,
+        sheetName: wb.sheetName ?? null,
+        cells: contextCells ?? null,
+      });
+    }
+
+    try {
+      await db.insert(aiMessages).values({
+        sessionId,
+        role: 'user',
+        content: redactedContent,
+        contentBlocks: contentBlocks.length > 0 ? contentBlocks : null,
+      });
+    } catch (err) {
+      console.error('[client-ai] Failed to save user message:', err);
+      activeSession.state = 'idle';
+      return c.json({ error: 'Failed to save message' }, 500);
+    }
+
+    if (!session.title) {
+      const title = generateClientSessionTitle(redactedContent);
+      try {
+        await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+      } catch (err) {
+        console.error('[client-ai] Failed to auto-set session title:', err);
+      }
+    }
+
+    activeSession.inputController.pushMessage(modelContent);
+    streamingSessionManager.startTurnTimeout(activeSession);
+
+    auditClient(c, auth, {
+      action: 'ai.client_session.message',
+      resourceId: sessionId,
+      details: {
+        contentLength: body.content.length,
+        workbookContextKind: wb?.kind ?? 'none',
+        redactionCount: redactions.length,
+      },
+    });
+
+    // The turn streams over GET /:id/events — see sse.ts for the event names.
+    return c.json({ accepted: true }, 202);
+  },
+);
 
 // Helpers shared with Tasks 11/12 (messages / events / tool-results routes).
 export { ensureActiveClientSession, loadClientSession, auditClient, runClientPreflight };
