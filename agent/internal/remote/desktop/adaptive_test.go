@@ -7,8 +7,9 @@ import (
 
 // stubEncoder satisfies encoderBackend for testing adaptive bitrate.
 type stubEncoder struct {
-	bitrate int
-	quality QualityPreset
+	bitrate  int
+	quality  QualityPreset
+	hardware bool // reported by IsHardware(); defaults to software
 }
 
 func (s *stubEncoder) Encode([]byte) ([]byte, error)         { return nil, nil }
@@ -20,7 +21,7 @@ func (s *stubEncoder) SetDimensions(int, int) error          { return nil }
 func (s *stubEncoder) SetPixelFormat(PixelFormat)            {}
 func (s *stubEncoder) Close() error                          { return nil }
 func (s *stubEncoder) Name() string                          { return "stub" }
-func (s *stubEncoder) IsHardware() bool                      { return false }
+func (s *stubEncoder) IsHardware() bool                      { return s.hardware }
 func (s *stubEncoder) IsPlaceholder() bool                   { return false }
 func (s *stubEncoder) SetD3D11Device(uintptr, uintptr)       {}
 func (s *stubEncoder) SupportsGPUInput() bool                { return false }

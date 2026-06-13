@@ -411,8 +411,19 @@ func validateConfig(cfg EncoderConfig) error {
 func newBackend(cfg EncoderConfig) (encoderBackend, error) {
 	if cfg.PreferHardware {
 		if backend := tryHardware(cfg); backend != nil {
+			slog.Info("Selected hardware H264 encoder",
+				"backend", backend.Name(), "gpuVendor", cfg.GPUVendor)
 			return backend, nil
 		}
+		// Hardware was requested but no factory produced a backend. On a cgo
+		// macOS build this should not happen (VideoToolbox registers a factory),
+		// so logging it makes a missing-cgo or registration gap diagnosable from
+		// shipped logs instead of a process sample. See issue #1292.
+		hardwareFactoriesMu.Lock()
+		registered := len(hardwareFactories)
+		hardwareFactoriesMu.Unlock()
+		slog.Warn("No hardware H264 encoder available despite PreferHardware, using software",
+			"gpuVendor", cfg.GPUVendor, "registeredFactories", registered)
 	}
 	return newSoftwareEncoder(cfg)
 }

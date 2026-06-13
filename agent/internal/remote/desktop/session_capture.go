@@ -679,6 +679,11 @@ func (s *Session) captureLoopTicker() captureMode {
 				}
 			}
 
+			// Self-heal: if a hardware encoder was demoted to software (e.g.
+			// VideoToolbox stalled on a cold 5K first frame), periodically retry
+			// hardware so we don't software-encode for the whole session.
+			s.maybeRestoreHardwareEncoder(time.Now())
+
 			if s.lastVideoWriteUnixNano.Load() == 0 && time.Now().Before(startupWarmupUntil) && time.Since(lastStartupRepaint) >= startupFrameRepaintEvery {
 				nudgeSecureDesktop()
 				forceDesktopRepaint()
@@ -1202,8 +1207,10 @@ func (s *Session) swapToSoftwareEncoder() {
 	if enc == nil {
 		return
 	}
+	fromHardware := enc.BackendIsHardware()
 	slog.Warn("Hardware encoder stalling, swapping to software encoder",
 		"session", s.id, "backend", enc.BackendName(),
+		"fromHardware", fromHardware,
 		"consecutiveErrors", s.cpuEncodeErrors)
 
 	// Get current dimensions from capturer
@@ -1261,8 +1268,18 @@ func (s *Session) swapToSoftwareEncoder() {
 		s.adaptive.CapForSoftwareEncoder()
 	}
 
+	// If we demoted a real hardware encoder (e.g. VideoToolbox stalled on a cold
+	// 5K first frame), arm the self-heal so the capture loop periodically retries
+	// hardware instead of software-encoding for the rest of the session. The
+	// Windows desktop-switch path has its own restoreHardwareEncoder trigger, so
+	// only arm here for the CPU capture path that lacks one.
+	if fromHardware {
+		s.hwRestore.onDemotedFromHardware(time.Now())
+	}
+
 	slog.Info("Swapped to software encoder",
 		"session", s.id,
 		"backend", newEnc.BackendName(),
+		"fromHardware", fromHardware,
 		"dimensions", fmt.Sprintf("%dx%d", w, h))
 }
