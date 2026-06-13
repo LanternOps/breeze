@@ -8,6 +8,16 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: Object.assign(
+    () => ({
+      organizations: [{ id: 'org-1', name: 'Acme Corp' }],
+      currentOrgId: 'org-1',
+    }),
+    { getState: () => ({ currentOrgId: 'org-1', organizations: [{ id: 'org-1', name: 'Acme Corp' }] }) }
+  ),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -97,7 +107,7 @@ describe('PatchComplianceView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
     fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -187,7 +197,7 @@ describe('PatchComplianceView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
     fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -278,7 +288,7 @@ describe('PatchComplianceView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
     fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     expect(await screen.findByText(/pending approval/i)).toBeTruthy();
     expect(screen.queryByText(/^Install failed/)).toBeNull();

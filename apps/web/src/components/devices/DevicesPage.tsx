@@ -24,6 +24,8 @@ import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
 import ProgressBar from '../shared/ProgressBar';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 
 type ViewMode = 'list' | 'grid';
 
@@ -65,6 +67,8 @@ export default function DevicesPage() {
   });
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
+  type PendingScriptRun = { script: Script; runAs: ScriptRunAsSelection; parameters?: Record<string, unknown> };
+  const [pendingScriptRun, setPendingScriptRun] = useState<PendingScriptRun | null>(null);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -340,11 +344,16 @@ export default function DevicesPage() {
     setScriptTargetDevices([]);
   };
 
-  const handleScriptSelect = async (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => {
-    if (actionInProgress) return;
+  const handleScriptSelect = (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => {
+    // Gate script execution behind a scope-naming confirm dialog.
+    setPendingScriptRun({ script, runAs, parameters });
+  };
 
+  const doExecuteScript = async (pending: PendingScriptRun) => {
+    if (actionInProgress) return;
     try {
       setActionInProgress(true);
+      const { script, runAs, parameters } = pending;
       const deviceIds = scriptTargetDevices.map(d => d.id);
       const result = await executeScript(script.id, deviceIds, parameters, runAs);
 
@@ -839,6 +848,34 @@ export default function DevicesPage() {
         deviceHostname={scriptTargetLabel}
         deviceOs={scriptTargetOs}
       />
+
+      {pendingScriptRun && (() => {
+        const distinctOrgIds = [...new Set(scriptTargetDevices.map(d => d.orgId).filter(Boolean))];
+        const scriptOrgNames = distinctOrgIds.length > 0
+          ? distinctOrgIds.map(id => orgStoreOrgs.find(o => o.id === id)?.name ?? id)
+          : ['the selected organization'];
+        return (
+          <ConfirmDialog
+            open={true}
+            onClose={() => setPendingScriptRun(null)}
+            onConfirm={() => {
+              const p = pendingScriptRun;
+              setPendingScriptRun(null);
+              void doExecuteScript(p);
+            }}
+            title="Confirm script run"
+            variant="warning"
+            confirmLabel="Run"
+            confirmTestId="confirm-fleet-action"
+            message={scopeConfirmMessage({
+              action: `Run ${pendingScriptRun.script.name}`,
+              deviceCount: scriptTargetDevices.length,
+              orgNames: scriptOrgNames,
+            })}
+            isLoading={actionInProgress}
+          />
+        );
+      })()}
 
       {settingsDevice && (
         <DeviceSettingsModal

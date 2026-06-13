@@ -515,11 +515,13 @@ export default function PatchesPage() {
       {/* Compliance tab — merged device view with summary */}
       {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
 
-      {/* Approval modal — passes ringId */}
+      {/* Approval modal — passes ringId and org context for confirmation */}
       <PatchApprovalModal
         open={modalOpen}
         patch={selectedPatch}
         ringId={selectedRingId}
+        orgName={currentOrg?.name ?? null}
+        ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
         onClose={() => {
           setModalOpen(false);
           setSelectedPatch(null);
