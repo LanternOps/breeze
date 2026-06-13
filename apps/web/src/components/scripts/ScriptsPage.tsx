@@ -44,6 +44,8 @@ export default function ScriptsPage() {
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategoryFilter, setLibraryCategoryFilter] = useState<string>('all');
 
+  const { organizations } = useOrgStore();
+
   const fetchScripts = useCallback(async () => {
     try {
       setLoading(true);
@@ -393,6 +395,7 @@ export default function ScriptsPage() {
           onRun={handleRun}
           onEdit={handleEdit}
           onDelete={handleDelete}
+          organizations={organizations}
         />
       )}
 

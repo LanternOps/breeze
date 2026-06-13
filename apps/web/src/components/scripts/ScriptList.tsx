@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Play, Pencil, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScriptLanguage, OSType, ScriptRunAs } from '@breeze/shared';
+import { ScopeBadge } from '../shared/ScopeBadge';
 export type { ScriptLanguage, OSType } from '@breeze/shared';
 export type ScriptStatus = 'active' | 'draft' | 'archived';
 
@@ -17,6 +18,15 @@ export type Script = {
   status?: ScriptStatus;
   createdAt: string;
   updatedAt: string;
+  // Scope fields — present when the API returns them (after org-scope-normalization).
+  orgId?: string | null;
+  partnerId?: string | null;
+  isSystem?: boolean;
+};
+
+type Organization = {
+  id: string;
+  name: string;
 };
 
 type ScriptListProps = {
@@ -27,6 +37,7 @@ type ScriptListProps = {
   onDelete?: (script: Script) => void;
   pageSize?: number;
   timezone?: string;
+  organizations?: Organization[];
 };
 
 const languageConfig: Record<ScriptLanguage, { label: string; color: string; icon: string }> = {
@@ -75,7 +86,8 @@ export default function ScriptList({
   onEdit,
   onDelete,
   pageSize = 10,
-  timezone
+  timezone,
+  organizations = [],
 }: ScriptListProps) {
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -272,7 +284,17 @@ export default function ScriptList({
                 >
                   <td className="max-w-[280px] px-4 py-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium" title={script.name}>{script.name}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="truncate text-sm font-medium" title={script.name}>{script.name}</p>
+                        {(script.isSystem !== undefined || script.partnerId !== undefined || script.orgId !== undefined) && (
+                          <ScopeBadge
+                            orgId={script.orgId ?? null}
+                            partnerId={script.partnerId ?? null}
+                            isSystem={script.isSystem ?? false}
+                            orgName={organizations.find(o => o.id === script.orgId)?.name}
+                          />
+                        )}
+                      </div>
                       {script.description && (
                         <p className="text-xs text-muted-foreground truncate max-w-xs" title={script.description}>
                           {script.description}
