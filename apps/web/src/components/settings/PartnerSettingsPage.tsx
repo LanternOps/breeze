@@ -6,6 +6,7 @@ import {
   Loader2,
   Save,
 } from 'lucide-react';
+import TicketingSettingsTabs from './TicketingSettingsTabs';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
@@ -37,7 +38,7 @@ import type {
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'remoteAccess';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'remoteAccess' | 'ticketing';
 
 type Partner = {
   id: string;
@@ -59,7 +60,24 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'branding', label: 'Branding' },
   { key: 'aiBudgets', label: 'AI Budgets' },
   { key: 'remoteAccess', label: 'Remote' },
+  { key: 'ticketing', label: 'Ticketing' },
 ];
+
+const VALID_TAB_KEYS = TABS.map(t => t.key);
+
+/**
+ * Map a top-level URL hash to a partner settings tab. The Ticketing tab is
+ * deep-linkable via `/settings/partner#ticketing` (the old `/settings/ticketing`
+ * route redirects here), so honor that fragment on first render. Other fragments
+ * fall back to the default Company tab. The nested ticketing sub-tab `#tab=…`
+ * fragment is intentionally NOT used here — the embedded TicketingSettingsTabs
+ * keeps its own local state so the two hash schemes don't collide.
+ */
+function getTabFromHash(): TabKey | null {
+  if (typeof window === 'undefined') return null;
+  const hash = window.location.hash.replace('#', '');
+  return (VALID_TAB_KEYS as string[]).includes(hash) ? (hash as TabKey) : null;
+}
 
 const TIMEZONES = [
   'UTC', 'America/New_York', 'America/Chicago', 'America/Denver',
@@ -208,6 +226,21 @@ export default function PartnerSettingsPage() {
     setLoading(false); // JWT confirms non-partner scope; show access denied
   }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);
 
+  // Deep-link support: open the tab named in the URL hash on mount (e.g.
+  // `/settings/partner#ticketing`, which the legacy `/settings/ticketing` route
+  // redirects to). Seeded SSR-safe via the 'company' default above; the hash is
+  // applied client-side here to avoid a hydration mismatch. Also tracks external
+  // hash changes (back/forward, in-app links).
+  useEffect(() => {
+    const applyHash = () => {
+      const tab = getTabFromHash();
+      if (tab) setActiveTab(tab);
+    };
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, []);
+
   const handleSave = async () => {
     setSaving(true);
     setError(undefined);
@@ -350,7 +383,11 @@ export default function PartnerSettingsPage() {
           <button
             key={tab.key}
             type="button"
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => {
+              setActiveTab(tab.key);
+              // Keep the URL hash in sync so the tab is bookmarkable / deep-linkable.
+              history.replaceState(null, '', `#${tab.key}`);
+            }}
             className={cn(
               'px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
               activeTab === tab.key
@@ -363,7 +400,7 @@ export default function PartnerSettingsPage() {
         ))}
       </div>
 
-      {activeTab !== 'regional' && activeTab !== 'company' && (
+      {activeTab !== 'regional' && activeTab !== 'company' && activeTab !== 'ticketing' && (
         <div className="rounded-md border bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
           Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.
         </div>
@@ -544,6 +581,19 @@ export default function PartnerSettingsPage() {
       {activeTab === 'remoteAccess' && (
         <section className="rounded-lg border bg-card p-6 shadow-sm">
           <PartnerRemoteAccessTab data={remoteAccessData} onChange={setRemoteAccessData} />
+        </section>
+      )}
+
+      {/* Ticketing: partner-wide statuses, priority SLAs, categories, and billing
+          export. Each sub-tab persists independently, so the top-level "Save
+          Settings" button does not apply here. */}
+      {activeTab === 'ticketing' && (
+        <section className="space-y-2" data-testid="partner-ticketing-tab">
+          <p className="text-sm text-muted-foreground">
+            Configure ticket statuses, priority SLA defaults, categories, and billing exports.
+            These apply across all of your organizations.
+          </p>
+          <TicketingSettingsTabs syncHash={false} />
         </section>
       )}
     </div>
