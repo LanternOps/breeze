@@ -1923,6 +1923,57 @@ describe('org routes', () => {
       expect(capturedUpdateData.settings.notifications).toEqual({ emailEnabled: true });
     });
 
+    // #1318: a valid tz in settings is mirrored to the first-class
+    // `partners.timezone` column so resolveEffectiveTimezone can read it.
+    it('mirrors settings.timezone into the partners.timezone column', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { timezone: 'America/New_York' } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.timezone).toBe('America/New_York');
+      expect(capturedUpdateData.settings.timezone).toBe('America/New_York');
+    });
+
+    it('rejects an invalid IANA timezone in partner settings', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { timezone: 'Mars/Olympus_Mons' } })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
     it('accepts a fully populated address in settings', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };

@@ -45,6 +45,8 @@ type Partner = {
   slug: string;
   type: string;
   plan: string;
+  // First-class partner timezone column (#1318); the canonical tz default.
+  timezone?: string;
   settings: PartnerSettings;
   createdAt: string;
 };
@@ -154,7 +156,9 @@ export default function PartnerSettingsPage() {
       setCompanyName(data.name || '');
 
       const settings = data.settings || {};
-      setTimezone(settings.timezone || 'UTC');
+      // Prefer the legacy JSONB key the UI has always written, then the new
+      // first-class `partners.timezone` column (#1318), then UTC.
+      setTimezone(settings.timezone || data.timezone || 'UTC');
       setDateFormat(settings.dateFormat || 'MM/DD/YYYY');
       setTimeFormat(settings.timeFormat || '12h');
       setBusinessHoursPreset(settings.businessHours?.preset || 'business');

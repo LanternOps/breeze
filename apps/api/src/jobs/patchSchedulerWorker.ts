@@ -15,9 +15,11 @@ import {
   devices,
   deviceGroupMemberships,
   organizations,
+  partners,
   sites,
 } from '../db/schema';
 import { and, eq, gte, inArray } from 'drizzle-orm';
+import { resolveEffectiveTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 import { enqueuePatchJob } from './patchJobExecutor';
@@ -86,6 +88,15 @@ function parseOrgTimezone(settings: unknown): string | null {
   if (!settings || typeof settings !== 'object') return null;
   const timezone = (settings as Record<string, unknown>).timezone;
   return typeof timezone === 'string' && timezone.length > 0 ? timezone : null;
+}
+
+// Partner tz with the column as source of truth and the legacy
+// `settings.timezone` JSONB key as a non-destructive fallback (issue #1318).
+function parsePartnerTimezone(column: string | null | undefined, settings: unknown): string | null {
+  if (typeof column === 'string' && column.length > 0 && column !== 'UTC') return column;
+  const fromSettings = parseOrgTimezone(settings);
+  if (fromSettings) return fromSettings;
+  return typeof column === 'string' && column.length > 0 ? column : null;
 }
 
 function normalizeTimezone(timezone: string | null | undefined): string {
@@ -233,16 +244,28 @@ async function loadDeviceSchedulingContexts(deviceIds: string[]): Promise<Device
       orgId: devices.orgId,
       siteTimezone: sites.timezone,
       orgSettings: organizations.settings,
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
     })
     .from(devices)
     .innerJoin(organizations, eq(devices.orgId, organizations.id))
+    .innerJoin(partners, eq(organizations.partnerId, partners.id))
     .leftJoin(sites, eq(devices.siteId, sites.id))
     .where(inArray(devices.id, deviceIds));
 
   return rows.map((row) => ({
     deviceId: row.deviceId,
     orgId: row.orgId,
-    timezone: normalizeTimezone(row.siteTimezone || parseOrgTimezone(row.orgSettings) || 'UTC'),
+    // explicit (n/a) -> site -> org -> partner -> UTC (issue #1318). The
+    // resolver IANA-validates each candidate, so normalizeTimezone here just
+    // guards the (already-valid) result for the older call shape.
+    timezone: normalizeTimezone(
+      resolveEffectiveTimezone({
+        siteTz: row.siteTimezone,
+        orgTz: parseOrgTimezone(row.orgSettings),
+        partnerTz: parsePartnerTimezone(row.partnerTimezone, row.partnerSettings),
+      }),
+    ),
   }));
 }
 

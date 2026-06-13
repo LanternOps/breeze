@@ -11,11 +11,13 @@ import {
   configPolicyBackupSettings,
   devices,
   organizations,
+  partners,
   deviceGroupMemberships,
   sites,
   softwarePolicies,
 } from '../db/schema';
 import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { resolveEffectiveTimezone } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
 
@@ -345,14 +347,40 @@ export interface ResolvedPatchConfigDetails {
   resolvedTimezone: string;
 }
 
+// Reads the partner timezone with the column as the source of truth and the
+// legacy `settings.timezone` JSONB key as a non-destructive fallback (the column
+// is backfilled from that key but the UI still writes the key today — see
+// issue #1318 / migration 2026-06-13-c).
+function partnerTimezoneFrom(
+  column: string | null | undefined,
+  settings: unknown,
+): string | null {
+  if (typeof column === 'string' && column.length > 0 && column !== 'UTC') {
+    return column;
+  }
+  const fromSettings =
+    settings && typeof settings === 'object'
+      ? (settings as Record<string, unknown>).timezone
+      : null;
+  if (typeof fromSettings === 'string' && fromSettings.length > 0) {
+    return fromSettings;
+  }
+  // Column defaults to 'UTC'; surface it so the resolver can use it as a
+  // genuine (if last-resort) candidate rather than treating it as unset.
+  return typeof column === 'string' && column.length > 0 ? column : null;
+}
+
 export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
   const [row] = await db
     .select({
-      timezone: sites.timezone,
+      siteTimezone: sites.timezone,
       orgSettings: organizations.settings,
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
     })
     .from(devices)
     .innerJoin(organizations, eq(devices.orgId, organizations.id))
+    .innerJoin(partners, eq(organizations.partnerId, partners.id))
     .leftJoin(sites, eq(devices.siteId, sites.id))
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -362,7 +390,12 @@ export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
       ? (row.orgSettings as Record<string, unknown>).timezone
       : null;
 
-  return row?.timezone || (typeof orgTimezone === 'string' && orgTimezone.length > 0 ? orgTimezone : 'UTC');
+  // explicit (n/a for a device — devices have no own tz) -> site -> org -> partner -> UTC
+  return resolveEffectiveTimezone({
+    siteTz: row?.siteTimezone,
+    orgTz: typeof orgTimezone === 'string' ? orgTimezone : null,
+    partnerTz: partnerTimezoneFrom(row?.partnerTimezone, row?.partnerSettings),
+  });
 }
 
 export async function resolvePatchConfigDetailsForDevice(

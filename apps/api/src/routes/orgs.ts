@@ -307,7 +307,9 @@ const dayScheduleSchema = z.object({
 });
 
 const partnerSettingsSchema = z.object({
-  timezone: z.string().optional(),
+  // Partner tz is the canonical default for every downstream tz field (#1318),
+  // so police it as a real IANA zone on write (was previously unvalidated).
+  timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
   language: z.literal('en').optional(),
@@ -536,6 +538,14 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
 
   if (body.name) updateData.name = body.name;
   if (body.billingEmail) updateData.billingEmail = body.billingEmail;
+
+  // Keep the first-class `partners.timezone` column in sync with the legacy
+  // `settings.timezone` JSONB key the UI writes (issue #1318). The column is the
+  // source of truth for `resolveEffectiveTimezone`; the validator above already
+  // guarantees a valid IANA zone here.
+  if (typeof body.settings?.timezone === 'string' && body.settings.timezone.length > 0) {
+    updateData.timezone = body.settings.timezone;
+  }
 
   const [partner] = await db
     .update(partners)
