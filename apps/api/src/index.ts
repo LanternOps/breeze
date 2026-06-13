@@ -151,6 +151,7 @@ import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
+import { initializeProcessSampleRetention } from './jobs/processSampleRetention';
 import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
@@ -1031,6 +1032,7 @@ async function initializeWorkers(): Promise<void> {
     ['agentLogRetention', initializeAgentLogRetention],
     ['ipHistoryRetention', initializeIPHistoryRetention],
     ['reliabilityRetention', initializeReliabilityRetention],
+    ['processSampleRetention', initializeProcessSampleRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
