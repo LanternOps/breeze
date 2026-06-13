@@ -1621,8 +1621,6 @@ export interface EventLogSettings {
   minimumLevel: EventLogLevel;
   collectionIntervalMinutes: number;
   rateLimitPerHour: number;
-  enableFullTextSearch: boolean;
-  enableCorrelation: boolean;
 }
 
 export const EVENT_LOG_DEFAULTS: EventLogSettings = {
@@ -1632,8 +1630,6 @@ export const EVENT_LOG_DEFAULTS: EventLogSettings = {
   minimumLevel: 'info',
   collectionIntervalMinutes: 5,
   rateLimitPerHour: 12000,
-  enableFullTextSearch: true,
-  enableCorrelation: true,
 };
 
 const LEVEL_PRIORITY: Record<string, number> = {
@@ -1696,8 +1692,6 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
       minimumLevel: configPolicyEventLogSettings.minimumLevel,
       collectionIntervalMinutes: configPolicyEventLogSettings.collectionIntervalMinutes,
       rateLimitPerHour: configPolicyEventLogSettings.rateLimitPerHour,
-      enableFullTextSearch: configPolicyEventLogSettings.enableFullTextSearch,
-      enableCorrelation: configPolicyEventLogSettings.enableCorrelation,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
@@ -1730,8 +1724,6 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
     minimumLevel: winner.minimumLevel as EventLogLevel,
     collectionIntervalMinutes: winner.collectionIntervalMinutes,
     rateLimitPerHour: winner.rateLimitPerHour,
-    enableFullTextSearch: winner.enableFullTextSearch,
-    enableCorrelation: winner.enableCorrelation,
   };
 }
 
