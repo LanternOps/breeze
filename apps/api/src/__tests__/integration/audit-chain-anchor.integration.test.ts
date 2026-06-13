@@ -76,6 +76,40 @@ async function verifyAnchor(orgId: string): Promise<DivergenceRow[]> {
   return rows;
 }
 
+interface SignedAnchorRow {
+  anchor_seq: number;
+  head_chain_seq: number;
+  signed: boolean;
+}
+
+/**
+ * Write an anchor supplying a signature + the head/count the caller signed.
+ * The function stamps the signature only when its re-read of the head still
+ * matches p_expected_head_seq / p_expected_entry_count (the TOCTOU guard);
+ * otherwise it anchors UNSIGNED. Returns whether the signature was stamped.
+ */
+async function writeSignedAnchor(
+  orgId: string,
+  signature: string,
+  keyId: string,
+  expectedHeadSeq: number,
+  expectedEntryCount: number,
+): Promise<SignedAnchorRow> {
+  return withSystemDbAccessContext(async () => {
+    const rows = (await db.execute(sql`
+      SELECT anchor_seq, head_chain_seq, signed
+      FROM audit_chain_anchor_head(
+        ${orgId}::uuid,
+        ${signature}::text,
+        ${keyId}::varchar,
+        ${expectedHeadSeq}::bigint,
+        ${expectedEntryCount}::bigint
+      )
+    `)) as unknown as SignedAnchorRow[];
+    return rows[0]!;
+  });
+}
+
 describe('audit_chain_anchors external anchor', () => {
   let orgId: string;
 
@@ -161,6 +195,60 @@ describe('audit_chain_anchors external anchor', () => {
 
     const div = await verifyAnchor(orgId);
     expect(div.map((d) => d.reason)).toContain('checksum_diverged');
+  });
+
+  it('treats a fully-pruned (empty) live chain as benign count_shrank, not seq_regressed', async () => {
+    // Anchor a non-empty chain, then FORGE a full retention prune that deletes
+    // THROUGH the anchored head (org went fully inactive). The live chain is now
+    // empty (head_seq 0 / count 0). A naive seq_regressed check would page a P1;
+    // branch (a0) must instead report the benign count_shrank class.
+    await seedAuditRows(orgId, 4);
+    const anchor = await writeAnchor(orgId);
+    expect(anchor.entry_count).toBe(4);
+    expect(anchor.head_chain_seq).toBeGreaterThan(0);
+
+    await getTestDb().execute(sql`ALTER TABLE audit_log_chain DISABLE TRIGGER audit_log_chain_block_delete`);
+    try {
+      await getTestDb().execute(sql`DELETE FROM audit_log_chain WHERE org_id = ${orgId}`);
+    } finally {
+      await getTestDb().execute(sql`ALTER TABLE audit_log_chain ENABLE TRIGGER audit_log_chain_block_delete`);
+    }
+
+    const div = await verifyAnchor(orgId);
+    expect(div).toHaveLength(1);
+    // Benign retention class — NOT a tamper reason. Without branch (a0) this
+    // would be seq_regressed (live_head_seq 0 < anchored head) → false P1.
+    expect(div[0]?.reason).toBe('count_shrank');
+    expect(div[0]?.live_head_seq).toBe(0);
+  });
+
+  it('stamps the signature only when the re-read head matches what was signed (TOCTOU guard)', async () => {
+    await seedAuditRows(orgId, 3);
+    const head = await readHead(orgId);
+
+    // (1) Signature over the CURRENT head → stamped (signed=true).
+    const matched = await writeSignedAnchor(
+      orgId,
+      'sig-for-current-head',
+      'anchor-deadbeefdeadbeef',
+      head.head_chain_seq,
+      head.entry_count,
+    );
+    expect(matched.signed).toBe(true);
+
+    // (2) Now the live head ADVANCES (more rows). A signature computed for the
+    // OLD head no longer matches the re-read head → the function anchors
+    // UNSIGNED rather than attach a stale signature.
+    await seedAuditRows(orgId, 2);
+    const stale = await writeSignedAnchor(
+      orgId,
+      'sig-for-stale-head',
+      'anchor-deadbeefdeadbeef',
+      head.head_chain_seq, // the OLD head the signature was computed over
+      head.entry_count,
+    );
+    expect(stale.signed).toBe(false);
+    expect(stale.head_chain_seq).toBeGreaterThan(head.head_chain_seq); // anchored the advanced head
   });
 
   it('reports no_anchor before the first anchor is written', async () => {

@@ -105,12 +105,26 @@ END $$;
 -- Privileges: breeze_app may read and APPEND only — never mutate. This is the
 -- core of the anchor's trust value: the same app credential that writes audit
 -- rows cannot rewrite (or remove) a prior anchor to cover a chain forgery.
--- Even a full SQLi/RCE inside the API process is INSERT-only here. Retention
--- pruning of very old anchors (if ever needed) goes through breeze_audit_admin
--- plus the retention GUC, matching audit_log_chain.
+-- A full SQLi/RCE inside the API process is INSERT-only here AT THE breeze_app
+-- LAYER. Note the broader "even full SQLi/RCE is INSERT-only" claim only holds
+-- once the manual #915 hardening step — `REVOKE breeze_audit_admin FROM
+-- breeze_app` — has been applied: by default breeze_app is a no-op member of
+-- breeze_audit_admin and the #915 migration only emits a NOTICE, so an attacker
+-- who can `SET ROLE breeze_audit_admin` could still DELETE under the retention
+-- GUC until that REVOKE is run. The append-only TRIGGER below is the layer that
+-- holds regardless. Retention pruning of very old anchors (if ever needed) goes
+-- through breeze_audit_admin plus the retention GUC, matching audit_log_chain.
 GRANT SELECT, INSERT ON TABLE audit_chain_anchors TO breeze_app;
 REVOKE UPDATE, DELETE ON TABLE audit_chain_anchors FROM breeze_app;
 GRANT USAGE ON SEQUENCE audit_chain_anchors_anchor_seq_seq TO breeze_app;
+-- USAGE (nextval via the bigserial INSERT DEFAULT) is sufficient for appending
+-- anchors; UPDATE (setval) would let breeze_app rewind/jump anchor_seq and break
+-- the monotonic ordering the off-box verifier relies on. Revoke it explicitly so
+-- the restriction is recorded in the migration as well as re-applied on every
+-- boot by ensureAppRole step 5 (the blanket GRANT ON ALL SEQUENCES there runs
+-- AFTER migrations and would otherwise silently re-permit setval — same
+-- DoS-grade gap closed for audit_log_chain_chain_seq_seq).
+REVOKE UPDATE ON SEQUENCE audit_chain_anchors_anchor_seq_seq FROM breeze_app;
 GRANT SELECT, DELETE ON TABLE audit_chain_anchors TO breeze_audit_admin;
 REVOKE UPDATE ON TABLE audit_chain_anchors FROM breeze_audit_admin;
 
@@ -296,8 +310,14 @@ $$;
 --                     tamper signal on its own — the first anchor establishes
 --                     the baseline. The job treats this as "needs first
 --                     anchor", not an incident.)
---   'count_shrank'    live entry_count < anchored entry_count → rows were
---                     deleted from audit_log_chain since the anchor.
+--   'count_shrank'    live entry_count < anchored entry_count (with the anchored
+--                     head intact), OR the live chain is now FULLY EMPTY
+--                     (live_head_seq=0 AND live_entry_count=0) while the anchor
+--                     recorded a non-empty head → rows were pruned from
+--                     audit_log_chain since the anchor. Benign-retention class:
+--                     the empty-live case is what a full prune of a now-inactive
+--                     org looks like and must NOT be mistaken for seq_regressed
+--                     tamper (an empty chain has no forged head to detect).
 --   'seq_regressed'   live head chain_seq < anchored head chain_seq → the head
 --                     moved backwards (truncation/rewrite). bigserial only
 --                     ever advances, so this can only happen via deletion.
@@ -308,13 +328,17 @@ $$;
 --                     entirely (and the head didn't simply advance past it via
 --                     legitimate retention — see note) → truncation.
 --
--- Retention note: legitimate retention pruning deletes the OLDEST chain
--- entries, never the head, and advances neither downward. So count_shrank can
--- fire after a large retention prune; the job distinguishes this by checking
--- whether the anchored head seq still exists with a matching checksum (chain
--- intact, just shorter prefix = benign) vs. the head itself regressed/changed
--- (tamper). We expose both signals and let the job apply that policy, keeping
--- this function a pure observation.
+-- Retention note: legitimate retention pruning normally deletes the OLDEST
+-- chain entries, leaving the head in place, so count_shrank fires after a large
+-- prune; the job distinguishes this by checking whether the anchored head seq
+-- still exists with a matching checksum (chain intact, just a shorter prefix =
+-- benign) vs. the head itself regressed/changed (tamper). The ONE exception is
+-- a fully-inactive org whose retention window passes its newest row: the prune
+-- then deletes THROUGH the anchored head and empties the chain. That collapses
+-- live_head_seq/live_entry_count to 0, which would otherwise look like
+-- seq_regressed — so branch (a0) special-cases an empty live chain against a
+-- non-empty anchor as benign count_shrank, not tamper. We expose all signals
+-- and let the job apply policy, keeping this function a pure observation.
 CREATE OR REPLACE FUNCTION audit_chain_verify_anchor(p_org_id uuid)
 RETURNS TABLE (
   reason text,
@@ -383,9 +407,29 @@ BEGIN
   anchored_head_checksum := a.head_chain_checksum;
   live_head_checksum := v_live_head_checksum;
 
+  -- (a0) FULLY-PRUNED chain: the live chain is now completely empty
+  -- (live_head_seq=0 AND live_entry_count=0) but the anchor recorded a
+  -- non-empty head. This is the benign tail of legitimate retention: when an
+  -- org goes fully inactive, the retention prune (auditRetention prefix-cut,
+  -- MIN()=NULL) can delete THROUGH the anchored head and empty the chain
+  -- entirely. A naive seq_regressed check (below) would mis-flag this as
+  -- tamper and page a P1. An empty live chain carries no rewritten/forged head
+  -- to detect — there is simply nothing left — so we classify it as the benign
+  -- count_shrank class (not a tamper reason) and let the job log it as a prune.
+  -- A true truncation that deletes the NEWEST rows but leaves OLDER ones behind
+  -- still trips seq_regressed/anchored_head_missing below (live chain non-empty
+  -- with a lower head); only the fully-empty case lands here.
+  IF v_live_head_seq = 0 AND v_live_count = 0
+     AND (a.head_chain_seq > 0 OR a.entry_count > 0) THEN
+    reason := 'count_shrank';
+    RETURN NEXT;
+    RETURN;
+  END IF;
+
   -- (a) Head moved backwards. bigserial never reuses/regresses, so a lower
   -- live head than the anchored head means rows at/after the anchor's head
-  -- were deleted. Strongest tamper signal.
+  -- were deleted. Strongest tamper signal. (The fully-empty special case is
+  -- handled by (a0) above so it does not reach here.)
   IF v_live_head_seq < a.head_chain_seq THEN
     reason := 'seq_regressed';
     RETURN NEXT;

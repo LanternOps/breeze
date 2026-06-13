@@ -371,6 +371,133 @@ describe('auditChainAnchor worker', () => {
       expect(stats.anchorsSigned).toBe(2);
     });
 
+    it('treats a fully-pruned (empty) live chain as benign retention, not tamper', async () => {
+      // A now-inactive org whose retention window passed its newest row: the
+      // prune deleted THROUGH the anchored head and emptied the chain, so the
+      // SQL verifier returns count_shrank (NOT seq_regressed) per branch (a0).
+      // The worker must treat that as benign (no incident), same as any other
+      // count_shrank.
+      mockSweep(
+        ['org-1'],
+        [
+          { verify: [] }, // system
+          {
+            verify: [
+              {
+                reason: 'count_shrank',
+                anchor_seq: 9,
+                anchored_head_seq: 120,
+                anchored_entry_count: 120,
+                live_head_seq: 0, // chain fully pruned away
+                live_entry_count: 0,
+                anchored_head_checksum: 'h120',
+                live_head_checksum: null,
+              },
+            ],
+          },
+        ],
+      );
+
+      const stats = await runAnchorSweep();
+      expect(stats.divergencesFound).toBe(1);
+      expect(stats.incidentsRaised).toBe(0);
+      expect(dbInsertMock).not.toHaveBeenCalled();
+      expect(publishEventMock).not.toHaveBeenCalled();
+      // count_shrank is explicitly NOT a tamper reason.
+      expect(__testOnly.TAMPER_REASONS.has('count_shrank')).toBe(false);
+    });
+
+    it('emitAnchorLog writes one single-line evt:audit_chain_anchor JSON record per target', async () => {
+      // Spy console.log; assert the structured anchor line (signed) carries the
+      // signed/signingKeyId/canonical/digest fields the off-box forwarder reads.
+      process.env.AUDIT_ANCHOR_SIGNING_KEY = Buffer.alloc(32, 7).toString('base64');
+      mockSweep(
+        ['org-1'],
+        [
+          { verify: [{ reason: 'no_anchor' }], signed: true }, // system chain
+          { verify: [], signed: true }, // org-1
+        ],
+      );
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      let loggedArgs: unknown[];
+      try {
+        await runAnchorSweep();
+      } finally {
+        // Snapshot before mockRestore (which clears mock.calls).
+        loggedArgs = logSpy.mock.calls.map((c) => c[0]);
+        logSpy.mockRestore();
+      }
+
+      // Collect every console.log arg that parses as an evt:audit_chain_anchor line.
+      const anchorLines = loggedArgs
+        .filter((a): a is string => typeof a === 'string')
+        .map((s) => {
+          try {
+            return JSON.parse(s) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter(
+          (o): o is Record<string, unknown> =>
+            o !== null && o.evt === 'audit_chain_anchor',
+        );
+
+      // One per target: system chain + org-1.
+      expect(anchorLines).toHaveLength(2);
+      for (const rec of anchorLines) {
+        // Single-line JSON (no embedded newline) for forwarder ingestion.
+        expect(JSON.stringify(rec)).not.toContain('\n');
+        // Off-box-relevant fields are present.
+        expect(rec.signed).toBe(true);
+        expect(rec.signingKeyId).toMatch(/^anchor-[0-9a-f]{16}$/);
+        expect(typeof rec.canonical).toBe('string');
+        expect(String(rec.canonical)).toContain('"v":1');
+        expect(rec.digest).toMatch(/^[0-9a-f]{64}$/);
+        expect(typeof rec.anchorSeq).toBe('number');
+        expect(rec).toHaveProperty('headChainSeq');
+        expect(rec).toHaveProperty('entryCount');
+        expect(rec).toHaveProperty('anchoredAt');
+      }
+      // org-1 line carries its org id; system line is null.
+      const orgIds = anchorLines.map((r) => r.orgId).sort();
+      expect(orgIds).toEqual([null, 'org-1']);
+    });
+
+    it('emits an UNSIGNED anchor line (signed:false, signingKeyId:null) when no key is set', async () => {
+      delete process.env.AUDIT_ANCHOR_SIGNING_KEY;
+      mockSweep([], [{ verify: [{ reason: 'no_anchor' }], signed: false }]); // system only
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      let loggedArgs: unknown[];
+      try {
+        await runAnchorSweep();
+      } finally {
+        loggedArgs = logSpy.mock.calls.map((c) => c[0]);
+        logSpy.mockRestore();
+      }
+
+      const anchorLine = loggedArgs
+        .filter((a): a is string => typeof a === 'string')
+        .map((s) => {
+          try {
+            return JSON.parse(s) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .find((o) => o !== null && o.evt === 'audit_chain_anchor');
+
+      expect(anchorLine).toBeDefined();
+      expect(anchorLine!.signed).toBe(false);
+      expect(anchorLine!.signingKeyId).toBeNull();
+      // Even unsigned, the canonical/digest are emitted so the off-box record is
+      // self-describing.
+      expect(typeof anchorLine!.canonical).toBe('string');
+      expect(anchorLine!.digest).toMatch(/^[0-9a-f]{64}$/);
+    });
+
     it('isolates a per-target failure without aborting the sweep', async () => {
       dbExecuteMock.mockResolvedValueOnce([{ id: 'org-1' }]); // enumeration
       // system chain target: verify throws.

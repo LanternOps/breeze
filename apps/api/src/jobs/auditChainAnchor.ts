@@ -16,8 +16,13 @@
  * breeze_app may INSERT but never UPDATE/DELETE (migration 2026-06-13-c) — and
  * SIGNS each snapshot with a per-deployment Ed25519 key whose seed never enters
  * Postgres (services/auditAnchorSigning.ts). It then:
- *   1. emits the signed anchor as a structured log line for off-box pickup by
- *      the existing log forwarder (the phase-1 external-retention hook), and
+ *   1. emits the signed anchor as a structured log line on stdout, intended for
+ *      an stdout log forwarder which THE OPERATOR MUST CONFIGURE (promtail /
+ *      Vector / Fluent Bit shipping the API container's stdout off-box). Note
+ *      the in-house log forwarder (services/logForwarding.ts) ships DB
+ *      device-logs to a per-org Elasticsearch sink, NOT this API stdout — so by
+ *      default this line stays in container logs. A durable off-box sink is the
+ *      deferred follow-up (see below).
  *   2. runs audit_chain_verify_anchor() to compare the LIVE chain head against
  *      the most recent anchor, raising a P1 security incident when the head
  *      moved backwards / a sealed entry vanished / a historical checksum
@@ -29,8 +34,9 @@
  * The durable off-box SINK itself (S3 Object Lock, write-only host, or SIEM
  * ingestion) is deferred pending the infra decision tracked on #916. Phase 1
  * ships: the append-only in-DB anchor, the signing seam, the signed structured
- * log emission (so a configured log forwarder already retains anchors off-box),
- * and divergence detection. Wiring a dedicated immutable sink is the follow-up.
+ * stdout log emission (which an operator-configured stdout log forwarder can
+ * retain off-box), and divergence detection. Wiring a dedicated immutable sink
+ * is the follow-up.
  *
  * #1105 long-transaction pitfall: same handling as auditChainVerify — read the
  * org list in one short system txn, then run the per-org sweep via
@@ -211,11 +217,15 @@ async function writeAnchor(
 }
 
 /**
- * Emit the signed anchor as a structured log line. This is the phase-1
- * external-retention hook: a configured log forwarder (per-org Elasticsearch /
- * SIEM) picks these up and retains them OFF the primary DB, so a later DB-side
- * chain rewrite can be reconciled against the forwarded anchor history. The
- * durable, write-once sink itself is the deferred phase-2 step (#916).
+ * Emit the signed anchor as a structured log line on stdout. This is the
+ * phase-1 external-retention hook, but it only retains anchors off-box IF THE
+ * OPERATOR HAS CONFIGURED AN STDOUT LOG FORWARDER (promtail / Vector / Fluent
+ * Bit shipping the API container's stdout). It does NOT ride the in-house log
+ * forwarder (services/logForwarding.ts), which ships DB device-logs to a per-org
+ * Elasticsearch sink, not this process's stdout. Without an stdout forwarder the
+ * line simply stays in container logs. When a forwarder IS configured, a later
+ * DB-side chain rewrite can be reconciled against the forwarded anchor history.
+ * The durable, write-once sink itself is the deferred phase-2 step (#916).
  *
  * The line is a single JSON object on stdout with a stable `evt` tag so the
  * forwarder can route it. Contains NO secrets — only the public snapshot, its
