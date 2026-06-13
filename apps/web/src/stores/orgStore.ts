@@ -40,7 +40,9 @@ interface OrgState {
 
   // Actions
   setPartner: (partnerId: string) => void;
-  setOrganization: (orgId: string) => void;
+  /** Pass a non-empty orgId to select that org; pass '' or null to clear the
+   * selection (currentOrgId → null, currentSiteId → null). */
+  setOrganization: (orgId: string | null) => void;
   setSite: (siteId: string | null) => void;
   fetchPartners: () => Promise<void>;
   fetchOrganizations: () => Promise<void>;
@@ -73,13 +75,15 @@ export const useOrgStore = create<OrgState>()(
       },
 
       setOrganization: (orgId) => {
+        // Falsy ('' or null) clears the selection entirely.
+        const resolved = orgId || null;
         set({
-          currentOrgId: orgId,
+          currentOrgId: resolved,
           currentSiteId: null,
           sites: []
         });
-        // Fetch sites for the new organization
-        get().fetchSites();
+        // Fetch sites only when an org is actually selected.
+        if (resolved) get().fetchSites();
       },
 
       setSite: (siteId) => {
