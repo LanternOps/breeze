@@ -320,6 +320,9 @@ export const agentWarrantyInfoSchema = z.object({
   coverageEndDate: warrantyDateSchema,
   coverageStartDate: warrantyDateSchema,
   coverageType: z.string().max(200).optional(),
+  // Coverage kind derived from the macOS NDO label verb: 'subscription'
+  // ("Renews ...") vs 'fixed' ("Expires ..."). Empty/absent when unknown.
+  coverageKind: z.enum(['subscription', 'fixed']).optional(),
   deviceName: z.string().max(200).optional(),
 });
 

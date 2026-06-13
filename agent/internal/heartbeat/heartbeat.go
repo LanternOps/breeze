@@ -1098,6 +1098,7 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 		"coverageEndDate":   info.CoverageEndDate,
 		"coverageStartDate": info.CoverageStartDate,
 		"coverageType":      info.CoverageType,
+		"coverageKind":      info.CoverageKind,
 		"deviceName":        info.DeviceName,
 	}
 	h.sendInventoryData("warranty-info", payload, "apple warranty")
