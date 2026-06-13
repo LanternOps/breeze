@@ -15,7 +15,8 @@ import {
   XCircle,
   Package,
   MapPin,
-  Zap
+  Zap,
+  ChevronDown
 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -30,13 +31,19 @@ type ModalType = 'none' | 'reboot' | 'reboot_safe_mode' | 'shutdown' | 'maintena
 
 export default function DeviceActions({ device, onAction, compact = false }: DeviceActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [powerMenuOpen, setPowerMenuOpen] = useState(false);
   const [modalType, setModalType] = useState<ModalType>('none');
   const [loading, setLoading] = useState(false);
+
+  const closeMenus = () => {
+    setMenuOpen(false);
+    setPowerMenuOpen(false);
+  };
 
   const handleAction = async (action: string) => {
     if (action === 'reboot' || action === 'reboot_safe_mode' || action === 'shutdown' || action === 'maintenance' || action === 'decommission' || action === 'clear-sessions') {
       setModalType(action);
-      setMenuOpen(false);
+      closeMenus();
       return;
     }
 
@@ -45,7 +52,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
       await onAction?.(action, device);
     } finally {
       setLoading(false);
-      setMenuOpen(false);
+      closeMenus();
     }
   };
 
@@ -223,42 +230,69 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <Wrench className="h-4 w-4" />
           Remote Tools
         </button>
-        <button
-          type="button"
-          onClick={() => handleAction('refresh')}
-          disabled={device.status === 'offline' || loading}
-          title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
-          className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Refresh
-        </button>
-        <button
-          type="button"
-          onClick={() => handleAction('reboot')}
-          disabled={device.status === 'offline' || loading}
-          className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <RotateCcw className="h-4 w-4" />
-          Reboot
-        </button>
-        {device.status === 'offline' && (
-          <button
-            type="button"
-            onClick={() => handleAction('wake')}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-            title="Send a Wake-on-LAN packet via an online peer agent on the device's LAN"
-          >
-            <Zap className="h-4 w-4" />
-            Wake
-          </button>
-        )}
-
         <div className="relative">
           <button
             type="button"
-            onClick={() => setMenuOpen(!menuOpen)}
+            onClick={() => { setPowerMenuOpen(!powerMenuOpen); setMenuOpen(false); }}
+            disabled={loading}
+            aria-haspopup="true"
+            aria-expanded={powerMenuOpen}
+            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Power className="h-4 w-4" />
+            Power
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          </button>
+          {powerMenuOpen && (
+            <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+              <button
+                type="button"
+                onClick={() => handleAction('reboot')}
+                disabled={device.status === 'offline'}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Reboot
+              </button>
+              {device.os === 'windows' && (
+                <button
+                  type="button"
+                  onClick={() => handleAction('reboot_safe_mode')}
+                  disabled={device.status === 'offline'}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-yellow-600 hover:bg-yellow-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Shield className="h-4 w-4" />
+                  Reboot to Safe Mode
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => handleAction('shutdown')}
+                disabled={device.status === 'offline'}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Power className="h-4 w-4" />
+                Shutdown
+              </button>
+              {device.status === 'offline' && (
+                <button
+                  type="button"
+                  onClick={() => handleAction('wake')}
+                  disabled={loading}
+                  title="Send a Wake-on-LAN packet via an online peer agent on the device's LAN"
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Zap className="h-4 w-4" />
+                  Wake
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => { setMenuOpen(!menuOpen); setPowerMenuOpen(false); }}
             disabled={loading}
             className="flex h-10 w-10 items-center justify-center rounded-md border bg-background transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -266,6 +300,16 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           </button>
           {menuOpen && (
             <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+              <button
+                type="button"
+                onClick={() => handleAction('refresh')}
+                disabled={device.status === 'offline' || loading}
+                title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </button>
               <button
                 type="button"
                 onClick={() => handleAction('maintenance')}
@@ -282,26 +326,6 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Package className="h-4 w-4" />
                 Deploy Software
               </button>
-              <button
-                type="button"
-                onClick={() => handleAction('shutdown')}
-                disabled={device.status === 'offline'}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Power className="h-4 w-4" />
-                Shutdown
-              </button>
-              {device.os === 'windows' && (
-                <button
-                  type="button"
-                  onClick={() => handleAction('reboot_safe_mode')}
-                  disabled={device.status === 'offline'}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-yellow-600 hover:bg-yellow-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Shield className="h-4 w-4" />
-                  Reboot to Safe Mode
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => handleAction('clear-sessions')}
