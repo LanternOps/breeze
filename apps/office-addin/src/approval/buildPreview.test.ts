@@ -61,4 +61,33 @@ describe('buildWritePreview', () => {
     const table = await buildWritePreview('create_table', { address: 'A1:C10' });
     expect(table).toMatchObject({ kind: 'summary', target: 'A1:C10' });
   });
+
+  it('summarizes create_pivot_table with source, rows, and values', async () => {
+    const pivot = await buildWritePreview('create_pivot_table', {
+      sourceAddress: 'A1:F500',
+      destinationAddress: 'H1',
+      rows: ['Region'],
+      columns: ['Quarter'],
+      values: [{ field: 'Revenue', aggregation: 'sum' }, { field: 'Units' }],
+    });
+    expect(pivot).toMatchObject({ kind: 'summary', target: 'H1' });
+    const desc = (pivot as { description: string }).description;
+    expect(desc).toContain('A1:F500');
+    expect(desc).toContain('Region');
+    expect(desc).toContain('Revenue');
+    expect(desc).toContain('Units');
+  });
+
+  it('summarizes create_chart with type, source, and title', async () => {
+    const chart = await buildWritePreview('create_chart', {
+      sourceAddress: 'A1:D12',
+      chartType: 'line',
+      title: 'Quarterly revenue',
+    });
+    expect(chart).toMatchObject({ kind: 'summary', target: 'A1:D12' });
+    const desc = (chart as { description: string }).description;
+    expect(desc).toContain('line');
+    expect(desc).toContain('A1:D12');
+    expect(desc).toContain('Quarterly revenue');
+  });
 });

@@ -130,6 +130,55 @@ export const CLIENT_TOOL_REGISTRY = {
       matchCase: z.boolean().optional(),
     },
   },
+  create_pivot_table: {
+    description:
+      'Create a PivotTable summarizing a source range. Provide row fields, optional column fields, and value fields with an aggregation (sum/count/average/max/min). Requires Excel build support (ExcelApi 1.8); if unsupported the tool returns an error so you can fall back to a formula-based summary. Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      sourceAddress: addressSchema.describe('Range to summarize, including the header row, e.g. "A1:F500"'),
+      destinationAddress: addressSchema.describe('Top-left anchor where the PivotTable is placed, e.g. "H1"'),
+      sheetName: sheetNameSchema,
+      rows: z
+        .array(z.string().min(1).max(255))
+        .min(1)
+        .max(20)
+        .describe('Header names to use as PivotTable row fields'),
+      columns: z
+        .array(z.string().min(1).max(255))
+        .max(20)
+        .optional()
+        .describe('Header names to use as PivotTable column fields'),
+      values: z
+        .array(
+          z
+            .object({
+              field: z.string().min(1).max(255),
+              aggregation: z.enum(['sum', 'count', 'average', 'max', 'min']).optional(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(20)
+        .describe('Header names to aggregate, each with an optional aggregation (defaults to sum)'),
+    },
+  },
+  create_chart: {
+    description:
+      'Create a chart from a source range. Choose a chartType (columnClustered/line/pie/bar/area), an optional title, and optional seriesBy (rows/columns/auto). Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      sourceAddress: addressSchema.describe('Range to plot, including headers, e.g. "A1:D12"'),
+      sheetName: sheetNameSchema,
+      chartType: z
+        .enum(['columnClustered', 'line', 'pie', 'bar', 'area'])
+        .describe('Chart type to create'),
+      title: z.string().min(1).max(255).optional().describe('Chart title text'),
+      seriesBy: z
+        .enum(['rows', 'columns', 'auto'])
+        .optional()
+        .describe('Whether each series is a row or a column of the source ("auto" lets Excel decide)'),
+    },
+  },
 } as const satisfies Record<string, ClientWorkbookTool>;
 
 export type ClientToolName = keyof typeof CLIENT_TOOL_REGISTRY;

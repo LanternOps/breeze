@@ -108,6 +108,41 @@ export async function buildWritePreview(
       const address = requireString(input, 'address');
       return { kind: 'summary', toolName, target: address, description: `Create a table over ${address}` };
     }
+    case 'create_pivot_table': {
+      const sourceAddress = requireString(input, 'sourceAddress');
+      const destinationAddress = requireString(input, 'destinationAddress');
+      const rows = Array.isArray(input.rows) ? (input.rows as unknown[]).map(String) : [];
+      const columns = Array.isArray(input.columns) ? (input.columns as unknown[]).map(String) : [];
+      const values = Array.isArray(input.values)
+        ? (input.values as Array<{ field?: unknown; aggregation?: unknown }>).map((v) => {
+            const field = typeof v?.field === 'string' ? v.field : '?';
+            const agg = typeof v?.aggregation === 'string' ? v.aggregation : 'sum';
+            return `${agg}(${field})`;
+          })
+        : [];
+      const parts = [
+        `rows=${rows.join(', ') || '—'}`,
+        ...(columns.length ? [`columns=${columns.join(', ')}`] : []),
+        `values=${values.join(', ') || '—'}`,
+      ];
+      return {
+        kind: 'summary',
+        toolName,
+        target: destinationAddress,
+        description: `PivotTable from ${sourceAddress} → ${parts.join('; ')}`,
+      };
+    }
+    case 'create_chart': {
+      const sourceAddress = requireString(input, 'sourceAddress');
+      const chartType = requireString(input, 'chartType');
+      const title = optionalString(input, 'title');
+      return {
+        kind: 'summary',
+        toolName,
+        target: sourceAddress,
+        description: `Create a ${chartType} chart from ${sourceAddress}${title ? ` titled "${title}"` : ''}`,
+      };
+    }
     default:
       return { kind: 'summary', toolName, target: '', description: `Run ${toolName}` };
   }

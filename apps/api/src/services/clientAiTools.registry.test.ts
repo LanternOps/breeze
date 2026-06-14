@@ -11,6 +11,8 @@ import { TOOL_TIERS, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import { aiTools } from './aiTools';
 
 const PINNED_NAMES = [
+  'create_chart',
+  'create_pivot_table',
   'create_sheet',
   'create_table',
   'format_range',
@@ -22,15 +24,23 @@ const PINNED_NAMES = [
   'write_range',
 ];
 
-const PINNED_MUTATING = ['create_sheet', 'create_table', 'format_range', 'insert_formula', 'write_range'];
+const PINNED_MUTATING = [
+  'create_chart',
+  'create_pivot_table',
+  'create_sheet',
+  'create_table',
+  'format_range',
+  'insert_formula',
+  'write_range',
+];
 
 describe('CLIENT_TOOL_REGISTRY — pinned shape (Plans 3/4/5 depend on these names)', () => {
-  it('contains exactly the 9 pinned workbook tools', () => {
+  it('contains exactly the 11 pinned workbook tools', () => {
     expect(Object.keys(CLIENT_TOOL_REGISTRY).sort()).toEqual(PINNED_NAMES);
     expect(CLIENT_TOOL_NAMES.slice().sort()).toEqual(PINNED_NAMES);
   });
 
-  it('flags exactly the 5 write tools as mutating', () => {
+  it('flags exactly the 7 write tools as mutating', () => {
     const mutating = CLIENT_TOOL_NAMES.filter((n) => CLIENT_TOOL_REGISTRY[n].mutating).sort();
     expect(mutating).toEqual(PINNED_MUTATING);
   });
@@ -63,13 +73,13 @@ describe('hard isolation from the technician registry (spec §5: allowlist, not 
       expect(mcpName.startsWith('mcp__excel__')).toBe(true);
       expect(BREEZE_MCP_TOOL_NAMES).not.toContain(mcpName);
     }
-    expect(CLIENT_MCP_TOOL_NAMES).toHaveLength(9);
+    expect(CLIENT_MCP_TOOL_NAMES).toHaveLength(11);
   });
 });
 
 describe('clientMcpToolNamesForWriteMode', () => {
-  it('readwrite exposes all 9 tools', () => {
-    expect(clientMcpToolNamesForWriteMode('readwrite')).toHaveLength(9);
+  it('readwrite exposes all 11 tools', () => {
+    expect(clientMcpToolNamesForWriteMode('readwrite')).toHaveLength(11);
   });
 
   it('readonly strips every mutating tool from the toolset', () => {

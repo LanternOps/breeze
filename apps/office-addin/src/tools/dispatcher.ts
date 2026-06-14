@@ -16,6 +16,8 @@ import { insertFormula } from './insertFormula';
 import { createSheet } from './createSheet';
 import { formatRange } from './formatRange';
 import { createTable } from './createTable';
+import { createPivotTable } from './createPivotTable';
+import { createChart } from './createChart';
 import { searchWorkbook } from './searchWorkbook';
 
 export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
@@ -29,6 +31,8 @@ export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   create_sheet: createSheet,
   format_range: formatRange,
   create_table: createTable,
+  create_pivot_table: createPivotTable,
+  create_chart: createChart,
   search_workbook: searchWorkbook,
 };
 
@@ -38,6 +42,8 @@ export const MUTATING_TOOLS = new Set([
   'create_sheet',
   'format_range',
   'create_table',
+  'create_pivot_table',
+  'create_chart',
 ]);
 
 export type ToolRequest = Extract<ClientAiStreamEvent, { type: 'tool_request' }>;

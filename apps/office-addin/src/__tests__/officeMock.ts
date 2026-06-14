@@ -78,6 +78,15 @@ export class MockSheetState {
     return this.formats.get(key(p.startRow, p.startCol));
   }
 
+  /** Header-row values of a source range (first row), used by the pivot mock. */
+  pivotHeadersFor(qualifiedSource: string): string[] {
+    const rect = rectOf(qualifiedSource);
+    return Array.from({ length: rect.cols }, (_, c) => {
+      const v = this.cells.get(key(rect.startRow, rect.startCol + c));
+      return typeof v === 'string' ? v : v == null ? '' : String(v);
+    });
+  }
+
   usedRect(): Rect | null {
     let minR = Infinity;
     let minC = Infinity;
@@ -95,12 +104,35 @@ export class MockSheetState {
   }
 }
 
+export type MockChart = {
+  name: string;
+  type: string;
+  seriesBy: string;
+  sourceAddress: string;
+  sheetName: string;
+  title: string | null;
+};
+export type MockPivotDataHierarchy = { field: string; summarizeBy: string };
+export type MockPivotTable = {
+  name: string;
+  source: string;
+  destination: string;
+  sheetName: string;
+  rowHierarchies: string[];
+  columnHierarchies: string[];
+  dataHierarchies: MockPivotDataHierarchy[];
+};
+
 export class MockWorkbookState {
   sheets: MockSheetState[] = [new MockSheetState('Sheet1')];
   activeSheetName = 'Sheet1';
   /** Sheet-qualified selection, e.g. 'Sheet1!B2:F40'. */
   selectionAddress = 'Sheet1!A1';
   tables: Array<{ name: string; address: string; hasHeaders: boolean }> = [];
+  charts: MockChart[] = [];
+  pivotTables: MockPivotTable[] = [];
+  /** ExcelApi requirement-set versions reported as supported (feature detect). */
+  supportedApiSets = new Set(['1.1', '1.4', '1.7', '1.8', '1.9']);
   loadCalls: Array<{ target: string; props: unknown }> = [];
   syncCount = 0;
   selectionHandlers: Array<() => void> = [];
@@ -211,6 +243,13 @@ class MockRange implements Syncable {
     return this;
   }
 
+  /** Sheet-qualified A1 address without requiring a prior sync (mock helper for
+   *  chart/pivot collections that consume a Range object directly). */
+  qualifiedAddress(): string {
+    if (this.isNullObject) return '';
+    return `${this.sheetState!.name}!${rangeAddress(this.rect!.startRow, this.rect!.startCol, this.rect!.rows, this.rect!.cols)}`;
+  }
+
   getRow(index: number): MockRange {
     if (this.isNullObject) return new MockRange(this.ctx, null, null);
     const r = this.rect!;
@@ -307,6 +346,125 @@ class MockRange implements Syncable {
   }
 }
 
+class MockChartObject {
+  constructor(private record: MockChart) {}
+  load(_props: unknown): this {
+    return this;
+  }
+  get name(): string {
+    return this.record.name;
+  }
+  get title(): { set text(v: string) } {
+    const record = this.record;
+    return {
+      set text(v: string) {
+        record.title = v;
+      },
+    };
+  }
+}
+
+class MockChartCollection {
+  constructor(
+    private ctx: MockContext,
+    private sheetName: string,
+  ) {}
+  add(type: string, sourceData: MockRange, seriesBy?: string): MockChartObject {
+    const record: MockChart = {
+      name: `Chart ${this.ctx.state.charts.length + 1}`,
+      type,
+      seriesBy: seriesBy ?? 'Auto',
+      sourceAddress: sourceData.qualifiedAddress(),
+      sheetName: this.sheetName,
+      title: null,
+    };
+    this.ctx.state.charts.push(record);
+    return new MockChartObject(record);
+  }
+}
+
+class MockPivotHierarchy {
+  constructor(
+    public name: string,
+    public isNullObject: boolean,
+  ) {}
+  load(_props: unknown): this {
+    return this;
+  }
+}
+
+class MockRowColumnHierarchyCollection {
+  constructor(private target: string[]) {}
+  add(hierarchy: MockPivotHierarchy): void {
+    this.target.push(hierarchy.name);
+  }
+}
+
+class MockDataPivotHierarchy {
+  constructor(private record: MockPivotDataHierarchy) {}
+  set summarizeBy(v: string) {
+    this.record.summarizeBy = v;
+  }
+}
+
+class MockDataHierarchyCollection {
+  constructor(private target: MockPivotDataHierarchy[]) {}
+  add(hierarchy: MockPivotHierarchy): MockDataPivotHierarchy {
+    const record: MockPivotDataHierarchy = { field: hierarchy.name, summarizeBy: 'Sum' };
+    this.target.push(record);
+    return new MockDataPivotHierarchy(record);
+  }
+}
+
+class MockPivotTableObject {
+  constructor(
+    private ctx: MockContext,
+    private record: MockPivotTable,
+  ) {}
+  load(_props: unknown): this {
+    return this;
+  }
+  get name(): string {
+    return this.record.name;
+  }
+  get hierarchies(): { getItemOrNullObject(name: string): MockPivotHierarchy } {
+    const headers = this.ctx.state.sheet(this.record.sheetName).pivotHeadersFor(this.record.source);
+    return {
+      getItemOrNullObject: (name: string) =>
+        new MockPivotHierarchy(name, !headers.includes(name)),
+    };
+  }
+  get rowHierarchies(): MockRowColumnHierarchyCollection {
+    return new MockRowColumnHierarchyCollection(this.record.rowHierarchies);
+  }
+  get columnHierarchies(): MockRowColumnHierarchyCollection {
+    return new MockRowColumnHierarchyCollection(this.record.columnHierarchies);
+  }
+  get dataHierarchies(): MockDataHierarchyCollection {
+    return new MockDataHierarchyCollection(this.record.dataHierarchies);
+  }
+}
+
+class MockPivotTableCollection {
+  constructor(
+    private ctx: MockContext,
+    private sheetName: string,
+  ) {}
+  add(name: string, source: MockRange, destination: MockRange): MockPivotTableObject {
+    const record: MockPivotTable = {
+      name,
+      source: source.qualifiedAddress(),
+      destination: destination.qualifiedAddress(),
+      sheetName: this.sheetName,
+      rowHierarchies: [],
+      columnHierarchies: [],
+      dataHierarchies: [],
+    };
+    this.ctx.state.pivotTables.push(record);
+    return new MockPivotTableObject(this.ctx, record);
+  }
+}
+
 class MockWorksheet implements Syncable {
   isNullObject: boolean;
 
@@ -321,6 +479,16 @@ class MockWorksheet implements Syncable {
   /** Leniency: readable without load(). */
   get name(): string {
     return this.sheetState?.name ?? '';
+  }
+
+  get charts(): MockChartCollection {
+    if (!this.sheetState) throw new Error('ItemNotFound: charts on a null worksheet');
+    return new MockChartCollection(this.ctx, this.sheetState.name);
+  }
+
+  get pivotTables(): MockPivotTableCollection {
+    if (!this.sheetState) throw new Error('ItemNotFound: pivotTables on a null worksheet');
+    return new MockPivotTableCollection(this.ctx, this.sheetState.name);
   }
 
   load(props: unknown): this {
@@ -452,6 +620,13 @@ export function installOfficeMock(): MockWorkbookState {
     },
     EventType: { DocumentSelectionChanged: 'documentSelectionChanged' },
     context: {
+      requirements: {
+        isSetSupported: (name: string, minVersion?: string): boolean => {
+          if (name !== 'ExcelApi') return false;
+          if (!minVersion) return true;
+          return state.supportedApiSets.has(minVersion);
+        },
+      },
       document: {
         addHandlerAsync: (
           _type: string,
