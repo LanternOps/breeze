@@ -44,6 +44,8 @@ export class MockSheetState {
   cells = new Map<string, CellValue>();
   formulas = new Map<string, string>();
   formats = new Map<string, Record<string, unknown>>();
+  /** Office.js Range.valueTypes, keyed like cells (e.g. 'Error', 'Double'). */
+  valueTypes = new Map<string, string>();
   /** Conditional-format rules applied to sub-rects of this sheet. */
   conditionalFormats: Array<{ rect: Rect; type: string; detail: Record<string, unknown> }> = [];
 
@@ -71,6 +73,27 @@ export class MockSheetState {
         const k = key(rect.startRow + r, rect.startCol + c);
         return this.formulas.get(k) ?? String(this.cells.get(k) ?? '');
       }),
+    );
+  }
+
+  /** Per-cell number-format strings (mirror of Range.numberFormat reads). */
+  getNumberFormats(rect: Rect): string[][] {
+    return Array.from({ length: rect.rows }, (_, r) =>
+      Array.from({ length: rect.cols }, (_, c) => {
+        const fmt = this.formats.get(key(rect.startRow + r, rect.startCol + c));
+        const nf = fmt?.numberFormat;
+        return typeof nf === 'string' ? nf : 'General';
+      }),
+    );
+  }
+
+  /** Per-cell Office.js value types (mirror of Range.valueTypes reads). */
+  getValueTypes(rect: Rect): string[][] {
+    return Array.from({ length: rect.rows }, (_, r) =>
+      Array.from(
+        { length: rect.cols },
+        (_, c) => this.valueTypes.get(key(rect.startRow + r, rect.startCol + c)) ?? 'Empty',
+      ),
     );
   }
 
@@ -348,6 +371,8 @@ class MockRange implements Syncable {
   private pendingConditional: MockConditionalFormat[] = [];
   private _values: CellValue[][] = [];
   private _formulas: string[][] = [];
+  private _numberFormat: string[][] = [];
+  private _valueTypes: string[][] = [];
   private _address = '';
 
   constructor(
@@ -486,8 +511,15 @@ class MockRange implements Syncable {
     this.pendingFormulas = v;
   }
 
+  get numberFormat(): string[][] {
+    return this.read('numberFormat', this._numberFormat);
+  }
   set numberFormat(v: string[][]) {
     this.pendingNumberFormat = v;
+  }
+
+  get valueTypes(): string[][] {
+    return this.read('valueTypes', this._valueTypes);
   }
 
   get address(): string {
@@ -563,6 +595,8 @@ class MockRange implements Syncable {
     }
     this._values = sheet.getValues(rect);
     this._formulas = sheet.getFormulas(rect);
+    this._numberFormat = sheet.getNumberFormats(rect);
+    this._valueTypes = sheet.getValueTypes(rect);
     this._address = `${sheet.name}!${rangeAddress(rect.startRow, rect.startCol, rect.rows, rect.cols)}`;
     this.hydrated = true;
   }

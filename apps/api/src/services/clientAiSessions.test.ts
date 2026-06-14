@@ -41,6 +41,7 @@ describe('system prompt', () => {
       'get_workbook_overview',
       'read_selection',
       'read_range',
+      'read_cell_details',
       'search_workbook',
       'write_range',
       'insert_formula',
@@ -54,6 +55,12 @@ describe('system prompt', () => {
     }
     expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('conditional formatting');
     expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('Do not understate what you can do');
+  });
+
+  it('instructs explaining formulas/errors via read_cell_details rather than guessing', () => {
+    expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('explain a formula or an Excel error');
+    expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('read_cell_details');
+    expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('#REF!');
   });
 
   it('readwrite mode returns the base prompt; readonly appends the read-only addendum', () => {

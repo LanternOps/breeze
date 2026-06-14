@@ -11,6 +11,7 @@ import type { ClientAiStreamEvent, ToolResultBody } from '../api/types';
 import { getWorkbookOverview } from './getWorkbookOverview';
 import { readSelection } from './readSelection';
 import { readRange } from './readRange';
+import { readCellDetails } from './readCellDetails';
 import { writeRange } from './writeRange';
 import { insertFormula } from './insertFormula';
 import { createSheet } from './createSheet';
@@ -28,6 +29,7 @@ export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   get_workbook_overview: getWorkbookOverview,
   read_selection: readSelection,
   read_range: readRange,
+  read_cell_details: readCellDetails,
   write_range: writeRange,
   insert_formula: insertFormula,
   create_sheet: createSheet,

@@ -19,6 +19,7 @@ const PINNED_NAMES = [
   'format_range',
   'get_workbook_overview',
   'insert_formula',
+  'read_cell_details',
   'read_range',
   'read_selection',
   'search_workbook',
@@ -39,7 +40,7 @@ const PINNED_MUTATING = [
 ];
 
 describe('CLIENT_TOOL_REGISTRY — pinned shape (Plans 3/4/5 depend on these names)', () => {
-  it('contains exactly the 13 pinned workbook tools', () => {
+  it('contains exactly the 14 pinned workbook tools', () => {
     expect(Object.keys(CLIENT_TOOL_REGISTRY).sort()).toEqual(PINNED_NAMES);
     expect(CLIENT_TOOL_NAMES.slice().sort()).toEqual(PINNED_NAMES);
   });
@@ -77,19 +78,20 @@ describe('hard isolation from the technician registry (spec §5: allowlist, not 
       expect(mcpName.startsWith('mcp__excel__')).toBe(true);
       expect(BREEZE_MCP_TOOL_NAMES).not.toContain(mcpName);
     }
-    expect(CLIENT_MCP_TOOL_NAMES).toHaveLength(13);
+    expect(CLIENT_MCP_TOOL_NAMES).toHaveLength(14);
   });
 });
 
 describe('clientMcpToolNamesForWriteMode', () => {
-  it('readwrite exposes all 13 tools', () => {
-    expect(clientMcpToolNamesForWriteMode('readwrite')).toHaveLength(13);
+  it('readwrite exposes all 14 tools', () => {
+    expect(clientMcpToolNamesForWriteMode('readwrite')).toHaveLength(14);
   });
 
   it('readonly strips every mutating tool from the toolset', () => {
     const names = clientMcpToolNamesForWriteMode('readonly');
     expect(names.sort()).toEqual([
       'mcp__excel__get_workbook_overview',
+      'mcp__excel__read_cell_details',
       'mcp__excel__read_range',
       'mcp__excel__read_selection',
       'mcp__excel__search_workbook',

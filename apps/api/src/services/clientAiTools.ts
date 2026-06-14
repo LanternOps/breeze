@@ -2,7 +2,7 @@
  * AI for Office — client workbook tool registry (spec §5).
  *
  * A SEPARATE registry from the technician aiTools map / TOOL_TIERS — client
- * sessions can only ever see these 9 tools (hard allowlist; proven by
+ * sessions can only ever see these 14 tools (hard allowlist; proven by
  * clientAiTools.registry.test.ts). Tools do NOT execute on the server:
  * Office.js only runs inside Excel, so the handler (Task 6) round-trips
  * through services/clientAiToolBridge.ts to the add-in.
@@ -65,6 +65,12 @@ export const CLIENT_TOOL_REGISTRY = {
   read_range: {
     description:
       'Read the cell values of a specific range. Returns a row-major matrix. Read data before answering questions about it — never guess values.',
+    mutating: false,
+    inputSchema: { address: addressSchema, sheetName: sheetNameSchema },
+  },
+  read_cell_details: {
+    description:
+      'Return the value, formula, number format, and any Excel error for a cell or range so you can explain it. Use this before explaining a formula or an error (e.g. #REF!, #VALUE!, #DIV/0!) — read the actual formula/error, never guess.',
     mutating: false,
     inputSchema: { address: addressSchema, sheetName: sheetNameSchema },
   },
