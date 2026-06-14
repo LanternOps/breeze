@@ -330,8 +330,10 @@ async function readPriorities(partnerId: string): Promise<Record<TicketPriorityV
 }
 
 /**
- * Full partner ticketing configuration: every custom + system status (ordered)
- * and the merged per-priority SLA settings (nulls where unset).
+ * Full partner ticketing configuration: every custom + system status (ordered),
+ * the merged per-priority SLA settings (nulls where unset), and the inbound-email
+ * block (resolved address + override, enabled/autoresponder flags, defaultTriageOrgId,
+ * slug, and whether TICKETS_INBOUND_DOMAIN is configured).
  */
 export async function getTicketConfig(partnerId: string) {
   const statuses = await db
@@ -564,6 +566,16 @@ export async function upsertOrgTicketSettings(orgId: string, input: OrgTicketSet
 
 const REVIEW_STATUSES = ['quarantined', 'failed'] as const;
 
+/**
+ * Extract a display name from a raw From header (`"Jane Doe" <jane@x.com>`
+ * → `Jane Doe`). Replicates the Mailgun provider's `extractName` so a converted
+ * ticket carries the submitter's name. Returns '' for a bare address.
+ */
+function extractFromName(fromHeader: string): string {
+  const m = fromHeader.match(/^\s*"?([^"<]+?)"?\s*</);
+  return m ? (m[1] ?? '').trim() : '';
+}
+
 export interface EmailInboundQueueRow {
   id: string;
   fromAddress: string | null;
@@ -670,6 +682,10 @@ async function readQueueRow(partnerId: string, id: string) {
  * audit attribution (no synthetic all-zero-UUID sentinel).
  */
 export async function convertEmailInbound(partnerId: string, id: string, orgId: string, actor: TicketActor): Promise<EmailInboundQueueRow> {
+  // Read first only to validate the guards (org-in-partner, usable sender) and to
+  // distinguish NOT_FOUND from ALREADY_RESOLVED for the caller. The actual race-
+  // safe transition is the claim UPDATE below — no ticket is created until the
+  // row is atomically claimed out of the review state.
   const row = await readQueueRow(partnerId, id);
 
   // Guard (spec §6): the chosen org must belong to the resolved partner. Without
@@ -691,10 +707,36 @@ export async function convertEmailInbound(partnerId: string, id: string, orgId: 
     throw new TicketConfigServiceError('This email has no usable sender address; it cannot be converted to a ticket', 400, 'INBOUND_ROW_NO_SENDER');
   }
 
+  // The persisted `raw` JSONB is the UNTRANSFORMED Mailgun webhook form body, so
+  // it carries `stripped-text`/`body-plain` (not `text`) and `from` (the full
+  // From header, not `fromName`). Read those real keys — using `raw.text` /
+  // `raw.fromName` here silently lost the body and submitter name on every convert.
   const raw = (row.raw as Record<string, unknown> | null) ?? {};
-  const description = typeof raw.text === 'string' ? raw.text : (typeof raw['stripped-text'] === 'string' ? raw['stripped-text'] as string : '');
-  const fromName = typeof raw.fromName === 'string' ? raw.fromName : undefined;
+  const description =
+    (typeof raw['stripped-text'] === 'string' && raw['stripped-text']) ||
+    (typeof raw['body-plain'] === 'string' && raw['body-plain']) ||
+    '';
+  const fromName = extractFromName(typeof raw.from === 'string' ? raw.from : '') || undefined;
 
+  // CLAIM-FIRST: atomically transition the row out of the review state BEFORE any
+  // ticket is created. If a concurrent dismiss/convert won the race, this affects
+  // 0 rows and we throw before createTicket runs — so a lost race never orphans a
+  // ticket. The WHERE keys on (id, partnerId, parse_status IN review) so it's also
+  // the real TOCTOU-safe transition (the read above is advisory only).
+  const [claimed] = await db
+    .update(ticketEmailInbound)
+    .set({ parseStatus: 'created' })
+    .where(and(
+      eq(ticketEmailInbound.id, id),
+      eq(ticketEmailInbound.partnerId, partnerId),
+      inArray(ticketEmailInbound.parseStatus, REVIEW_STATUSES as unknown as string[]),
+    ))
+    .returning(returnQueueCols);
+  if (!claimed) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+
+  // Only now create the ticket. If createTicket throws, the error propagates
+  // (non-service error → handleServiceError rethrows → the request transaction
+  // rolls back, undoing the claim above — the row is never left half-updated).
   const ticket = await createTicket(
     {
       orgId,
@@ -709,11 +751,11 @@ export async function convertEmailInbound(partnerId: string, id: string, orgId: 
 
   const [updated] = await db
     .update(ticketEmailInbound)
-    .set({ ticketId: ticket.id, parseStatus: 'created' })
+    .set({ ticketId: ticket.id })
     .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
     .returning(returnQueueCols);
-  // TOCTOU guard: the row was read at the top, but a concurrent delete/dismiss
-  // could win the race before this UPDATE. An empty update means the row is gone.
+  // The row was claimed by THIS transaction a moment ago, so it must still exist;
+  // an empty result would mean the row vanished mid-transaction (shouldn't happen).
   if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
   return updated;
 }

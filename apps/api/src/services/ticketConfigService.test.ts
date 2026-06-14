@@ -10,6 +10,11 @@ const { dbMocks } = vi.hoisted(() => ({
     insertedValues: [] as Record<string, unknown>[],
     conflictArgs: [] as Record<string, unknown>[],
     updateSetArgs: [] as Record<string, unknown>[],
+    // Predicates passed to .where() on select() and update() terminals. The
+    // mocked drizzle operators (and/eq/inArray below) build plain JSON sentinels,
+    // so tests can introspect that a query actually filters on partnerId/parseStatus
+    // — not merely that an empty result was seeded.
+    whereArgs: [] as unknown[],
   },
 }));
 
@@ -21,7 +26,8 @@ vi.mock('../db', () => ({
       from: vi.fn(() => {
         const result = () => dbMocks.selectResults.shift() ?? [];
         const chain: any = {
-          where: vi.fn(() => {
+          where: vi.fn((predicate: unknown) => {
+            dbMocks.whereArgs.push(predicate);
             const r = result();
             const orderByResult: any = Object.assign(
               // orderBy is awaitable on its own (statuses select terminates here)…
@@ -70,7 +76,8 @@ vi.mock('../db', () => ({
     update: vi.fn(() => ({
       set: vi.fn((vals: Record<string, unknown>) => {
         dbMocks.updateSetArgs.push(vals);
-        const where = () => {
+        const where = (predicate?: unknown) => {
+          dbMocks.whereArgs.push(predicate);
           const thenable: any = {
             returning: vi.fn(() => Promise.resolve(dbMocks.updateResult)),
             then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
@@ -83,6 +90,22 @@ vi.mock('../db', () => ({
     })),
   },
 }));
+
+// Mock the drizzle-orm comparison operators so .where() predicates are plain,
+// introspectable JSON sentinels. The schema mock below uses string column names
+// (e.g. ticketEmailInbound.partnerId === 'partnerId'), so eq('partnerId', 'p-1')
+// becomes { __op: 'eq', column: 'partnerId', value: 'p-1' }. and(...) nests the
+// children so a test can assert a query references a given column. Everything
+// else (asc/desc/count/sql) is preserved from the real module.
+vi.mock('drizzle-orm', async (importActual) => {
+  const actual = await importActual<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    and: vi.fn((...conds: unknown[]) => ({ __op: 'and', conds })),
+    eq: vi.fn((column: unknown, value: unknown) => ({ __op: 'eq', column, value })),
+    inArray: vi.fn((column: unknown, values: unknown) => ({ __op: 'inArray', column, values })),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   ticketStatuses: {
@@ -147,10 +170,38 @@ beforeEach(() => {
   dbMocks.insertedValues.length = 0;
   dbMocks.conflictArgs.length = 0;
   dbMocks.updateSetArgs.length = 0;
+  dbMocks.whereArgs.length = 0;
   dbMocks.insertErrors.length = 0;
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
 });
+
+// Recursively flatten a predicate sentinel (eq/inArray/and) into its leaf clauses.
+function flattenPredicate(p: unknown): Array<{ __op: string; column?: unknown; value?: unknown; values?: unknown }> {
+  if (!p || typeof p !== 'object') return [];
+  const node = p as { __op?: string; conds?: unknown[]; column?: unknown; value?: unknown; values?: unknown };
+  if (node.__op === 'and') return (node.conds ?? []).flatMap(flattenPredicate);
+  if (node.__op) return [node as { __op: string }];
+  return [];
+}
+
+// Does any captured .where() predicate filter on the given column?
+function whereHasColumn(predicate: unknown, column: string): boolean {
+  return flattenPredicate(predicate).some((c) => c.column === column);
+}
+
+// Does any captured .where() predicate carry an inArray filter on the column
+// against exactly the given value set (order-independent)?
+function whereHasInArray(predicate: unknown, column: string, expected: string[]): boolean {
+  return flattenPredicate(predicate).some(
+    (c) =>
+      c.__op === 'inArray' &&
+      c.column === column &&
+      Array.isArray(c.values) &&
+      (c.values as unknown[]).length === expected.length &&
+      expected.every((v) => (c.values as unknown[]).includes(v)),
+  );
+}
 
 describe('getTicketConfig', () => {
   it('merges priority defaults for unset priorities', async () => {
@@ -445,6 +496,10 @@ describe('listEmailInboundQueue', () => {
     expect(res.data).toHaveLength(1);
     expect(res.data[0]!.parseStatus).toBe('quarantined');
     expect(res.pagination).toEqual({ page: 1, limit: 50, total: 1 });
+    // The query filters on partnerId AND limits parseStatus to exactly the two
+    // review statuses — a widened filter (e.g. dropping the inArray) would fail.
+    expect(whereHasColumn(dbMocks.whereArgs[0], 'partnerId')).toBe(true);
+    expect(whereHasInArray(dbMocks.whereArgs[0], 'parseStatus', ['quarantined', 'failed'])).toBe(true);
   });
   it('caps limit at 100 and floors page at 1', async () => {
     dbMocks.selectResults.push([]); // rows
@@ -463,22 +518,74 @@ describe('convertEmailInbound', () => {
   beforeEach(() => createTicketMock.mockReset());
 
   it('creates a source:email ticket for the chosen org and links the row', async () => {
-    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { text: 'help' } }]); // row read
+    // raw is the UNTRANSFORMED Mailgun form body: stripped-text + full From header.
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { 'stripped-text': 'help me', from: '"Jane Doe" <jane@x.com>', sender: 'jane@x.com' } }]); // row read
     dbMocks.selectResults.push([{ id: 'o-1' }]); // org guard read
     dbMocks.updateResult = [{ id: 'r-1', fromAddress: 'jane@x.com', toAddress: 'acme@tickets.example.com', subject: 'printer', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
     createTicketMock.mockResolvedValue({ id: 't-9', internalNumber: 'T-2026-0007' });
     const row = await convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR);
+    // Body comes from stripped-text and the submitter name is parsed from the
+    // From header — NOT the non-existent raw.text / raw.fromName keys.
     expect(createTicketMock).toHaveBeenCalledWith(
-      expect.objectContaining({ orgId: 'o-1', source: 'email', submitterEmail: 'jane@x.com' }),
+      expect.objectContaining({ orgId: 'o-1', source: 'email', submitterEmail: 'jane@x.com', description: 'help me', submitterName: 'Jane Doe' }),
       ACTOR,
     );
     expect(row.ticketId).toBe('t-9');
     expect(row.parseStatus).toBe('created');
   });
+  it('falls back to body-plain when stripped-text is absent', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { 'body-plain': 'plain body only', from: 'jane@x.com' } }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = [{ id: 'r-1', fromAddress: 'jane@x.com', toAddress: null, subject: 'printer', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
+    createTicketMock.mockResolvedValue({ id: 't-9' });
+    await convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR);
+    // bare-address From header yields no display name → undefined.
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'plain body only', submitterName: undefined }),
+      ACTOR,
+    );
+  });
+  it('claims the row out of the review state BEFORE creating the ticket (claim-first ordering)', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { 'stripped-text': 'help' } }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = [{ id: 'r-1', fromAddress: 'jane@x.com', toAddress: null, subject: 'printer', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
+    createTicketMock.mockResolvedValue({ id: 't-9' });
+    await convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR);
+    // First UPDATE is the claim: set parse_status='created', gated on the row
+    // still being in a review status (quarantined/failed) and scoped to the partner.
+    expect(dbMocks.updateSetArgs[0]).toEqual({ parseStatus: 'created' });
+    const claimWhere = dbMocks.whereArgs.find((p) => whereHasInArray(p, 'parseStatus', ['quarantined', 'failed']));
+    expect(claimWhere).toBeDefined();
+    expect(whereHasColumn(claimWhere, 'partnerId')).toBe(true);
+    // Second UPDATE links the ticket id.
+    expect(dbMocks.updateSetArgs[1]).toEqual({ ticketId: 't-9' });
+  });
+  it('does NOT create a ticket when the claim UPDATE races to zero rows (raced dismiss)', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { 'stripped-text': 'help' } }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = []; // claim UPDATE affects 0 rows — a concurrent dismiss won the race
+    await expect(convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR)).rejects.toMatchObject({ code: 'INBOUND_ROW_NOT_FOUND', status: 404 });
+    // Critical: no ticket was created — the lost race never orphans a ticket.
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+  it('propagates a createTicket rejection without leaving the row half-updated', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { 'stripped-text': 'help' } }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = [{ id: 'r-1', fromAddress: 'jane@x.com', toAddress: null, subject: 'printer', parseStatus: 'created', error: null, ticketId: null, createdAt: new Date() }];
+    createTicketMock.mockRejectedValueOnce(new Error('ticket service boom'));
+    // The error propagates (non-service error) so handleServiceError rethrows and
+    // the request transaction rolls the claim back. Convert must reject.
+    await expect(convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR)).rejects.toThrow('ticket service boom');
+    // Only the claim UPDATE ran; the ticket-link UPDATE never fired.
+    expect(dbMocks.updateSetArgs).toHaveLength(1);
+    expect(dbMocks.updateSetArgs[0]).toEqual({ parseStatus: 'created' });
+  });
   it('throws INBOUND_ROW_NOT_FOUND when the row is not under this partner', async () => {
     dbMocks.selectResults.push([]); // scoped row read → []
     await expect(convertEmailInbound('p-1', 'r-x', 'o-1', ACTOR)).rejects.toMatchObject({ code: 'INBOUND_ROW_NOT_FOUND' });
     expect(createTicketMock).not.toHaveBeenCalled();
+    // The row read filtered on partnerId (defense-in-depth atop partner-axis RLS).
+    expect(whereHasColumn(dbMocks.whereArgs[0], 'partnerId')).toBe(true);
   });
   it('throws INBOUND_ROW_ALREADY_RESOLVED for a non-queue row (idempotency)', async () => {
     dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'created' }]);
@@ -489,6 +596,12 @@ describe('convertEmailInbound', () => {
     dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: null, subject: 'x', toAddress: 'acme@tickets.example.com', raw: {} }]);
     dbMocks.selectResults.push([{ id: 'o-1' }]); // org guard (still read before the sender check; order tolerant)
     await expect(convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR)).rejects.toMatchObject({ code: 'INBOUND_ROW_NO_SENDER' });
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+  it('throws INBOUND_ROW_NO_SENDER for a whitespace-only from address', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: '   ', subject: 'x', toAddress: 'acme@tickets.example.com', raw: {} }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]); // org guard
+    await expect(convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR)).rejects.toMatchObject({ code: 'INBOUND_ROW_NO_SENDER', status: 400 });
     expect(createTicketMock).not.toHaveBeenCalled();
   });
   it('throws ORG_NOT_ACCESSIBLE when the chosen org is not under the partner', async () => {
@@ -505,10 +618,16 @@ describe('dismissEmailInbound', () => {
     dbMocks.updateResult = [{ id: 'r-1', fromAddress: null, toAddress: null, subject: null, parseStatus: 'ignored', error: null, ticketId: null, createdAt: new Date() }];
     const row = await dismissEmailInbound('p-1', 'r-1');
     expect(row.parseStatus).toBe('ignored');
+    // Both the read and the UPDATE filter on partnerId (the tenant boundary).
+    expect(dbMocks.whereArgs.every((p) => whereHasColumn(p, 'partnerId'))).toBe(true);
+    expect(dbMocks.whereArgs.length).toBeGreaterThanOrEqual(2);
   });
   it('throws INBOUND_ROW_NOT_FOUND for a foreign-partner row', async () => {
     dbMocks.selectResults.push([]); // scoped read returns []
     await expect(dismissEmailInbound('p-1', 'r-x')).rejects.toMatchObject({ code: 'INBOUND_ROW_NOT_FOUND' });
+    // The read that returned [] actually filtered on partnerId — it isn't NOT_FOUND
+    // merely because an empty result was seeded.
+    expect(whereHasColumn(dbMocks.whereArgs[0], 'partnerId')).toBe(true);
   });
   it('throws INBOUND_ROW_ALREADY_RESOLVED for an already-ignored row', async () => {
     dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'ignored' }]);

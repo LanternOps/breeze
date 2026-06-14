@@ -20,6 +20,10 @@ interface QueueRow {
   fromAddress: string | null;
   toAddress: string | null;
   subject: string | null;
+  // The list endpoint only ever returns review-queue rows, so the union is the
+  // two review statuses. convert/dismiss responses carry the resolved status
+  // ('created'/'ignored') but the card intentionally discards those bodies and
+  // reloads the queue, so they never widen this type.
   parseStatus: 'quarantined' | 'failed';
   error: string | null;
   ticketId: string | null;

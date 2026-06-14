@@ -533,6 +533,23 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     };
   }
 
+  // Tenant-isolation guard: defaultTriageOrgId is stored verbatim, but the
+  // future auto-triage path will route mail INTO that org. A cross-partner id
+  // here would route a partner's inbound mail to an org outside their tenant.
+  // Validate it references an org in THIS partner (the read runs under the
+  // request RLS context, so the partner_id equality is the security boundary).
+  const triageOrgId = body.settings?.ticketing?.inbound?.defaultTriageOrgId;
+  if (typeof triageOrgId === 'string') {
+    const [orgOk] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, triageOrgId), eq(organizations.partnerId, auth.partnerId as string)))
+      .limit(1);
+    if (!orgOk) {
+      return c.json({ error: 'defaultTriageOrgId must reference an organization in your partner' }, 400);
+    }
+  }
+
   // Enable-gate: turning the allowlist on (empty -> non-empty) requires that
   // the API can actually see real client IPs, otherwise enforcement would
   // silently fail open (false security).
