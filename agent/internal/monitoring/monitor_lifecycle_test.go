@@ -8,6 +8,31 @@ import (
 
 // --- Lifecycle integration tests ---
 
+// waitForCallCount polls until the supplied counter reaches `want` (or more)
+// within a generous deadline, then returns the observed count. The immediate
+// check kicked off by ApplyConfig/Start runs asynchronously in the loop
+// goroutine, so a fixed real-clock sleep races that goroutine — on a busy CI
+// runner the check may not have fired yet when the sleep elapses (issue #1267).
+// Polling lets timing pressure only slow the test, never fail it.
+func waitForCallCount(t *testing.T, mu *sync.Mutex, callCount *int, want int) int {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		count := *callCount
+		mu.Unlock()
+
+		if count >= want {
+			return count
+		}
+		if time.Now().After(deadline) {
+			return count
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestMonitorRunsImmediateCheckOnStart(t *testing.T) {
 	var mu sync.Mutex
 	var callCount int
@@ -26,13 +51,9 @@ func TestMonitorRunsImmediateCheckOnStart(t *testing.T) {
 	}
 
 	m.ApplyConfig(cfg)
-	// Give the immediate check time to fire
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the async immediate check to fire instead of racing a fixed sleep.
+	count := waitForCallCount(t, &mu, &callCount, 1)
 	m.Stop()
-
-	mu.Lock()
-	count := callCount
-	mu.Unlock()
 
 	if count < 1 {
 		t.Fatalf("callCount = %d, want >= 1 (immediate check should have fired)", count)
@@ -56,7 +77,9 @@ func TestApplyConfigRestopsAndRestarts(t *testing.T) {
 		},
 	}
 	m.ApplyConfig(cfg1)
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the first ApplyConfig's immediate check before re-applying, so the
+	// second config can't clobber the first check before it runs.
+	waitForCallCount(t, &mu, &callCount, 1)
 
 	// Re-apply with different config — should stop and restart
 	cfg2 := MonitorConfig{
@@ -66,12 +89,9 @@ func TestApplyConfigRestopsAndRestarts(t *testing.T) {
 		},
 	}
 	m.ApplyConfig(cfg2)
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the second ApplyConfig's immediate check (total >= 2).
+	count := waitForCallCount(t, &mu, &callCount, 2)
 	m.Stop()
-
-	mu.Lock()
-	count := callCount
-	mu.Unlock()
 
 	// Should have fired at least twice (one immediate check per ApplyConfig)
 	if count < 2 {

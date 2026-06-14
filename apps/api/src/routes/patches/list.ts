@@ -1,11 +1,32 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc, type SQL } from 'drizzle-orm';
+import { and, eq, sql, asc, desc, type SQL, type Column } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
 import { getPagination, inferPatchOs } from './helpers';
+
+// Whitelist mapping sort keys (validated by listPatchesSchema) to real columns.
+// Never pass raw user input into orderBy — only keys present here are honored.
+//
+// NOTE (sort divergence — read before wiring the web to these params):
+//   - `severity` here sorts ALPHABETICALLY (asc(patches.severity)). The web
+//     (PatchList.tsx severityRank/approvalRank) sorts by SEMANTIC priority
+//     (critical=0, important=1, moderate=2, low=3). Whoever later sends
+//     sortBy/sortDir from fetchPatches must reconcile these — either map the
+//     web's priority order onto a CASE expression here, or drop the client-side
+//     rank — or severity sort will silently change meaning.
+//   - The web also exposes `os` and `approvalStatus` as SortKeys with NO column
+//     in this map; they'd need server-side support (osTypes / patch_approvals
+//     join) before they can be pushed down.
+const PATCH_SORT_COLUMNS: Record<string, Column> = {
+  title: patches.title,
+  severity: patches.severity,
+  source: patches.source,
+  releaseDate: patches.releaseDate,
+  createdAt: patches.createdAt
+};
 
 export const listRoutes = new Hono();
 
@@ -57,6 +78,21 @@ listRoutes.get(
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
+    // Resolve sort column/direction from the whitelisted map. Defaults preserve
+    // the prior newest-first behavior when no sort params are supplied. The
+    // `?? createdAt` fallback is defensive — query.sortBy is already constrained
+    // to the whitelist keys by listPatchesSchema, so the lookup never misses.
+    //
+    // sortBy/sortDir are API-ready but NOT yet consumed by the web client: the
+    // patches page (apps/web/.../PatchesPage.tsx) fetches a fixed `limit=200`
+    // and sorts/paginates entirely client-side, so this server-side ordering is
+    // currently exercised only by direct API callers. Wiring the web to send
+    // these is a follow-up — see the severity-divergence NOTE on
+    // PATCH_SORT_COLUMNS above before doing so.
+    const sortColumn = (query.sortBy && PATCH_SORT_COLUMNS[query.sortBy]) || patches.createdAt;
+    const sortDirection = query.sortDir ?? (query.sortBy ? 'asc' : 'desc');
+    const orderByClause = sortDirection === 'asc' ? asc(sortColumn) : desc(sortColumn);
+
     // Get patches with optional approval status for the org
     const patchList = await db
       .select({
@@ -86,7 +122,7 @@ listRoutes.get(
       })
       .from(patches)
       .where(whereClause)
-      .orderBy(desc(patches.createdAt))
+      .orderBy(orderByClause)
       .limit(limit)
       .offset(offset);
 

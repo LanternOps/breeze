@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
 import { verifyToken } from '../services/jwt';
+import { shouldActivatePendingPartner, activatePartnerRow } from '../services/partnerActivation';
 
 export async function partnerGuard(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
@@ -36,6 +37,9 @@ export async function partnerGuard(c: Context, next: Next) {
         .select({
           status: partners.status,
           settings: partners.settings,
+          emailVerifiedAt: partners.emailVerifiedAt,
+          paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+          deletedAt: partners.deletedAt,
         })
         .from(partners)
         .where(eq(partners.id, partnerId!))
@@ -62,6 +66,30 @@ export async function partnerGuard(c: Context, next: Next) {
   }
 
   if (partner.status !== 'active') {
+    // Activation reconciliation (#718). Covers the verify-then-pay ordering:
+    // the partner verified email first, then breeze-billing attached payment
+    // but — through a webhook / idempotency gap — never flipped status. Both
+    // preconditions are now independently met, so self-heal to `active` on
+    // this request rather than stranding the tenant on the billing page
+    // forever. Strictly gated on `payment_method_attached_at` (a confirmed
+    // Stripe capture) AND `email_verified_at`; never time-based, and only for
+    // `pending` (suspended/churned/soft-deleted are never resurrected here).
+    if (shouldActivatePendingPartner(partner)) {
+      try {
+        await withSystemDbAccessContext(() => activatePartnerRow(db, partnerId!));
+        console.warn(`[PartnerGuard] reconciled stranded pending partner ${partnerId} → active (#718)`);
+        return next();
+      } catch (err) {
+        // Reconciliation is best-effort: if the activation write fails we fall
+        // through to the normal inactive response rather than leaking through.
+        // The next request retries. Fail closed.
+        console.error(
+          `[PartnerGuard] activation reconciliation failed for partner ${partnerId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
     const settings = (partner.settings ?? {}) as Record<string, unknown>;
     return c.json({
       error: 'Account inactive',

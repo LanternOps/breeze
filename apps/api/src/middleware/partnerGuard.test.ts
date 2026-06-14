@@ -5,6 +5,9 @@ vi.mock('../services/jwt', () => ({
 }));
 
 const limitMock = vi.fn();
+const updateWhereMock = vi.fn().mockResolvedValue(undefined);
+const updateSetMock = vi.fn((_values: Record<string, unknown>) => ({ where: updateWhereMock }));
+const updateMock = vi.fn((_table: unknown) => ({ set: updateSetMock }));
 vi.mock('../db', () => ({
   db: {
     select: () => ({
@@ -14,6 +17,7 @@ vi.mock('../db', () => ({
         }),
       }),
     }),
+    update: (table: unknown) => updateMock(table),
   },
   // Passthrough — production wraps the partner lookup so that RLS doesn't
   // shadow the row under `breeze_app` (the guard fires before authMiddleware
@@ -22,7 +26,14 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  partners: { id: { name: 'id' }, status: { name: 'status' }, settings: { name: 'settings' } },
+  partners: {
+    id: { name: 'id' },
+    status: { name: 'status' },
+    settings: { name: 'settings' },
+    emailVerifiedAt: { name: 'email_verified_at' },
+    paymentMethodAttachedAt: { name: 'payment_method_attached_at' },
+    deletedAt: { name: 'deleted_at' },
+  },
 }));
 
 import { Hono } from 'hono';
@@ -102,6 +113,115 @@ describe('partnerGuard — fail closed (SR-005)', () => {
       headers: { Authorization: 'Bearer partner-token' },
     });
     expect(res.status).toBe(200);
+  });
+});
+
+// Issue #718 — activation reconciliation for the verify-then-pay ordering.
+// A partner that verified email first and then had payment attached (but was
+// never flipped to active by breeze-billing) must self-heal to active on the
+// next authenticated request rather than being stranded on the billing page.
+describe('partnerGuard — activation reconciliation (#718)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateWhereMock.mockResolvedValue(undefined);
+  });
+
+  it('reconciles a stranded pending partner (email verified + payment attached) to active and lets the request through', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValueOnce([
+      {
+        status: 'pending',
+        settings: {},
+        emailVerifiedAt: new Date('2026-06-13T00:00:00Z'),
+        paymentMethodAttachedAt: new Date('2026-06-13T00:05:00Z'),
+        deletedAt: null,
+      },
+    ]);
+    const res = await makeApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(200);
+    // The activation UPDATE must have been issued.
+    expect(updateMock).toHaveBeenCalledOnce();
+    const setArg = updateSetMock.mock.calls[0]![0]! as Record<string, unknown>;
+    expect(setArg.status).toBe('active');
+  });
+
+  it('does NOT reconcile a pending partner with email verified but NO payment attached', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValueOnce([
+      {
+        status: 'pending',
+        settings: { statusMessage: 'Finish payment' },
+        emailVerifiedAt: new Date('2026-06-13T00:00:00Z'),
+        paymentMethodAttachedAt: null,
+        deletedAt: null,
+      },
+    ]);
+    const res = await makeApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code?: string; message?: string };
+    expect(body.code).toBe('PARTNER_INACTIVE');
+    expect(body.message).toBe('Finish payment');
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reconcile a pending partner with payment attached but email NOT verified (gate holds)', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValueOnce([
+      {
+        status: 'pending',
+        settings: {},
+        emailVerifiedAt: null,
+        paymentMethodAttachedAt: new Date('2026-06-13T00:05:00Z'),
+        deletedAt: null,
+      },
+    ]);
+    const res = await makeApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(403);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('never reconciles a suspended partner even with both preconditions met', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValueOnce([
+      {
+        status: 'suspended',
+        settings: {},
+        emailVerifiedAt: new Date('2026-06-13T00:00:00Z'),
+        paymentMethodAttachedAt: new Date('2026-06-13T00:05:00Z'),
+        deletedAt: null,
+      },
+    ]);
+    const res = await makeApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(403);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed (403 PARTNER_INACTIVE) when the activation write throws', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValueOnce([
+      {
+        status: 'pending',
+        settings: {},
+        emailVerifiedAt: new Date('2026-06-13T00:00:00Z'),
+        paymentMethodAttachedAt: new Date('2026-06-13T00:05:00Z'),
+        deletedAt: null,
+      },
+    ]);
+    updateWhereMock.mockRejectedValueOnce(new Error('write failed'));
+    const res = await makeApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('PARTNER_INACTIVE');
   });
 });
 

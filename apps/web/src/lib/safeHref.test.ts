@@ -96,4 +96,22 @@ describe('isDocsUrl', () => {
     // DOCS_BASE_URL is https; the http variant is a different origin.
     expect(isDocsUrl('http://docs.breezermm.com/agents/install')).toBe(false);
   });
+
+  it('trusts a self-hosted docs origin supplied via PUBLIC_DOCS_URL', () => {
+    const selfHosted = 'https://docs.example.com';
+    expect(isDocsUrl('https://docs.example.com/getting-started/', selfHosted)).toBe(true);
+    // The canonical hosted origin remains trusted alongside the self-hosted one.
+    expect(isDocsUrl(`${DOCS_BASE_URL}/agents/install`, selfHosted)).toBe(true);
+  });
+
+  it('keeps rejecting lookalikes of the self-hosted docs origin (exact origin match)', () => {
+    const selfHosted = 'https://docs.example.com';
+    expect(isDocsUrl('https://docs.example.com.evil.com/phish', selfHosted)).toBe(false);
+    expect(isDocsUrl('https://docs.example.com@evil.com/x', selfHosted)).toBe(false);
+    expect(isDocsUrl('http://docs.example.com/x', selfHosted)).toBe(false); // scheme differs
+  });
+
+  it('rejects an arbitrary origin when no self-hosted docs origin is configured', () => {
+    expect(isDocsUrl('https://docs.example.com/x', null)).toBe(false);
+  });
 });

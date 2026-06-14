@@ -75,6 +75,14 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((_c: unknown, next: () => unknown) => next()),
 }));
 
+// NOTE: auditUserLoginFailure is NOT a bare vi.fn() here. The real helper
+// (apps/api/src/routes/auth/helpers.ts) feeds the anomaly metric by calling
+// recordFailedLogin() exactly once internally. If we stubbed it out, the
+// login handler could re-add its own recordFailedLogin() call on the same
+// path and we'd never notice the double-count. The mock below mirrors the
+// real helper's SINGLE internal emission, so the "called exactly once"
+// assertions in the inactive-tenant/account tests will fail if anyone
+// reintroduces a redundant recordFailedLogin() in login.ts (#719 regression).
 vi.mock('./helpers', () => ({
   getClientIP: vi.fn(() => '203.0.113.10'),
   getClientRateLimitKey: vi.fn(() => 'test-client'),
@@ -95,7 +103,13 @@ vi.mock('./helpers', () => ({
     orgId: null,
     scope: 'partner',
   })),
-  auditUserLoginFailure: vi.fn(),
+  auditUserLoginFailure: vi.fn(
+    async (_c: unknown, opts: { reason: string }) => {
+      // Faithful stand-in for the real helper's single internal emission.
+      const { recordFailedLogin } = await import('../../services/anomalyMetrics');
+      recordFailedLogin(opts.reason);
+    },
+  ),
   auditLogin: vi.fn(),
   userRequiresSetup: vi.fn(() => false),
 }));
@@ -127,6 +141,9 @@ import { loginRoutes } from './login';
 import { db } from '../../db';
 import { createTokenPair } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
+import { recordFailedLogin } from '../../services/anomalyMetrics';
+import { TenantInactiveError } from '../../services/tenantStatus';
+import { resolveCurrentUserTokenContext } from './helpers';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -228,5 +245,80 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
     expect(body.user.isPlatformAdmin).toBe(false);
+  });
+});
+
+// #719 residual 2: inactive-account and inactive-tenant login denials must
+// emit an anomaly-metric signal (so a spike is alertable) WITHOUT changing the
+// generic 401 the client sees (so nothing leaks for enumeration).
+describe('POST /login — inactive-tenant observability signal (#719)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+  });
+
+  it('counts an inactive-account denial as account_inactive and still returns a generic 401', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'sus@msp.com',
+      name: 'Suspended User',
+      passwordHash: 'password-hash',
+      status: 'suspended',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+
+    const res = await postLogin({ email: 'sus@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, unknown>;
+    // Generic body — no account/tenant status leaks.
+    expect(body).toMatchObject({ error: 'Invalid email or password' });
+    expect(JSON.stringify(body)).not.toContain('suspended');
+    expect(recordFailedLogin).toHaveBeenCalledWith('account_inactive');
+    // Exactly once — a single inactive-account attempt must not double-count.
+    // The metric is emitted ONLY via auditUserLoginFailure's internal
+    // recordFailedLogin call; login.ts must not add its own (#719 regression).
+    expect(recordFailedLogin).toHaveBeenCalledTimes(1);
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('counts an inactive-tenant denial as tenant_inactive and still returns a generic 401', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'trapped@msp.com',
+      name: 'Trapped User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    // The user is active, but their tenant (partner/org) is not — the context
+    // resolver throws TenantInactiveError, which the handler maps to a generic
+    // 401 plus the tenant_inactive metric.
+    vi.mocked(resolveCurrentUserTokenContext).mockRejectedValueOnce(
+      new TenantInactiveError('Partner is not active'),
+    );
+
+    const res = await postLogin({ email: 'trapped@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ error: 'Invalid email or password' });
+    expect(recordFailedLogin).toHaveBeenCalledWith('tenant_inactive');
+    // Exactly once — a single inactive-tenant attempt must not double-count.
+    // The metric is emitted ONLY via auditUserLoginFailure's internal
+    // recordFailedLogin call; login.ts must not add its own (#719 regression).
+    expect(recordFailedLogin).toHaveBeenCalledTimes(1);
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 });

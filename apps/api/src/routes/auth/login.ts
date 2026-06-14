@@ -332,6 +332,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // used for invalid creds, but keep the rich audit trail (status, reason)
   // so ops can still see why a real user was bounced.
   if (user.status !== 'active') {
+    // #719 residual 2: auditUserLoginFailure feeds the anomaly metric
+    // (recordFailedLogin) internally, so repeated inactive-account login
+    // denials are alertable WITHOUT double-counting. Server-side counter
+    // only — the response stays a generic 401, so this leaks nothing to
+    // the client.
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
@@ -351,6 +356,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     await assertPasswordAuthAllowedBySso(context);
   } catch (err) {
     if (!(err instanceof TenantInactiveError) && !(err instanceof SsoPasswordAuthRequiredError)) throw err;
+    // #719 residual 2: auditUserLoginFailure feeds the anomaly metric
+    // (recordFailedLogin) internally, so a sudden spike in inactive-tenant
+    // denials (e.g. a billing-state change trapping a cohort of users) is
+    // alertable WITHOUT double-counting. Metric only — the client still
+    // gets the generic 401.
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,

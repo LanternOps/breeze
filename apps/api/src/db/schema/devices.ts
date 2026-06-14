@@ -183,6 +183,25 @@ export const deviceMetrics = pgTable('device_metrics', {
   pk: primaryKey({ columns: [table.deviceId, table.timestamp] })
 }));
 
+export type TopProcess = {
+  name: string;
+  pid: number;
+  cpu: number;
+  ramMb: number;
+  diskBps?: number;
+  netBps?: number;
+};
+
+export const deviceProcessSamples = pgTable('device_process_samples', {
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  timestamp: timestamp('timestamp', { withTimezone: true }).notNull(),
+  agentTimestamp: timestamp('agent_timestamp', { withTimezone: true }),
+  topProcesses: jsonb('top_processes').$type<TopProcess[]>().notNull()
+}, (table) => ({
+  pk: primaryKey({ columns: [table.deviceId, table.timestamp] })
+}));
+
 export const deviceSoftware = pgTable('device_software', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
