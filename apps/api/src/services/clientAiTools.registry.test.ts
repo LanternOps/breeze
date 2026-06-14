@@ -95,11 +95,9 @@ describe('host-keyed registry map', () => {
     expect(CLIENT_TOOL_REGISTRY).toBe(EXCEL_CLIENT_TOOL_REGISTRY);
   });
 
-  it('powerpoint/outlook registries are empty (unsupported until built)', () => {
-    expect(Object.keys(CLIENT_TOOL_REGISTRIES.powerpoint)).toHaveLength(0);
+  it('outlook registry is empty (unsupported until built)', () => {
     expect(Object.keys(CLIENT_TOOL_REGISTRIES.outlook)).toHaveLength(0);
     expect(isClientHostSupported('excel')).toBe(true);
-    expect(isClientHostSupported('powerpoint')).toBe(false);
     expect(isClientHostSupported('outlook')).toBe(false);
   });
 
@@ -170,6 +168,70 @@ describe('word', () => {
     expect(readonly.sort()).toEqual([
       'mcp__word__get_document_overview',
       'mcp__word__read_selection',
+    ]);
+  });
+});
+
+const POWERPOINT_PINNED_NAMES = [
+  'add_slide',
+  'format_selection',
+  'get_presentation_overview',
+  'insert_text_box',
+  'read_selection',
+];
+
+const POWERPOINT_PINNED_MUTATING = ['add_slide', 'format_selection', 'insert_text_box'];
+
+describe('powerpoint', () => {
+  it('contains exactly the 5 baseline PowerPoint tools', () => {
+    expect(Object.keys(CLIENT_TOOL_REGISTRIES.powerpoint).sort()).toEqual(POWERPOINT_PINNED_NAMES);
+    expect(clientToolNames('powerpoint').slice().sort()).toEqual(POWERPOINT_PINNED_NAMES);
+  });
+
+  it('flags exactly the 3 write tools as mutating', () => {
+    const mutating = Object.entries(CLIENT_TOOL_REGISTRIES.powerpoint)
+      .filter(([, def]) => def.mutating)
+      .map(([name]) => name)
+      .sort();
+    expect(mutating).toEqual(POWERPOINT_PINNED_MUTATING);
+  });
+
+  it('is supported once the registry is populated', () => {
+    expect(isClientHostSupported('powerpoint')).toBe(true);
+  });
+
+  it('every tool has a non-empty description and an inputSchema object', () => {
+    for (const def of Object.values(CLIENT_TOOL_REGISTRIES.powerpoint)) {
+      expect(def.description.length).toBeGreaterThan(20);
+      expect(typeof def.inputSchema).toBe('object');
+    }
+  });
+
+  it('uses the mcp__powerpoint__ namespace for every tool', () => {
+    expect(clientMcpServerName('powerpoint')).toBe('powerpoint');
+    expect(clientMcpToolPrefix('powerpoint')).toBe('mcp__powerpoint__');
+    const names = clientMcpToolNames('powerpoint');
+    expect(names).toHaveLength(5);
+    for (const name of names) {
+      expect(name.startsWith('mcp__powerpoint__')).toBe(true);
+      expect(BREEZE_MCP_TOOL_NAMES).not.toContain(name);
+    }
+  });
+
+  it('shares no tool name with the technician registries', () => {
+    for (const name of clientToolNames('powerpoint')) {
+      expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBeUndefined();
+      expect(aiTools.has(name)).toBe(false);
+    }
+  });
+
+  it('readwrite exposes all 5 tools; readonly strips the 3 mutating (length 2)', () => {
+    expect(clientMcpToolNamesForWriteMode('powerpoint', 'readwrite')).toHaveLength(5);
+    const readonly = clientMcpToolNamesForWriteMode('powerpoint', 'readonly');
+    expect(readonly).toHaveLength(2);
+    expect(readonly.sort()).toEqual([
+      'mcp__powerpoint__get_presentation_overview',
+      'mcp__powerpoint__read_selection',
     ]);
   });
 });

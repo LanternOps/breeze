@@ -12,6 +12,7 @@ import {
   DEFAULT_CLIENT_AI_MODEL,
   EXCEL_CLIENT_SYSTEM_PROMPT,
   WORD_CLIENT_SYSTEM_PROMPT,
+  POWERPOINT_CLIENT_SYSTEM_PROMPT,
   buildExcelClientSystemPrompt,
   buildClientSystemPrompt,
   buildClientAuthContext,
@@ -153,8 +154,16 @@ describe('buildClientSystemPrompt', () => {
     expect(p.startsWith(WORD_CLIENT_SYSTEM_PROMPT)).toBe(true);
     expect(p).toContain('READ-ONLY');
   });
-  it('throws fail-loud for a host with no prompt (e.g. powerpoint in Phase 4)', () => {
-    expect(() => buildClientSystemPrompt('powerpoint', 'readwrite')).toThrow(/unsupported|no prompt/i);
+  it('returns the PowerPoint prompt for the powerpoint host (readwrite)', () => {
+    expect(buildClientSystemPrompt('powerpoint', 'readwrite')).toBe(POWERPOINT_CLIENT_SYSTEM_PROMPT);
+  });
+  it('appends the read-only addendum under readonly for powerpoint', () => {
+    const p = buildClientSystemPrompt('powerpoint', 'readonly');
+    expect(p.startsWith(POWERPOINT_CLIENT_SYSTEM_PROMPT)).toBe(true);
+    expect(p).toContain('READ-ONLY');
+  });
+  it('throws fail-loud for a host with no prompt (e.g. outlook in Phase 5)', () => {
+    expect(() => buildClientSystemPrompt('outlook', 'readwrite')).toThrow(/unsupported|no prompt/i);
   });
 });
 
@@ -176,6 +185,28 @@ describe('WORD_CLIENT_SYSTEM_PROMPT', () => {
       'find_replace',
     ]) {
       expect(WORD_CLIENT_SYSTEM_PROMPT).toContain(tool);
+    }
+  });
+});
+
+describe('POWERPOINT_CLIENT_SYSTEM_PROMPT', () => {
+  it('pins the presentation-only scope and the no-RMM-claims rule', () => {
+    expect(POWERPOINT_CLIENT_SYSTEM_PROMPT).toContain('Microsoft PowerPoint');
+    expect(POWERPOINT_CLIENT_SYSTEM_PROMPT).toContain('never claim or imply such capabilities');
+    expect(POWERPOINT_CLIENT_SYSTEM_PROMPT).toContain('click Apply');
+    expect(POWERPOINT_CLIENT_SYSTEM_PROMPT).toContain('[REDACTED:');
+    expect(POWERPOINT_CLIENT_SYSTEM_PROMPT).toContain('Be concise');
+  });
+
+  it('advertises the 5 baseline PowerPoint tools', () => {
+    for (const tool of [
+      'get_presentation_overview',
+      'read_selection',
+      'add_slide',
+      'insert_text_box',
+      'format_selection',
+    ]) {
+      expect(POWERPOINT_CLIENT_SYSTEM_PROMPT).toContain(tool);
     }
   });
 });

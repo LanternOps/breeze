@@ -534,10 +534,13 @@ clientAiSessionRoutes.post(
       return dlpBlockedResponse(c, auth, sessionId, textResult.blockReason);
     }
 
-    // ── workbookContext cells leave Breeze for the provider too — same chokepoint ──
+    // ── workbookContext leaves Breeze for the provider too — same chokepoint ──
+    // Grid hosts (Excel) ship `cells`; grid-less hosts (Word/PowerPoint/Outlook)
+    // ship linear `text`. Both must be DLP-scanned before egress.
     const redactions: DlpRedactionEvent[] = [...textResult.redactions];
     const wb = body.workbookContext;
     let contextCells: unknown[][] | undefined;
+    let contextText: string | undefined;
     if (wb && wb.kind !== 'none' && wb.cells) {
       const cellsResult = await applyDlp({
         cells: wb.cells,
@@ -549,6 +552,17 @@ clientAiSessionRoutes.post(
       }
       redactions.push(...cellsResult.redactions);
       contextCells = cellsResult.cells;
+    } else if (wb && wb.kind !== 'none' && wb.text) {
+      const wbTextResult = await applyDlp({
+        text: wb.text,
+        dlpConfig: policy.dlpConfig,
+        orgId: auth.orgId,
+      });
+      if (wbTextResult.action === 'block') {
+        return dlpBlockedResponse(c, auth, sessionId, wbTextResult.blockReason);
+      }
+      redactions.push(...wbTextResult.redactions);
+      contextText = wbTextResult.text ?? wb.text;
     }
 
     const redactedContent = textResult.text ?? body.content;
@@ -558,9 +572,10 @@ clientAiSessionRoutes.post(
         wb.kind === 'selection'
           ? `Current selection${wb.address ? ` (${wb.address})` : ''}`
           : `Sheet "${wb.sheetName ?? 'unknown'}"`;
-      modelContent += `\n\n[Workbook context — ${label}]\n${
-        contextCells ? JSON.stringify(contextCells) : '(no cell data provided)'
-      }`;
+      const contextBody = contextCells
+        ? JSON.stringify(contextCells)
+        : (contextText ?? '(no cell data provided)');
+      modelContent += `\n\n[Workbook context — ${label}]\n${contextBody}`;
     }
 
     let activeSession: ActiveSession;
@@ -591,6 +606,8 @@ clientAiSessionRoutes.post(
         address: wb.address ?? null,
         sheetName: wb.sheetName ?? null,
         cells: contextCells ?? null,
+        // Redacted linear-text form (grid-less hosts) — raw value never stored.
+        text: contextText ?? null,
       });
     }
 

@@ -81,7 +81,10 @@ vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
 
 import { clientAiSessionRoutes } from './sessions';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
-import { WORD_CLIENT_SYSTEM_PROMPT } from '../../services/clientAiSessions';
+import {
+  WORD_CLIENT_SYSTEM_PROMPT,
+  POWERPOINT_CLIENT_SYSTEM_PROMPT,
+} from '../../services/clientAiSessions';
 
 const EXCEL_SESSION_ROW = {
   id: SESSION_ID, orgId: ORG_ID, clientUserId: CLIENT_USER_ID, type: 'excel_client',
@@ -187,14 +190,28 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
     );
   });
 
-  it('rejects powerpoint with 400 unsupported_host (still unpopulated in Phase 4)', async () => {
+  it('creates a powerpoint_client session for host:"powerpoint" (Phase 5 seam) with the PowerPoint prompt', async () => {
+    const valuesSpy = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: SESSION_ID }])) }));
+    dbInsertMock.mockImplementation(() => ({ values: valuesSpy }));
+
     const res = await buildApp().request('/client-ai/sessions', {
       method: 'POST', body: JSON.stringify({ host: 'powerpoint' }), headers: AUTHED,
     });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe('unsupported_host');
-    // No session is persisted for a host the server cannot serve yet.
-    expect(dbInsertMock).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    // Stored type encodes the host; the stored prompt is the PowerPoint system
+    // prompt (default writeMode 'readwrite' ⇒ no readonly addendum).
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'powerpoint_client',
+      systemPrompt: POWERPOINT_CLIENT_SYSTEM_PROMPT,
+    }));
+    // The create audit records the resolved host.
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai.client_session.create',
+        details: expect.objectContaining({ host: 'powerpoint' }),
+      }),
+    );
   });
 
   it('rejects outlook with 400 unsupported_host (still unpopulated in Phase 4)', async () => {
@@ -207,11 +224,12 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
 });
 
 describe('use-path host guard (ensureActiveClientSession)', () => {
-  it('refuses to start a stored powerpoint_client session (400 on /messages)', async () => {
-    // A powerpoint_client row exists, but PowerPoint has no tool registry/prompt
+  it('refuses to start a stored outlook_client session (400 on /messages)', async () => {
+    // An outlook_client row exists, but Outlook has no tool registry/prompt
     // yet — the use path must fail loud, not build a zero-tool MCP server.
-    // (Word is now fully supported in Phase 4, so it is no longer the fail-loud host.)
-    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'powerpoint_client' }]));
+    // (PowerPoint is now fully supported in Phase 5, so it is no longer the
+    // fail-loud host; Outlook is the remaining still-unpopulated baton.)
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'outlook_client' }]));
     applyDlpMock.mockImplementation(async (input: { text?: string; cells?: unknown[][] }) => ({
       action: 'allow',
       ...(input.text !== undefined ? { text: input.text } : {}),
@@ -227,8 +245,8 @@ describe('use-path host guard (ensureActiveClientSession)', () => {
     expect(managerMock.getOrCreate).not.toHaveBeenCalled();
   });
 
-  it('refuses to open the SSE channel for a stored powerpoint_client session (400 on /events)', async () => {
-    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'powerpoint_client' }]));
+  it('refuses to open the SSE channel for a stored outlook_client session (400 on /events)', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'outlook_client' }]));
 
     const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/events`, { headers: AUTHED });
     expect(res.status).toBe(400);
