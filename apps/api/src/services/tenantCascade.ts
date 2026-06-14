@@ -73,6 +73,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'audit_baseline_apply_approvals',
   'audit_baseline_results',
   'audit_baselines',
+  'audit_chain_anchors',
   'audit_log_chain',
   'audit_logs',
   'audit_policy_states',
@@ -123,6 +124,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_metrics',
   'device_network',
   'device_patches',
+  'device_process_samples',
   'device_registry_state',
   'device_reliability',
   'device_reliability_history',
@@ -279,7 +281,7 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
  * to DELETE. These are gated by the audit_log_immutable trigger and
  * the per-role DELETE grant established in migration 2026-05-25-i.
  */
-const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>(['audit_logs', 'audit_log_chain']);
+const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>(['audit_logs', 'audit_log_chain', 'audit_chain_anchors']);
 
 interface FkEdge {
   // SQL aliases are snake_case (postgres-js does not auto-camelCase).

@@ -100,7 +100,8 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
-  'device_metrics', 'device_network', 'device_patches', 'device_registry_state',
+  'device_metrics', 'device_network', 'device_patches',
+  'device_process_samples', 'device_registry_state',
   'device_reliability', 'device_reliability_history', 'device_sessions',
   'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
@@ -199,6 +200,7 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
+  'device_process_samples',
   // Portal & integrations (tickets are detached, not deleted —
   // see DEVICE_DETACH_DEVICE_ID_TABLES)
   'psa_ticket_mappings', 'asset_checkouts',

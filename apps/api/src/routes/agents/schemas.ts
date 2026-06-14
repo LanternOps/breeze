@@ -169,6 +169,22 @@ export const heartbeatSchema = z.object({
 });
 
 // ============================================
+// Process Samples
+// ============================================
+
+export const processSampleSchema = z.object({
+  timestamp: z.string().datetime(),
+  processes: z.array(z.object({
+    name: z.string().min(1).max(256),
+    pid: z.number().int().min(0),
+    cpu: z.number().min(0),
+    ramMb: z.number().min(0),
+    diskBps: z.number().min(0).optional(),
+    netBps: z.number().min(0).optional()
+  })).max(16)
+});
+
+// ============================================
 // Commands
 // ============================================
 
