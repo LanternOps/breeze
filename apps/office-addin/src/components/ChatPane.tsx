@@ -95,7 +95,10 @@ export function ChatPane({ session }: { session: ClientSession }) {
       />
       {empty && (
         <>
-          <QuickActions onSelect={(prompt) => void controller.send(prompt)} />
+          <QuickActions
+            capture={excelHostAdapter.captureContext.bind(null, 'selection')}
+            onSelect={(prompt) => void controller.send(prompt)}
+          />
           <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />
         </>
       )}
@@ -110,6 +113,8 @@ export function ChatPane({ session }: { session: ClientSession }) {
         draft={state.draft}
         busy={state.busy}
         contextKind={state.contextKind}
+        captureSelectionAddress={excelHostAdapter.captureSelectionAddress}
+        subscribeSelectionChanged={excelHostAdapter.subscribeSelectionChanged}
         onDraftChange={(text) => controller.setDraft(text)}
         onContextKindChange={(kind) => controller.setContextKind(kind)}
         onSend={() => void controller.send()}

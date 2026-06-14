@@ -12,6 +12,7 @@
 import { buildWritePreview } from '../approval/buildPreview';
 import { captureWorkbookContext, captureWorkbookName } from '../chat/captureContext';
 import { MUTATING_TOOLS, TOOL_EXECUTORS } from '../tools/dispatcher';
+import { captureExcelSelectionAddress, subscribeExcelSelectionChanged } from './excelSelection';
 import type { HostAdapter } from './types';
 
 export const excelHostAdapter: HostAdapter = {
@@ -20,4 +21,6 @@ export const excelHostAdapter: HostAdapter = {
   toolExecutors: TOOL_EXECUTORS,
   mutatingTools: MUTATING_TOOLS,
   buildPreview: buildWritePreview,
+  captureSelectionAddress: captureExcelSelectionAddress,
+  subscribeSelectionChanged: subscribeExcelSelectionChanged,
 };

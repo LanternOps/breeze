@@ -166,6 +166,8 @@ describe('ChatController — send', () => {
     const fakeHost = {
       captureContext: async () => undefined,
       captureName: async () => undefined,
+      captureSelectionAddress: async () => undefined,
+      subscribeSelectionChanged: () => () => {},
       toolExecutors: {
         echo: async (input: Record<string, unknown>) => {
           executed.push(String(input.value));

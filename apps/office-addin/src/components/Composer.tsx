@@ -12,6 +12,8 @@ export function Composer({
   draft,
   busy,
   contextKind,
+  captureSelectionAddress,
+  subscribeSelectionChanged,
   onDraftChange,
   onContextKindChange,
   onSend,
@@ -19,11 +21,18 @@ export function Composer({
   draft: string;
   busy: boolean;
   contextKind: WorkbookContextKind;
+  // Selection fns are threaded from ChatPane (the Excel adapter today) so the
+  // composer stays host-neutral and never imports `Excel.*` or the concrete host.
+  captureSelectionAddress: () => Promise<string | undefined>;
+  subscribeSelectionChanged: (cb: () => void) => () => void;
   onDraftChange: (text: string) => void;
   onContextKindChange: (kind: WorkbookContextKind) => void;
   onSend: () => void;
 }) {
-  const selection = useSelectionAddress();
+  const selection = useSelectionAddress({
+    captureSelectionAddress,
+    subscribeSelectionChanged,
+  });
   const sheetName = selection ? parseAddress(selection).sheet : null;
   const chip =
     contextKind === 'none'

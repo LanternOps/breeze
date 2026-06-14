@@ -913,12 +913,35 @@ export function installOfficeMock(): MockWorkbookState {
       },
       document: {
         addHandlerAsync: (
-          _type: string,
+          type: string,
           handler: () => void,
           done?: (result: { status: string }) => void,
         ) => {
-          state.selectionHandlers.push(handler);
+          // Real Office only invokes a handler for the event it was registered
+          // under, so only retain DocumentSelectionChanged handlers — a wrong
+          // EventType wiring then registers nothing and its callback never fires.
+          if (type === 'documentSelectionChanged') {
+            state.selectionHandlers.push(handler);
+          }
           done?.({ status: 'succeeded' });
+        },
+        removeHandlerAsync: (
+          _type: string,
+          options?: { handler?: () => void } | (() => void),
+          done?: (result: { status: string }) => void,
+        ) => {
+          // The Excel adapter never removes its handler (the no-op unsubscribe),
+          // but model the real API so a host that DOES unsubscribe is testable.
+          const handler =
+            typeof options === 'function' ? undefined : options?.handler;
+          if (handler) {
+            const i = state.selectionHandlers.indexOf(handler);
+            if (i >= 0) state.selectionHandlers.splice(i, 1);
+          } else {
+            state.selectionHandlers = [];
+          }
+          const cb = typeof options === 'function' ? options : done;
+          cb?.({ status: 'succeeded' });
         },
       },
     },
