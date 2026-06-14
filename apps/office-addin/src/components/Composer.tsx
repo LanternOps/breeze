@@ -1,5 +1,4 @@
 import { useSelectionAddress } from '../hooks/useSelectionAddress';
-import { excelHostAdapter } from '../host/excel';
 import { parseAddress, stripSheet } from '../lib/address';
 import type { WorkbookContextKind } from '../api/types';
 
@@ -13,6 +12,8 @@ export function Composer({
   draft,
   busy,
   contextKind,
+  captureSelectionAddress,
+  subscribeSelectionChanged,
   onDraftChange,
   onContextKindChange,
   onSend,
@@ -20,15 +21,17 @@ export function Composer({
   draft: string;
   busy: boolean;
   contextKind: WorkbookContextKind;
+  // Selection fns are threaded from ChatPane (the Excel adapter today) so the
+  // composer stays host-neutral and never imports `Excel.*` or the concrete host.
+  captureSelectionAddress: () => Promise<string | undefined>;
+  subscribeSelectionChanged: (cb: () => void) => () => void;
   onDraftChange: (text: string) => void;
   onContextKindChange: (kind: WorkbookContextKind) => void;
   onSend: () => void;
 }) {
-  // Task 3 threads these as props; for now Composer binds the Excel adapter's
-  // selection fns directly so the hook stays host-neutral.
   const selection = useSelectionAddress({
-    captureSelectionAddress: excelHostAdapter.captureSelectionAddress,
-    subscribeSelectionChanged: excelHostAdapter.subscribeSelectionChanged,
+    captureSelectionAddress,
+    subscribeSelectionChanged,
   });
   const sheetName = selection ? parseAddress(selection).sheet : null;
   const chip =

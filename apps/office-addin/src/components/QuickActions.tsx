@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { captureWorkbookContext } from '../chat/captureContext';
 import { quickActionsFor, summarizeSelection, type QuickAction } from '../chat/quickActions';
 import type { WorkbookContext } from '../api/types';
 
@@ -17,10 +16,13 @@ type CaptureFn = () => Promise<WorkbookContext | undefined>;
  */
 export function QuickActions({
   onSelect,
-  capture = captureWorkbookContext.bind(null, 'selection'),
+  capture,
 }: {
   onSelect: (prompt: string) => void;
-  capture?: CaptureFn;
+  // Required: threaded from ChatPane (the Excel adapter's selection capture
+  // today) so this presentational component never imports `Excel.*` or the
+  // host-bound `captureContext` directly.
+  capture: CaptureFn;
 }) {
   const [actions, setActions] = useState<QuickAction[]>(() =>
     quickActionsFor({ shape: 'empty' }),
