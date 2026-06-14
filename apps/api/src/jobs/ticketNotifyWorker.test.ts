@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { insertValuesMock, selectMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
+const { insertValuesMock, selectMock, updateSetMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
   const insertValuesMock = vi.fn().mockResolvedValue([]);
   const withSystemDbAccessContextMock = vi.fn((fn: () => unknown) => fn());
   return {
     insertValuesMock,
     selectMock: vi.fn(),
+    updateSetMock: vi.fn(),
     sendEmailMock: vi.fn().mockResolvedValue(undefined),
     getEmailServiceMock: vi.fn(),
     withSystemDbAccessContextMock
@@ -16,6 +17,10 @@ vi.mock('bullmq', () => ({ Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/email', () => ({ getEmailService: getEmailServiceMock }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+// outboundThreading.ts reads TICKETS_INBOUND_DOMAIN via getConfig(). The specifier
+// from this file (in jobs/) is '../config/validate', which resolves to the same
+// apps/api/src/config/validate.ts that outboundThreading imports as '../../config/validate'.
+vi.mock('../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
 vi.mock('../db', () => ({
   // Correct mock name: the worker uses withSystemDbAccessContext (not runWithSystemDbAccess)
   withSystemDbAccessContext: withSystemDbAccessContextMock,
@@ -25,11 +30,14 @@ vi.mock('../db', () => ({
         where: vi.fn(() => ({ limit: vi.fn(() => selectMock()) }))
       }))
     })),
-    insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { insertValuesMock(v); return { returning: vi.fn(() => Promise.resolve([])) }; }) }))
+    insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { insertValuesMock(v); return { returning: vi.fn(() => Promise.resolve([])) }; }) })),
+    // anchor-stamp UPDATE: db.update(tickets).set({...}).where(...)
+    update: vi.fn(() => ({ set: vi.fn((v: unknown) => { updateSetMock(v); return { where: vi.fn(() => Promise.resolve([])) }; }) }))
   }
 }));
 vi.mock('../db/schema', () => ({
   tickets: { id: 'id' },
+  partners: { id: 'id', slug: 'slug', settings: 'settings' },
   userNotifications: {},
   users: { id: 'id' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
@@ -42,6 +50,7 @@ describe('handleTicketEvent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     selectMock.mockReset();
+    updateSetMock.mockReset();
     withSystemDbAccessContextMock.mockImplementation((fn: () => unknown) => fn());
     getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
   });
@@ -125,6 +134,126 @@ describe('handleTicketEvent', () => {
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'enduser@acme.example'
     }));
+  });
+
+  it('threads the outbound public-comment reply (Message-ID/In-Reply-To/Reply-To + subject token)', async () => {
+    // Two selects in order: the ticket row, then the partner (slug + settings) row.
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+
+    await handleTicketEvent({
+      type: 'ticket.commented',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1',
+      payload: { commentId: 'c-9', isPublic: true /* inbound omitted = false */ }
+    } as never);
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const arg = sendEmailMock.mock.calls[0]![0] as { to: string; subject: string; replyTo?: string; headers?: Record<string, string> };
+    expect(arg.to).toBe('jane@x.com');
+    expect(arg.subject).toBe('[T-2026-0001] New reply: printer down');
+    expect(arg.replyTo).toBe('acme@tickets.example.com');
+    expect(arg.headers!['Message-ID']).toBe('<ticket-t-1-c-9@tickets.example.com>');
+    expect(arg.headers!['In-Reply-To']).toBe('<ticket-t-1@tickets.example.com>');
+    expect(arg.headers!['References']).toBe('<ticket-t-1@tickets.example.com>');
+
+    // The thread anchor was stamped onto the ticket (first reply, emailThreadKey was null).
+    expect(updateSetMock).toHaveBeenCalledWith(expect.objectContaining({
+      emailThreadKey: '<ticket-t-1@tickets.example.com>'
+    }));
+  });
+
+  it('honors the partner self-hosted inbound override as Reply-To', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: { ticketing: { inbound: { address: 'support@helpdesk.theirmsp.com' } } } }]);
+
+    await handleTicketEvent({
+      type: 'ticket.commented',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1',
+      payload: { commentId: 'c-9', isPublic: true }
+    } as never);
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { replyTo?: string };
+    expect(arg.replyTo).toBe('support@helpdesk.theirmsp.com');
+  });
+
+  it('does NOT re-stamp emailThreadKey when the ticket already has one', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: '<existing@x>' }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+
+    await handleTicketEvent({
+      type: 'ticket.commented',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1',
+      payload: { commentId: 'c-9', isPublic: true }
+    } as never);
+
+    expect(updateSetMock).not.toHaveBeenCalled();
+    // But In-Reply-To/References still point at the deterministic ticket anchor.
+    const arg = sendEmailMock.mock.calls[0]![0] as { headers?: Record<string, string> };
+    expect(arg.headers!['In-Reply-To']).toBe('<ticket-t-1@tickets.example.com>');
+  });
+
+  it('does NOT thread the Resolved status-changed email (no headers / no Reply-To / no anchor collision)', async () => {
+    // Only ONE select (ticket) — no partner lookup happens because commentId is absent.
+    selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }]);
+
+    await handleTicketEvent({
+      type: 'ticket.status_changed',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1',
+      payload: { from: 'open', to: 'resolved', resolutionNote: null }
+    } as never);
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const arg = sendEmailMock.mock.calls[0]![0] as { subject: string; headers?: Record<string, string>; replyTo?: string };
+    expect(arg.subject).toBe('[T-2026-0001] Resolved: printer down');
+    expect(arg.headers).toBeUndefined();   // no Message-ID → no collision with the autoresponse anchor
+    expect(arg.replyTo).toBeUndefined();
+    // And no anchor was stamped on the Resolved path.
+    expect(updateSetMock).not.toHaveBeenCalled();
+  });
+
+  it('sends a threaded, Auto-Submitted autoresponse on ticket.autoresponse', async () => {
+    // Two selects in order: the ticket row (getTicket), then the partner (slug + settings) row.
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+
+    await handleTicketEvent({
+      type: 'ticket.autoresponse',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null,
+      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
+    } as never);
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const arg = sendEmailMock.mock.calls[0]![0] as { to: string; subject: string; replyTo?: string; headers?: Record<string, string> };
+    expect(arg.to).toBe('jane@x.com');
+    expect(arg.subject).toBe('[T-2026-0001] We received your request: printer down');
+    expect(arg.replyTo).toBe('acme@tickets.example.com');
+    expect(arg.headers!['Auto-Submitted']).toBe('auto-replied');
+    expect(arg.headers!['Message-ID']).toBe('<ticket-t-1@tickets.example.com>');
+  });
+
+  it('autoresponse honors the partner self-hosted inbound override as Reply-To', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: { ticketing: { inbound: { address: 'support@helpdesk.theirmsp.com' } } } }]);
+
+    await handleTicketEvent({
+      type: 'ticket.autoresponse',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null,
+      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
+    } as never);
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { replyTo?: string };
+    expect(arg.replyTo).toBe('support@helpdesk.theirmsp.com');
   });
 
   it('works without an email service configured (in-app only)', async () => {
