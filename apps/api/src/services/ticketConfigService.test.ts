@@ -23,9 +23,15 @@ vi.mock('../db', () => ({
         const chain: any = {
           where: vi.fn(() => {
             const r = result();
+            const orderByResult: any = Object.assign(
+              // orderBy is awaitable on its own (statuses select terminates here)…
+              Promise.resolve(r),
+              // …and also exposes .limit().offset() for the paginated queue read.
+              { limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve(r)) })) },
+            );
             return {
               limit: vi.fn(() => Promise.resolve(r)),
-              orderBy: vi.fn(() => Promise.resolve(r)),
+              orderBy: vi.fn(() => orderByResult),
               then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
                 Promise.resolve(r).then(res, rej),
             };
@@ -97,6 +103,11 @@ vi.mock('../db/schema', () => ({
   partners: {
     id: 'id', slug: 'slug', settings: 'settings',
   },
+  ticketEmailInbound: {
+    id: 'id', partnerId: 'partnerId', fromAddress: 'fromAddress', toAddress: 'toAddress',
+    subject: 'subject', parseStatus: 'parseStatus', error: 'error', ticketId: 'ticketId',
+    raw: 'raw', createdAt: 'createdAt',
+  },
 }));
 
 // ticketStatusEnum is read at module load for CoreTicketStatus type/values.
@@ -113,6 +124,7 @@ import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
   upsertPrioritySettings, upsertOrgTicketSettings, getOrgTicketSettings,
   TicketConfigServiceError, findStatusByName, listActiveStatusNames,
+  listEmailInboundQueue,
 } from './ticketConfigService';
 
 const PARTNER = 'p-1';
@@ -409,5 +421,25 @@ describe('listActiveStatusNames', () => {
     dbMocks.selectResults.push([]);
     const names = await listActiveStatusNames(PARTNER);
     expect(names).toEqual([]);
+  });
+});
+
+// ── listEmailInboundQueue ─────────────────────────────────────────────────
+
+describe('listEmailInboundQueue', () => {
+  it('returns quarantined+failed rows scoped to the partner with pagination', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', fromAddress: 'jane@x.com', toAddress: 'acme@tickets.example.com', subject: 'printer', parseStatus: 'quarantined', error: null, ticketId: null, createdAt: new Date('2026-06-13T00:00:00Z') }]); // rows
+    dbMocks.selectResults.push([{ total: 1 }]); // count
+    const res = await listEmailInboundQueue('p-1', { page: 1, limit: 50 });
+    expect(res.data).toHaveLength(1);
+    expect(res.data[0]!.parseStatus).toBe('quarantined');
+    expect(res.pagination).toEqual({ page: 1, limit: 50, total: 1 });
+  });
+  it('caps limit at 100 and floors page at 1', async () => {
+    dbMocks.selectResults.push([]); // rows
+    dbMocks.selectResults.push([{ total: 0 }]); // count
+    const res = await listEmailInboundQueue('p-1', { page: 0, limit: 9999 });
+    expect(res.pagination.limit).toBe(100);
+    expect(res.pagination.page).toBe(1);
   });
 });

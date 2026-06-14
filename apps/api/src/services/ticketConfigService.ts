@@ -1,7 +1,7 @@
 // Owns ticketing configuration: custom statuses, priority SLA settings, and org-level overrides — per 2026-06-12 spec.
 
-import { eq, and, asc, inArray } from 'drizzle-orm';
-import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners } from '../db/schema';
+import { eq, and, asc, desc, inArray, count } from 'drizzle-orm';
+import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
 import { getConfig } from '../config/validate';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -274,7 +274,11 @@ export type TicketConfigServiceErrorCode =
   | 'STATUS_NAME_TAKEN'
   | 'STATUS_NOT_FOUND'
   | 'SYSTEM_STATUS_IMMUTABLE'
-  | 'SYSTEM_STATUS_REQUIRED';
+  | 'SYSTEM_STATUS_REQUIRED'
+  | 'INBOUND_ROW_NOT_FOUND'
+  | 'INBOUND_ROW_ALREADY_RESOLVED'
+  | 'INBOUND_ROW_NO_SENDER'
+  | 'ORG_NOT_ACCESSIBLE';
 
 export class TicketConfigServiceError extends Error {
   constructor(message: string, public status: 400 | 404 | 409 = 400, public code?: TicketConfigServiceErrorCode) {
@@ -548,4 +552,63 @@ export async function upsertOrgTicketSettings(orgId: string, input: OrgTicketSet
     })
     .returning();
   return toOrgTicketSettingsResponse(orgId, row);
+}
+
+// ============================================================================
+// Inbound-email review queue (Phase 4). Admin-only surface — the routes carry
+// writePerm + adminMiddleware. Reads/writes run in the REQUEST DB context, so
+// the partner-axis RLS policy on ticket_email_inbound is the real backstop; the
+// explicit partnerId filter is defense-in-depth.
+// ============================================================================
+
+const REVIEW_STATUSES = ['quarantined', 'failed'] as const;
+
+export interface EmailInboundQueueRow {
+  id: string;
+  fromAddress: string | null;
+  toAddress: string | null;
+  subject: string | null;
+  parseStatus: string;
+  error: string | null;
+  ticketId: string | null;
+  createdAt: Date;
+}
+
+export async function listEmailInboundQueue(
+  partnerId: string,
+  opts: { page: number; limit: number },
+): Promise<{ data: EmailInboundQueueRow[]; pagination: { page: number; limit: number; total: number } }> {
+  const page = Math.max(1, Math.floor(opts.page) || 1);
+  const limit = Math.min(100, Math.max(1, Math.floor(opts.limit) || 50));
+  const offset = (page - 1) * limit;
+
+  const where = and(
+    eq(ticketEmailInbound.partnerId, partnerId),
+    inArray(ticketEmailInbound.parseStatus, REVIEW_STATUSES as unknown as string[]),
+  );
+
+  const data = await db
+    .select({
+      id: ticketEmailInbound.id,
+      fromAddress: ticketEmailInbound.fromAddress,
+      toAddress: ticketEmailInbound.toAddress,
+      subject: ticketEmailInbound.subject,
+      parseStatus: ticketEmailInbound.parseStatus,
+      error: ticketEmailInbound.error,
+      ticketId: ticketEmailInbound.ticketId,
+      createdAt: ticketEmailInbound.createdAt,
+    })
+    .from(ticketEmailInbound)
+    .where(where)
+    .orderBy(desc(ticketEmailInbound.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  const countRows = await db
+    .select({ total: count() })
+    .from(ticketEmailInbound)
+    .where(where);
+  const total = countRows[0]?.total ?? 0;
+
+  return { data, pagination: { page, limit, total: Number(total) } };
 }

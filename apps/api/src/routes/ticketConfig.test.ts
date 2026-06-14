@@ -7,6 +7,9 @@ const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
     updateTicketStatus: vi.fn(),
     reorderTicketStatuses: vi.fn(),
     upsertPrioritySettings: vi.fn(),
+    listEmailInboundQueue: vi.fn(),
+    convertEmailInbound: vi.fn(),
+    dismissEmailInbound: vi.fn(),
   },
   authRef: {
     current: {
@@ -185,5 +188,28 @@ describe('PUT /priorities', () => {
       body: JSON.stringify({ priorities: { high: { label: 'High' } } }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /ticket-config/email-inbound', () => {
+  it('403 when not admin (default tickets-only perms)', async () => {
+    const res = await ticketConfigRoutes.request('/email-inbound');
+    expect(res.status).toBe(403);
+  });
+  it('403 when no partner context', async () => {
+    permsRef.current = ADMIN_PERMS;
+    authRef.current.user.isPlatformAdmin = true;
+    authRef.current.partnerId = null;
+    const res = await ticketConfigRoutes.request('/email-inbound');
+    expect(res.status).toBe(403);
+  });
+  it('returns the paginated queue for an admin partner user', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.listEmailInboundQueue.mockResolvedValue({ data: [{ id: 'r-1', parseStatus: 'quarantined' }], pagination: { page: 1, limit: 50, total: 1 } });
+    const res = await ticketConfigRoutes.request('/email-inbound');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].id).toBe('r-1');
+    expect(serviceMocks.listEmailInboundQueue).toHaveBeenCalledWith('p-1', { page: 1, limit: 50 });
   });
 });

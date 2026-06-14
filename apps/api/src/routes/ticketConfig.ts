@@ -11,7 +11,8 @@ import {
 } from '@breeze/shared';
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
-  upsertPrioritySettings, TicketConfigServiceError
+  upsertPrioritySettings, TicketConfigServiceError,
+  listEmailInboundQueue,
 } from '../services/ticketConfigService';
 
 export const ticketConfigRoutes = new Hono();
@@ -64,6 +65,23 @@ ticketConfigRoutes.get('/', scopes, readPerm, async (c) => {
 });
 
 // Literal paths BEFORE /:id (Hono matching is registration-ordered).
+
+const emailInboundQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+// GET /email-inbound — review queue (quarantined + failed). Admin-only surface,
+// so it carries writePerm + adminMiddleware like the mutations beside it. The
+// list query runs under the request partner context (RLS auto-scopes the rows)
+// and is additionally filtered by the resolved partnerId in the service.
+ticketConfigRoutes.get('/email-inbound', scopes, writePerm, adminMiddleware, zValidator('query', emailInboundQuerySchema), async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  const { page, limit } = c.req.valid('query');
+  const result = await listEmailInboundQueue(partnerId, { page, limit });
+  return c.json(result);
+});
 
 ticketConfigRoutes.post('/statuses/reorder', scopes, writePerm, adminMiddleware, zValidator('json', reorderTicketStatusesSchema), async (c) => {
   const partnerId = requirePartnerId(c);
