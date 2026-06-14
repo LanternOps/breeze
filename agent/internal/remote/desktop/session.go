@@ -79,6 +79,13 @@ type Session struct {
 	// Disabled by default; viewer can toggle via control message.
 	cursorStreamEnabled atomic.Bool
 
+	// localInputBlocked tracks whether THIS session currently holds a local-input
+	// block reference with the InputBlockManager (issue #966). It guards the
+	// refcount so that repeated block_local_input toggles and the session-end
+	// cleanup each adjust the manager's refcount at most once per session.
+	// Disabled by default; viewer engages via the block_local_input control msg.
+	localInputBlocked atomic.Bool
+
 	// capturerSwapped is set by switch_monitor. The capture loop checks and
 	// clears it to re-read s.capturer and reinitialize GPU pipeline state.
 	capturerSwapped atomic.Bool
@@ -455,6 +462,16 @@ func (s *Session) doCleanup() {
 
 		if err := GetWallpaperManager().Restore(); err != nil {
 			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err.Error())
+		}
+
+		// Auto-release any local-input block this session engaged (issue #966).
+		// CompareAndSwap ensures we only decrement the manager's refcount if this
+		// session was actually holding a block — never leave the local user
+		// locked out after a session ends.
+		if s.localInputBlocked.CompareAndSwap(true, false) {
+			if err := GetInputBlockManager().Release(); err != nil {
+				slog.Warn("Failed to release local-input block", "session", s.id, "error", err.Error())
+			}
 		}
 	})
 }
