@@ -38,8 +38,9 @@
 // scripts hitting the same MSI). Without dedupe a single legitimate
 // admin-prompt can produce 5+ events. We key dedupe on
 // sha256(exe_path) + ":" + subject_username with a 30s window using the
-// existing ipc.RateLimiter — matches what Track 1's server-side dedupe
-// will also do, so the wire is clean.
+// existing ipc.RateLimiter. The server runs its own independent dedupe on
+// ingest; the keys and windows are not guaranteed identical, so this is
+// agent-side noise suppression, not a parity contract with the server.
 //
 // Offline-queue rationale. The agent often runs on laptops behind captive
 // portals or VPNs that drop briefly. The intercept event itself is short-
@@ -308,13 +309,24 @@ func handleEvent(ctx context.Context, ev Event, limiter *ipc.RateLimiter, hb Hea
 		"path", ev.TargetExecutablePath,
 	)
 
-	// Drive the local elevation flow. The dedupe above already prevents
-	// stacked dialogs for re-fired ETW events on one prompt. Note this only
-	// fires for live posts: events replayed later via Queue.Drain discard the
-	// outcome and deliberately skip the flow — a drained event is a stale
-	// prompt whose consent.exe dialog is long gone, so actuating it is wrong.
+	// Drive the local elevation flow. The dedupe above prevents stacked dialogs
+	// for re-fired ETW events that arrive *before* the flow starts, but the
+	// window is re-asserted at flow-end (below) to also cover flows that run
+	// longer than dedupeWindow. Note this only fires for live posts: events
+	// replayed later via Queue.Drain discard the outcome and deliberately skip
+	// the flow — a drained event is a stale prompt whose consent.exe dialog is
+	// long gone, so actuating it is wrong.
 	if pam != nil && outcome.RequestID != "" && outcome.Status != "ignored" {
 		pam.RunPamFlow(ctx, ev, outcome)
+		// RunPamFlow can block on the PAM dialog up to ~90s — longer than the
+		// 30s dedupeWindow — so the arrival entry recorded above may have
+		// expired by now. Re-record the key so the dedupe window restarts from
+		// flow-end: the sliding-window limiter prunes the stale arrival entry
+		// and records this moment, so a buffered re-fire drained within
+		// dedupeWindow of flow-end is suppressed, while a genuine retry after
+		// the window still gets through. Result discarded — we're recording,
+		// not gating.
+		_ = limiter.Allow(key)
 	}
 
 	// Opportunistic drain on every successful post — quickly catches up

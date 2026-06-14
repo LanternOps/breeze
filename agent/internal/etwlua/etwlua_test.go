@@ -53,9 +53,16 @@ func (f *fakeHB) Received() []Event {
 type fakePamRunner struct {
 	mu       sync.Mutex
 	outcomes []ElevationOutcome
+	// delay simulates a long-running flow (e.g. a blocking PAM dialog). When
+	// longer than the dedupe window it lets a test prove the post-flow re-record
+	// restarts the dedupe window from flow-end.
+	delay time.Duration
 }
 
 func (f *fakePamRunner) RunPamFlow(_ context.Context, _ Event, outcome ElevationOutcome) {
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.outcomes = append(f.outcomes, outcome)
@@ -355,5 +362,33 @@ func TestHandleEventDoesNotInvokeRunnerOnPostFailure(t *testing.T) {
 
 	if got := len(pam.Calls()); got != 0 {
 		t.Fatalf("expected PamRunner NOT invoked on post failure, got %d calls", got)
+	}
+}
+
+// TestHandleEventReassertsDedupeAfterLongFlow proves the post-flow re-record:
+// RunPamFlow can block longer than the dedupe window (a real PAM dialog waits
+// up to ~90s, the window is 30s). Without re-recording the dedupe key at
+// flow-end, the original arrival entry expires during the flow and a buffered
+// re-fire drained right after sails past the now-stale window and triggers a
+// redundant second flow. We use a short window and a flow that outlasts it: the
+// second handleEvent for the same key must be deduped by the flow-end re-record.
+func TestHandleEventReassertsDedupeAfterLongFlow(t *testing.T) {
+	const window = 60 * time.Millisecond
+	hb := &fakeHB{outcome: ElevationOutcome{RequestID: "r-long", Status: "auto_approved"}}
+	limiter := ipc.NewRateLimiter(1, window)
+	// Flow outlasts the window: the arrival entry recorded at line 282 will have
+	// expired by the time the flow returns, so the post-flow re-record is the
+	// only thing that can suppress an immediate re-fire.
+	pam := &fakePamRunner{delay: 2 * window}
+
+	ev := sampleEvent("alice", `C:\Windows\System32\mmc.exe`)
+
+	// First event: posts, runs the (long) flow, and on return re-records the key.
+	handleEvent(context.Background(), ev, limiter, hb, nil, pam)
+	// Immediate re-fire of the SAME key: must be deduped by the flow-end record.
+	handleEvent(context.Background(), ev, limiter, hb, nil, pam)
+
+	if got := len(pam.Calls()); got != 1 {
+		t.Fatalf("expected RunPamFlow invoked once (re-fire deduped by flow-end re-record), got %d", got)
 	}
 }
