@@ -99,6 +99,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'c2c_consent_sessions',
   'capacity_predictions',
   'capacity_thresholds',
+  'catalog_item_org_pricing',
   'cis_baseline_results',
   'cis_baselines',
   'cis_remediation_actions',
