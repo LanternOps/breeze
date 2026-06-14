@@ -529,6 +529,85 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — ticketing.inbound merge safety', () => {
+    // Local copies of the :id-block helpers (plain functions, safe to duplicate).
+    // mockCurrentPartnerSelect seeds the current partner row; mockUpdateCapture
+    // captures the set(...) payload the route writes.
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('preserves a pre-existing settings.ticketing.inbound.address override (blocker #1)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({
+        ticketing: { inbound: { enabled: false, address: 'support@tickets.acme.com', autoresponderEnabled: true } },
+      });
+      const getCaptured = mockUpdateCapture();
+
+      // Card re-sends the COMPLETE ticketing.inbound including the override it read back.
+      const res = await patchMe({ settings: { ticketing: { inbound: {
+        enabled: true,
+        defaultTriageOrgId: null,
+        autoresponderEnabled: false,
+        address: 'support@tickets.acme.com',
+      } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ticketing.inbound.address).toBe('support@tickets.acme.com');
+      expect(getCaptured().settings.ticketing.inbound.enabled).toBe(true);
+      expect(getCaptured().settings.ticketing.inbound.autoresponderEnabled).toBe(false);
+    });
+
+    it('preserves settings.security.ipAllowlist when only ticketing.inbound is patched (R8)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({
+        security: { ipAllowlist: ['203.0.113.0/24'], requireMfa: true },
+        ticketing: { inbound: { enabled: false } },
+      });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ticketing: { inbound: {
+        enabled: true, defaultTriageOrgId: null, autoresponderEnabled: false,
+      } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.security.ipAllowlist).toEqual(['203.0.113.0/24']);
+      expect(getCaptured().settings.ticketing.inbound.enabled).toBe(true);
+    });
+  });
+
   describe('DELETE /orgs/partners/:id', () => {
     it('should delete a partner', async () => {
       vi.mocked(db.update).mockReturnValue({
