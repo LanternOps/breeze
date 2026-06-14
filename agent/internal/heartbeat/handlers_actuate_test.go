@@ -35,10 +35,18 @@ func (m *fakeElevationManager) Demote(context.Context) error {
 
 type fakeActuator struct {
 	trigger func(context.Context, pamactuator.Request) pamactuator.Result
+	dismiss func(context.Context) pamactuator.Result
 }
 
 func (a fakeActuator) Trigger(ctx context.Context, req pamactuator.Request) pamactuator.Result {
 	return a.trigger(ctx, req)
+}
+
+func (a fakeActuator) Dismiss(ctx context.Context) pamactuator.Result {
+	if a.dismiss == nil {
+		return pamactuator.Result{Success: true, Reason: "ok"}
+	}
+	return a.dismiss(ctx)
 }
 
 func TestParseActuatePayloadAcceptsSlimGoSignal(t *testing.T) {
