@@ -53,4 +53,36 @@ describe('QuickActions', () => {
     render(<QuickActions capture={capture} onSelect={() => {}} />);
     await waitFor(() => expect(screen.getByTestId('quickaction-summarize-sheet')).toBeTruthy());
   });
+
+  it('uses the host-supplied compute function when provided (not the Excel default)', async () => {
+    const ctx: WorkbookContext = { kind: 'selection', text: 'a doc paragraph' };
+    const compute = vi.fn(() => [
+      { id: 'summarize-document', label: 'Summarize this document', prompt: 'Summarize this document.' },
+    ]);
+    render(<QuickActions capture={captureReturning(ctx)} compute={compute} onSelect={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('quickaction-summarize-document')).toBeTruthy());
+    // The host function was handed the captured context...
+    expect(compute).toHaveBeenCalledWith(ctx);
+    // ...and the Excel grid chips are NOT rendered.
+    expect(screen.queryByTestId('quickaction-summarize-sheet')).toBeNull();
+  });
+
+  it('calls the host compute with undefined when capture rejects', async () => {
+    const compute = vi.fn(() => [
+      { id: 'draft-reply', label: 'Draft a reply', prompt: 'Draft a reply to this email.' },
+    ]);
+    const capture = vi.fn(async () => {
+      throw new Error('mailbox unavailable');
+    });
+    render(<QuickActions capture={capture} compute={compute} onSelect={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('quickaction-draft-reply')).toBeTruthy());
+    expect(compute).toHaveBeenCalledWith(undefined);
+  });
+
+  it('uses the Excel grid default when no compute is supplied', async () => {
+    const ctx: WorkbookContext = { kind: 'selection', address: 'B2', cells: [['=SUM(A1:A10)']] };
+    render(<QuickActions capture={captureReturning(ctx)} onSelect={() => {}} />);
+    // The default path classifies the grid shape → formula chip.
+    await waitFor(() => expect(screen.getByTestId('quickaction-explain-formula')).toBeTruthy());
+  });
 });

@@ -27,6 +27,7 @@ import type {
   WorkbookContextKind,
   WritePreview,
 } from '../api/types';
+import type { QuickAction } from '../chat/quickActions';
 
 export type HostAdapter = {
   /**
@@ -82,4 +83,16 @@ export type HostAdapter = {
    * default.
    */
   composerPlaceholder?: string;
+  /**
+   * OPTIONAL host-specific empty-state quick-action chips. When present, the
+   * pane uses this to compute the suggestion chips from the captured context
+   * INSTEAD of the Excel grid-shape heuristic (`summarizeSelection` →
+   * `quickActionsFor`). Word/PowerPoint/Outlook supply a small, host-appropriate
+   * set ("Summarize this document", "Draft a reply", …) so non-Excel hosts don't
+   * fall back to the spreadsheet-flavored chips. Must be PURE and deterministic
+   * — it is called with the best-effort captured context (or `undefined` when
+   * capture failed/returned nothing) and must never throw. Excel leaves this
+   * unset and inherits the grid heuristic.
+   */
+  quickActions?: (ctx: WorkbookContext | undefined) => QuickAction[];
 };

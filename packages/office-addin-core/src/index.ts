@@ -37,3 +37,9 @@ export { App } from './components/App';
 export { ChatPane } from './components/ChatPane';
 export * from './lib/address';
 export * from './lib/markdown';
+export {
+  CLIENT_TOOL_CONTRACT,
+  contractToolNames,
+  contractMutatingToolNames,
+} from './contract/clientToolContract';
+export type { ClientToolContract, ClientToolContractEntry } from './contract/clientToolContract';

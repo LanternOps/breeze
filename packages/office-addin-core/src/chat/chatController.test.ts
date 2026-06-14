@@ -288,6 +288,134 @@ describe('ChatController — flag conversation', () => {
   });
 });
 
+describe('ChatController — tool-result post failures', () => {
+  /** Drive a mutating tool_request into the approval queue for the active session. */
+  async function enqueueWrite(controller: ChatController, toolUseId = 'tu-w1') {
+    controller.handleEvent({
+      type: 'tool_request',
+      toolUseId,
+      toolName: 'write_range',
+      input: { address: 'B2', cells: [['x']] },
+      mutating: true,
+    });
+    await vi.waitFor(() => expect(controller.approvals.getPending()).toHaveLength(1));
+  }
+
+  it('swallows the benign post-timeout 404 unknown_tool_request (no banner)', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const api = stubApi({
+      postToolResult: vi.fn(async () => {
+        throw new ApiError(404, 'unknown_tool_request');
+      }),
+    });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
+    await controller.send('write something'); // establishes sessionId
+    await enqueueWrite(controller);
+
+    await controller.approvals.apply('tu-w1');
+
+    // Benign: the server already gave up, so no error is shown to the user.
+    expect(controller.getState().banner).toBeNull();
+    expect(debug).toHaveBeenCalled();
+    debug.mockRestore();
+  });
+
+  it('surfaces an error banner when an Apply post fails with a 5xx', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const api = stubApi({
+      postToolResult: vi.fn(async () => {
+        throw new ApiError(503, 'server_error');
+      }),
+    });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
+    await controller.send('write something');
+    await enqueueWrite(controller);
+
+    await controller.approvals.apply('tu-w1');
+
+    expect(controller.getState().banner?.kind).toBe('error');
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('surfaces an error banner when an Apply post fails with a network error', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const api = stubApi({
+      postToolResult: vi.fn(async () => {
+        throw new Error('Failed to fetch');
+      }),
+    });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
+    await controller.send('write something');
+    await enqueueWrite(controller);
+
+    await controller.approvals.apply('tu-w1');
+
+    expect(controller.getState().banner?.kind).toBe('error');
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('surfaces an error banner when a NON-mutating tool-result post fails', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let calls = 0;
+    const api = stubApi({
+      // First send establishes the session; the tool-result post is the one that fails.
+      postToolResult: vi.fn(async () => {
+        calls += 1;
+        throw new ApiError(500, 'server_error');
+      }),
+    });
+    const host = fakeHost({
+      toolExecutors: { echo: async () => ({ ok: true }) },
+      mutatingTools: new Set<string>(), // echo is non-mutating → posts directly
+    });
+    const controller = new ChatController({ api, host, captureContext: async () => undefined });
+    await controller.send('go'); // establishes sessionId
+    controller.handleEvent({
+      type: 'tool_request',
+      toolUseId: 'tu-echo',
+      toolName: 'echo',
+      input: {},
+      mutating: false,
+    });
+
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(controller.getState().banner?.kind).toBe('error'));
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('does NOT surface a banner for a benign 404 on a NON-mutating tool-result post', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    let calls = 0;
+    const api = stubApi({
+      postToolResult: vi.fn(async () => {
+        calls += 1;
+        throw new ApiError(404, 'unknown_tool_request');
+      }),
+    });
+    const host = fakeHost({
+      toolExecutors: { echo: async () => ({ ok: true }) },
+      mutatingTools: new Set<string>(),
+    });
+    const controller = new ChatController({ api, host, captureContext: async () => undefined });
+    await controller.send('go');
+    controller.handleEvent({
+      type: 'tool_request',
+      toolUseId: 'tu-echo',
+      toolName: 'echo',
+      input: {},
+      mutating: false,
+    });
+
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(debug).toHaveBeenCalled());
+    expect(controller.getState().banner).toBeNull();
+    debug.mockRestore();
+  });
+});
+
 describe('ChatController — conversation history', () => {
   it('createSession with no captured workbook name sends an empty body', async () => {
     const api = stubApi();

@@ -4,44 +4,55 @@ import type { WorkbookContext } from '../api/types';
 
 type CaptureFn = () => Promise<WorkbookContext | undefined>;
 
+type ComputeFn = (ctx: WorkbookContext | undefined) => QuickAction[];
+
+/** Default (Excel) chip logic: classify the grid shape and map it to chips. */
+const defaultCompute: ComputeFn = (ctx) => quickActionsFor(summarizeSelection(ctx));
+
 /**
- * Empty-state quick-action chips (selection-aware). On mount we read the current
- * workbook selection and offer a few canned prompts that fit it — a formula cell
- * gets "Explain this formula", a numeric range gets "Summarize this" + "Make a
- * chart", and so on. Clicking a chip hands its canned prompt to `onSelect` (the
- * pane wires that to `controller.send`, so the prompt is sent immediately).
+ * Empty-state quick-action chips (context-aware). On mount we read the current
+ * host context and offer a few canned prompts that fit it. For Excel (the
+ * default `compute`) a formula cell gets "Explain this formula", a numeric range
+ * gets "Summarize this" + "Make a chart", and so on. Non-Excel hosts pass their
+ * own `compute` (from `host.quickActions`) so Word gets "Summarize this
+ * document", Outlook gets "Draft a reply", etc. — never the spreadsheet
+ * fallback. Clicking a chip hands its canned prompt to `onSelect` (the pane
+ * wires that to `controller.send`, so the prompt is sent immediately).
  *
- * Presentational + thin: all selection→chip logic lives in the pure
- * `quickActions` helper. Capture failures degrade silently to the generic set.
+ * Presentational + thin: all context→chip logic lives in the pure `compute`
+ * function. Capture failures degrade to `compute(undefined)` (the host's own
+ * generic set).
  */
 export function QuickActions({
   onSelect,
   capture,
+  compute = defaultCompute,
 }: {
   onSelect: (prompt: string) => void;
-  // Required: threaded from ChatPane (the Excel adapter's selection capture
-  // today) so this presentational component never imports `Excel.*` or the
-  // host-bound `captureContext` directly.
+  // Required: threaded from ChatPane (the active adapter's context capture) so
+  // this presentational component never imports `Excel.*` or the host-bound
+  // `captureContext` directly.
   capture: CaptureFn;
+  // Optional: host-specific chip logic (`host.quickActions`). Defaults to the
+  // Excel grid heuristic when unset.
+  compute?: ComputeFn;
 }) {
-  const [actions, setActions] = useState<QuickAction[]>(() =>
-    quickActionsFor({ shape: 'empty' }),
-  );
+  const [actions, setActions] = useState<QuickAction[]>(() => compute(undefined));
 
   useEffect(() => {
     let disposed = false;
     capture()
       .then((ctx) => {
-        if (!disposed) setActions(quickActionsFor(summarizeSelection(ctx)));
+        if (!disposed) setActions(compute(ctx));
       })
       .catch(() => {
-        // Selection capture is best-effort — keep the generic chips on failure.
-        if (!disposed) setActions(quickActionsFor({ shape: 'empty' }));
+        // Context capture is best-effort — fall back to the host's generic set.
+        if (!disposed) setActions(compute(undefined));
       });
     return () => {
       disposed = true;
     };
-  }, [capture]);
+  }, [capture, compute]);
 
   if (actions.length === 0) return null;
 

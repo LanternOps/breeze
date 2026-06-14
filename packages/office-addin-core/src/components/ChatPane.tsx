@@ -112,6 +112,7 @@ export function ChatPane({
           <QuickActions
             capture={host.captureContext.bind(null, 'selection')}
             onSelect={(prompt) => void controller.send(prompt)}
+            {...(host.quickActions ? { compute: host.quickActions } : {})}
           />
           <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />
         </>

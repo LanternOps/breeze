@@ -17,8 +17,11 @@ export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
 /**
  * Before/after preview for a mutating tool request (spec §5). The generic union
  * every host's `buildPreview` collapses to: a `grid` carries a real before/after
- * matrix (revertible writes), a `summary` is a one-line description. Owned here
- * (host-neutral) — it only references `CellValue`.
+ * matrix (revertible writes), a `summary` is a one-line description, and `text`
+ * carries the full proposed prose (an email draft body) so the user approves the
+ * actual content rather than a one-line summary — `before` is set only when an
+ * existing draft is being revised. Owned here (host-neutral) — it only
+ * references `CellValue`.
  */
 export type WritePreview =
   | {
@@ -29,7 +32,8 @@ export type WritePreview =
       after: CellValue[][];
       changedCount: number;
     }
-  | { kind: 'summary'; toolName: string; target: string; description: string };
+  | { kind: 'summary'; toolName: string; target: string; description: string }
+  | { kind: 'text'; toolName: string; target: string; before?: string; after: string };
 
 export type DlpRedaction = { rule: string; count: number; location: string };
 export type TurnUsage = { inputTokens: number; outputTokens: number; costCents: number };
