@@ -14,7 +14,7 @@
  *  - worksheets.getItem() throws immediately instead of at sync
  */
 import { vi } from 'vitest';
-import { parseAddress, rangeAddress, stripSheet } from '../lib/address';
+import { parseAddress, rangeAddress, stripSheet } from '@breeze/office-addin-core';
 
 export type CellValue = string | number | boolean | null;
 type Rect = { startRow: number; startCol: number; rows: number; cols: number };

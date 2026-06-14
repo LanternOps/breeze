@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { captureWorkbookContext, captureWorkbookName } from './captureContext';
 import { getOfficeMock } from '../__tests__/officeMock';
-import type { WorkbookContext } from '../api/types';
+import type { WorkbookContext } from '@breeze/office-addin-core';
 
 const SELECTION_CONTEXT: WorkbookContext = {
   kind: 'selection',

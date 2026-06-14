@@ -4,9 +4,8 @@
  * full grid; above that a summary line (reading thousands of cells to draw an
  * unreadable table helps nobody).
  */
-import { parseAddress, rangeAddress, stripSheet } from '../lib/address';
+import { parseAddress, rangeAddress, stripSheet, type CellValue, type WritePreview } from '@breeze/office-addin-core';
 import { addressDims, optionalString, requireCellMatrix, requireString, resolveSheet } from '../tools/helpers';
-import type { CellValue, WritePreview } from '../api/types';
 
 export type { WritePreview };
 

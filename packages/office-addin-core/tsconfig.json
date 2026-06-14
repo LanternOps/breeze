@@ -5,17 +5,14 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
+    "jsxImportSource": "react",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true,
     "useDefineForClassFields": true,
-    "types": ["office-js", "vite/client", "vitest/globals"],
-    "baseUrl": ".",
-    "paths": {
-      "@breeze/office-addin-core": ["../../packages/office-addin-core/src"]
-    }
+    "types": ["office-js", "vitest/globals", "vite/client"]
   },
   "include": ["src"]
 }

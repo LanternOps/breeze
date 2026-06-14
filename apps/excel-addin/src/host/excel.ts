@@ -13,7 +13,7 @@ import { buildWritePreview } from '../approval/buildPreview';
 import { captureWorkbookContext, captureWorkbookName } from '../chat/captureContext';
 import { MUTATING_TOOLS, TOOL_EXECUTORS } from '../tools/dispatcher';
 import { captureExcelSelectionAddress, subscribeExcelSelectionChanged } from './excelSelection';
-import type { HostAdapter } from './types';
+import type { HostAdapter } from '@breeze/office-addin-core';
 
 export const excelHostAdapter: HostAdapter = {
   captureContext: captureWorkbookContext,

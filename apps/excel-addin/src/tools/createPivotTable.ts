@@ -1,4 +1,4 @@
-import { stripSheet } from '../lib/address';
+import { stripSheet } from '@breeze/office-addin-core';
 import { optionalString, requireString, resolveSheet, ToolInputError } from './helpers';
 
 /** Friendly aggregation names → Excel.AggregationFunction string-literal values. */

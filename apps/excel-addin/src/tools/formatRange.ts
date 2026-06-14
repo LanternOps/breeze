@@ -1,4 +1,4 @@
-import { stripSheet } from '../lib/address';
+import { stripSheet } from '@breeze/office-addin-core';
 import { addressDims, assertCellCap, optionalString, requireString, resolveSheet, ToolInputError } from './helpers';
 
 type BorderEdge = 'top' | 'bottom' | 'left' | 'right' | 'all';

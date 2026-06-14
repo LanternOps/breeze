@@ -1,6 +1,5 @@
-import { parseAddress, rangeAddress, stripSheet } from '../lib/address';
+import { parseAddress, rangeAddress, stripSheet, type CellValue } from '@breeze/office-addin-core';
 import { optionalString, requireString, resolveSheet, SEARCH_RESULT_CAP } from './helpers';
-import type { CellValue } from '../api/types';
 
 /** Case-insensitive substring scan over used ranges, capped at SEARCH_RESULT_CAP hits. */
 export async function searchWorkbook(input: Record<string, unknown>): Promise<unknown> {

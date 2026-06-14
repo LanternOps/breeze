@@ -7,8 +7,7 @@
  * results so the model can react (the server's 60s read timeout is the
  * backstop, not the happy path).
  */
-import { type ToolExecutor } from '../api/types';
-import type { ClientAiStreamEvent, ToolResultBody } from '../api/types';
+import type { ToolExecutor, ClientAiStreamEvent, ToolResultBody } from '@breeze/office-addin-core';
 import { getWorkbookOverview } from './getWorkbookOverview';
 import { readSelection } from './readSelection';
 import { readRange } from './readRange';

@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { ChatController } from '../chat/chatController';
+import {
+  ChatController,
+  ChatThread,
+  ChatToolbar,
+  Composer,
+  TemplatePicker,
+  QuickActions,
+  BrandingFooter,
+  HistoryPanel,
+  ChangesPanel,
+  type ClientSession,
+} from '@breeze/office-addin-core';
 import { excelHostAdapter } from '../host/excel';
-import { ChatThread } from './ChatThread';
-import { ChatToolbar } from './ChatToolbar';
-import { Composer } from './Composer';
-import { TemplatePicker } from './TemplatePicker';
-import { QuickActions } from './QuickActions';
-import { BrandingFooter } from './BrandingFooter';
-import { HistoryPanel } from './HistoryPanel';
-import { ChangesPanel } from './ChangesPanel';
-import type { ClientSession } from '../auth/session';
 
 export function ChatPane({ session }: { session: ClientSession }) {
   // The pane is the single place the concrete host is chosen and injected.

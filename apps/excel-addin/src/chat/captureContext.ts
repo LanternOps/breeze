@@ -6,8 +6,7 @@
  * Over CONTEXT_CELL_CAP cells, `cells` is omitted (address/sheetName only) —
  * the model can still pull narrower data through read tools.
  */
-import { parseAddress } from '../lib/address';
-import type { CellValue, WorkbookContext, WorkbookContextKind } from '../api/types';
+import { parseAddress, type CellValue, type WorkbookContext, type WorkbookContextKind } from '@breeze/office-addin-core';
 
 export const CONTEXT_CELL_CAP = 10_000;
 

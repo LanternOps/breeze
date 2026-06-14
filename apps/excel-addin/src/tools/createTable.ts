@@ -1,4 +1,4 @@
-import { stripSheet } from '../lib/address';
+import { stripSheet } from '@breeze/office-addin-core';
 import { optionalString, requireString, resolveSheet } from './helpers';
 
 /** MUTATING. */

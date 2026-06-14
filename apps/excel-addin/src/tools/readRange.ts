@@ -1,4 +1,4 @@
-import { stripSheet } from '../lib/address';
+import { stripSheet } from '@breeze/office-addin-core';
 import { addressDims, assertCellCap, optionalString, requireString, resolveSheet } from './helpers';
 
 export async function readRange(input: Record<string, unknown>): Promise<unknown> {

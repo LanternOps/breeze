@@ -10,11 +10,11 @@ import {
   AuthBlockedError,
   getStoredSession,
   signIn,
+  BlockedScreen,
+  SignInScreen,
   type AuthBlockKind,
   type ClientSession,
-} from './auth/session';
-import { BlockedScreen } from './components/BlockedScreen';
-import { SignInScreen } from './components/SignInScreen';
+} from '@breeze/office-addin-core';
 import { ChatPane } from './components/ChatPane';
 
 type Phase =

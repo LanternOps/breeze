@@ -4,8 +4,7 @@
  * DLP engine's fail-closed limit (Plan 3) — anything bigger would be refused
  * there anyway, so fail fast here with a message the model can act on.
  */
-import { parseAddress, stripSheet } from '../lib/address';
-import type { CellValue } from '../api/types';
+import { parseAddress, stripSheet, type CellValue } from '@breeze/office-addin-core';
 
 export const MAX_TOOL_CELLS = 50_000;
 export const SEARCH_RESULT_CAP = 200;

@@ -1,5 +1,5 @@
 import { OVERVIEW_HEADER_CAP } from './helpers';
-import type { CellValue } from '../api/types';
+import type { CellValue } from '@breeze/office-addin-core';
 
 /** Sheet names + used ranges + first-row headers — the model's map of the workbook. */
 export async function getWorkbookOverview(_input: Record<string, unknown>): Promise<unknown> {

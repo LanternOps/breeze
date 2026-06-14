@@ -1,4 +1,4 @@
-import { parseAddress, rangeAddress, stripSheet } from '../lib/address';
+import { parseAddress, rangeAddress, stripSheet } from '@breeze/office-addin-core';
 import {
   addressDims,
   assertCellCap,

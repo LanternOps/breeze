@@ -15,7 +15,13 @@ export default defineConfig(async () => {
   }
   return {
     plugins: [react()],
-    server: { port: 3000, strictPort: true, https },
+    resolve: { dedupe: ['react', 'react-dom'] },
+    server: {
+      port: 3000,
+      strictPort: true,
+      https,
+      fs: { allow: ['../../packages/office-addin-core', '../..'] },
+    },
     build: {
       outDir: 'dist',
       rollupOptions: {

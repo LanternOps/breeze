@@ -1,5 +1,4 @@
-import { columnLetter, parseAddress } from '../lib/address';
-import { stripSheet } from '../lib/address';
+import { columnLetter, parseAddress, stripSheet } from '@breeze/office-addin-core';
 import { addressDims, assertCellCap, optionalString, requireString, resolveSheet } from './helpers';
 
 /** Excel error sentinels (#REF!, #VALUE!, …) so we can flag a cell as an error

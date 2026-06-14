@@ -1,4 +1,4 @@
-import { stripSheet } from '../lib/address';
+import { stripSheet } from '@breeze/office-addin-core';
 import { optionalString, requireString, resolveSheet, ToolInputError } from './helpers';
 
 type ClearWhat = 'contents' | 'formats' | 'all';
