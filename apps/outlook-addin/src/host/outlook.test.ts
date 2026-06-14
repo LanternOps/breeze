@@ -45,8 +45,9 @@ describe('outlookHostAdapter', () => {
     expect(outlookHostAdapter.composerPlaceholder).toBe('Ask about this email…');
   });
 
-  it('buildPreview returns a summary card for draft_reply', async () => {
+  it('buildPreview returns a text card carrying the body for draft_reply', async () => {
     const preview = await outlookHostAdapter.buildPreview('draft_reply', { body: 'Hi there.' });
-    expect(preview.kind).toBe('summary');
+    expect(preview.kind).toBe('text');
+    expect((preview as { after: string }).after).toBe('Hi there.');
   });
 });

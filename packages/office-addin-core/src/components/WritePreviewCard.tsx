@@ -27,6 +27,29 @@ export function WritePreviewCard({
       </div>
       {preview.kind === 'summary' ? (
         <p className="mb-2 text-amber-900">{preview.description}</p>
+      ) : preview.kind === 'text' ? (
+        <div className="mb-2 space-y-2" data-testid="write-preview-text">
+          {preview.before !== undefined ? (
+            <div data-testid="write-preview-text-before">
+              <div className="mb-0.5 text-xs font-medium uppercase tracking-wide text-amber-700">
+                Before
+              </div>
+              <div className="max-h-32 overflow-auto whitespace-pre-wrap rounded border border-amber-200 bg-white/60 p-2 text-xs text-gray-500 line-through">
+                {preview.before}
+              </div>
+            </div>
+          ) : null}
+          <div data-testid="write-preview-text-after">
+            {preview.before !== undefined ? (
+              <div className="mb-0.5 text-xs font-medium uppercase tracking-wide text-amber-700">
+                After
+              </div>
+            ) : null}
+            <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-amber-200 bg-white p-2 text-amber-900">
+              {preview.after}
+            </div>
+          </div>
+        </div>
       ) : (
         <div className="mb-2">
           <div className="max-h-48 overflow-auto">
