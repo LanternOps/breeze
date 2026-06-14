@@ -21,7 +21,7 @@
  * tests rows that no longer exist, making the assertions vacuous. Each test
  * re-seeds — matching every sibling *-rls.integration.test.ts.
  */
-import '../__tests__/integration/setup';
+import './setup';
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import {
@@ -29,9 +29,9 @@ import {
   withDbAccessContext,
   withSystemDbAccessContext,
   type DbAccessContext,
-} from '../db';
-import { catalogItems, catalogItemOrgPricing, catalogBundleComponents } from '../db/schema';
-import { createOrganization, createPartner } from '../__tests__/integration/db-utils';
+} from '../../db';
+import { catalogItems, catalogItemOrgPricing, catalogBundleComponents } from '../../db/schema';
+import { createOrganization, createPartner } from './db-utils';
 import {
   createCatalogItem,
   updateCatalogItem,
@@ -42,7 +42,7 @@ import {
   computeBundleEconomics,
   CatalogServiceError,
   type CatalogActor,
-} from './catalogService';
+} from '../../services/catalogService';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 

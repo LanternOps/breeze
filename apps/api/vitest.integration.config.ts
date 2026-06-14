@@ -8,7 +8,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/__tests__/integration/**/*.test.ts', 'src/**/*.integration.test.ts'],
+    include: ['src/__tests__/integration/**/*.test.ts'],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's
       // clothing — it stubs the postgres/drizzle layer at the module
