@@ -166,7 +166,7 @@ describe('ticket_email_inbound RLS — cross-partner forge (breeze_app role)', (
         })
         .returning({ id: ticketEmailInbound.id })
     );
-    expect(seeded.id).toBeDefined();
+    expect(seeded?.id).toBeDefined();
 
     // Partner A must not see partner B's row.
     const rows = await withDbAccessContext(partnerAContext, () =>
@@ -215,7 +215,7 @@ describe('partner_inbound_domains RLS — cross-partner forge (breeze_app role)'
         })
         .returning({ id: partnerInboundDomains.id })
     );
-    expect(seeded.id).toBeDefined();
+    expect(seeded?.id).toBeDefined();
 
     const rows = await withDbAccessContext(partnerAContext, () =>
       db
