@@ -44,7 +44,10 @@ func (a fakeActuator) Trigger(ctx context.Context, req pamactuator.Request) pama
 
 func (a fakeActuator) Dismiss(ctx context.Context) pamactuator.Result {
 	if a.dismiss == nil {
-		return pamactuator.Result{Success: true, Reason: "ok"}
+		// Fail-safe default matching the production non-windows stub, so a
+		// deny-path test that forgets to wire `dismiss` fails loud instead of
+		// silently reporting a successful dismissal.
+		return pamactuator.Result{Success: false, Reason: "unsupported_platform"}
 	}
 	return a.dismiss(ctx)
 }

@@ -95,8 +95,9 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 }
 
 // actuateElevation runs the dormant-admin promote → consent.exe type →
-// guaranteed-demote pipeline and returns the actuator result. Shared by the
-// remote actuate_elevation command handler and the local etwlua-driven flow.
+// guaranteed-demote pipeline and returns the actuator result. Called by the
+// remote actuate_elevation command handler, and (Task 5) by the local
+// etwlua-driven flow — the receiver is on *Heartbeat so RunPamFlow can share it.
 func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, timeoutMs int) pamactuator.Result {
 	manager := newElevationAccountManager()
 	cred, err := manager.Promote(ctx)
