@@ -106,6 +106,13 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['time_entries', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
+  // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
+  // ticket_email_inbound (only system scope may write null-partner rows);
+  // NOT NULL on partner_inbound_domains. Policy:
+  //   breeze_current_scope()='system' OR breeze_has_partner_access(partner_id)
+  // Functional cross-partner forge proof: emailInboundRls.integration.test.ts.
+  ['ticket_email_inbound', 'partner_id'],
+  ['partner_inbound_domains', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
