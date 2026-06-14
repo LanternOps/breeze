@@ -3,6 +3,7 @@ import {
   submitChangesSchema,
   CHANGE_INGEST_MAX_ITEMS,
   __resolveChangeIngestMaxItemsForTests,
+  agentWarrantyInfoSchema,
 } from './schemas';
 
 // Build a minimal valid change item the schema accepts.
@@ -79,5 +80,36 @@ describe('submitChangesSchema — array length boundary', () => {
   it('accepts an empty changes array (default)', () => {
     expect(submitChangesSchema.safeParse({}).success).toBe(true);
     expect(submitChangesSchema.safeParse({ changes: [] }).success).toBe(true);
+  });
+});
+
+describe('agentWarrantyInfoSchema — coverageKind acceptance', () => {
+  const base = { source: 'agent_plist', manufacturer: 'Apple' };
+
+  it("accepts coverageKind: '' (the value the agent sends for unclassified labels) — must NOT 400 and drop the whole update (#1320)", () => {
+    const parsed = agentWarrantyInfoSchema.safeParse({ ...base, coverageKind: '' });
+    expect(parsed.success).toBe(true);
+    // '' survives validation; upsertAgentWarranty treats it as fixed-term.
+    expect(parsed.success && parsed.data.coverageKind).toBe('');
+  });
+
+  it("accepts coverageKind: 'subscription'", () => {
+    const parsed = agentWarrantyInfoSchema.safeParse({ ...base, coverageKind: 'subscription' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts coverageKind: 'fixed'", () => {
+    const parsed = agentWarrantyInfoSchema.safeParse({ ...base, coverageKind: 'fixed' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts an omitted coverageKind', () => {
+    const parsed = agentWarrantyInfoSchema.safeParse({ ...base });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("still rejects an unknown non-empty coverageKind (e.g. 'lease')", () => {
+    const parsed = agentWarrantyInfoSchema.safeParse({ ...base, coverageKind: 'lease' });
+    expect(parsed.success).toBe(false);
   });
 });

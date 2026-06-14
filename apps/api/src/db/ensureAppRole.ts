@@ -123,6 +123,24 @@ export async function ensureAppRole(): Promise<void> {
             GRANT USAGE ON SEQUENCE audit_log_chain_chain_seq_seq TO breeze_app;
           END IF;
         END IF;
+        -- audit_chain_anchors (issue #916) is the external anchor — append-only
+        -- from breeze_app's perspective in exactly the same way as
+        -- audit_log_chain: the immutable trigger + REVOKE in migration -c-
+        -- enforce it, but the blanket GRANT above re-permits UPDATE/DELETE.
+        -- Re-revoke here so the restriction sticks on every boot.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_chain_anchors') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_chain_anchors FROM breeze_app;
+          -- The blanket sequence GRANT in step 4 re-permits UPDATE (setval) on
+          -- the anchor's serial sequence. setval() lets breeze_app rewind/jump
+          -- anchor_seq, breaking the monotonic anchor ordering the off-box
+          -- verifier relies on — DoS-grade, identical to the chain_seq case
+          -- above. Revoke UPDATE only; USAGE (nextval via INSERT DEFAULT) and
+          -- SELECT (currval) stay.
+          IF EXISTS (SELECT 1 FROM information_schema.sequences WHERE sequence_schema='public' AND sequence_name='audit_chain_anchors_anchor_seq_seq') THEN
+            REVOKE UPDATE ON SEQUENCE audit_chain_anchors_anchor_seq_seq FROM breeze_app;
+            GRANT USAGE ON SEQUENCE audit_chain_anchors_anchor_seq_seq TO breeze_app;
+          END IF;
+        END IF;
       END $$;
     `);
 

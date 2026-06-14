@@ -13,6 +13,7 @@ import {
   Legend
 } from 'recharts';
 import { fetchWithAuth } from '../../stores/auth';
+import ProcessDrilldownPanel from './ProcessDrilldownPanel';
 
 type TimeRange = '24h' | '7d' | '30d';
 
@@ -78,6 +79,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
   const [data, setData] = useState<MetricPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [drilldownAt, setDrilldownAt] = useState<string | null>(null);
 
   const fetchMetrics = useCallback(async () => {
     setLoading(true);
@@ -215,7 +217,12 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
 
       <div className={compact ? 'mt-4 h-56' : 'mt-6 h-80'}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data}>
+          <LineChart
+            data={data}
+            onClick={(state: { activeLabel?: string | number } | null) => {
+              if (state && state.activeLabel != null) setDrilldownAt(String(state.activeLabel));
+            }}
+          >
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
             <XAxis
               dataKey="timestamp"
@@ -429,6 +436,10 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             </div>
           )}
         </>
+      )}
+
+      {drilldownAt && (
+        <ProcessDrilldownPanel deviceId={deviceId} at={drilldownAt} onClose={() => setDrilldownAt(null)} />
       )}
     </div>
   );

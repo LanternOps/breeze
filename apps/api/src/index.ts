@@ -145,6 +145,10 @@ import {
   initializeAuditChainVerifyWorker,
   shutdownAuditChainVerifyWorker,
 } from './jobs/auditChainVerify';
+import {
+  initializeAuditChainAnchorWorker,
+  shutdownAuditChainAnchorWorker,
+} from './jobs/auditChainAnchor';
 import { initializeTenantErasureWorker, shutdownTenantErasureWorker } from './jobs/tenantErasure';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
@@ -152,6 +156,7 @@ import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
+import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
 import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
@@ -1036,10 +1041,12 @@ async function initializeWorkers(): Promise<void> {
     ['agentLogRetention', initializeAgentLogRetention],
     ['ipHistoryRetention', initializeIPHistoryRetention],
     ['reliabilityRetention', initializeReliabilityRetention],
+    ['processSampleRetention', initializeProcessSampleRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
+    ['auditChainAnchor', initializeAuditChainAnchorWorker],
     ['tenantErasure', initializeTenantErasureWorker],
     ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
@@ -1206,10 +1213,12 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAgentLogRetention,
     shutdownIPHistoryRetention,
     shutdownReliabilityRetention,
+    shutdownProcessSampleRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,
+    shutdownAuditChainAnchorWorker,
     shutdownTenantErasureWorker,
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
