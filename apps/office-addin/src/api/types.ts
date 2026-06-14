@@ -7,6 +7,30 @@
 
 export type CellValue = string | number | boolean | null;
 
+/**
+ * Host tool layer signature: one wire-tool executor. Lives here (host-neutral)
+ * so the HostAdapter contract and the Excel dispatcher both reference the same
+ * shape without the core depending on the Excel modules.
+ */
+export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
+
+/**
+ * Before/after preview for a mutating tool request (spec §5). The generic union
+ * every host's `buildPreview` collapses to: a `grid` carries a real before/after
+ * matrix (revertible writes), a `summary` is a one-line description. Owned here
+ * (host-neutral) — it only references `CellValue`.
+ */
+export type WritePreview =
+  | {
+      kind: 'grid';
+      toolName: string;
+      target: string;
+      before: CellValue[][];
+      after: CellValue[][];
+      changedCount: number;
+    }
+  | { kind: 'summary'; toolName: string; target: string; description: string };
+
 export type DlpRedaction = { rule: string; count: number; location: string };
 export type TurnUsage = { inputTokens: number; outputTokens: number; costCents: number };
 

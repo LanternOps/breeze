@@ -18,9 +18,12 @@
  *   - `toolExecutors` / `mutatingTools` → the per-host tool layer; the registry
  *     shape (and the approval/DLP machinery around it) is identical across hosts.
  */
-import type { WritePreview } from '../approval/buildPreview';
-import type { ToolExecutor } from '../tools/dispatcher';
-import type { WorkbookContext, WorkbookContextKind } from '../api/types';
+import type {
+  ToolExecutor,
+  WorkbookContext,
+  WorkbookContextKind,
+  WritePreview,
+} from '../api/types';
 
 export type HostAdapter = {
   /**

@@ -6,20 +6,11 @@
  */
 import { parseAddress, rangeAddress, stripSheet } from '../lib/address';
 import { addressDims, optionalString, requireCellMatrix, requireString, resolveSheet } from '../tools/helpers';
-import type { CellValue } from '../api/types';
+import type { CellValue, WritePreview } from '../api/types';
+
+export type { WritePreview };
 
 export const PREVIEW_GRID_CELL_CAP = 200;
-
-export type WritePreview =
-  | {
-      kind: 'grid';
-      toolName: string;
-      target: string;
-      before: CellValue[][];
-      after: CellValue[][];
-      changedCount: number;
-    }
-  | { kind: 'summary'; toolName: string; target: string; description: string };
 
 async function readCurrent(
   sheetName: string | undefined,

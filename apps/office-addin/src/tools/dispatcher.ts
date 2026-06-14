@@ -7,6 +7,7 @@
  * results so the model can react (the server's 60s read timeout is the
  * backstop, not the happy path).
  */
+import { type ToolExecutor } from '../api/types';
 import type { ClientAiStreamEvent, ToolResultBody } from '../api/types';
 import { getWorkbookOverview } from './getWorkbookOverview';
 import { readSelection } from './readSelection';
@@ -23,7 +24,7 @@ import { searchWorkbook } from './searchWorkbook';
 import { clearRange } from './clearRange';
 import { sortRange } from './sortRange';
 
-export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
+export type { ToolExecutor };
 
 export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   get_workbook_overview: getWorkbookOverview,

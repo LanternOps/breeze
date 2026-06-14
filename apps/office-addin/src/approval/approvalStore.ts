@@ -3,15 +3,26 @@
  * WritePreviewCard resolves via apply()/reject(). Snapshots are immutable and
  * subscribe() fires on every change — useSyncExternalStore-compatible.
  */
-import { buildWritePreview, type WritePreview } from './buildPreview';
-import { executeTool, type ToolRequest } from '../tools/dispatcher';
-import type { CellValue, ToolResultBody } from '../api/types';
+import type { CellValue, ClientAiStreamEvent, ToolResultBody, WritePreview } from '../api/types';
+
+/** One tool_request event off the SSE stream (host-neutral discriminant). */
+export type ToolRequest = Extract<ClientAiStreamEvent, { type: 'tool_request' }>;
 
 /** Shape of the preview builder — injectable so non-Excel hosts can supply their own. */
 export type BuildPreview = (
   toolName: string,
   input: Record<string, unknown>,
 ) => Promise<WritePreview>;
+
+/**
+ * Host-neutral tool runner: applies one tool and never throws (failures become
+ * { status: 'error' }). Injected so the store reuses the same executors as the
+ * dispatcher without importing the Excel tool layer.
+ */
+export type Execute = (
+  toolName: string,
+  input: Record<string, unknown>,
+) => Promise<{ status: 'success' | 'error'; output: unknown }>;
 
 export type PendingApproval = {
   toolUseId: string;
@@ -55,14 +66,17 @@ function nextChangeId(): string {
 
 export type ApprovalDeps = {
   postToolResult: (result: ToolResultBody) => Promise<void>;
-  /** Injectable for tests; defaults to the real Office.js executor. */
-  execute?: typeof executeTool;
   /**
-   * Injectable preview builder. Defaults to the Excel before/after card so
-   * existing behavior is preserved; a non-Excel host supplies its own via the
-   * HostAdapter.
+   * Tool runner. REQUIRED — bound to the host's tool layer by the composition
+   * root (ChatPane) so apply/auto-apply/revert use the same executors as the
+   * dispatcher. The store never imports a host tool layer itself.
    */
-  buildPreview?: BuildPreview;
+  execute: Execute;
+  /**
+   * Preview builder. REQUIRED — the host supplies its own (Excel before/after
+   * card, or a non-Excel host's equivalent) via the HostAdapter.
+   */
+  buildPreview: BuildPreview;
 };
 
 export class ApprovalStore {
@@ -132,7 +146,7 @@ export class ApprovalStore {
 
   async enqueue(request: ToolRequest): Promise<void> {
     let preview: WritePreview;
-    const buildPreview = this.deps.buildPreview ?? buildWritePreview;
+    const buildPreview = this.deps.buildPreview;
     try {
       preview = await buildPreview(request.toolName, request.input);
     } catch (err) {
@@ -150,7 +164,7 @@ export class ApprovalStore {
     // still executed via Office.js AND reported to the server (recorded/audited
     // exactly like a user-approved Apply) — it's just not gated on a click.
     if (this.autoApply) {
-      const run = this.deps.execute ?? executeTool;
+      const run = this.deps.execute;
       const { status, output } = await run(request.toolName, request.input);
       if (status === 'success') this.recordApplied(request.toolUseId, preview);
       await this.deps.postToolResult({ toolUseId: request.toolUseId, status, output });
@@ -182,7 +196,7 @@ export class ApprovalStore {
   async apply(toolUseId: string): Promise<void> {
     const pending = this.take(toolUseId);
     if (!pending) return;
-    const run = this.deps.execute ?? executeTool;
+    const run = this.deps.execute;
     const { status, output } = await run(pending.toolName, pending.input);
     if (status === 'success') this.recordApplied(toolUseId, pending.preview);
     await this.deps.postToolResult({ toolUseId, status, output });
@@ -205,7 +219,7 @@ export class ApprovalStore {
   async revertChange(id: string): Promise<void> {
     const entry = this.applied.find((c) => c.id === id) ?? null;
     if (!entry || !entry.revertible || entry.reverted || !entry.before) return;
-    const run = this.deps.execute ?? executeTool;
+    const run = this.deps.execute;
     const { status } = await run('write_range', { address: entry.target, cells: entry.before });
     if (status !== 'success') return;
     this.applied = this.applied.map((c) => (c.id === id ? { ...c, reverted: true } : c));

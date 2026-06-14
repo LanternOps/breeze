@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChatController, type ChatApi } from './chatController';
-import { captureWorkbookContext, captureWorkbookName } from './captureContext';
-import { getOfficeMock } from '../__tests__/officeMock';
 import { ApiError } from '../api/client';
+import type { HostAdapter } from '../host/types';
 import type { WorkbookContext } from '../api/types';
 
 function stubApi(overrides: Partial<ChatApi> = {}): ChatApi {
@@ -37,9 +36,32 @@ function stubApi(overrides: Partial<ChatApi> = {}): ChatApi {
   };
 }
 
+/**
+ * A neutral fake host so the controller tests never touch the Excel path. The
+ * controller now REQUIRES a host; capture/preview/tool execution all route
+ * through it. Individual tests override pieces (e.g. toolExecutors) as needed.
+ */
+function fakeHost(overrides: Partial<HostAdapter> = {}): HostAdapter {
+  return {
+    captureContext: async () => undefined,
+    captureName: async () => undefined,
+    captureSelectionAddress: async () => undefined,
+    subscribeSelectionChanged: () => () => {},
+    toolExecutors: {},
+    mutatingTools: new Set<string>(),
+    buildPreview: async (toolName: string) => ({
+      kind: 'summary' as const,
+      toolName,
+      target: 'x',
+      description: 'x',
+    }),
+    ...overrides,
+  };
+}
+
 /** Default deps: a deterministic workbook name so create-body assertions are stable. */
 function deps(api: ChatApi, captureContext: () => Promise<WorkbookContext | undefined>) {
-  return { api, captureContext, captureName: async () => 'Q3 Budget.xlsx' };
+  return { api, host: fakeHost(), captureContext, captureName: async () => 'Q3 Budget.xlsx' };
 }
 
 const SELECTION_CONTEXT: WorkbookContext = {
@@ -54,7 +76,7 @@ const SELECTION_CONTEXT: WorkbookContext = {
 
 describe('ChatController — streaming', () => {
   it('accumulates message_delta text and finalizes one assistant message on turn_complete', () => {
-    const controller = new ChatController({ api: stubApi() });
+    const controller = new ChatController({ api: stubApi(), host: fakeHost() });
     controller.handleEvent({ type: 'message_delta', text: 'Hello ' });
     controller.handleEvent({ type: 'message_delta', text: 'world' });
     expect(controller.getState().streamingText).toBe('Hello world');
@@ -72,14 +94,14 @@ describe('ChatController — streaming', () => {
   });
 
   it('session_error raises the error banner and clears busy', () => {
-    const controller = new ChatController({ api: stubApi() });
+    const controller = new ChatController({ api: stubApi(), host: fakeHost() });
     controller.handleEvent({ type: 'session_error', message: 'loop exploded' });
     expect(controller.getState().banner).toEqual({ kind: 'error', text: 'loop exploded' });
     expect(controller.getState().busy).toBe(false);
   });
 
   it('tool_completed appends an activity row with the redaction count and raises a block banner', () => {
-    const controller = new ChatController({ api: stubApi() });
+    const controller = new ChatController({ api: stubApi(), host: fakeHost() });
     controller.handleEvent({
       type: 'tool_completed',
       toolUseId: 'tu-1',
@@ -136,7 +158,7 @@ describe('ChatController — send', () => {
         throw new ApiError(403, 'budget_exceeded');
       }),
     });
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('hi');
     expect(controller.getState().busy).toBe(false);
     expect(controller.getState().banner?.text).toContain('budget');
@@ -144,7 +166,7 @@ describe('ChatController — send', () => {
 
   it('routes mutating tool_requests into the approval queue without posting', async () => {
     const api = stubApi();
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('write something'); // establishes sessionId
     controller.handleEvent({
       type: 'tool_request',
@@ -163,26 +185,15 @@ describe('ChatController — send', () => {
     // A fake non-Excel host: a single non-mutating tool that records calls and
     // an empty mutating set. If the controller still used the Excel default it
     // would treat write_range as mutating and never hit this executor.
-    const fakeHost = {
-      captureContext: async () => undefined,
-      captureName: async () => undefined,
-      captureSelectionAddress: async () => undefined,
-      subscribeSelectionChanged: () => () => {},
+    const host = fakeHost({
       toolExecutors: {
         echo: async (input: Record<string, unknown>) => {
           executed.push(String(input.value));
           return { ok: true };
         },
       },
-      mutatingTools: new Set<string>(),
-      buildPreview: async (toolName: string, _input: Record<string, unknown>) => ({
-        kind: 'summary' as const,
-        toolName,
-        target: 'x',
-        description: 'x',
-      }),
-    };
-    const controller = new ChatController({ api, host: fakeHost });
+    });
+    const controller = new ChatController({ api, host });
     await controller.send('go'); // establishes sessionId
     controller.handleEvent({
       type: 'tool_request',
@@ -205,7 +216,7 @@ describe('ChatController — send', () => {
 
   it('keeps writeApproval=ask out of the pane state under the default policy', async () => {
     const api = stubApi();
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('hi');
     expect(controller.getState().writeApproval).toBe('ask');
   });
@@ -218,14 +229,14 @@ describe('ChatController — send', () => {
         writeApproval: 'allow_auto' as const,
       })),
     });
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('hi');
     expect(controller.getState().writeApproval).toBe('allow_auto');
   });
 
   it('ignores a setAutoApply request when the org policy is ask (server-side gate is the real one, but the pane refuses too)', async () => {
     const api = stubApi(); // writeApproval: 'ask'
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('hi');
     controller.setAutoApply(true);
     expect(controller.approvals.isAutoApply()).toBe(false);
@@ -239,7 +250,7 @@ describe('ChatController — send', () => {
         writeApproval: 'allow_auto' as const,
       })),
     });
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('hi');
     controller.setAutoApply(true);
     expect(controller.approvals.isAutoApply()).toBe(true);
@@ -249,14 +260,14 @@ describe('ChatController — send', () => {
 describe('ChatController — flag conversation', () => {
   it('is a no-op before a session exists (nothing to flag)', async () => {
     const api = stubApi();
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.flagConversation('looks wrong');
     expect(api.flagSession).not.toHaveBeenCalled();
   });
 
   it('flags the current session with the reason and shows a confirmation banner', async () => {
     const api = stubApi();
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('hi'); // establishes sessionId
     await controller.flagConversation('looks wrong');
     expect(api.flagSession).toHaveBeenCalledWith('sess-1', 'looks wrong');
@@ -269,7 +280,7 @@ describe('ChatController — flag conversation', () => {
         throw new ApiError(500, 'server_error');
       }),
     });
-    const controller = new ChatController({ api, captureContext: async () => undefined });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
     await controller.send('hi');
     await controller.flagConversation();
     expect(controller.getState().flagged).toBe(false);
@@ -282,6 +293,7 @@ describe('ChatController — conversation history', () => {
     const api = stubApi();
     const controller = new ChatController({
       api,
+      host: fakeHost(),
       captureContext: async () => undefined,
       captureName: async () => undefined,
     });
@@ -293,6 +305,7 @@ describe('ChatController — conversation history', () => {
     const api = stubApi();
     const controller = new ChatController({
       api,
+      host: fakeHost(),
       captureContext: async () => undefined,
       captureName: async () => {
         throw new Error('Office unavailable');
@@ -315,7 +328,7 @@ describe('ChatController — conversation history', () => {
       messageCount: 2,
     };
     const api = stubApi({ listSessions: vi.fn(async () => [item]) });
-    const controller = new ChatController({ api });
+    const controller = new ChatController({ api, host: fakeHost() });
     await expect(controller.listSessions()).resolves.toEqual([item]);
   });
 
@@ -340,7 +353,7 @@ describe('ChatController — conversation history', () => {
       ],
     }));
     const api = stubApi({ getSession });
-    const controller = new ChatController({ api });
+    const controller = new ChatController({ api, host: fakeHost() });
 
     await controller.resumeSession('past-1');
 
@@ -379,42 +392,10 @@ describe('ChatController — conversation history', () => {
 
 describe('ChatController — draft & templates', () => {
   it('insertTemplate fills an empty draft and appends to a non-empty one', () => {
-    const controller = new ChatController({ api: stubApi() });
+    const controller = new ChatController({ api: stubApi(), host: fakeHost() });
     controller.insertTemplate('Summarize this sheet.');
     expect(controller.getState().draft).toBe('Summarize this sheet.');
     controller.insertTemplate('Then list outliers.');
     expect(controller.getState().draft).toBe('Summarize this sheet.\n\nThen list outliers.');
-  });
-});
-
-describe('captureWorkbookContext', () => {
-  it("'selection' captures the pinned payload shape from the live selection", async () => {
-    const mock = getOfficeMock();
-    mock.setValues('Sheet1', 'B2', [
-      ['Region', 'Q1'],
-      ['EMEA', 1200],
-    ]);
-    mock.select('Sheet1!B2:C3');
-    await expect(captureWorkbookContext('selection')).resolves.toEqual(SELECTION_CONTEXT);
-  });
-
-  it("'sheet' captures the used range of the active sheet; 'none' sends kind only", async () => {
-    const mock = getOfficeMock();
-    mock.setValues('Sheet1', 'A1', [['x', 'y']]);
-    await expect(captureWorkbookContext('sheet')).resolves.toEqual({
-      kind: 'sheet',
-      sheetName: 'Sheet1',
-      address: 'Sheet1!A1:B1',
-      cells: [['x', 'y']],
-    });
-    await expect(captureWorkbookContext('none')).resolves.toEqual({ kind: 'none' });
-  });
-});
-
-describe('captureWorkbookName', () => {
-  it('reads the open workbook file name', async () => {
-    const mock = getOfficeMock();
-    mock.workbookName = 'Q3 Budget.xlsx';
-    await expect(captureWorkbookName()).resolves.toBe('Q3 Budget.xlsx');
   });
 });

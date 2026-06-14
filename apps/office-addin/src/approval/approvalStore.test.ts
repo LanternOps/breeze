@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getOfficeMock } from '../__tests__/officeMock';
-import { ApprovalStore } from './approvalStore';
-import type { ToolRequest } from '../tools/dispatcher';
+import { ApprovalStore, type Execute, type ToolRequest } from './approvalStore';
+import type { WritePreview } from '../api/types';
 
 function writeRequest(toolUseId = 'tu-w1'): ToolRequest {
   return {
@@ -13,19 +12,51 @@ function writeRequest(toolUseId = 'tu-w1'): ToolRequest {
   };
 }
 
-function makeStore() {
+/** A grid preview for write_range — the revertible shape with a real before/after. */
+function gridPreview(before: string[][], after: string[][]): WritePreview {
+  return {
+    kind: 'grid',
+    toolName: 'write_range',
+    target: 'Sheet1!B2',
+    before,
+    after,
+    changedCount: 1,
+  };
+}
+
+/**
+ * Default fakes for the two required host deps. `execute` succeeds; `buildPreview`
+ * returns a write_range grid by default. Both are vi.fn so callers can assert on
+ * calls / override per-test. No Office mock — the store is host-clean.
+ */
+function makeStore(overrides: {
+  execute?: Execute;
+  buildPreview?: (toolName: string, input: Record<string, unknown>) => Promise<WritePreview>;
+} = {}) {
   const postToolResult = vi.fn(async () => undefined);
-  const store = new ApprovalStore({ postToolResult });
-  return { store, postToolResult };
+  const execute: Execute =
+    overrides.execute ??
+    vi.fn(async () => ({
+      status: 'success' as const,
+      output: { address: 'Sheet1!B2', rowsWritten: 1, columnsWritten: 1 },
+    }));
+  const buildPreview =
+    overrides.buildPreview ??
+    vi.fn(async (_toolName: string, input: Record<string, unknown>) =>
+      gridPreview([['']], (input.cells as string[][]) ?? [['hello']]),
+    );
+  const store = new ApprovalStore({ postToolResult, execute, buildPreview });
+  return { store, postToolResult, execute, buildPreview };
 }
 
 describe('ApprovalStore', () => {
   it('enqueue builds a preview, exposes an immutable snapshot, and notifies subscribers', async () => {
-    const { store } = makeStore();
+    const { store, buildPreview } = makeStore();
     const seen: number[] = [];
     store.subscribe(() => seen.push(store.getPending().length));
     const before = store.getPending();
     await store.enqueue(writeRequest());
+    expect(buildPreview).toHaveBeenCalledWith('write_range', { address: 'B2', cells: [['hello']] });
     expect(store.getPending()).toHaveLength(1);
     expect(store.getPending()).not.toBe(before); // new snapshot reference
     expect(store.getPending()[0]).toMatchObject({
@@ -37,10 +68,10 @@ describe('ApprovalStore', () => {
   });
 
   it('apply executes the tool and posts the success result', async () => {
-    const { store, postToolResult } = makeStore();
+    const { store, postToolResult, execute } = makeStore();
     await store.enqueue(writeRequest());
     await store.apply('tu-w1');
-    expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['hello']]);
+    expect(execute).toHaveBeenCalledWith('write_range', { address: 'B2', cells: [['hello']] });
     expect(postToolResult).toHaveBeenCalledWith({
       toolUseId: 'tu-w1',
       status: 'success',
@@ -50,7 +81,17 @@ describe('ApprovalStore', () => {
   });
 
   it('apply posts status:error when execution fails', async () => {
-    const { store, postToolResult } = makeStore();
+    const execute: Execute = vi.fn(async () => ({
+      status: 'error' as const,
+      output: { error: 'A worksheet with this name already exists.' },
+    }));
+    const buildPreview = vi.fn(async (toolName: string) => ({
+      kind: 'summary' as const,
+      toolName,
+      target: 'Sheet1',
+      description: 'Create a new sheet named "Sheet1"',
+    }));
+    const { store, postToolResult } = makeStore({ execute, buildPreview });
     await store.enqueue({
       type: 'tool_request',
       toolUseId: 'tu-w2',
@@ -67,10 +108,10 @@ describe('ApprovalStore', () => {
   });
 
   it('reject posts status:rejected WITHOUT executing', async () => {
-    const { store, postToolResult } = makeStore();
+    const { store, postToolResult, execute } = makeStore();
     await store.enqueue(writeRequest('tu-w3'));
     await store.reject('tu-w3');
-    expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['']]); // untouched
+    expect(execute).not.toHaveBeenCalled(); // untouched
     expect(postToolResult).toHaveBeenCalledWith({
       toolUseId: 'tu-w3',
       status: 'rejected',
@@ -80,38 +121,23 @@ describe('ApprovalStore', () => {
   });
 
   describe('auto-apply mode', () => {
-    // NOTE: buildPreview reads write_range cells from input.cells
-    // (requireCellMatrix(input, 'cells')), so these requests use `cells`. The
-    // older tests above use `values` — the pre-existing cells/values param
-    // mismatch the prior commit captured. These use the correct key so they
-    // exercise the real auto-apply path end-to-end.
-    function cellsRequest(toolUseId: string): ToolRequest {
-      return {
-        type: 'tool_request',
-        toolUseId,
-        toolName: 'write_range',
-        input: { address: 'B2', cells: [['hello']] },
-        mutating: true,
-      };
-    }
-
     it('defaults to Ask: enqueue parks in the queue and does NOT execute', async () => {
-      const { store } = makeStore();
+      const { store, execute } = makeStore();
       expect(store.isAutoApply()).toBe(false);
-      await store.enqueue(cellsRequest('tu-auto0'));
+      await store.enqueue(writeRequest('tu-auto0'));
       expect(store.getPending()).toHaveLength(1);
-      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['']]); // untouched
+      expect(execute).not.toHaveBeenCalled(); // untouched
     });
 
     it('in Auto mode enqueue applies immediately WITHOUT queuing a preview card', async () => {
-      const { store, postToolResult } = makeStore();
+      const { store, postToolResult, execute } = makeStore();
       store.setAutoApply(true);
       expect(store.isAutoApply()).toBe(true);
-      await store.enqueue(cellsRequest('tu-auto1'));
+      await store.enqueue(writeRequest('tu-auto1'));
       // No card parked — it was applied straight through.
       expect(store.getPending()).toHaveLength(0);
       // Still executed (the write landed) and still reported (recorded/audited).
-      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['hello']]);
+      expect(execute).toHaveBeenCalledWith('write_range', { address: 'B2', cells: [['hello']] });
       expect(postToolResult).toHaveBeenCalledWith({
         toolUseId: 'tu-auto1',
         status: 'success',
@@ -120,7 +146,10 @@ describe('ApprovalStore', () => {
     });
 
     it('Auto mode still surfaces an unbuildable-input error (no silent execution)', async () => {
-      const { store, postToolResult } = makeStore();
+      const buildPreview = vi.fn(async () => {
+        throw new Error('Unsupported address: not-an-address');
+      });
+      const { store, postToolResult, execute } = makeStore({ buildPreview });
       store.setAutoApply(true);
       await store.enqueue({
         type: 'tool_request',
@@ -130,6 +159,8 @@ describe('ApprovalStore', () => {
         mutating: true,
       });
       expect(store.getPending()).toHaveLength(0);
+      // A write we can't preview is one we won't silently execute.
+      expect(execute).not.toHaveBeenCalled();
       expect(postToolResult).toHaveBeenCalledWith({
         toolUseId: 'tu-auto2',
         status: 'error',
@@ -141,20 +172,19 @@ describe('ApprovalStore', () => {
       const { store } = makeStore();
       store.setAutoApply(true);
       store.setAutoApply(false);
-      await store.enqueue(cellsRequest('tu-auto3'));
+      await store.enqueue(writeRequest('tu-auto3'));
       expect(store.getPending()).toHaveLength(1);
     });
   });
 
   it('uses an injected buildPreview (the HostAdapter seam) instead of the Excel default', async () => {
-    const postToolResult = vi.fn(async () => undefined);
     const buildPreview = vi.fn(async (toolName: string) => ({
       kind: 'summary' as const,
       toolName,
       target: 'mail-draft',
       description: 'draft reply',
     }));
-    const store = new ApprovalStore({ postToolResult, buildPreview });
+    const { store } = makeStore({ buildPreview });
     await store.enqueue(writeRequest('tu-host'));
     expect(buildPreview).toHaveBeenCalledWith('write_range', { address: 'B2', cells: [['hello']] });
     expect(store.getPending()[0]).toMatchObject({
@@ -164,7 +194,10 @@ describe('ApprovalStore', () => {
   });
 
   it('enqueue with unbuildable input posts an immediate error instead of a broken card', async () => {
-    const { store, postToolResult } = makeStore();
+    const buildPreview = vi.fn(async () => {
+      throw new Error('Unsupported address: not-an-address');
+    });
+    const { store, postToolResult } = makeStore({ buildPreview });
     await store.enqueue({
       type: 'tool_request',
       toolUseId: 'tu-w4',
@@ -182,9 +215,9 @@ describe('ApprovalStore', () => {
 
   describe('applied-changes log', () => {
     it('records a revertible grid entry when a write_range Apply succeeds', async () => {
-      const { store } = makeStore();
-      // Seed the cell so before != after — a real diff to undo.
-      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      // before != after — a real diff to undo.
+      const buildPreview = vi.fn(async () => gridPreview([['original']], [['hello']]));
+      const { store } = makeStore({ buildPreview });
       const seen: number[] = [];
       store.subscribe(() => seen.push(store.getAppliedChanges().length));
 
@@ -210,7 +243,17 @@ describe('ApprovalStore', () => {
     });
 
     it('does NOT record an entry when Apply fails (nothing changed)', async () => {
-      const { store } = makeStore();
+      const execute: Execute = vi.fn(async () => ({
+        status: 'error' as const,
+        output: { error: 'A worksheet with this name already exists.' },
+      }));
+      const buildPreview = vi.fn(async (toolName: string) => ({
+        kind: 'summary' as const,
+        toolName,
+        target: 'Sheet1',
+        description: 'x',
+      }));
+      const { store } = makeStore({ execute, buildPreview });
       await store.enqueue({
         type: 'tool_request',
         toolUseId: 'tu-log-err',
@@ -223,7 +266,13 @@ describe('ApprovalStore', () => {
     });
 
     it('records a non-revertible (summary) entry for tools without a before grid', async () => {
-      const { store } = makeStore();
+      const buildPreview = vi.fn(async (toolName: string) => ({
+        kind: 'summary' as const,
+        toolName,
+        target: 'Budget',
+        description: 'Create a new sheet named "Budget"',
+      }));
+      const { store } = makeStore({ buildPreview });
       await store.enqueue({
         type: 'tool_request',
         toolUseId: 'tu-log-sheet',
@@ -244,8 +293,8 @@ describe('ApprovalStore', () => {
     });
 
     it('records an entry on the AUTO-APPLY path too', async () => {
-      const { store } = makeStore();
-      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      const buildPreview = vi.fn(async () => gridPreview([['original']], [['hello']]));
+      const { store } = makeStore({ buildPreview });
       store.setAutoApply(true);
       await store.enqueue(writeRequest('tu-log-auto'));
       const changes = store.getAppliedChanges();
@@ -266,27 +315,40 @@ describe('ApprovalStore', () => {
     });
 
     it('revertChange re-writes the captured before-grid and marks the entry reverted', async () => {
-      const { store, postToolResult } = makeStore();
-      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      const buildPreview = vi.fn(async () => gridPreview([['original']], [['hello']]));
+      const execute: Execute = vi.fn(async () => ({
+        status: 'success' as const,
+        output: { address: 'Sheet1!B2', rowsWritten: 1, columnsWritten: 1 },
+      }));
+      const { store, postToolResult } = makeStore({ buildPreview, execute });
       await store.enqueue(writeRequest('tu-rev1'));
       await store.apply('tu-rev1');
-      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['hello']]);
 
       const id = store.getAppliedChanges()[0]!.id;
       postToolResult.mockClear();
+      (execute as ReturnType<typeof vi.fn>).mockClear();
       await store.revertChange(id);
 
-      // The cell is back to its original value.
-      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['original']]);
+      // Revert re-writes the captured before-grid through the write_range executor.
+      expect(execute).toHaveBeenCalledWith('write_range', {
+        address: 'Sheet1!B2',
+        cells: [['original']],
+      });
       // The entry is now marked reverted.
       expect(store.getAppliedChanges()[0]).toMatchObject({ id, reverted: true });
-      // Revert reuses the write_range executor path — it does NOT post a tool
-      // result to the model (this is a user-initiated undo, not a model turn).
+      // Revert is a user-initiated undo, not a model turn — it does NOT post a
+      // tool result to the model.
       expect(postToolResult).not.toHaveBeenCalled();
     });
 
     it('revertChange is a no-op for a non-revertible entry', async () => {
-      const { store } = makeStore();
+      const buildPreview = vi.fn(async (toolName: string) => ({
+        kind: 'summary' as const,
+        toolName,
+        target: 'Budget',
+        description: 'x',
+      }));
+      const { store } = makeStore({ buildPreview });
       await store.enqueue({
         type: 'tool_request',
         toolUseId: 'tu-rev-sum',
@@ -306,16 +368,16 @@ describe('ApprovalStore', () => {
     });
 
     it('revertChange twice does not double-apply (already reverted is a no-op)', async () => {
-      const { store } = makeStore();
-      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      const buildPreview = vi.fn(async () => gridPreview([['original']], [['hello']]));
+      const { store, execute } = makeStore({ buildPreview });
       await store.enqueue(writeRequest('tu-rev2'));
       await store.apply('tu-rev2');
       const id = store.getAppliedChanges()[0]!.id;
       await store.revertChange(id);
-      // Mutate the cell after the revert; a second revert must NOT clobber it.
-      getOfficeMock().setValues('Sheet1', 'B2', [['user-typed']]);
+      (execute as ReturnType<typeof vi.fn>).mockClear();
+      // A second revert on an already-reverted entry must NOT execute again.
       await store.revertChange(id);
-      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['user-typed']]);
+      expect(execute).not.toHaveBeenCalled();
     });
   });
 });

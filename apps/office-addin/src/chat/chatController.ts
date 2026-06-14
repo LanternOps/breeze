@@ -16,9 +16,7 @@ import {
   type StreamCallbacks,
   type StreamHandle,
 } from '../api/client';
-import { dispatchToolRequest, executeTool, type ToolRequest } from '../tools/dispatcher';
 import { ApprovalStore } from '../approval/approvalStore';
-import { excelHostAdapter } from '../host/excel';
 import type { HostAdapter } from '../host/types';
 import type {
   ClientAiStreamEvent,
@@ -28,12 +26,36 @@ import type {
   SessionHistory,
   SessionListItem,
   ToolCompletedStatus,
+  ToolExecutor,
   ToolResultBody,
   TurnUsage,
   WorkbookContext,
   WorkbookContextKind,
   WriteApproval,
 } from '../api/types';
+
+/** One tool_request event off the SSE stream (host-neutral discriminant). */
+type ToolRequest = Extract<ClientAiStreamEvent, { type: 'tool_request' }>;
+
+/**
+ * Host-neutral tool runner: invokes one executor from the host's tool layer and
+ * never throws — executor failures collapse to { status: 'error' } so the model
+ * can react. Mirrors the Excel dispatcher's executeTool, but bound to whatever
+ * tool layer the injected host supplies (no static Excel import).
+ */
+async function runTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  executors: Record<string, ToolExecutor>,
+): Promise<{ status: 'success' | 'error'; output: unknown }> {
+  const executor = executors[toolName];
+  if (!executor) return { status: 'error', output: { error: `Unknown tool: ${toolName}` } };
+  try {
+    return { status: 'success', output: await executor(input) };
+  } catch (err) {
+    return { status: 'error', output: { error: err instanceof Error ? err.message : String(err) } };
+  }
+}
 
 export type ChatApi = {
   createSession: (body?: CreateSessionBody) => Promise<SessionCreated>;
@@ -102,10 +124,11 @@ function bannerText(err: unknown): string {
 export type ChatControllerDeps = {
   api?: ChatApi;
   /**
-   * The concrete host (Excel by default). The single place the host is chosen;
-   * the controller routes capture/preview/tool execution through it.
+   * The concrete host. REQUIRED — the controller is host-neutral and routes all
+   * capture/preview/tool execution through this adapter. The composition root
+   * (ChatPane) injects the Excel adapter; tests inject a fake.
    */
-  host?: HostAdapter;
+  host: HostAdapter;
   /**
    * Direct overrides for the context-capture seams. Take precedence over the
    * host adapter so existing tests that inject these keep working; production
@@ -138,9 +161,9 @@ export class ChatController {
   private capture: (kind: WorkbookContextKind) => Promise<WorkbookContext | undefined>;
   private captureName: () => Promise<string | undefined>;
 
-  constructor(deps: ChatControllerDeps = {}) {
+  constructor(deps: ChatControllerDeps) {
     this.api = deps.api ?? realApi;
-    this.host = deps.host ?? excelHostAdapter;
+    this.host = deps.host;
     this.capture = deps.captureContext ?? this.host.captureContext;
     this.captureName = deps.captureName ?? this.host.captureName;
     const host = this.host;
@@ -152,7 +175,7 @@ export class ChatController {
       buildPreview: host.buildPreview,
       // Bind execution to the host's tool layer so apply/auto-apply/revert use
       // the same executors as the dispatcher.
-      execute: (toolName, input) => executeTool(toolName, input, host.toolExecutors),
+      execute: (toolName, input) => runTool(toolName, input, host.toolExecutors),
     });
   }
 
@@ -358,12 +381,15 @@ export class ChatController {
   private async handleToolRequest(request: ToolRequest): Promise<void> {
     const sessionId = this.sessionId;
     if (!sessionId) return; // events only flow on an open stream, which implies a session
-    await dispatchToolRequest(request, {
-      postToolResult: (result) => this.api.postToolResult(sessionId, result),
-      enqueueApproval: (req) => this.approvals.enqueue(req),
-      executors: this.host.toolExecutors,
-      mutatingTools: this.host.mutatingTools,
-    });
+    // Defense-in-depth: the server flag is OR-ed with the host's local set so a
+    // server bug can never auto-execute a write.
+    const mutating = request.mutating || this.host.mutatingTools.has(request.toolName);
+    if (mutating) {
+      await this.approvals.enqueue(request);
+      return;
+    }
+    const { status, output } = await runTool(request.toolName, request.input, this.host.toolExecutors);
+    await this.api.postToolResult(sessionId, { toolUseId: request.toolUseId, status, output });
   }
 
   /** After an SSE reconnect: replace the local thread with server history (already redacted). */
