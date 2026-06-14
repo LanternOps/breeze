@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
 import { getConfig } from '../../config/validate';
 import type { InboundEmailProvider, NormalizedInboundEmail } from './types';
@@ -15,7 +15,16 @@ export class MailgunInboundProvider implements InboundEmailProvider {
     const expected = createHmac('sha256', key).update(timestamp + token).digest('hex');
     const a = Buffer.from(expected, 'hex');
     const b = Buffer.from(signature, 'hex');
-    return a.length === b.length && timingSafeEqual(a, b);
+    if (!(a.length === b.length && timingSafeEqual(a, b))) return false;
+
+    // Replay/staleness guard: reject signatures whose timestamp is outside a
+    // 15-minute tolerance (a non-numeric timestamp is treated as invalid).
+    const ts = Number(timestamp);
+    if (!Number.isFinite(ts)) return false;
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSec - ts) > 900) return false;
+
+    return true;
   }
 
   async parse(req: HonoRequest): Promise<NormalizedInboundEmail> {
@@ -23,9 +32,16 @@ export class MailgunInboundProvider implements InboundEmailProvider {
     const from = extractEmail(b.sender || b.from || '');
     const fromName = extractName(b.from || '');
     const refs = (b['References'] || '').trim();
+    // When no Message-Id is present, fall back to a content hash that is STABLE
+    // across provider retries — the signing `timestamp` differs each retry, so
+    // hashing it (the old fallback) defeated dedup. Hash the immutable envelope.
+    const messageId = b['Message-Id'] || b['message-id'];
+    const fallbackId = `sha256:${createHash('sha256')
+      .update(`${from}\n${b.subject ?? ''}\n${b['stripped-text'] ?? b['body-plain'] ?? ''}`)
+      .digest('hex')}`;
     return {
       provider: this.name,
-      providerMessageId: b['Message-Id'] || b['message-id'] || `${b.recipient}:${b.timestamp ?? ''}`,
+      providerMessageId: messageId || fallbackId,
       to: extractEmail(b.recipient || ''),
       from,
       fromName: fromName || undefined,

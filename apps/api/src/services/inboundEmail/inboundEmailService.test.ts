@@ -207,6 +207,33 @@ describe('processInboundEmail', () => {
     expect(log[0]!.ticketId).toBe('t-1');
   });
 
+  it('matches on a thread key in the MIDDLE of references (not just In-Reply-To / last)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no dup
+    // The matching key sits in the middle of the References chain. The query now
+    // searches ALL candidate keys via inArray, so it must still match.
+    state.selectRows['tickets'] = [{
+      id: 't-mid', partnerId: 'p-1', orgId: 'o-1', status: 'open',
+      emailThreadKey: '<msg-mid@tickets.example.com>', internalNumber: 'T-2026-0002'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+
+    await processInboundEmail(email({
+      inReplyTo: undefined,
+      references: ['<msg-0@x>', '<msg-mid@tickets.example.com>', '<msg-last@x>']
+    }));
+
+    // appended a public comment on the matched ticket (no reopen — status open)
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.isPublic).toBe(true);
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('matched');
+    expect(log[0]!.ticketId).toBe('t-mid');
+  });
+
   it('GUARD: refuses to touch a matched ticket from another partner (-> failed, no write)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];

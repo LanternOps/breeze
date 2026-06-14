@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { ticketEmailInbound, tickets, ticketComments, portalUsers, organizations } from '../../db/schema';
 import { createTicket } from '../ticketService';
@@ -55,6 +55,12 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
   }
 
   // (2) Idempotency — provider retries / at-least-once delivery. Scoped to the partner.
+  // This SELECT alone is NOT the exactly-once guarantee: under CONCURRENT delivery two
+  // workers can both miss the dup here and race to insert. Exactly-once is enforced by the
+  // `(partner_id, provider_message_id)` UNIQUE index combined with the surrounding
+  // `withSystemDbAccessContext` transaction — the losing insert hits 23505, its transaction
+  // rolls back, BullMQ retries the job, and the retry's dedup SELECT then finds the row the
+  // winner committed and returns early. This SELECT is the fast path; the index is the lock.
   const dup = await db
     .select({ id: ticketEmailInbound.id })
     .from(ticketEmailInbound)
@@ -127,13 +133,17 @@ async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string)
     internalNumber: tickets.internalNumber
   };
 
-  // 1) thread headers -> email_thread_key (scoped to partner)
-  const key = n.inReplyTo ?? n.references?.[n.references.length - 1];
-  if (key) {
+  // 1) thread headers -> email_thread_key (scoped to partner). Match against ALL
+  // candidate keys (In-Reply-To + every References entry), not just the last one —
+  // a reply's parent can be anywhere in the References chain.
+  const candidateKeys = Array.from(
+    new Set([n.inReplyTo, ...(n.references ?? [])].filter(Boolean) as string[])
+  );
+  if (candidateKeys.length > 0) {
     const rows = await db
       .select(cols)
       .from(tickets)
-      .where(and(eq(tickets.partnerId, partnerId), eq(tickets.emailThreadKey, key)))
+      .where(and(eq(tickets.partnerId, partnerId), inArray(tickets.emailThreadKey, candidateKeys)))
       .limit(1);
     if (rows[0]) return rows[0] as MatchedTicket;
   }

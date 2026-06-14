@@ -11,9 +11,12 @@
  *   rate-limit (per source IP) → provider.verify (HMAC) → provider.parse → enqueue → 202
  *
  * Error semantics chosen for provider retry behaviour:
+ *   429 — rate-limit failure: provider SHOULD retry. This also covers a Redis
+ *         outage, because rateLimiter fails CLOSED (a failed limiter check returns
+ *         not-allowed -> 429), so a Redis-down request never reaches the enqueue path.
  *   401 — bad HMAC: provider should NOT retry (signature is permanent)
  *   400 — parse error: provider should NOT retry (payload is malformed)
- *   503 — queue error: provider SHOULD retry (transient Redis failure)
+ *   503 — enqueue failure (queue add rejected): provider SHOULD retry
  *   202 — accepted for async processing
  */
 
@@ -60,8 +63,9 @@ emailWebhookRoutes.post('/email-inbound', async (c) => {
     }, 400);
   }
 
-  // 4. Enqueue for async processing — return 503 on Redis failure so the
-  //    provider retries the webhook delivery (at-least-once semantics).
+  // 4. Enqueue for async processing — return 503 if the queue add is rejected so the
+  //    provider retries the webhook delivery (at-least-once semantics). Note: a full
+  //    Redis outage surfaces earlier as a 429 from the fail-closed rate limiter above.
   try {
     await enqueueInboundEmail(parsed);
   } catch (err) {
