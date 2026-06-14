@@ -99,6 +99,13 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 // remote actuate_elevation command handler, and (Task 5) by the local
 // etwlua-driven flow — the receiver is on *Heartbeat so RunPamFlow can share it.
 func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, timeoutMs int) pamactuator.Result {
+	// Serialize the whole promote→Trigger→demote critical section against any
+	// concurrent denyConsent (or a second actuateElevation): two goroutines
+	// driving SendInput/SetThreadDesktop against the same live consent.exe
+	// would corrupt input injection. See Heartbeat.pamActuateMu.
+	h.pamActuateMu.Lock()
+	defer h.pamActuateMu.Unlock()
+
 	manager := newElevationAccountManager()
 	cred, err := manager.Promote(ctx)
 	if err != nil {

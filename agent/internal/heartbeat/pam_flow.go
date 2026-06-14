@@ -29,6 +29,19 @@ const (
 // path resolves remotely: the server issues an actuate_elevation command once
 // a technician approves.
 func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etwlua.ElevationOutcome) {
+	// RunPamFlow runs on the etwlua loop goroutine and reaches raw SendInput
+	// syscalls via the actuator — unlike the remote actuate path, there is no
+	// worker-pool recover() above it. A syscall panic here would crash the
+	// whole agent. Contain it: the credential-zeroing/demote defers inside
+	// actuateElevation still run during unwinding, so this is purely
+	// availability hardening, not a correctness shortcut.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("pam: panic in RunPamFlow; elevation flow aborted",
+				"elevationRequestId", outcome.RequestID, "panic", r)
+		}
+	}()
+
 	switch outcome.Status {
 	case "denied":
 		h.denyConsent(ctx, outcome.RequestID, "policy_denied") // policy hard-deny, no dialog
@@ -77,8 +90,19 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 
 	switch sessionbroker.ComposePamDecision(verdict, dialog, nil) {
 	case sessionbroker.PamActionActuate:
-		res := h.actuateElevation(ctx, outcome.RequestID, defaultActuateTimeoutMs)
-		log.Info("pam: local actuation complete", "elevationRequestId", outcome.RequestID, "success", res.Success, "reason", res.Reason)
+		// Bound the local actuation with a per-flow ceiling, mirroring the
+		// remote handler (handlers_actuate.go). Deriving from ctx (not
+		// context.Background) preserves agent-shutdown cancellation while
+		// adding a flow-scoped timeout so a stuck desktop can't pin the
+		// etwlua loop goroutine forever.
+		actCtx, cancel := context.WithTimeout(ctx, 2*defaultActuateTimeoutMs*time.Millisecond)
+		res := h.actuateElevation(actCtx, outcome.RequestID, defaultActuateTimeoutMs)
+		cancel()
+		if res.Success {
+			log.Info("pam: local actuation complete", "elevationRequestId", outcome.RequestID, "success", true, "reason", res.Reason)
+		} else {
+			log.Warn("pam: local actuation failed", "elevationRequestId", outcome.RequestID, "reason", res.Reason, "message", res.DetailMessage)
+		}
 	case sessionbroker.PamActionDeny:
 		h.denyConsent(ctx, outcome.RequestID, dialog.Reason)
 	case sessionbroker.PamActionAwaitRemote:
@@ -88,10 +112,21 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 
 // denyConsent cancels the live consent.exe prompt and logs the denial.
 func (h *Heartbeat) denyConsent(ctx context.Context, requestID, reason string) {
+	// Serialize the Dismiss against any concurrent actuateElevation so the two
+	// never drive SendInput against the same prompt at once. See pamActuateMu.
+	h.pamActuateMu.Lock()
 	res := newActuator().Dismiss(ctx)
-	log.Info("pam: denied elevation, dismissed consent prompt",
-		"elevationRequestId", requestID, "reason", reason,
-		"dismiss_success", res.Success, "dismiss_reason", res.Reason)
+	h.pamActuateMu.Unlock()
+
+	if res.Success {
+		log.Info("pam: denied elevation, dismissed consent prompt",
+			"elevationRequestId", requestID, "reason", reason,
+			"dismiss_success", true, "dismiss_reason", res.Reason)
+	} else {
+		log.Warn("pam: deny enforcement FAILED — consent.exe may still be live",
+			"elevationRequestId", requestID, "reason", reason,
+			"dismiss_reason", res.Reason, "dismiss_message", res.DetailMessage)
+	}
 }
 
 // buildPamRequestDialog maps a detected ETW event onto the dialog payload.
@@ -103,6 +138,11 @@ func buildPamRequestDialog(ev etwlua.Event) ipc.PamRequestDialog {
 		Hash:           ev.TargetExecutableHash,
 		SubjectUser:    ev.SubjectUsername,
 		CommandLine:    ev.CommandLine,
+		// TimeoutSeconds is informational only today: the authoritative
+		// round-trip timeout is enforced broker-side via the pamDialogTimeout
+		// arg to RequestPamApproval, and the user-helper MessageBox does not
+		// currently self-dismiss on this value. Populated for a future helper
+		// self-timeout — do not rely on it for enforcement.
 		TimeoutSeconds: int(pamDialogTimeout.Seconds()),
 	}
 }

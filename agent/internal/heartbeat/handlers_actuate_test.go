@@ -98,7 +98,7 @@ func TestHandleActuateElevationUsesLocalCredentialAndDemotes(t *testing.T) {
 		}}
 	})
 
-	result := handleActuateElevation(nil, Command{
+	result := handleActuateElevation(&Heartbeat{}, Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{
@@ -154,7 +154,7 @@ func TestHandleActuateElevationDemotesWhenActuatorPanics(t *testing.T) {
 		}
 	}()
 
-	_ = handleActuateElevation(nil, Command{
+	_ = handleActuateElevation(&Heartbeat{}, Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{
@@ -174,7 +174,7 @@ func TestHandleActuateElevationPromoteFailureReturnsStructuredResult(t *testing.
 		}}
 	})
 
-	result := handleActuateElevation(nil, Command{
+	result := handleActuateElevation(&Heartbeat{}, Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{

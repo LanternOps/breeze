@@ -2,6 +2,9 @@ package heartbeat
 
 import (
 	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +23,10 @@ func TestRunPamFlow(t *testing.T) {
 		name          string
 		status        string
 		dialog        ipc.PamDialogResult
+		// returnErr, when non-nil, is returned by the pamRequestDialog seam to
+		// simulate a broker round-trip failure. RunPamFlow must coerce that to
+		// deny+dismiss regardless of the (ignored) dialog result.
+		returnErr     error
 		noSession     bool
 		// noBroker builds the heartbeat with nil swappable fields (pamFindSession,
 		// pamRequestDialog) AND a nil sessionBroker, reproducing production wiring
@@ -112,15 +119,40 @@ func TestRunPamFlow(t *testing.T) {
 			wantDismissed: true,
 			wantActuated:  false,
 		},
+		{
+			// Broker round-trip error must fail safe: even an APPROVED dialog
+			// is overridden to deny+dismiss (pam_flow.go dialog-error branch).
+			name:          "dialog round-trip error coerces to deny+dismiss",
+			status:        "auto_approved",
+			dialog:        approved, // overridden by the error path
+			returnErr:     errors.New("broker pipe closed"),
+			wantDialog:    true, // the ask(...) seam was reached (and errored)
+			wantTriggered: false,
+			wantDismissed: true,
+			wantActuated:  false,
+		},
+		{
+			// Unknown/future status hits the inert default branch: no dialog,
+			// no actuation, no dismissal.
+			name:          "unknown status is inert (default branch)",
+			status:        "some_future_status",
+			dialog:        approved, // ignored
+			wantDialog:    false,
+			wantTriggered: false,
+			wantDismissed: false,
+			wantActuated:  false,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var triggered, dismissed bool
+			var gotRequest pamactuator.Request
 			swapActuatorForTest(t, func() pamactuator.Actuator {
 				return fakeActuator{
-					trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+					trigger: func(_ context.Context, req pamactuator.Request) pamactuator.Result {
 						triggered = true
+						gotRequest = req
 						return pamactuator.Result{Success: true, Reason: "ok"}
 					},
 					dismiss: func(context.Context) pamactuator.Result {
@@ -136,6 +168,8 @@ func TestRunPamFlow(t *testing.T) {
 			swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
 
 			var dialogCalled bool
+			var gotDialog ipc.PamRequestDialog
+			var gotDialogTimeout time.Duration
 			// noBroker reproduces production wiring: both swappable seams nil
 			// AND a nil sessionBroker. The defensive guard in RunPamFlow must
 			// keep this from dereferencing the nil broker.
@@ -150,18 +184,22 @@ func TestRunPamFlow(t *testing.T) {
 					}
 					return &sessionbroker.Session{}
 				}
-				h.pamRequestDialog = func(_ *sessionbroker.Session, _ string, _ ipc.PamRequestDialog, _ time.Duration) (ipc.PamDialogResult, error) {
+				h.pamRequestDialog = func(_ *sessionbroker.Session, _ string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error) {
 					dialogCalled = true
-					return tc.dialog, nil
+					gotDialog = req
+					gotDialogTimeout = timeout
+					return tc.dialog, tc.returnErr
 				}
 			}
 
+			// Distinct, recognizable field values so a transposition (e.g.
+			// Signer↔Hash) in buildPamRequestDialog fails the mapping assertion.
 			ev := etwlua.Event{
-				SubjectUsername:        "CORP\\\\alice",
-				TargetExecutablePath:   `C:\Windows\regedit.exe`,
-				TargetExecutableHash:   "abc123",
-				TargetExecutableSigner: "Microsoft Windows",
-				CommandLine:            `regedit.exe`,
+				SubjectUsername:        "CORP\\subjectuser",
+				TargetExecutablePath:   `C:\path\to\target.exe`,
+				TargetExecutableHash:   "hash-deadbeef",
+				TargetExecutableSigner: "signer-Acme Corp",
+				CommandLine:            `target.exe --do-thing`,
 			}
 			outcome := etwlua.ElevationOutcome{RequestID: "req-1", Status: tc.status}
 
@@ -193,6 +231,142 @@ func TestRunPamFlow(t *testing.T) {
 			if manager.demoteSeen != wantDemote {
 				t.Errorf("Demote called %d times, want %d", manager.demoteSeen, wantDemote)
 			}
+
+			// FIX 3: whenever the dialog round-trip succeeds, assert the full
+			// ETW-event → PamRequestDialog field mapping. This guards a
+			// security-sensitive, compiler-invisible mapping (a Signer↔Hash
+			// transposition would silently mislabel the prompt to the user).
+			if tc.wantDialog && tc.returnErr == nil {
+				if gotDialog.ExePath != ev.TargetExecutablePath {
+					t.Errorf("dialog ExePath = %q, want %q", gotDialog.ExePath, ev.TargetExecutablePath)
+				}
+				if gotDialog.Signer != ev.TargetExecutableSigner {
+					t.Errorf("dialog Signer = %q, want %q", gotDialog.Signer, ev.TargetExecutableSigner)
+				}
+				if gotDialog.Hash != ev.TargetExecutableHash {
+					t.Errorf("dialog Hash = %q, want %q", gotDialog.Hash, ev.TargetExecutableHash)
+				}
+				if gotDialog.SubjectUser != ev.SubjectUsername {
+					t.Errorf("dialog SubjectUser = %q, want %q", gotDialog.SubjectUser, ev.SubjectUsername)
+				}
+				if gotDialog.CommandLine != ev.CommandLine {
+					t.Errorf("dialog CommandLine = %q, want %q", gotDialog.CommandLine, ev.CommandLine)
+				}
+				if gotDialog.TimeoutSeconds != 90 {
+					t.Errorf("dialog TimeoutSeconds = %d, want 90", gotDialog.TimeoutSeconds)
+				}
+				if gotDialogTimeout != pamDialogTimeout {
+					t.Errorf("dialog round-trip timeout = %v, want %v", gotDialogTimeout, pamDialogTimeout)
+				}
+			}
+
+			// FIX 7: on the actuate path, the actuator must receive the right
+			// Request — the same elevation request ID and the default timeout.
+			if tc.wantActuated {
+				if gotRequest.ElevationRequestID != outcome.RequestID {
+					t.Errorf("actuator Request.ElevationRequestID = %q, want %q", gotRequest.ElevationRequestID, outcome.RequestID)
+				}
+				if gotRequest.TimeoutMs != defaultActuateTimeoutMs {
+					t.Errorf("actuator Request.TimeoutMs = %d, want %d", gotRequest.TimeoutMs, defaultActuateTimeoutMs)
+				}
+			}
 		})
+	}
+}
+
+// TestActuateAndDenyMutuallyExclusive proves pamActuateMu serializes consent.exe
+// actuation against dismissal: a remote actuate_elevation (actuateElevation) and
+// a re-fired local deny (denyConsent) must never drive SendInput against the same
+// prompt concurrently. The fake trigger/dismiss closures flip a shared `inside`
+// flag on entry, sleep to widen the overlap window, and fail the test if they
+// observe another invocation already inside the critical section. Run with -race.
+func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
+	var inside atomic.Bool
+	var violation atomic.Bool
+
+	// guarded wraps a fake actuator op: assert nobody else is inside, hold the
+	// section briefly to widen the race window, then clear the flag.
+	guarded := func() {
+		if !inside.CompareAndSwap(false, true) {
+			violation.Store(true) // someone else was already inside
+		}
+		time.Sleep(2 * time.Millisecond)
+		inside.Store(false)
+	}
+
+	swapActuatorForTest(t, func() pamactuator.Actuator {
+		return fakeActuator{
+			trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+				guarded()
+				return pamactuator.Result{Success: true, Reason: "ok"}
+			},
+			dismiss: func(context.Context) pamactuator.Result {
+				guarded()
+				return pamactuator.Result{Success: true, Reason: "dismissed"}
+			},
+		}
+	})
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager {
+		return &fakeElevationManager{cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"}}
+	})
+
+	h := &Heartbeat{}
+
+	const iterations = 40
+	var wg sync.WaitGroup
+	for i := 0; i < iterations; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			h.actuateElevation(context.Background(), "req-actuate", defaultActuateTimeoutMs)
+		}()
+		go func() {
+			defer wg.Done()
+			h.denyConsent(context.Background(), "req-deny", "policy_denied")
+		}()
+	}
+	wg.Wait()
+
+	if violation.Load() {
+		t.Fatal("detected concurrent consent.exe actuation/dismissal — pamActuateMu is not serializing")
+	}
+}
+
+// TestRunPamFlowSurvivesActuatorPanic proves the defer/recover at the top of
+// RunPamFlow contains a syscall-level panic on the local actuate path (which
+// runs on the etwlua loop goroutine, unprotected by the worker-pool recover).
+// The credential-zeroing/demote defers in actuateElevation still run during
+// unwinding; this is purely availability hardening.
+func TestRunPamFlowSurvivesActuatorPanic(t *testing.T) {
+	manager := &fakeElevationManager{cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"}}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+	swapActuatorForTest(t, func() pamactuator.Actuator {
+		return fakeActuator{
+			trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+				panic("simulated SendInput syscall panic")
+			},
+			dismiss: func(context.Context) pamactuator.Result {
+				return pamactuator.Result{Success: true, Reason: "dismissed"}
+			},
+		}
+	})
+
+	h := &Heartbeat{}
+	h.pamFindSession = func(capability, _ string) *sessionbroker.Session {
+		return &sessionbroker.Session{}
+	}
+	h.pamRequestDialog = func(_ *sessionbroker.Session, _ string, _ ipc.PamRequestDialog, _ time.Duration) (ipc.PamDialogResult, error) {
+		return ipc.PamDialogResult{Approved: true}, nil
+	}
+
+	ev := etwlua.Event{TargetExecutablePath: `C:\Windows\regedit.exe`}
+	outcome := etwlua.ElevationOutcome{RequestID: "req-panic", Status: "auto_approved"}
+
+	// Must NOT panic out of RunPamFlow.
+	h.RunPamFlow(context.Background(), ev, outcome)
+
+	// The deferred Demote in actuateElevation must still have run during unwinding.
+	if manager.demoteSeen != 1 {
+		t.Fatalf("Demote called %d times after panic, want 1 (deferred cleanup must run)", manager.demoteSeen)
 	}
 }
