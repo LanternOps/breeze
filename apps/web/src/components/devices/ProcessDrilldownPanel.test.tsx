@@ -43,9 +43,12 @@ describe('ProcessDrilldownPanel', () => {
     render(<ProcessDrilldownPanel deviceId="dev-1" at="2026-06-13T12:32:00.000Z" onClose={() => {}} />);
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
 
-    fetchWithAuth.mockReturnValue(jsonResponse({ processes: [{ name: 'live', pid: 9, cpuPercent: 3, memoryMb: 7 }] }));
+    // Real GET /devices/:id/processes shape is { data: [...processes], meta }.
+    fetchWithAuth.mockReturnValue(jsonResponse({ data: [{ name: 'live', pid: 9, cpuPercent: 3, memoryMb: 7 }], meta: { total: 1 } }));
     fireEvent.click(screen.getByTestId('process-drilldown-live-toggle'));
 
     await waitFor(() => expect(fetchWithAuth).toHaveBeenLastCalledWith(expect.stringContaining('/devices/dev-1/processes')));
+    // and the live row actually renders from `data` (regression guard for the array-under-data shape)
+    await waitFor(() => expect(screen.getByTestId('process-drilldown-row-0')).toHaveTextContent('live'));
   });
 });

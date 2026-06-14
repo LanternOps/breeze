@@ -1053,8 +1053,10 @@ func (h *Heartbeat) runProcessSampler() {
 
 	secs := h.config.ProcessSampleIntervalSeconds
 	if secs < 60 {
+		log.Warn("clamping process_sample_interval_seconds to minimum", "configured", secs, "clamped", 60)
 		secs = 60
 	} else if secs > 3600 {
+		log.Warn("clamping process_sample_interval_seconds to maximum", "configured", secs, "clamped", 3600)
 		secs = 3600
 	}
 	ticker := time.NewTicker(time.Duration(secs) * time.Second)

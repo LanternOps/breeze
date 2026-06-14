@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { Dialog } from '../shared/Dialog';
 
@@ -19,38 +19,50 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(undefined);
-    try {
-      if (live) {
-        const res = await fetchWithAuth(`/devices/${deviceId}/processes?limit=16&sortBy=cpu&sortDesc=true`);
-        if (!res.ok) throw new Error('Failed to fetch live processes');
-        const json = await res.json();
-        const procs = (json.processes ?? json.data?.processes ?? []) as Array<Record<string, unknown>>;
-        setRows(procs.map((p) => ({
-          name: String(p.name ?? ''),
-          pid: Number(p.pid ?? 0),
-          cpu: Number(p.cpuPercent ?? p.cpu ?? 0),
-          ramMb: Number(p.memoryMb ?? p.ramMb ?? 0),
-        })));
-        setSampleTime(null);
-      } else {
-        const res = await fetchWithAuth(`/devices/${deviceId}/process-samples?at=${encodeURIComponent(at)}`);
-        if (!res.ok) throw new Error('Failed to fetch process sample');
-        const json = await res.json();
-        if (!json.sample) { setRows([]); setSampleTime(null); return; }
-        setRows((json.sample.topProcesses ?? []) as Row[]);
-        setSampleTime(json.sample.timestamp);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load processes');
-    } finally {
-      setLoading(false);
-    }
-  }, [deviceId, at, live]);
+  useEffect(() => {
+    // `cancelled` guards against a slow/older response clobbering newer state
+    // (e.g. toggling Live on→off fast) or setting state after unmount.
+    let cancelled = false;
 
-  useEffect(() => { load(); }, [load]);
+    (async () => {
+      setLoading(true);
+      setError(undefined);
+      try {
+        if (live) {
+          const res = await fetchWithAuth(`/devices/${deviceId}/processes?limit=16&sortBy=cpu&sortDesc=true`);
+          if (!res.ok) throw new Error('Failed to fetch live processes');
+          const json = await res.json();
+          // The on-demand endpoint returns { data: [...processes], meta } — the
+          // process array lives directly under `data`.
+          const procs = (Array.isArray(json.data)
+            ? json.data
+            : json.processes ?? json.data?.processes ?? []) as Array<Record<string, unknown>>;
+          if (cancelled) return;
+          setRows(procs.map((p) => ({
+            name: String(p.name ?? ''),
+            pid: Number(p.pid ?? 0),
+            cpu: Number(p.cpuPercent ?? p.cpu ?? 0),
+            ramMb: Number(p.memoryMb ?? p.ramMb ?? 0),
+          })));
+          setSampleTime(null);
+        } else {
+          const res = await fetchWithAuth(`/devices/${deviceId}/process-samples?at=${encodeURIComponent(at)}`);
+          if (!res.ok) throw new Error('Failed to fetch process sample');
+          const json = await res.json();
+          if (cancelled) return;
+          if (!json.sample) { setRows([]); setSampleTime(null); return; }
+          setRows((json.sample.topProcesses ?? []) as Row[]);
+          setSampleTime(json.sample.timestamp);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load processes');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [deviceId, at, live]);
 
   const sorted = useMemo(
     () => [...rows].sort((a, b) => (sortKey === 'cpu' ? b.cpu - a.cpu : b.ramMb - a.ramMb)),
@@ -97,7 +109,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           </thead>
           <tbody>
             {sorted.map((r, i) => (
-              <tr key={`${r.pid}-${i}`} data-testid={`process-drilldown-row-${i}`}>
+              <tr key={r.pid} data-testid={`process-drilldown-row-${i}`}>
                 <td>{r.name}</td>
                 <td>{r.pid}</td>
                 <td>{r.cpu.toFixed(1)}</td>
