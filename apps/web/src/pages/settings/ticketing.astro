@@ -1,8 +1,6 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import TicketCategoriesPage from '../../components/settings/TicketCategoriesPage';
+// Ticketing config now lives on the Partner settings hub (issue #1327). Keep this
+// route as a permanent alias so existing bookmarks / in-app links land on the
+// new Ticketing tab instead of 404ing.
+return Astro.redirect('/settings/partner#ticketing', 301);
 ---
-
-<DashboardLayout title="Ticketing Settings">
-  <TicketCategoriesPage client:load />
-</DashboardLayout>

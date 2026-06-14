@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { tickets, ticketComments } from '../../db/schema';
+import { tickets, ticketComments, ticketStatuses } from '../../db/schema';
 import {
   listSchema,
   createTicketSchema,
@@ -45,9 +45,11 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
       status: tickets.status,
       priority: tickets.priority,
       createdAt: tickets.createdAt,
-      updatedAt: tickets.updatedAt
+      updatedAt: tickets.updatedAt,
+      statusName: ticketStatuses.name
     })
     .from(tickets)
+    .leftJoin(ticketStatuses, eq(tickets.statusId, ticketStatuses.id))
     .where(conditions)
     .orderBy(desc(tickets.createdAt))
     .limit(limit)
@@ -153,9 +155,11 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       status: tickets.status,
       priority: tickets.priority,
       createdAt: tickets.createdAt,
-      updatedAt: tickets.updatedAt
+      updatedAt: tickets.updatedAt,
+      statusName: ticketStatuses.name
     })
     .from(tickets)
+    .leftJoin(ticketStatuses, eq(tickets.statusId, ticketStatuses.id))
     .where(
       and(
         eq(tickets.id, id),

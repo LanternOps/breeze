@@ -80,8 +80,22 @@ vi.mock('../../db', () => ({
         leftJoin: vi.fn(() => ({
           leftJoin: vi.fn(() => ({
             leftJoin: vi.fn(() => ({
-              // 3 leftJoins: list endpoint (tickets + orgs + devices + users)
-              // and the GET /:id decoration query (where → limit(1))
+              leftJoin: vi.fn(() => ({
+                // 4 leftJoins: list/detail endpoints (tickets + orgs + devices + users + ticketStatuses)
+                where: vi.fn((...args: unknown[]) => {
+                  lastWhereArgs.push({ conditions: args });
+                  return {
+                    orderBy: vi.fn((...orderArgs: unknown[]) => {
+                      lastOrderByArgs.push(orderArgs);
+                      return {
+                        limit: vi.fn(() => ({ offset: vi.fn(() => dbSelectMock()) }))
+                      };
+                    }),
+                    limit: vi.fn(() => dbSelectMock())
+                  };
+                })
+              })),
+              // 3 leftJoins: fallback
               where: vi.fn((...args: unknown[]) => {
                 lastWhereArgs.push({ conditions: args });
                 return {
@@ -134,8 +148,9 @@ vi.mock('../../db/schema', () => ({
     source: 'source', slaBreachedAt: 'sla_breached_at', firstResponseAt: 'first_response_at',
     responseSlaMinutes: 'response_sla_minutes', resolutionSlaMinutes: 'resolution_sla_minutes',
     slaPausedAt: 'sla_paused_at', slaPausedMinutes: 'sla_paused_minutes',
-    slaBreachReason: 'sla_breach_reason'
+    slaBreachReason: 'sla_breach_reason', statusId: 'statusId'
   },
+  ticketStatuses: { id: 'id', name: 'name', color: 'color' },
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
   ticketCategories: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId', id: 'id', linkType: 'linkType' },
@@ -519,7 +534,7 @@ describe('POST /tickets/:id/status', () => {
     expect(res.status).toBe(200);
     expect(serviceMocks.changeTicketStatus).toHaveBeenCalledWith(
       TICKET_ID,
-      'resolved',
+      expect.objectContaining({ status: 'resolved' }),
       expect.objectContaining({ resolutionNote: 'Fixed it' }),
       expect.objectContaining({ userId: 'u-1' })
     );

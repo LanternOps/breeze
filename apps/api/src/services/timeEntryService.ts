@@ -1,12 +1,15 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users } from '../db/schema';
+import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
+import { getOrgBillingDefaults } from './ticketConfigService';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
   | 'TICKET_NOT_FOUND'
   | 'TICKET_WRONG_PARTNER'
+  | 'TICKET_ORG_DENIED'
   | 'ENTRY_NOT_FOUND'
   | 'PART_NOT_FOUND'
   | 'NOT_OWN_ENTRY'
@@ -36,6 +39,15 @@ export interface TimeEntryActor {
   partnerId: string | null;
   /** wildcard-permission holders (computed in routes): may manage others' entries + approve */
   manageAll: boolean;
+  /**
+   * auth.accessibleOrgIds — the org-axis allowlist. `null` = system scope
+   * (unrestricted). A partner user with orgAccess='selected' carries only the
+   * granted org ids here, so a ticket in a non-granted org under the same
+   * partner is denied (org-axis check in resolveTicketLink). Threaded from the
+   * route's AuthContext so the system-context ticket read can't be used to
+   * write onto a ticket the caller can't actually see.
+   */
+  accessibleOrgIds: string[] | null;
 }
 
 /** Floored whole minutes — matches the SLA pause-folding convention. */
@@ -103,26 +115,75 @@ async function getCategoryDefaults(categoryId: string): Promise<{ defaultBillabl
 }
 
 /**
- * Validates a ticket link for the acting partner and resolves billing defaults
- * (spec D2: category default + manual override). Returns the denormalization
- * payload for the time-entry/part row.
+ * Validates a ticket link for the acting partner AND org axis, then resolves
+ * billing defaults (spec D2: category default + manual override). Returns the
+ * denormalization payload for the time-entry/part row.
+ *
+ * The ticket is read under system scope (see getTicketForTimeTracking), so the
+ * request's org-axis RLS does NOT gate it. We therefore re-apply the caller's
+ * org-axis allowlist here: a partner user with orgAccess='selected' can target
+ * only tickets in granted orgs, never an arbitrary org under the same partner.
+ * `accessibleOrgIds === null` is system scope (unrestricted) — behavior
+ * unchanged. Mirrors getScopedTicketOr404 / auth.canAccessOrg semantics.
  */
-async function resolveTicketLink(ticketId: string, actorPartnerId: string | null) {
+async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
   const ticket = await getTicketForTimeTracking(ticketId);
   const ticketPartnerId = await resolveTicketPartner(ticket);
   if (!ticketPartnerId) {
     throw new TimeEntryServiceError('Ticket partner is unresolvable', 400, 'PARTNER_UNRESOLVABLE');
   }
-  if (actorPartnerId && ticketPartnerId !== actorPartnerId) {
+  if (actor.partnerId && ticketPartnerId !== actor.partnerId) {
     throw new TimeEntryServiceError('Ticket must belong to the same partner', 400, 'TICKET_WRONG_PARTNER');
   }
-  const category = ticket.categoryId ? await getCategoryDefaults(ticket.categoryId) : null;
+  // Org-axis gate: non-system callers must have access to the ticket's org.
+  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(ticket.orgId)) {
+    throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_ORG_DENIED');
+  }
+  const [org, category] = await Promise.all([
+    getOrgBillingDefaults(ticket.orgId),
+    ticket.categoryId ? getCategoryDefaults(ticket.categoryId) : Promise.resolve(null)
+  ]);
   return {
     ticket,
     partnerId: ticketPartnerId,
-    defaultBillable: category?.defaultBillable ?? false,
-    defaultHourlyRate: category?.defaultHourlyRate ?? null
+    // D6: per-entry explicit override (applied by callers) → org default → category default → false/null
+    defaultBillable: org?.defaultBillable ?? category?.defaultBillable ?? false,
+    defaultHourlyRate: org?.defaultHourlyRate ?? category?.defaultHourlyRate ?? null
   };
+}
+
+/** "45m", "1h 30m", "2h" — shared wording for feed comments. */
+function fmtMinutes(minutes: number | null): string {
+  const m = Math.max(0, minutes ?? 0);
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  if (h === 0) return `${rest}m`;
+  return rest === 0 ? `${h}h` : `${h}h ${rest}m`;
+}
+
+/** D4: internal-only system feed line; never isPublic. No-op without a ticket.
+ *  Swallows insert errors so a failed comment never rolls back a committed mutation. */
+async function insertTimeEntryFeedComment(
+  ticketId: string | null,
+  actor: TimeEntryActor,
+  content: string
+): Promise<void> {
+  if (!ticketId) return;
+  try {
+    await db.insert(ticketComments).values({
+      ticketId,
+      userId: actor.userId,
+      authorName: actor.name ?? null,
+      authorType: 'internal',
+      commentType: 'time_entry',
+      content,
+      isPublic: false,
+      oldValue: null,
+      newValue: null
+    });
+  } catch (err) {
+    console.error('[timeEntryService] feed comment insert failed', err);
+  }
 }
 
 export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEntryActor) {
@@ -132,7 +193,7 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
   let defaultRate: string | null = null;
 
   if (input.ticketId) {
-    const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+    const link = await resolveTicketLink(input.ticketId, actor);
     partnerId = link.partnerId;
     orgId = link.ticket.orgId;
     defaultBillable = link.defaultBillable;
@@ -164,6 +225,12 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
     })
     .returning();
   const entry = rows[0]!;
+
+  await insertTimeEntryFeedComment(
+    entry.ticketId,
+    actor,
+    `${actor.name ?? 'Technician'} logged ${fmtMinutes(entry.durationMinutes)}${entry.isBillable ? ' (billable)' : ''}`
+  );
 
   await emitTimeEntryEvent({
     type: 'time_entry.created',
@@ -201,9 +268,9 @@ async function stopRunningEntry(
   return rows[0] ?? null;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
-}
+// Unwraps the DrizzleQueryError `.cause` so the retry/409 path actually fires
+// (a bare `err.code` check missed every wrapped insert). See utils/pgErrors.
+const isUniqueViolation = (err: unknown): boolean => isPgUniqueViolation(err);
 
 export async function startTimer(input: { ticketId?: string; description?: string }, actor: TimeEntryActor) {
   let partnerId = actor.partnerId;
@@ -212,7 +279,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   let defaultRate: string | null = null;
 
   if (input.ticketId) {
-    const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+    const link = await resolveTicketLink(input.ticketId, actor);
     partnerId = link.partnerId;
     orgId = link.ticket.orgId;
     defaultBillable = link.defaultBillable;
@@ -225,7 +292,14 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   const attempt = async () => {
     // D3: auto-stop the previous timer, then start the new one. The partial
     // unique index time_entries_one_running_per_user_uq is the race backstop.
-    await stopRunningEntry(actor);
+    const autoStopped = await stopRunningEntry(actor);
+    if (autoStopped) {
+      await insertTimeEntryFeedComment(
+        autoStopped.ticketId,
+        actor,
+        `${actor.name ?? 'Technician'} logged ${fmtMinutes(autoStopped.durationMinutes)}${autoStopped.isBillable ? ' (billable)' : ''}`
+      );
+    }
     const rows = await db
       .insert(timeEntries)
       .values({
@@ -278,6 +352,13 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
   if (!stopped) {
     throw new TimeEntryServiceError('No running timer', 404, 'NO_RUNNING_TIMER');
   }
+
+  await insertTimeEntryFeedComment(
+    stopped.ticketId,
+    actor,
+    `${actor.name ?? 'Technician'} logged ${fmtMinutes(stopped.durationMinutes)}${stopped.isBillable ? ' (billable)' : ''}`
+  );
+
   await emitTimeEntryEvent({
     type: 'time_entry.updated',
     timeEntryId: stopped.id,
@@ -332,7 +413,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
       set.ticketId = null;
       set.orgId = null;
     } else {
-      const link = await resolveTicketLink(input.ticketId, actor.partnerId);
+      const link = await resolveTicketLink(input.ticketId, actor);
       if (link.partnerId !== entry.partnerId) {
         throw new TimeEntryServiceError('Ticket must belong to the same partner as the time entry', 400, 'TICKET_WRONG_PARTNER');
       }
@@ -369,6 +450,13 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
   const entry = await getEntryOr404(id);
   assertCanMutate(entry, actor);
   await db.delete(timeEntries).where(eq(timeEntries.id, id));
+
+  await insertTimeEntryFeedComment(
+    entry.ticketId,
+    actor,
+    `${actor.name ?? 'Technician'} removed a${entry.durationMinutes != null ? ` ${fmtMinutes(entry.durationMinutes)}` : ''} time entry`
+  );
+
   await emitTimeEntryEvent({
     type: 'time_entry.deleted',
     timeEntryId: id,
@@ -441,7 +529,7 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 // ── Parts ────────────────────────────────────────────────────────────────
 
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
-  const link = await resolveTicketLink(ticketId, actor.partnerId);
+  const link = await resolveTicketLink(ticketId, actor);
   const rows = await db
     .insert(ticketParts)
     .values({

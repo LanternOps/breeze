@@ -10,6 +10,11 @@ import { Hono } from 'hono';
 //
 // This test asserts the response body contains both keys with the values
 // from the DB row — a check the existing permission tests didn't make.
+//
+// Extended for #1273: the "Reboot pending" list badge has the identical
+// failure mode — `pendingReboot` is selected from the DB in core.ts but was
+// omitted by the same response mapper, so the list/grid badge never rendered
+// (the device-detail page worked because it returns the full row).
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -120,6 +125,7 @@ describe('GET /devices — response shape', () => {
         status: 'offline',
         watchdogStatus: 'connected',
         mainAgentSilentSince: silentSince,
+        pendingReboot: true,
         lastSeenAt: new Date('2026-05-26T19:19:57.519Z'),
         enrolledAt: new Date('2026-04-26T19:39:57.519Z'),
         tags: ['e2e'],
@@ -147,9 +153,11 @@ describe('GET /devices — response shape', () => {
     expect(body.data).toHaveLength(1);
     const row = body.data[0];
 
-    // The two fields the response mapper was silently dropping.
+    // The fields the response mapper was silently dropping.
     expect(row).toHaveProperty('watchdogStatus', 'connected');
     expect(row).toHaveProperty('mainAgentSilentSince', silentSince.toISOString());
+    // #1273 regression — pendingReboot must survive the mapper for the list badge.
+    expect(row).toHaveProperty('pendingReboot', true);
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -171,6 +179,7 @@ describe('GET /devices — response shape', () => {
         status: 'online',
         watchdogStatus: null,
         mainAgentSilentSince: null,
+        pendingReboot: false,
         lastSeenAt: new Date(),
         enrolledAt: new Date(),
         tags: [],
@@ -202,7 +211,9 @@ describe('GET /devices — response shape', () => {
     // (healthy device on a new API).
     expect(Object.prototype.hasOwnProperty.call(row, 'watchdogStatus')).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(row, 'mainAgentSilentSince')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'pendingReboot')).toBe(true);
     expect(row.watchdogStatus).toBeNull();
     expect(row.mainAgentSilentSince).toBeNull();
+    expect(row.pendingReboot).toBe(false);
   });
 });

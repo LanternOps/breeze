@@ -94,7 +94,16 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
+  // The MFA gate added in this PR on create/update/delete. Built once at import
+  // time, so it consults a mutable global flag: tests flip `__denyMfa` to assert
+  // a request without satisfied MFA gets 403. Default (false) keeps the existing
+  // happy-path tests passing.
+  requireMfa: vi.fn(() => async (_c: any, next: any) => {
+    if ((globalThis as any).__denyMfa) {
+      return _c.json({ error: 'MFA required' }, 403);
+    }
+    await next();
+  })
 }));
 
 import { db } from '../db';
@@ -270,6 +279,21 @@ describe('deployment routes', () => {
       expect(body.data.name).toBe('Updated Deploy');
     });
 
+    it('should return 403 when MFA is not satisfied', async () => {
+      (globalThis as any).__denyMfa = true;
+      try {
+        const res = await app.request(`/deployments/${DEPLOYMENT_ID_1}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Updated Deploy' })
+        });
+        expect(res.status).toBe(403);
+        expect(db.update).not.toHaveBeenCalled();
+      } finally {
+        (globalThis as any).__denyMfa = false;
+      }
+    });
+
     it('should reject update for non-draft deployment', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -357,6 +381,20 @@ describe('deployment routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.id).toBe(DEPLOYMENT_ID_1);
+    });
+
+    it('should return 403 when MFA is not satisfied', async () => {
+      (globalThis as any).__denyMfa = true;
+      try {
+        const res = await app.request(`/deployments/${DEPLOYMENT_ID_1}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(403);
+        expect(db.delete).not.toHaveBeenCalled();
+      } finally {
+        (globalThis as any).__denyMfa = false;
+      }
     });
 
     it('should reject deleting non-draft deployment', async () => {

@@ -13,6 +13,8 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { writeRouteAudit } from '../services/auditEvents';
+import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
 
 export const softwareInventoryRoutes = new Hono();
 const requireSoftwareInventoryRead = requirePermission(
@@ -348,6 +350,26 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
       console.warn('[softwareInventory] Failed to auto-link config policy for Default Allowlist:', err);
     }
 
+    recordSoftwarePolicyAudit({
+      orgId,
+      policyId: existing.id,
+      action: 'inventory_approve',
+      actor: 'user',
+      actorId: auth.user?.id ?? null,
+      details: { softwareName, vendor: vendor || null, mode: 'allowlist' },
+    }).catch((err) => {
+      console.error('[softwareInventory] Audit write failed for inventory_approve:', err);
+    });
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software_policy.inventory_approve',
+      resourceType: 'software_policy',
+      resourceId: existing.id,
+      resourceName: existing.name,
+      details: { softwareName, vendor: vendor || null, mode: 'allowlist' },
+    });
+
     return c.json({ success: true, policyId: existing.id });
   }
 
@@ -375,6 +397,26 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
   } catch (err) {
     console.warn('[softwareInventory] Failed to auto-link config policy for Default Allowlist:', err);
   }
+
+  recordSoftwarePolicyAudit({
+    orgId,
+    policyId: created!.id,
+    action: 'inventory_approve',
+    actor: 'user',
+    actorId: auth.user?.id ?? null,
+    details: { softwareName, vendor: vendor || null, mode: 'allowlist', created: true },
+  }).catch((err) => {
+    console.error('[softwareInventory] Audit write failed for inventory_approve:', err);
+  });
+
+  writeRouteAudit(c, {
+    orgId,
+    action: 'software_policy.inventory_approve',
+    resourceType: 'software_policy',
+    resourceId: created!.id,
+    resourceName: created!.name,
+    details: { softwareName, vendor: vendor || null, mode: 'allowlist', created: true },
+  });
 
   return c.json({ success: true, policyId: created!.id }, 201);
 });
@@ -428,6 +470,26 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
       console.warn('[softwareInventory] Failed to auto-link config policy for Default Blocklist:', err);
     }
 
+    recordSoftwarePolicyAudit({
+      orgId,
+      policyId: existing.id,
+      action: 'inventory_deny',
+      actor: 'user',
+      actorId: auth.user?.id ?? null,
+      details: { softwareName, vendor: vendor || null, mode: 'blocklist' },
+    }).catch((err) => {
+      console.error('[softwareInventory] Audit write failed for inventory_deny:', err);
+    });
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software_policy.inventory_deny',
+      resourceType: 'software_policy',
+      resourceId: existing.id,
+      resourceName: existing.name,
+      details: { softwareName, vendor: vendor || null, mode: 'blocklist' },
+    });
+
     return c.json({ success: true, policyId: existing.id });
   }
 
@@ -453,6 +515,26 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
   } catch (err) {
     console.warn('[softwareInventory] Failed to auto-link config policy for Default Blocklist:', err);
   }
+
+  recordSoftwarePolicyAudit({
+    orgId,
+    policyId: created!.id,
+    action: 'inventory_deny',
+    actor: 'user',
+    actorId: auth.user?.id ?? null,
+    details: { softwareName, vendor: vendor || null, mode: 'blocklist', created: true },
+  }).catch((err) => {
+    console.error('[softwareInventory] Audit write failed for inventory_deny:', err);
+  });
+
+  writeRouteAudit(c, {
+    orgId,
+    action: 'software_policy.inventory_deny',
+    resourceType: 'software_policy',
+    resourceId: created!.id,
+    resourceName: created!.name,
+    details: { softwareName, vendor: vendor || null, mode: 'blocklist', created: true },
+  });
 
   return c.json({ success: true, policyId: created!.id }, 201);
 });
@@ -501,6 +583,26 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
         .update(softwarePolicies)
         .set({ rules, updatedAt: new Date() })
         .where(eq(softwarePolicies.id, policy.id));
+
+      recordSoftwarePolicyAudit({
+        orgId,
+        policyId: policy.id,
+        action: 'inventory_clear',
+        actor: 'user',
+        actorId: auth.user?.id ?? null,
+        details: { softwareName, vendor: vendor || null, mode: policy.mode },
+      }).catch((err) => {
+        console.error('[softwareInventory] Audit write failed for inventory_clear:', err);
+      });
+
+      writeRouteAudit(c, {
+        orgId,
+        action: 'software_policy.inventory_clear',
+        resourceType: 'software_policy',
+        resourceId: policy.id,
+        resourceName: policy.name,
+        details: { softwareName, vendor: vendor || null, mode: policy.mode },
+      });
     }
   }
 

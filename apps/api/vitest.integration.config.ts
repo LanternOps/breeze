@@ -8,7 +8,17 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/__tests__/integration/**/*.test.ts'],
+    include: [
+      'src/__tests__/integration/**/*.test.ts',
+      // Co-located real-driver integration test for the inbound email pipeline
+      // (placed alongside the code it exercises, per the repo's test-placement
+      // convention). It uses the shared integration setup via setupFiles plus an
+      // explicit `./setup` import. Scoped to this dir on purpose: the only other
+      // `*.integration.test.ts` outside __tests__/integration (manifestSigning)
+      // is a MOCKED unit test that mocks `../db` and must NOT hook the real-DB
+      // setup — it runs under the default unit config instead.
+      'src/services/inboundEmail/**/*.integration.test.ts',
+    ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's
       // clothing — it stubs the postgres/drizzle layer at the module

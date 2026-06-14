@@ -792,6 +792,7 @@ cisHardeningRoutes.post(
       .select({
         id: cisRemediationActions.id,
         orgId: cisRemediationActions.orgId,
+        deviceId: cisRemediationActions.deviceId,
         status: cisRemediationActions.status,
         approvalStatus: cisRemediationActions.approvalStatus,
       })
@@ -805,6 +806,36 @@ cisHardeningRoutes.post(
         error: 'One or more remediation actions were not found or are outside your scope',
         missingIds,
       }, 404);
+    }
+
+    // Site-scope re-check: RLS only defends the org axis. A
+    // site-restricted user could otherwise approve/queue pending actions another
+    // tech created for devices outside their site allowlist, dispatching CIS
+    // hardening/rollback commands to endpoints beyond their authority. Mirror the
+    // `assertDeviceAccess` / `POST /cis/remediate` site check on each action's
+    // target device before any status flip. Empty/unset allowlist = full org access.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      const targetDeviceIds = Array.from(new Set(actions.map((action) => action.deviceId)));
+      const deviceRows = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(inArray(devices.id, targetDeviceIds));
+      const deviceSiteById = new Map(deviceRows.map((row) => [row.id, row.siteId]));
+
+      const deniedActionIds = actions
+        .filter((action) => {
+          const siteId = deviceSiteById.get(action.deviceId);
+          return typeof siteId !== 'string' || !canAccessSite(permissions, siteId);
+        })
+        .map((action) => action.id);
+
+      if (deniedActionIds.length > 0) {
+        return c.json({
+          error: 'One or more remediation actions target a device outside your site scope',
+          deniedActionIds,
+        }, 403);
+      }
     }
 
     const pendingIds = actions

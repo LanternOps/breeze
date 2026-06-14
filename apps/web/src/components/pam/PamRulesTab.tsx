@@ -23,7 +23,7 @@ function ruleCriteriaSummary(rule: PamRule): string {
   return parts.join(' · ');
 }
 
-export default function PamRulesTab() {
+export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
   const [rules, setRules] = useState<PamRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,7 +74,7 @@ export default function PamRulesTab() {
     const controller = new AbortController();
     void fetchRules(controller.signal);
     return () => controller.abort();
-  }, [fetchRules]);
+  }, [fetchRules, liveTick]);
 
   const toggleEnabled = async (rule: PamRule) => {
     try {
@@ -124,7 +124,8 @@ export default function PamRulesTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Rules are evaluated in priority order (lowest first); the first match decides.
+          Software policies are evaluated first — an allowlist/blocklist match decides before these rules.
+          Rules then run in priority order (lowest first); the first match decides.
         </p>
         <button
           type="button"

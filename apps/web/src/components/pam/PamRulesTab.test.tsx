@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+// rerender is used by the liveTick refetch test below.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRulesTab from './PamRulesTab';
 import { fetchWithAuth } from '../../stores/auth';
@@ -92,6 +93,30 @@ describe('PamRulesTab', () => {
     render(<PamRulesTab />);
     await waitFor(() => {
       expect(screen.getByText('No PAM rules yet')).toBeInTheDocument();
+    });
+  });
+
+  it('shows the evaluation-order copy: software policies are evaluated first', async () => {
+    installFetchRoutes({ rules: [] });
+    render(<PamRulesTab />);
+    await waitFor(() => screen.getByTestId('pam-add-rule-btn'));
+    expect(
+      screen.getByText(/Software policies are evaluated first/i),
+    ).toBeInTheDocument();
+  });
+
+  it('re-fetches rules when the liveTick prop changes', async () => {
+    installFetchRoutes({ rules: [signedRule] });
+    const { rerender } = render(<PamRulesTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-rule-row-rule-1'));
+    const rulesCallsBefore = fetchWithAuthMock.mock.calls.filter(
+      (c) => c[0] === '/pam/rules',
+    ).length;
+
+    rerender(<PamRulesTab liveTick={1} />);
+    await waitFor(() => {
+      const after = fetchWithAuthMock.mock.calls.filter((c) => c[0] === '/pam/rules').length;
+      expect(after).toBe(rulesCallsBefore + 1);
     });
   });
 

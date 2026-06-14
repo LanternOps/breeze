@@ -623,17 +623,27 @@ sensitiveDataRoutes.get(
     const conditions: SQL[] = [];
     const orgCondition = auth.orgCondition(sensitiveDataFindings.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    // Site-axis enforcement: narrow the aggregate to devices in the caller's
+    // allowed sites so site-restricted users don't see cross-site PII/PCI/PHI
+    // totals (mirrors GET /report).
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const rows = await db
+    const baseQuery = db
       .select({
         dataType: sensitiveDataFindings.dataType,
         risk: sensitiveDataFindings.risk,
         status: sensitiveDataFindings.status,
         lastSeenAt: sensitiveDataFindings.lastSeenAt,
       })
-      .from(sensitiveDataFindings)
-      .where(whereClause);
+      .from(sensitiveDataFindings);
+
+    const rows = permissions?.allowedSiteIds
+      ? await baseQuery
+        .innerJoin(devices, eq(devices.id, sensitiveDataFindings.deviceId))
+        .where(whereClause)
+      : await baseQuery.where(whereClause);
 
     const now = Date.now();
     let openTotal = 0;
@@ -718,6 +728,23 @@ sensitiveDataRoutes.post(
 
     if (findings.length === 0) {
       return c.json({ error: 'No findings found' }, 404);
+    }
+
+    // Site-axis enforcement (app-layer; RLS only covers the org axis). A
+    // site-restricted user must not remediate findings on devices outside
+    // their allowed sites. Load the distinct device sites and reject if any
+    // matched finding is on an out-of-site device.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      const deviceIds = Array.from(new Set(findings.map((finding) => finding.deviceId)));
+      const findingDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(inArray(devices.id, deviceIds));
+      const siteDenied = findingDevices.some((device) => !canAccessDeviceSite(device, permissions));
+      if (siteDenied || findingDevices.length !== deviceIds.length) {
+        return c.json({ error: 'Access to one or more device sites denied' }, 403);
+      }
     }
 
     if (payload.dryRun) {

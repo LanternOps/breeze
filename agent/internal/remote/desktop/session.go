@@ -98,6 +98,14 @@ type Session struct {
 	// encoder is swapped to software (OpenH264) mid-session.
 	cpuEncodeErrors int
 
+	// hwRestore governs retrying the hardware encoder after a software
+	// fallback. On macOS, VideoToolbox can stall on a cold first frame and get
+	// demoted to OpenH264; since the CPU capture path has no Windows-style
+	// hardware-restore trigger, this periodically tries to swap back so a
+	// transient stall doesn't pin a CPU core software-encoding 5K for the whole
+	// session. Driven from the ticker capture loop. See session_encoder_restore.go.
+	hwRestore hardwareRestorePolicy
+
 	// cursorOffsetX/Y store the active monitor's virtual desktop origin so
 	// cursorStreamLoop can convert absolute GetCursorInfo coords to
 	// display-relative coords before sending to the viewer.

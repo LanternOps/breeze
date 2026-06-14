@@ -19,7 +19,7 @@ Partner          (lowest priority)
 
 ## Feature types
 
-A policy can bundle up to 8 feature types:
+A policy can bundle multiple feature types:
 
 | Feature | What it controls |
 |---|---|
@@ -31,6 +31,7 @@ A policy can bundle up to 8 feature types:
 | **Security** | Security policy settings |
 | **Monitoring** | Check configuration |
 | **Automation** | Event triggers, cron schedules, bulk actions |
+| **Privileged Access** | Windows UAC elevation prompt capture for [privileged access management](/features/pam/) |
 
 Each feature can be configured in one of two modes:
 
@@ -235,7 +236,7 @@ All paths are relative to `/api/v1`.
 | GET | `/configuration-policies/:id/patch-settings` | Get patch settings for a policy |
 | GET | `/configuration-policies/:id/resolve-patch-config/:deviceId` | Resolve patch config for a specific device |
 
-When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`.
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`, `pam`.
 
 ## Troubleshooting
 

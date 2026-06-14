@@ -6,6 +6,7 @@ import { db } from '../db';
 import { networkKnownGuests } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const networkKnownGuestsRoutes = new Hono();
 const requireKnownGuestRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -64,7 +65,7 @@ networkKnownGuestsRoutes.post(
 
       return c.json({ data: guest }, 201);
     } catch (err: unknown) {
-      if (typeof err === 'object' && err !== null && (err as Record<string, unknown>).code === '23505') {
+      if (isPgUniqueViolation(err)) {
         return c.json({ error: 'This MAC address is already in your known guests list' }, 409);
       }
       throw err;

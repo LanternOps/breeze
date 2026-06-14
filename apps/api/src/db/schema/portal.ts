@@ -83,6 +83,7 @@ export const tickets = pgTable('tickets', {
   emailThreadKey: text('email_thread_key'),
   closedBy: uuid('closed_by').references(() => users.id),
   resolutionNote: text('resolution_note'),
+  statusId: uuid('status_id'),  // FK + ON DELETE SET NULL added in SQL (ticketStatuses lives in ticketConfig.ts — avoid a circular import; same pattern as categoryId above)
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

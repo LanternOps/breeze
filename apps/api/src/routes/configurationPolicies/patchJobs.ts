@@ -76,6 +76,7 @@ patchJobRoutes.post(
   zValidator('json', createPatchJobFromConfigPolicySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
     const { id: configPolicyId } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -104,6 +105,7 @@ patchJobRoutes.post(
       .select({
         id: devices.id,
         orgId: devices.orgId,
+        siteId: devices.siteId,
         hostname: devices.hostname,
       })
       .from(devices)
@@ -111,6 +113,27 @@ patchJobRoutes.post(
 
     const foundDeviceIds = new Set(targetDevices.map((d) => d.id));
     const missingDeviceIds = data.deviceIds.filter((id) => !foundDeviceIds.has(id));
+
+    // Site-scope gate: `requirePatchExecute` populated permissions in context;
+    // enforce `allowedSiteIds` BEFORE any patch_jobs insert / enqueuePatchJob
+    // since RLS does not defend the site axis (it is intra-org). Mirrors the
+    // sibling GET /:id/resolve-patch-config/:deviceId and resolution.ts.
+    if (userPerms?.allowedSiteIds) {
+      const siteDeniedDeviceIds = targetDevices
+        .filter(
+          (d) =>
+            auth.canAccessOrg(d.orgId) &&
+            (typeof d.siteId !== 'string' || !canAccessSite(userPerms, d.siteId))
+        )
+        .map((d) => d.id);
+      if (siteDeniedDeviceIds.length > 0) {
+        return c.json({
+          error: 'Access to one or more device sites denied',
+          skipped: { missingDeviceIds, siteDeniedDeviceIds },
+        }, 403);
+      }
+    }
+
     const accessibleDevices = targetDevices.filter((d) => auth.canAccessOrg(d.orgId));
     const inaccessibleDeviceIds = targetDevices
       .filter((d) => !auth.canAccessOrg(d.orgId))

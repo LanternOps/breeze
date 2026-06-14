@@ -5,7 +5,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 export const tagRoutes = new Hono();
 const requireTagRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -57,6 +57,16 @@ tagRoutes.get(
     const conditions = [] as ReturnType<typeof eq>[];
     if (orgIds) {
       conditions.push(inArray(devices.orgId, orgIds));
+    }
+
+    // Site-axis narrowing — RLS only enforces the org axis, so site-restricted
+    // users must be narrowed app-layer. Mirror devices/core.ts: an empty
+    // allowlist short-circuits to no rows; unset = full org access.
+    const allowedSiteIds = (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+    if (allowedSiteIds) {
+      conditions.push(allowedSiteIds.length > 0
+        ? inArray(devices.siteId, allowedSiteIds)
+        : sql`false`);
     }
 
     const whereCondition = conditions.length ? and(...conditions) : undefined;
@@ -116,6 +126,16 @@ tagRoutes.get(
     const conditions = [] as ReturnType<typeof eq>[];
     if (orgIds) {
       conditions.push(inArray(devices.orgId, orgIds));
+    }
+
+    // Site-axis narrowing — RLS only enforces the org axis, so site-restricted
+    // users must be narrowed app-layer. Mirror devices/core.ts: an empty
+    // allowlist short-circuits to no rows; unset = full org access.
+    const allowedSiteIds = (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+    if (allowedSiteIds) {
+      conditions.push(allowedSiteIds.length > 0
+        ? inArray(devices.siteId, allowedSiteIds)
+        : sql`false`);
     }
 
     // Filter by tag - PostgreSQL array contains (use sql.param for safety)

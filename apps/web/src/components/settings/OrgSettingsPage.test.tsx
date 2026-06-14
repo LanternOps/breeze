@@ -31,6 +31,7 @@ vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="n
 vi.mock('./OrgSecuritySettings', () => ({ default: () => <div data-testid="security" /> }));
 vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
 vi.mock('./OrgRemoteAccessSettings', () => ({ default: () => <div data-testid="remote-access" /> }));
+vi.mock('./OrgTicketSettingsEditor', () => ({ default: () => <div data-testid="org-ticket-settings" /> }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);

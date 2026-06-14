@@ -65,6 +65,23 @@ func TestNoopActuatorIsNonBlocking(t *testing.T) {
 	}
 }
 
+// TestDismissUnsupportedOnNonWindows guards the deny-path stub: on
+// non-Windows hosts Dismiss must report "unsupported_platform" so the
+// Track 6 deny flow can record the outcome rather than block.
+func TestDismissUnsupportedOnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no-op stub only compiled on non-Windows")
+	}
+
+	res := New().Dismiss(context.Background())
+	if res.Success {
+		t.Fatal("Dismiss should not succeed on non-windows")
+	}
+	if res.Reason != "unsupported_platform" {
+		t.Fatalf("reason = %q, want unsupported_platform", res.Reason)
+	}
+}
+
 // TestRequestZeroValuesAreSafe sanity-checks that a zero-valued Request
 // doesn't make the stub panic. The Windows impl applies a default 8000ms
 // timeout when TimeoutMs<=0; the stub doesn't need to but must not crash.

@@ -4,6 +4,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   getConfigPolicy,
   assignPolicy,
@@ -86,8 +87,8 @@ assignmentRoutes.post(
       });
 
       return c.json(assignment, 201);
-    } catch (err: any) {
-      if (err?.code === '23505') {
+    } catch (err: unknown) {
+      if (isPgUniqueViolation(err)) {
         return c.json({ error: 'This policy is already assigned to this target at this level' }, 409);
       }
       throw err;

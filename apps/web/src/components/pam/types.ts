@@ -1,5 +1,7 @@
 /** Shared shapes for the /pam admin UI (#1159), mirroring routes/pam.ts responses. */
 
+import { Bot, MonitorCog, UserCog, type LucideIcon } from 'lucide-react';
+
 export type ElevationStatus =
   | 'pending'
   | 'approved'
@@ -46,6 +48,17 @@ export interface ElevationRequest {
   approvedByName?: string | null;
   deniedByName?: string | null;
   revokedByName?: string | null;
+  // Decision provenance joined by the API (#1159 follow-up): which software
+  // policy / PAM rule auto-decided the request, and the kind of decider.
+  softwarePolicyMatchId?: string | null;
+  matchedPolicyName?: string | null;
+  pamRuleId?: string | null;
+  pamRuleName?: string | null;
+  // 'human' and null are display-equivalent today (both fall through to
+  // decidedByLabel); the variant exists to mirror the API's derivation — do not
+  // assume 'human' implies decidedByLabel() is non-null (older rows may lack
+  // joined names).
+  decisionSource?: 'software_policy' | 'pam_rule' | 'human' | null;
 }
 
 export interface PamTimeWindow {
@@ -84,6 +97,60 @@ export interface Pagination {
   total: number;
 }
 
+export type PamRuleDraft =
+  | {
+      shape: 'executable';
+      name?: string;
+      orgId?: string;
+      siteId?: string | null;
+      matchSigner?: string | null;
+      matchHash?: string | null;
+      matchPathGlob?: string | null;
+      matchUser?: string | null;
+    }
+  | {
+      shape: 'tool';
+      name?: string;
+      orgId?: string;
+      siteId?: string | null;
+      matchToolName?: string | null;
+      matchRiskTier?: number | null;
+    };
+
+function baseName(path: string): string {
+  const i = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+  return i >= 0 ? path.slice(i + 1) : path;
+}
+
+/**
+ * Seed a rule draft from a request. Prefers the stable criterion: signer
+ * over hash (hashes churn with updates) over path; tool actions seed
+ * toolName + riskTier; JIT admin seeds the subject user.
+ */
+export function requestToRuleDraft(r: ElevationRequest): PamRuleDraft {
+  if (r.flowType === 'ai_tool_action') {
+    return {
+      shape: 'tool',
+      name: r.toolName ? `Rule for ${r.toolName}` : undefined,
+      orgId: r.orgId,
+      siteId: r.siteId ?? null,
+      matchToolName: r.toolName ?? null,
+      matchRiskTier: r.riskTier ?? null,
+    };
+  }
+  if (r.flowType === 'tech_jit_admin') {
+    return { shape: 'executable', orgId: r.orgId, siteId: r.siteId ?? null, matchUser: r.subjectUsername };
+  }
+  const name = r.targetExecutablePath ? `Rule for ${baseName(r.targetExecutablePath)}` : undefined;
+  if (r.targetExecutableSigner) {
+    return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchSigner: r.targetExecutableSigner };
+  }
+  if (r.targetExecutableHash) {
+    return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchHash: r.targetExecutableHash };
+  }
+  return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchPathGlob: r.targetExecutablePath ?? null };
+}
+
 export const STATUS_LABELS: Record<ElevationStatus, string> = {
   pending: 'Pending',
   approved: 'Approved',
@@ -98,6 +165,13 @@ export const FLOW_LABELS: Record<ElevationFlowType, string> = {
   uac_intercept: 'UAC intercept',
   tech_jit_admin: 'Tech JIT admin',
   ai_tool_action: 'AI tool action',
+};
+
+/** Per-flow lucide glyph, paired with FLOW_LABELS in the Flow cells. */
+export const FLOW_ICONS: Record<ElevationFlowType, LucideIcon> = {
+  uac_intercept: MonitorCog,
+  tech_jit_admin: UserCog,
+  ai_tool_action: Bot,
 };
 
 export const VERDICT_LABELS: Record<PamVerdict, string> = {
@@ -160,4 +234,28 @@ export function decidedByLabel(r: ElevationRequest): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Who/what decided the request, for display under the status badge.
+ * Auto decisions name their source (software policy / PAM rule); human
+ * decisions defer to decidedByLabel. Null while pending/undecided.
+ *
+ * A human revoke supersedes the original auto-decision for display: an
+ * auto-approved request later revoked by a person keeps decisionSource
+ * 'pam_rule', but the revoker is the more actionable attribution.
+ */
+export function decisionAttribution(r: ElevationRequest): string | null {
+  if (r.status === 'revoked') {
+    const revoker = decidedByLabel(r);
+    if (revoker) return `by ${revoker}`;
+  }
+  if (r.decisionSource === 'software_policy') {
+    return `Policy · ${r.matchedPolicyName ?? 'Software policy'}`;
+  }
+  if (r.decisionSource === 'pam_rule') {
+    return `Rule · ${r.pamRuleName ?? 'PAM rule'}`;
+  }
+  const human = decidedByLabel(r);
+  return human ? `by ${human}` : null;
 }

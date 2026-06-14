@@ -102,7 +102,61 @@ Go to **Settings > Ticketing** to manage ticket categories.
 Categories also carry SLA targets (response and resolution times) and billing defaults. When a ticket's resolution target is running out, an **at-risk** chip appears in the queue, turning to **breached** once the target has passed -- and the **Breaching soon** tab collects all of them in one place.
 
 <Aside>
-  Today the SLA targets drive the at-risk and breached chips in the queue. The full automated SLA engine -- enforcement, escalations, and business-hours schedules -- arrives in a later release.
+  The automated SLA engine is live. Breeze tracks each ticket against its category's response and resolution targets, pauses the clock while a ticket is **On Hold**, monitors for breaches, and notifies the assignee (and escalates to the configured contacts) as a target approaches or is missed.
+</Aside>
+
+## Custom Statuses & SLA Configuration
+
+Go to **Settings → Ticketing** to configure statuses, priority labels, and SLA defaults. The page is tabbed: **Statuses**, **Priorities**, **Categories**, and **Export**.
+
+### Custom ticket statuses
+
+Every ticket status maps to one of six core states: **New**, **Open**, **Pending**, **On Hold**, **Resolved**, and **Closed**. Within each core state you can create as many custom statuses as your workflow needs -- for example "Waiting on vendor" under Pending, or "Needs review" under Resolved. Custom statuses appear in the workbench status picker, grouped by their core state. Tickets that pre-date custom statuses show the core state label directly.
+
+Statuses are partner-wide and apply across all your customer organizations. Built-in statuses cannot be deleted. Custom statuses can be deactivated (they disappear from the picker but existing tickets keep their status). Use the up/down arrows on any row to reorder statuses, which sets the order they appear in the picker.
+
+### Priority labels and partner-wide SLA defaults
+
+Under the **Priorities** tab you can rename each of the four priority levels (Low, Normal, High, Urgent) to match your team's language. For each priority you can also set partner-wide default **response** and **resolution** SLA targets (in minutes). These defaults apply to every ticket that doesn't have a more-specific override.
+
+### Per-organization SLA tiers
+
+In an organization's settings, open the **Ticketing** tab to set per-priority SLA overrides for that customer. You can also set the organization's **default hourly rate** and whether new time entries default to billable.
+
+<Aside>
+  Saving organization-level ticketing settings requires MFA confirmation. SLA precedence: a category's SLA beats an organization override, which beats the partner-wide priority default.
+</Aside>
+
+## Time Tracking & Parts
+
+Breeze lets technicians log time and record parts against any ticket. These records feed the billing summary on the ticket's properties rail and the weekly Timesheet view -- but are **never shown in the customer portal**.
+
+### Timer widget
+
+When you are working a ticket, click **Start timer** in the Time & Billing rail to begin tracking. A live clock appears in the top navigation bar, anchored to the ticket number, so the timer follows you across the queue. Only one timer can run per technician at a time -- starting a new timer automatically stops the previous one.
+
+Click the stop icon in the header widget to open the stop popover, where you can add a description and mark the entry as billable before saving.
+
+### Manual time entry
+
+Click **Log time** in the ticket's Time & Billing rail to open the quick-add form. Enter the number of minutes, an optional description, and whether the entry is billable, then click **Save**. The entry is back-dated so the end time is now and the start time is now minus the minutes you entered.
+
+### Parts
+
+The Parts card on the ticket rail lets you record physical or consumable items used on a job. Each part has a **description**, **quantity**, **unit price**, and an optional **cost basis** for margin tracking. Parts default to billable; uncheck the box for internal-only consumables.
+
+### Timesheet
+
+Open **/timesheet** from the sidebar to see a week-at-a-glance view of all your time entries, grouped by day with billable totals. Use the week navigation buttons to move backwards and forwards. Technicians with a wildcard-permission admin role can switch to any other technician's timesheet via the dropdown.
+
+Admins can select one or more completed entries and click **Approve selected** to mark them approved. Approved entries become immutable for non-admins.
+
+### Billables export
+
+Under **Settings → Ticketing**, the Billables Export card lets you download a CSV of all time entries and parts for any date range up to 366 days. The export includes each entry's approval status, billable flag, and computed amounts -- useful for invoicing or importing into external accounting tools.
+
+<Aside>
+  Time entries and parts are technician-facing only. End-users accessing the customer portal never see time logs, cost data, or parts records.
 </Aside>
 
 ## Tickets on a Device

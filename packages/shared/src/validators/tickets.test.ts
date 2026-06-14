@@ -26,6 +26,39 @@ describe('ticket validators', () => {
     expect(changeTicketStatusSchema.safeParse({ status: 'open' }).success).toBe(true);
   });
 
+  it('changeTicketStatusSchema: both status and statusId → invalid', () => {
+    const r = changeTicketStatusSchema.safeParse({
+      status: 'open',
+      statusId: '3f2f1d8e-1111-4222-8333-444455556666'
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('changeTicketStatusSchema: neither status nor statusId → invalid', () => {
+    const r = changeTicketStatusSchema.safeParse({});
+    expect(r.success).toBe(false);
+  });
+
+  it('changeTicketStatusSchema: statusId only (uuid) → valid', () => {
+    const r = changeTicketStatusSchema.safeParse({
+      statusId: '3f2f1d8e-1111-4222-8333-444455556666'
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('changeTicketStatusSchema: statusId with non-uuid → invalid', () => {
+    const r = changeTicketStatusSchema.safeParse({ statusId: 'not-a-uuid' });
+    expect(r.success).toBe(false);
+  });
+
+  it('changeTicketStatusSchema: status=resolved without resolutionNote → invalid', () => {
+    const r = changeTicketStatusSchema.safeParse({ status: 'resolved' });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some(i => i.path.includes('resolutionNote'))).toBe(true);
+    }
+  });
+
   it('assign accepts a uuid or null (unassign)', () => {
     expect(assignTicketSchema.safeParse({ assigneeId: null }).success).toBe(true);
     expect(assignTicketSchema.safeParse({ assigneeId: '3f2f1d8e-1111-4222-8333-444455556666' }).success).toBe(true);

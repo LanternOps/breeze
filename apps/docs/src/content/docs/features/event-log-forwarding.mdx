@@ -1,0 +1,121 @@
+---
+title: Event Log Forwarding
+description: Forward managed-device event logs to any Elasticsearch- or OpenSearch-compatible store, configured per organization or partner-wide.
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Event Log Forwarding ships the event logs collected from your managed devices -- Windows Event Log entries, syslog, and application logs -- to an external log store that the customer owns and controls. Breeze's agents already gather these device logs; this feature additionally streams them outbound to the customer's own SIEM or search cluster for long-term storage, search, and analysis. The destination can be any Elasticsearch- or OpenSearch-compatible store that accepts the standard bulk-ingest protocol, and forwarding can be configured per organization or applied partner-wide across every customer at once.
+
+<Aside type="caution" title="Not the same as Log Shipping">
+  Event Log Forwarding is **distinct from the agent diagnostic "Log Shipping" feature**. Log Shipping sends the agent's *own internal diagnostic logs* back **to Breeze** so you can troubleshoot the agent itself. Event Log Forwarding sends the *customer's managed-device event logs* **out to the customer's own SIEM** -- never to Breeze. One answers "is the agent working?"; the other answers "what is happening on the customer's machines?".
+</Aside>
+
+---
+
+## Supported Destinations
+
+Forwarding works with any log store that speaks the standard Elasticsearch/OpenSearch bulk-ingest wire protocol. The destinations named in the product are:
+
+| Destination | Notes |
+|---|---|
+| **Elasticsearch** | Official Elasticsearch clusters |
+| **OpenSearch** | Self-managed OpenSearch |
+| **Wazuh indexer** | The Wazuh SIEM indexer |
+| **AWS OpenSearch Service** | Amazon-managed OpenSearch |
+
+<Aside type="note">
+  Any store that accepts the same bulk protocol will work. Generic HTTP/JSON, Splunk HEC, Datadog, and syslog targets are **not** supported today -- those are planned for a future phase.
+</Aside>
+
+---
+
+## What You Configure
+
+For a destination you set:
+
+| Setting | Description |
+|---|---|
+| **Enable / disable** | Forwarding only runs when turned on. When enabled, logs are forwarded on a recurring schedule (not real-time per event) |
+| **Log endpoint URL** | The base URL of the compatible log store, e.g. `https://logs.example.com:9200`. Must use HTTPS -- Breeze appends the bulk path itself |
+| **Index prefix** | Defaults to `breeze-logs`. Logs land in date-stamped indices named `<prefix>-YYYY.MM.DD` (one per day) |
+| **Authentication** | Either an **API key** or a **username / password** (basic auth) |
+
+Stored credentials are encrypted at rest and masked when the settings screen reloads. Outbound requests are also protected against being pointed at internal or private addresses.
+
+<Aside type="tip">
+  Which categories of event logs are collected (and therefore forwarded) is governed separately under **Configuration Policies**, where you choose the categories -- security, application, system, and hardware -- along with a minimum severity, collection interval, and retention. The forwarding screen links you to Configuration Policies for those collection-side controls.
+</Aside>
+
+---
+
+## Per-Organization Configuration
+
+An organization administrator configures forwarding in **Settings**, on the Event Logs tab for the currently selected organization. There you set the enable toggle, the endpoint URL, the index prefix, and authentication (API key or username and password). This points a single customer's device logs at their own cluster.
+
+<Steps>
+1. Open **Settings** and select the **Event Logs** tab for the organization.
+
+2. Toggle forwarding on.
+
+3. Enter the **endpoint URL** (HTTPS) and an **index prefix** (or keep the `breeze-logs` default).
+
+4. Choose an authentication method and enter the **API key** or **username and password**.
+
+5. Save. Confirm the categories you want collected are enabled in Configuration Policies.
+</Steps>
+
+---
+
+## Partner-Wide Configuration
+
+At the partner level, a dedicated **Event Logs** tab lets the MSP configure forwarding once and apply it across all child organizations. The toggle is labeled **Enable centralized event log shipping**. When the partner enables it and fills in the endpoint URL, index prefix, and credentials, every child organization ships its event logs to that single configured destination.
+
+How the two levels interact:
+
+| Partner setting | Effect on organizations |
+|---|---|
+| **Disabled** | Each organization configures its own destination individually. Partner fields show a "Not set -- orgs configure individually" placeholder |
+| **Enabled and set** | Becomes a managed, locked setting. The matching fields in the org-level screen are read-only with a **"Managed by partner"** label, and the system rejects org-level attempts to change locked fields |
+
+<Aside>
+  Partner configuration is a true override, not just a default. When the partner locks a field, organizations cannot edit it. When the partner leaves forwarding disabled, organizations are free to self-serve their own destinations.
+</Aside>
+
+---
+
+## What Gets Shipped
+
+Logs are sent in **batches** using the standard bulk-ingest format. Each forwarded event document contains:
+
+| Field | Description |
+|---|---|
+| **timestamp** | When the event occurred |
+| **hostname** | The source device's host name |
+| **device & organization identifiers** | Which device and customer the event came from |
+| **category** | security, application, system, or hardware |
+| **level** | Severity: info, warning, error, or critical |
+| **source** | The originating log source or provider |
+| **message** | The event text |
+| **raw data** | The original underlying event payload, when available |
+
+Each document is given a deterministic ID derived from its content, so re-sending a batch overwrites rather than duplicates -- retries are safe and will not create duplicate entries in the destination. Batches hitting transient errors (rate limiting, server errors) are retried with backoff; permanent rejections (bad credentials, a malformed mapping) are dropped and reported rather than retried forever.
+
+---
+
+## Troubleshooting
+
+**No "test connection" button.**
+There is no pre-save connection test. Save the configuration, then confirm logs are arriving by searching for the day's index (`<prefix>-YYYY.MM.DD`) in your log store. Delivery failures are reported to operations through error tracking rather than shown at save time.
+
+**Logs are not arriving in the destination.**
+Confirm forwarding is enabled, the endpoint URL is correct and uses HTTPS, and the credentials are valid. Confirm the relevant log categories are enabled in Configuration Policies -- if nothing is being collected, nothing will be forwarded. Check that the endpoint is publicly reachable and is not an internal or private address, which is blocked.
+
+**An organization cannot change its forwarding settings.**
+The partner has enabled centralized event log shipping and locked those fields. The org-level screen will show a **"Managed by partner"** label. Change the configuration at the partner level instead.
+
+**Logs are delayed.**
+Forwarding runs on a recurring schedule, not in real time per event. A short delay between an event occurring on a device and it appearing in the destination is expected.
+
+**Am I sending agent diagnostics to my SIEM?**
+No. Event Log Forwarding sends managed-device event logs only. The agent's own diagnostic logs are handled separately by the Log Shipping feature and are sent to Breeze, not to your SIEM.

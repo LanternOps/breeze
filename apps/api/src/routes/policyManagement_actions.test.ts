@@ -128,7 +128,16 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next())
+  // The RBAC gate added in this PR. Built once at import time, so it consults a
+  // mutable global flag rather than a re-mocked implementation. Tests flip
+  // `__denyPermission` to assert a user lacking the permission gets 403; default
+  // (false) lets every gate pass so the existing happy-path tests stay green.
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if ((globalThis as any).__denyPermission) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    await next();
+  })
 }));
 
 import { db } from '../db';
@@ -159,6 +168,7 @@ describe('policyManagement routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    (globalThis as any).__denyPermission = false;
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -427,6 +437,31 @@ describe('policyManagement routes', () => {
 
       expect(res.status).toBe(404);
     });
+  });
+
+  // ----------------------------------------------------------------
+  // RBAC permission gate (added with the requirePermission fix). requireScope
+  // alone only checks tenancy tier, so a read-only role would pass. Each action
+  // route now also requires a devices permission; assert a caller lacking it
+  // gets 403 before any policy state is read or mutated.
+  // ----------------------------------------------------------------
+  describe('RBAC permission gate', () => {
+    it.each(['activate', 'deactivate', 'evaluate', 'remediate'])(
+      'should return 403 on POST /:id/%s when caller lacks the required permission',
+      async (action) => {
+        (globalThis as any).__denyPermission = true;
+
+        const res = await app.request(`/policies/${POLICY_ID}/${action}`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(403);
+        // Gate runs before the handler — no policy lookup/mutation should occur.
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      }
+    );
   });
 
 });

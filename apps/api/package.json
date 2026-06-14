@@ -9,6 +9,7 @@
     "db:check-drift": "tsx scripts/check-drift.ts",
     "db:migrate": "tsx src/db/autoMigrate.ts",
     "db:seed": "tsx src/db/seed.ts",
+    "db:seed:e2e": "tsx src/db/seedE2eFixtures.ts",
     "check:migrations": "tsx scripts/check-migrations.ts",
     "db:studio": "drizzle-kit studio",
     "dev": "tsx watch src/index.ts",

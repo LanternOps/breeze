@@ -213,3 +213,130 @@ describe('OrgSwitcher org change navigation', () => {
     expect(reloadMock).not.toHaveBeenCalled();
   });
 });
+
+// #1319: when a site is the active scope, opening the picker should land the
+// user on their current context — the ancestor org pre-expanded and the
+// selected site row visible/highlighted — instead of a flat list of collapsed
+// orgs.
+describe('OrgSwitcher pre-expand to selected site (#1319)', () => {
+  const originalLocation = window.location;
+
+  beforeEach(() => {
+    setOrganizationMock.mockReset();
+    setSiteMock.mockReset();
+    setOrgScopeMock.mockReset();
+    fetchOrganizationsMock.mockReset();
+    fetchSitesMock.mockReset();
+    waitForPendingRefreshMock.mockClear();
+    waitForPendingRefreshMock.mockResolvedValue(undefined);
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, pathname: '/devices', reload: vi.fn() }
+    });
+
+    mockStoreState = {
+      currentOrgId: 'org-a',
+      currentSiteId: 'site-a1',
+      orgScope: 'current',
+      organizations: [
+        { id: 'org-a', partnerId: 'p1', name: 'Org A', status: 'active', createdAt: '2024-01-01' },
+        { id: 'org-b', partnerId: 'p1', name: 'Org B', status: 'active', createdAt: '2024-01-01' }
+      ],
+      sites: [
+        { id: 'site-a1', orgId: 'org-a', name: 'HQ Site', deviceCount: 12, createdAt: '2024-01-01' },
+        { id: 'site-a2', orgId: 'org-a', name: 'Branch Site', deviceCount: 3, createdAt: '2024-01-01' }
+      ],
+      isLoading: false
+    };
+    mockStoreRef.current = mockStoreState;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      writable: true,
+      value: originalLocation
+    });
+  });
+
+  function openDropdown() {
+    fireEvent.click(screen.getByTestId('org-switcher-trigger'));
+  }
+
+  it('auto-expands the ancestor org so the selected site is visible on open without a manual click', () => {
+    render(<OrgSwitcher />);
+
+    openDropdown();
+
+    // The selected site's row (and its sibling) are visible immediately — the
+    // user did NOT have to click the org row to expand it.
+    expect(screen.getByText('HQ Site')).toBeInTheDocument();
+    expect(screen.getByText('Branch Site')).toBeInTheDocument();
+    // The "All Sites" affordance only renders inside an expanded org, so its
+    // presence confirms the submenu mounted.
+    expect(screen.getByText('All Sites')).toBeInTheDocument();
+  });
+
+  it('does not throw even though jsdom stubs scrollIntoView (selected row scrolled into view)', () => {
+    // jsdom does not implement scrollIntoView; the component guards the call.
+    // Opening must not throw regardless of whether the stub exists.
+    expect(() => {
+      render(<OrgSwitcher />);
+      openDropdown();
+    }).not.toThrow();
+  });
+
+  it('does not auto-expand any org in All-orgs scope', () => {
+    mockStoreState.orgScope = 'all';
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    openDropdown();
+
+    // No submenu should be visible: sites stay hidden and there is no
+    // "All Sites" row until the user manually expands an org.
+    expect(screen.queryByText('HQ Site')).not.toBeInTheDocument();
+    expect(screen.queryByText('All Sites')).not.toBeInTheDocument();
+  });
+
+  it('leaves orgs collapsed when only an org (no site) is selected', () => {
+    mockStoreState.currentSiteId = null;
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    openDropdown();
+
+    // Org selected but no site → submenu stays collapsed.
+    expect(screen.queryByText('HQ Site')).not.toBeInTheDocument();
+    expect(screen.queryByText('All Sites')).not.toBeInTheDocument();
+  });
+
+  it('re-seeds expansion on each open so a manual collapse does not persist across opens', () => {
+    render(<OrgSwitcher />);
+
+    // First open: auto-expanded.
+    openDropdown();
+    expect(screen.getByText('HQ Site')).toBeInTheDocument();
+
+    // Manually collapse Org A by clicking its row, then close the dropdown.
+    const orgARow = screen
+      .getAllByRole('button')
+      .find(
+        (b) =>
+          b.getAttribute('data-testid') !== 'org-switcher-trigger' &&
+          b.textContent?.includes('Org A')
+      )!;
+    fireEvent.click(orgARow);
+    expect(screen.queryByText('HQ Site')).not.toBeInTheDocument();
+
+    // Re-open — should re-seed and expand again rather than respect the manual
+    // collapse from the prior session.
+    openDropdown(); // toggle closed
+    openDropdown(); // toggle open again
+    expect(screen.getByText('HQ Site')).toBeInTheDocument();
+  });
+});

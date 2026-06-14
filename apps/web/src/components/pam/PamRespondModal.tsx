@@ -9,10 +9,12 @@ export default function PamRespondModal({
   request,
   onClose,
   onActioned,
+  onCreateRule,
 }: {
   request: ElevationRequest;
   onClose: () => void;
   onActioned: () => void;
+  onCreateRule?: () => void;
 }) {
   const [decision, setDecision] = useState<'approve' | 'deny'>('approve');
   const [reason, setReason] = useState('');
@@ -151,24 +153,39 @@ export default function PamRespondModal({
           </div>
         )}
 
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border px-3 py-2 text-sm hover:bg-accent"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={submitting}
-            data-testid="pam-respond-submit"
-            className={`rounded-md px-3 py-2 text-sm font-medium text-white disabled:opacity-50 ${
-              decision === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'
-            }`}
-          >
-            {submitting ? 'Submitting…' : decision === 'approve' ? 'Approve elevation' : 'Deny request'}
-          </button>
+        <div className="flex items-center justify-between gap-2">
+          {onCreateRule ? (
+            <button
+              type="button"
+              onClick={onCreateRule}
+              disabled={submitting}
+              data-testid="pam-respond-create-rule"
+              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+            >
+              Create rule from this request…
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border px-3 py-2 text-sm hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              data-testid="pam-respond-submit"
+              className={`rounded-md px-3 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+                decision === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'
+              }`}
+            >
+              {submitting ? 'Submitting…' : decision === 'approve' ? 'Approve elevation' : 'Deny request'}
+            </button>
+          </div>
         </div>
       </form>
     </Dialog>

@@ -14,6 +14,12 @@ vi.mock('../db/schema', () => ({
   rolePermissions: { __t: 'role_permissions', roleId: 'role_permissions.roleId', permissionId: 'role_permissions.permissionId' },
   organizations: { __t: 'organizations', id: 'organizations.id' },
   sites: { __t: 'sites', id: 'sites.id' },
+  ticketStatuses: { __t: 'ticket_statuses' },
+}));
+
+// ticketConfigService reads ticketStatusEnum from portal.ts directly.
+vi.mock('../db/schema/portal', () => ({
+  ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
 }));
 
 // Build a per-table counter so returning ids are distinguishable.
@@ -133,6 +139,39 @@ describe('createPartner', () => {
     const userCall = insertCalls.find((c) => (c.table as any).__t === 'users')!;
     expect(userCall.values.email).toBe('alex@acme.com');
     expect(userCall.values.passwordHash).toBe('hashed');
+  });
+
+  it('inserts six system ticket_statuses rows inside the transaction', async () => {
+    await createPartner({
+      orgName: 'Acme',
+      adminEmail: 'alex@acme.com',
+      adminName: 'Alex',
+      passwordHash: 'hashed',
+      origin: { mcp: false },
+    });
+
+    const statusCalls = insertCalls.filter((c) => (c.table as any).__t === 'ticket_statuses');
+    // seedSystemTicketStatuses does a single bulk insert
+    expect(statusCalls).toHaveLength(1);
+
+    expect(statusCalls[0]).toBeDefined();
+    const rows = statusCalls[0]!.values as unknown as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(6);
+
+    // All rows must be system rows linked to the partner
+    for (const row of rows) {
+      expect(row.partnerId).toBe('partners-id');
+      expect(row.isSystem).toBe(true);
+    }
+
+    // Verify each core state is present with the correct label and sortOrder
+    const byCore = Object.fromEntries(rows.map((r) => [r.coreStatus as string, r]));
+    expect(byCore['new']).toMatchObject({ name: 'New', sortOrder: 0 });
+    expect(byCore['open']).toMatchObject({ name: 'Open', sortOrder: 1 });
+    expect(byCore['pending']).toMatchObject({ name: 'Pending', sortOrder: 2 });
+    expect(byCore['on_hold']).toMatchObject({ name: 'On hold', sortOrder: 3 });
+    expect(byCore['resolved']).toMatchObject({ name: 'Resolved', sortOrder: 4 });
+    expect(byCore['closed']).toMatchObject({ name: 'Closed', sortOrder: 5 });
   });
 
   it('tags partner with mcp_origin fields and sets status=pending when origin.mcp is true', async () => {

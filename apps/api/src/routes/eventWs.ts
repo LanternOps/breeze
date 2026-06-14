@@ -30,6 +30,13 @@ interface TicketRecord {
   // in-memory across a deploy) still parse cleanly. New writes always
   // populate orgIds.
   orgId?: string;
+  // App-layer-only SITE-scope axis (`permissions.allowedSiteIds`). RLS only
+  // enforces ORG; events are delivered over Redis pub/sub with no DB backstop,
+  // so a site-restricted user's connection must be filtered in the WS layer
+  // (see `buildSiteFilter` / the dispatch-time predicate). `undefined` or
+  // empty = full org access (no site restriction). Captured at mint time so
+  // the restriction is bound to the ticket, not re-derived at connect time.
+  allowedSiteIds?: string[];
   expiresAt: number;
 }
 
@@ -58,6 +65,7 @@ function purgeExpired(): void {
 export async function createEventWsTicket(
   userId: string,
   orgIdOrIds: string | string[],
+  allowedSiteIds?: string[],
 ): Promise<{ ticket: string; expiresInSeconds: number }> {
   purgeExpired();
 
@@ -66,6 +74,12 @@ export async function createEventWsTicket(
     throw new Error('createEventWsTicket requires at least one orgId');
   }
 
+  // Only persist a site restriction when one is actually present. An empty or
+  // undefined allowlist means "no site restriction" (full org access) and is
+  // dropped so the ticket carries no `allowedSiteIds` key.
+  const normalisedSiteIds =
+    allowedSiteIds && allowedSiteIds.length > 0 ? [...new Set(allowedSiteIds)] : undefined;
+
   const ticket = randomBytes(32).toString('base64url');
   const record: TicketRecord = {
     userId,
@@ -73,6 +87,7 @@ export async function createEventWsTicket(
     // Populate the legacy field for forward compat with any reader that
     // hasn't been redeployed yet. Pick the first id deterministically.
     orgId: orgIds[0],
+    ...(normalisedSiteIds ? { allowedSiteIds: normalisedSiteIds } : {}),
     expiresAt: Date.now() + TICKET_TTL_MS,
   };
 
@@ -105,7 +120,16 @@ const CONSUME_LUA = `
   return v
 `;
 
-function normaliseTicketRecord(record: TicketRecord): { userId: string; orgIds: string[] } | null {
+export interface TicketIdentity {
+  userId: string;
+  orgIds: string[];
+  // Carried from the ticket. `undefined` = no site restriction (full org
+  // access); a non-empty array means the connection may only receive events
+  // positively attributable to one of these sites.
+  allowedSiteIds?: string[];
+}
+
+function normaliseTicketRecord(record: TicketRecord): TicketIdentity | null {
   // Backward-compat: an older record might only carry orgId.
   const ids = record.orgIds && record.orgIds.length > 0
     ? record.orgIds
@@ -113,10 +137,12 @@ function normaliseTicketRecord(record: TicketRecord): { userId: string; orgIds: 
       ? [record.orgId]
       : [];
   if (ids.length === 0) return null;
-  return { userId: record.userId, orgIds: ids };
+  const allowedSiteIds =
+    record.allowedSiteIds && record.allowedSiteIds.length > 0 ? record.allowedSiteIds : undefined;
+  return { userId: record.userId, orgIds: ids, allowedSiteIds };
 }
 
-export async function consumeTicket(ticket: string): Promise<{ userId: string; orgIds: string[] } | null> {
+export async function consumeTicket(ticket: string): Promise<TicketIdentity | null> {
   if (shouldUseRedis()) {
     const redis = getRedis();
     if (!redis) {
@@ -166,6 +192,63 @@ export type ClientMessage = z.infer<typeof clientMessageSchema>;
 // Server → Client message helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Build the per-client SITE-scope delivery predicate for a site-restricted
+ * connection. Returns `undefined` when the user is unrestricted (full org
+ * access — no filtering, no behaviour change).
+ *
+ * The predicate runs synchronously in the dispatcher's hot path, so it can
+ * only inspect fields already on the event message — it cannot do a DB lookup
+ * to resolve a device's site. The published `BreezeEvent` (`eventBus.ts`)
+ * carries no `siteId` on the wire — neither top-level nor in `payload` — so
+ * there is no synchronous, correct way to attribute most events to a site.
+ *
+ * We therefore FAIL CLOSED: a site-restricted client only receives an event we
+ * can POSITIVELY attribute to one of its allowed sites — i.e. the event must
+ * carry a `siteId` (top-level or in `payload`) that is in the allowlist.
+ * Because no publisher currently emits `siteId`, the practical effect is that
+ * site-restricted users receive no live events until publishers are updated to
+ * include `siteId` — strictly safer than the prior behaviour, which leaked
+ * every org event (incl. other sites' devices/alerts) to them.
+ *
+ * RESIDUAL LIMITATION / FOLLOW-UP: add `siteId` to the event payload at publish
+ * time (eventBus publishers) so in-site events are delivered. Once present,
+ * this predicate starts allowing them with no further change here. A
+ * deviceId→siteId map could alternatively be threaded in, but that needs a
+ * synchronous cache and is out of scope for this WS-layer fix.
+ */
+export function buildSiteFilter(
+  allowedSiteIds: string[] | undefined,
+): ((event: Record<string, unknown>) => boolean) | undefined {
+  if (!allowedSiteIds || allowedSiteIds.length === 0) return undefined;
+
+  const allowed = new Set(allowedSiteIds);
+
+  return (event: Record<string, unknown>): boolean => {
+    const siteId = extractEventSiteId(event);
+    // Fail closed: deliver only when we can positively attribute the event to
+    // an allowed site. No attributable siteId ⇒ drop.
+    return typeof siteId === 'string' && allowed.has(siteId);
+  };
+}
+
+/**
+ * Pull a `siteId` off an event message if one is present. Checks the top level
+ * first, then the nested `payload` object (publishers attach domain fields
+ * under `payload`). Returns `undefined` when no string siteId is found.
+ */
+function extractEventSiteId(event: Record<string, unknown>): string | undefined {
+  const top = event.siteId;
+  if (typeof top === 'string' && top.length > 0) return top;
+
+  const payload = event.payload;
+  if (payload && typeof payload === 'object') {
+    const inner = (payload as Record<string, unknown>).siteId;
+    if (typeof inner === 'string' && inner.length > 0) return inner;
+  }
+  return undefined;
+}
+
 function sendJson(ws: WSContext, payload: Record<string, unknown>): void {
   try {
     ws.send(JSON.stringify(payload));
@@ -210,7 +293,17 @@ export function createEventWsTicketRoute(): Hono {
       return c.json({ error: 'Organization context required — select an org first' }, 400);
     }
 
-    const result = await createEventWsTicket(auth.user.id, orgIds);
+    // Capture the SITE-scope restriction (app-layer-only axis) so it's bound to
+    // the ticket. A site-restricted org user must not receive live events for
+    // sites outside their allowlist — RLS doesn't defend this and events are
+    // pub/sub, not Postgres. `undefined`/empty = unrestricted (full org access).
+    // Sourced from `auth.allowedSiteIds` (set by authMiddleware), NOT
+    // `c.get('permissions')` — this route mints a ticket behind authMiddleware
+    // only, and `permissions` is populated solely by requirePermission, which
+    // does not run here.
+    const allowedSiteIds = auth.allowedSiteIds;
+
+    const result = await createEventWsTicket(auth.user.id, orgIds, allowedSiteIds);
     return c.json(result);
   });
 
@@ -288,6 +381,9 @@ function createEventWsHandlers(ticket: string | undefined) {
           ws,
           userId: identity.userId,
           subscribedTypes: new Set<string>(),
+          // Site-scope (app-layer-only) delivery gate. Undefined for
+          // unrestricted users — no filtering, no behaviour change.
+          filter: buildSiteFilter(identity.allowedSiteIds),
         };
 
         const dispatcher = getEventDispatcher();

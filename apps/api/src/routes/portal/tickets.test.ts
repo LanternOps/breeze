@@ -56,12 +56,15 @@ vi.mock('../../db/schema', () => ({
     id: 'id', orgId: 'orgId', ticketNumber: 'ticketNumber',
     subject: 'subject', description: 'description', status: 'status',
     priority: 'priority', submittedBy: 'submittedBy', createdAt: 'createdAt',
-    updatedAt: 'updatedAt'
+    updatedAt: 'updatedAt', statusId: 'statusId'
   },
   ticketComments: {
     id: 'id', ticketId: 'ticketId', authorName: 'authorName',
     content: 'content', isPublic: 'isPublic', deletedAt: 'deletedAt',
     createdAt: 'createdAt'
+  },
+  ticketStatuses: {
+    id: 'id', name: 'name', color: 'color'
   }
 }));
 
@@ -126,16 +129,16 @@ describe('GET /tickets/:id — portal internal-note isolation', () => {
     dbSelectMock.mockImplementation(() => {
       callCount++;
       if (callCount === 1) {
-        // Ticket lookup
+        // Ticket lookup — route does .from().leftJoin().where().limit()
+        const whereLimit = vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([TICKET_ROW]))
+        }));
+        const leftJoin = vi.fn(() => ({ where: whereLimit }));
         return {
-          from: vi.fn(() => ({
-            where: vi.fn(() => ({
-              limit: vi.fn(() => Promise.resolve([TICKET_ROW]))
-            }))
-          }))
+          from: vi.fn(() => ({ leftJoin }))
         };
       }
-      // Comments lookup — capture the where args
+      // Comments lookup — route does .from().where().orderBy(); capture the where args
       return {
         from: vi.fn(() => ({
           where: vi.fn((...args: unknown[]) => {
@@ -225,8 +228,10 @@ describe('GET /tickets/:id — portal internal-note isolation', () => {
   it('returns 404 when the ticket does not belong to the portal user', async () => {
     dbSelectMock.mockImplementation(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([]))
+        leftJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve([]))
+          }))
         }))
       }))
     }));

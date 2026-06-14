@@ -25,6 +25,15 @@ import { deviceInSiteScope } from '../tickets/siteScope';
 
 export const alertsRoutes = new Hono();
 
+// State-change handlers (acknowledge/resolve/suppress/bulk) gate on an alert
+// write/acknowledge RBAC permission in addition to scope tier. RLS enforces
+// tenancy but NOT intra-org role, so a read-only org user otherwise passes
+// requireScope('organization') + own-org RLS and could mutate alert state.
+// Mirrors the mobile alert routes: acknowledge → ALERTS_ACKNOWLEDGE,
+// resolve/suppress/bulk → ALERTS_WRITE.
+const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+const requireAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
+
 const alertIdParamSchema = z.object({ id: z.string().uuid() });
 
 // GET /alerts - List alerts with filters
@@ -271,6 +280,7 @@ alertsRoutes.get(
 alertsRoutes.post(
   '/bulk',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
   zValidator('json', bulkAlertActionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -380,6 +390,7 @@ alertsRoutes.post(
 alertsRoutes.post(
   '/:id/acknowledge',
   requireScope('organization', 'partner', 'system'),
+  requireAlertAcknowledge,
   zValidator('param', alertIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -444,6 +455,7 @@ alertsRoutes.post(
 alertsRoutes.post(
   '/:id/resolve',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
   zValidator('param', alertIdParamSchema),
   zValidator('json', resolveAlertSchema),
   async (c) => {
@@ -540,6 +552,7 @@ alertsRoutes.post(
 alertsRoutes.post(
   '/:id/suppress',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
   zValidator('param', alertIdParamSchema),
   zValidator('json', suppressAlertSchema),
   async (c) => {

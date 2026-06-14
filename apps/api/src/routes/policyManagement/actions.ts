@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { automationPolicies, automationRuns, automations } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { evaluatePolicy, resolvePolicyRemediationAutomationId } from '../../services/policyEvaluationService';
 import { AuthContext, policyIdSchema } from './schemas';
@@ -15,6 +15,9 @@ export const actionRoutes = new Hono();
 actionRoutes.post(
   '/:id/activate',
   requireScope('organization', 'partner', 'system'),
+  // requireScope only checks tenancy tier, not role. Toggling policy state
+  // mutates enforcement that drives device automations, so gate on device-write.
+  requirePermission('devices', 'write'),
   zValidator('param', policyIdSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -48,6 +51,8 @@ actionRoutes.post(
 actionRoutes.post(
   '/:id/deactivate',
   requireScope('organization', 'partner', 'system'),
+  // Mutates policy enforcement state (see activate) — requires device-write.
+  requirePermission('devices', 'write'),
   zValidator('param', policyIdSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -81,6 +86,9 @@ actionRoutes.post(
 actionRoutes.post(
   '/:id/evaluate',
   requireScope('organization', 'partner', 'system'),
+  // Evaluate is a read-trigger (assesses compliance, may request remediation).
+  // Gate on at least device-read so a no-permission user can't trigger it.
+  requirePermission('devices', 'read'),
   zValidator('param', policyIdSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -117,6 +125,9 @@ actionRoutes.post(
 actionRoutes.post(
   '/:id/remediate',
   requireScope('organization', 'partner', 'system'),
+  // Triggers a remediation automation run against devices — a state-mutating,
+  // execute-like action. Gate on device-write (mirrors activate/deactivate).
+  requirePermission('devices', 'write'),
   zValidator('param', policyIdSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

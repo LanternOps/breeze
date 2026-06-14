@@ -9,7 +9,8 @@ import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketWorkbench from './TicketWorkbench';
 import { useQueueKeyboard } from './useQueueKeyboard';
-import { priorityConfig, statusConfig, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
+import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
+import { fetchTicketConfig, priorityLabel, statusLabel, type TicketConfig } from '../../lib/ticketConfigApi';
 
 // Human-readable labels for bulk-skip reason codes returned by POST /tickets/bulk.
 const SKIP_REASON_LABELS: Record<string, string> = {
@@ -118,6 +119,9 @@ export default function TicketsPage() {
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAssignee, setBulkAssignee] = useState(''); // '' = none; 'unassign' sentinel = null assignee
   const [bulkStatus, setBulkStatus] = useState('');
+  // Ticket config (custom statuses + priority labels). null = not loaded / fetch
+  // failed; chips and bulk-status options fall back to the static core config.
+  const [config, setConfig] = useState<TicketConfig | null>(null);
   const fetchSeq = useRef(0);
 
   // 'mine'/'unassigned' tabs already pin the assignee param; the filter select is locked there.
@@ -212,6 +216,16 @@ export default function TicketsPage() {
   }, []);
 
   useEffect(() => { void fetchTickets(); void fetchStats(); }, [fetchTickets, fetchStats]);
+
+  // Fetch ticket config once (module-cached). Failure leaves config null, so
+  // chips and the bulk-status menu keep using the static core labels.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchTicketConfig().then((c) => {
+      if (!cancelled && c) setConfig(c);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // Selection survives tab switches (POST /tickets/bulk takes raw ids; the bar's
   // count chip reports off-view rows) but clears when a filter or the search
@@ -374,7 +388,10 @@ export default function TicketsPage() {
 
   const filterSelectClass = (active: boolean) =>
     cn(
-      'h-8 max-w-[180px] rounded-md border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
+      // py-1 + leading-tight overrides the @tailwindcss/forms base padding
+      // (0.5rem) + 1.5rem line-height that otherwise overflow the fixed h-8
+      // box and clip descenders on the displayed value (e.g. "All categories").
+      'h-8 max-w-[180px] rounded-md border bg-background px-2 py-1 text-sm leading-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
       active ? 'text-foreground' : 'text-muted-foreground'
     );
 
@@ -441,7 +458,7 @@ export default function TicketsPage() {
         >
           <option value="">All priorities</option>
           {PRIORITY_ORDER.map((p) => (
-            <option key={p} value={p}>{priorityConfig[p].label}</option>
+            <option key={p} value={p}>{priorityLabel(config, p)}</option>
           ))}
         </select>
         <select
@@ -498,7 +515,7 @@ export default function TicketsPage() {
           </p>
           <div className="mt-3 flex gap-2">
             <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90" data-testid="tickets-empty-create">Create ticket</a>
-            <a href="/settings/ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">Ticketing settings</a>
+            <a href="/settings/partner#ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">Ticketing settings</a>
           </div>
         </div>
       ) : error ? (
@@ -527,6 +544,7 @@ export default function TicketsPage() {
                 selectedId={selected?.id ?? null}
                 onSelect={select}
                 loading={loading}
+                config={config}
                 onClearFilters={filtersActive ? clearFilters : undefined}
                 bulkSelectedIds={bulkSelectedIds}
                 onToggleSelect={toggleBulkSelect}
@@ -555,7 +573,7 @@ export default function TicketsPage() {
                     onChange={(e) => { setBulkAssignee(e.target.value); if (e.target.value) setBulkStatus(''); }}
                     aria-label="Bulk assign to"
                     data-testid="tickets-bulk-assignee"
-                    className="h-8 max-w-[150px] rounded-md border bg-background px-2 text-sm"
+                    className="h-8 max-w-[150px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
                   >
                     <option value="">Assign to…</option>
                     <option value="unassign">Unassign</option>
@@ -568,11 +586,11 @@ export default function TicketsPage() {
                     onChange={(e) => { setBulkStatus(e.target.value); if (e.target.value) setBulkAssignee(''); }}
                     aria-label="Bulk set status"
                     data-testid="tickets-bulk-status"
-                    className="h-8 max-w-[130px] rounded-md border bg-background px-2 text-sm"
+                    className="h-8 max-w-[130px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
                   >
                     <option value="">Set status…</option>
                     {BULK_STATUSES.map((s) => (
-                      <option key={s} value={s}>{statusConfig[s].label}</option>
+                      <option key={s} value={s}>{statusLabel(config, s)}</option>
                     ))}
                   </select>
                   <button

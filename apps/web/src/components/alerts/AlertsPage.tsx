@@ -11,6 +11,7 @@ import type { FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
+import { runAction, ActionError } from '../../lib/runAction';
 
 type Device = { id: string; name: string };
 
@@ -102,6 +103,9 @@ export default function AlertsPage() {
     let cancelled = false;
     (async () => {
       try {
+        // runaction-exempt: read-only filter preview (POST carries the filter
+        // body but mutates nothing). Failure is handled inline by falling back
+        // to the unfiltered list; a toast here would be noise.
         const res = await fetchWithAuth('/filters/preview', {
           method: 'POST',
           body: JSON.stringify({ conditions: deviceFilter, limit: 100 })
@@ -140,16 +144,19 @@ export default function AlertsPage() {
   };
 
   const handleAcknowledge = async (alert: Alert) => {
+    // setSubmitting/setSubmittingId drive the in-flight spinner + disabled state
+    // (row spinner in AlertList, disabled Ack button in AlertDetails). The
+    // acknowledge round-trip can be slow, so this feedback must show the whole
+    // time the request is in flight — not just after it returns (#1300).
     setSubmitting(true);
     setSubmittingId(alert.id);
     try {
-      const response = await fetchWithAuth(`/alerts/${alert.id}/acknowledge`, {
-        method: 'POST'
+      await runAction({
+        request: () => fetchWithAuth(`/alerts/${alert.id}/acknowledge`, { method: 'POST' }),
+        errorFallback: 'Failed to acknowledge alert',
+        successMessage: 'Alert acknowledged',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to acknowledge alert');
-      }
 
       setAlerts(prev => prev.map(a =>
         a.id === alert.id ? { ...a, status: 'acknowledged' as const, acknowledgedAt: new Date().toISOString() } : a
@@ -162,11 +169,12 @@ export default function AlertsPage() {
         );
       }
 
-      showToast({ message: 'Alert acknowledged', type: 'success' });
       fetchAlerts();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to acknowledge alert';
-      showToast({ message: msg, type: 'error' });
+      // runAction already toasted any ActionError (and 401 → login redirect).
+      if (!(err instanceof ActionError)) {
+        showToast({ message: 'Failed to acknowledge alert', type: 'error' });
+      }
     } finally {
       setSubmitting(false);
       setSubmittingId(null);
@@ -177,25 +185,26 @@ export default function AlertsPage() {
     setSubmitting(true);
     setSubmittingId(alert.id);
     try {
-      const response = await fetchWithAuth(`/alerts/${alert.id}/resolve`, {
-        method: 'POST',
-        body: JSON.stringify({ note })
+      await runAction({
+        request: () => fetchWithAuth(`/alerts/${alert.id}/resolve`, {
+          method: 'POST',
+          body: JSON.stringify({ note })
+        }),
+        errorFallback: 'Failed to resolve alert',
+        successMessage: 'Alert resolved',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to resolve alert');
-      }
 
       setAlerts(prev => prev.map(a =>
         a.id === alert.id ? { ...a, status: 'resolved' as const, resolvedAt: new Date().toISOString() } : a
       ));
 
-      showToast({ message: 'Alert resolved', type: 'success' });
       handleCloseDetail();
       fetchAlerts();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to resolve alert';
-      showToast({ message: msg, type: 'error' });
+      if (!(err instanceof ActionError)) {
+        showToast({ message: 'Failed to resolve alert', type: 'error' });
+      }
     } finally {
       setSubmitting(false);
       setSubmittingId(null);
@@ -224,8 +233,12 @@ export default function AlertsPage() {
       duration: 5000,
     });
 
-    // Fire the actual request
+    // Fire the actual request.
     try {
+      // runaction-exempt: optimistic-with-undo handler — it shows its outcome
+      // inline (the optimistic row mutation + the undo toast above, and an
+      // explicit revert + error toast on failure below). Routing through
+      // runAction would double-toast and fight the optimistic flow.
       const response = await fetchWithAuth(`/alerts/${alert.id}/suppress`, {
         method: 'POST'
       });
@@ -246,23 +259,23 @@ export default function AlertsPage() {
   const executeBulkAction = async (action: string, selectedAlerts: Alert[]) => {
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth('/alerts/bulk', {
-        method: 'POST',
-        body: JSON.stringify({
-          action,
-          alertIds: selectedAlerts.map(a => a.id)
-        })
+      await runAction({
+        request: () => fetchWithAuth('/alerts/bulk', {
+          method: 'POST',
+          body: JSON.stringify({
+            action,
+            alertIds: selectedAlerts.map(a => a.id)
+          })
+        }),
+        errorFallback: `Failed to ${action} alerts`,
+        successMessage: `${selectedAlerts.length} alert${selectedAlerts.length > 1 ? 's' : ''} ${action}d`,
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        throw new Error(`Failed to ${action} alerts`);
-      }
-
-      showToast({ message: `${selectedAlerts.length} alert${selectedAlerts.length > 1 ? 's' : ''} ${action}d`, type: 'success' });
       await fetchAlerts();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : `Failed to ${action} alerts`;
-      showToast({ message: msg, type: 'error' });
+      if (!(err instanceof ActionError)) {
+        showToast({ message: `Failed to ${action} alerts`, type: 'error' });
+      }
     } finally {
       setSubmitting(false);
       setPendingBulk(null);

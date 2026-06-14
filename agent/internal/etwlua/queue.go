@@ -118,7 +118,7 @@ func (q *Queue) Drain(hb HeartbeatPoster) (int, error) {
 			posted++
 			continue
 		}
-		if err := hb.SendElevationRequest(ev); err != nil {
+		if _, err := hb.SendElevationRequest(ev); err != nil {
 			// Keep this and everything after; stop draining.
 			kept = append(kept, events[i:]...)
 			break

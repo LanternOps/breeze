@@ -9,6 +9,7 @@ const {
   getEligibilityForUserMock,
   revokeOauthArtifactsMock,
   revokeAllUserTokensMock,
+  recordFailedLoginMock,
 } = vi.hoisted(() => ({
   sendPasswordResetMock: vi.fn(async () => undefined),
   setexMock: vi.fn(async () => 'OK'),
@@ -18,6 +19,7 @@ const {
   getEligibilityForUserMock: vi.fn(),
   revokeOauthArtifactsMock: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 })),
   revokeAllUserTokensMock: vi.fn(async () => undefined),
+  recordFailedLoginMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -63,6 +65,10 @@ vi.mock('../../services/email', () => ({
 vi.mock('../../services/passwordResetEligibility', () => ({
   getPasswordResetEligibility: getEligibilityMock,
   getPasswordResetEligibilityForUser: getEligibilityForUserMock,
+}));
+
+vi.mock('../../services/anomalyMetrics', () => ({
+  recordFailedLogin: recordFailedLoginMock,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -145,6 +151,7 @@ describe('password reset eligibility (#719)', () => {
     revokeOauthArtifactsMock.mockResolvedValue({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 });
     revokeAllUserTokensMock.mockReset();
     revokeAllUserTokensMock.mockResolvedValue(undefined);
+    recordFailedLoginMock.mockReset();
   });
 
   describe('POST /forgot-password', () => {
@@ -175,12 +182,15 @@ describe('password reset eligibility (#719)', () => {
           userId: 'u-pending',
         }),
       );
+      // A successful (allowed) reset must NOT pollute the inactive-tenant signal.
+      expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset for users in suspended partners (generic 200, no email sent)', async () => {
       getEligibilityMock.mockResolvedValue({
         allowed: false,
         reason: 'tenant_inactive',
+        detail: 'partner:suspended',
         userId: 'u-suspended',
         email: 'sus@x.com',
       });
@@ -188,8 +198,11 @@ describe('password reset eligibility (#719)', () => {
       const res = await postJson('/forgot-password', { email: 'sus@x.com' });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; error?: string };
       expect(body.success).toBe(true);
+      // Anti-enumeration: the blocking partner status NEVER appears in the
+      // response body.
+      expect(JSON.stringify(body)).not.toContain('suspended');
       expect(sendPasswordResetMock).not.toHaveBeenCalled();
       expect(setexMock).not.toHaveBeenCalled();
       expect(writeAuthAudit).toHaveBeenCalledWith(
@@ -199,8 +212,12 @@ describe('password reset eligibility (#719)', () => {
           result: 'denied',
           reason: 'tenant_inactive',
           userId: 'u-suspended',
+          // #719 residual 1: specific status recorded server-side for ops.
+          details: { detail: 'partner:suspended' },
         }),
       );
+      // #719 residual 2: inactive-tenant reset attempts feed the anomaly metric.
+      expect(recordFailedLoginMock).toHaveBeenCalledWith('reset_tenant_inactive');
     });
 
     it('refuses reset for unknown emails (generic 200, no email sent, no audit)', async () => {
@@ -217,6 +234,9 @@ describe('password reset eligibility (#719)', () => {
       // No audit log for unknown users — defeats enumeration via audit-trail
       // exposure or write-volume side-channels.
       expect(writeAuthAudit).not.toHaveBeenCalled();
+      // And no metric — an unknown email must be indistinguishable from a
+      // known-but-inactive one in every observable channel.
+      expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset for SSO-enforced org users', async () => {
@@ -240,6 +260,9 @@ describe('password reset eligibility (#719)', () => {
           userId: 'u-sso',
         }),
       );
+      // Only tenant_inactive feeds the inactive-tenant signal — sso_required
+      // is a separate, intentional policy and must not inflate it.
+      expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset for disabled users', async () => {
@@ -366,6 +389,7 @@ describe('password reset eligibility (#719)', () => {
       getEligibilityForUserMock.mockResolvedValue({
         allowed: false,
         reason: 'tenant_inactive',
+        detail: 'partner:suspended',
         userId: 'u-suspended',
       });
 
@@ -378,6 +402,7 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { error: string };
       // Generic message — never leaks partner-status.
       expect(body.error).toBe('Invalid or expired reset token');
+      expect(JSON.stringify(body)).not.toContain('suspended');
       expect(updateWhereMock).not.toHaveBeenCalled();
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
@@ -386,8 +411,12 @@ describe('password reset eligibility (#719)', () => {
           result: 'denied',
           reason: 'tenant_inactive',
           userId: 'u-suspended',
+          details: { detail: 'partner:suspended' },
         }),
       );
+      // #719 residual 2: a tenant flipping inactive mid-flow is exactly the
+      // trap class we want alertable.
+      expect(recordFailedLoginMock).toHaveBeenCalledWith('reset_tenant_inactive');
     });
 
     it('returns 403 when org enforces SSO', async () => {

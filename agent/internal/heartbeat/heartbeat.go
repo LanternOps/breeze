@@ -96,6 +96,7 @@ type HeartbeatResponse struct {
 	RenewCert              bool                   `json:"renewCert,omitempty"`
 	RotateToken            bool                   `json:"rotateToken,omitempty"`
 	HelperEnabled          bool                   `json:"helperEnabled,omitempty"`
+	UacInterceptionEnabled *bool                  `json:"uacInterceptionEnabled,omitempty"`
 	HelperSettings         *HelperSettings        `json:"helperSettings,omitempty"`
 	HelperUpgradeTo        string                 `json:"helperUpgradeTo,omitempty"`
 	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
@@ -164,6 +165,16 @@ type Heartbeat struct {
 	helperFinder     func(targetSession string) *sessionbroker.Session
 	spawnHelper      func(targetSession string) error
 	killStaleHelpers func(staleKey string)
+	// pamFindSession / pamRequestDialog default to the real broker methods in
+	// RunPamFlow when nil; overridden in pam_flow_test.go.
+	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	// pamActuateMu serializes consent.exe actuation/dismissal so the local
+	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
+	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
+	// concurrently (e.g. an await_remote technician approval firing
+	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
+	pamActuateMu sync.Mutex
 	wsDesktopStart   func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners    sync.Map // desktop session ID -> helper session ID
 
@@ -200,6 +211,12 @@ type Heartbeat struct {
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
+
+	// uacInterceptionDisabled is set when the server's 'pam' config policy
+	// turns UAC capture off for this device. Inverted so the zero value
+	// (enabled) matches the default-ON contract before the first heartbeat
+	// and against older servers that never send the field.
+	uacInterceptionDisabled atomic.Bool
 
 	// Service & process monitoring
 	monitor *monitoring.Monitor
@@ -1092,6 +1109,13 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 		"coverageStartDate": info.CoverageStartDate,
 		"coverageType":      info.CoverageType,
 		"deviceName":        info.DeviceName,
+	}
+	// Only include coverageKind when the NDO verb is recognized; omit the key for
+	// timestamp-only/labelless/localized/plist-fallback coverage where it can't be
+	// classified (#1320). The API schema tolerates an empty/absent value and treats
+	// it as fixed for back-compat (#1344), so omitting it here is safe — no 400.
+	if info.CoverageKind != "" {
+		payload["coverageKind"] = info.CoverageKind
 	}
 	h.sendInventoryData("warranty-info", payload, "apple warranty")
 }
@@ -2341,6 +2365,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Update helper enabled state and apply full settings
 	h.handleHelperEnabled(response.HelperEnabled)
+	h.handleUACInterception(response.UacInterceptionEnabled)
 	if response.HelperSettings != nil {
 		h.helperMgr.Apply(&helper.Settings{
 			Enabled:            response.HelperSettings.Enabled,
@@ -2365,6 +2390,28 @@ func (h *Heartbeat) handleHelperEnabled(enabled bool) {
 			log.Info("helper chat enabled for this device")
 		} else {
 			log.Info("helper chat disabled for this device")
+		}
+	}
+}
+
+// IsUACInterceptionEnabled reports whether etwlua should post UAC elevation
+// events. Default true; only an explicit uacInterceptionEnabled=false from
+// the server's resolved 'pam' config policy disables it.
+func (h *Heartbeat) IsUACInterceptionEnabled() bool {
+	return !h.uacInterceptionDisabled.Load()
+}
+
+// handleUACInterception updates the UAC interception flag from the heartbeat
+// response and logs state transitions. nil (field absent — older server)
+// means enabled.
+func (h *Heartbeat) handleUACInterception(enabled *bool) {
+	disabled := enabled != nil && !*enabled
+	prev := h.uacInterceptionDisabled.Swap(disabled)
+	if prev != disabled {
+		if disabled {
+			log.Info("UAC interception disabled by configuration policy")
+		} else {
+			log.Info("UAC interception enabled by configuration policy")
 		}
 	}
 }

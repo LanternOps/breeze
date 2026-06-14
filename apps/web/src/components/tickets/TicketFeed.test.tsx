@@ -92,4 +92,37 @@ describe('TicketFeed', () => {
     expect(screen.getByTestId('ticket-feed-empty')).toBeInTheDocument();
     expect(screen.queryByTestId('ticket-feed')).toBeNull();
   });
+
+  it('renders time_entry comments as system lines with their content', () => {
+    render(
+      <TicketFeed
+        comments={[
+          makeComment({ id: 'te-1', commentType: 'time_entry', content: 'Todd logged 45m (billable)', authorName: 'Todd' })
+        ]}
+      />
+    );
+    expect(screen.getByText(/Todd logged 45m \(billable\)/)).toBeInTheDocument();
+  });
+
+  it('renders a fallback label for time_entry comments with empty content', () => {
+    render(
+      <TicketFeed
+        comments={[
+          makeComment({ id: 'te-empty', commentType: 'time_entry', content: '', authorName: 'Todd' })
+        ]}
+      />
+    );
+    expect(screen.getByText('Todd logged time')).toBeInTheDocument();
+  });
+
+  it('renders "Technician logged time" for time_entry comments with empty content and null authorName', () => {
+    render(
+      <TicketFeed
+        comments={[
+          makeComment({ id: 'te-noauth', commentType: 'time_entry', content: '', authorName: null })
+        ]}
+      />
+    );
+    expect(screen.getByText('Technician logged time')).toBeInTheDocument();
+  });
 });

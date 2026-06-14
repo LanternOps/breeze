@@ -1,0 +1,45 @@
+---
+import '../styles/globals.css';
+
+interface Props {
+  title: string;
+  statusCode: number;
+}
+
+const { title, statusCode } = Astro.props;
+---
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Breeze RMM - Remote Monitoring and Management" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      Theme bootstrap is the same already-CSP-allowed external script used by
+      Layout.astro; it sets the light/dark class before paint. No ClientRouter
+      here on purpose — error pages must render without view-transition JS.
+    -->
+    <script is:inline src="/theme-bootstrap.js"></script>
+    <title>{title} | Breeze RMM</title>
+  </head>
+  <body class="min-h-screen bg-background antialiased">
+    <main class="flex min-h-screen flex-col items-center justify-center px-4 py-12 text-center">
+      <div class="flex items-center gap-2 text-primary">
+        <svg width="22" height="22" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <path d="M12 22C12 22 20 22 28 22C36 22 40 16 48 16C52 16 54 18 54 20C54 22 52 24 48 24C44 24 42 22 42 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M8 34C8 34 18 34 30 34C42 34 46 28 52 28C55 28 57 30 57 32C57 34 55 36 52 36C48 36 46 34 46 34" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M14 46C14 46 22 46 32 46C40 46 44 40 50 40C53 40 55 42 55 44C55 46 53 48 50 48C46 48 44 46 44 46" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="text-lg font-bold tracking-tight text-foreground">Breeze</span>
+      </div>
+
+      <p class="mt-10 text-7xl font-bold tracking-tight text-primary sm:text-8xl">{statusCode}</p>
+
+      <div class="mt-4 w-full max-w-md space-y-6">
+        <slot />
+      </div>
+    </main>
+  </body>
+</html>

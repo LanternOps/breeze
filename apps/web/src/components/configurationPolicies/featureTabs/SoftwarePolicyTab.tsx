@@ -132,6 +132,10 @@ export default function SoftwarePolicyTab({ policyId, existingLink, onLinkChange
             <p className="mt-1 text-xs text-muted-foreground capitalize">
               Mode: {linkedPolicySummary.mode}
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Executable rules in this policy also gate UAC elevation requests on assigned devices —
+              an allowlist match auto-approves, a blocklist match auto-denies, before any PAM rules run.
+            </p>
             {linkedPolicySummary.rules?.software && linkedPolicySummary.rules.software.length > 0 && (
               <div className="mt-2">
                 <p className="text-xs font-medium text-muted-foreground">

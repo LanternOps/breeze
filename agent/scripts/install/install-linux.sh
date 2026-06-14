@@ -52,15 +52,22 @@ elif [ -f "breeze-watchdog" ]; then
     chmod 755 /usr/local/bin/breeze-watchdog
 fi
 
-# Install watchdog systemd unit if not already present
+# (Re)install the watchdog systemd unit on EVERY install/upgrade.
+#
+# `breeze-watchdog service install` always rewrites the unit file (and runs
+# daemon-reload + enable). Re-running it on an existing host is how unit changes
+# — e.g. the RuntimeDirectory=breeze / RuntimeDirectoryPreserve=yes additions
+# for #1297 — reach already-deployed watchdogs. The old "rewrite only when
+# absent, else just restart" path silently skipped those edits, so an upgraded
+# host kept its stale watchdog unit and stayed one reboot away from a
+# 226/NAMESPACE wedge. `service install` is idempotent, so always calling it is
+# safe. It stops the service while writing the unit but does not start it, so we
+# (re)start explicitly afterward.
 if [ -f "/usr/local/bin/breeze-watchdog" ]; then
-    if [ ! -f "/etc/systemd/system/breeze-watchdog.service" ]; then
-        echo "Registering watchdog service..."
-        /usr/local/bin/breeze-watchdog service install
-    else
-        echo "Restarting watchdog service..."
-        systemctl restart breeze-watchdog || true
-    fi
+    echo "Registering watchdog service..."
+    /usr/local/bin/breeze-watchdog service install
+    echo "Starting watchdog service..."
+    systemctl restart breeze-watchdog || true
 fi
 
 # Install systemd unit
@@ -104,17 +111,19 @@ if ! getent group breeze &>/dev/null; then
 fi
 
 # Install tmpfiles.d snippet so /run/breeze is recreated on every boot.
-# /run is tmpfs-backed and wiped across reboots; without this the service
-# fails sandbox setup (ProtectSystem=strict + ReadWritePaths=/var/run/breeze)
-# and does not auto-start after reboot. Runs AFTER groupadd because the
-# snippet references the breeze group for ownership.
+# /run is tmpfs-backed and wiped across reboots. The breeze-agent.service and
+# breeze-watchdog.service units now declare RuntimeDirectory=breeze, so systemd
+# recreates /run/breeze before each ExecStart even without this snippet — that
+# is the primary, self-contained fix for #1297. The snippet remains as defense-
+# in-depth so /run/breeze also exists for tooling that runs before the units
+# start. Runs AFTER groupadd because the snippet references the breeze group.
 TMPFILES_SRC="$SCRIPT_DIR/../../service/tmpfiles.d/breeze-agent.conf"
 TMPFILES_DST="/usr/lib/tmpfiles.d/breeze-agent.conf"
 if [ -f "$TMPFILES_SRC" ]; then
     cp "$TMPFILES_SRC" "$TMPFILES_DST"
     chmod 644 "$TMPFILES_DST"
     if ! systemd-tmpfiles --create "$TMPFILES_DST"; then
-        echo "Warning: systemd-tmpfiles --create failed; /run/breeze will be created on next boot" >&2
+        echo "Warning: systemd-tmpfiles --create failed; relying on RuntimeDirectory=breeze in the unit to recreate /run/breeze on next start" >&2
     fi
     echo "tmpfiles.d snippet installed (recreates /run/breeze on reboot)."
 fi
@@ -124,6 +133,16 @@ IPC_DIR="/var/run/breeze"
 mkdir -p "$IPC_DIR"
 chown root:breeze "$IPC_DIR"
 chmod 770 "$IPC_DIR"
+
+# Verify /run/breeze exists post-install. With RuntimeDirectory=breeze on both
+# units this is normally redundant, but a failed mkdir/chown above (e.g. a
+# read-only /run) would otherwise ship a host one reboot away from a silent
+# 226/NAMESPACE wedge (#1297 / #502). Fail loudly instead of warn-and-continue.
+if [ ! -d "$IPC_DIR" ]; then
+    echo "Error: $IPC_DIR does not exist after install — the service will fail to start." >&2
+    echo "       Check that /run is writable and re-run the installer." >&2
+    exit 1
+fi
 
 # Add all logged-in users to the breeze group
 for user in $(who | awk '{print $1}' | sort -u); do

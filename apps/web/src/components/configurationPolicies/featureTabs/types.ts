@@ -1,4 +1,4 @@
-export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access';
+export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access' | 'pam';
 
 export type FeatureLink = {
   id: string;
@@ -32,11 +32,12 @@ export const FEATURE_META: Record<FeatureType, {
   maintenance:  { label: 'Maintenance',  fetchUrl: '/maintenance/windows', description: 'Maintenance window settings' },
   compliance:   { label: 'Compliance',   fetchUrl: '/policies',            description: 'Compliance rules and enforcement' },
   automation:   { label: 'Automations',  fetchUrl: '/automations',         description: 'Automated tasks and responses' },
-  event_log:    { label: 'Event Logs',   fetchUrl: null,                   description: 'Event log collection and retention' },
+  event_log:    { label: 'Event Logs',   fetchUrl: null,                   description: 'Event log collection tuning & retention' },
   software_policy: { label: 'Software Policy', fetchUrl: '/software-policies', description: 'Allowlist/blocklist software rules' },
   sensitive_data: { label: 'Data Discovery', fetchUrl: '/sensitive-data/policies', description: 'Sensitive data scanning configuration' },
   peripheral_control: { label: 'Peripheral Control', fetchUrl: '/peripherals/policies', description: 'USB, Bluetooth, and Thunderbolt device policies' },
   warranty:    { label: 'Warranty',    fetchUrl: null,                   description: 'Warranty expiry alert thresholds' },
   helper:      { label: 'Breeze Assist',     fetchUrl: null,                   description: 'End-user Breeze Assist tray application' },
   remote_access: { label: 'Remote Access',  fetchUrl: null,                   description: 'Remote desktop, proxy tunnels, and session limits' },
+  pam:         { label: 'Privileged Access', fetchUrl: null,              description: 'Windows UAC elevation prompt capture (PAM)' },
 };

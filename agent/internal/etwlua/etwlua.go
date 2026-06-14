@@ -38,8 +38,10 @@
 // scripts hitting the same MSI). Without dedupe a single legitimate
 // admin-prompt can produce 5+ events. We key dedupe on
 // sha256(exe_path) + ":" + subject_username with a 30s window using the
-// existing ipc.RateLimiter — matches what Track 1's server-side dedupe
-// will also do, so the wire is clean.
+// existing ipc.RateLimiter. This is purely agent-side noise suppression —
+// the server applies its own per-device rate limit on ingest but does not
+// coalesce duplicates (it inserts a fresh row per accepted request), so
+// there is no parity contract and the keys/windows are unrelated.
 //
 // Offline-queue rationale. The agent often runs on laptops behind captive
 // portals or VPNs that drop briefly. The intercept event itself is short-
@@ -67,6 +69,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -75,6 +78,16 @@ import (
 )
 
 var log = logging.L("etwlua")
+
+// dropObserved tracks suppressed-event observability while the 'pam' config
+// policy has interception disabled: one Info log on the first drop of each
+// disable interval (not per event — a busy desktop would spam), and a counter
+// so the re-enable transition can quantify the window. Package-level because
+// handleEvent is a free function; reset by the re-enable path in handleEvent.
+var (
+	dropLogged  atomic.Bool
+	dropCounter atomic.Int64
+)
 
 // Event is the platform-neutral representation of a UAC consent prompt.
 // Windows-side decoders populate it from ConsentUI ETW events; the cross-
@@ -109,6 +122,26 @@ type Event struct {
 	ObservedAt time.Time `json:"observed_at"`
 }
 
+// ElevationStatus is the server's ingest decision for a uac_intercept request.
+type ElevationStatus string
+
+const (
+	ElevationPending      ElevationStatus = "pending"
+	ElevationAutoApproved ElevationStatus = "auto_approved"
+	ElevationDenied       ElevationStatus = "denied"
+	ElevationIgnored      ElevationStatus = "ignored"
+)
+
+// ElevationOutcome is the server's synchronous ingest decision for a posted
+// uac_intercept elevation request, parsed from the POST response body
+// {"id":"<uuid>","status":"<status>"}. Status is one of "pending",
+// "auto_approved", "denied", or "ignored". RequestID is empty when the
+// server suppressed the request (status "ignored", id null).
+type ElevationOutcome struct {
+	RequestID string
+	Status    ElevationStatus
+}
+
 // Subscriber abstracts the ETW event source. Real Windows builds use
 // etwSession from etwlua_windows.go; tests pass a fake.
 type Subscriber interface {
@@ -126,7 +159,29 @@ type Subscriber interface {
 // create a cycle once heartbeat imports etwlua for the SendElevationRequest
 // handler).
 type HeartbeatPoster interface {
-	SendElevationRequest(req Event) error
+	// SendElevationRequest posts the detected prompt and returns the
+	// server's ingest decision. A non-nil error means the post failed
+	// (network/5xx) and the event should be queued for retry.
+	SendElevationRequest(req Event) (ElevationOutcome, error)
+	// IsUACInterceptionEnabled reports the server-resolved 'pam' config
+	// policy state. While false, handleEvent drops events entirely (no
+	// post, no offline queue) and the periodic queue drain is paused.
+	IsUACInterceptionEnabled() bool
+}
+
+// PamRunner drives the local elevation flow (dialog → decision →
+// actuate/deny) for one detected UAC prompt, using the server's ingest
+// decision. It is the single edge from etwlua into the session broker +
+// actuator, kept behind an interface so etwlua stays unit-testable without
+// a live broker or Windows. A nil PamRunner disables the flow (detection +
+// post only) — used on non-Windows builds and when the broker is absent.
+//
+// Implementations must be non-blocking-forever: bound the dialog round-trip
+// to consent.exe's lifetime. RunPamFlow is called synchronously from the
+// event loop; UAC prompts are modal and serial, so one in-flight flow at a
+// time is correct.
+type PamRunner interface {
+	RunPamFlow(ctx context.Context, ev Event, outcome ElevationOutcome)
 }
 
 // ErrNotPrivileged is returned by Start when the process is not running as
@@ -162,7 +217,7 @@ const drainTickInterval = 60 * time.Second
 // containers — IsRunningAsRoot returns true there).
 //
 // Start does not spawn its own goroutine; callers should `go etwlua.Start(...)`.
-func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
+func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster, pam PamRunner) error {
 	if !privilege.IsRunningAsRoot() {
 		log.Warn(ErrNotPrivileged.Error())
 		return ErrNotPrivileged
@@ -198,15 +253,17 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 			if ev.ObservedAt.IsZero() {
 				ev.ObservedAt = time.Now().UTC()
 			}
-			handleEvent(ev, limiter, hb, q)
+			handleEvent(ctx, ev, limiter, hb, q, pam)
 
 		case <-ticker.C:
-			if q != nil {
+			if q != nil && hb.IsUACInterceptionEnabled() {
 				if drained, err := q.Drain(hb); err != nil {
 					log.Debug("etwlua: periodic drain failed", "error", err.Error())
 				} else if drained > 0 {
 					log.Info("etwlua: periodic drain succeeded", "events", drained)
 				}
+			} else if q != nil {
+				log.Debug("etwlua: periodic drain paused — interception disabled by configuration policy")
 			}
 		}
 	}
@@ -214,7 +271,25 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 
 // handleEvent is the per-event hot path, extracted so tests can exercise it
 // without spinning up the full Start loop.
-func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queue) {
+func handleEvent(ctx context.Context, ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queue, pam PamRunner) {
+	if !hb.IsUACInterceptionEnabled() {
+		dropCounter.Add(1)
+		if dropLogged.CompareAndSwap(false, true) {
+			log.Info("etwlua: dropping UAC events — interception disabled by configuration policy")
+		}
+		return
+	}
+
+	// Interception is enabled. If a disable window just ended, log the
+	// re-enable transition with the count of events dropped. This fires
+	// lazily on the first event after re-enable, not at the exact moment
+	// the policy flips — acceptable for diagnostic purposes.
+	if dropLogged.Load() {
+		dropped := dropCounter.Swap(0)
+		dropLogged.Store(false)
+		log.Info("etwlua: interception re-enabled by configuration policy", "dropped_during_disable", dropped)
+	}
+
 	key := dedupeKey(ev)
 	if !limiter.Allow(key) {
 		log.Debug("etwlua: event deduped",
@@ -224,7 +299,8 @@ func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queu
 		return
 	}
 
-	if err := hb.SendElevationRequest(ev); err != nil {
+	outcome, err := hb.SendElevationRequest(ev)
+	if err != nil {
 		log.Warn("etwlua: post failed, queueing",
 			"user", ev.SubjectUsername,
 			"path", ev.TargetExecutablePath,
@@ -243,9 +319,32 @@ func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queu
 		"user", ev.SubjectUsername,
 		"path", ev.TargetExecutablePath,
 	)
+
+	// Drive the local elevation flow. The dedupe above prevents stacked dialogs
+	// for re-fired ETW events that arrive *before* the flow starts, but the
+	// window is re-asserted at flow-end (below) to also cover flows that run
+	// longer than dedupeWindow. Note this only fires for live posts: events
+	// replayed later via Queue.Drain discard the outcome and deliberately skip
+	// the flow — a drained event is a stale prompt whose consent.exe dialog is
+	// long gone, so actuating it is wrong.
+	if pam != nil && outcome.RequestID != "" && outcome.Status != ElevationIgnored {
+		pam.RunPamFlow(ctx, ev, outcome)
+		// RunPamFlow can block on the PAM dialog up to ~90s — longer than the
+		// 30s dedupeWindow — so the arrival entry recorded above may have
+		// expired by now. Re-record the key so a re-fired *live* ETW event
+		// arriving right after the flow completes is suppressed. This only
+		// effectively restarts the window from flow-end when the flow OUTLASTS
+		// dedupeWindow; for a short flow the arrival entry is still live and
+		// this Allow is a no-op (the window stays anchored at arrival) — still
+		// correct, just unnecessary. A genuine retry after the window still
+		// gets through. Result discarded — we're recording, not gating.
+		_ = limiter.Allow(key)
+	}
+
 	// Opportunistic drain on every successful post — quickly catches up
 	// after a network blip.
-	if q != nil {
+	// Mirror the ticker-drain gate: both drain sites must check the policy flag.
+	if q != nil && hb.IsUACInterceptionEnabled() {
 		if _, err := q.Drain(hb); err != nil {
 			log.Debug("etwlua: opportunistic drain failed", "error", err.Error())
 		}
