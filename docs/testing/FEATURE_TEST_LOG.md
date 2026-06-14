@@ -34,7 +34,7 @@ Use the `feature-testing` skill to run structured verification and record result
 - Add-in `.env`: `VITE_API_BASE_URL=https://localhost:3000/api/v1`, `VITE_CLIENT_AI_ENTRA_CLIENT_ID=4ad559f9-…`; `vite.config.ts` has a local `server.proxy` for `/api/v1`.
 - Org "Default Organization" (`b50945ac-…`) mapped to tenant `dba1c0e6-…`, policy enabled.
 - **TEMP debug line** in `apps/api/src/routes/clientAi/auth.ts` (`[client-ai][TIER-B-DEBUG]`) — remove before any commit.
-- Pane server: `cd apps/office-addin && PATH=…/v22.20.0/bin:$PATH pnpm dev`.
+- Pane server: `cd apps/excel-addin && PATH=…/v22.20.0/bin:$PATH pnpm dev`.
 
 ## Breeze AI for Office (PR #1314) — Tier A control-plane sweep — 2026-06-13
 
@@ -58,7 +58,7 @@ Re-pointed the shared `breeze` dev stack (`docker compose -p breeze`) from the `
 | 8 | Console health | **PASS** | 0 console errors across the full UI session |
 
 ### Not covered (Tier B — deferred, needs Entra app registration)
-Excel add-in (`apps/office-addin`), Office/MSAL SSO → `/client-ai/auth/exchange`, the SSE session loop, write-preview Apply/Reject, live DLP block banner in-host. Author's 16-item hand checklist: `apps/office-addin/MANUAL_TESTS.md`.
+Excel add-in (`apps/excel-addin`), Office/MSAL SSO → `/client-ai/auth/exchange`, the SSE session loop, write-preview Apply/Reject, live DLP block banner in-host. Author's 16-item hand checklist: `apps/excel-addin/MANUAL_TESTS.md`.
 
 ## Since-Release E2E Sweep (v0.68.2 → HEAD) — 2026-06-01
 
