@@ -113,6 +113,10 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Functional cross-partner forge proof: emailInboundRls.integration.test.ts.
   ['ticket_email_inbound', 'partner_id'],
   ['partner_inbound_domains', 'partner_id'],
+  // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
+  // per partner; policy gates on breeze_has_partner_access(partner_id) with a
+  // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.
+  ['authenticator_policies', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -228,6 +232,10 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // via breeze_current_user_id(), with an OR breeze_current_scope() = 'system'
   // branch for system-scope access (Shape 6).
   'user_passkeys',
+  // authenticator_devices: Breeze Authenticator approver device keys, scoped to
+  // the owning user via breeze_current_user_id(), with an
+  // OR breeze_current_scope() = 'system' branch (Shape 6). Mirrors user_passkeys.
+  'authenticator_devices',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
