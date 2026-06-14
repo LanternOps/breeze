@@ -1,5 +1,5 @@
 {
-  "name": "@breeze/office-addin",
+  "name": "@breeze/excel-addin",
   "type": "module",
   "version": "0.1.0",
   "private": true,
