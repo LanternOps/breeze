@@ -35,14 +35,30 @@ function inboundDomainOrUndefined(): string | undefined {
   }
 }
 
+// Settings lookup runs INSIDE processInboundEmail's system-context work
+// transaction (the autoresponder is called from createFromEmail, which
+// createFromEmail awaits). A transient error here — or a query on an already
+// aborted tx (25P02) — would otherwise propagate up through createFromEmail
+// into processInboundEmail's catch, rolling back the JUST-CREATED ticket and
+// logging the inbound as 'failed'. The module invariant is "best-effort must
+// never undo ticket creation" (the same reason capAllows() is try/caught), so
+// wrap the read and fail CLOSED to SUPPRESS (return false) on any error: a
+// transient settings lookup can never roll back ticket creation. Capture for
+// visibility, then deny.
 async function autoresponderEnabled(partnerId: string): Promise<boolean> {
-  const rows = await db.select({ settings: partners.settings })
-    .from(partners).where(eq(partners.id, partnerId)).limit(1);
-  const settings = rows[0]?.settings as
-    | { ticketing?: { inbound?: { autoresponderEnabled?: boolean } } }
-    | undefined;
-  // Default ON when unset (spec §2 config default).
-  return settings?.ticketing?.inbound?.autoresponderEnabled !== false;
+  try {
+    const rows = await db.select({ settings: partners.settings })
+      .from(partners).where(eq(partners.id, partnerId)).limit(1);
+    const settings = rows[0]?.settings as
+      | { ticketing?: { inbound?: { autoresponderEnabled?: boolean } } }
+      | undefined;
+    // Default ON when unset (spec §2 config default).
+    return settings?.ticketing?.inbound?.autoresponderEnabled !== false;
+  } catch (err) {
+    // Fail CLOSED — suppress the autoresponse rather than poison the work tx.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return false;
+  }
 }
 
 // Per-sender sliding-window cap, best-effort. The cap check runs INSIDE
@@ -55,9 +71,13 @@ async function autoresponderEnabled(partnerId: string): Promise<boolean> {
 // creation. Returns true to PROCEED, false to SUPPRESS.
 async function capAllows(senderEmail: string): Promise<boolean> {
   try {
+    // Key on the lowercased sender — loopPrevention + the portal-user lookup
+    // already lowercase, so the cap must too, else case-variant senders
+    // (Jane@x.com vs jane@x.com) would each get their own 1/24h budget and
+    // bypass the cap.
     const cap = await rateLimiter(
       getRedis(),
-      `autoresponse:${senderEmail}`,
+      `autoresponse:${senderEmail.trim().toLowerCase()}`,
       AUTORESPONSE_CAP_LIMIT,
       AUTORESPONSE_CAP_WINDOW_SECONDS,
     );
