@@ -38,9 +38,10 @@
 // scripts hitting the same MSI). Without dedupe a single legitimate
 // admin-prompt can produce 5+ events. We key dedupe on
 // sha256(exe_path) + ":" + subject_username with a 30s window using the
-// existing ipc.RateLimiter. The server runs its own independent dedupe on
-// ingest; the keys and windows are not guaranteed identical, so this is
-// agent-side noise suppression, not a parity contract with the server.
+// existing ipc.RateLimiter. This is purely agent-side noise suppression —
+// the server applies its own per-device rate limit on ingest but does not
+// coalesce duplicates (it inserts a fresh row per accepted request), so
+// there is no parity contract and the keys/windows are unrelated.
 //
 // Offline-queue rationale. The agent often runs on laptops behind captive
 // portals or VPNs that drop briefly. The intercept event itself is short-
@@ -121,6 +122,16 @@ type Event struct {
 	ObservedAt time.Time `json:"observed_at"`
 }
 
+// ElevationStatus is the server's ingest decision for a uac_intercept request.
+type ElevationStatus string
+
+const (
+	ElevationPending      ElevationStatus = "pending"
+	ElevationAutoApproved ElevationStatus = "auto_approved"
+	ElevationDenied       ElevationStatus = "denied"
+	ElevationIgnored      ElevationStatus = "ignored"
+)
+
 // ElevationOutcome is the server's synchronous ingest decision for a posted
 // uac_intercept elevation request, parsed from the POST response body
 // {"id":"<uuid>","status":"<status>"}. Status is one of "pending",
@@ -128,7 +139,7 @@ type Event struct {
 // server suppressed the request (status "ignored", id null).
 type ElevationOutcome struct {
 	RequestID string
-	Status    string
+	Status    ElevationStatus
 }
 
 // Subscriber abstracts the ETW event source. Real Windows builds use
@@ -316,16 +327,17 @@ func handleEvent(ctx context.Context, ev Event, limiter *ipc.RateLimiter, hb Hea
 	// replayed later via Queue.Drain discard the outcome and deliberately skip
 	// the flow — a drained event is a stale prompt whose consent.exe dialog is
 	// long gone, so actuating it is wrong.
-	if pam != nil && outcome.RequestID != "" && outcome.Status != "ignored" {
+	if pam != nil && outcome.RequestID != "" && outcome.Status != ElevationIgnored {
 		pam.RunPamFlow(ctx, ev, outcome)
 		// RunPamFlow can block on the PAM dialog up to ~90s — longer than the
 		// 30s dedupeWindow — so the arrival entry recorded above may have
-		// expired by now. Re-record the key so the dedupe window restarts from
-		// flow-end: the sliding-window limiter prunes the stale arrival entry
-		// and records this moment, so a buffered re-fire drained within
-		// dedupeWindow of flow-end is suppressed, while a genuine retry after
-		// the window still gets through. Result discarded — we're recording,
-		// not gating.
+		// expired by now. Re-record the key so a re-fired *live* ETW event
+		// arriving right after the flow completes is suppressed. This only
+		// effectively restarts the window from flow-end when the flow OUTLASTS
+		// dedupeWindow; for a short flow the arrival entry is still live and
+		// this Allow is a no-op (the window stays anchored at arrival) — still
+		// correct, just unnecessary. A genuine retry after the window still
+		// gets through. Result discarded — we're recording, not gating.
 		_ = limiter.Allow(key)
 	}
 

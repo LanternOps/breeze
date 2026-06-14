@@ -368,8 +368,8 @@ func TestHandleEventDoesNotInvokeRunnerOnPostFailure(t *testing.T) {
 // TestHandleEventReassertsDedupeAfterLongFlow proves the post-flow re-record:
 // RunPamFlow can block longer than the dedupe window (a real PAM dialog waits
 // up to ~90s, the window is 30s). Without re-recording the dedupe key at
-// flow-end, the original arrival entry expires during the flow and a buffered
-// re-fire drained right after sails past the now-stale window and triggers a
+// flow-end, the original arrival entry expires during the flow and a live event
+// re-fired right after sails past the now-stale window and triggers a
 // redundant second flow. We use a short window and a flow that outlasts it: the
 // second handleEvent for the same key must be deduped by the flow-end re-record.
 func TestHandleEventReassertsDedupeAfterLongFlow(t *testing.T) {
