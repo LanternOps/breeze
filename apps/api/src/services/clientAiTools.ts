@@ -335,12 +335,80 @@ export const WORD_CLIENT_TOOL_REGISTRY = {
   },
 } as const satisfies Record<string, ClientWorkbookTool>;
 
-/** Per-host tool registries. Excel + Word are populated; PowerPoint/Outlook
- *  are filled in as each host's tools land (Phase 5+). */
+/**
+ * AI for Office — PowerPoint baseline tool registry (Phase 5). Five tools
+ * mirroring the add-in's PowerPoint HostAdapter executors. inputSchema keys are
+ * BYTE-IDENTICAL to the client executor read keys (the cells-vs-values no-op
+ * bug, MEMORY.md):
+ *   get_presentation_overview {}                                  (read)
+ *   read_selection            {}                                  (read)
+ *   add_slide                 layoutName?, title?                 (mutating)
+ *   insert_text_box           text, slideIndex?                   (mutating)
+ *   format_selection          format{bold?,italic?,underline?,fontColor?,fontSize?}
+ *
+ * NB: no find_replace — PowerPoint JS has no presentation-wide search primitive.
+ * `format_selection`'s `format` object is byte-identical to Word's `format_text`.
+ */
+export const POWERPOINT_CLIENT_TOOL_REGISTRY = {
+  get_presentation_overview: {
+    description:
+      'Summarize the open PowerPoint presentation: slide count and the title of each slide. Call this first to orient yourself before reading or editing the presentation.',
+    mutating: false,
+    inputSchema: {},
+  },
+  read_selection: {
+    description:
+      "Read the user's current selection in the presentation: the text of the selected shapes. Use when the user refers to 'this', 'the selected text', or similar.",
+    mutating: false,
+    inputSchema: {},
+  },
+  add_slide: {
+    description:
+      'Add a new slide to the presentation. Optionally choose a layout by name and set the slide title. The user sees a preview in the task pane and must click Apply before anything changes.',
+    mutating: true,
+    inputSchema: {
+      layoutName: z.string().min(1).max(255).optional().describe('Slide layout name; defaults to the first available layout'),
+      title: z.string().max(255).optional().describe('Title text for the new slide'),
+    },
+  },
+  insert_text_box: {
+    description:
+      'Insert a text box containing the given text onto a slide. Defaults to the selected slide when slideIndex is omitted. Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      text: z.string().min(1).max(100000).describe('The text to place in the new text box'),
+      slideIndex: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('0-based index of the target slide; defaults to the selected slide'),
+    },
+  },
+  format_selection: {
+    description:
+      'Apply character formatting to the selected shapes: bold/italic/underline, font color (hex), and font size. Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      format: z
+        .object({
+          bold: z.boolean().optional(),
+          italic: z.boolean().optional(),
+          underline: z.boolean().optional(),
+          fontColor: z.string().max(20).optional().describe('Hex color, e.g. "#1F4E79"'),
+          fontSize: z.number().min(6).max(72).optional(),
+        })
+        .strict(),
+    },
+  },
+} as const satisfies Record<string, ClientWorkbookTool>;
+
+/** Per-host tool registries. Excel + Word + PowerPoint are populated; Outlook
+ *  is filled in as the host's tools land (Phase 6). */
 export const CLIENT_TOOL_REGISTRIES: Record<ClientHost, Record<string, ClientWorkbookTool>> = {
   excel: EXCEL_CLIENT_TOOL_REGISTRY,
   word: WORD_CLIENT_TOOL_REGISTRY,
-  powerpoint: {},
+  powerpoint: POWERPOINT_CLIENT_TOOL_REGISTRY,
   outlook: {},
 };
 
