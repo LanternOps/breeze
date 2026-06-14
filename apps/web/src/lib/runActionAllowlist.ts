@@ -28,6 +28,6 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/alerts/AlertRulesPage.tsx',
   'apps/web/src/components/alerts/AlertTemplateEditor.tsx',
   'apps/web/src/components/alerts/AlertTemplateList.tsx',
-  'apps/web/src/components/alerts/AlertsPage.tsx',
+  // AlertsPage.tsx migrated to runAction (#1300) — now in TARGET_GLOBS.
   'apps/web/src/components/alerts/CorrelatedAlertGroups.tsx',
 ];

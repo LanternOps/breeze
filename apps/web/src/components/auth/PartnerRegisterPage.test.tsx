@@ -8,6 +8,7 @@ vi.mock('../../stores/auth', () => ({
     {},
   ),
   apiRegisterPartner: vi.fn(),
+  fetchWithAuth: vi.fn(),
 }));
 
 vi.mock('../../lib/navigation', () => ({
@@ -17,6 +18,18 @@ vi.mock('../../lib/navigation', () => ({
 import PartnerRegisterPage from './PartnerRegisterPage';
 import { apiRegisterPartner } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+import { useFeaturesStore } from '../../stores/featuresStore';
+
+// The page now gates on the runtime registration flag (#1308). Seed the store
+// to "loaded + enabled" so the form renders; the disabled path has its own test.
+function setRegistration(enabled: boolean, loaded = true) {
+  useFeaturesStore.setState({
+    features: { billing: false, support: false },
+    cfAccessLogin: { enabled: false },
+    registration: { enabled },
+    loaded,
+  });
+}
 
 const baseSuccess = {
   success: true as const,
@@ -38,6 +51,16 @@ async function fillAndSubmit() {
 describe('PartnerRegisterPage navigation after signup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setRegistration(true);
+  });
+
+  it('redirects to login when registration is disabled at runtime (#1308)', async () => {
+    setRegistration(false);
+    render(<PartnerRegisterPage />);
+    await waitFor(() =>
+      expect(navigateTo).toHaveBeenCalledWith('/login?reason=registration-disabled'),
+    );
+    expect(screen.queryByLabelText(/company name/i)).toBeNull();
   });
 
   it('billing-hook redirectUrl wins over next', async () => {

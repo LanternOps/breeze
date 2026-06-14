@@ -19,6 +19,7 @@ import {
   getPasswordResetEligibility,
   getPasswordResetEligibilityForUser,
 } from '../../services/passwordResetEligibility';
+import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { ENABLE_2FA, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema } from './schemas';
@@ -29,6 +30,7 @@ import {
   writeAuthAudit
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
+import { revokeAllUserOauthArtifacts } from '../../oauth/grantRevocation';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -129,14 +131,24 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
     console.warn('[auth] Password reset requested for non-existent account');
   } else if (eligibility.userId) {
     // Known user, blocked for policy reasons (SSO required / tenant
-    // inactive / user disabled). Log the denial for ops visibility.
+    // inactive / user disabled). Log the denial for ops visibility. The
+    // `detail` (e.g. `partner:suspended`) is recorded server-side only —
+    // never in the HTTP response (#719 residual 1).
     writeAuthAudit(c, {
       action: 'user.password.reset.requested',
       result: 'denied',
       reason: eligibility.reason,
       userId: eligibility.userId,
       email: eligibility.email,
+      details: eligibility.detail ? { detail: eligibility.detail } : undefined,
     });
+    // #719 residual 2: feed the anomaly metric so a spike of inactive-tenant
+    // reset attempts is alertable. Reuses the existing failed-login counter
+    // (breeze_failed_logins_total) — the metric is server-side only and never
+    // leaves an enumeration trail in any response.
+    if (eligibility.reason === 'tenant_inactive') {
+      recordFailedLogin('reset_tenant_inactive');
+    }
   }
 
   // Always return success
@@ -185,7 +197,14 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
       result: 'denied',
       reason: eligibility.reason,
       userId,
+      details: eligibility.detail ? { detail: eligibility.detail } : undefined,
     });
+    // #719 residual 2: a tenant that flipped inactive between token-issue and
+    // token-consume is exactly the "trap class" we want visibility on. Count
+    // it (server-side metric only).
+    if (eligibility.reason === 'tenant_inactive') {
+      recordFailedLogin('reset_tenant_inactive');
+    }
     // For all other ineligible reasons (tenant_inactive, user_disabled,
     // unknown_user) surface the same generic error as an expired token
     // — never leak partner-status to the client.
@@ -213,13 +232,18 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
       .where(eq(users.id, userId))
   );
 
-  // Invalidate all sessions — best-effort; password is already changed above
+  // Invalidate all sessions — best-effort; password is already changed above.
   await invalidateAllUserSessions(userId);
-  try {
-    await revokeAllUserTokens(userId);
-  } catch (error) {
-    console.error('[auth] Failed to revoke tokens after password reset:', error);
-  }
+  // Decouple the two revokes so each runs and fails independently. The OAuth
+  // revoke (more durable threat — a stolen refresh token mints access tokens
+  // for up to 14 days) must NOT be short-circuited by a JWT-revoke failure
+  // (e.g. a Redis blip), which is the exact window this revoke closes.
+  await revokeAllUserTokens(userId).catch((error) =>
+    console.error('[auth] Failed to revoke JWTs after password reset:', error),
+  );
+  await revokeAllUserOauthArtifacts(userId).catch((error) =>
+    console.error('[auth] Failed to revoke OAuth artifacts after password reset:', error),
+  );
 
   // Audit log
   const auditOrgId = await resolveUserAuditOrgId(userId);
@@ -285,12 +309,19 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
     .where(eq(users.id, auth.user.id));
 
   await invalidateAllUserSessions(auth.user.id);
-  try {
-    await revokeAllUserTokens(auth.user.id);
-    await revokeCurrentRefreshTokenJti(c, auth.user.id);
-  } catch (error) {
-    console.error('[auth] Failed to revoke tokens after password change:', error);
-  }
+  // Decouple the revokes so each runs and fails independently. The OAuth
+  // revoke (more durable threat — a previously authorized refresh token can
+  // keep minting access tokens) must NOT be short-circuited by a JWT-revoke
+  // failure (e.g. a Redis blip), which is the exact window this revoke closes.
+  await revokeAllUserTokens(auth.user.id).catch((error) =>
+    console.error('[auth] Failed to revoke JWTs after password change:', error),
+  );
+  await revokeCurrentRefreshTokenJti(c, auth.user.id).catch((error) =>
+    console.error('[auth] Failed to revoke current refresh token after password change:', error),
+  );
+  await revokeAllUserOauthArtifacts(auth.user.id).catch((error) =>
+    console.error('[auth] Failed to revoke OAuth artifacts after password change:', error),
+  );
 
   // Audit log
   const changeAuditOrgId = await resolveUserAuditOrgId(auth.user.id);

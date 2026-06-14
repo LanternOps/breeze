@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ENABLE_REGISTRATION } from '../../lib/featureFlags';
+import { useRegistrationGate } from '../../stores/featuresStore';
 
 const loginSchema = z.object({
   email: z.string().email('Enter a valid email address'),
@@ -37,6 +37,11 @@ export default function LoginForm({
   });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  // Gate the registration link on the runtime /config flag, not a build-time
+  // constant — prebuilt images can't honor PUBLIC_ENABLE_REGISTRATION (#1308).
+  // Hidden until /config confirms it's enabled, so we never flash a link that
+  // the server would reject.
+  const { enabled: registrationEnabled } = useRegistrationGate();
 
   return (
     <form
@@ -104,7 +109,7 @@ export default function LoginForm({
         {isLoading ? 'Signing in...' : submitLabel}
       </button>
 
-      {ENABLE_REGISTRATION && (
+      {registrationEnabled && (
         <div className="space-y-2 text-center text-sm text-muted-foreground">
           <p>
             New here?{' '}

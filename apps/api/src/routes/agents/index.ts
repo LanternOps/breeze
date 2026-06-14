@@ -19,13 +19,19 @@ import { changesRoutes } from './changes';
 import { peripheralRoutes } from './peripherals';
 import { tokenRoutes } from './token';
 import { elevationRequestsRoutes } from './elevationRequests';
+import { processSampleRoutes } from './processSample';
 
 export const agentRoutes = new Hono();
 
 // Sub-paths under /:id/* that handle their own (user-JWT) auth and skip agent-token auth.
 export const AGENT_AUTH_SKIP_ID_SEGMENTS = new Set([
-  'enroll', 'renew-cert', 'quarantined', 'org', 'download',
+  'enroll',
+  'renew-cert',
+  'quarantined',
+  'org',
+  'download',
 ]);
+export const AGENT_AUTH_SKIP_EXACT_ID_SEGMENTS = new Set(['install.sh', 'uninstall.sh']);
 // Routes of the exact shape /:id/<action> that use user JWT auth.
 export const AGENT_AUTH_SKIP_ACTIONS = new Set(['approve', 'deny']);
 
@@ -33,6 +39,7 @@ export function shouldSkipAgentAuth(path: string, id: string): boolean {
   if (AGENT_AUTH_SKIP_ID_SEGMENTS.has(id)) return true;
   const segments = path.split('/').filter(Boolean);
   const last = segments[segments.length - 1] ?? '';
+  if (AGENT_AUTH_SKIP_EXACT_ID_SEGMENTS.has(id) && last === id) return true;
   const secondLast = segments[segments.length - 2] ?? '';
   // Only the EXACT shape .../<id>/<action> skips — never a deeper nested path.
   return secondLast === id && AGENT_AUTH_SKIP_ACTIONS.has(last);
@@ -69,3 +76,4 @@ agentRoutes.route('/', reliabilityRoutes);
 agentRoutes.route('/', changesRoutes);
 agentRoutes.route('/', peripheralRoutes);
 agentRoutes.route('/', elevationRequestsRoutes);
+agentRoutes.route('/', processSampleRoutes);

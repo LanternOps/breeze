@@ -207,7 +207,7 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
     .set({ status: 'offline' })
     .where(eq(devices.id, data.deviceId));
 
-  // Publish device.offline event
+  // Publish device.offline event — carry siteId for site-restricted users
   await publishEvent(
     'device.offline',
     data.orgId,
@@ -217,7 +217,8 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
       displayName: device.displayName,
       lastSeenAt: data.lastSeenAt
     },
-    'offline-detector'
+    'offline-detector',
+    { siteId: device.siteId }
   );
 
   console.log(`[OfflineDetector] Marked device ${data.deviceId} as offline`);

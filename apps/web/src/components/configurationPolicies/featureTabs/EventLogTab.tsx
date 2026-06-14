@@ -12,8 +12,6 @@ type EventLogSettings = {
   minimumLevel: 'info' | 'warning' | 'error' | 'critical';
   collectionIntervalMinutes: number;
   rateLimitPerHour: number;
-  enableFullTextSearch: boolean;
-  enableCorrelation: boolean;
 };
 
 const defaults: EventLogSettings = {
@@ -23,8 +21,6 @@ const defaults: EventLogSettings = {
   minimumLevel: 'info',
   collectionIntervalMinutes: 5,
   rateLimitPerHour: 12000,
-  enableFullTextSearch: true,
-  enableCorrelation: true,
 };
 
 const allCategories = [
@@ -40,26 +36,6 @@ const levelOptions = [
   { value: 'error', label: 'Error+' },
   { value: 'critical', label: 'Critical only' },
 ];
-
-function ToggleRow({ label, description, checked, onChange }: {
-  label: string; description: string; checked: boolean; onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
-      <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </div>
-      <button
-        type="button"
-        onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? 'bg-emerald-500/80' : 'bg-muted'}`}
-      >
-        <span className={`inline-block h-5 w-5 rounded-full bg-white transition ${checked ? 'translate-x-5' : 'translate-x-1'}`} />
-      </button>
-    </div>
-  );
-}
 
 export default function EventLogTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink }: FeatureTabProps) {
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
@@ -95,12 +71,24 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
     });
   };
 
+  // Build the payload from the known keys only, so removed/legacy fields
+  // (e.g. the dead enableFullTextSearch / enableCorrelation toggles, #1323)
+  // are never re-persisted even if they were present on an older link.
+  const toPayload = (s: EventLogSettings): EventLogSettings => ({
+    retentionDays: s.retentionDays,
+    maxEventsPerCycle: s.maxEventsPerCycle,
+    collectCategories: s.collectCategories,
+    minimumLevel: s.minimumLevel,
+    collectionIntervalMinutes: s.collectionIntervalMinutes,
+    rateLimitPerHour: s.rateLimitPerHour,
+  });
+
   const handleSave = async () => {
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: 'event_log',
       featurePolicyId: linkedPolicyId,
-      inlineSettings: settings,
+      inlineSettings: toPayload(settings),
     });
     if (result) onLinkChanged(result, 'event_log');
   };
@@ -116,7 +104,7 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
     const result = await save(null, {
       featureType: 'event_log',
       featurePolicyId: linkedPolicyId,
-      inlineSettings: settings,
+      inlineSettings: toPayload(settings),
     });
     if (result) onLinkChanged(result, 'event_log');
   };
@@ -143,6 +131,11 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
       onOverride={isInherited ? handleOverride : undefined}
       onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
     >
+      <p className="mb-6 rounded-md border border-muted bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+        Event logs are collected from all devices by default. These settings tune what's
+        collected, how often, and how long it's retained — they do not turn collection on or off.
+      </p>
+
       <div className="grid gap-6 sm:grid-cols-2">
         {/* Retention */}
         <div>
@@ -235,23 +228,6 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
             </button>
           ))}
         </div>
-      </div>
-
-      {/* Feature toggles */}
-      <div className="mt-6 space-y-3">
-        <h3 className="text-sm font-semibold">Features</h3>
-        <ToggleRow
-          label="Full-text search"
-          description="Index logs for full-text search queries."
-          checked={settings.enableFullTextSearch}
-          onChange={(v) => update('enableFullTextSearch', v)}
-        />
-        <ToggleRow
-          label="Correlation detection"
-          description="Include logs in pattern correlation analysis."
-          checked={settings.enableCorrelation}
-          onChange={(v) => update('enableCorrelation', v)}
-        />
       </div>
     </FeatureTabShell>
   );

@@ -21,6 +21,8 @@ export interface Partner {
   plan: PlanType;
   maxOrganizations: number | null;
   maxDevices: number | null;
+  /** First-class partner timezone (#1318); canonical tz default. */
+  timezone?: string;
   settings: Record<string, unknown>;
   ssoConfig: Record<string, unknown> | null;
   billingEmail: string;

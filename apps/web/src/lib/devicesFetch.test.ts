@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fetchAllDevices } from './devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices } from './devicesFetch';
 
 function jsonResponse(body: unknown, init?: { ok?: boolean; status?: number }): Response {
   return {
@@ -250,5 +250,59 @@ describe('fetchAllDevices', () => {
       expect(result.data).toEqual([{ id: 'a' }, { id: 'b' }]);
       expect(result.pagesWalked).toBe(1);
     });
+  });
+});
+
+describe('fetchAllNetworkDevices (#1322)', () => {
+  it('walks offset pages until a short page is returned', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: [{ id: 'n1' }, { id: 'n2' }],
+          pagination: { page: 1, limit: 2, total: 3 },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: [{ id: 'n3' }],
+          pagination: { page: 2, limit: 2, total: 3 },
+        }),
+      );
+
+    const result = await fetchAllNetworkDevices({ fetcher, pageLimit: 2 });
+
+    expect(result.data.map((d) => d.id)).toEqual(['n1', 'n2', 'n3']);
+    expect(result.total).toBe(3);
+    expect(result.pagesWalked).toBe(2);
+    // includeTotal only on page 0; page param increments.
+    expect(fetcher.mock.calls[0][0]).toContain('/devices/network');
+    expect(fetcher.mock.calls[0][0]).toContain('page=1');
+    expect(fetcher.mock.calls[0][0]).toContain('includeTotal=true');
+    expect(fetcher.mock.calls[1][0]).toContain('page=2');
+    expect(fetcher.mock.calls[1][0]).not.toContain('includeTotal=true');
+  });
+
+  it('stops after one page when the first page is already short', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(
+      jsonResponse({ data: [{ id: 'n1' }], pagination: { page: 1, limit: 200, total: 1 } }),
+    );
+    const result = await fetchAllNetworkDevices({ fetcher });
+    expect(result.data.map((d) => d.id)).toEqual(['n1']);
+    expect(result.pagesWalked).toBe(1);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('degrades to an empty set when the network route is missing (404)', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(jsonResponse({}, { ok: false, status: 404 }));
+    const result = await fetchAllNetworkDevices({ fetcher });
+    expect(result.data).toEqual([]);
+    expect(result.total).toBe(0);
+  });
+
+  it('throws the Response on a non-404 error so the caller surfaces it', async () => {
+    const errorResp = jsonResponse({ error: 'boom' }, { ok: false, status: 500 });
+    const fetcher = vi.fn().mockResolvedValueOnce(errorResp);
+    await expect(fetchAllNetworkDevices({ fetcher })).rejects.toBe(errorResp);
   });
 });

@@ -19,3 +19,11 @@ func (*noopActuator) Trigger(_ context.Context, _ Request) Result {
 		DetailMessage: "pamactuator: not implemented for this platform",
 	}
 }
+
+func (*noopActuator) Dismiss(_ context.Context) Result {
+	return Result{
+		Success:       false,
+		Reason:        "unsupported_platform",
+		DetailMessage: "pamactuator: not implemented for this platform",
+	}
+}

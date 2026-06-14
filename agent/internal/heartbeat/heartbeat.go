@@ -165,6 +165,16 @@ type Heartbeat struct {
 	helperFinder     func(targetSession string) *sessionbroker.Session
 	spawnHelper      func(targetSession string) error
 	killStaleHelpers func(staleKey string)
+	// pamFindSession / pamRequestDialog default to the real broker methods in
+	// RunPamFlow when nil; overridden in pam_flow_test.go.
+	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	// pamActuateMu serializes consent.exe actuation/dismissal so the local
+	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
+	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
+	// concurrently (e.g. an await_remote technician approval firing
+	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
+	pamActuateMu sync.Mutex
 	wsDesktopStart   func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners    sync.Map // desktop session ID -> helper session ID
 
@@ -765,6 +775,7 @@ func (h *Heartbeat) Start() {
 	// Send initial inventory in background
 	go h.sendInventory()
 	go h.sendReliabilityMetrics()
+	go h.runProcessSampler()
 	h.mu.Lock()
 	h.lastPostureUpdate = time.Now()
 	h.lastReliabilityUpdate = time.Now()
@@ -1041,6 +1052,94 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 }
 
+// processSampleTopN is the per-dimension top-N (CPU and RAM); the union is
+// capped at 2×this and must stay ≤ the API ingest schema's processes.max(16).
+const processSampleTopN = 8
+
+// clampProcessSampleInterval bounds the configured sampler interval to a safe
+// [60, 3600] second range. Pure (no side effects) so it can be unit-tested and
+// so time.NewTicker never receives a non-positive duration.
+func clampProcessSampleInterval(secs int) int {
+	if secs < 60 {
+		return 60
+	}
+	if secs > 3600 {
+		return 3600
+	}
+	return secs
+}
+
+// runProcessSampler periodically captures a top-N process snapshot and POSTs it,
+// on its own ticker decoupled from the heartbeat (spec: process-sample pipeline).
+func (h *Heartbeat) runProcessSampler() {
+	configured := h.config.ProcessSampleIntervalSeconds
+	secs := clampProcessSampleInterval(configured)
+	if secs != configured {
+		log.Warn("clamped process_sample_interval_seconds", "configured", configured, "clamped", secs)
+	}
+	ticker := time.NewTicker(time.Duration(secs) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Per-iteration recovery: a panic in a single sample must not kill the
+			// long-lived sampler goroutine (a top-level defer Recoverer would).
+			func() {
+				defer observability.Recoverer("heartbeat.processSampler")
+				if h.authMon != nil && h.authMon.ShouldSkip() {
+					return
+				}
+				h.sendProcessSample()
+			}()
+		case <-h.stopChan:
+			return
+		}
+	}
+}
+
+// sendProcessSample builds a top-N process snapshot and POSTs it to the ingest
+// route, mirroring sendInventoryData's auth/retry/timeout handling.
+func (h *Heartbeat) sendProcessSample() {
+	entries, err := tools.TopProcessSample(processSampleTopN)
+	if err != nil {
+		log.Error("failed to collect process sample", "error", err.Error())
+		return
+	}
+
+	payload := map[string]any{
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"processes": entries,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Error("failed to marshal process sample", "error", err.Error())
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/process-sample", h.config.ServerURL, h.config.AgentID)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {h.authHeader()},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
+	if err != nil {
+		log.Error("failed to send process sample", "error", err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		log.Debug("process sample sent", "count", len(entries))
+	} else {
+		log.Warn("process sample send failed", "status", resp.StatusCode)
+	}
+}
+
 // submitPeripheralEvents sends detected peripheral events to the server.
 func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) error {
 	body, err := json.Marshal(peripheral.EventSubmission{Events: events})
@@ -1099,6 +1198,13 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 		"coverageStartDate": info.CoverageStartDate,
 		"coverageType":      info.CoverageType,
 		"deviceName":        info.DeviceName,
+	}
+	// Only include coverageKind when the NDO verb is recognized; omit the key for
+	// timestamp-only/labelless/localized/plist-fallback coverage where it can't be
+	// classified (#1320). The API schema tolerates an empty/absent value and treats
+	// it as fixed for back-compat (#1344), so omitting it here is safe — no 400.
+	if info.CoverageKind != "" {
+		payload["coverageKind"] = info.CoverageKind
 	}
 	h.sendInventoryData("warranty-info", payload, "apple warranty")
 }

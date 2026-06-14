@@ -20,14 +20,24 @@
     document.documentElement.setAttribute('data-density', d);
   }
 
+  function applyFont() {
+    var f = localStorage.getItem('breeze.font');
+    if (f !== 'system') {
+      f = 'breeze';
+    }
+    document.documentElement.setAttribute('data-font', f);
+  }
+
   applyTheme();
   applyDensity();
+  applyFont();
 
   if (!window.__themeSwap) {
     window.__themeSwap = true;
     document.addEventListener('astro:after-swap', function () {
       applyTheme();
       applyDensity();
+      applyFont();
       var main = document.querySelector('main');
       if (main) main.scrollTop = 0;
     });
