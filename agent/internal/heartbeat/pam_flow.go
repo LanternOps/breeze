@@ -9,6 +9,9 @@ import (
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
+// Compile-time check that *Heartbeat satisfies the etwlua PamRunner contract.
+var _ etwlua.PamRunner = (*Heartbeat)(nil)
+
 const (
 	// pamDialogTimeout bounds the broker round-trip to comfortably under
 	// consent.exe's idle lifetime (~120s default). Timeout → deny+dismiss
@@ -34,6 +37,15 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// fall through to the dialog gate
 	default:
 		log.Debug("pam: no local flow for status", "status", outcome.Status, "elevationRequestId", outcome.RequestID)
+		return
+	}
+
+	// Defensive: the PamRunner contract (see etwlua.PamRunner) says the caller
+	// passes a nil runner when the broker is absent. Guard anyway so a wiring
+	// slip can't panic the ETW hot path — only the dialog path needs the broker.
+	if h.pamFindSession == nil && h.sessionBroker == nil {
+		log.Warn("pam: no session broker available; skipping elevation flow",
+			"elevationRequestId", outcome.RequestID)
 		return
 	}
 

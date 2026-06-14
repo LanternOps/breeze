@@ -73,7 +73,7 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	// itself enforces its own deadline; this ctx is the belt-and-braces.
 	timeout := time.Duration(payload.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 8 * time.Second
+		timeout = defaultActuateTimeoutMs * time.Millisecond
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout)
 	defer cancel()
