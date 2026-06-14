@@ -59,7 +59,7 @@ describe('dispatchToolRequest', () => {
     expect(d.postToolResult).toHaveBeenCalledWith({
       toolUseId: 'tu-1',
       status: 'success',
-      output: { address: 'Sheet1!A1', rowCount: 1, columnCount: 1, values: [['v']] },
+      output: { address: 'Sheet1!A1', rowCount: 1, columnCount: 1, cells: [['v']] },
     });
   });
 

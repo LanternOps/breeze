@@ -13,7 +13,7 @@ describe('read_range', () => {
       address: 'Sheet1!B2:C3',
       rowCount: 2,
       columnCount: 2,
-      values: [
+      cells: [
         ['a', 1],
         ['b', 2],
       ],

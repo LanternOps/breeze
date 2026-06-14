@@ -48,6 +48,10 @@ export async function searchWorkbook(input: Record<string, unknown>): Promise<un
         }
       }
     }
-    return { query, results, truncated };
+    // Also expose the matched cell text under the wire-contract key `cells`
+    // (one match per row) so the server DLP chokepoint scans the found values
+    // cell-by-cell (pass 1); the structured `results` field is retained.
+    const cells: string[][] = results.map((r) => [String(r.value)]);
+    return { query, results, cells, truncated };
   });
 }

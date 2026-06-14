@@ -13,7 +13,9 @@ export async function readSelection(_input: Record<string, unknown>): Promise<un
       address: range.address,
       rowCount: range.rowCount,
       columnCount: range.columnCount,
-      values: range.values,
+      // Wire-contract key `cells` (NOT `values`) so the server DLP chokepoint
+      // scans the matrix cell-by-cell (pass 1).
+      cells: range.values,
     };
   });
 }

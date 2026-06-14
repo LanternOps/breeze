@@ -6,6 +6,7 @@ import { SEARCH_RESULT_CAP } from './helpers';
 type SearchResult = {
   query: string;
   results: Array<{ sheet: string; address: string; value: unknown }>;
+  cells: string[][];
   truncated: boolean;
 };
 
@@ -20,6 +21,9 @@ describe('search_workbook', () => {
       { sheet: 'Sheet1', address: 'A1', value: 'Total Revenue' },
       { sheet: 'Data', address: 'C5', value: 'quarterly TOTALS' },
     ]);
+    // Matched cell text is mirrored under `cells` (one match per row) so the
+    // server DLP chokepoint scans the found values cell-by-cell.
+    expect(result.cells).toEqual([['Total Revenue'], ['quarterly TOTALS']]);
     expect(result.truncated).toBe(false);
   });
 
