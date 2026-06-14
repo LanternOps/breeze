@@ -15,6 +15,7 @@
     "prod:docker": "pnpm run build:prod && pnpm run preview:docker",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
+    "check:csp": "node --experimental-strip-types scripts/check-csp-hash-drift.ts",
     "lint": "eslint src",
     "clean": "rm -rf dist .astro"
   },
