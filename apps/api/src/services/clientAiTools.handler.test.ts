@@ -218,7 +218,7 @@ describe('makeClientToolHandler — rejection and timeout results', () => {
     const { session, publish } = makeSession();
     requestToolMock.mockResolvedValue({
       status: 'timeout',
-      output: { error: "Tool 'read_range' timed out after 60s — the user may have closed Excel or not responded to the approval prompt." },
+      output: { error: "Tool 'read_range' timed out after 60s — the user may have closed the document or not responded to the approval prompt." },
     });
     const handler = makeClientToolHandler('excel', 'read_range', () => session);
 
