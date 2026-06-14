@@ -18,6 +18,7 @@ import { buildOutlookPreview } from '../approval/buildPreview';
 import { captureOutlookContext, captureOutlookSubject } from '../chat/captureContext';
 import { OUTLOOK_MUTATING_TOOLS, OUTLOOK_TOOL_EXECUTORS } from '../tools/dispatcher';
 import { captureOutlookSelectionLabel, subscribeOutlookItemChanged } from './outlookSelection';
+import { outlookQuickActions } from './outlookQuickActions';
 import type { HostAdapter } from '@breeze/office-addin-core';
 
 export const outlookHostAdapter: HostAdapter = {
@@ -34,4 +35,6 @@ export const outlookHostAdapter: HostAdapter = {
     { value: 'none', label: 'No email data' },
   ],
   composerPlaceholder: 'Ask about this email…',
+  // Mail-flavored chips (the spreadsheet grid heuristic is wrong for mail).
+  quickActions: outlookQuickActions,
 };

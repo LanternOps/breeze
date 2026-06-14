@@ -14,6 +14,7 @@ import { buildPptPreview } from '../approval/buildPreview';
 import { capturePptContext, capturePptName } from '../chat/captureContext';
 import { POWERPOINT_MUTATING_TOOLS, POWERPOINT_TOOL_EXECUTORS } from '../tools/dispatcher';
 import { capturePptSelectionLabel, subscribePptSelectionChanged } from './powerpointSelection';
+import { powerpointQuickActions } from './powerpointQuickActions';
 import type { HostAdapter } from '@breeze/office-addin-core';
 
 export const powerpointHostAdapter: HostAdapter = {
@@ -24,4 +25,6 @@ export const powerpointHostAdapter: HostAdapter = {
   buildPreview: buildPptPreview,
   captureSelectionAddress: capturePptSelectionLabel,
   subscribeSelectionChanged: subscribePptSelectionChanged,
+  // Deck-flavored chips (the spreadsheet grid heuristic is wrong for PowerPoint).
+  quickActions: powerpointQuickActions,
 };

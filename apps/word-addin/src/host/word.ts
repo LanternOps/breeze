@@ -14,6 +14,7 @@ import { buildWordPreview } from '../approval/buildPreview';
 import { captureWordContext, captureWordDocumentName } from '../chat/captureContext';
 import { WORD_MUTATING_TOOLS, WORD_TOOL_EXECUTORS } from '../tools/dispatcher';
 import { captureWordSelectionLabel, subscribeWordSelectionChanged } from './wordSelection';
+import { wordQuickActions } from './wordQuickActions';
 import type { HostAdapter } from '@breeze/office-addin-core';
 
 export const wordHostAdapter: HostAdapter = {
@@ -24,4 +25,6 @@ export const wordHostAdapter: HostAdapter = {
   buildPreview: buildWordPreview,
   captureSelectionAddress: captureWordSelectionLabel,
   subscribeSelectionChanged: subscribeWordSelectionChanged,
+  // Document-flavored chips (the spreadsheet grid heuristic is wrong for Word).
+  quickActions: wordQuickActions,
 };
