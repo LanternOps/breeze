@@ -7,7 +7,7 @@ describe('write_range', () => {
     await expect(
       writeRange({
         address: 'B2',
-        values: [
+        cells: [
           ['Region', 'Q1'],
           ['EMEA', 1200],
         ],
@@ -21,14 +21,14 @@ describe('write_range', () => {
 
   it('writes into an exactly-matching multi-cell range', async () => {
     await expect(
-      writeRange({ address: 'A1:B1', values: [['x', 'y']] }),
+      writeRange({ address: 'A1:B1', cells: [['x', 'y']] }),
     ).resolves.toMatchObject({ address: 'Sheet1!A1:B1' });
     expect(getOfficeMock().getValues('Sheet1', 'A1:B1')).toEqual([['x', 'y']]);
   });
 
   it('rejects a dimension mismatch against a multi-cell target', async () => {
-    await expect(writeRange({ address: 'A1:C1', values: [['only', 'two']] })).rejects.toThrow(
-      /values is 1x2 but A1:C1 is 1x3/,
+    await expect(writeRange({ address: 'A1:C1', cells: [['only', 'two']] })).rejects.toThrow(
+      /cells is 1x2 but A1:C1 is 1x3/,
     );
   });
 });

@@ -9,7 +9,7 @@ describe('buildWritePreview', () => {
     ]);
     const preview = await buildWritePreview('write_range', {
       address: 'B2',
-      values: [['new', 'same']],
+      cells: [['new', 'same']],
     });
     expect(preview).toEqual({
       kind: 'grid',
@@ -27,7 +27,7 @@ describe('buildWritePreview', () => {
     expect(rows * cols).toBeGreaterThan(PREVIEW_GRID_CELL_CAP);
     const preview = await buildWritePreview('write_range', {
       address: 'A1',
-      values: Array.from({ length: rows }, () => Array.from({ length: cols }, () => 'x')),
+      cells: Array.from({ length: rows }, () => Array.from({ length: cols }, () => 'x')),
     });
     expect(preview.kind).toBe('summary');
     expect(preview.target).toBe('A1');

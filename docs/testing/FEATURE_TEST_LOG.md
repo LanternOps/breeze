@@ -4,6 +4,62 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Breeze AI for Office (PR #1314) — Tier B in-Excel SSO + session loop — 2026-06-13
+
+**Branch:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
+**Host:** Excel for Mac (desktop), real Entra app reg in tenant OliveTech LLC (`dba1c0e6-…`), account `todd@olivetech.co`
+**Result:** **Auth + read/chat loop PASS; workbook WRITE path FAILs (open).**
+
+### What works (verified live via API logs)
+- **Silent Office SSO** (`OfficeRuntime.auth.getAccessToken`) → real Entra v2 token, no popup.
+- **`POST /auth/exchange` → 200** — full JWKS sig + audience(=client-id) + issuer-per-tid verification, tenant-mapping lookup, `portal_user` auto-provisioned (`todd@olivetech.co`), Redis session minted.
+- **Session loop:** `POST /sessions 201` → `messages 202` → `GET /events 200` (SSE) → `tool-results 200` (read-tool round-trip). Multi-tool turns ran clean.
+- **SSE streams through the Vite proxy** (the mixed-content fix, below) without buffering issues.
+
+### Workbook write — root-caused + FIXED (bug #6)
+- **Symptom:** every `write_range` failed instantly (no preview card), model kept retrying and guessing about "the cells parameter."
+- **Root cause:** param-name mismatch. Server schema + wire contract (DLP, tool-result output, bridge) use **`cells`**; two client read-sites read **`values`** — `tools/writeRange.ts` (executor) and `approval/buildPreview.ts` (preview builder). The preview builder reading `values` is why it failed *before* Apply.
+- **Fix:** aligned both client sites + their tests to `cells`. `writeRange.test.ts` + `buildPreview.test.ts` → 7/7 pass. (Client was internally consistent on `values`; it disagreed with the model/server contract, which is `cells`.)
+- **Pending:** live re-verify in Excel (reopen pane → write produces preview → Apply lands data).
+
+### Bugs / gaps found bringing Tier B up (fix in the PR — my fixes were local-only)
+1. **`VITE_API_BASE_URL` default omits `/api/v1`** → every add-in API call 404s out of the box. (`session.ts`/`client.ts` build `${base}/client-ai/...`; routes are under `/api/v1/client-ai/...`.)
+2. **No dev proxy → mixed-content block on macOS/Safari.** The `https://localhost:3000` pane calling the `http://localhost:3001` API is blocked by WebKit (`Fetch … cannot load … due to access control checks`). Chrome exempts `http://localhost`; Excel-for-Mac's WebKit view does not. Fixed locally with a Vite `server.proxy` (`/api/v1` → http API, same-origin https). **Recommend shipping the proxy + a relative/same-origin default base.**
+3. **`CLIENT_AI_ENTRA_CLIENT_ID` not mapped in tracked compose** (`docker-compose.yml`/`.override.yml.dev`) — value in `.env` never reaches the api container. Matches the PR's open reviewer checkbox.
+4. **Exchange `200` writes no `client_ai.auth.exchange` audit row** — `MANUAL_TESTS.md` item 3 expects one; none appeared in `audit_logs`. Verify the success-path audit is wired.
+5. **macOS dev-cert CA not trusted by the System keychain** — `office-addin-dev-certs install` reported "already trusted" but `security verify-cert` → `CSSMERR_TP_NOT_TRUSTED`; Excel showed "isn't signed by a valid security certificate". Needed a manual `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.office-addin-dev-certs/ca.crt`. Worth a README note for Mac.
+
+### Local setup left in place (uncommitted) for resuming
+- Stack re-pointed to `breeze-ai4office` (project `breeze`); placeholder→real `CLIENT_AI_ENTRA_CLIENT_ID=4ad559f9-…` in API `.env` + `docker-compose.override.clientai.yml`.
+- Add-in `.env`: `VITE_API_BASE_URL=https://localhost:3000/api/v1`, `VITE_CLIENT_AI_ENTRA_CLIENT_ID=4ad559f9-…`; `vite.config.ts` has a local `server.proxy` for `/api/v1`.
+- Org "Default Organization" (`b50945ac-…`) mapped to tenant `dba1c0e6-…`, policy enabled.
+- **TEMP debug line** in `apps/api/src/routes/clientAi/auth.ts` (`[client-ai][TIER-B-DEBUG]`) — remove before any commit.
+- Pane server: `cd apps/office-addin && PATH=…/v22.20.0/bin:$PATH pnpm dev`.
+
+## Breeze AI for Office (PR #1314) — Tier A control-plane sweep — 2026-06-13
+
+**Branch tested:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
+**Tested by:** Claude (feature-testing skill, live API + SQL + Playwright)
+**Result:** **Tier A PASS** (foundation, admin API, DLP defaults, RLS, dashboard UI). Tier B (in-Excel client flow / Entra SSO) deferred — needs an Entra app registration.
+
+### Environment note
+Re-pointed the shared `breeze` dev stack (`docker compose -p breeze`) from the `breeze-impeccable-device-overview` worktree to `breeze-ai4office` (code-mounted hot-reload). Auto-migrate applied `2026-06-12-b-client-ai-foundation.sql` (4 new tables). Set a **placeholder** `CLIENT_AI_ENTRA_CLIENT_ID` (admin routes only need it non-empty; the client `/auth/exchange` path is the only one that verifies real Entra tokens). The var is **not yet mapped in tracked compose** — added via an uncommitted `docker-compose.override.clientai.yml`; this matches the PR's own open reviewer checkbox. Creds: `admin@breeze.local` (partner-scoped). Browser→API at `http://localhost` (CORS-allowed).
+
+### Results
+| # | Area | Result | Evidence |
+|---|---|---|---|
+| 1 | Migration / schema | **PASS** | 4 tables created (`client_ai_tenant_mappings`/`org_policies`/`usage`/`prompt_templates`); all show RLS **enabled + forced**; migration row recorded |
+| 2 | Admin API dark-gate + scope | **PASS** | `GET /client-ai/admin/orgs` → 200 (not the 404 dark-gate) returning only the 3 accessible orgs (`auth.orgCondition` scope filter working) |
+| 3 | Write endpoints | **PASS** | `PUT …/policy` 200, `POST …/templates` 201, `PUT …/tenant-mapping` 200 (`requireMfa()` passed — bootstrap admin has no MFA enrolled) |
+| 4 | RLS functional forge (`breeze_app`) | **PASS** | Org-scoped to Default: control insert succeeded; cross-tenant insert targeting Acme → `ERROR: new row violates row-level security policy`; SELECT isolation showed only Default's rows. (Satisfies the PR's unchecked reviewer item) |
+| 5 | Dashboard — Organizations tab | **PASS** | Default Org row shows AI enabled=Yes, mapped Entra tenant, "Consent pending", Manage/Policy/Unmap actions — seeded data flows through |
+| 6 | Dashboard — Templates tab | **PASS** | Seeded "Summarize selection" template (scope: Default Organization, category: analysis) |
+| 7 | Dashboard — Policy editor | **PASS** | All sections render; seeded budgets ($5/$50), rate limits (20/500), read-write mode persisted; DLP built-ins show spec §6 defaults (financial/credential=Redact, email/phone=Off); custom-rule add present |
+| 8 | Console health | **PASS** | 0 console errors across the full UI session |
+
+### Not covered (Tier B — deferred, needs Entra app registration)
+Excel add-in (`apps/office-addin`), Office/MSAL SSO → `/client-ai/auth/exchange`, the SSE session loop, write-preview Apply/Reject, live DLP block banner in-host. Author's 16-item hand checklist: `apps/office-addin/MANUAL_TESTS.md`.
+
 ## Since-Release E2E Sweep (v0.68.2 → HEAD) — 2026-06-01
 
 **Branch tested:** `feat/google-identity-device-tasks` @ `cba95590` (16 identity commits on top of merged main work since the v0.68.2 tag)

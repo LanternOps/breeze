@@ -55,7 +55,7 @@ export async function buildWritePreview(
     case 'write_range': {
       const address = requireString(input, 'address');
       const sheetName = optionalString(input, 'sheetName');
-      const after = requireCellMatrix(input, 'values');
+      const after = requireCellMatrix(input, 'cells');
       const rows = after.length;
       const cols = after[0]!.length;
       if (rows * cols > PREVIEW_GRID_CELL_CAP)

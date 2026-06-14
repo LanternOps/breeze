@@ -17,12 +17,12 @@ import {
 export async function writeRange(input: Record<string, unknown>): Promise<unknown> {
   const address = requireString(input, 'address');
   const sheetName = optionalString(input, 'sheetName');
-  const values = requireCellMatrix(input, 'values');
+  const values = requireCellMatrix(input, 'cells');
   const { rows, cols } = addressDims(address);
   const isAnchor = rows === 1 && cols === 1;
   if (!isAnchor && (rows !== values.length || cols !== values[0]!.length))
     throw new ToolInputError(
-      `values is ${values.length}x${values[0]!.length} but ${stripSheet(address)} is ${rows}x${cols}`,
+      `cells is ${values.length}x${values[0]!.length} but ${stripSheet(address)} is ${rows}x${cols}`,
     );
   assertCellCap(values.length, values[0]!.length, `Write to ${address}`);
   return Excel.run(async (context) => {
