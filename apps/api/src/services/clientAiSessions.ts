@@ -14,6 +14,7 @@ import type { AuthContext } from '../middleware/auth';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import type { ClientAiOrgPolicy } from './clientAiPolicy';
+import type { ClientHost } from './clientAiHosts';
 
 export const DEFAULT_CLIENT_AI_MODEL = 'claude-sonnet-4-5-20250929';
 
@@ -50,6 +51,23 @@ This session is READ-ONLY: write tools are not available and you cannot modify t
 
 export function buildExcelClientSystemPrompt(writeMode: 'readwrite' | 'readonly'): string {
   return writeMode === 'readonly' ? EXCEL_CLIENT_SYSTEM_PROMPT + READONLY_ADDENDUM : EXCEL_CLIENT_SYSTEM_PROMPT;
+}
+
+/** Host-keyed system prompts. Only Excel has a prompt today; a host is
+ *  "supported" only when it has BOTH a non-empty tool registry
+ *  (isClientHostSupported) AND a prompt here — Phase 4 adds Word to both. */
+const CLIENT_SYSTEM_PROMPTS: Partial<Record<ClientHost, string>> = {
+  excel: EXCEL_CLIENT_SYSTEM_PROMPT,
+};
+
+export function buildClientSystemPrompt(host: ClientHost, writeMode: 'readwrite' | 'readonly'): string {
+  const base = CLIENT_SYSTEM_PROMPTS[host];
+  // Fail-loud: an unsupported host must never reach prompt-building (the
+  // create-session route guards with isClientHostSupported; the use path
+  // guards in ensureActiveClientSession). No generic fallback — we never ship
+  // an untested half-baked prompt.
+  if (!base) throw new Error(`No client system prompt for unsupported host: ${host}`);
+  return writeMode === 'readonly' ? base + READONLY_ADDENDUM : base;
 }
 
 export function buildClientAuthContext(params: {
