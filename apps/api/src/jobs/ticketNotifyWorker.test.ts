@@ -218,6 +218,44 @@ describe('handleTicketEvent', () => {
     expect(updateSetMock).not.toHaveBeenCalled();
   });
 
+  it('sends a threaded, Auto-Submitted autoresponse on ticket.autoresponse', async () => {
+    // Two selects in order: the ticket row (getTicket), then the partner (slug + settings) row.
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+
+    await handleTicketEvent({
+      type: 'ticket.autoresponse',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null,
+      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
+    } as never);
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const arg = sendEmailMock.mock.calls[0]![0] as { to: string; subject: string; replyTo?: string; headers?: Record<string, string> };
+    expect(arg.to).toBe('jane@x.com');
+    expect(arg.subject).toBe('[T-2026-0001] We received your request: printer down');
+    expect(arg.replyTo).toBe('acme@tickets.example.com');
+    expect(arg.headers!['Auto-Submitted']).toBe('auto-replied');
+    expect(arg.headers!['Message-ID']).toBe('<ticket-t-1@tickets.example.com>');
+  });
+
+  it('autoresponse honors the partner self-hosted inbound override as Reply-To', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: { ticketing: { inbound: { address: 'support@helpdesk.theirmsp.com' } } } }]);
+
+    await handleTicketEvent({
+      type: 'ticket.autoresponse',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null,
+      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
+    } as never);
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { replyTo?: string };
+    expect(arg.replyTo).toBe('support@helpdesk.theirmsp.com');
+  });
+
   it('works without an email service configured (in-app only)', async () => {
     getEmailServiceMock.mockReturnValue(null);
     selectMock

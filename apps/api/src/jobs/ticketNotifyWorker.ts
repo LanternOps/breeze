@@ -32,6 +32,7 @@ import { partners, tickets, userNotifications, users } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
+import { buildAutoresponseEmail } from '../services/inboundEmail/autoresponseTemplate';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -185,6 +186,49 @@ async function collectRequesterEmail(
   }];
 }
 
+/**
+ * One-time autoresponse acknowledgement (spec §5). The autoresponder gate
+ * (inboundEmail/autoresponder.ts) already applied loop-prevention + the per-sender
+ * cap before emitting; here we just compose + send. The body is the hardcoded v1
+ * template (PR4 swaps it). Loop hygiene: stamp Auto-Submitted: auto-replied and set
+ * the ticket thread anchor as Message-ID so the requester's reply threads. Reply-To
+ * is the partner inbound address (self-hosted override honored).
+ */
+async function collectAutoresponse(
+  event: Extract<TicketEvent, { type: 'ticket.autoresponse' }>
+): Promise<EmailPayload[]> {
+  const ticket = await getTicket(event.ticketId);
+  if (!ticket) {
+    throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
+  }
+
+  const tpl = buildAutoresponseEmail({
+    internalNumber: event.payload.internalNumber,
+    subject: event.payload.subject
+  });
+
+  let replyTo: string | undefined;
+  if (ticket.partnerId) {
+    const partnerRows = await db
+      .select({ slug: partners.slug, settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, ticket.partnerId))
+      .limit(1);
+    const slug = partnerRows[0]?.slug;
+    const override = (partnerRows[0]?.settings as
+      | { ticketing?: { inbound?: { address?: string } } }
+      | undefined)?.ticketing?.inbound?.address;
+    if (slug) replyTo = partnerInboundAddress(slug, override) ?? undefined;
+  }
+
+  // Anchor as Message-ID so the requester's reply threads; Auto-Submitted for loop hygiene.
+  const headers: Record<string, string> = { 'Auto-Submitted': 'auto-replied' };
+  const anchor = ticketThreadAnchor(ticket.id);
+  if (anchor) headers['Message-ID'] = anchor;
+
+  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true }];
+}
+
 async function collectSlaBreachNotification(
   event: Extract<TicketEvent, { type: 'ticket.sla_breached' }>,
   assigneeId: string
@@ -266,6 +310,10 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
       case 'ticket.updated': {
         // Plain field edits (subject, priority, …) notify no one in Phase 1 —
         // explicit no-op case so the exhaustiveness default stays meaningful.
+        return;
+      }
+      case 'ticket.autoresponse': {
+        emailPayloads = await collectAutoresponse(event);
         return;
       }
       case 'ticket.status_changed': {
