@@ -338,7 +338,44 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     expect(ticketsWithKey.length).toBe(1);
   });
 
-  it('CASE 5 (reopen): a matched same-partner reply to a RESOLVED partner-A ticket reopens it and appends a public comment', async () => {
+  it('CASE 5 (concurrent idempotency): two concurrent processInboundEmail calls for the same (partner, providerMessageId) produce exactly one inbound row and one ticket', async () => {
+    // This proves the (partner_id, provider_message_id) unique index + BullMQ retry
+    // story under a real concurrent race — the losing worker's tx hits 23505, rolls
+    // back, and the winner's committed row is the terminal record.
+    const providerMessageId = `<concurrent-${uniqueSuffix()}@known.test>`;
+    const messageId = providerMessageId;
+    const emailA = buildEmail({
+      to: `support@${fx.domainA}`,
+      from: fx.janeEmail,
+      fromName: 'Jane Known',
+      subject: 'Concurrent delivery test',
+      text: 'Arrived twice at the same instant.',
+      providerMessageId,
+      messageId
+    });
+    // Fire both calls concurrently, each in its own withSystemDbAccessContext (matching
+    // what two separate BullMQ workers would do).
+    const results = await Promise.allSettled([
+      withSystemDbAccessContext(() => processInboundEmail(emailA)),
+      withSystemDbAccessContext(() => processInboundEmail(emailA))
+    ]);
+    // Both may resolve OR one may reject with the 23505 unique violation — both are
+    // acceptable (processInboundEmail swallows the error via logInboundFailedDurable,
+    // but an aborted tx means the durable insert also may 23505 and be swallowed).
+    // What MUST be true: exactly ONE ticket_email_inbound row with a terminal status.
+    const aRows = await inboundRowsFor(fx.partnerA.id, providerMessageId);
+    expect(aRows.length).toBe(1);
+    // And exactly one ticket carries the thread key stamped on create.
+    const ticketsWithKey = await admin()
+      .select({ id: tickets.id })
+      .from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partnerA.id), eq(tickets.emailThreadKey, messageId)));
+    expect(ticketsWithKey.length).toBe(1);
+    // Suppress the lint warning about unused results — we inspected the DB state above.
+    void results;
+  });
+
+  it('CASE 6 (reopen): a matched same-partner reply to a RESOLVED partner-A ticket reopens it and appends a public comment', async () => {
     const ticketBefore = await ticketById(fx.aResolvedTicketId);
     expect(ticketBefore.status).toBe('resolved');
     const commentsBefore = await commentsForTicket(fx.aResolvedTicketId);

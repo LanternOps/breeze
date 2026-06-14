@@ -26,12 +26,12 @@ import type { NormalizedInboundEmail } from '../services/inboundEmail/types';
 
 let worker: Worker<NormalizedInboundEmail> | null = null;
 
-async function handleInboundEmail(email: NormalizedInboundEmail): Promise<void> {
+export async function handleInboundEmail(job: Job<NormalizedInboundEmail>): Promise<void> {
   // runOutsideDbContext is a synchronous wrapper that asserts no open DB context
   // exists on the current async-context stack and then runs fn() in a clean scope.
   // We need to bridge it to our async work by returning the Promise it produces.
   return dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(() => processInboundEmail(email))
+    dbModule.withSystemDbAccessContext(() => processInboundEmail(job.data))
   );
 }
 
@@ -40,7 +40,7 @@ export function initializeInboundEmailWorker(): Promise<void> {
 
   worker = new Worker<NormalizedInboundEmail>(
     INBOUND_EMAIL_QUEUE,
-    async (job: Job<NormalizedInboundEmail>) => handleInboundEmail(job.data),
+    (job: Job<NormalizedInboundEmail>) => handleInboundEmail(job),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
 

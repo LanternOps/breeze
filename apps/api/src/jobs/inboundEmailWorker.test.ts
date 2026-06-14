@@ -36,7 +36,7 @@ vi.mock('../services/inboundEmailQueue', () => ({
 import * as workerModule from './inboundEmailWorker';
 
 const makeEmail = (overrides: Partial<{ providerMessageId: string }> = {}) => ({
-  provider: 'mailgun',
+  provider: 'mailgun' as const,
   providerMessageId: 'mg-abc-123',
   to: 'support@acme.tickets.example.com',
   from: 'user@customer.example.com',
@@ -56,40 +56,42 @@ describe('inboundEmailWorker', () => {
     processInboundEmailMock.mockResolvedValue(undefined);
   });
 
-  it('calls runOutsideDbContext wrapping withSystemDbAccessContext', async () => {
-    const email = makeEmail();
-    // Access the internal handler via the module's named export that we will expose
-    // We call the exported initializeInboundEmailWorker and test the worker's job processor
-    // by invoking the handler directly as extracted from module internals.
-    // Since handleInboundEmail is not exported, we test end-to-end via processInboundEmail calls.
+  // TEST 1: drive the REAL exported handleInboundEmail and verify the
+  // runOutsideDbContext → withSystemDbAccessContext → processInboundEmail ordering
+  // (the #1105 pool-poison guard).
+  it('real handleInboundEmail: calls runOutsideDbContext before withSystemDbAccessContext before processInboundEmail', async () => {
+    const callOrder: string[] = [];
 
-    // Invoke the behavior directly via the internal processing:
-    // We simulate what the BullMQ job processor does by calling the imported module path.
-    // handleInboundEmail is the private function; we test it indirectly via mocks.
-    await withSystemDbAccessContextMock(async () => {
-      await processInboundEmailMock(email);
-    });
-
-    expect(processInboundEmailMock).toHaveBeenCalledWith(email);
-  });
-
-  it('processInboundEmail is called with the normalized email inside system db context', async () => {
-    const email = makeEmail({ providerMessageId: 'mg-xyz-999' });
-
-    // Simulate the chain: runOutsideDbContext → withSystemDbAccessContext → processInboundEmail
-    runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => {
-      // runs synchronously (fn returns a Promise here)
+    runOutsideDbContextMock.mockImplementation(<T>(fn: () => T): T => {
+      callOrder.push('runOutsideDbContext');
       return fn();
     });
-    withSystemDbAccessContextMock.mockImplementation(<T>(fn: () => Promise<T>) => fn());
+    withSystemDbAccessContextMock.mockImplementation(<T>(fn: () => Promise<T>): Promise<T> => {
+      callOrder.push('withSystemDbAccessContext');
+      return fn();
+    });
+    processInboundEmailMock.mockImplementation(async () => {
+      callOrder.push('processInboundEmail');
+    });
 
-    // Call through the full chain manually to assert ordering
-    await runOutsideDbContextMock(() =>
-      withSystemDbAccessContextMock(() => processInboundEmailMock(email))
-    );
+    const email = makeEmail();
+    // Call the REAL exported handler (not the mocks directly)
+    await workerModule.handleInboundEmail({ data: email } as any);
 
+    // (a) runOutsideDbContext was called
     expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    // (b) withSystemDbAccessContext was called INSIDE runOutsideDbContext
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    // (c) processInboundEmail received job.data
+    expect(processInboundEmailMock).toHaveBeenCalledWith(email);
+    // Ordering assertion: runOutsideDbContext must come before withSystemDbAccessContext
+    expect(callOrder.indexOf('runOutsideDbContext')).toBeLessThan(callOrder.indexOf('withSystemDbAccessContext'));
+    expect(callOrder.indexOf('withSystemDbAccessContext')).toBeLessThan(callOrder.indexOf('processInboundEmail'));
+  });
+
+  it('real handleInboundEmail: resolves without throwing when processInboundEmail succeeds', async () => {
+    const email = makeEmail({ providerMessageId: 'mg-xyz-999' });
+    await expect(workerModule.handleInboundEmail({ data: email } as any)).resolves.toBeUndefined();
     expect(processInboundEmailMock).toHaveBeenCalledWith(email);
   });
 });
@@ -102,6 +104,10 @@ describe('inboundEmailWorker exports', () => {
 
   it('exports shutdownInboundEmailWorker', () => {
     expect(typeof workerModule.shutdownInboundEmailWorker).toBe('function');
+  });
+
+  it('exports handleInboundEmail', () => {
+    expect(typeof workerModule.handleInboundEmail).toBe('function');
   });
 
   it('initializeInboundEmailWorker resolves without throwing', async () => {

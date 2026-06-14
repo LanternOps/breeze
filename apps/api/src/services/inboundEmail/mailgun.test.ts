@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 
-vi.mock('../../config/validate', () => ({ getConfig: () => ({ MAILGUN_INBOUND_SIGNING_KEY: 'test-signing-key' }) }));
+// Hoist a controllable getConfig mock so individual tests can override the key.
+const { getConfigMock } = vi.hoisted(() => ({
+  getConfigMock: vi.fn(() => ({ MAILGUN_INBOUND_SIGNING_KEY: 'test-signing-key' as string | undefined }))
+}));
+
+vi.mock('../../config/validate', () => ({ getConfig: getConfigMock }));
 
 import { MailgunInboundProvider } from './mailgun';
 
@@ -16,6 +21,12 @@ function reqWith(fields: Record<string, string>) {
 
 describe('MailgunInboundProvider.verify', () => {
   const provider = new MailgunInboundProvider();
+
+  beforeEach(() => {
+    // Reset to the default signed-key config before each test.
+    getConfigMock.mockReturnValue({ MAILGUN_INBOUND_SIGNING_KEY: 'test-signing-key' });
+  });
+
   it('accepts a valid signature with a current timestamp', async () => {
     const timestamp = String(Math.floor(Date.now() / 1000)), token = 'abc';
     const ok = await provider.verify(reqWith({ timestamp, token, signature: sign(timestamp, token) }));
@@ -32,6 +43,33 @@ describe('MailgunInboundProvider.verify', () => {
   it('rejects a correctly-signed but stale timestamp (replay guard)', async () => {
     const timestamp = String(Math.floor(Date.now() / 1000) - 4000), token = 'abc';
     const ok = await provider.verify(reqWith({ timestamp, token, signature: sign(timestamp, token) }));
+    expect(ok).toBe(false);
+  });
+
+  // TEST 5a — missing signing key: verify returns false (fail-closed-when-unconfigured).
+  it('rejects (false) when MAILGUN_INBOUND_SIGNING_KEY is not configured', async () => {
+    // Simulate the env var being absent — the key is undefined.
+    getConfigMock.mockReturnValue({ MAILGUN_INBOUND_SIGNING_KEY: undefined });
+
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const token = 'abc';
+    // Build a correct signature using the key we know (even though the server has no key).
+    const validSig = sign(timestamp, token);
+
+    // Must return false — no key configured → fail closed even with a "correct" signature.
+    const ok = await provider.verify(reqWith({ timestamp, token, signature: validSig }));
+    expect(ok).toBe(false);
+  });
+
+  // TEST 5b — non-numeric timestamp: the Number.isFinite guard rejects it.
+  it('rejects a non-numeric timestamp (Number.isFinite guard)', async () => {
+    const timestamp = 'abc'; // non-numeric — passes Number() = NaN, Number.isFinite = false
+    const token = 'xyz';
+    // Build the HMAC over this non-numeric timestamp so the signature check passes
+    // and only the isFinite guard is the rejection cause.
+    const validSigOverNonNumeric = sign(timestamp, token);
+
+    const ok = await provider.verify(reqWith({ timestamp, token, signature: validSigOverNonNumeric }));
     expect(ok).toBe(false);
   });
 });

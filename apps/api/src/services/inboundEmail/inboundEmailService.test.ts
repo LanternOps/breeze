@@ -377,4 +377,85 @@ describe('processInboundEmail', () => {
     expect(log[0]!.parseStatus).toBe('created');
     expect(log[0]!.ticketId).toBe('t-linked');
   });
+
+  // TEST 2 — durable failed-log path: when a WORK write throws, logInboundFailedDurable
+  // still commits a `failed` row in a fresh transaction (the prior commit's key fix).
+  it('durable-fail: when createTicket throws, a failed row is still written, sentry is called, and the function resolves', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no dup
+    state.selectRows['tickets'] = []; // no thread match
+    // Known portal user — triggers the create path.
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }]; // org guard passes
+
+    // Simulate a DB-level error during the work write (createTicket throws).
+    const dbError = new Error('deadlock detected');
+    createTicketMock.mockRejectedValue(dbError);
+
+    // (c) Must NOT rethrow — processInboundEmail resolves even when work throws.
+    await expect(processInboundEmail(email({ subject: 'Will fail' }))).resolves.toBeUndefined();
+
+    // (a) A ticket_email_inbound insert with parseStatus: 'failed' was still captured
+    // (the durable path ran — logInboundFailedDurable opens a fresh context via the
+    // pass-through runOutsideDbContext/withSystemDbAccessContext mocks).
+    const failedRows = inboundOf().filter((r) => r.parseStatus === 'failed');
+    expect(failedRows).toHaveLength(1);
+    expect(failedRows[0]!.parseStatus).toBe('failed');
+    expect(failedRows[0]!.partnerId).toBe('p-1');
+    expect(String(failedRows[0]!.error)).toContain('deadlock');
+
+    // (b) captureException was called with the error.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![0]).toBeInstanceOf(Error);
+    expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('deadlock');
+  });
+
+  // TEST 3 — org-not-in-partner guard: when the portal-user's org is not in the
+  // resolved partner, createFromEmail throws and the outcome is a durable `failed` row.
+  it('org-not-in-partner guard: returns failed with "not in partner" error and no ticket created', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    // Portal-user lookup succeeds (sender is known under some org).
+    state.selectRows['portal_users'] = [{ id: 'pu-2', orgId: 'o-other' }];
+    // The org guard in createFromEmail: organizations select returns [] (org not in partner).
+    state.selectRows['organizations'] = [];
+
+    await expect(processInboundEmail(email({ subject: 'Org mismatch test' }))).resolves.toBeUndefined();
+
+    // No ticket was created.
+    expect(createTicketMock).not.toHaveBeenCalled();
+
+    // A failed row was written with an error message containing 'not in partner'.
+    const failedRows = inboundOf().filter((r) => r.parseStatus === 'failed');
+    expect(failedRows).toHaveLength(1);
+    expect(failedRows[0]!.partnerId).toBe('p-1');
+    expect(String(failedRows[0]!.error)).toContain('not in partner');
+
+    // captureException was called.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  // TEST 4 — partner-active gate: a suspended/inactive partner causes a `skipped` log
+  // with no ticket creation and no comment append.
+  it('partner-active gate: suspended partner yields skipped log, no ticket, no comment', async () => {
+    resolveMock.mockResolvedValue('p-suspended');
+    state.selectRows['ticket_email_inbound'] = [];
+    // Override the default active partners row — partner is suspended.
+    state.selectRows['partners'] = [{ status: 'suspended' }];
+
+    await processInboundEmail(email({ subject: 'Suspended partner test' }));
+
+    // No ticket, no comment.
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+
+    // A single skipped row logged under the partner.
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('skipped');
+    expect(log[0]!.partnerId).toBe('p-suspended');
+    // The error note mentions the status.
+    expect(String(log[0]!.error)).toContain('suspended');
+  });
 });
