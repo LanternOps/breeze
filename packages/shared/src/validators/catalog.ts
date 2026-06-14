@@ -6,7 +6,13 @@ export type CatalogItemType = z.infer<typeof catalogItemTypeSchema>;
 export const catalogBillingTypeSchema = z.enum(['one_time', 'recurring']);
 export type CatalogBillingType = z.infer<typeof catalogBillingTypeSchema>;
 
-const money = z.number().nonnegative().multipleOf(0.01);
+// Bounded to numeric(12,2) (max 9,999,999,999.99) so out-of-range inputs fail
+// fast with a 400 rather than overflowing at insert (DB-layer 500).
+const money = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
+
+// markup_percent is numeric(6,2) in the schema (max 9999.99). Cap here so values
+// in the 10000+ range are rejected up front instead of overflowing on insert.
+const markupPercent = z.number().min(0).max(9999.99).multipleOf(0.01);
 
 export const createCatalogItemSchema = z.object({
   itemType: catalogItemTypeSchema,
@@ -16,7 +22,7 @@ export const createCatalogItemSchema = z.object({
   billingType: catalogBillingTypeSchema.default('one_time'),
   unitPrice: money,
   costBasis: money.nullable().optional(),
-  markupPercent: z.number().min(0).max(100_000).multipleOf(0.01).nullable().optional(),
+  markupPercent: markupPercent.nullable().optional(),
   unitOfMeasure: z.string().max(50).default('each'),
   taxable: z.boolean().default(true),
   taxCategory: z.string().max(100).nullable().optional(),
@@ -33,7 +39,7 @@ export const updateCatalogItemSchema = z.object({
   billingType: catalogBillingTypeSchema.optional(),
   unitPrice: money.optional(),
   costBasis: money.nullable().optional(),
-  markupPercent: z.number().min(0).max(100_000).multipleOf(0.01).nullable().optional(),
+  markupPercent: markupPercent.nullable().optional(),
   unitOfMeasure: z.string().max(50).optional(),
   taxable: z.boolean().optional(),
   taxCategory: z.string().max(100).nullable().optional(),
@@ -61,8 +67,12 @@ export type SetBundleComponentsInput = z.infer<typeof setBundleComponentsSchema>
 
 export const listCatalogQuerySchema = z.object({
   itemType: catalogItemTypeSchema.optional(),
-  isActive: z.coerce.boolean().optional(),
-  isBundle: z.coerce.boolean().optional(),
+  // Tri-state boolean query params: z.coerce.boolean() uses JS truthiness, so the
+  // strings "false"/"0" would coerce to true. Use the repo's enum-string idiom
+  // (see apps/api/src/routes/alerts/schemas.ts) and transform to a real boolean so
+  // ?isActive=false correctly filters for inactive items.
+  isActive: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+  isBundle: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   search: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().uuid().optional()
