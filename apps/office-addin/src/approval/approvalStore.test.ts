@@ -8,7 +8,7 @@ function writeRequest(toolUseId = 'tu-w1'): ToolRequest {
     type: 'tool_request',
     toolUseId,
     toolName: 'write_range',
-    input: { address: 'B2', values: [['hello']] },
+    input: { address: 'B2', cells: [['hello']] },
     mutating: true,
   };
 }
@@ -85,7 +85,7 @@ describe('ApprovalStore', () => {
       type: 'tool_request',
       toolUseId: 'tu-w4',
       toolName: 'write_range',
-      input: { address: 'not-an-address', values: [['x']] },
+      input: { address: 'not-an-address', cells: [['x']] },
       mutating: true,
     });
     expect(store.getPending()).toHaveLength(0);

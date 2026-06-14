@@ -137,7 +137,7 @@ describe('ChatController — send', () => {
       type: 'tool_request',
       toolUseId: 'tu-w1',
       toolName: 'write_range',
-      input: { address: 'B2', values: [['x']] },
+      input: { address: 'B2', cells: [['x']] },
       mutating: true,
     });
     await vi.waitFor(() => expect(controller.approvals.getPending()).toHaveLength(1));
