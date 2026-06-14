@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const calls: any = { nearest: null, markers: null };
+const DEFAULT_NEAREST = [{ timestamp: new Date('2026-06-13T12:00:00Z'), agentTimestamp: null, topProcesses: [{ name: 'chrome', pid: 1, cpu: 9, ramMb: 100 }] }];
+const calls: any = { nearest: null, markers: null, nearestRows: DEFAULT_NEAREST };
 vi.mock('../../db', () => {
   const chain = (kind: string) => ({
     from: () => ({
       where: () => ({
         orderBy: () => ({
-          limit: () => { calls.nearest = kind; return Promise.resolve([{ timestamp: new Date('2026-06-13T12:00:00Z'), agentTimestamp: null, topProcesses: [{ name: 'chrome', pid: 1, cpu: 9, ramMb: 100 }] }]); },
+          limit: () => { calls.nearest = kind; return Promise.resolve(calls.nearestRows); },
         }),
       }),
     }),
@@ -55,7 +56,7 @@ function app() {
 }
 
 describe('GET /:id/process-samples', () => {
-  beforeEach(() => { calls.nearest = null; calls.markers = null; });
+  beforeEach(() => { calls.nearest = null; calls.markers = null; calls.nearestRows = DEFAULT_NEAREST; });
 
   it('returns the nearest snapshot for ?at', async () => {
     const res = await app().request('/dev-1/process-samples?at=2026-06-13T12:00:30.000Z');
@@ -71,5 +72,24 @@ describe('GET /:id/process-samples', () => {
     const body = await res.json();
     expect(Array.isArray(body.markers)).toBe(true);
     expect(calls.markers).toBe(true);
+  });
+
+  it('returns { sample: null } when no snapshot exists at-or-before the time', async () => {
+    calls.nearestRows = [];
+    const res = await app().request('/dev-1/process-samples?at=2026-06-13T12:00:30.000Z');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sample).toBeNull();
+    expect(calls.nearest).toBe('nearest');
+  });
+
+  it('rejects a request with neither ?at nor ?from&to (400)', async () => {
+    const res = await app().request('/dev-1/process-samples');
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects ?from without ?to (400)', async () => {
+    const res = await app().request('/dev-1/process-samples?from=2026-06-13T11:00:00.000Z');
+    expect(res.status).toBe(400);
   });
 });

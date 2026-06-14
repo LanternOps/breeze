@@ -29,7 +29,10 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
       setError(undefined);
       try {
         if (live) {
-          const res = await fetchWithAuth(`/devices/${deviceId}/processes?limit=16&sortBy=cpu&sortDesc=true`);
+          // On-demand process listing lives under /system-tools; the agent
+          // already returns CPU-desc order by default (sortBy/sortDesc aren't
+          // accepted query params here).
+          const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=16`);
           if (!res.ok) throw new Error('Failed to fetch live processes');
           const json = await res.json();
           // The on-demand endpoint returns { data: [...processes], meta } — the

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/shirou/gopsutil/v3/process"
@@ -37,11 +38,21 @@ func TopProcessSample(perDimension int) ([]ProcessSampleEntry, error) {
 		if err != nil {
 			continue
 		}
+		// Bound the name to the ingest schema's limit (256) so one pathological
+		// name can't 400 the whole sample; rune-safe.
+		name, _ = truncateStringBytes(name, 256)
 		e := ProcessSampleEntry{Name: name, PID: p.Pid, CPU: cpuPercents[p.Pid]}
 		if mem, err := p.MemoryInfo(); err == nil && mem != nil {
 			e.RAMMb = float64(mem.RSS) / 1024 / 1024
 		}
 		entries = append(entries, e)
+	}
+
+	// A non-empty process table that yields zero entries means every Name()
+	// lookup failed (sandbox/permission/platform regression) — surface it as an
+	// error rather than silently POSTing an empty "successful" snapshot.
+	if len(procs) > 0 && len(entries) == 0 {
+		return nil, fmt.Errorf("collected 0 of %d processes: all Name() lookups failed", len(procs))
 	}
 
 	return selectTopN(entries, perDimension), nil

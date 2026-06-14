@@ -47,7 +47,9 @@ describe('ProcessDrilldownPanel', () => {
     fetchWithAuth.mockReturnValue(jsonResponse({ data: [{ name: 'live', pid: 9, cpuPercent: 3, memoryMb: 7 }], meta: { total: 1 } }));
     fireEvent.click(screen.getByTestId('process-drilldown-live-toggle'));
 
-    await waitFor(() => expect(fetchWithAuth).toHaveBeenLastCalledWith(expect.stringContaining('/devices/dev-1/processes')));
+    // The on-demand listing is mounted under /system-tools (not /devices) — asserting
+    // the full path guards against the 404 the loose '/devices/...' match previously masked.
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenLastCalledWith(expect.stringContaining('/system-tools/devices/dev-1/processes')));
     // and the live row actually renders from `data` (regression guard for the array-under-data shape)
     await waitFor(() => expect(screen.getByTestId('process-drilldown-row-0')).toHaveTextContent('live'));
   });

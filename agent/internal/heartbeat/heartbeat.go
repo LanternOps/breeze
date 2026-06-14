@@ -1046,18 +1046,26 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 // capped at 2×this and must stay ≤ the API ingest schema's processes.max(16).
 const processSampleTopN = 8
 
+// clampProcessSampleInterval bounds the configured sampler interval to a safe
+// [60, 3600] second range. Pure (no side effects) so it can be unit-tested and
+// so time.NewTicker never receives a non-positive duration.
+func clampProcessSampleInterval(secs int) int {
+	if secs < 60 {
+		return 60
+	}
+	if secs > 3600 {
+		return 3600
+	}
+	return secs
+}
+
 // runProcessSampler periodically captures a top-N process snapshot and POSTs it,
 // on its own ticker decoupled from the heartbeat (spec: process-sample pipeline).
 func (h *Heartbeat) runProcessSampler() {
-	defer observability.Recoverer("heartbeat.processSampler")
-
-	secs := h.config.ProcessSampleIntervalSeconds
-	if secs < 60 {
-		log.Warn("clamping process_sample_interval_seconds to minimum", "configured", secs, "clamped", 60)
-		secs = 60
-	} else if secs > 3600 {
-		log.Warn("clamping process_sample_interval_seconds to maximum", "configured", secs, "clamped", 3600)
-		secs = 3600
+	configured := h.config.ProcessSampleIntervalSeconds
+	secs := clampProcessSampleInterval(configured)
+	if secs != configured {
+		log.Warn("clamped process_sample_interval_seconds", "configured", configured, "clamped", secs)
 	}
 	ticker := time.NewTicker(time.Duration(secs) * time.Second)
 	defer ticker.Stop()
@@ -1065,10 +1073,15 @@ func (h *Heartbeat) runProcessSampler() {
 	for {
 		select {
 		case <-ticker.C:
-			if h.authMon != nil && h.authMon.ShouldSkip() {
-				continue
-			}
-			h.sendProcessSample()
+			// Per-iteration recovery: a panic in a single sample must not kill the
+			// long-lived sampler goroutine (a top-level defer Recoverer would).
+			func() {
+				defer observability.Recoverer("heartbeat.processSampler")
+				if h.authMon != nil && h.authMon.ShouldSkip() {
+					return
+				}
+				h.sendProcessSample()
+			}()
 		case <-h.stopChan:
 			return
 		}

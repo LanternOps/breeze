@@ -74,3 +74,26 @@ func pids(entries []ProcessSampleEntry) []int32 {
 	}
 	return out
 }
+
+func TestSelectTopNEmptyInput(t *testing.T) {
+	if got := selectTopN(nil, 8); len(got) != 0 {
+		t.Errorf("expected empty result for nil input, got %+v", got)
+	}
+	if got := selectTopN([]ProcessSampleEntry{}, 8); len(got) != 0 {
+		t.Errorf("expected empty result for empty input, got %+v", got)
+	}
+}
+
+func TestSelectTopNPerDimensionFloor(t *testing.T) {
+	entries := []ProcessSampleEntry{
+		{Name: "a", PID: 1, CPU: 5, RAMMb: 1},
+		{Name: "b", PID: 2, CPU: 9, RAMMb: 1}, // top CPU
+		{Name: "c", PID: 3, CPU: 1, RAMMb: 9}, // top RAM
+	}
+	// perDimension <= 0 must floor to 1 (no panic), yielding top-1-by-CPU ∪ top-1-by-RAM.
+	got := selectTopN(entries, 0)
+	set := pidSet(got)
+	if !set[2] || !set[3] || set[1] {
+		t.Errorf("expected {2,3} (top-1 CPU=2, top-1 RAM=3), got %v", pids(got))
+	}
+}

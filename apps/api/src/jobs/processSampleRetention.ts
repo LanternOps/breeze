@@ -29,10 +29,12 @@ type RetentionJobData = { retentionDays?: number };
 /**
  * postgres-js / drizzle row-count extraction. The result may expose `.count`
  * (postgres-js DELETE), `.rowCount`, or — when the driver returns rows as an
- * array — fall back to `.length`. Mirrors `auditRetention.extractRowCount` and
- * `ipHistoryRetention` so we never report 0 when rows were actually deleted.
+ * array — fall back to `.length`. Mirrors `auditRetention.extractRowCount`
+ * (and the inline `.count ?? .length` check in `ipHistoryRetention`) so we never
+ * report 0 when rows were actually deleted — which would prematurely end the
+ * batched-delete loop and silently leave old rows.
  */
-function extractRowCount(result: unknown): number {
+export function extractRowCount(result: unknown): number {
   const raw = result as { rowCount?: number; count?: number };
   if (typeof raw.rowCount === 'number') return raw.rowCount;
   if (typeof raw.count === 'number') return raw.count;
