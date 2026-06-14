@@ -503,7 +503,7 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  // Merge settings (top-level shallow merge, except `security` below)
+  // Merge settings (top-level shallow merge, except `security` and `ticketing` below)
   const currentSettings = (current.settings as Record<string, unknown>) || {};
   const newSettings: Record<string, unknown> = body.settings
     ? { ...currentSettings, ...body.settings }
@@ -518,6 +518,18 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     newSettings.security = {
       ...((currentSettings.security as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.security,
+    };
+  }
+
+  // Deep-merge the `ticketing` sub-object one level for the same reason: today it
+  // holds only `inbound` (the email-to-ticket settings card sends the COMPLETE
+  // `inbound` object, so replacing that key wholesale is intended), but a future
+  // sibling (e.g. `ticketing.outbound`) must NOT be silently wiped by a PATCH that
+  // only carries `ticketing.inbound`. Sub-keys present in the body still override.
+  if (body.settings?.ticketing) {
+    newSettings.ticketing = {
+      ...((currentSettings.ticketing as Record<string, unknown> | undefined) ?? {}),
+      ...body.settings.ticketing,
     };
   }
 
