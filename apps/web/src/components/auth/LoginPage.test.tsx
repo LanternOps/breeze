@@ -12,6 +12,9 @@ vi.mock('../../stores/auth', () => ({
   apiVerifyPasskeyMFA: vi.fn(),
   apiSendSmsMfaCode: vi.fn(),
   fetchAndApplyPreferences: vi.fn(),
+  // LoginForm's useRegistrationGate loads /config via fetchWithAuth; answer
+  // "registration disabled" so the password form renders unchanged.
+  fetchWithAuth: vi.fn(async () => new Response('{}', { status: 200 })),
 }));
 
 vi.mock('../../lib/navigation', () => ({

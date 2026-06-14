@@ -83,6 +83,30 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
   };
 }
 
+const RING_SEVERITIES = ['critical', 'important', 'moderate', 'low'] as const;
+type RingSeverity = (typeof RING_SEVERITIES)[number];
+
+/**
+ * Normalize a ring's stored `autoApprove` JSONB (#1317) into the typed form
+ * the editor expects. Tolerant of every historical shape the API may have
+ * stored: `{}` / missing → disabled; boolean `true` → enabled with no severity
+ * filter; the typed `{ enabled, severities, deferralDays }` object passes
+ * through. Mirrors the API-side `parseRingAutoApprove`.
+ */
+function normalizeRingAutoApprove(raw: unknown): UpdateRingItem['autoApprove'] {
+  if (raw === true) return { enabled: true, severities: [], deferralDays: 0 };
+  if (!raw || typeof raw !== 'object') return { enabled: false, severities: [], deferralDays: 0 };
+  const obj = raw as Record<string, unknown>;
+  const severities = Array.isArray(obj.severities)
+    ? obj.severities.filter((s): s is RingSeverity => RING_SEVERITIES.includes(s as RingSeverity))
+    : [];
+  const deferralDays =
+    typeof obj.deferralDays === 'number' && Number.isInteger(obj.deferralDays) && obj.deferralDays > 0
+      ? obj.deferralDays
+      : 0;
+  return { enabled: obj.enabled === true, severities, deferralDays };
+}
+
 export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
   return {
     id: String(raw.id ?? ''),
@@ -93,6 +117,7 @@ export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
     deferralDays: Number(raw.deferralDays ?? 0),
     deadlineDays: raw.deadlineDays != null ? Number(raw.deadlineDays) : null,
     gracePeriodHours: Number(raw.gracePeriodHours ?? 4),
+    autoApprove: normalizeRingAutoApprove(raw.autoApprove),
     categoryRules: Array.isArray(raw.categoryRules) ? raw.categoryRules as UpdateRingItem['categoryRules'] : [],
     deviceCount: raw.deviceCount != null ? Number(raw.deviceCount) : undefined,
     updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,

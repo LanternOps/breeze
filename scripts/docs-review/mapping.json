@@ -819,20 +819,64 @@
     {
       "pattern": "apps/api/src/routes/pam.ts",
       "docs": [
-        "features/pam.mdx"
+        "features/pam.mdx",
+        "reference/pam-api.mdx",
+        "security/pam.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/routes/agents/elevationRequests.ts",
       "docs": [
-        "features/pam.mdx"
+        "features/pam.mdx",
+        "reference/pam-api.mdx",
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/actuateElevation.ts",
+      "docs": [
+        "reference/pam-api.mdx",
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/elevations.ts",
+      "docs": [
+        "reference/pam-api.mdx",
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/pam.ts",
+      "docs": [
+        "reference/pam-api.mdx",
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/elevaccount/**",
+      "docs": [
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/pamactuator/**",
+      "docs": [
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/pam/**",
+      "docs": [
+        "security/pam.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/routes/agents/pamSettings.ts",
       "docs": [
         "features/pam.mdx",
-        "features/configuration-policies.mdx"
+        "features/configuration-policies.mdx",
+        "reference/pam-api.mdx"
       ]
     },
     {

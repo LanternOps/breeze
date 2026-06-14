@@ -132,6 +132,15 @@ function expiresAtFrom(expiresIn?: number): Date | null {
   return expiresIn === undefined ? null : new Date(Date.now() + expiresIn * 1000);
 }
 
+// Mirror oidc-provider's epochTime() (helpers/epoch_time.js): seconds since
+// epoch. The consumable mixin's IN_PAYLOAD allowlist carries a `consumed`
+// field that the library stamps into the payload on consume; canonical DB
+// adapters set `payload.consumed = epochTime()` so a later find() surfaces it
+// and the library's own consumed-check fires the grant-wide revoke.
+function epochTime(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
 async function requiredPartnerId(payload: OidcPayload): Promise<string> {
   // First try extra.partner_id (kept for backward compatibility / tests). If
   // not present, fall back to deriving it from the Grant via the cache, then
@@ -291,7 +300,37 @@ export class BreezeOidcAdapter {
       }
       if (this.model === 'AuthorizationCode') {
         const [row] = await db.select().from(oauthAuthorizationCodes).where(eq(oauthAuthorizationCodes.id, id));
-        return row && !row.consumedAt && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+        if (!row) return undefined;
+        // Truly-expired non-consumed rows stay invisible via our own
+        // `expiresAt >= new Date()` filter below — and that filter is the only
+        // thing rejecting them: the grant calls find() with
+        // ignoreExpiration:true, so the library will not reject them for us.
+        // But a CONSUMED row must surface
+        // its payload (with `consumed` stamped by consume()) rather than
+        // returning undefined: oidc-provider's authorization_code grant calls
+        // find() with ignoreExpiration:true, and its own
+        // `if (code.consumed) { revoke(grantId); throw }` branch is the canonical
+        // place that revokes the whole grant family on replay. Hiding consumed
+        // rows surfaced replays as a generic "authorization code not found" and
+        // left that revoke branch dead — mirroring the refresh-token reuse gap.
+        if (row.consumedAt) {
+          const payload = row.payload as { grantId?: string } | null;
+          const grantId = typeof payload?.grantId === 'string' ? payload.grantId : undefined;
+          logOauthError({
+            errorId: ERROR_IDS.OAUTH_AUTH_CODE_REUSE,
+            message: 'Consumed authorization code presented again (replay)',
+            context: {
+              code_hash: sha256(id).slice(0, 16),
+              grant_id: grantId,
+            },
+          });
+          // Return the payload so the library's consumed-check fires the
+          // grant-wide revoke. The payload already carries `consumed` (stamped
+          // by consume()); we don't revoke here to keep the revoke path owned
+          // by oidc-provider (revoke() walks the full grant graph).
+          return row.payload as OidcPayload;
+        }
+        return row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       }
       if (this.model === 'RefreshToken') {
         const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
@@ -383,7 +422,16 @@ export class BreezeOidcAdapter {
   async consume(id: string): Promise<void> {
     return asSystem(async () => {
       if (this.model === 'AuthorizationCode') {
-        await db.update(oauthAuthorizationCodes).set({ consumedAt: new Date() }).where(eq(oauthAuthorizationCodes.id, id));
+        // Stamp BOTH the `consumedAt` column (our row-level single-use guard)
+        // AND `payload.consumed` (the oidc-provider consumable-mixin field, an
+        // epochTime int). find() returns the payload for a consumed row, and
+        // the library reads `code.consumed` from that payload to fire its
+        // grant-wide revoke on replay. jsonb_set keeps it a single atomic
+        // write — no read-modify-write race on concurrent replays.
+        await db.update(oauthAuthorizationCodes).set({
+          consumedAt: new Date(),
+          payload: sql`jsonb_set(${oauthAuthorizationCodes.payload}, '{consumed}', ${epochTime()}::text::jsonb, true)`,
+        }).where(eq(oauthAuthorizationCodes.id, id));
       } else if (this.model === 'RefreshToken') {
         // oidc-provider rotates refresh tokens by minting a new one and
         // calling consume() on the previous. Mark it revoked so

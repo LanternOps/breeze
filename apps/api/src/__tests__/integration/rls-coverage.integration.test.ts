@@ -110,6 +110,21 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['script_categories', 'partner_id'],
   ['script_tags', 'partner_id'],
   ['alert_templates', 'partner_id'],
+  // Product catalog (2026-06-14): partner-axis (RLS shape 3), flat
+  // breeze_has_partner_access(partner_id) policies. catalog_bundle_components
+  // denormalizes partner_id (rather than join through the bundle item) to
+  // avoid the #1016 nested-EXISTS bound-param bug. catalog_item_org_pricing
+  // is NOT here — it carries a direct org_id column and is auto-discovered
+  // as an ordinary shape-1 org-tenant table.
+  ['catalog_items', 'partner_id'],
+  ['catalog_bundle_components', 'partner_id'],
+  // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
+  // ticket_email_inbound (only system scope may write null-partner rows);
+  // NOT NULL on partner_inbound_domains. Policy:
+  //   breeze_current_scope()='system' OR breeze_has_partner_access(partner_id)
+  // Functional cross-partner forge proof: emailInboundRls.integration.test.ts.
+  ['ticket_email_inbound', 'partner_id'],
+  ['partner_inbound_domains', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

@@ -35,10 +35,21 @@ func (m *fakeElevationManager) Demote(context.Context) error {
 
 type fakeActuator struct {
 	trigger func(context.Context, pamactuator.Request) pamactuator.Result
+	dismiss func(context.Context) pamactuator.Result
 }
 
 func (a fakeActuator) Trigger(ctx context.Context, req pamactuator.Request) pamactuator.Result {
 	return a.trigger(ctx, req)
+}
+
+func (a fakeActuator) Dismiss(ctx context.Context) pamactuator.Result {
+	if a.dismiss == nil {
+		// Fail-safe default matching the production non-windows stub, so a
+		// deny-path test that forgets to wire `dismiss` fails loud instead of
+		// silently reporting a successful dismissal.
+		return pamactuator.Result{Success: false, Reason: "unsupported_platform"}
+	}
+	return a.dismiss(ctx)
 }
 
 func TestParseActuatePayloadAcceptsSlimGoSignal(t *testing.T) {
@@ -87,7 +98,7 @@ func TestHandleActuateElevationUsesLocalCredentialAndDemotes(t *testing.T) {
 		}}
 	})
 
-	result := handleActuateElevation(nil, Command{
+	result := handleActuateElevation(&Heartbeat{}, Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{
@@ -143,7 +154,7 @@ func TestHandleActuateElevationDemotesWhenActuatorPanics(t *testing.T) {
 		}
 	}()
 
-	_ = handleActuateElevation(nil, Command{
+	_ = handleActuateElevation(&Heartbeat{}, Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{
@@ -163,7 +174,7 @@ func TestHandleActuateElevationPromoteFailureReturnsStructuredResult(t *testing.
 		}}
 	})
 
-	result := handleActuateElevation(nil, Command{
+	result := handleActuateElevation(&Heartbeat{}, Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{

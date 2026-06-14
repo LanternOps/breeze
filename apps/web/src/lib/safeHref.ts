@@ -1,22 +1,35 @@
 import { DOCS_BASE_URL } from '@breeze/shared';
+import { configuredDocsOrigin } from './docsEmbed';
 
 const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:']);
 
 /**
  * True only when `url` parses as an absolute URL whose origin (scheme + host +
- * port) strictly equals the docs origin. This is an ORIGIN check, not a string
- * prefix check: lookalikes such as `https://docs.breezermm.com.evil.com/x`,
+ * port) strictly equals a trusted docs origin. This is an ORIGIN check, not a
+ * string prefix check: lookalikes such as `https://docs.breezermm.com.evil.com/x`,
  * `https://docs.breezermm.com@evil.com/x`, or `https://docs.breezermm.comevil.com`
  * are rejected even though they share the `DOCS_BASE_URL` string prefix.
+ *
+ * The canonical hosted docs origin (`DOCS_BASE_URL`) is always trusted. A
+ * self-hosted deployment may add exactly one more trusted origin via
+ * `PUBLIC_DOCS_URL`; that origin is still matched exactly (no suffix/prefix
+ * widening), so the lookalike protection holds for custom domains too.
  *
  * Used to decide whether a value is safe to treat as a trusted in-app docs link
  * (e.g. consumed as an `<iframe src>` / passed to `window.open`). Returns false
  * for unparseable, scheme-relative, null, or undefined values.
+ * `selfHostedDocsOrigin` is injectable for tests; production callers fall back
+ * to `PUBLIC_DOCS_URL`.
  */
-export function isDocsUrl(url: string | null | undefined): boolean {
+export function isDocsUrl(
+  url: string | null | undefined,
+  selfHostedDocsOrigin: string | null = configuredDocsOrigin(),
+): boolean {
   if (!url) return false;
   try {
-    return new URL(url).origin === new URL(DOCS_BASE_URL).origin;
+    const origin = new URL(url).origin;
+    if (origin === new URL(DOCS_BASE_URL).origin) return true;
+    return selfHostedDocsOrigin !== null && origin === selfHostedDocsOrigin;
   } catch {
     return false;
   }

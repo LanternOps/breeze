@@ -8,6 +8,8 @@
 
 export const COLUMN_IDS = [
   'hostname',
+  'class',
+  'type',
   'organization',
   'site',
   'os',
@@ -37,6 +39,8 @@ export type ColumnId = (typeof COLUMN_IDS)[number];
 
 export const COLUMN_LABELS: Record<ColumnId, string> = {
   hostname: 'Hostname',
+  class: 'Class',
+  type: 'Type',
   organization: 'Organization',
   site: 'Site',
   os: 'OS',
@@ -64,6 +68,8 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
 
 export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [
   'hostname',
+  'class',
+  'type',
   'organization',
   'site',
   'os',

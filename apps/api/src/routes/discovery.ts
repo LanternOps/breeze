@@ -1243,6 +1243,21 @@ discoveryRoutes.get(
       ? await db.select().from(networkTopology).where(eq(networkTopology.orgId, orgResult.orgId))
       : await db.select().from(networkTopology);
 
+    // The honest topology view groups assets by the subnet they actually belong
+    // to. We surface the discovery-profile CIDRs so the client can group by the
+    // correct mask (e.g. a /23 or /16) instead of guessing a /24 from the IP.
+    const profileRows = await db
+      .select({ subnets: discoveryProfiles.subnets })
+      .from(discoveryProfiles)
+      .where(orgResult.orgId ? eq(discoveryProfiles.orgId, orgResult.orgId) : undefined);
+    const subnets = Array.from(
+      new Set(
+        profileRows.flatMap((p) =>
+          (p.subnets ?? []).map((s) => s.trim()).filter((s) => s.length > 0)
+        )
+      )
+    );
+
     const nodes = assets.map((a) => ({
       id: a.id,
       type: a.assetType,
@@ -1255,6 +1270,7 @@ discoveryRoutes.get(
 
     return c.json({
       nodes,
+      subnets,
       edges: edges.map((e) => ({
         id: e.id,
         source: e.sourceId,

@@ -177,6 +177,67 @@ export async function fetchAllDevices(
   return { data: accumulated, total: undefined, pagesWalked: MAX_PAGES };
 }
 
+/**
+ * Network-arm fetcher for the unified Devices list (#1322). Walks the
+ * offset-paginated `/devices/network` endpoint (approved, unlinked
+ * discovered_assets) and returns every accessible network-device row.
+ *
+ * Separate from {@link fetchAllDevices} because the two arms paginate
+ * differently (agent arm = keyset cursor; network arm = offset) — unifying
+ * the cursor across the two tables is deferred (see network.ts route doc).
+ * The web layer merges the two arrays client-side.
+ *
+ * Best-effort: an older API without the `/devices/network` route 404s; we
+ * swallow that and return an empty set so the agent list still renders. Any
+ * other non-OK status throws the Response (same contract as fetchAllDevices).
+ */
+export async function fetchAllNetworkDevices(
+  options: FetchAllDevicesOptions = {},
+): Promise<DevicesListResponse> {
+  const pageLimit = options.pageLimit ?? PAGE_LIMIT;
+  const fetcher = options.fetcher ?? fetchWithAuth;
+  const signal = options.signal;
+
+  if (signal?.aborted) throw signalAbortError(signal);
+
+  const accumulated: Record<string, unknown>[] = [];
+  let total: number | undefined;
+
+  for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
+    if (signal?.aborted) throw signalAbortError(signal);
+
+    const params = new URLSearchParams();
+    params.set('limit', String(pageLimit));
+    params.set('page', String(pageNum + 1));
+    if (pageNum === 0) params.set('includeTotal', 'true');
+
+    const resp = await fetcher(`/devices/network?${params.toString()}`);
+    // Old API (no network arm) — degrade gracefully to "no network devices".
+    if (resp.status === 404) {
+      return { data: accumulated, total: accumulated.length, pagesWalked: pageNum + 1 };
+    }
+    if (!resp.ok) throw resp;
+
+    const body = (await resp.json()) as {
+      data?: Record<string, unknown>[];
+      pagination?: { total?: number; page?: number; limit?: number };
+    };
+    const page = body.data ?? [];
+    accumulated.push(...page);
+
+    if (pageNum === 0 && typeof body.pagination?.total === 'number') {
+      total = body.pagination.total;
+    }
+
+    // Offset pagination: stop when the server returns a short (or empty) page.
+    if (page.length < pageLimit) {
+      return { data: accumulated, total, pagesWalked: pageNum + 1 };
+    }
+  }
+
+  return { data: accumulated, total: undefined, pagesWalked: MAX_PAGES };
+}
+
 /** Build the standard DOMException-shaped AbortError so callers can do
  *  `catch (err) { if (err.name === 'AbortError') return; }` against any
  *  abort source (DOM-native fetch, our walker, any other library). When

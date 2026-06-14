@@ -16,6 +16,11 @@ import { resolveRingDeviceCounts } from './updateRingsHelpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import { ringAutoApproveSchema } from '@breeze/shared/validators';
+
+// Typed default for a ring's autoApprove JSONB (#1317). A freshly created or
+// auto-provisioned ring auto-approves nothing until an operator opts in.
+const DEFAULT_RING_AUTO_APPROVE = { enabled: false, severities: [], deferralDays: 0 } as const;
 
 export const updateRingRoutes = new Hono();
 const requireUpdateRingRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -105,7 +110,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
       description: 'Default update ring — all patches require manual approval',
       enabled: true,
       targets: {},
-      autoApprove: {},
+      autoApprove: DEFAULT_RING_AUTO_APPROVE,
       schedule: {},
       rebootPolicy: {},
       categoryRules: [],
@@ -150,7 +155,9 @@ const createRingSchema = z.object({
   excludeCategories: z.array(z.string().max(100)).optional(),
   categoryRules: z.array(categoryRuleSchema).optional(),
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
-  autoApprove: z.record(z.unknown()).optional(),
+  // Ring-level auto-approval gate (#1317). Typed shape replaces the old
+  // free-form record so the ring owns approval rules with validated severities.
+  autoApprove: ringAutoApproveSchema.optional(),
   targets: z.record(z.unknown()).optional(),
 });
 
@@ -166,7 +173,8 @@ const updateRingSchema = z.object({
   excludeCategories: z.array(z.string().max(100)).optional(),
   categoryRules: z.array(categoryRuleSchema).optional(),
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
-  autoApprove: z.record(z.unknown()).optional(),
+  // Ring-level auto-approval gate (#1317). See createRingSchema.
+  autoApprove: ringAutoApproveSchema.optional(),
   targets: z.record(z.unknown()).optional(),
 });
 
@@ -285,7 +293,7 @@ updateRingRoutes.post(
         categories: data.categories ?? [],
         excludeCategories: data.excludeCategories ?? [],
         sources: data.sources ?? null,
-        autoApprove: data.autoApprove ?? {},
+        autoApprove: data.autoApprove ?? DEFAULT_RING_AUTO_APPROVE,
         categoryRules: data.categoryRules ?? [],
         targets: data.targets ?? {},
         createdBy: auth.user.id,

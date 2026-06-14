@@ -264,6 +264,11 @@ export const PERMISSIONS = {
   TICKETS_READ: { resource: 'tickets', action: 'read' },
   TICKETS_WRITE: { resource: 'tickets', action: 'write' },
 
+  // Catalog (billing/invoicing program)
+  CATALOG_READ: { resource: 'catalog', action: 'read' },
+  CATALOG_WRITE: { resource: 'catalog', action: 'write' },
+  CATALOG_DELETE: { resource: 'catalog', action: 'delete' },
+
   // Time entries (ticketing Phase 3)
   TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
   TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },

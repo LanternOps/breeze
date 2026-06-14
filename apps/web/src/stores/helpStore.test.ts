@@ -9,7 +9,7 @@ vi.mock('./aiStore', () => ({
 }));
 
 import { getDocsForPath, DOCS_BASE_URL } from '@breeze/shared';
-import { useHelpStore } from './helpStore';
+import { rebaseDocsUrl, useHelpStore } from './helpStore';
 
 const setPathname = (pathname: string) => {
   Object.defineProperty(window, 'location', {
@@ -74,5 +74,31 @@ describe('help store open() href hardening', () => {
     expect(state.isOpen).toBe(true);
     expect(state.docsUrl).toBe(expected.url);
     expect(state.label).toBe(expected.label);
+  });
+});
+
+describe('rebaseDocsUrl (self-hosted docs origin)', () => {
+  const selfHosted = 'https://docs.example.com';
+
+  it('is a no-op when no docs origin is configured', () => {
+    const canonical = `${DOCS_BASE_URL}/features/device-groups/`;
+    expect(rebaseDocsUrl(canonical, null)).toBe(canonical);
+  });
+
+  it('swaps the canonical docs origin for the configured one, keeping path/query/hash', () => {
+    expect(rebaseDocsUrl(`${DOCS_BASE_URL}/features/device-groups/?x=1#frag`, selfHosted)).toBe(
+      'https://docs.example.com/features/device-groups/?x=1#frag',
+    );
+    expect(rebaseDocsUrl(DOCS_BASE_URL, selfHosted)).toBe('https://docs.example.com/');
+  });
+
+  it('leaves a non-canonical-origin url untouched', () => {
+    // Already a self-hosted (or unrelated) origin — nothing to rebase.
+    expect(rebaseDocsUrl('https://docs.example.com/x', selfHosted)).toBe('https://docs.example.com/x');
+    expect(rebaseDocsUrl('https://unrelated.example/x', selfHosted)).toBe('https://unrelated.example/x');
+  });
+
+  it('returns the input unchanged for an unparseable url', () => {
+    expect(rebaseDocsUrl('not a url', selfHosted)).toBe('not a url');
   });
 });
