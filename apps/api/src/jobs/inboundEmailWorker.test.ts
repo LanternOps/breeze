@@ -33,10 +33,6 @@ vi.mock('../services/inboundEmailQueue', () => ({
   INBOUND_EMAIL_QUEUE: 'inbound-email'
 }));
 
-import { handleInboundEmail } from './inboundEmailWorker';
-
-// Export handleInboundEmail for testing by re-exporting from module
-// We test it via the module's internal export below.
 import * as workerModule from './inboundEmailWorker';
 
 const makeEmail = (overrides: Partial<{ providerMessageId: string }> = {}) => ({

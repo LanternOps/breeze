@@ -29,6 +29,7 @@ import { automationRoutes, automationWebhookRoutes } from './routes/automations'
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
+import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
@@ -756,6 +757,9 @@ api.route('/sso', ssoRoutes);
 api.route('/docs', docsRoutes);
 api.route('/access-reviews', accessReviewRoutes);
 api.route('/webhooks', webhookRoutes);
+// Inbound email webhook — no session auth, HMAC-gated. partnerGuard passes
+// through for requests with no Authorization header (calls next() immediately).
+api.route('/webhooks/tickets', emailWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
