@@ -1,4 +1,5 @@
 import { useSelectionAddress } from '../hooks/useSelectionAddress';
+import { excelHostAdapter } from '../host/excel';
 import { parseAddress, stripSheet } from '../lib/address';
 import type { WorkbookContextKind } from '../api/types';
 
@@ -23,7 +24,12 @@ export function Composer({
   onContextKindChange: (kind: WorkbookContextKind) => void;
   onSend: () => void;
 }) {
-  const selection = useSelectionAddress();
+  // Task 3 threads these as props; for now Composer binds the Excel adapter's
+  // selection fns directly so the hook stays host-neutral.
+  const selection = useSelectionAddress({
+    captureSelectionAddress: excelHostAdapter.captureSelectionAddress,
+    subscribeSelectionChanged: excelHostAdapter.subscribeSelectionChanged,
+  });
   const sheetName = selection ? parseAddress(selection).sheet : null;
   const chip =
     contextKind === 'none'

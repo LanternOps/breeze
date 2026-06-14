@@ -920,6 +920,24 @@ export function installOfficeMock(): MockWorkbookState {
           state.selectionHandlers.push(handler);
           done?.({ status: 'succeeded' });
         },
+        removeHandlerAsync: (
+          _type: string,
+          options?: { handler?: () => void } | (() => void),
+          done?: (result: { status: string }) => void,
+        ) => {
+          // The Excel adapter never removes its handler (the no-op unsubscribe),
+          // but model the real API so a host that DOES unsubscribe is testable.
+          const handler =
+            typeof options === 'function' ? undefined : options?.handler;
+          if (handler) {
+            const i = state.selectionHandlers.indexOf(handler);
+            if (i >= 0) state.selectionHandlers.splice(i, 1);
+          } else {
+            state.selectionHandlers = [];
+          }
+          const cb = typeof options === 'function' ? options : done;
+          cb?.({ status: 'succeeded' });
+        },
       },
     },
   };
