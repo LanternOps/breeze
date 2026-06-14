@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { loginPathWithNext } from '../../lib/authScope';
+import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 
 // Catalog items are partner-scoped. numeric(12,2) columns (unitPrice, costBasis)
 // serialize to JSON as strings, so the price fields are typed as string here.
@@ -44,6 +45,16 @@ export default function CatalogItemsTab() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<EditForm>(EMPTY_FORM);
+  // In-flight guards prevent double-submit duplicate POSTs.
+  const [saving, setSaving] = useState(false);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
+
+  // Catalog routes enforce requireScope('partner','system') server-side. Mirror
+  // that client-side so org-scope users see a clear message instead of a
+  // misleading "failed to load" 403. getJwtClaims returns null scope on a
+  // missing/undecodable token; treat only confirmed 'organization' scope as
+  // denied so we never hard-block on a decode failure (server still re-checks).
+  const isOrgScoped = getJwtClaims().scope === 'organization';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,9 +95,16 @@ export default function CatalogItemsTab() {
   };
 
   const save = useCallback(async () => {
+    if (saving) return; // guard re-entry while a save is in flight
     if (!form.name.trim()) return;
     const unitPrice = Number(form.unitPrice);
-    if (!Number.isFinite(unitPrice)) return;
+    // Blank or non-finite unit price: surface feedback instead of a silent
+    // no-op. (Save is also disabled in this state — this is the belt-and-braces
+    // path for keyboard/Enter submits.)
+    if (!form.unitPrice.trim() || !Number.isFinite(unitPrice)) {
+      showToast({ message: 'Enter a valid unit price.', type: 'error' });
+      return;
+    }
     const body: Record<string, unknown> = {
       itemType: form.itemType,
       name: form.name.trim(),
@@ -95,6 +113,7 @@ export default function CatalogItemsTab() {
       costBasis: form.costBasis.trim() ? Number(form.costBasis) : null,
       isBundle: form.isBundle
     };
+    setSaving(true);
     try {
       await runAction({
         request: () =>
@@ -109,10 +128,14 @@ export default function CatalogItemsTab() {
       void load();
     } catch (err) {
       handleActionError(err, editId ? 'Update failed. Retry.' : 'Item creation failed. Retry.');
+    } finally {
+      setSaving(false);
     }
-  }, [form, editId, load]);
+  }, [form, editId, load, saving]);
 
   const archive = useCallback(async (id: string) => {
+    if (archivingId) return; // guard re-entry while an archive is in flight
+    setArchivingId(id);
     try {
       await runAction({
         request: () => fetchWithAuth(`/catalog/${id}/archive`, { method: 'POST' }),
@@ -123,8 +146,18 @@ export default function CatalogItemsTab() {
       void load();
     } catch (err) {
       handleActionError(err, 'Archive failed. Retry.');
+    } finally {
+      setArchivingId(null);
     }
-  }, [load]);
+  }, [load, archivingId]);
+
+  if (isOrgScoped) {
+    return (
+      <p className="text-center text-sm text-muted-foreground" data-testid="catalog-items-org-scope">
+        The product catalog is available to partner accounts only.
+      </p>
+    );
+  }
 
   if (loading) {
     return (
@@ -205,10 +238,11 @@ export default function CatalogItemsTab() {
                   <button
                     type="button"
                     onClick={() => void archive(it.id)}
-                    className="text-sm text-destructive hover:underline"
+                    disabled={archivingId !== null}
+                    className="text-sm text-destructive hover:underline disabled:opacity-50"
                     data-testid={`catalog-archive-${it.id}`}
                   >
-                    Archive
+                    {archivingId === it.id ? 'Archiving…' : 'Archive'}
                   </button>
                 </td>
               </tr>
@@ -298,11 +332,16 @@ export default function CatalogItemsTab() {
             <button
               type="button"
               onClick={() => void save()}
-              disabled={!form.name.trim()}
+              disabled={
+                saving ||
+                !form.name.trim() ||
+                !form.unitPrice.trim() ||
+                !Number.isFinite(Number(form.unitPrice))
+              }
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
               data-testid="catalog-form-save"
             >
-              Save
+              {saving ? 'Saving…' : 'Save'}
             </button>
             <button
               type="button"
