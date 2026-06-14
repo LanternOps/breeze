@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { dlpConfigSchema, DEFAULT_DLP_CONFIG } from '@breeze/shared/validators';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
+import { CLIENT_HOSTS } from '../../services/clientAiHosts';
 
 // ============================================
 // Constants (mirrors routes/portal/schemas.ts)
@@ -156,6 +157,7 @@ export const sendClientMessageSchema = z.object({
 export const createClientSessionSchema = z
   .object({
     workbookName: z.string().trim().min(1).max(500).optional(),
+    host: z.enum(CLIENT_HOSTS).optional().default('excel'),
   })
   .strict();
 

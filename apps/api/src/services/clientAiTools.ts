@@ -22,6 +22,7 @@ import { requestClientToolExecution } from './clientAiToolBridge';
 import { applyDlp, type DlpRedactionEvent } from './clientAiDlp';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { captureException } from './sentry';
+import { type ClientHost } from './clientAiHosts';
 
 const addressSchema = z
   .string()
@@ -49,7 +50,7 @@ export interface ClientWorkbookTool {
   inputSchema: Record<string, z.ZodTypeAny>;
 }
 
-export const CLIENT_TOOL_REGISTRY = {
+export const EXCEL_CLIENT_TOOL_REGISTRY = {
   get_workbook_overview: {
     description:
       'List the sheets in the open workbook with their used ranges and first-row headers. Call this first to orient yourself before reading or writing data.',
@@ -267,33 +268,54 @@ export const CLIENT_TOOL_REGISTRY = {
   },
 } as const satisfies Record<string, ClientWorkbookTool>;
 
-export type ClientToolName = keyof typeof CLIENT_TOOL_REGISTRY;
+export type ClientToolName = keyof typeof EXCEL_CLIENT_TOOL_REGISTRY;
 
-export const CLIENT_TOOL_NAMES = Object.keys(CLIENT_TOOL_REGISTRY) as ClientToolName[];
+/** Per-host tool registries. Only Excel is populated today; Word/PowerPoint/
+ *  Outlook are filled in as each host's tools land (Phase 4+). */
+export const CLIENT_TOOL_REGISTRIES: Record<ClientHost, Record<string, ClientWorkbookTool>> = {
+  excel: EXCEL_CLIENT_TOOL_REGISTRY,
+  word: {},
+  powerpoint: {},
+  outlook: {},
+};
 
-export const CLIENT_MUTATING_TOOL_NAMES = CLIENT_TOOL_NAMES.filter(
-  (name) => CLIENT_TOOL_REGISTRY[name].mutating,
-);
+/** Back-compat alias for code/tests that only ever meant the Excel registry. */
+export const CLIENT_TOOL_REGISTRY = EXCEL_CLIENT_TOOL_REGISTRY;
 
-/** MCP server name → SDK tool prefix mcp__excel__<tool> (own namespace,
- *  disjoint from mcp__breeze__ — see registry.test.ts). */
-export const CLIENT_MCP_SERVER_NAME = 'excel';
-export const CLIENT_MCP_TOOL_PREFIX = `mcp__${CLIENT_MCP_SERVER_NAME}__`;
+export function isClientHostSupported(host: ClientHost): boolean {
+  return Object.keys(CLIENT_TOOL_REGISTRIES[host]).length > 0;
+}
 
-export const CLIENT_MCP_TOOL_NAMES = CLIENT_TOOL_NAMES.map(
-  (name) => `${CLIENT_MCP_TOOL_PREFIX}${name}`,
-);
+/** MCP server name === host string ⇒ SDK tool prefix mcp__<host>__<tool>
+ *  (own namespace, disjoint from mcp__breeze__). */
+export function clientMcpServerName(host: ClientHost): string {
+  return host;
+}
+export function clientMcpToolPrefix(host: ClientHost): string {
+  return `mcp__${clientMcpServerName(host)}__`;
+}
 
-/**
- * The SDK-level allowlist for a session: policy writeMode 'readonly' strips
- * mutating tools from the model's toolset at session start (pinned contract).
- * The handler additionally rejects mutating calls server-side (Task 6) in
- * case a resumed/stale SDK process still advertises them.
- */
-export function clientMcpToolNamesForWriteMode(writeMode: 'readwrite' | 'readonly'): string[] {
-  return CLIENT_TOOL_NAMES.filter(
-    (name) => writeMode === 'readwrite' || !CLIENT_TOOL_REGISTRY[name].mutating,
-  ).map((name) => `${CLIENT_MCP_TOOL_PREFIX}${name}`);
+export function clientToolNames(host: ClientHost): string[] {
+  return Object.keys(CLIENT_TOOL_REGISTRIES[host]);
+}
+export function clientMutatingToolNames(host: ClientHost): string[] {
+  return Object.entries(CLIENT_TOOL_REGISTRIES[host])
+    .filter(([, def]) => def.mutating)
+    .map(([name]) => name);
+}
+export function clientMcpToolNames(host: ClientHost): string[] {
+  return clientToolNames(host).map((name) => `${clientMcpToolPrefix(host)}${name}`);
+}
+
+/** SDK allowlist for a session: 'readonly' strips mutating tools at session
+ *  start (the handler also rejects them server-side as defense-in-depth). */
+export function clientMcpToolNamesForWriteMode(
+  host: ClientHost,
+  writeMode: 'readwrite' | 'readonly',
+): string[] {
+  return Object.entries(CLIENT_TOOL_REGISTRIES[host])
+    .filter(([, def]) => writeMode === 'readwrite' || !def.mutating)
+    .map(([name]) => `${clientMcpToolPrefix(host)}${name}`);
 }
 
 // ============================================
@@ -449,8 +471,15 @@ function auditClientTool(
   });
 }
 
-export function makeClientToolHandler(toolName: ClientToolName, getSession: () => ActiveSession) {
-  const entry: ClientWorkbookTool = CLIENT_TOOL_REGISTRY[toolName];
+export function makeClientToolHandler(
+  host: ClientHost,
+  toolName: string,
+  getSession: () => ActiveSession,
+) {
+  const entry = CLIENT_TOOL_REGISTRIES[host][toolName];
+  if (!entry) {
+    throw new Error(`Unknown client tool '${toolName}' for host '${host}'`);
+  }
 
   return async (args: Record<string, unknown>): Promise<ClientToolHandlerResult> => {
     // Escape any inherited AsyncLocalStorage DB context from the SDK callback
@@ -552,17 +581,12 @@ export function makeClientToolHandler(toolName: ClientToolName, getSession: () =
  * streamingSessionManager.getOrCreate via the mcpServerFactory parameter
  * (the scriptAi.ts:211-215 precedent).
  */
-export function createClientWorkbookMcpServer(getSession: () => ActiveSession) {
+export function createClientWorkbookMcpServer(host: ClientHost, getSession: () => ActiveSession) {
   return createSdkMcpServer({
-    name: CLIENT_MCP_SERVER_NAME,
+    name: clientMcpServerName(host),
     version: '1.0.0',
-    tools: CLIENT_TOOL_NAMES.map((name) =>
-      tool(
-        name,
-        CLIENT_TOOL_REGISTRY[name].description,
-        CLIENT_TOOL_REGISTRY[name].inputSchema,
-        makeClientToolHandler(name, getSession),
-      ),
+    tools: Object.entries(CLIENT_TOOL_REGISTRIES[host]).map(([name, def]) =>
+      tool(name, def.description, def.inputSchema, makeClientToolHandler(host, name, getSession)),
     ),
   });
 }

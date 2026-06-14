@@ -84,7 +84,7 @@ beforeEach(() => {
 describe('makeClientToolHandler — readonly write-mode gate', () => {
   it('rejects mutating tools server-side without calling the bridge, audits tool_reject', async () => {
     const { session, publish } = makeSession({ clientWriteMode: 'readonly' });
-    const handler = makeClientToolHandler('write_range', () => session);
+    const handler = makeClientToolHandler('excel', 'write_range', () => session);
 
     const result = await handler({ address: 'A1', cells: [[1]] });
 
@@ -110,7 +110,7 @@ describe('makeClientToolHandler — readonly write-mode gate', () => {
   it('still allows read tools under readonly', async () => {
     const { session } = makeSession({ clientWriteMode: 'readonly' });
     requestToolMock.mockResolvedValue({ status: 'success', output: { cells: [['x']] } });
-    const handler = makeClientToolHandler('read_range', () => session);
+    const handler = makeClientToolHandler('excel', 'read_range', () => session);
     const result = await handler({ address: 'A1' });
     expect(result.isError).toBeFalsy();
     expect(requestToolMock).toHaveBeenCalled();
@@ -132,7 +132,7 @@ describe('makeClientToolHandler — success path', () => {
       return { action: 'allow', text: input.text, redactions: [] };
     });
 
-    const handler = makeClientToolHandler('read_range', () => session);
+    const handler = makeClientToolHandler('excel', 'read_range', () => session);
     const result = await handler({ address: 'A1:B1' });
 
     expect(requestToolMock).toHaveBeenCalledWith(session, 'toolu_real', 'read_range', { address: 'A1:B1' }, false);
@@ -164,7 +164,7 @@ describe('makeClientToolHandler — success path', () => {
   it('mints a toolUseId when the FIFO queue is empty', async () => {
     const { session } = makeSession({ queue: [] });
     requestToolMock.mockResolvedValue({ status: 'success', output: { ok: true } });
-    const handler = makeClientToolHandler('read_selection', () => session);
+    const handler = makeClientToolHandler('excel', 'read_selection', () => session);
     await handler({});
     const usedId = requestToolMock.mock.calls[0]![1] as string;
     expect(usedId).toMatch(/^[0-9a-f-]{36}$/);
@@ -181,7 +181,7 @@ describe('makeClientToolHandler — DLP block on tool output', () => {
       redactions: [{ rule: 'creditCard', count: 1, location: 'cell[0][0]' }],
     });
 
-    const handler = makeClientToolHandler('read_range', () => session);
+    const handler = makeClientToolHandler('excel', 'read_range', () => session);
     const result = await handler({ address: 'A1' });
 
     expect(result.isError).toBe(true);
@@ -197,7 +197,7 @@ describe('makeClientToolHandler — rejection and timeout results', () => {
   it('user rejection → rejected execution + tool_reject audit + isError result', async () => {
     const { session, publish } = makeSession();
     requestToolMock.mockResolvedValue({ status: 'rejected', output: null });
-    const handler = makeClientToolHandler('write_range', () => session);
+    const handler = makeClientToolHandler('excel', 'write_range', () => session);
 
     const result = await handler({ address: 'A1', cells: [[1]] });
 
@@ -218,9 +218,9 @@ describe('makeClientToolHandler — rejection and timeout results', () => {
     const { session, publish } = makeSession();
     requestToolMock.mockResolvedValue({
       status: 'timeout',
-      output: { error: "Tool 'read_range' timed out after 60s — the user may have closed Excel or not responded to the approval prompt." },
+      output: { error: "Tool 'read_range' timed out after 60s — the user may have closed the document or not responded to the approval prompt." },
     });
-    const handler = makeClientToolHandler('read_range', () => session);
+    const handler = makeClientToolHandler('excel', 'read_range', () => session);
 
     const result = await handler({ address: 'A1' });
 

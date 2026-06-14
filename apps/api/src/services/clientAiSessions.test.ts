@@ -12,6 +12,7 @@ import {
   DEFAULT_CLIENT_AI_MODEL,
   EXCEL_CLIENT_SYSTEM_PROMPT,
   buildExcelClientSystemPrompt,
+  buildClientSystemPrompt,
   buildClientAuthContext,
   checkClientRateLimits,
   generateClientSessionTitle,
@@ -131,5 +132,19 @@ describe('generateClientSessionTitle', () => {
 describe('DEFAULT_CLIENT_AI_MODEL', () => {
   it('matches the platform default model', () => {
     expect(DEFAULT_CLIENT_AI_MODEL).toBe('claude-sonnet-4-5-20250929');
+  });
+});
+
+describe('buildClientSystemPrompt', () => {
+  it('returns the Excel prompt for the excel host (readwrite)', () => {
+    expect(buildClientSystemPrompt('excel', 'readwrite')).toBe(EXCEL_CLIENT_SYSTEM_PROMPT);
+  });
+  it('appends the read-only addendum under readonly', () => {
+    const p = buildClientSystemPrompt('excel', 'readonly');
+    expect(p.startsWith(EXCEL_CLIENT_SYSTEM_PROMPT)).toBe(true);
+    expect(p).toContain('READ-ONLY');
+  });
+  it('throws fail-loud for a host with no prompt (e.g. word in Phase 1)', () => {
+    expect(() => buildClientSystemPrompt('word', 'readwrite')).toThrow(/unsupported|no prompt/i);
   });
 });

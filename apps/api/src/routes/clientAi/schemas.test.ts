@@ -4,6 +4,7 @@ import {
   CLIENT_AI_DLP_DEFAULT_BUILTINS,
   adminUsageQuerySchema,
   adminSessionListQuerySchema,
+  createClientSessionSchema,
   templateBodySchema,
   templateUpdateSchema,
   USAGE_MONTH_REGEX,
@@ -97,6 +98,19 @@ describe('adminSessionListQuerySchema', () => {
   });
   it('caps limit at 100', () => {
     expect(adminSessionListQuerySchema.safeParse({ limit: '500' }).success).toBe(false);
+  });
+});
+
+describe('createClientSessionSchema', () => {
+  it('defaults host to excel and rejects unknown hosts', () => {
+    expect(createClientSessionSchema.parse({}).host).toBe('excel');
+    expect(createClientSessionSchema.safeParse({ host: 'keynote' }).success).toBe(false);
+  });
+
+  it('accepts each known host', () => {
+    for (const host of ['excel', 'word', 'powerpoint', 'outlook']) {
+      expect(createClientSessionSchema.safeParse({ host }).success).toBe(true);
+    }
   });
 });
 

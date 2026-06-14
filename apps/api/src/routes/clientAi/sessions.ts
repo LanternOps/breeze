@@ -17,7 +17,8 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { zValidator } from '@hono/zod-validator';
-import { and, asc, count, desc, eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
 import {
@@ -38,15 +39,22 @@ import {
 import {
   DEFAULT_CLIENT_AI_MODEL,
   buildClientAuthContext,
-  buildExcelClientSystemPrompt,
+  buildClientSystemPrompt,
   checkClientRateLimits,
   generateClientSessionTitle,
 } from '../../services/clientAiSessions';
+import {
+  CLIENT_HOSTS,
+  CLIENT_SESSION_TYPES,
+  clientHostFromType,
+  clientSessionType,
+} from '../../services/clientAiHosts';
 import { applyDlp, type DlpRedactionEvent } from '../../services/clientAiDlp';
 import {
-  CLIENT_MCP_SERVER_NAME,
+  clientMcpServerName,
   clientMcpToolNamesForWriteMode,
   createClientWorkbookMcpServer,
+  isClientHostSupported,
 } from '../../services/clientAiTools';
 import { failPendingForSession, resolveClientToolResult } from '../../services/clientAiToolBridge';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
@@ -66,6 +74,20 @@ clientAiSessionRoutes.use('*', requireClientAiEnabledMiddleware);
 
 type ClientSessionRow = typeof aiSessions.$inferSelect;
 
+/**
+ * Thrown by ensureActiveClientSession when a stored session's host has no tool
+ * registry / system prompt yet (e.g. a future `word_client` row in Phase 1).
+ * The message/events handlers catch it and map it to 400 unsupported_host so we
+ * never spin up a zero-tool MCP session. The create route already 400s such a
+ * host up front; this is the symmetric use-path guard.
+ */
+class ClientHostUnsupportedError extends Error {
+  constructor(public readonly sessionType: string) {
+    super(`Unsupported client session host for type: ${sessionType}`);
+    this.name = 'ClientHostUnsupportedError';
+  }
+}
+
 /** The per-route access check: id + type + client principal + org, all in the WHERE. */
 async function loadClientSession(
   sessionId: string,
@@ -77,7 +99,10 @@ async function loadClientSession(
     .where(
       and(
         eq(aiSessions.id, sessionId),
-        eq(aiSessions.type, 'excel_client'),
+        // Any of the user's client sessions (excel/word/…); tenancy is already
+        // pinned by clientUserId + orgId (and forced RLS). The host is read back
+        // from the row's `type` by ensureActiveClientSession.
+        inArray(aiSessions.type, CLIENT_SESSION_TYPES),
         eq(aiSessions.clientUserId, auth.clientUserId),
         eq(aiSessions.orgId, auth.orgId),
       ),
@@ -142,6 +167,15 @@ async function ensureActiveClientSession(
 ): Promise<ActiveSession> {
   const maxBudgetUsd = await getRemainingClientBudgetUsd(policy);
 
+  // The session's host is encoded in its stored `type` (e.g. 'excel_client').
+  const host = clientHostFromType(sessionRow.type);
+  if (!host || !isClientHostSupported(host)) {
+    // A stored session whose host has no tools (e.g. a future word_client row
+    // in Phase 1) must not spin up an empty-tools session. The caller maps this
+    // to a 400; never hand the model a zero-tool registry.
+    throw new ClientHostUnsupportedError(sessionRow.type);
+  }
+
   const active = await streamingSessionManager.getOrCreate(
     sessionRow.id,
     {
@@ -159,15 +193,15 @@ async function ensureActiveClientSession(
       name: auth.name,
     }),
     c,
-    sessionRow.systemPrompt ?? buildExcelClientSystemPrompt(policy.writeMode),
+    sessionRow.systemPrompt ?? buildClientSystemPrompt(host, policy.writeMode),
     maxBudgetUsd,
-    clientMcpToolNamesForWriteMode(policy.writeMode),
+    clientMcpToolNamesForWriteMode(host, policy.writeMode),
     (_getAuth, _onPreToolUse, _onPostToolUse, getSession) => ({
       // The technician pre/post callbacks are deliberately unused: they reject
       // tools absent from TOOL_TIERS (aiAgentSdk.ts:222-225) and encode
       // technician persistence. Client handlers own their pipeline.
-      server: createClientWorkbookMcpServer(getSession),
-      name: CLIENT_MCP_SERVER_NAME,
+      server: createClientWorkbookMcpServer(host, getSession),
+      name: clientMcpServerName(host),
     }),
     { injectApprovalModeInstructions: false },
   );
@@ -212,13 +246,20 @@ clientAiSessionRoutes.post('/', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
   }
-  const { workbookName } = parsed.data;
+  const { workbookName, host } = parsed.data;
 
   const rejection = await runClientPreflight(c, auth, policy);
   if (rejection) return rejection;
 
+  // A host the server can't actually serve (no tool registry / system prompt
+  // yet — e.g. word/powerpoint/outlook in Phase 1) is rejected up front so we
+  // never persist a session that ensureActiveClientSession would refuse to run.
+  if (!isClientHostSupported(host)) {
+    return c.json({ error: 'unsupported_host', host }, 400);
+  }
+
   const model = policy.allowedModels[0] ?? DEFAULT_CLIENT_AI_MODEL;
-  const systemPrompt = buildExcelClientSystemPrompt(policy.writeMode);
+  const systemPrompt = buildClientSystemPrompt(host, policy.writeMode);
 
   const [session] = await db
     .insert(aiSessions)
@@ -226,7 +267,7 @@ clientAiSessionRoutes.post('/', async (c) => {
       orgId: auth.orgId,
       userId: null,
       clientUserId: auth.clientUserId,
-      type: 'excel_client',
+      type: clientSessionType(host),
       model,
       systemPrompt,
       workbookName: workbookName ?? null,
@@ -243,6 +284,7 @@ clientAiSessionRoutes.post('/', async (c) => {
     action: 'ai.client_session.create',
     resourceId: session.id,
     details: {
+      host,
       model,
       writeMode: policy.writeMode,
       writeApproval: policy.writeApproval,
@@ -266,17 +308,33 @@ clientAiSessionRoutes.post('/', async (c) => {
 // ============================================
 // GET / — THIS user's conversation history (per-user, workbook-tagged).
 //
-// Strict tenancy: the WHERE pins clientUserId AND orgId AND type='excel_client'
-// (mirrors loadClientSession), so the list can only ever contain the
-// authenticated portal user's own Excel sessions — never another user's.
-// RLS on ai_sessions is a second, independent guard. messageCount comes from a
-// LEFT JOIN + COUNT so empty sessions still appear with 0.
+// Strict tenancy: the WHERE pins clientUserId AND orgId AND the host's session
+// type (mirrors loadClientSession), so the list can only ever contain the
+// authenticated portal user's own sessions for that host — never another
+// user's. RLS on ai_sessions is a second, independent guard. messageCount comes
+// from a LEFT JOIN + COUNT so empty sessions still appear with 0.
+//
+// The ?host= query param scopes the list to one host's pane (default 'excel').
+// It is validated through z.enum(CLIENT_HOSTS): an out-of-vocab value returns
+// 400 (matching the create path) rather than silently returning an empty list.
 // ============================================
 
 const MAX_HISTORY_SESSIONS = 100;
 
+const historyQuerySchema = z.object({
+  host: z.enum(CLIENT_HOSTS).optional().default('excel'),
+});
+
 clientAiSessionRoutes.get('/', async (c) => {
   const auth = c.get('clientAiAuth');
+
+  const parsedQuery = historyQuerySchema.safeParse({
+    host: c.req.query('host'),
+  });
+  if (!parsedQuery.success) {
+    return c.json({ error: 'unsupported_host', host: c.req.query('host') }, 400);
+  }
+  const { host } = parsedQuery.data;
 
   const rows = await db
     .select({
@@ -293,7 +351,7 @@ clientAiSessionRoutes.get('/', async (c) => {
     .leftJoin(aiMessages, eq(aiMessages.sessionId, aiSessions.id))
     .where(
       and(
-        eq(aiSessions.type, 'excel_client'),
+        eq(aiSessions.type, clientSessionType(host)),
         eq(aiSessions.clientUserId, auth.clientUserId),
         eq(aiSessions.orgId, auth.orgId),
       ),
@@ -505,7 +563,15 @@ clientAiSessionRoutes.post(
       }`;
     }
 
-    const activeSession = await ensureActiveClientSession(c, session, auth, policy);
+    let activeSession: ActiveSession;
+    try {
+      activeSession = await ensureActiveClientSession(c, session, auth, policy);
+    } catch (err) {
+      if (err instanceof ClientHostUnsupportedError) {
+        return c.json({ error: 'unsupported_host' }, 400);
+      }
+      throw err;
+    }
 
     // Concurrent message guard — atomic check-and-set (ai.ts:467 convention).
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
@@ -594,9 +660,17 @@ clientAiSessionRoutes.get('/:id/events', async (c) => {
 
   // Create the in-memory session if absent so the add-in can connect the
   // stream immediately after POST /sessions, before the first message.
-  const activeSession =
-    streamingSessionManager.get(sessionId) ??
-    (await ensureActiveClientSession(c, session, auth, policy));
+  let activeSession: ActiveSession;
+  try {
+    activeSession =
+      streamingSessionManager.get(sessionId) ??
+      (await ensureActiveClientSession(c, session, auth, policy));
+  } catch (err) {
+    if (err instanceof ClientHostUnsupportedError) {
+      return c.json({ error: 'unsupported_host' }, 400);
+    }
+    throw err;
+  }
 
   const subscriptionId = crypto.randomUUID();
 

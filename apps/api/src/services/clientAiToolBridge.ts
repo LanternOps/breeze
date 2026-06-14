@@ -56,7 +56,7 @@ export function requestClientToolExecution(
       resolve({
         status: 'timeout',
         output: {
-          error: `Tool '${toolName}' timed out after ${Math.round(timeoutMs / 1000)}s — the user may have closed Excel or not responded to the approval prompt.`,
+          error: `Tool '${toolName}' timed out after ${Math.round(timeoutMs / 1000)}s — the user may have closed the document or not responded to the approval prompt.`,
         },
       });
     }, timeoutMs);
