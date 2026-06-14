@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { aiSessions, aiMessages, aiToolExecutions } from '../../db/schema';
 import { organizations } from '../../db/schema/orgs';
@@ -9,11 +9,13 @@ import { requireMfa, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolveScopedOrgId } from '../c2c/helpers';
+import { CLIENT_SESSION_TYPES } from '../../services/clientAiHosts';
 import { adminSessionListQuerySchema, flagSessionSchema } from './schemas';
 
 /**
  * AI for Office — client-session audit viewer endpoints (spec §9.3).
- * excel_client sessions ONLY; technician sessions stay on /ai/admin/*.
+ * Client sessions ONLY (every `${host}_client` type — excel/word/…); technician
+ * sessions stay on /ai/admin/*.
  *
  * Flag/unflag mirrors the technician handlers (routes/ai.ts:285-360) — those
  * are inline db.updates with no shared service, so there is nothing to call
@@ -82,7 +84,7 @@ clientAiAdminSessionRoutes.get(
     const auth = c.get('auth');
     const q = c.req.valid('query');
 
-    const conditions: SQL[] = [eq(aiSessions.type, 'excel_client')];
+    const conditions: SQL[] = [inArray(aiSessions.type, CLIENT_SESSION_TYPES)];
     if (q.orgId) {
       const orgId = resolveScopedOrgId(auth, q.orgId);
       if (!orgId) return c.json({ error: 'Organization not found' }, 404);
@@ -135,14 +137,14 @@ clientAiAdminSessionRoutes.get(
   }
 );
 
-/** Fetch one excel_client session the caller can access, else null. */
+/** Fetch one client session (any host) the caller can access, else null. */
 async function getClientSession(auth: SessionAuth, sessionId: string) {
   const [row] = await db
     .select(sessionSelection)
     .from(aiSessions)
     .leftJoin(organizations, eq(aiSessions.orgId, organizations.id))
     .leftJoin(portalUsers, eq(aiSessions.clientUserId, portalUsers.id))
-    .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.type, 'excel_client')))
+    .where(and(eq(aiSessions.id, sessionId), inArray(aiSessions.type, CLIENT_SESSION_TYPES)))
     .limit(1);
   if (!row) return null;
   // RLS already scopes the SELECT; this is the belt-and-braces app-layer
