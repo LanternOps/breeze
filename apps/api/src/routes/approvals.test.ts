@@ -24,6 +24,17 @@ vi.mock('../db/schema/approvals', () => ({
   approvalRequests: {},
 }));
 
+vi.mock('../db/schema/authenticatorDevices', () => ({
+  authenticatorDevices: {
+    id: 'id',
+    userId: 'user_id',
+    credentialId: 'credential_id',
+    kind: 'kind',
+    transports: 'transports',
+    disabledAt: 'disabled_at',
+  },
+}));
+
 vi.mock('../db/schema/ai', () => ({
   aiToolExecutions: { id: 'id', sessionId: 'session_id' },
   aiSessions: { id: 'id', delegantM365ConnectionId: 'delegant_m365_connection_id' },
@@ -42,6 +53,35 @@ vi.mock('./lifecycle', () => ({
   // Not used by approvals.ts but exported from lifecycle.ts; mocked to avoid
   // pulling in the full lifecycle module-init chain in this test surface.
   isOauthClientBlockedForOrg: vi.fn(async () => false),
+}));
+
+// Phase 2: the decide path now resolves assurance through assertApprovalAssurance
+// (verifies an optional browser proof). Default the no-proof L1 result; tests
+// override per-case. resolveApprovalAssurance is still re-exported for any callers.
+vi.mock('../services/authenticatorAssurance', () => ({
+  resolveApprovalAssurance: vi.fn((riskTier: string) => ({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  })),
+  assertApprovalAssurance: vi.fn(async () => ({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  })),
+}));
+
+vi.mock('../services/approverWebAuthn', () => ({
+  generateApprovalAssertionOptions: vi.fn(async () => ({
+    challenge: 'chal-xyz',
+    rpId: 'breeze.test',
+    allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
+    userVerification: 'required',
+  })),
 }));
 
 const TEST_USER = {
@@ -72,6 +112,8 @@ vi.mock('../middleware/auth', () => ({
 import { approvalRoutes } from './approvals';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 
 function buildApp() {
   const app = new Hono();
@@ -146,6 +188,22 @@ beforeEach(() => {
   vi.mocked(db.update).mockReset();
   vi.mocked(db.insert).mockReset();
   vi.mocked(db.delete).mockReset();
+  // Re-establish the default no-proof (L1 session_tap) assurance after
+  // clearAllMocks wipes the implementation, so the unchanged approve tests
+  // keep recording session_tap and per-case overrides start from a clean slate.
+  vi.mocked(assertApprovalAssurance).mockResolvedValue({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  });
+  vi.mocked(generateApprovalAssertionOptions).mockResolvedValue({
+    challenge: 'chal-xyz',
+    rpId: 'breeze.test',
+    allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
+    userVerification: 'required',
+  } as any);
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -415,6 +473,158 @@ describe('POST /approvals/:id/approve', () => {
     expect(aiSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedBy: TEST_USER.id }),
     );
+  });
+});
+
+describe('POST /approvals/:id/assertion-challenge', () => {
+  const pendingRow = {
+    id: 'a1',
+    userId: TEST_USER.id,
+    riskTier: 'high',
+    status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000),
+  };
+
+  it('returns assertion options for the caller active approver devices', async () => {
+    // 1) pending approval lookup; 2) active webauthn_platform device list.
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([pendingRow]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: 'dev-1', credentialId: 'cred-1', transports: ['internal'] },
+          ]),
+        }),
+      } as any);
+
+    const res = await buildApp().request('/approvals/a1/assertion-challenge', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.options.challenge).toBe('chal-xyz');
+    expect(generateApprovalAssertionOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: 'a1',
+        userId: TEST_USER.id,
+        devices: [{ credentialId: 'cred-1', transports: ['internal'] }],
+      }),
+    );
+  });
+
+  it('returns 404 when the approval is not pending for this user', async () => {
+    mockSelectResolves([]);
+    const res = await buildApp().request('/approvals/missing/assertion-challenge', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /approvals/:id/approve with assertion proof', () => {
+  const updatedRow = {
+    id: 'a1',
+    userId: TEST_USER.id,
+    requestingClientLabel: 'Console',
+    requestingMachineLabel: null,
+    requestingClientId: null,
+    requestingSessionId: null,
+    actionLabel: 'x',
+    actionToolName: 'y',
+    actionArguments: {},
+    riskTier: 'high',
+    riskSummary: 'z',
+    status: 'approved',
+    expiresAt: new Date(Date.now() + 60_000),
+    decidedAt: new Date(),
+    decisionReason: null,
+    createdAt: new Date(),
+  };
+
+  const proof = {
+    credentialId: 'cred-1',
+    authenticatorData: 'AA',
+    clientDataJSON: 'BB',
+    signature: 'CC',
+    userHandle: null,
+  };
+
+  it('records webauthn_platform / L2 when a valid proof is presented', async () => {
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 2,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+      pinVerified: false,
+    });
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof }),
+    });
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: 'a1', userId: TEST_USER.id, proof }),
+    );
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'approved',
+        decidedVia: 'webauthn_platform',
+        decidedAssuranceLevel: 2,
+        authenticatorDeviceId: 'dev-1',
+      }),
+    );
+  });
+
+  it('still records session_tap / L1 when no proof is presented (unchanged)', async () => {
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: 'a1', userId: TEST_USER.id, proof: undefined }),
+    );
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decidedVia: 'session_tap',
+        decidedAssuranceLevel: 1,
+        authenticatorDeviceId: null,
+      }),
+    );
+  });
+
+  it('returns 401 assertion_failed when a presented proof fails verification', async () => {
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(
+      new Error('assertion verification failed'),
+    );
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof }),
+    });
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe('assertion_failed');
+    // A failed assertion is NOT a silent downgrade — the CAS update never runs.
+    expect(set).not.toHaveBeenCalled();
   });
 });
 

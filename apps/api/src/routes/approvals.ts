@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, gt, desc, inArray } from 'drizzle-orm';
+import { and, eq, gt, desc, inArray, isNull } from 'drizzle-orm';
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
@@ -11,8 +11,10 @@ import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
-import { resolveApprovalAssurance } from '../services/authenticatorAssurance';
-import type { RiskTier } from '@breeze/shared';
+import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import { authenticatorDevices } from '../db/schema/authenticatorDevices';
+import { assertionProofSchema, type RiskTier, type AssertionProof } from '@breeze/shared';
 
 export const approvalRoutes = new Hono();
 
@@ -145,8 +147,63 @@ approvalRoutes.get('/:id', async (c) => {
   return c.json({ approval: serialize(row, customerTenant) });
 });
 
+// Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
+// {approvalId,userId} so the technician can satisfy a Windows-Hello / Touch-ID
+// step-up before approving. allowCredentials is the caller's active platform
+// approver devices; with none registered the options carry no allowCredentials
+// and the console falls back to an L1 (session-tap) approval — P2 is opt-in.
+approvalRoutes.post('/:id/assertion-challenge', async (c) => {
+  const userId = c.get('auth').user.id;
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'Bad request' }, 400);
+
+  const [existing] = await db
+    .select()
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.id, id),
+        eq(approvalRequests.userId, userId),
+        eq(approvalRequests.status, 'pending'),
+      ),
+    );
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  // Caller's active platform approver devices (RLS scopes to the user; the
+  // userId predicate is defense-in-depth — see reference memory: admin-list IDOR).
+  const devices = await db
+    .select()
+    .from(authenticatorDevices)
+    .where(
+      and(
+        eq(authenticatorDevices.userId, userId),
+        eq(authenticatorDevices.kind, 'webauthn_platform'),
+        isNull(authenticatorDevices.disabledAt),
+      ),
+    );
+
+  const options = await generateApprovalAssertionOptions({
+    approvalId: id,
+    userId,
+    devices: devices
+      .filter((d) => d.credentialId)
+      .map((d) => ({ credentialId: d.credentialId!, transports: d.transports })),
+  });
+
+  return c.json({ options });
+});
+
 approvalRoutes.post('/:id/approve', async (c) => {
-  return decideHandler(c, 'approved');
+  // Optional WebAuthn assertion proof (Phase 2). A malformed proof is a 400 at
+  // validation; an absent proof keeps today's L1 session-tap behavior.
+  let proof: AssertionProof | undefined;
+  const raw = await c.req.json().catch(() => null);
+  if (raw && raw.proof !== undefined) {
+    const parsed = assertionProofSchema.safeParse(raw.proof);
+    if (!parsed.success) return c.json({ error: 'Invalid proof' }, 400);
+    proof = parsed.data;
+  }
+  return decideHandler(c, 'approved', undefined, proof);
 });
 
 approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
@@ -260,7 +317,8 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
 async function decideHandler(
   c: import('hono').Context,
   status: 'approved' | 'denied',
-  reason?: string
+  reason?: string,
+  proof?: AssertionProof
 ) {
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
@@ -285,7 +343,21 @@ async function decideHandler(
     return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
   }
 
-  const assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
+  // Phase 2: verify an optional browser assertion proof. No proof → today's L1
+  // session tap (never blocks). A presented-but-invalid proof throws → 401; it is
+  // NOT silently downgraded to L1. Enforcement of "proof REQUIRED" is Phase 4.
+  let assurance;
+  try {
+    assurance = await assertApprovalAssurance({
+      approvalId: id,
+      userId,
+      riskTier: existing.riskTier as RiskTier,
+      proof,
+    });
+  } catch (err) {
+    console.error('[approvals] assertion verification failed:', err);
+    return c.json({ error: 'assertion_failed' }, 401);
+  }
 
   const result = await db
     .update(approvalRequests)
