@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, ne, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketEmailInbound, tickets, ticketComments, portalUsers, organizations, partners } from '../../db/schema';
 import { createTicket } from '../ticketService';
@@ -250,7 +250,14 @@ function candidateThreadKeys(n: NormalizedInboundEmail): string[] {
 // ticket fall through to the dedicated closed lookup (-> ONE new linked ticket), while
 // subsequent replies match the LIVE continuation. Resolved tickets still match (reopen).
 async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string): Promise<MatchedTicket | null> {
-  // 1) thread headers -> email_thread_key (scoped to partner, live tickets only).
+  // 1) thread headers -> email_thread_key OR email_message_id (scoped to partner,
+  // live tickets only). Candidate keys (In-Reply-To ∪ References) are matched
+  // against EITHER column: email_thread_key carries the generated anchor (so a
+  // reply to the autoresponse / outbound reply threads), and email_message_id
+  // carries the customer's OWN original Message-Id (so an autoresponder-OFF
+  // partner's customer replying to their own original — In-Reply-To = their
+  // original Message-Id, NOT the anchor — still threads instead of forking a
+  // duplicate). The partner predicate stays mandatory (spec §6 layer 1).
   const candidateKeys = candidateThreadKeys(n);
   if (candidateKeys.length > 0) {
     const rows = await db
@@ -259,7 +266,10 @@ async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string)
       .where(and(
         eq(tickets.partnerId, partnerId),
         ne(tickets.status, 'closed'),
-        inArray(tickets.emailThreadKey, candidateKeys)
+        or(
+          inArray(tickets.emailThreadKey, candidateKeys),
+          inArray(tickets.emailMessageId, candidateKeys)
+        )
       ))
       .limit(1);
     if (rows[0]) return rows[0] as MatchedTicket;
@@ -401,10 +411,21 @@ async function createFromEmail(
   //      domain is configured (self-hosted without TICKETS_INBOUND_DOMAIN). Keeps
   //      the no-domain integration env unchanged (still anchors on the inbound id).
   //   4) null — no domain AND no Message-Id (threading off for this ticket).
+  // ALSO stamp the customer's OWN Message-Id (email_message_id, Phase 1 column).
+  // When a platform domain is configured, email_thread_key is the generated
+  // anchor — so an autoresponder-OFF partner's customer who replies to their OWN
+  // original (In-Reply-To = their original Message-Id, NOT the anchor) would not
+  // header-match email_thread_key and would fork a duplicate ticket. Persisting
+  // the customer's Message-Id here lets findTicketInPartner match the reply
+  // against EITHER key (review fix). Harmless when it duplicates email_thread_key
+  // (no-domain path) — both columns just carry the same value.
   const domain = inboundDomainOrNull();
   const generatedAnchor = domain ? `<ticket-${ticket.id}@${domain}>` : null;
   await db.update(tickets)
-    .set({ emailThreadKey: carryThreadKey ?? (domain ? generatedAnchor : (n.messageId ?? null)) })
+    .set({
+      emailThreadKey: carryThreadKey ?? (domain ? generatedAnchor : (n.messageId ?? null)),
+      emailMessageId: n.messageId ?? null,
+    })
     .where(eq(tickets.id, ticket.id));
 
   // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
@@ -452,8 +473,9 @@ async function appendInboundComment(ticketId: string, n: NormalizedInboundEmail,
   const comment = inserted[0];
   if (!comment) throw new Error('failed to insert inbound comment');
 
-  // inbound:true -> the notify worker's live guard (ticketNotifyWorker.ts:205-207 reads
-  // `!event.payload.inbound`) skips echoing the email back to the sender, preventing a loop.
+  // inbound:true -> the notify worker's ticket.commented branch skips the requester
+  // echo when event.payload.inbound is set (its guard is `isPublic && !inbound`), so the
+  // email is never bounced back to the same sender — preventing a mail loop.
   await emitTicketEvent({
     type: 'ticket.commented',
     ticketId,

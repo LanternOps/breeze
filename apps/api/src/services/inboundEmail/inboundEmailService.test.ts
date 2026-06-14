@@ -130,7 +130,8 @@ vi.mock('../../db/schema', () => ({
   tickets: {
     __t: 'tickets',
     id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status', subject: 'subject',
-    emailThreadKey: 'emailThreadKey', internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt'
+    emailThreadKey: 'emailThreadKey', emailMessageId: 'emailMessageId',
+    internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt'
   },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
@@ -294,6 +295,41 @@ describe('processInboundEmail', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('matched');
     expect(log[0]!.ticketId).toBe('t-mid');
+  });
+
+  it('threads a customer self-reply via email_message_id when email_thread_key is the anchor (autoresponder-off)', async () => {
+    // FIX 2: for an autoresponder-OFF partner, a ticket created with a platform
+    // domain has email_thread_key = <ticket-...@domain> (the anchor) but
+    // email_message_id = the customer's OWN original Message-Id. If the customer
+    // replies to their own original (In-Reply-To = <cust-orig>, NOT the anchor),
+    // the live-match query matches via email_message_id (the OR branch) and threads
+    // onto the SAME ticket instead of forking a duplicate. The query carries both
+    // keys and matches EITHER column, still partner-scoped.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no dup
+    state.selectRows['tickets'] = [{
+      id: 't-self', partnerId: 'p-1', orgId: 'o-1', status: 'open',
+      emailThreadKey: '<ticket-t-self@tickets.example.com>', // the anchor (NOT the cust id)
+      emailMessageId: '<cust-orig@customer.com>',            // the customer's own Message-Id
+      internalNumber: 'T-2026-0003'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+
+    // The reply's In-Reply-To is the customer's ORIGINAL Message-Id — NOT the anchor.
+    await processInboundEmail(email({ inReplyTo: '<cust-orig@customer.com>' }));
+
+    // Appended a public comment on the matched ticket (header threading via email_message_id).
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.isPublic).toBe(true);
+
+    // Did NOT fork a new ticket.
+    expect(createTicketMock).not.toHaveBeenCalled();
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('matched');
+    expect(log[0]!.ticketId).toBe('t-self');
   });
 
   it('GUARD: refuses to touch a matched ticket from another partner (-> failed, no write)', async () => {

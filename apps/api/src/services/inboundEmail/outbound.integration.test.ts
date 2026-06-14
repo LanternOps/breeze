@@ -553,4 +553,91 @@ describe('outbound threading + autoresponder + Reply-To + leak (real DB, capture
       .where(eq(ticketComments.ticketId, created.id));
     expect(comments.some((c: any) => c.content === 'It is still smoking.' && c.isPublic === true)).toBe(true);
   });
+
+  // ---------------------------------------------------------------------------
+  // FIX 2 (autoresponder-OFF self-reply): when a platform domain is configured,
+  // email_thread_key = the generated anchor, but email_message_id = the customer's
+  // OWN original Message-Id. A customer who replies to their OWN original (so
+  // In-Reply-To = their original Message-Id, NOT the anchor — the autoresponder
+  // never sent the anchor) must still thread onto the SAME ticket via the
+  // email_message_id OR-branch — NOT fork a duplicate.
+  // ---------------------------------------------------------------------------
+  it('round-trip: a customer reply to their OWN original Message-Id (In-Reply-To != anchor) threads via email_message_id, no fork', async () => {
+    const suffix = uniqueSuffix();
+    const providerMessageId = `<self-orig-${suffix}@customer.test>`;
+    // The customer's OWN Message-Id on the original — what their reply's In-Reply-To
+    // will point at (they replied to their own sent mail, not to our autoresponse).
+    const customerMessageId = `<self-real-${suffix}@customer.test>`;
+
+    const buildInbound = (overrides: Partial<NormalizedInboundEmail>): NormalizedInboundEmail => ({
+      provider: 'mailgun',
+      providerMessageId,
+      to: `${fx.partner.slug}@${INBOUND_DOMAIN}`,
+      from: fx.janeEmail,
+      fromName: 'Jane Known',
+      subject: 'My screen is cracked',
+      text: 'It happened when it fell.',
+      messageId: customerMessageId,
+      attachments: [],
+      raw: { recipient: `${fx.partner.slug}@${INBOUND_DOMAIN}` },
+      ...overrides
+    });
+
+    // 1) Drive the inbound create (known portal-user sender → source:email ticket).
+    await withSystemDbAccessContext(() => processInboundEmail(buildInbound({})));
+
+    const createdRows = await admin()
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partner.id), eq(tickets.source, 'email')));
+    expect(createdRows).toHaveLength(1);
+    const created = createdRows[0];
+
+    // email_thread_key = the anchor; email_message_id = the customer's own Message-Id.
+    const anchor = `<ticket-${created.id}@${INBOUND_DOMAIN}>`;
+    expect(created.emailThreadKey).toBe(anchor);
+    expect(created.emailMessageId).toBe(customerMessageId);
+
+    // 2) Customer replies to their OWN original: In-Reply-To = customerMessageId (NOT anchor).
+    const replyProviderMessageId = `<self-reply-${suffix}@customer.test>`;
+    await withSystemDbAccessContext(() =>
+      processInboundEmail(
+        buildInbound({
+          providerMessageId: replyProviderMessageId,
+          messageId: `<self-reply-real-${suffix}@customer.test>`,
+          subject: 'Re: My screen is cracked',
+          inReplyTo: customerMessageId, // their OWN original id, NOT the anchor
+          references: [customerMessageId],
+          text: 'Any update on this?'
+        })
+      )
+    );
+
+    // Still exactly ONE source:email ticket for this partner (no fork).
+    const afterReply = await admin()
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partner.id), eq(tickets.source, 'email')));
+    expect(afterReply).toHaveLength(1);
+    expect(afterReply[0].id).toBe(created.id);
+
+    // The reply was logged 'matched' against the original ticket (via email_message_id).
+    const replyLog = await admin()
+      .select()
+      .from(ticketEmailInbound)
+      .where(and(
+        eq(ticketEmailInbound.partnerId, fx.partner.id),
+        eq(ticketEmailInbound.providerMessageId, replyProviderMessageId)
+      ));
+    expect(replyLog).toHaveLength(1);
+    expect(replyLog[0].parseStatus).toBe('matched');
+    expect(replyLog[0].ticketId).toBe(created.id);
+
+    // A public inbound comment landed on the original ticket.
+    const comments = await admin()
+      .select()
+      .from(ticketComments)
+      .where(eq(ticketComments.ticketId, created.id));
+    expect(comments.some((c: any) => c.content === 'Any update on this?' && c.isPublic === true)).toBe(true);
+  });
 });
