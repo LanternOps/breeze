@@ -2,10 +2,54 @@ import { describe, it, expect } from 'vitest';
 import {
   patchInlineSettingsSchema,
   policyAppRuleSchema,
+  ringAutoApproveSchema,
   eventLogInlineSettingsSchema,
   sensitiveDataInlineSettingsSchema,
   monitoringInlineSettingsSchema,
 } from './index';
+
+// ============================================
+// Ring Auto-Approve (#1317)
+// ============================================
+
+describe('ringAutoApproveSchema', () => {
+  it('applies fail-closed defaults', () => {
+    const result = ringAutoApproveSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({ enabled: false, severities: [], deferralDays: 0 });
+    }
+  });
+
+  it('accepts an enabled gate with severities and a deferral window', () => {
+    const result = ringAutoApproveSchema.safeParse({
+      enabled: true,
+      severities: ['critical', 'important'],
+      deferralDays: 7,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects enabled with no severities (must opt in to a severity set)', () => {
+    const result = ringAutoApproveSchema.safeParse({ enabled: true, severities: [], deferralDays: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown severity', () => {
+    const result = ringAutoApproveSchema.safeParse({ enabled: true, severities: ['catastrophic'] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a deferralDays out of range', () => {
+    expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 366 }).success).toBe(false);
+    expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: -1 }).success).toBe(false);
+  });
+
+  it('allows disabled with no severities (the default off state)', () => {
+    const result = ringAutoApproveSchema.safeParse({ enabled: false, severities: [], deferralDays: 0 });
+    expect(result.success).toBe(true);
+  });
+});
 
 // ============================================
 // Patch Inline Settings

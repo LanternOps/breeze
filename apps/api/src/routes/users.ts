@@ -1370,6 +1370,11 @@ userRoutes.delete(
       await revokeAllUserTokens(userId).catch((err) => {
         console.error('[users] token revoke failed after partner-user removal:', err);
       });
+      // Also revoke OAuth grants/refresh tokens (e.g. MCP) so a removed user's
+      // refresh token can't keep minting access tokens after they lose access.
+      await revokeUserAccess(userId).catch((err) => {
+        console.error('[users] oauth revoke failed after partner-user removal:', err);
+      });
 
       return c.json({ success: true });
     }
@@ -1392,6 +1397,10 @@ userRoutes.delete(
     // Task 14: see comment above — same rationale for org-scope users.
     await revokeAllUserTokens(userId).catch((err) => {
       console.error('[users] token revoke failed after org-user removal:', err);
+    });
+    // Also revoke OAuth grants/refresh tokens (e.g. MCP) — see partner branch.
+    await revokeUserAccess(userId).catch((err) => {
+      console.error('[users] oauth revoke failed after org-user removal:', err);
     });
 
     return c.json({ success: true });

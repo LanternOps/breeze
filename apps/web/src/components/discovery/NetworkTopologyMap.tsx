@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { fetchWithAuth } from '../../stores/auth';
 import { cn, heightPxClass, leftPxClass, topPxClass } from '@/lib/utils';
+import {
+  groupNodesBySubnet,
+  parseProfileSubnets,
+  type SubnetGroup
+} from './topologySubnets';
 
 export type TopologyNodeType =
   | 'router'
@@ -21,6 +26,8 @@ export type TopologyNode = {
   type: TopologyNodeType;
   status: TopologyNodeStatus;
   ipAddress?: string;
+  // Layout fields populated per-render.
+  subnet?: string;
   x?: number;
   y?: number;
   fx?: number | null;
@@ -52,6 +59,11 @@ type NetworkTopologyMapProps = {
   height?: number;
   onNodeClick?: (nodeId: string) => void;
 };
+
+// Above this node count we abandon the live force simulation (which gets
+// expensive and visually unstable) in favor of a static grouped grid. Issue
+// #1325 Tier 1 perf guard.
+const FORCE_SIM_NODE_LIMIT = 150;
 
 const typeColors: Record<TopologyNodeType, string> = {
   router: '#0f766e',
@@ -119,7 +131,15 @@ const typeMap: Record<string, TopologyNodeType> = {
   unknown: 'unknown'
 };
 
+// Infrastructure nodes anchor a subnet and get visual emphasis (larger radius).
 const INFRA_TYPES = new Set<TopologyNodeType>(['router', 'switch', 'firewall', 'access_point']);
+
+const NODE_RADIUS = 18;
+const INFRA_NODE_RADIUS = 26;
+
+function nodeRadius(node: TopologyNode): number {
+  return INFRA_TYPES.has(node.type) ? INFRA_NODE_RADIUS : NODE_RADIUS;
+}
 
 function mapNode(node: ApiTopologyNode): TopologyNode {
   const normalizedType = (node.type ?? 'unknown').toLowerCase();
@@ -143,58 +163,43 @@ function mapLink(link: ApiTopologyLink): TopologyLink {
   };
 }
 
-function getSubnetPrefix(ip: string): string | null {
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  return parts.slice(0, 3).join('.');
-}
+type LayoutGroup = {
+  group: SubnetGroup<TopologyNode>;
+  cx: number;
+  cy: number;
+};
 
-function generateSubnetEdges(nodes: TopologyNode[]): TopologyLink[] {
-  const subnets = new Map<string, TopologyNode[]>();
-  for (const node of nodes) {
-    if (!node.ipAddress) continue;
-    const prefix = getSubnetPrefix(node.ipAddress);
-    if (!prefix) continue;
-    let group = subnets.get(prefix);
-    if (!group) {
-      group = [];
-      subnets.set(prefix, group);
-    }
-    group.push(node);
-  }
+/**
+ * Assign each subnet group a cluster centre on a grid. Used both as the seed
+ * for force-clustering (small graphs) and as the final position for the static
+ * grid layout (large graphs).
+ */
+function computeGroupCentres(
+  groups: SubnetGroup<TopologyNode>[],
+  width: number,
+  height: number
+): LayoutGroup[] {
+  const count = groups.length || 1;
+  const cols = Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / cols);
+  const cellW = width / cols;
+  const cellH = height / rows;
 
-  const edges: TopologyLink[] = [];
-  for (const [prefix, group] of subnets) {
-    if (group.length < 2) continue;
-    const hub = group.find(n => INFRA_TYPES.has(n.type)) ?? group[0];
-    for (const node of group) {
-      if (node.id === hub.id) continue;
-      edges.push({
-        source: hub.id,
-        target: node.id,
-        type: 'wired',
-        subnet: `${prefix}.0/24`
-      });
-    }
-  }
-  return edges;
-}
-
-function curvedPath(
-  sx: number,
-  sy: number,
-  tx: number,
-  ty: number
-): string {
-  const dx = tx - sx;
-  const dy = ty - sy;
-  const dr = Math.sqrt(dx * dx + dy * dy) * 1.5;
-  return `M${sx},${sy}A${dr},${dr} 0 0,1 ${tx},${ty}`;
+  return groups.map((group, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    return {
+      group,
+      cx: cellW * (col + 0.5),
+      cy: cellH * (row + 0.5)
+    };
+  });
 }
 
 export default function NetworkTopologyMap({ height = 560, onNodeClick }: NetworkTopologyMapProps) {
   const [nodes, setNodes] = useState<TopologyNode[]>([]);
   const [links, setLinks] = useState<TopologyLink[]>([]);
+  const [profileSubnets, setProfileSubnets] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -216,9 +221,15 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
       const data = await response.json();
       const rawNodes = data.nodes ?? data.data?.nodes ?? [];
       const rawLinks = data.edges ?? data.links ?? data.data?.edges ?? [];
+      const rawSubnets: string[] = Array.isArray(data.subnets) ? data.subnets : [];
       const mappedNodes: TopologyNode[] = rawNodes.map(mapNode);
       const nodeIds = new Set(mappedNodes.map((n: TopologyNode) => n.id));
-      let mappedLinks: TopologyLink[] = rawLinks
+
+      // Only ever render edges the backend actually observed. We deliberately do
+      // NOT fabricate adjacency from IP prefixes anymore (issue #1325): the
+      // system collects no real inter-host connectivity, so a guessed star is
+      // misleading. Real LLDP/CDP/SNMP-bridge collection is a Tier 2 follow-up.
+      const mappedLinks: TopologyLink[] = rawLinks
         .map(mapLink)
         .filter((l: TopologyLink) => {
           const src = typeof l.source === 'string' ? l.source : l.source.id;
@@ -226,13 +237,9 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
           return nodeIds.has(src) && nodeIds.has(tgt);
         });
 
-      // If no real edges, infer from subnet grouping
-      if (mappedLinks.length === 0 && mappedNodes.length > 1) {
-        mappedLinks = generateSubnetEdges(mappedNodes);
-      }
-
       setNodes(mappedNodes);
       setLinks(mappedLinks);
+      setProfileSubnets(rawSubnets);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -246,6 +253,20 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
 
   const nodesMemo = useMemo(() => nodes.map(node => ({ ...node })), [nodes]);
   const linksMemo = useMemo(() => links.map(link => ({ ...link })), [links]);
+
+  const subnetGroups = useMemo(
+    () => groupNodesBySubnet(nodes, parseProfileSubnets(profileSubnets)),
+    [nodes, profileSubnets]
+  );
+
+  // Stamp the resolved subnet label onto each node for tooltips/legend.
+  const subnetByNodeId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of subnetGroups) {
+      for (const node of group.nodes) map.set(node.id, group.label);
+    }
+    return map;
+  }, [subnetGroups]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -274,54 +295,74 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     const container = svg.append('g').attr('class', 'zoom-container');
 
     const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.3, 3])
+      .scaleExtent([0.2, 3])
       .on('zoom', (event) => {
         container.attr('transform', event.transform);
       });
     svg.call(zoomBehavior);
 
-    const simulation = d3
-      .forceSimulation<TopologyNode>(nodesMemo)
-      .force(
-        'link',
-        d3
-          .forceLink<TopologyNode, TopologyLink>(linksMemo)
-          .id(d => d.id)
-          .distance(120)
-      )
-      .force('charge', d3.forceManyBody().strength(-320))
-      .force('center', d3.forceCenter(chartWidth / 2, chartHeight / 2))
-      .force('collision', d3.forceCollide().radius(36));
+    const groupCentres = computeGroupCentres(subnetGroups, chartWidth, chartHeight);
+    const centreByNodeId = new Map<string, LayoutGroup>();
+    for (const lg of groupCentres) {
+      for (const node of lg.group.nodes) centreByNodeId.set(node.id, lg);
+    }
 
-    // Edge group
-    const linkGroup = container
+    // Seed nodes near their subnet centre so clusters form quickly / read well.
+    for (const node of nodesMemo) {
+      const lg = centreByNodeId.get(node.id);
+      if (lg) {
+        node.x = lg.cx + (Math.random() - 0.5) * 40;
+        node.y = lg.cy + (Math.random() - 0.5) * 40;
+      }
+    }
+
+    // ---- Subnet group containers (labelled) ----
+    const groupLayer = container.append('g').attr('class', 'subnet-groups');
+    const groupCells = groupLayer
+      .selectAll<SVGGElement, LayoutGroup>('g')
+      .data(groupCentres)
+      .enter()
       .append('g')
-      .attr('class', 'links');
+      .attr('class', 'subnet-group');
 
-    const link = linkGroup
-      .selectAll<SVGPathElement, TopologyLink>('path')
+    groupCells
+      .append('text')
+      .attr('x', (d) => d.cx)
+      .attr('y', (d) => d.cy)
+      .attr('text-anchor', 'middle')
+      .attr('class', 'subnet-group-label')
+      .attr('font-size', 12)
+      .attr('font-weight', '600')
+      .attr('fill', '#475569')
+      .attr('pointer-events', 'none')
+      .each(function (d) {
+        const text = d3.select(this);
+        text.append('tspan').attr('x', d.cx).text(d.group.label);
+        text
+          .append('tspan')
+          .attr('x', d.cx)
+          .attr('dy', '1.2em')
+          .attr('font-size', 10)
+          .attr('font-weight', '400')
+          .attr('fill', '#94a3b8')
+          .text(`${d.group.nodes.length} host${d.group.nodes.length === 1 ? '' : 's'}`);
+      });
+
+    const useForceSim = nodesMemo.length <= FORCE_SIM_NODE_LIMIT;
+
+    // ---- Edges (only when the backend observed real ones) ----
+    const linkLayer = container.append('g').attr('class', 'links');
+    const link = linkLayer
+      .selectAll<SVGLineElement, TopologyLink>('line')
       .data(linksMemo)
       .enter()
-      .append('path')
-      .attr('fill', 'none')
+      .append('line')
       .attr('stroke', '#94a3b8')
-      .attr('stroke-opacity', 0.5)
-      .attr('stroke-width', d => (d.type === 'wireless' ? 1.5 : 2))
-      .attr('stroke-dasharray', d => (d.type === 'wireless' ? '6 4' : '0'));
+      .attr('stroke-opacity', 0.6)
+      .attr('stroke-width', (d) => (d.type === 'wireless' ? 1.5 : 2))
+      .attr('stroke-dasharray', (d) => (d.type === 'wireless' ? '6 4' : '0'));
 
-    // Edge hover labels (hidden by default)
-    const linkLabel = linkGroup
-      .selectAll<SVGTextElement, TopologyLink>('text')
-      .data(linksMemo.filter(l => l.subnet))
-      .enter()
-      .append('text')
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 9)
-      .attr('fill', '#64748b')
-      .attr('opacity', 0)
-      .text(d => d.subnet ?? '');
-
-    // Node group
+    // ---- Nodes ----
     const nodeGroup = container
       .append('g')
       .attr('class', 'nodes')
@@ -331,7 +372,115 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
       .append('g')
       .style('cursor', 'pointer');
 
-    // Drag behavior
+    nodeGroup
+      .append('circle')
+      .attr('r', (d) => nodeRadius(d))
+      .attr('fill', (d) => typeColors[d.type])
+      .attr('stroke', (d) => statusStroke[d.status])
+      .attr('stroke-width', (d) => (INFRA_TYPES.has(d.type) ? 4 : 3))
+      .attr('class', (d) => (d.status === 'online' ? 'node-online' : ''));
+
+    nodeGroup
+      .append('text')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '0.35em')
+      .attr('font-size', (d) => (INFRA_TYPES.has(d.type) ? 15 : 13))
+      .attr('font-weight', '700')
+      .attr('fill', '#fff')
+      .attr('pointer-events', 'none')
+      .text((d) => typeIcon[d.type] ?? '?');
+
+    nodeGroup
+      .append('text')
+      .attr('text-anchor', 'middle')
+      .attr('dy', (d) => nodeRadius(d) + 14)
+      .attr('font-size', 11)
+      .attr('fill', '#334155')
+      .attr('pointer-events', 'none')
+      .text((d) => d.label);
+
+    // Hover + tooltip
+    nodeGroup
+      .on('mouseenter', (event: MouseEvent, d: TopologyNode) => {
+        const subnet = subnetByNodeId.get(d.id);
+        nodeGroup.attr('opacity', (n) =>
+          n.id === d.id || subnetByNodeId.get(n.id) === subnet ? 1 : 0.25
+        );
+        setTooltip({ x: event.pageX + 12, y: event.pageY - 10, node: { ...d, subnet } });
+      })
+      .on('mousemove', (event: MouseEvent) => {
+        setTooltip((prev) =>
+          prev ? { ...prev, x: event.pageX + 12, y: event.pageY - 10 } : null
+        );
+      })
+      .on('mouseleave', () => {
+        nodeGroup.attr('opacity', 1);
+        setTooltip(null);
+      });
+
+    if (onNodeClick) {
+      nodeGroup.on('click', (_event: MouseEvent, d: TopologyNode) => {
+        onNodeClick(d.id);
+      });
+    }
+
+    const positionNodes = () => {
+      nodeGroup.attr('transform', (d) => `translate(${d.x ?? 0}, ${d.y ?? 0})`);
+      link
+        .attr('x1', (d) => (d.source as unknown as TopologyNode).x ?? 0)
+        .attr('y1', (d) => (d.source as unknown as TopologyNode).y ?? 0)
+        .attr('x2', (d) => (d.target as unknown as TopologyNode).x ?? 0)
+        .attr('y2', (d) => (d.target as unknown as TopologyNode).y ?? 0);
+    };
+
+    if (!useForceSim) {
+      // Static grouped grid: lay nodes out in a tidy block under each subnet
+      // centre. No simulation — cheap and stable for large result sets.
+      for (const lg of groupCentres) {
+        const members = lg.group.nodes;
+        const perRow = Math.ceil(Math.sqrt(members.length)) || 1;
+        const spacing = 52;
+        members.forEach((member, idx) => {
+          const liveNode = nodesMemo.find((n) => n.id === member.id);
+          if (!liveNode) return;
+          const col = idx % perRow;
+          const row = Math.floor(idx / perRow);
+          const rowCount = Math.ceil(members.length / perRow);
+          liveNode.x = lg.cx + (col - (perRow - 1) / 2) * spacing;
+          liveNode.y = lg.cy + 28 + (row - (rowCount - 1) / 2) * spacing;
+        });
+      }
+      positionNodes();
+      return () => {};
+    }
+
+    // Force layout with per-subnet clustering: forceX/forceY pull each node to
+    // its subnet centre, so groups stay visually separated instead of forming
+    // one hairball.
+    const simulation = d3
+      .forceSimulation<TopologyNode>(nodesMemo)
+      .force(
+        'link',
+        d3
+          .forceLink<TopologyNode, TopologyLink>(linksMemo)
+          .id((d) => d.id)
+          .distance(90)
+      )
+      .force('charge', d3.forceManyBody().strength(-220))
+      .force(
+        'x',
+        d3
+          .forceX<TopologyNode>((d) => centreByNodeId.get(d.id)?.cx ?? chartWidth / 2)
+          .strength(0.35)
+      )
+      .force(
+        'y',
+        d3
+          .forceY<TopologyNode>((d) => centreByNodeId.get(d.id)?.cy ?? chartHeight / 2)
+          .strength(0.35)
+      )
+      .force('collision', d3.forceCollide<TopologyNode>().radius((d) => nodeRadius(d) + 14));
+
     const drag = d3.drag<SVGGElement, TopologyNode>()
       .on('start', (event, d) => {
         if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -347,144 +496,28 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
         d.fx = null;
         d.fy = null;
       });
-
     nodeGroup.call(drag);
 
-    // Circle
-    nodeGroup
-      .append('circle')
-      .attr('r', 20)
-      .attr('fill', d => typeColors[d.type])
-      .attr('stroke', d => statusStroke[d.status])
-      .attr('stroke-width', 3)
-      .attr('class', d => d.status === 'online' ? 'node-online' : '');
-
-    // Type icon inside circle
-    nodeGroup
-      .append('text')
-      .attr('text-anchor', 'middle')
-      .attr('dy', '0.35em')
-      .attr('font-size', 13)
-      .attr('font-weight', '700')
-      .attr('fill', '#fff')
-      .attr('pointer-events', 'none')
-      .text(d => typeIcon[d.type] ?? '?');
-
-    // Label below node
-    nodeGroup
-      .append('text')
-      .attr('text-anchor', 'middle')
-      .attr('dy', 36)
-      .attr('font-size', 11)
-      .attr('fill', '#334155')
-      .attr('pointer-events', 'none')
-      .text(d => d.label);
-
-    // Build adjacency for hover highlighting
-    const adjacency = new Set<string>();
-    const connectedNodes = new Map<string, Set<string>>();
-    for (const l of linksMemo) {
-      const src = typeof l.source === 'string' ? l.source : l.source.id;
-      const tgt = typeof l.target === 'string' ? l.target : l.target.id;
-      adjacency.add(`${src}-${tgt}`);
-      adjacency.add(`${tgt}-${src}`);
-      if (!connectedNodes.has(src)) connectedNodes.set(src, new Set());
-      if (!connectedNodes.has(tgt)) connectedNodes.set(tgt, new Set());
-      connectedNodes.get(src)!.add(tgt);
-      connectedNodes.get(tgt)!.add(src);
-    }
-
-    // Hover handlers
-    nodeGroup
-      .on('mouseenter', (event: MouseEvent, d: TopologyNode) => {
-        const connected = connectedNodes.get(d.id) ?? new Set();
-
-        // Dim unconnected nodes
-        nodeGroup.attr('opacity', n =>
-          n.id === d.id || connected.has(n.id) ? 1 : 0.2
-        );
-
-        // Highlight connected edges
-        link
-          .attr('stroke', l => {
-            const src = typeof l.source === 'string' ? l.source : (l.source as TopologyNode).id;
-            const tgt = typeof l.target === 'string' ? l.target : (l.target as TopologyNode).id;
-            return src === d.id || tgt === d.id ? '#3b82f6' : '#94a3b8';
-          })
-          .attr('stroke-opacity', l => {
-            const src = typeof l.source === 'string' ? l.source : (l.source as TopologyNode).id;
-            const tgt = typeof l.target === 'string' ? l.target : (l.target as TopologyNode).id;
-            return src === d.id || tgt === d.id ? 0.9 : 0.15;
-          })
-          .attr('stroke-width', l => {
-            const src = typeof l.source === 'string' ? l.source : (l.source as TopologyNode).id;
-            const tgt = typeof l.target === 'string' ? l.target : (l.target as TopologyNode).id;
-            const base = l.type === 'wireless' ? 1.5 : 2;
-            return src === d.id || tgt === d.id ? base + 1.5 : base;
-          });
-
-        // Show subnet labels on connected edges
-        linkLabel.attr('opacity', l => {
-          const src = typeof l.source === 'string' ? l.source : (l.source as TopologyNode).id;
-          const tgt = typeof l.target === 'string' ? l.target : (l.target as TopologyNode).id;
-          return src === d.id || tgt === d.id ? 1 : 0;
-        });
-
-        // Show tooltip
-        setTooltip({
-          x: event.pageX + 12,
-          y: event.pageY - 10,
-          node: d
-        });
-      })
-      .on('mousemove', (event: MouseEvent) => {
-        setTooltip(prev =>
-          prev ? { ...prev, x: event.pageX + 12, y: event.pageY - 10 } : null
-        );
-      })
-      .on('mouseleave', () => {
-        nodeGroup.attr('opacity', 1);
-        link
-          .attr('stroke', '#94a3b8')
-          .attr('stroke-opacity', 0.5)
-          .attr('stroke-width', d => (d.type === 'wireless' ? 1.5 : 2));
-        linkLabel.attr('opacity', 0);
-        setTooltip(null);
-      });
-
-    // Click handler
-    if (onNodeClick) {
-      nodeGroup.on('click', (_event: MouseEvent, d: TopologyNode) => {
-        onNodeClick(d.id);
-      });
-    }
-
+    // Keep subnet labels anchored to the live cluster centroid.
     simulation.on('tick', () => {
-      link.attr('d', d => {
-        const src = d.source as unknown as TopologyNode;
-        const tgt = d.target as unknown as TopologyNode;
-        return curvedPath(src.x ?? 0, src.y ?? 0, tgt.x ?? 0, tgt.y ?? 0);
+      positionNodes();
+      groupCells.select<SVGTextElement>('text').each(function (d) {
+        const members = d.group.nodes
+          .map((m) => nodesMemo.find((n) => n.id === m.id))
+          .filter((n): n is TopologyNode => !!n);
+        if (members.length === 0) return;
+        const cx = members.reduce((sum, n) => sum + (n.x ?? 0), 0) / members.length;
+        const minY = Math.min(...members.map((n) => (n.y ?? 0) - nodeRadius(n)));
+        const text = d3.select(this);
+        text.selectAll('tspan').attr('x', cx);
+        text.attr('y', minY - 24);
       });
-
-      linkLabel
-        .attr('x', d => {
-          const src = d.source as unknown as TopologyNode;
-          const tgt = d.target as unknown as TopologyNode;
-          return ((src.x ?? 0) + (tgt.x ?? 0)) / 2;
-        })
-        .attr('y', d => {
-          const src = d.source as unknown as TopologyNode;
-          const tgt = d.target as unknown as TopologyNode;
-          return ((src.y ?? 0) + (tgt.y ?? 0)) / 2 - 8;
-        });
-
-      nodeGroup.attr('transform', d => `translate(${d.x ?? 0}, ${d.y ?? 0})`);
     });
 
     return () => {
       simulation.stop();
     };
-  }, [height, linksMemo, nodesMemo, onNodeClick]);
+  }, [height, linksMemo, nodesMemo, onNodeClick, subnetGroups, subnetByNodeId]);
 
   if (loading && nodes.length === 0) {
     return (
@@ -512,13 +545,15 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     );
   }
 
+  const isLargeSet = nodes.length > FORCE_SIM_NODE_LIMIT;
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Network Topology</h2>
           <p className="text-sm text-muted-foreground">
-            Force-directed map of discovered connections. Scroll to zoom, drag to pan.
+            Discovered assets grouped by subnet. Scroll to zoom, drag to pan.
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -543,8 +578,26 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
         </div>
       )}
 
-      <div ref={containerRef} className="relative mt-6 overflow-hidden rounded-md border bg-muted/30">
-        <svg ref={svgRef} className={cn('h-full w-full', heightPxClass(height))} />
+      {/* Honesty note: we only draw connections we actually observed. */}
+      <div
+        data-testid="topology-adjacency-note"
+        className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+      >
+        {links.length === 0 ? (
+          <>
+            Connection lines are shown only when real adjacency is measured (LLDP/CDP/SNMP).
+            None has been collected yet, so assets are grouped by subnet without inferred links.
+          </>
+        ) : (
+          <>Connection lines reflect measured adjacency.</>
+        )}
+        {isLargeSet && (
+          <> Showing a static grouped layout for {nodes.length} assets (force layout disabled above {FORCE_SIM_NODE_LIMIT}).</>
+        )}
+      </div>
+
+      <div ref={containerRef} className="relative mt-4 overflow-hidden rounded-md border bg-muted/30">
+        <svg ref={svgRef} data-testid="topology-svg" className={cn('h-full w-full', heightPxClass(height))} />
         {tooltip && (
           <div
             className={cn(
@@ -557,6 +610,9 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
             {tooltip.node.ipAddress && (
               <p className="text-muted-foreground">{tooltip.node.ipAddress}</p>
             )}
+            {tooltip.node.subnet && (
+              <p className="text-muted-foreground">Subnet: {tooltip.node.subnet}</p>
+            )}
             <p className="text-muted-foreground">
               {typeLabels[tooltip.node.type]} &middot;{' '}
               <span className={cn('font-medium', statusTextClass[tooltip.node.status])}>
@@ -567,6 +623,25 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
         )}
       </div>
 
+      {/* Subnet legend with host counts. */}
+      {subnetGroups.length > 0 && (
+        <div className="mt-4" data-testid="topology-subnet-legend">
+          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Subnets</p>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            {subnetGroups.map((group) => (
+              <span
+                key={group.label}
+                className="flex items-center gap-1.5 rounded-full border bg-muted/40 px-2 py-0.5 text-muted-foreground"
+              >
+                <span className="font-medium text-foreground">{group.label}</span>
+                <span className="text-muted-foreground/70">{group.nodes.length}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Device-type legend. */}
       <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         {Object.entries(typeColors).map(([type, color]) => (
           <span key={type} className="flex items-center gap-1.5">

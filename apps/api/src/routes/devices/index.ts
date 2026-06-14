@@ -22,6 +22,7 @@ import { provisionRoutes } from './provision';
 import { moveOrgRoutes } from './moveOrg';
 import { actuateElevationRoutes } from './actuateElevation';
 import { softwareActionsRoutes } from './softwareActions';
+import { networkRoutes } from './network';
 
 export const deviceRoutes = new Hono();
 
@@ -41,6 +42,11 @@ deviceRoutes.route('/', filesystemRoutes);
 // Mount move-org BEFORE core routes — its POST /:id/move-org would collide
 // with any future :id-prefixed match in core if registered after.
 deviceRoutes.route('/', moveOrgRoutes);
+
+// Mount the network arm of the unified Devices list (#1322) BEFORE core
+// routes — `GET /network` is a static path that must not be eaten by the
+// `/:id` matcher in coreRoutes.
+deviceRoutes.route('/', networkRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);

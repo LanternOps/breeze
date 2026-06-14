@@ -4,7 +4,7 @@ import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
-import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
+import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
@@ -16,7 +16,7 @@ import { FilterChipBar } from './FilterChipBar';
 import { QuickAddChips } from './QuickAddChips';
 import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices } from '../../lib/devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
@@ -42,6 +42,15 @@ type DeviceGroup = {
   deviceCount: number;
   deviceIds?: string[];
 };
+
+// Compact, bounded summary of which devices failed in a per-item bulk loop, so
+// a 50-device batch with failures yields one readable toast (not 50 toasts or
+// an opaque "some failed"). Caps the named list to avoid an unbounded string.
+function summarizeFailedDevices(names: string[]): string {
+  const shown = names.slice(0, 3);
+  const rest = names.length - shown.length;
+  return rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ');
+}
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -126,7 +135,7 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
-      const [devicesResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
+      const [devicesResult, networkResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
           signal,
@@ -142,6 +151,21 @@ export default function DevicesPage() {
               duration: 8000
             });
           }
+        }),
+        // Network arm of the unified list (#1322) — approved, unlinked
+        // discovered_assets. Best-effort: a transient/absent-endpoint failure
+        // here must not blank the agent fleet, so we degrade to an empty
+        // network set. A 401, however, is a real auth failure and must NOT be
+        // masked — re-throw it so it propagates to the outer catch and gets the
+        // same auth-redirect/logout handling as the agent arm (fetchWithAuth
+        // already triggered logout). Swallowing it would leave the user on a
+        // half-rendered, silently-broken page. (The endpoint-absent case is
+        // a 404, already degraded to empty inside fetchAllNetworkDevices.)
+        fetchAllNetworkDevices({ signal }).catch((err) => {
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          if (err instanceof Response && err.status === 401) throw err;
+          console.warn('Failed to fetch network devices:', err);
+          return { data: [], total: 0, pagesWalked: 0 };
         }),
         fetchWithAuth('/orgs', { signal }),
         fetchWithAuth('/orgs/sites', { signal }),
@@ -197,6 +221,35 @@ export default function DevicesPage() {
         };
       });
 
+      // Network arm (#1322): normalize discovered_assets rows into the same
+      // Device shape so they render in one list. Agent-only fields stay blank.
+      const transformedNetworkDevices: Device[] = networkResult.data.map((d: Record<string, unknown>) => ({
+        id: d.id as string,
+        deviceClass: (d.deviceClass as DeviceClass) ?? 'network',
+        assetType: (d.assetType as DeviceRole | undefined) ?? 'unknown',
+        hostname: (d.hostname ?? d.displayName ?? 'Unknown') as string,
+        // No OS for a network device; the OS column renders "—" for network rows.
+        os: '' as OSType,
+        osVersion: '',
+        status: (d.status ?? 'offline') as DeviceStatus,
+        cpuPercent: 0,
+        ramPercent: 0,
+        lastSeen: (d.lastSeenAt ?? '') as string,
+        orgId: (d.orgId ?? '') as string,
+        orgName: '',
+        siteId: (d.siteId ?? '') as string,
+        siteName: '',
+        agentVersion: '',
+        tags: (d.tags ?? []) as string[],
+        manufacturer: (d.manufacturer ?? null) as string | null,
+        model: (d.model ?? null) as string | null,
+        responseTimeMs: typeof d.responseTimeMs === 'number' ? d.responseTimeMs : null,
+        monitoringEnabled: d.monitoringEnabled === true,
+        enrolledAt: d.enrolledAt as string | undefined,
+      }));
+
+      const allTransformed = [...transformedDevices, ...transformedNetworkDevices];
+
       // Fetch orgs for org name lookup
       let orgsList: Org[] = [];
       if (orgsResponse.ok) {
@@ -219,8 +272,8 @@ export default function DevicesPage() {
       const orgMap = new Map(orgsList.map((o: Org) => [o.id, o.name]));
       const siteMap = new Map(sitesList.map((s: Site) => [s.id, s.name]));
 
-      // Assign org and site names to devices
-      const devicesWithNames = transformedDevices.map(device => ({
+      // Assign org and site names to devices (agent + network arms).
+      const devicesWithNames = allTransformed.map(device => ({
         ...device,
         orgName: orgMap.get(device.orgId) ?? 'Unknown Org',
         siteName: siteMap.get(device.siteId) ?? 'Unknown Site'
@@ -318,6 +371,13 @@ export default function DevicesPage() {
   }, [advancedFilter, filtersV2]);
 
   const handleSelectDevice = (device: Device) => {
+    // Network-discovered devices have no agent device-detail page yet
+    // (per-type overview pages are deferred to a #1322 follow-up). Route to
+    // the existing Discovery asset view, deep-linked to this asset.
+    if ((device.deviceClass ?? 'agent') === 'network') {
+      void navigateTo(`/discovery?tab=assets&asset=${device.id}`);
+      return;
+    }
     void navigateTo(`/devices/${device.id}`);
   };
 
@@ -513,8 +573,31 @@ export default function DevicesPage() {
     }
   };
 
-  const handleBulkAction = async (action: string, selectedDevices: Device[]) => {
-    if (actionInProgress || selectedDevices.length === 0) return;
+  const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
+    if (actionInProgress || allSelectedDevices.length === 0) return;
+
+    // Every bulk action below talks to an enrolled agent (reboot/shutdown/lock,
+    // maintenance, decommission, wake, run-script, deploy-software). A network
+    // row's `id` is a `discovered_assets.id`, NOT a `devices.id` — feeding it
+    // into an agent-only endpoint 404s (e.g. PATCH /devices/:id/maintenance),
+    // and an unhandled throw mid-loop would silently skip every real device
+    // after it. So drop network rows up front for these actions and tell the
+    // user, rather than letting them flow into the per-device loops (#1322).
+    const selectedDevices = allSelectedDevices.filter(d => (d.deviceClass ?? 'agent') === 'agent');
+    const skippedNetworkCount = allSelectedDevices.length - selectedDevices.length;
+    if (selectedDevices.length === 0) {
+      showToast({
+        type: 'error',
+        message: 'This action applies to agent devices only. Network devices have no agent and were skipped.',
+      });
+      return;
+    }
+    if (skippedNetworkCount > 0) {
+      showToast({
+        type: 'warning',
+        message: `${skippedNetworkCount} network device${skippedNetworkCount === 1 ? '' : 's'} skipped — this action applies to agent devices only.`,
+      });
+    }
 
     const deviceIds = selectedDevices.map(d => d.id);
     const deviceCount = selectedDevices.length;
@@ -559,32 +642,35 @@ export default function DevicesPage() {
           break;
         }
 
-        case 'maintenance-on': {
-          const mOnLabel = 'Enabling maintenance mode';
-          setBulkProgress({ current: 0, total: deviceCount, label: mOnLabel });
-          let mOnDone = 0;
-          for (const device of selectedDevices) {
-            await toggleMaintenanceMode(device.id, true);
-            mOnDone++;
-            setBulkProgress({ current: mOnDone, total: deviceCount, label: mOnLabel });
-          }
-          setBulkProgress(null);
-          showToast({ type: 'success', message: `${deviceCount} devices put into maintenance mode` });
-          await fetchDevices();
-          break;
-        }
-
+        case 'maintenance-on':
         case 'maintenance-off': {
-          const mOffLabel = 'Disabling maintenance mode';
-          setBulkProgress({ current: 0, total: deviceCount, label: mOffLabel });
-          let mOffDone = 0;
+          const enabling = action === 'maintenance-on';
+          const mLabel = enabling ? 'Enabling maintenance mode' : 'Disabling maintenance mode';
+          setBulkProgress({ current: 0, total: deviceCount, label: mLabel });
+          let mDone = 0;
+          const mFailed: string[] = [];
+          // Per-device try/catch: one device 404'ing/erroring must NOT abort
+          // the batch and silently skip every device after it. Collect the
+          // failures and report them in a single summary toast (#1322).
           for (const device of selectedDevices) {
-            await toggleMaintenanceMode(device.id, false);
-            mOffDone++;
-            setBulkProgress({ current: mOffDone, total: deviceCount, label: mOffLabel });
+            try {
+              await toggleMaintenanceMode(device.id, enabling);
+            } catch {
+              mFailed.push(device.hostname || device.id);
+            }
+            mDone++;
+            setBulkProgress({ current: mDone, total: deviceCount, label: mLabel });
           }
           setBulkProgress(null);
-          showToast({ type: 'success', message: `${deviceCount} devices taken out of maintenance mode` });
+          const mSucceeded = deviceCount - mFailed.length;
+          const mVerb = enabling ? 'put into' : 'taken out of';
+          if (mFailed.length === 0) {
+            showToast({ type: 'success', message: `${mSucceeded} device${mSucceeded === 1 ? '' : 's'} ${mVerb} maintenance mode` });
+          } else if (mSucceeded === 0) {
+            showToast({ type: 'error', message: `Failed to update maintenance mode for all ${mFailed.length} device${mFailed.length === 1 ? '' : 's'}: ${summarizeFailedDevices(mFailed)}` });
+          } else {
+            showToast({ type: 'error', message: `${mSucceeded} device${mSucceeded === 1 ? '' : 's'} ${mVerb} maintenance mode; ${mFailed.length} failed: ${summarizeFailedDevices(mFailed)}` });
+          }
           await fetchDevices();
           break;
         }
