@@ -214,6 +214,15 @@ const statusSortRank: Record<DeviceStatus, number> = {
 // numeric collation (host-2 < host-10, agent 0.9.x < 0.10.x).
 const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   hostname: d => d.displayName || d.hostname,
+  // Unified-list columns (#1322): sort by the same value the cell renders so
+  // header sort stays consistent with every other column (#1284 invariant).
+  class: d => ((d.deviceClass ?? 'agent') === 'network' ? 'Network' : 'Agent'),
+  type: d =>
+    getDeviceRoleLabel(
+      (d.deviceClass ?? 'agent') === 'network'
+        ? (d.assetType ?? 'unknown')
+        : (d.deviceRole ?? 'unknown'),
+    ),
   organization: d => d.orgName || null,
   site: d => d.siteName || null,
   os: d => osLabels[d.os],
@@ -589,7 +598,7 @@ export default function DeviceList({
       ),
     },
     class: {
-      header: () => <th key="class" className="px-3 py-3">Class</th>,
+      header: () => sortHeader('class', 'Class', 'Sort by class'),
       cell: (device) => {
         const deviceClass = device.deviceClass ?? 'agent';
         const isNetwork = deviceClass === 'network';
@@ -612,7 +621,7 @@ export default function DeviceList({
       },
     },
     type: {
-      header: () => <th key="type" className="px-3 py-3">Type</th>,
+      header: () => sortHeader('type', 'Type', 'Sort by type'),
       cell: (device) => {
         // Network rows carry assetType; agent rows fall back to deviceRole.
         const typeValue = (device.deviceClass ?? 'agent') === 'network'
