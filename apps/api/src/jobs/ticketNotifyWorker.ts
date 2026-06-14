@@ -295,6 +295,12 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         return;
       }
       case 'ticket.commented': {
+        // Payload-trust contract: the worker TRUSTS event.payload.isPublic — the
+        // EMITTER is the sole authority on visibility. inboundEmailService always
+        // emits isPublic:true for an inbound customer comment; an internal note never
+        // emits a public ticket.commented event. The composer is TEMPLATE-ONLY: it
+        // never loads ticket_comments, so the comment's content is structurally
+        // unreachable from any outbound body/subject (see ticketNotifyWorker.leak.test.ts).
         // Skip requester email for inbound comments — the comment originated FROM the
         // requester's email, so echoing it back would create a mail loop.
         if (event.payload.isPublic && !event.payload.inbound) {

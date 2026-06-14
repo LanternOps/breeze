@@ -23,12 +23,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ---------------------------------------------------------------------------
 // Hoisted mocks (must appear before any import that resolves the mocked modules)
 // ---------------------------------------------------------------------------
-const { selectMock, insertValuesMock, updateSetMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
+const { selectMock, selectFromTablesMock, insertValuesMock, updateSetMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
   const insertValuesMock = vi.fn().mockResolvedValue([]);
   const withSystemDbAccessContextMock = vi.fn((fn: () => unknown) => fn());
   return {
     insertValuesMock,
     selectMock: vi.fn(),
+    // Records the `__t` marker of every table passed to db.select().from(table),
+    // so we can assert the composer NEVER queries ticket_comments — comment content
+    // is structurally unreachable because it is never loaded.
+    selectFromTablesMock: vi.fn(),
     updateSetMock: vi.fn(),
     sendEmailMock: vi.fn().mockResolvedValue(undefined),
     getEmailServiceMock: vi.fn(),
@@ -47,9 +51,12 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: withSystemDbAccessContextMock,
   db: {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({ limit: vi.fn(() => selectMock()) }))
-      }))
+      from: vi.fn((tbl: unknown) => {
+        selectFromTablesMock((tbl as { __t?: string })?.__t ?? 'unknown');
+        return {
+          where: vi.fn(() => ({ limit: vi.fn(() => selectMock()) }))
+        };
+      })
     })),
     insert: vi.fn(() => ({
       values: vi.fn((v: unknown) => {
@@ -66,10 +73,12 @@ vi.mock('../db', () => ({
   }
 }));
 vi.mock('../db/schema', () => ({
-  tickets: { id: 'id' },
-  partners: { id: 'id', slug: 'slug', settings: 'settings' },
-  userNotifications: {},
-  users: { id: 'id' },
+  tickets: { __t: 'tickets', id: 'id' },
+  partners: { __t: 'partners', id: 'id', slug: 'slug', settings: 'settings' },
+  userNotifications: { __t: 'user_notifications' },
+  users: { __t: 'users', id: 'id' },
+  // Present so a regression that DOES query it would be caught by the table assertion.
+  ticketComments: { __t: 'ticket_comments', id: 'id', ticketId: 'ticketId', content: 'content' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
@@ -118,6 +127,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   sendEmailMock.mockReset().mockResolvedValue(undefined);
   selectMock.mockReset();
+  selectFromTablesMock.mockReset();
   updateSetMock.mockReset();
   withSystemDbAccessContextMock.mockImplementation((fn: () => unknown) => fn());
   getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
@@ -162,11 +172,16 @@ describe('outbound composer never leaks an internal note (spec §6/§9)', () => 
   // Test 2: Every email-producing branch must NEVER include the secret in output
   // ---------------------------------------------------------------------------
 
-  it('no outbound email body or subject ever contains the private comment content', async () => {
-    // Drive every email-producing branch one by one. Each branch gets the ticket row
-    // first; the threaded-comment and autoresponse branches also get the partner row.
-    // After those, any further select resolves to PRIVATE_COMMENT_ROW so that a
-    // regression reading comment content before composing would expose the secret here.
+  it('the composer NEVER queries ticket_comments across any email-producing branch (content is structurally unreachable)', async () => {
+    // Meaningful invariant: the composer is TEMPLATE-ONLY — it never loads a comment
+    // row, so comment content can never reach an outbound body/subject regardless of
+    // what the body template renders. We prove this by asserting that across ALL
+    // email-producing branches (public comment, resolved, autoresponse) the worker
+    // issues ZERO db.select().from(ticketComments). (The earlier "assert SECRET not in
+    // body" check was vacuous — the composer never read the seeded comment, so the
+    // assertion was trivially true. Asserting the table is never queried is the
+    // refactor-robust version: a future regression that starts loading comment content
+    // would query ticket_comments and fail here.)
 
     // Branch 1: public technician comment (threaded reply)
     selectMock.mockReset();
@@ -215,17 +230,25 @@ describe('outbound composer never leaks an internal note (spec §6/§9)', () => 
       payload: { to: 'jane@customer.example', internalNumber: 'T-2026-0001', subject: 'Printer is down' }
     } as never);
 
-    // At least the three public branches sent email — confirms the test is meaningful,
-    // not a no-op (if no emails were sent at all, the absence-of-secret would be trivially true).
+    // At least the three public branches sent email — confirms the test exercised the
+    // composer (not a no-op: if no emails were sent the table assertion would be
+    // vacuously satisfiable too).
     expect(sendEmailMock).toHaveBeenCalled();
 
+    // The composer must NEVER have loaded a ticket_comments row in any branch.
+    const queriedTables = selectFromTablesMock.mock.calls.map((c) => c[0]);
+    expect(queriedTables).not.toContain('ticket_comments');
+    // Sanity: it DID query the tables it legitimately needs (proves the spy works).
+    expect(queriedTables).toContain('tickets');
+
+    // Defense-in-depth: even if some future template DID render comment content,
+    // the seeded SECRET must not appear — but the real guarantee is the table
+    // assertion above (the secret is unreachable because it is never loaded).
     for (const call of sendEmailMock.mock.calls) {
       const args = call[0] as { html?: string; subject?: string; to?: string };
-      // Body must never contain the internal-note content.
       if (args.html !== undefined) {
         expect(args.html).not.toContain(SECRET);
       }
-      // Subject must never contain the internal-note content.
       if (args.subject !== undefined) {
         expect(args.subject).not.toContain(SECRET);
       }
