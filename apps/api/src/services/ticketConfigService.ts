@@ -1,8 +1,9 @@
 // Owns ticketing configuration: custom statuses, priority SLA settings, and org-level overrides — per 2026-06-12 spec.
 
 import { eq, and, asc, inArray } from 'drizzle-orm';
-import { ticketStatuses, ticketPrioritySettings, orgTicketSettings } from '../db/schema';
+import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
+import { getConfig } from '../config/validate';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type {
@@ -343,7 +344,33 @@ export async function getTicketConfig(partnerId: string) {
     .orderBy(asc(ticketStatuses.sortOrder), asc(ticketStatuses.name));
 
   const priorities = await readPriorities(partnerId);
-  return { statuses, priorities };
+
+  const [partner] = await db
+    .select({ slug: partners.slug, settings: partners.settings })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+
+  const slug = partner?.slug ?? '';
+  const settings = (partner?.settings as Record<string, unknown> | null) ?? {};
+  const inboundCfg = (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
+    { enabled?: boolean; address?: string; defaultTriageOrgId?: string | null; autoresponderEnabled?: boolean } | undefined) ?? {};
+  const domain = getConfig().TICKETS_INBOUND_DOMAIN ?? '';
+  const domainConfigured = domain.length > 0;
+  const derived = domainConfigured && slug ? `${slug}@${domain}` : '';
+  const addressOverride = (inboundCfg.address && inboundCfg.address.length > 0) ? inboundCfg.address : null;
+
+  const inbound = {
+    enabled: inboundCfg.enabled ?? false,
+    address: addressOverride ?? derived,
+    addressOverride,
+    defaultTriageOrgId: inboundCfg.defaultTriageOrgId ?? null,
+    autoresponderEnabled: inboundCfg.autoresponderEnabled ?? true,
+    slug,
+    domainConfigured,
+  };
+
+  return { statuses, priorities, inbound };
 }
 
 export async function createTicketStatus(partnerId: string, input: CreateTicketStatusInput) {

@@ -431,6 +431,18 @@ const partnerSettingsSchema = z.object({
       enabled: z.boolean(),
     })).max(50).optional(),
   }).optional(),
+  // Top-level sibling (NOT under `security`) so the security-only deep-merge in
+  // PATCH /partners/me never touches it. Because `ticketing` is shallow-REPLACED
+  // on write, the card must send the COMPLETE ticketing.inbound object each time
+  // (incl. the `address` self-hosted override read back via getTicketConfig).
+  ticketing: z.object({
+    inbound: z.object({
+      enabled: z.boolean().optional(),
+      address: z.string().email().optional().or(z.literal('')),
+      defaultTriageOrgId: z.string().uuid().nullable().optional(),
+      autoresponderEnabled: z.boolean().optional(),
+    }).optional(),
+  }).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({

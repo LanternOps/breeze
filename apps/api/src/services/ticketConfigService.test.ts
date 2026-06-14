@@ -94,12 +94,20 @@ vi.mock('../db/schema', () => ({
     defaultHourlyRate: 'defaultHourlyRate', defaultBillable: 'defaultBillable',
     updatedAt: 'updatedAt',
   },
+  partners: {
+    id: 'id', slug: 'slug', settings: 'settings',
+  },
 }));
 
 // ticketStatusEnum is read at module load for CoreTicketStatus type/values.
 vi.mock('../db/schema/portal', () => ({
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
 }));
+
+// getConfig() is read in getTicketConfig's inbound block to resolve the platform
+// inbound domain; toggle it per-case via configRef.
+const { configRef } = vi.hoisted(() => ({ configRef: { current: { TICKETS_INBOUND_DOMAIN: 'tickets.example.com' as string | undefined } } }));
+vi.mock('../config/validate', () => ({ getConfig: () => configRef.current }));
 
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
@@ -123,14 +131,57 @@ beforeEach(() => {
 
 describe('getTicketConfig', () => {
   it('merges priority defaults for unset priorities', async () => {
-    dbMocks.selectResults.push([{ id: 's-1', name: 'New', coreStatus: 'new', color: null, sortOrder: 0, isSystem: true, isActive: true }]); // statuses
-    dbMocks.selectResults.push([{ priority: 'high', label: 'High', responseSlaMinutes: 30, resolutionSlaMinutes: 120 }]); // priorities
+    dbMocks.selectResults.push([{ id: 's-1', name: 'New', coreStatus: 'new', color: null, sortOrder: 0, isSystem: true, isActive: true }]); // (1) statuses
+    dbMocks.selectResults.push([{ priority: 'high', label: 'High', responseSlaMinutes: 30, resolutionSlaMinutes: 120 }]); // (2) priorities
+    dbMocks.selectResults.push([{ slug: 'acme', settings: {} }]); // (3) partners row (new — keeps the FIFO aligned)
     const cfg = await getTicketConfig(PARTNER);
     expect(cfg.statuses).toHaveLength(1);
     expect(cfg.priorities.high).toEqual({ label: 'High', responseSlaMinutes: 30, resolutionSlaMinutes: 120 });
     expect(cfg.priorities.low).toEqual({ label: null, responseSlaMinutes: null, resolutionSlaMinutes: null });
     expect(cfg.priorities.normal).toEqual({ label: null, responseSlaMinutes: null, resolutionSlaMinutes: null });
     expect(cfg.priorities.urgent).toEqual({ label: null, responseSlaMinutes: null, resolutionSlaMinutes: null });
+  });
+});
+
+describe('getTicketConfig inbound block', () => {
+  beforeEach(() => { configRef.current.TICKETS_INBOUND_DOMAIN = 'tickets.example.com'; });
+
+  function enqueueForInbound(partnerRow: unknown) {
+    dbMocks.selectResults.push([]); // (1) statuses
+    dbMocks.selectResults.push([]); // (2) priorities
+    dbMocks.selectResults.push([partnerRow]); // (3) partners row
+  }
+
+  it('derives the platform inbound address from slug when no override', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { enabled: true, autoresponderEnabled: false } } } });
+    const cfg = await getTicketConfig('p-1');
+    expect(cfg.inbound.enabled).toBe(true);
+    expect(cfg.inbound.address).toBe('acme@tickets.example.com');
+    expect(cfg.inbound.addressOverride).toBeNull();
+    expect(cfg.inbound.autoresponderEnabled).toBe(false);
+    expect(cfg.inbound.slug).toBe('acme');
+    expect(cfg.inbound.domainConfigured).toBe(true);
+  });
+  it('prefers an explicit address override (self-hosted) and exposes it as addressOverride', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { address: 'support@tickets.acme.com' } } } });
+    const cfg = await getTicketConfig('p-1');
+    expect(cfg.inbound.address).toBe('support@tickets.acme.com');
+    expect(cfg.inbound.addressOverride).toBe('support@tickets.acme.com');
+  });
+  it('defaults enabled=false, autoresponderEnabled=true, addressOverride=null when config absent', async () => {
+    enqueueForInbound({ slug: 'acme', settings: {} });
+    const cfg = await getTicketConfig('p-1');
+    expect(cfg.inbound.enabled).toBe(false);
+    expect(cfg.inbound.autoresponderEnabled).toBe(true);
+    expect(cfg.inbound.defaultTriageOrgId).toBeNull();
+    expect(cfg.inbound.addressOverride).toBeNull();
+  });
+  it('reports domainConfigured=false and empty address when TICKETS_INBOUND_DOMAIN is unset', async () => {
+    configRef.current.TICKETS_INBOUND_DOMAIN = undefined;
+    enqueueForInbound({ slug: 'acme', settings: {} });
+    const cfg = await getTicketConfig('p-1');
+    expect(cfg.inbound.domainConfigured).toBe(false);
+    expect(cfg.inbound.address).toBe('');
   });
 });
 
