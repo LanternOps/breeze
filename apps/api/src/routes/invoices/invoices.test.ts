@@ -21,10 +21,11 @@ vi.mock('../../services/invoiceService', () => ({
   assembleDraftFromTicket: vi.fn()
 }));
 
-// Mock the Phase 5 PDF/email stub — /:id/send delegates here.
+// Mock the Phase 5 PDF/email service — /:id/send + /:id/pdf delegate here.
 vi.mock('../../services/invoicePdf', () => ({
   sendInvoiceEmail: vi.fn(),
-  renderInvoicePdf: vi.fn()
+  renderInvoicePdf: vi.fn(),
+  getInvoicePdf: vi.fn()
 }));
 
 // InvoiceServiceError lives in invoiceTypes; routes import the class from there.
@@ -47,6 +48,7 @@ vi.mock('../../middleware/auth', () => ({
 import { invoiceRoutes } from './index';
 import { invoiceAssemblyRoutes } from './assembly';
 import * as svc from '../../services/invoiceService';
+import * as pdfSvc from '../../services/invoicePdf';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 
 function app() {
@@ -267,6 +269,40 @@ describe('invoice payment routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('OVERPAYMENT');
+  });
+});
+
+describe('invoice pdf route', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('GET /:id/pdf streams the stored PDF as an attachment', async () => {
+    (svc.getInvoice as any).mockResolvedValue({ invoice: { id: INV_ID, invoiceNumber: 'INV-2026-0001' }, lines: [] });
+    (pdfSvc.getInvoicePdf as any).mockResolvedValue(Buffer.from('%PDF-1.7 test'));
+    const res = await app().request(`/${INV_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="INV-2026-0001.pdf"');
+    const buf = Buffer.from(await res.arrayBuffer());
+    expect(buf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(pdfSvc.renderInvoicePdf).not.toHaveBeenCalled();
+  });
+
+  it('GET /:id/pdf renders on demand when no artifact exists yet', async () => {
+    (svc.getInvoice as any).mockResolvedValue({ invoice: { id: INV_ID, invoiceNumber: 'INV-2026-0002' }, lines: [] });
+    (pdfSvc.getInvoicePdf as any)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(Buffer.from('%PDF-rendered'));
+    const res = await app().request(`/${INV_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(pdfSvc.renderInvoicePdf).toHaveBeenCalledWith(INV_ID);
+  });
+
+  it('GET /:id/pdf maps a cross-tenant INVOICE_NOT_FOUND to 404', async () => {
+    (svc.getInvoice as any).mockRejectedValue(new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'));
+    const res = await app().request(`/${INV_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe('INVOICE_NOT_FOUND');
   });
 });
 
