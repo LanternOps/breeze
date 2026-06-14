@@ -6,6 +6,8 @@ export * from './orgs';
 export * from './oauth';
 export * from './users';
 export * from './userPasskeys';
+export * from './authenticatorDevices';
+export * from './authenticatorPolicies';
 export * from './devices';
 export * from './scripts';
 export * from './alerts';

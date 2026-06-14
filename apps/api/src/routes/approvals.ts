@@ -11,6 +11,8 @@ import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
+import { resolveApprovalAssurance } from '../services/authenticatorAssurance';
+import type { RiskTier } from '@breeze/shared';
 
 export const approvalRoutes = new Hono();
 
@@ -264,9 +266,38 @@ async function decideHandler(
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
 
+  // Pre-fetch so we can resolve the required assurance from the row's risk tier
+  // before deciding. Phase 1: resolve only RECORDS the factor; it never blocks.
+  // This is the seam Phase 2 reuses to block on missing proof.
+  const [existing] = await db
+    .select()
+    .from(approvalRequests)
+    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+  if (existing.status !== 'pending') {
+    return c.json(
+      { error: `Already ${existing.status}`, finalStatus: existing.status },
+      409
+    );
+  }
+  if (existing.expiresAt <= new Date()) {
+    return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
+  }
+
+  const assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
+
   const result = await db
     .update(approvalRequests)
-    .set({ status, decidedAt: new Date(), decisionReason: reason ?? null })
+    .set({
+      status,
+      decidedAt: new Date(),
+      decisionReason: reason ?? null,
+      decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+      decidedVia: assurance.decidedVia,
+      authenticatorDeviceId: assurance.authenticatorDeviceId,
+      pinVerified: assurance.pinVerified,
+    })
     .where(
       and(
         eq(approvalRequests.id, id),
@@ -278,18 +309,8 @@ async function decideHandler(
     .returning();
 
   if (result.length === 0) {
-    const [existing] = await db
-      .select()
-      .from(approvalRequests)
-      .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
-    if (!existing) return c.json({ error: 'Not found' }, 404);
-    if (existing.status !== 'pending') {
-      return c.json(
-        { error: `Already ${existing.status}`, finalStatus: existing.status },
-        409
-      );
-    }
-    return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
+    // Lost a concurrent decide/expiry race between the pre-fetch and the CAS.
+    return c.json({ error: 'Already decided', finalStatus: 'expired' }, 409);
   }
 
   const [updated] = result;
