@@ -41,4 +41,20 @@ export type HostAdapter = {
   mutatingTools: ReadonlySet<string>;
   /** Build the before/after preview card for a mutating tool request. */
   buildPreview: (toolName: string, input: Record<string, unknown>) => Promise<WritePreview>;
+  /**
+   * One-shot read of the host's current selection as a human label (Excel: the
+   * sheet-qualified range address, e.g. `Sheet1!B2`). Returns undefined when
+   * nothing is selected or it can't be read — must never throw in a way that
+   * blocks the UI. REQUIRED so the core's selection chip never touches `Excel.*`.
+   */
+  captureSelectionAddress: () => Promise<string | undefined>;
+  /**
+   * Subscribe to host selection changes; invokes `cb` whenever the selection
+   * moves so the core can re-read via `captureSelectionAddress`. Returns an
+   * unsubscribe function. The Excel impl wires `DocumentSelectionChanged` and
+   * returns a no-op unsubscribe (it never removes the handler — see
+   * host/excelSelection.ts). REQUIRED: a one-shot capture alone would freeze the
+   * live selection chip, a regression.
+   */
+  subscribeSelectionChanged: (cb: () => void) => () => void;
 };

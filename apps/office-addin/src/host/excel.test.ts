@@ -12,6 +12,8 @@ describe('excelHostAdapter', () => {
     expect(typeof adapter.captureContext).toBe('function');
     expect(typeof adapter.captureName).toBe('function');
     expect(typeof adapter.buildPreview).toBe('function');
+    expect(typeof adapter.captureSelectionAddress).toBe('function');
+    expect(typeof adapter.subscribeSelectionChanged).toBe('function');
     expect(adapter.toolExecutors).toBeTypeOf('object');
     expect(adapter.mutatingTools).toBeInstanceOf(Set);
   });
