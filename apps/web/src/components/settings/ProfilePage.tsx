@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
+import ApproverDevicesSection from './ApproverDevicesSection';
 import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
 import type { PasskeyRegistrationOptions } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -912,6 +913,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           </div>
         )}
       </div>
+
+      {/* Approval security (Breeze Authenticator) */}
+      <ApproverDevicesSection />
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-sm">
