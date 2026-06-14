@@ -46,6 +46,11 @@ const pollInterval = 100 * time.Millisecond
 // causes occasional dropped characters on slower VMs.
 const settleDelay = 25 * time.Millisecond
 
+// defaultConsentTimeoutMs is the fallback consent.exe wait window used when a
+// Request carries no TimeoutMs (Trigger) and for the deny path (Dismiss, which
+// has no Request at all).
+const defaultConsentTimeoutMs = 8000
+
 func (a *windowsActuator) Trigger(ctx context.Context, req Request) Result {
 	// SetThreadDesktop is per-thread; the rest of the actuator must stay on
 	// the same OS thread or the desktop binding goes with the original
@@ -81,7 +86,7 @@ func (a *windowsActuator) Trigger(ctx context.Context, req Request) Result {
 
 	timeoutMs := req.TimeoutMs
 	if timeoutMs <= 0 {
-		timeoutMs = 8000
+		timeoutMs = defaultConsentTimeoutMs
 	}
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 
@@ -181,7 +186,7 @@ func (a *windowsActuator) Dismiss(ctx context.Context) Result {
 		}
 	}
 
-	deadline := time.Now().Add(8000 * time.Millisecond)
+	deadline := time.Now().Add(defaultConsentTimeoutMs * time.Millisecond)
 
 	hwnd := waitForConsent(ctx, deadline)
 	if hwnd == 0 {
