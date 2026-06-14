@@ -4,6 +4,14 @@ import { deviceRoutes } from './devices';
 
 vi.mock('../services', () => ({}));
 
+// core.ts (decommission handler) imports both terminateDeviceRemoteSessions and
+// TEARDOWN_FAILED (#1283). The mock must export both, or the DELETE /devices/:id
+// path runs the real teardown service and 500s. Mirrors core.decommission.test.ts.
+vi.mock('../services/remoteSessionTeardown', () => ({
+  terminateDeviceRemoteSessions: vi.fn().mockResolvedValue(0),
+  TEARDOWN_FAILED: -1,
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
   writeRouteAudit: vi.fn()
