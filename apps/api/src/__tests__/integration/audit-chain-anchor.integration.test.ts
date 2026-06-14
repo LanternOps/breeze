@@ -55,8 +55,10 @@ async function readHead(orgId: string): Promise<HeadRow> {
     SELECT head_chain_seq, head_chain_checksum, entry_count
     FROM audit_chain_read_head(${orgId}::uuid)
   `)) as unknown as HeadRow[];
-  // entry_count is a pg bigint → returned as a string; coerce so numeric assertions hold.
-  return { ...rows[0]!, entry_count: Number(rows[0]!.entry_count) };
+  // head_chain_seq / entry_count are pg bigints → returned as strings; coerce
+  // so numeric assertions (toBe / toBeGreaterThan) hold.
+  const r = rows[0]!;
+  return { ...r, head_chain_seq: Number(r.head_chain_seq), entry_count: Number(r.entry_count) };
 }
 
 async function writeAnchor(orgId: string): Promise<AnchorRow> {
@@ -65,7 +67,8 @@ async function writeAnchor(orgId: string): Promise<AnchorRow> {
       SELECT anchor_seq, head_chain_seq, entry_count, signed
       FROM audit_chain_anchor_head(${orgId}::uuid)
     `)) as unknown as AnchorRow[];
-    return { ...rows[0]!, entry_count: Number(rows[0]!.entry_count) };
+    const r = rows[0]!;
+    return { ...r, anchor_seq: Number(r.anchor_seq), head_chain_seq: Number(r.head_chain_seq), entry_count: Number(r.entry_count) };
   });
 }
 
@@ -74,7 +77,11 @@ async function verifyAnchor(orgId: string): Promise<DivergenceRow[]> {
     SELECT reason, anchored_head_seq, live_head_seq
     FROM audit_chain_verify_anchor(${orgId}::uuid)
   `)) as unknown as DivergenceRow[];
-  return rows;
+  return rows.map((r) => ({
+    ...r,
+    anchored_head_seq: Number(r.anchored_head_seq),
+    live_head_seq: Number(r.live_head_seq),
+  }));
 }
 
 interface SignedAnchorRow {
@@ -107,7 +114,8 @@ async function writeSignedAnchor(
         ${expectedEntryCount}::bigint
       )
     `)) as unknown as SignedAnchorRow[];
-    return rows[0]!;
+    const r = rows[0]!;
+    return { ...r, anchor_seq: Number(r.anchor_seq), head_chain_seq: Number(r.head_chain_seq) };
   });
 }
 
