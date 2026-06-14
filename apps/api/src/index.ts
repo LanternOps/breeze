@@ -29,6 +29,7 @@ import { automationRoutes, automationWebhookRoutes } from './routes/automations'
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
+import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
@@ -200,6 +201,7 @@ import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
+import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -759,6 +761,9 @@ api.route('/sso', ssoRoutes);
 api.route('/docs', docsRoutes);
 api.route('/access-reviews', accessReviewRoutes);
 api.route('/webhooks', webhookRoutes);
+// Inbound email webhook — no session auth, HMAC-gated. partnerGuard passes
+// through for requests with no Authorization header (calls next() immediately).
+api.route('/webhooks/tickets', emailWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -1074,6 +1079,7 @@ async function initializeWorkers(): Promise<void> {
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
+    ['inboundEmailWorker', initializeInboundEmailWorker],
   ];
 
   await Promise.allSettled(
@@ -1230,6 +1236,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownApprovalExpiryReaper,
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
+    shutdownInboundEmailWorker,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

@@ -110,7 +110,8 @@ interface NavSection {
   items: NavItem[];
 }
 
-const navSections: NavSection[] = [
+// Exported for structural nav tests (see Sidebar.nav.test.tsx).
+export const navSections: NavSection[] = [
   {
     id: 'ai-fleet',
     label: 'AI & Fleet',
@@ -121,11 +122,19 @@ const navSections: NavSection[] = [
     ],
   },
   {
+    id: 'monitoring',
+    label: 'Monitoring',
+    icon: Activity,
+    items: [
+      { name: 'Network Monitor', href: '/monitoring', icon: Activity },
+      { name: 'Network Discovery', href: '/discovery', icon: Network },
+    ],
+  },
+  {
     id: 'security',
     label: 'Security',
     icon: ShieldCheck,
     items: [
-      { name: 'Network Monitor', href: '/monitoring', icon: Activity },
       { name: 'Security', href: '/security', icon: ShieldCheck },
       { name: 'DNS Security', href: '/dns-security', icon: Network },
       { name: 'PAM', href: '/pam', icon: KeyRound },
@@ -141,14 +150,20 @@ const navSections: NavSection[] = [
     label: 'Operations',
     icon: Layers,
     items: [
-      { name: 'Network Discovery', href: '/discovery', icon: Network },
       { name: 'Software Library', href: '/software', icon: Package },
       { name: 'Software Policies', href: '/software-inventory', icon: Package },
       { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
+      { name: 'Integrations', href: '/integrations', icon: Plug },
+    ],
+  },
+  {
+    id: 'backup',
+    label: 'Backup',
+    icon: HardDrive,
+    items: [
       { name: 'Backup', href: '/backup', icon: HardDrive },
       { name: 'Cloud Backup', href: '/c2c', icon: Cloud },
       { name: 'Disaster Recovery', href: '/dr', icon: ShieldEllipsis },
-      { name: 'Integrations', href: '/integrations', icon: Plug },
     ],
   },
   {

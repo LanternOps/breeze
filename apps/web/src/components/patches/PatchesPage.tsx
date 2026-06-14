@@ -113,11 +113,17 @@ export default function PatchesPage() {
     try {
       setPatchesLoading(true);
       setPatchesError(undefined);
-      const params = new URLSearchParams();
-      if (selectedRingId) params.set('ringId', selectedRingId);
+      // Fixed `limit=200` fetch: PatchList sorts AND paginates entirely
+      // client-side over this already-loaded array (issue #1316), so the
+      // page-size selector (up to 200) is fully populated. Caveat: for an org
+      // with >200 patches, only the loaded subset is sorted/searched — the rest
+      // are never fetched. Note: this never sends sortBy/sortDir, so the
+      // server-side sort added to the API (list.ts / schemas.ts) is NOT yet
+      // consumed by the web; wiring it up is a follow-up (see list.ts comment).
+      // Ring-scoped patches use a dedicated endpoint with its own bounded set.
       const url = selectedRingId
         ? `/update-rings/${selectedRingId}/patches`
-        : '/patches';
+        : '/patches?limit=200';
       const response = await fetchWithAuth(url);
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }

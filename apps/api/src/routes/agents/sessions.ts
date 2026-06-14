@@ -30,6 +30,7 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
     .select({
       id: devices.id,
       orgId: devices.orgId,
+      siteId: devices.siteId,
       hostname: devices.hostname,
     })
     .from(devices)
@@ -162,7 +163,8 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
           activityState: event.activityState ?? null,
           timestamp: event.timestamp ?? now.toISOString(),
         },
-        'agent'
+        'agent',
+        { siteId: device.siteId }
       );
     } catch (err) {
       console.error(`[agents] failed to publish ${eventType} for ${device.id}:`, err);

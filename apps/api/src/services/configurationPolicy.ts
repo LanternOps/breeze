@@ -667,8 +667,6 @@ async function assembleInlineSettings(
         minimumLevel: row.minimumLevel,
         collectionIntervalMinutes: row.collectionIntervalMinutes,
         rateLimitPerHour: row.rateLimitPerHour,
-        enableFullTextSearch: row.enableFullTextSearch,
-        enableCorrelation: row.enableCorrelation,
       };
     }
 

@@ -18,6 +18,7 @@ export * from './accessReviews';
 export * from './patches';
 export * from './integrations';
 export * from './portal';
+export * from './emailInbound';
 export * from './analytics';
 export * from './plugins';
 export * from './discovery';

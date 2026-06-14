@@ -165,6 +165,16 @@ type Heartbeat struct {
 	helperFinder     func(targetSession string) *sessionbroker.Session
 	spawnHelper      func(targetSession string) error
 	killStaleHelpers func(staleKey string)
+	// pamFindSession / pamRequestDialog default to the real broker methods in
+	// RunPamFlow when nil; overridden in pam_flow_test.go.
+	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	// pamActuateMu serializes consent.exe actuation/dismissal so the local
+	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
+	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
+	// concurrently (e.g. an await_remote technician approval firing
+	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
+	pamActuateMu sync.Mutex
 	wsDesktopStart   func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners    sync.Map // desktop session ID -> helper session ID
 
