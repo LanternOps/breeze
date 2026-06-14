@@ -235,6 +235,10 @@ describe('POST /client-ai/auth/exchange', () => {
       email: 'finance.user@contoso.com',
       name: 'Finance User',
     });
+    // org + branding flow to the client so the add-in can render the
+    // white-label footer (spec §11). Default policy has empty branding.
+    expect(body.org).toEqual({ id: ORG_ID });
+    expect(body.branding).toEqual({ displayName: null, logoUrl: null });
 
     expect(redisMock.setex).toHaveBeenCalledWith(
       `clientai:session:${body.accessToken}`,
@@ -252,6 +256,34 @@ describe('POST /client-ai/auth/exchange', () => {
         actorId: PORTAL_USER_ID,
       })
     );
+  });
+
+  it('surfaces org white-label branding from the policy in the success response', async () => {
+    setupDb({ mapping: MAPPING_ROW, user: USER_ROW });
+    getOrgPolicyMock.mockResolvedValue({
+      ...ENABLED_POLICY,
+      branding: { displayName: 'Lantern IT', logoUrl: 'https://cdn.example.com/logo.png' },
+    });
+    const res = await postExchange(buildApp());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.org).toEqual({ id: ORG_ID });
+    expect(body.branding).toEqual({
+      displayName: 'Lantern IT',
+      logoUrl: 'https://cdn.example.com/logo.png',
+    });
+  });
+
+  it('coerces non-string branding fields to null (defensive against bad JSONB)', async () => {
+    setupDb({ mapping: MAPPING_ROW, user: USER_ROW });
+    getOrgPolicyMock.mockResolvedValue({
+      ...ENABLED_POLICY,
+      branding: { displayName: 42, logoUrl: { nested: true } },
+    });
+    const res = await postExchange(buildApp());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.branding).toEqual({ displayName: null, logoUrl: null });
   });
 
   it('auto-provisions a portal user (authMethod=entra) on first exchange', async () => {
