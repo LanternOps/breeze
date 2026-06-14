@@ -14,6 +14,7 @@ import { and, asc, eq, ilike } from 'drizzle-orm';
 import { db } from '../db';
 import { catalogItems, catalogBundleComponents } from '../db/schema';
 import type { AiTool, AiToolTier } from './aiTools';
+import { escapeLikePattern } from './catalogService';
 
 export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('search_catalog', {
@@ -49,7 +50,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
         );
       }
       if (input.search) {
-        conditions.push(ilike(catalogItems.name, `%${String(input.search)}%`));
+        conditions.push(ilike(catalogItems.name, `%${escapeLikePattern(String(input.search))}%`));
       }
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       const rows = await db

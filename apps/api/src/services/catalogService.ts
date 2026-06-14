@@ -28,6 +28,13 @@ export type CatalogServiceErrorCode =
 // numeric(12,2) ceiling for any money column written by this service.
 const MAX_NUMERIC_12_2 = 9_999_999_999.99;
 
+// Escape LIKE/ILIKE metacharacters so a user-supplied search term is matched as a
+// literal substring. `%` and `_` are SQL LIKE wildcards; `\` is the default escape
+// char. Backslash must be escaped first so we don't double-escape the escapes we add.
+export function escapeLikePattern(term: string): string {
+  return term.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
 export class CatalogServiceError extends Error {
   constructor(
     message: string,
@@ -134,11 +141,28 @@ export async function updateCatalogItem(id: string, input: UpdateCatalogItemInpu
   // existing unit_price rather than collapsing it to deriveUnitPrice()'s '0.00' floor.
   const nextCost = input.costBasis !== undefined ? input.costBasis : (existing.costBasis != null ? Number(existing.costBasis) : null);
   const nextMarkup = input.markupPercent !== undefined ? input.markupPercent : (existing.markupPercent != null ? Number(existing.markupPercent) : null);
-  const shouldDeriveUnitPrice = input.unitPrice !== undefined || (nextCost != null && nextMarkup != null);
+  // Only (re)derive when the PATCH actually touched a price driver. A benign PATCH
+  // touching none of unitPrice/costBasis/markupPercent (e.g. {name}, {taxable},
+  // {isActive}) must leave the stored unit_price untouched — never silently recompute
+  // and overwrite a manually-set sell price.
+  const driverChanged = input.unitPrice !== undefined || input.costBasis !== undefined || input.markupPercent !== undefined;
+  const shouldDeriveUnitPrice = input.unitPrice !== undefined || (driverChanged && nextCost != null && nextMarkup != null);
   const unitPrice = input.unitPrice !== undefined
     ? input.unitPrice.toFixed(2)
     : deriveUnitPrice({ explicitPrice: undefined, costBasis: nextCost != null ? nextCost.toFixed(2) : null, markupPercent: nextMarkup != null ? nextMarkup.toFixed(2) : null });
   if (shouldDeriveUnitPrice) assertPriceInRange(unitPrice);
+
+  // Flipping a plain item into a bundle (false -> true) is illegal if the item is
+  // already referenced as a component of another bundle — that would create a
+  // retroactive nested bundle. Only check on the actual false -> true transition.
+  if (input.isBundle === true && !existing.isBundle) {
+    const referenced = await db.select({ one: catalogBundleComponents.id })
+      .from(catalogBundleComponents)
+      .where(eq(catalogBundleComponents.componentItemId, id)).limit(1);
+    if (referenced.length > 0) {
+      throw new CatalogServiceError('Cannot convert to a bundle: this item is a component of another bundle', 409, 'BUNDLE_NESTED');
+    }
+  }
 
   const patch: Record<string, unknown> = { updatedAt: new Date() };
   if (input.itemType !== undefined) patch.itemType = input.itemType;
@@ -184,7 +208,7 @@ export async function listCatalogItems(query: ListCatalogQuery, actor: CatalogAc
   if (query.itemType) conditions.push(eq(catalogItems.itemType, query.itemType));
   if (query.isActive !== undefined) conditions.push(eq(catalogItems.isActive, query.isActive));
   if (query.isBundle !== undefined) conditions.push(eq(catalogItems.isBundle, query.isBundle));
-  if (query.search) conditions.push(ilike(catalogItems.name, `%${query.search}%`));
+  if (query.search) conditions.push(ilike(catalogItems.name, `%${escapeLikePattern(query.search)}%`));
   if (query.cursor) conditions.push(gt(catalogItems.id, query.cursor));
   const rows = await db.select().from(catalogItems)
     .where(and(...conditions)).orderBy(asc(catalogItems.id)).limit(query.limit);

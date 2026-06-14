@@ -16,6 +16,7 @@ export const catalogItemRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CATALOG_READ.resource, PERMISSIONS.CATALOG_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
+const deletePerm = requirePermission(PERMISSIONS.CATALOG_DELETE.resource, PERMISSIONS.CATALOG_DELETE.action);
 const idParam = z.object({ id: z.string().uuid() });
 
 export function catalogActorFrom(c: { get: (k: string) => unknown }): CatalogActor {
@@ -34,8 +35,12 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
 
 catalogItemRoutes.get('/', scopes, readPerm, zValidator('query', listCatalogQuerySchema), async (c) => {
   try {
-    const rows = await listCatalogItems(c.req.valid('query'), catalogActorFrom(c));
-    return c.json({ data: rows });
+    const query = c.req.valid('query');
+    const rows = await listCatalogItems(query, catalogActorFrom(c));
+    // A full page implies there may be more rows; expose the last id as the cursor so
+    // the documented `cursor` query param is usable. `data` shape is unchanged (web reads body.data).
+    const nextCursor = rows.length === query.limit ? rows[rows.length - 1]!.id : null;
+    return c.json({ data: rows, nextCursor });
   } catch (err) { return handleServiceError(c, err); }
 });
 
@@ -60,7 +65,7 @@ catalogItemRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam),
   } catch (err) { return handleServiceError(c, err); }
 });
 
-catalogItemRoutes.post('/:id/archive', scopes, writePerm, zValidator('param', idParam), async (c) => {
+catalogItemRoutes.post('/:id/archive', scopes, deletePerm, zValidator('param', idParam), async (c) => {
   try {
     const item = await archiveCatalogItem(c.req.valid('param').id, catalogActorFrom(c));
     return c.json({ data: item });
