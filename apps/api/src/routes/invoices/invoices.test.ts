@@ -11,6 +11,7 @@ vi.mock('../../services/invoiceService', () => ({
   updateLine: vi.fn(),
   removeLine: vi.fn(),
   deleteDraftInvoice: vi.fn(),
+  updateInvoice: vi.fn(),
   issueInvoice: vi.fn(),
   voidInvoice: vi.fn(),
   recordPayment: vi.fn(),
@@ -122,6 +123,33 @@ describe('invoice crud + lines routes', () => {
     });
     expect(res.status).toBe(400);
     expect(svc.addManualLine).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /:id edits a draft invoice', async () => {
+    (svc.updateInvoice as any).mockResolvedValue({ id: INV_ID, notes: 'Updated', status: 'draft' });
+    const res = await app().request(`/${INV_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ notes: 'Updated', siteId: null })
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.notes).toBe('Updated');
+    expect(svc.updateInvoice).toHaveBeenCalledWith(
+      INV_ID,
+      { notes: 'Updated', siteId: null },
+      expect.anything()
+    );
+  });
+
+  it('PATCH /:id rejects an invalid body (non-UUID siteId → 400, no service call)', async () => {
+    const res = await app().request(`/${INV_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ siteId: 'not-a-uuid' })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.updateInvoice).not.toHaveBeenCalled();
   });
 
   it('DELETE /:id deletes a draft invoice', async () => {

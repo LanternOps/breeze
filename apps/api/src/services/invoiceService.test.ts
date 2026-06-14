@@ -47,6 +47,15 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
   });
 
+  it('updateInvoice rejects a non-draft invoice with NOT_A_DRAFT (409)', async () => {
+    // getOwnedInvoiceOr404 → a sent invoice
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.updateInvoice('i1', { notes: 'edit' }, actor)
+    ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
+  });
+
   it('addManualLine denies an actor without access to the invoice org (ORG_DENIED 403)', async () => {
     // draft invoice for org1, but actor can only access other-org
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);

@@ -173,6 +173,25 @@ export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor)
   await db.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
 }
 
+/** Draft-only header edit (notes/site/dueDate). Only provided fields are written;
+ *  siteId can be explicitly set to null to clear it. issue() overwrites dueDate
+ *  with issueDate + partner terms, so a draft dueDate is advisory until then. */
+export async function updateInvoice(
+  invoiceId: string,
+  patch: { notes?: string; siteId?: string | null; dueDate?: string },
+  actor: InvoiceActor
+) {
+  const inv = await getOwnedInvoiceOr404(invoiceId);
+  assertDraft(inv);
+  requireOrgAccess(actor, inv.orgId);
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  if (patch.notes !== undefined) set.notes = patch.notes;
+  if (patch.siteId !== undefined) set.siteId = patch.siteId;     // null clears it
+  if (patch.dueDate !== undefined) set.dueDate = patch.dueDate;  // date string
+  await db.update(invoices).set(set).where(eq(invoices.id, invoiceId));
+  return getOwnedInvoiceOr404(invoiceId);
+}
+
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireOrgAccess(actor, inv.orgId);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);

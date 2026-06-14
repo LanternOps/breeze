@@ -9,7 +9,7 @@ import {
 } from '@breeze/shared';
 import {
   createManualInvoice, getInvoice, listInvoices, addManualLine, addCatalogLine, addBundleLine,
-  updateLine, removeLine, deleteDraftInvoice
+  updateLine, removeLine, deleteDraftInvoice, updateInvoice
 } from '../../services/invoiceService';
 import { InvoiceServiceError, type InvoiceActor } from '../../services/invoiceTypes';
 
@@ -39,6 +39,10 @@ invoiceCrudRoutes.post('/', scopes, writePerm, zValidator('json', createManualIn
 });
 invoiceCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   try { return c.json({ data: await getInvoice(c.req.valid('param').id, invoiceActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+invoiceCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateInvoiceSchema), async (c) => {
+  try { return c.json({ data: await updateInvoice(c.req.valid('param').id, c.req.valid('json'), invoiceActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
