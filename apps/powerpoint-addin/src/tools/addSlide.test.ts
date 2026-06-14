@@ -19,14 +19,13 @@ describe('add_slide', () => {
     expect(mock.slides[mock.slides.length - 1].createdVia).toBe('native');
   });
 
-  it('falls back to OOXML insertSlidesFromBase64 when native add is unsupported', async () => {
+  it('returns a clean error (no slide added) when PowerPointApi 1.4 is unsupported', async () => {
     const mock = getOfficeMock();
-    // Flip the 1.4 capability off — native presentation.slides.add throws.
     mock.supportedApiSets.delete('1.4');
     const before = mock.slides.length;
-    const result = (await addSlide({})) as { added: boolean; via: string };
-    expect(result).toEqual({ added: true, via: 'ooxml' });
-    expect(mock.slides.length).toBe(before + 1);
-    expect(mock.slides[mock.slides.length - 1].createdVia).toBe('ooxml');
+    const result = (await addSlide({})) as { error?: string; added?: boolean };
+    expect(result.error).toMatch(/PowerPointApi 1\.4/);
+    expect(result.added).toBeUndefined();
+    expect(mock.slides.length).toBe(before); // no slide added on the unsupported path
   });
 });
