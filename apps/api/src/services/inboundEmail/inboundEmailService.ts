@@ -5,6 +5,7 @@ import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
 import { emitTicketEvent } from '../ticketEvents';
 import { captureException } from '../sentry';
+import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
@@ -315,6 +316,21 @@ async function findPortalUserInPartner(email: string, partnerId: string): Promis
   return rows[0] ?? null;
 }
 
+// Resolve TICKETS_INBOUND_DOMAIN defensively. The inbound worker runs `getConfig()`
+// against a validated config at runtime, but some execution contexts (e.g. the
+// integration harness, which seeds partner_inbound_domains and never calls
+// validateConfig()) reach the create path without an initialized config. A config
+// read must NEVER poison ingestion — degrade to null (threading off) instead of
+// throwing, mirroring `resolvePartner`'s slug-address branch being unreachable
+// there. Returns null when the domain is unset OR config isn't initialized.
+function inboundDomainOrNull(): string | null {
+  try {
+    return getConfig().TICKETS_INBOUND_DOMAIN ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function createFromEmail(
   n: NormalizedInboundEmail,
   partnerId: string,
@@ -345,9 +361,20 @@ async function createFromEmail(
     SYSTEM_ACTOR
   );
 
-  // Stamp the threading key so future replies match. Carry the old key for closed-continuations.
+  // Stamp the threading key so future replies match. Precedence:
+  //   1) carryThreadKey — preserves a closed-continuation's original thread.
+  //   2) n.messageId    — the customer's own Message-Id (the natural anchor).
+  //   3) a stable generated anchor — <ticket-${id}@TICKETS_INBOUND_DOMAIN>, used
+  //      when the inbound email carried NO Message-Id. Without it the thread key
+  //      would be null and the customer's NEXT reply could never thread-match
+  //      (-> quarantine). This is also the value PR3's OUTBOUND reply references
+  //      (In-Reply-To/References), so the inbound matcher + outbound headers
+  //      round-trip to the same key. Degrades to null when no platform domain is
+  //      configured (self-hosted without TICKETS_INBOUND_DOMAIN — threading off).
+  const domain = inboundDomainOrNull();
+  const generatedAnchor = domain ? `<ticket-${ticket.id}@${domain}>` : null;
   await db.update(tickets)
-    .set({ emailThreadKey: carryThreadKey ?? n.messageId ?? null })
+    .set({ emailThreadKey: carryThreadKey ?? n.messageId ?? generatedAnchor })
     .where(eq(tickets.id, ticket.id));
   return ticket;
 }

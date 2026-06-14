@@ -141,6 +141,9 @@ vi.mock('../../db/schema', () => ({
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
+// createFromEmail's stable-anchor fallback reads TICKETS_INBOUND_DOMAIN via getConfig().
+vi.mock('../../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
+
 const { resolveMock } = vi.hoisted(() => ({ resolveMock: vi.fn() }));
 vi.mock('./resolvePartner', () => ({ resolvePartnerByRecipient: resolveMock }));
 
@@ -332,6 +335,52 @@ describe('processInboundEmail', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('created');
     expect(log[0]!.ticketId).toBe('t-created');
+  });
+
+  it('stamps a stable generated anchor on email_thread_key when the inbound email has no Message-Id', async () => {
+    // PR1 stamped `n.messageId ?? null`, leaving the no-Message-Id case un-anchored so
+    // the customer's NEXT reply could never thread (-> quarantine). The fallback now
+    // stamps a deterministic <ticket-${id}@TICKETS_INBOUND_DOMAIN> anchor so future
+    // inbound replies + outbound References both resolve to the same key.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = []; // no thread/token match
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-anchor', internalNumber: 'T-2026-0012' });
+
+    await processInboundEmail(email({ subject: 'no message id', messageId: undefined }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    // The post-create tickets UPDATE stamps the generated anchor (not null).
+    const stamp = state.updates.find(
+      (u) => u.table === 'tickets' && Object.prototype.hasOwnProperty.call(u.set, 'emailThreadKey')
+    );
+    expect(stamp).toBeDefined();
+    expect(stamp!.set.emailThreadKey).toBe('<ticket-t-anchor@tickets.example.com>');
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('created');
+  });
+
+  it('still stamps the inbound Message-Id (not the anchor) when one is present', async () => {
+    // Regression guard for the round-trip: when the customer's email carries a
+    // Message-Id, it remains the stamped thread key (matches integration CASE 4).
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-mid2', internalNumber: 'T-2026-0013' });
+
+    await processInboundEmail(email({ subject: 'has message id', messageId: '<real-msg@customer.com>' }));
+
+    const stamp = state.updates.find(
+      (u) => u.table === 'tickets' && Object.prototype.hasOwnProperty.call(u.set, 'emailThreadKey')
+    );
+    expect(stamp).toBeDefined();
+    expect(stamp!.set.emailThreadKey).toBe('<real-msg@customer.com>');
   });
 
   it('quarantines an unmatched unknown sender (no ticket)', async () => {
