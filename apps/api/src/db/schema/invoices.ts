@@ -68,7 +68,11 @@ export const invoices = pgTable('invoices', {
   index('invoices_partner_status_idx').on(t.partnerId, t.status),
   index('invoices_org_issue_date_idx').on(t.orgId, t.issueDate),
   index('invoices_due_overdue_idx').on(t.dueDate).where(sqlOpenForOverdue(t)),
-  uniqueIndex('invoices_partner_number_uq').on(t.partnerId, t.invoiceNumber).where(sqlNumberPresent(t))
+  uniqueIndex('invoices_partner_number_uq').on(t.partnerId, t.invoiceNumber).where(sqlNumberPresent(t)),
+  // Composite-FK target for the child (invoice_id, org_id) FKs and the
+  // invoices(org_id, partner_id) → organizations dual-axis FK. Created in SQL
+  // migration 2026-06-15-b; declared here so db:check-drift stays clean.
+  uniqueIndex('invoices_id_org_uq').on(t.id, t.orgId)
 ]);
 
 export const invoiceLines = pgTable('invoice_lines', {
@@ -104,6 +108,8 @@ export const invoicePayments = pgTable('invoice_payments', {
   id: uuid('id').primaryKey().defaultRandom(),
   invoiceId: uuid('invoice_id').notNull().references(() => invoices.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // amount > 0 enforced by a SQL-only CHECK in migration 2026-06-15-a (kept out of
+  // Drizzle to avoid a name-mismatch drift since migrations are hand-written).
   amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
   method: paymentMethodEnum('method').notNull(),
   reference: varchar('reference', { length: 255 }),

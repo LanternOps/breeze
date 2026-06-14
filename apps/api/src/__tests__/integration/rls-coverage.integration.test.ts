@@ -1,7 +1,7 @@
 import { afterAll, describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, users, organizations, invoices } from '../../db/schema';
+import { partners, users, organizations, invoices, invoiceLines } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 import { automations, automationRuns } from '../../db/schema/automations';
@@ -1801,5 +1801,36 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
       db.select({ id: invoices.id }).from(invoices).where(eq(invoices.id, createdId))
     );
     expect(visible).toHaveLength(0);
+  });
+
+  // Defense-in-depth: the composite FK invoice_lines(invoice_id, org_id) →
+  // invoices(id, org_id) must reject a line whose denormalized org_id disagrees
+  // with its parent invoice's org_id. Run in SYSTEM context so RLS is bypassed
+  // and the FK is unambiguously what rejects the write.
+  it.runIf(!!process.env.DATABASE_URL)('invoice line with mismatched org_id is rejected by the composite FK', async () => {
+    await ensureFixtures();
+    // Create the parent invoice (orgA) in its own system-context transaction so
+    // it is committed before we attempt the forged line.
+    let invoiceId = '';
+    await withSystemDbAccessContext(async () => {
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      invoiceId = inv!.id;
+    });
+    // The FK violation aborts the surrounding transaction, so postgres.js may
+    // surface the error at commit time — catch around the whole context call.
+    let caught: unknown;
+    try {
+      await withSystemDbAccessContext(async () =>
+        // invoice belongs to orgA, but we forge a line claiming orgB.
+        db.insert(invoiceLines).values({
+          invoiceId, orgId: orgBId, sourceType: 'manual',
+          description: 'forged mismatched-org line', quantity: '1', unitPrice: '0'
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/violates foreign key constraint|invoice_lines_invoice_org_fkey/);
   });
 });
