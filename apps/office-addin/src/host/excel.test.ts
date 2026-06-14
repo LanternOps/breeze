@@ -3,6 +3,7 @@ import { excelHostAdapter } from './excel';
 import { buildWritePreview } from '../approval/buildPreview';
 import { captureWorkbookContext, captureWorkbookName } from '../chat/captureContext';
 import { MUTATING_TOOLS, TOOL_EXECUTORS } from '../tools/dispatcher';
+import { captureExcelSelectionAddress, subscribeExcelSelectionChanged } from './excelSelection';
 import type { HostAdapter } from './types';
 
 describe('excelHostAdapter', () => {
@@ -25,6 +26,8 @@ describe('excelHostAdapter', () => {
     expect(excelHostAdapter.buildPreview).toBe(buildWritePreview);
     expect(excelHostAdapter.toolExecutors).toBe(TOOL_EXECUTORS);
     expect(excelHostAdapter.mutatingTools).toBe(MUTATING_TOOLS);
+    expect(excelHostAdapter.captureSelectionAddress).toBe(captureExcelSelectionAddress);
+    expect(excelHostAdapter.subscribeSelectionChanged).toBe(subscribeExcelSelectionChanged);
   });
 
   it('exposes the full Excel tool layer with mutating tools as a subset', () => {

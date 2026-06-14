@@ -913,11 +913,16 @@ export function installOfficeMock(): MockWorkbookState {
       },
       document: {
         addHandlerAsync: (
-          _type: string,
+          type: string,
           handler: () => void,
           done?: (result: { status: string }) => void,
         ) => {
-          state.selectionHandlers.push(handler);
+          // Real Office only invokes a handler for the event it was registered
+          // under, so only retain DocumentSelectionChanged handlers — a wrong
+          // EventType wiring then registers nothing and its callback never fires.
+          if (type === 'documentSelectionChanged') {
+            state.selectionHandlers.push(handler);
+          }
           done?.({ status: 'succeeded' });
         },
         removeHandlerAsync: (
