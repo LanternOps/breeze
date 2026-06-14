@@ -4,6 +4,7 @@ import { ChatThread } from './ChatThread';
 import { ChatToolbar } from './ChatToolbar';
 import { Composer } from './Composer';
 import { TemplatePicker } from './TemplatePicker';
+import { QuickActions } from './QuickActions';
 import { BrandingFooter } from './BrandingFooter';
 import { HistoryPanel } from './HistoryPanel';
 import type { ClientSession } from '../auth/session';
@@ -64,7 +65,12 @@ export function ChatPane({ session }: { session: ClientSession }) {
         onToggleAuto={(value) => controller.setAutoApply(value)}
         onFlag={() => void controller.flagConversation()}
       />
-      {empty && <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />}
+      {empty && (
+        <>
+          <QuickActions onSelect={(prompt) => void controller.send(prompt)} />
+          <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />
+        </>
+      )}
       <ChatThread
         state={state}
         approvals={approvals}
