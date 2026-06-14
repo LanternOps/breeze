@@ -9,6 +9,12 @@ import {
   generateApproverRegistrationOptions,
   verifyApproverRegistration,
 } from '../services/approverWebAuthn';
+import {
+  consumeMobileRegistrationNonce,
+  issueMobileRegistrationNonce,
+  verifyMobileSignature,
+} from '../services/mobileHwKey';
+import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { requireCurrentPasswordStepUp, writeAuthAudit } from './auth/helpers';
 
 // Attestation payload is a large nested object validated structurally by
@@ -28,6 +34,15 @@ const registerOptionsSchema = z.object({
 });
 const registerVerifySchema = z.object({
   response: attestationResponseSchema,
+  label: deviceLabelSchema.optional(),
+});
+
+// Mobile hardware-key registration: the client proves possession of a freshly
+// generated Secure Enclave / StrongBox key by signing the server-issued
+// registration nonce (RSA-SHA256 over the consumed nonce).
+const mobileRegisterVerifySchema = z.object({
+  publicKey: z.string().min(1).max(4096), // SPKI DER, base64
+  signature: z.string().min(1).max(4096), // RSA-SHA256 over the nonce, base64
   label: deviceLabelSchema.optional(),
 });
 const revokeSchema = z.object({
@@ -156,6 +171,95 @@ authenticatorRoutes.post(
         deviceId: inserted.id,
         kind: 'webauthn_platform',
         isPlatformBound: fields.isPlatformBound,
+      },
+    });
+
+    return c.json({ success: true, device: toPublicDevice(inserted) });
+  }
+);
+
+// Mobile hardware-key registration mirrors the webauthn flow above: a
+// password step-up gates `options` (which issues a single-use registration
+// nonce), then `verify` proves possession by verifying an RSA-SHA256 signature
+// over that consumed nonce before inserting the device.
+authenticatorRoutes.post(
+  '/devices/mobile-hw-key/options',
+  authMiddleware,
+  zValidator('json', registerOptionsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { currentPassword } = c.req.valid('json');
+
+    const passwordError = await requireCurrentPasswordStepUp(
+      c,
+      auth.user.id,
+      currentPassword,
+      'authenticator:pwd'
+    );
+    if (passwordError) return passwordError;
+
+    const nonce = await issueMobileRegistrationNonce(auth.user.id);
+    return c.json({ nonce });
+  }
+);
+
+authenticatorRoutes.post(
+  '/devices/mobile-hw-key/verify',
+  authMiddleware,
+  zValidator('json', mobileRegisterVerifySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { publicKey, signature, label } = c.req.valid('json');
+
+    // Consume the single-use nonce first; a missing/expired nonce is a 400 and
+    // the signature is never checked (no oracle).
+    const nonce = await consumeMobileRegistrationNonce(auth.user.id);
+    if (!nonce) {
+      return c.json({ error: 'Registration challenge expired or missing' }, 400);
+    }
+
+    const verified = verifyMobileSignature({
+      publicKeySpkiB64: publicKey,
+      payload: nonce,
+      signatureB64: signature,
+    });
+    if (!verified) {
+      return c.json({ error: 'Proof-of-possession signature verification failed' }, 400);
+    }
+
+    // Per-install device id is a UX/migration hint only (client-controlled,
+    // SR-001) — null when the header is absent.
+    const mobileDeviceId = readMobileDeviceId(c);
+
+    const [inserted] = await db
+      .insert(authenticatorDevices)
+      .values({
+        userId: auth.user.id,
+        kind: 'mobile_hw_key',
+        label: label ?? 'This phone',
+        publicKey,
+        credentialId: null,
+        signCount: 0,
+        isPlatformBound: true,
+        mobileDeviceId,
+      })
+      .returning();
+
+    if (!inserted) {
+      throw new Error('Approver device insert returned no row');
+    }
+
+    writeAuthAudit(c, {
+      orgId: auth.orgId ?? undefined,
+      action: 'auth.authenticator.device.register',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: {
+        deviceId: inserted.id,
+        kind: 'mobile_hw_key',
+        isPlatformBound: true,
+        mobileDeviceId,
       },
     });
 

@@ -6,6 +6,7 @@ const {
   dbState,
   redisMock,
   approverMocks,
+  mobileHwKeyMocks,
   helperMocks,
   authState,
 } = vi.hoisted(() => {
@@ -42,6 +43,11 @@ const {
       generateApproverRegistrationOptions: vi.fn(),
       verifyApproverRegistration: vi.fn(),
     },
+    mobileHwKeyMocks: {
+      issueMobileRegistrationNonce: vi.fn(),
+      consumeMobileRegistrationNonce: vi.fn(),
+      verifyMobileSignature: vi.fn(),
+    },
     helperMocks: {
       requireCurrentPasswordStepUp: vi.fn(),
       writeAuthAudit: vi.fn(),
@@ -54,6 +60,10 @@ const {
 
 vi.mock('../services/approverWebAuthn', () => ({
   ...approverMocks,
+}));
+
+vi.mock('../services/mobileHwKey', () => ({
+  ...mobileHwKeyMocks,
 }));
 
 vi.mock('./auth/helpers', () => ({
@@ -102,6 +112,7 @@ vi.mock('../db/schema', () => ({
     aaguid: 'authenticatorDevices.aaguid',
     transports: 'authenticatorDevices.transports',
     isPlatformBound: 'authenticatorDevices.isPlatformBound',
+    mobileDeviceId: 'authenticatorDevices.mobileDeviceId',
     createdAt: 'authenticatorDevices.createdAt',
     lastUsedAt: 'authenticatorDevices.lastUsedAt',
     disabledAt: 'authenticatorDevices.disabledAt',
@@ -135,6 +146,7 @@ const deviceRow = {
   aaguid: null,
   transports: ['internal'],
   isPlatformBound: true,
+  mobileDeviceId: null,
   createdAt: new Date('2026-06-14T00:00:00.000Z'),
   lastUsedAt: null,
   disabledAt: null,
@@ -168,6 +180,9 @@ describe('approver device routes', () => {
       aaguid: null,
       isPlatformBound: true,
     });
+    mobileHwKeyMocks.issueMobileRegistrationNonce.mockResolvedValue('reg-nonce-abc');
+    mobileHwKeyMocks.consumeMobileRegistrationNonce.mockResolvedValue('reg-nonce-abc');
+    mobileHwKeyMocks.verifyMobileSignature.mockReturnValue(true);
     app = new Hono();
     app.route('/authenticator', authenticatorRoutes);
     app.route('/me/approver-devices', approverDevicesRoutes);
@@ -302,5 +317,138 @@ describe('approver device routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ success: true, device: { label: 'New Name' } });
     expect(dbState.updateSets).toContainEqual(expect.objectContaining({ label: 'New Name' }));
+  });
+
+  it('requires authentication for mobile-hw-key registration options', async () => {
+    const res = await app.request('/authenticator/devices/mobile-hw-key/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword: 'pw' }),
+    });
+    expect(res.status).toBe(401);
+    expect(mobileHwKeyMocks.issueMobileRegistrationNonce).not.toHaveBeenCalled();
+  });
+
+  it('returns a registration nonce after the current-password step-up', async () => {
+    const res = await app.request('/authenticator/devices/mobile-hw-key/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ nonce: 'reg-nonce-abc' });
+    expect(helperMocks.requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-123',
+      'correct-password',
+      expect.any(String),
+    );
+    expect(mobileHwKeyMocks.issueMobileRegistrationNonce).toHaveBeenCalledWith('user-123');
+  });
+
+  it('blocks mobile-hw-key options when the password step-up fails', async () => {
+    helperMocks.requireCurrentPasswordStepUp.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401 }),
+    );
+
+    const res = await app.request('/authenticator/devices/mobile-hw-key/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'wrong-password' }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(mobileHwKeyMocks.issueMobileRegistrationNonce).not.toHaveBeenCalled();
+  });
+
+  it('verifies the PoP signature and inserts a mobile_hw_key device row', async () => {
+    dbState.insertReturning = [
+      { ...deviceRow, id: 'mobile-device-1', kind: 'mobile_hw_key', credentialId: null, mobileDeviceId: '11111111-2222-3333-4444-555555555555' },
+    ];
+
+    const res = await app.request('/authenticator/devices/mobile-hw-key/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer access-token',
+        'X-Breeze-Mobile-Device-Id': '11111111-2222-3333-4444-555555555555',
+      },
+      body: JSON.stringify({ publicKey: 'spki-base64', signature: 'sig-base64', label: 'My iPhone' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, device: { id: 'mobile-device-1', kind: 'mobile_hw_key' } });
+
+    // Nonce is consumed (single-use) and the signature is verified over it.
+    expect(mobileHwKeyMocks.consumeMobileRegistrationNonce).toHaveBeenCalledWith('user-123');
+    expect(mobileHwKeyMocks.verifyMobileSignature).toHaveBeenCalledWith({
+      publicKeySpkiB64: 'spki-base64',
+      payload: 'reg-nonce-abc',
+      signatureB64: 'sig-base64',
+    });
+
+    const inserted = dbState.insertValues[0];
+    expect(inserted).toMatchObject({
+      userId: 'user-123',
+      kind: 'mobile_hw_key',
+      publicKey: 'spki-base64',
+      credentialId: null,
+      signCount: 0,
+      isPlatformBound: true,
+      label: 'My iPhone',
+      mobileDeviceId: '11111111-2222-3333-4444-555555555555',
+    });
+    expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.authenticator.device.register' }),
+    );
+  });
+
+  it('rejects a bad PoP signature with 400 and does not insert', async () => {
+    mobileHwKeyMocks.verifyMobileSignature.mockReturnValueOnce(false);
+
+    const res = await app.request('/authenticator/devices/mobile-hw-key/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ publicKey: 'spki-base64', signature: 'bad-sig', label: 'My iPhone' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbState.insertValues).toHaveLength(0);
+    expect(helperMocks.writeAuthAudit).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.authenticator.device.register' }),
+    );
+  });
+
+  it('rejects mobile-hw-key verify with 400 when the registration nonce is missing/expired', async () => {
+    mobileHwKeyMocks.consumeMobileRegistrationNonce.mockResolvedValueOnce(null);
+
+    const res = await app.request('/authenticator/devices/mobile-hw-key/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ publicKey: 'spki-base64', signature: 'sig-base64', label: 'My iPhone' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mobileHwKeyMocks.verifyMobileSignature).not.toHaveBeenCalled();
+    expect(dbState.insertValues).toHaveLength(0);
+  });
+
+  it('inserts mobile_hw_key with mobileDeviceId null when the header is absent', async () => {
+    dbState.insertReturning = [
+      { ...deviceRow, id: 'mobile-device-2', kind: 'mobile_hw_key', credentialId: null },
+    ];
+
+    const res = await app.request('/authenticator/devices/mobile-hw-key/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ publicKey: 'spki-base64', signature: 'sig-base64' }),
+    });
+
+    expect(res.status).toBe(200);
+    const inserted = dbState.insertValues[0];
+    expect(inserted).toMatchObject({ kind: 'mobile_hw_key', mobileDeviceId: null });
   });
 });
