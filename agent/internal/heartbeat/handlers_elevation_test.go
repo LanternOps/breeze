@@ -9,6 +9,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/etwlua"
+	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
 func sampleElevationEvent() etwlua.Event {
@@ -52,10 +53,15 @@ func TestSendElevationRequestParsesIngestDecision(t *testing.T) {
 
 // TestSendElevationRequestErrorsOnServerError exercises the retry-exhaustion
 // path: 500 is a retryable status (httputil.isRetryableStatus), so httputil.Do
-// burns all DefaultRetryConfig retries (~7s of real backoff) and finally returns
-// a non-nil error. SendElevationRequest then hits the post-Do error branch
-// (handlers_elevation.go:44-46). It does NOT cover the non-2xx status branch —
-// see TestSendElevationRequestErrorsOnNonRetryableStatus for that.
+// makes its attempts and finally returns a non-nil error. SendElevationRequest
+// then hits the post-Do error branch (handlers_elevation.go:44-46). It does NOT
+// cover the non-2xx status branch — see
+// TestSendElevationRequestErrorsOnNonRetryableStatus for that.
+//
+// We pin MaxRetries:0 so the test makes a single attempt and returns in ~ms
+// instead of burning DefaultRetryConfig's ~7s of real backoff (1+2+4s). The
+// retryable-500 error branch is identical with 0 retries — Do still returns a
+// non-nil error after the lone attempt — so the assertion is unchanged.
 func TestSendElevationRequestErrorsOnServerError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -68,10 +74,18 @@ func TestSendElevationRequestErrorsOnServerError(t *testing.T) {
 		ServerURL: ts.URL,
 		AuthToken: "token",
 	}, "test", nil, nil)
+	h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
 
+	start := time.Now()
 	_, err := h.SendElevationRequest(sampleElevationEvent())
+	elapsed := time.Since(start)
+
 	if err == nil {
 		t.Fatal("SendElevationRequest returned nil error on 500, want non-nil")
+	}
+	// With MaxRetries:0 there is no backoff sleep, so this must return fast.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("500 with MaxRetries:0 took %s, want fast (no backoff)", elapsed)
 	}
 }
 
