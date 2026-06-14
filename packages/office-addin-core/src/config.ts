@@ -1,6 +1,7 @@
 /**
- * Build-time configuration. Values come from Vite env (apps/office-addin/.env,
- * gitignored — see .env.example). Defaults target local dev against the API
+ * Build-time configuration. Values come from the host app's Vite env
+ * (apps/excel-addin/.env, gitignored — see .env.example). Defaults target local
+ * dev against the API
  * dev server (apps/api listens on 3001; apps/web/astro.config.mjs uses the
  * same default).
  */
