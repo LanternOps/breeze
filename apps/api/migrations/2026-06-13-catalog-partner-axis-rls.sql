@@ -59,15 +59,22 @@ DROP POLICY IF EXISTS breeze_dual_axis_update ON public.scripts;
 DROP POLICY IF EXISTS breeze_dual_axis_delete ON public.scripts;
 ALTER TABLE public.scripts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.scripts FORCE ROW LEVEL SECURITY;
+-- is_system gates READ visibility only (system scripts are globally readable),
+-- NOT write access. It must NEVER appear in an INSERT/UPDATE/DELETE predicate:
+-- `OR is_system` in WITH CHECK would let any tenant forge a row with
+-- is_system=true and have it execute/appear across every partner's orgs
+-- (cross-tenant script injection — Discussion #633, scripts-system-rls test).
+-- Legitimate system scripts are seeded under system scope, where
+-- breeze_has_org_access(...) already returns TRUE, so writes stay covered.
 CREATE POLICY breeze_dual_axis_select ON public.scripts FOR SELECT
   USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_system);
 CREATE POLICY breeze_dual_axis_insert ON public.scripts FOR INSERT
-  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_system);
+  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id));
 CREATE POLICY breeze_dual_axis_update ON public.scripts FOR UPDATE
-  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_system)
-  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_system);
+  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id))
+  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id));
 CREATE POLICY breeze_dual_axis_delete ON public.scripts FOR DELETE
-  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_system);
+  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id));
 
 -- alert_templates (has is_built_in)
 DROP POLICY IF EXISTS breeze_org_isolation_select ON public.alert_templates;
@@ -80,15 +87,19 @@ DROP POLICY IF EXISTS breeze_dual_axis_update ON public.alert_templates;
 DROP POLICY IF EXISTS breeze_dual_axis_delete ON public.alert_templates;
 ALTER TABLE public.alert_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.alert_templates FORCE ROW LEVEL SECURITY;
+-- is_built_in gates READ visibility only (built-in templates are globally
+-- readable), NOT write access — same rule as scripts.is_system above. Keeping
+-- it out of the write predicates stops a tenant from forging a globally-visible
+-- is_built_in=true row; system-scope seeding stays covered by breeze_has_org_access.
 CREATE POLICY breeze_dual_axis_select ON public.alert_templates FOR SELECT
   USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_built_in);
 CREATE POLICY breeze_dual_axis_insert ON public.alert_templates FOR INSERT
-  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_built_in);
+  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id));
 CREATE POLICY breeze_dual_axis_update ON public.alert_templates FOR UPDATE
-  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_built_in)
-  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_built_in);
+  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id))
+  WITH CHECK (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id));
 CREATE POLICY breeze_dual_axis_delete ON public.alert_templates FOR DELETE
-  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id) OR is_built_in);
+  USING (public.breeze_has_org_access(org_id) OR public.breeze_has_partner_access(partner_id));
 
 -- script_categories (no system flag)
 DROP POLICY IF EXISTS breeze_org_isolation_select ON public.script_categories;
