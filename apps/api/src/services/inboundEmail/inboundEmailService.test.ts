@@ -398,9 +398,14 @@ describe('processInboundEmail', () => {
     expect(log[0]!.parseStatus).toBe('created');
   });
 
-  it('still stamps the inbound Message-Id (not the anchor) when one is present', async () => {
-    // Regression guard for the round-trip: when the customer's email carries a
-    // Message-Id, it remains the stamped thread key (matches integration CASE 4).
+  it('stamps the deterministic anchor (NOT the inbound Message-Id) when a platform domain is configured', async () => {
+    // Review fix: when TICKETS_INBOUND_DOMAIN is set, the generated anchor takes
+    // PRECEDENCE over the customer's own Message-Id. The anchor is the value the
+    // one-time autoresponse stamps as its Message-ID and every comment reply uses
+    // for In-Reply-To/References, so the autoresponse ↔ email_thread_key ↔ outbound
+    // headers all unify on ONE key — a reply to the autoresponse threads via header,
+    // not just the [T-...] subject token. (The no-domain env keeps n.messageId; that
+    // path is covered by integration CASE 4/5.)
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
@@ -414,7 +419,8 @@ describe('processInboundEmail', () => {
       (u) => u.table === 'tickets' && Object.prototype.hasOwnProperty.call(u.set, 'emailThreadKey')
     );
     expect(stamp).toBeDefined();
-    expect(stamp!.set.emailThreadKey).toBe('<real-msg@customer.com>');
+    // Anchor wins over the inbound Message-Id when a domain is configured.
+    expect(stamp!.set.emailThreadKey).toBe('<ticket-t-mid2@tickets.example.com>');
   });
 
   it('quarantines an unmatched unknown sender (no ticket)', async () => {

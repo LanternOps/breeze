@@ -386,19 +386,25 @@ async function createFromEmail(
   );
 
   // Stamp the threading key so future replies match. Precedence:
-  //   1) carryThreadKey — preserves a closed-continuation's original thread.
-  //   2) n.messageId    — the customer's own Message-Id (the natural anchor).
-  //   3) a stable generated anchor — <ticket-${id}@TICKETS_INBOUND_DOMAIN>, used
-  //      when the inbound email carried NO Message-Id. Without it the thread key
-  //      would be null and the customer's NEXT reply could never thread-match
-  //      (-> quarantine). This is also the value PR3's OUTBOUND reply references
-  //      (In-Reply-To/References), so the inbound matcher + outbound headers
-  //      round-trip to the same key. Degrades to null when no platform domain is
-  //      configured (self-hosted without TICKETS_INBOUND_DOMAIN — threading off).
+  //   1) carryThreadKey — preserves a closed-continuation's original thread, so a
+  //      reply to the linked ticket still resolves to the original thread key.
+  //   2) the deterministic generated anchor — <ticket-${id}@TICKETS_INBOUND_DOMAIN>
+  //      — WHEN a platform domain is configured. This is the SAME value PR3's
+  //      OUTBOUND mail stamps as Message-ID/In-Reply-To/References (the one-time
+  //      autoresponse's Message-ID and every comment reply's In-Reply-To), so the
+  //      autoresponse, the outbound reply headers, and the inbound matcher all
+  //      round-trip to ONE key. It MUST take precedence over the customer's own
+  //      Message-Id: otherwise a reply to the autoresponse (In-Reply-To = anchor)
+  //      would not match email_thread_key and would only thread via the weaker
+  //      [T-...] subject token (review finding — header threading must work).
+  //   3) n.messageId — the customer's own Message-Id, used ONLY when no platform
+  //      domain is configured (self-hosted without TICKETS_INBOUND_DOMAIN). Keeps
+  //      the no-domain integration env unchanged (still anchors on the inbound id).
+  //   4) null — no domain AND no Message-Id (threading off for this ticket).
   const domain = inboundDomainOrNull();
   const generatedAnchor = domain ? `<ticket-${ticket.id}@${domain}>` : null;
   await db.update(tickets)
-    .set({ emailThreadKey: carryThreadKey ?? n.messageId ?? generatedAnchor })
+    .set({ emailThreadKey: carryThreadKey ?? (domain ? generatedAnchor : (n.messageId ?? null)) })
     .where(eq(tickets.id, ticket.id));
 
   // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.

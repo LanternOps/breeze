@@ -63,7 +63,8 @@ async function capAllows(senderEmail: string): Promise<boolean> {
     );
     return cap.allowed;
   } catch (err) {
-    // Fail OPEN to "no autoresponse" (suppress). Capture, never propagate.
+    // Fail CLOSED to no-autoresponse (suppress) on Redis error — never propagate
+    // into the work tx. Capture for visibility, then deny.
     captureException(err instanceof Error ? err : new Error(String(err)));
     return false;
   }

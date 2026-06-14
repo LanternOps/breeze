@@ -27,11 +27,12 @@
  */
 import '../../__tests__/integration/setup';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { withSystemDbAccessContext } from '../../db';
 import {
   tickets,
   ticketComments,
+  ticketEmailInbound,
   portalUsers,
   organizations,
   partners,
@@ -39,6 +40,7 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
+import type { NormalizedInboundEmail } from './types';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must appear before any import that resolves them.
@@ -73,6 +75,7 @@ vi.mock('../config/validate', () => ({
 
 // Import AFTER mocks are registered.
 import { handleTicketEvent } from '../../jobs/ticketNotifyWorker';
+import { processInboundEmail } from './inboundEmailService';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -156,6 +159,9 @@ afterAll(async () => {
   await db.delete(ticketComments).where(
     sql`${ticketComments.ticketId} IN (SELECT id FROM tickets WHERE partner_id IN (${partnerList}))`
   );
+  // The round-trip test drives processInboundEmail, which writes ticket_email_inbound
+  // audit rows — clear them before the orgs/partners delete.
+  await db.delete(ticketEmailInbound).where(sql`${ticketEmailInbound.partnerId} IN (${partnerList})`);
   await db.delete(tickets).where(sql`${tickets.partnerId} IN (${partnerList})`);
   await db.delete(portalUsers).where(sql`${portalUsers.orgId} IN (${orgList})`);
   await db.execute(sql`DELETE FROM partner_ticket_sequences WHERE partner_id IN (${partnerList})`);
@@ -430,5 +436,121 @@ describe('outbound threading + autoresponder + Reply-To + leak (real DB, capture
 
     // No email must be sent — the private comment must never trigger a notify.
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Threading round-trip (review finding): the deterministic anchor must unify
+  // the created ticket's email_thread_key, the autoresponse's Message-ID, and the
+  // inbound matcher — so a customer reply to the autoresponse threads via HEADER,
+  // not just the [T-...] subject token.
+  //
+  // Before the fix, createFromEmail stamped email_thread_key = n.messageId (the
+  // customer's own id) when present, while the autoresponse went out with
+  // Message-ID = <ticket-{id}@domain>. A reply carrying In-Reply-To = that anchor
+  // therefore could NOT match email_thread_key.
+  // ---------------------------------------------------------------------------
+  it('round-trip: email-created ticket stamps the anchor as email_thread_key, the anchor IS the autoresponse Message-ID, and a reply to that anchor matches the SAME ticket', async () => {
+    const suffix = uniqueSuffix();
+    const providerMessageId = `<orig-${suffix}@customer.test>`;
+    // The customer's OWN Message-Id — the pre-fix code would have stamped THIS.
+    const customerMessageId = `<real-${suffix}@customer.test>`;
+
+    const buildInbound = (overrides: Partial<NormalizedInboundEmail>): NormalizedInboundEmail => ({
+      provider: 'mailgun',
+      providerMessageId,
+      // Address the partner via its slug @ the (mocked) inbound domain so
+      // resolvePartnerByRecipient resolves through the platform-slug branch.
+      to: `${fx.partner.slug}@${INBOUND_DOMAIN}`,
+      from: fx.janeEmail,
+      fromName: 'Jane Known',
+      subject: 'My printer is on fire',
+      text: 'Smoke is coming out of it.',
+      messageId: customerMessageId,
+      attachments: [],
+      raw: { recipient: `${fx.partner.slug}@${INBOUND_DOMAIN}` },
+      ...overrides
+    });
+
+    // 1) Drive the inbound create (known portal-user sender → source:email ticket).
+    await withSystemDbAccessContext(() => processInboundEmail(buildInbound({})));
+
+    // The ticket was created and logged.
+    const createdRows = await admin()
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partner.id), eq(tickets.source, 'email')));
+    expect(createdRows).toHaveLength(1);
+    const created = createdRows[0];
+
+    // 2) email_thread_key = the DETERMINISTIC ANCHOR — NOT the customer's Message-Id.
+    const anchor = `<ticket-${created.id}@${INBOUND_DOMAIN}>`;
+    expect(created.emailThreadKey).toBe(anchor);
+    expect(created.emailThreadKey).not.toBe(customerMessageId);
+
+    // 3) The anchor IS the autoresponse Message-ID. Drive the autoresponse event
+    //    (processInboundEmail enqueues it via BullMQ rather than sending inline) and
+    //    capture the Message-ID off the send mock — it must equal email_thread_key.
+    await withSystemDbAccessContext(() =>
+      handleTicketEvent({
+        type: 'ticket.autoresponse',
+        ticketId: created.id,
+        orgId: fx.org.id,
+        partnerId: fx.partner.id,
+        actorUserId: null,
+        payload: {
+          to: fx.janeEmail,
+          internalNumber: created.internalNumber,
+          subject: created.subject
+        }
+      } as never)
+    );
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const autoArg = sendEmailMock.mock.calls[0]![0] as { headers?: Record<string, string> };
+    expect(autoArg.headers?.['Message-ID']).toBe(anchor);
+    expect(created.emailThreadKey).toBe(autoArg.headers?.['Message-ID']);
+
+    // 4) A customer reply TO THE AUTORESPONSE carries In-Reply-To = the anchor.
+    //    Route it through processInboundEmail — it must MATCH the SAME ticket (append
+    //    a public comment, parse_status='matched'), NOT spawn a new ticket.
+    const replyProviderMessageId = `<reply-${suffix}@customer.test>`;
+    await withSystemDbAccessContext(() =>
+      processInboundEmail(
+        buildInbound({
+          providerMessageId: replyProviderMessageId,
+          messageId: `<reply-real-${suffix}@customer.test>`,
+          subject: 'Re: My printer is on fire',
+          inReplyTo: anchor,
+          references: [anchor],
+          text: 'It is still smoking.'
+        })
+      )
+    );
+
+    // Still exactly ONE source:email ticket for this partner (no fork).
+    const afterReply = await admin()
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partner.id), eq(tickets.source, 'email')));
+    expect(afterReply).toHaveLength(1);
+    expect(afterReply[0].id).toBe(created.id);
+
+    // The reply was logged 'matched' against the original ticket (header threading).
+    const replyLog = await admin()
+      .select()
+      .from(ticketEmailInbound)
+      .where(and(
+        eq(ticketEmailInbound.partnerId, fx.partner.id),
+        eq(ticketEmailInbound.providerMessageId, replyProviderMessageId)
+      ));
+    expect(replyLog).toHaveLength(1);
+    expect(replyLog[0].parseStatus).toBe('matched');
+    expect(replyLog[0].ticketId).toBe(created.id);
+
+    // A public inbound comment landed on the original ticket.
+    const comments = await admin()
+      .select()
+      .from(ticketComments)
+      .where(eq(ticketComments.ticketId, created.id));
+    expect(comments.some((c: any) => c.content === 'It is still smoking.' && c.isPublic === true)).toBe(true);
   });
 });
