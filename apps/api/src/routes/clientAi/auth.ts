@@ -48,7 +48,18 @@ type Denied = {
     details: Record<string, unknown>;
   };
 };
-type Resolved = { user: ExchangeUser; provisioned: boolean };
+/** White-label footer fields (spec §11), sourced from the org policy's branding JSONB. */
+type ExchangeBranding = { displayName: string | null; logoUrl: string | null };
+type Resolved = { user: ExchangeUser; provisioned: boolean; branding: ExchangeBranding };
+
+/** policy.branding is free-form JSONB — pull only the two known string fields, coercing anything else to null. */
+function brandingFromPolicy(branding: Record<string, unknown> | null | undefined): ExchangeBranding {
+  const asString = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  return {
+    displayName: asString(branding?.displayName),
+    logoUrl: asString(branding?.logoUrl),
+  };
+}
 
 const USER_COLUMNS = {
   id: portalUsers.id,
@@ -231,7 +242,7 @@ clientAiAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema), as
       };
     }
 
-    return { user, provisioned };
+    return { user, provisioned, branding: brandingFromPolicy(policy.branding) };
   });
 
   if ('denied' in resolution) {
@@ -243,7 +254,7 @@ clientAiAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema), as
     return c.json({ error: resolution.denied.error }, resolution.denied.status);
   }
 
-  const { user, provisioned } = resolution;
+  const { user, provisioned, branding } = resolution;
   const token = nanoid(48);
   await redis.setex(
     CLIENT_AI_REDIS_KEYS.session(token),
@@ -265,5 +276,7 @@ clientAiAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema), as
     accessToken: token,
     expiresInSeconds: CLIENT_AI_SESSION_TTL_SECONDS,
     user: { id: user.id, email: user.email, name: user.name },
+    org: { id: user.orgId },
+    branding,
   });
 });
