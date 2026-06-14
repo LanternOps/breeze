@@ -96,4 +96,26 @@ describe('invoiceService guards', () => {
       svc.recordPayment('i1', { amount: 60, method: 'check', receivedAt: '2026-06-14' }, actor)
     ).rejects.toMatchObject({ code: 'OVERPAYMENT', status: 400 });
   });
+
+  it('recordPayment rejects exact-cents overpayment at +0.01 (OVERPAYMENT 400)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', balance: '50.00' }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.recordPayment('i1', { amount: 50.01, method: 'check', receivedAt: '2026-06-14' }, actor)
+    ).rejects.toMatchObject({ code: 'OVERPAYMENT', status: 400 });
+  });
+
+  it('getCustomerInvoice returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    await expect(
+      svc.getCustomerInvoice('i1', 'other-org')
+    ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+  });
+
+  it('markViewed returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', firstViewedAt: null }]);
+    await expect(
+      svc.markViewed('i1', 'other-org')
+    ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+  });
 });

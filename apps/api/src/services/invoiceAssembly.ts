@@ -1,4 +1,4 @@
-import { and, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, eq, ne, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { timeEntries, ticketParts } from '../db/schema';
 import { computeLineTotal } from './invoiceMath';
@@ -55,6 +55,9 @@ export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date):
     eq(timeEntries.orgId, orgId),
     eq(timeEntries.isBillable, true),
     eq(timeEntries.billingStatus, 'not_billed'),
+    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+    ne(timeEntries.billingStatus, 'contract'),
+    ne(timeEntries.billingStatus, 'no_charge'),
     sql`${timeEntries.endedAt} IS NOT NULL`,
     gte(timeEntries.endedAt, from),
     lte(timeEntries.endedAt, to)
@@ -71,6 +74,9 @@ export async function gatherOrgParts(orgId: string, from: Date, to: Date): Promi
     eq(ticketParts.orgId, orgId),
     eq(ticketParts.isBillable, true),
     eq(ticketParts.billingStatus, 'not_billed'),
+    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+    ne(ticketParts.billingStatus, 'contract'),
+    ne(ticketParts.billingStatus, 'no_charge'),
     gte(ticketParts.createdAt, from),
     lte(ticketParts.createdAt, to)
   ));
@@ -84,13 +90,17 @@ export async function gatherTicketBillables(ticketId: string): Promise<DraftLine
     durationMinutes: timeEntries.durationMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved
   }).from(timeEntries).where(and(
     eq(timeEntries.ticketId, ticketId), eq(timeEntries.isBillable, true), eq(timeEntries.billingStatus, 'not_billed'),
+    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+    ne(timeEntries.billingStatus, 'contract'), ne(timeEntries.billingStatus, 'no_charge'),
     sql`${timeEntries.endedAt} IS NOT NULL`
   ));
   const parts = await db.select({
     id: ticketParts.id, ticketId: ticketParts.ticketId, catalogItemId: ticketParts.catalogItemId,
     description: ticketParts.description, quantity: ticketParts.quantity, unitPrice: ticketParts.unitPrice, costBasis: ticketParts.costBasis
   }).from(ticketParts).where(and(
-    eq(ticketParts.ticketId, ticketId), eq(ticketParts.isBillable, true), eq(ticketParts.billingStatus, 'not_billed')
+    eq(ticketParts.ticketId, ticketId), eq(ticketParts.isBillable, true), eq(ticketParts.billingStatus, 'not_billed'),
+    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+    ne(ticketParts.billingStatus, 'contract'), ne(ticketParts.billingStatus, 'no_charge')
   ));
   return [...te.map(timeEntryToLineSpec), ...parts.map(ticketPartToLineSpec)];
 }

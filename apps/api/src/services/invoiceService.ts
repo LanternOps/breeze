@@ -1,4 +1,4 @@
-import { and, eq, desc, lt, inArray, sql } from 'drizzle-orm';
+import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   invoices, invoiceLines, invoicePayments, organizations, partners,
@@ -59,6 +59,10 @@ async function effectiveRateForOrg(orgId: string, _partnerId: string): Promise<s
  *  uses the org's effective rate; on issue the snapshotted tax_rate is passed instead. */
 export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?: string | null) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
+  // Frozen invoices can never be re-totaled by a direct call. issueInvoice computes
+  // totals inline with the snapshot rate and does NOT call this; assembly recomputes
+  // a fresh draft (still draft here), so this guard is safe on both paths.
+  assertDraft(inv);
   const lines = await db.select({
     lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible
   }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
@@ -175,18 +179,31 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   return { invoice: inv, lines }; // accounting view (all lines)
 }
 
-export async function getCustomerInvoice(invoiceId: string) {
+export async function getCustomerInvoice(invoiceId: string, orgId?: string) {
   const inv = await getOwnedInvoiceOr404(invoiceId); // RLS scopes; portal context supplies org access
+  // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
+  if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const lines = await db.select().from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
   return { invoice: inv, lines };
 }
 
 export async function listInvoices(query: { orgId?: string; status?: string; limit: number; cursor?: string }, actor: InvoiceActor) {
-  const conds = [] as ReturnType<typeof eq>[];
+  const conds = [] as Array<ReturnType<typeof eq>>;
   if (query.orgId) { requireOrgAccess(actor, query.orgId); conds.push(eq(invoices.orgId, query.orgId)); }
   if (query.status) conds.push(eq(invoices.status, query.status as never));
-  if (query.cursor) conds.push(lt(invoices.id, query.cursor)); // simple keyset; or use createdAt+id
-  const rows = await db.select().from(invoices).where(conds.length ? and(...conds) : undefined).orderBy(desc(invoices.createdAt)).limit(query.limit);
+  // Deterministic keyset: order by (createdAt, id) desc. The cursor is the last
+  // row's id; resolve its createdAt and filter (createdAt, id) < (cursorCreatedAt, cursorId).
+  if (query.cursor) {
+    const [c] = await db.select({ createdAt: invoices.createdAt }).from(invoices).where(eq(invoices.id, query.cursor)).limit(1);
+    if (c) {
+      conds.push(or(
+        lt(invoices.createdAt, c.createdAt),
+        and(eq(invoices.createdAt, c.createdAt), lt(invoices.id, query.cursor))
+      ) as ReturnType<typeof eq>);
+    }
+  }
+  const rows = await db.select().from(invoices).where(conds.length ? and(...conds) : undefined)
+    .orderBy(desc(invoices.createdAt), desc(invoices.id)).limit(query.limit);
   return rows;
 }
 
@@ -282,7 +299,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       RETURNING counter
     `);
     const counter = Number((counterRows as unknown as Array<{ counter: number }>)[0]?.counter);
-    if (!Number.isFinite(counter) || counter < 1) throw new Error('Failed to allocate invoice number');
+    if (!Number.isFinite(counter) || counter < 1) throw new InvoiceServiceError('Failed to allocate invoice number', 500, 'NUMBER_ALLOCATION_FAILED');
     const number = formatInvoiceNumber(partner?.invoiceNumberPrefix ?? 'INV', year, counter);
 
     // Recompute totals with the snapshotted rate, then write everything atomically.
@@ -302,6 +319,9 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       billToTaxExempt: org?.taxExempt ?? false, terms: partner?.invoiceFooter ?? null, updatedAt: issueDate
     }).where(eq(invoices.id, invoiceId));
 
+    // A since-deleted source row makes its `billed` flip a harmless no-op; the
+    // invoice stays self-contained via its immutable snapshot lines, so we don't
+    // re-verify the source rows still exist before flipping.
     if (timeIds.length) await db.update(timeEntries).set({ billingStatus: 'billed', updatedAt: issueDate }).where(inArray(timeEntries.id, timeIds));
     if (partIds.length) await db.update(ticketParts).set({ billingStatus: 'billed', updatedAt: issueDate }).where(inArray(ticketParts.id, partIds));
   }));
@@ -333,8 +353,10 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   requireOrgAccess(actor, inv.orgId);
   if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
-  const balance = Number(inv.balance);
-  if (Number(input.amount) > balance + 1e-9) throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');
+  // Exact integer-cents comparison — robust against float representation error.
+  if (Math.round(Number(input.amount) * 100) > Math.round(Number(inv.balance) * 100)) {
+    throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');
+  }
   const [payment] = await db.insert(invoicePayments).values({
     invoiceId, orgId: inv.orgId, amount: Number(input.amount).toFixed(2), method: input.method,
     reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
@@ -348,7 +370,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
 
 export async function voidPayment(paymentId: string, actor: InvoiceActor) {
   const [pay] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
-  if (!pay) throw new InvoiceServiceError('Payment not found', 404, 'LINE_NOT_FOUND');
+  if (!pay) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
   requireOrgAccess(actor, pay.orgId);
   await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
   await recomputeInvoiceStatus(pay.invoiceId);
@@ -377,31 +399,49 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
   const timeIds = lines.filter((l) => l.sourceType === 'time_entry' && l.sourceId).map((l) => l.sourceId!) as string[];
   const partIds = lines.filter((l) => l.sourceType === 'part' && l.sourceId).map((l) => l.sourceId!) as string[];
 
+  // Void + (optional) reissue commit atomically in ONE system transaction: the
+  // void/release and the fresh-draft clone must not be observable independently.
+  let draftId: string | null = null;
   await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const now = new Date();
     await db.update(invoices).set({ status: 'void', voidedAt: now, voidReason: reason, updatedAt: now }).where(eq(invoices.id, invoiceId));
     // release source rows so they can be re-invoiced
     if (timeIds.length) await db.update(timeEntries).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(timeEntries.id, timeIds));
     if (partIds.length) await db.update(ticketParts).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(ticketParts.id, partIds));
+
+    if (!opts.reissue) return;
+    // Clone source-backed lines into a fresh draft (released rows are not_billed again).
+    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
+    draftId = draft!.id;
+    await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
+    const srcLines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+
+    // Two-pass clone to preserve bundle hierarchy: insert parents (parentLineId IS
+    // NULL) first, map old line id → new line id, then insert children with their
+    // parentLineId remapped to the cloned parent.
+    const cloneValues = (l: typeof srcLines[number], parentLineId: string | null) => ({
+      invoiceId: draft!.id, orgId: l.orgId, sourceType: l.sourceType, sourceId: l.sourceId, catalogItemId: l.catalogItemId,
+      parentLineId, ticketId: l.ticketId, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
+      costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
+      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
+    });
+    const oldToNew = new Map<string, string>();
+    const parents = srcLines.filter((l) => l.parentLineId === null);
+    if (parents.length) {
+      const inserted = await db.insert(invoiceLines).values(parents.map((l) => cloneValues(l, null))).returning({ id: invoiceLines.id });
+      parents.forEach((l, i) => oldToNew.set(l.id, inserted[i]!.id));
+    }
+    const children = srcLines.filter((l) => l.parentLineId !== null);
+    if (children.length) {
+      await db.insert(invoiceLines).values(children.map((l) => cloneValues(l, oldToNew.get(l.parentLineId!) ?? null)));
+    }
   }));
 
   await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
 
-  if (opts.reissue) {
-    // clone source-backed lines into a fresh draft (released rows are not_billed again)
-    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
-    await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
-    const srcLines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
-    if (srcLines.length) {
-      await db.insert(invoiceLines).values(srcLines.map((l) => ({
-        invoiceId: draft!.id, orgId: l.orgId, sourceType: l.sourceType, sourceId: l.sourceId, catalogItemId: l.catalogItemId,
-        parentLineId: null, ticketId: l.ticketId, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
-        costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
-        lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
-      })));
-    }
-    await recomputeInvoiceTotals(draft!.id);
-    return getInvoice(draft!.id, actor);
+  if (opts.reissue && draftId) {
+    await recomputeInvoiceTotals(draftId);
+    return getInvoice(draftId, actor);
   }
   return getInvoice(invoiceId, actor);
 }
@@ -422,9 +462,15 @@ export async function runOverdueSweep(asOf: Date = new Date()): Promise<number> 
 }
 
 /** Portal/email open: stamp viewed timestamps (independent of status). */
-export async function markViewed(invoiceId: string): Promise<void> {
+export async function markViewed(invoiceId: string, orgId?: string): Promise<void> {
   const inv = await getOwnedInvoiceOr404(invoiceId);
+  // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
+  if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const now = new Date();
-  await db.update(invoices).set({ viewedAt: now, firstViewedAt: inv.firstViewedAt ?? now }).where(eq(invoices.id, invoiceId));
+  // SQL CASE keeps first_viewed_at write-once so concurrent calls can't both set it.
+  await db.update(invoices).set({
+    viewedAt: now,
+    firstViewedAt: sql`CASE WHEN ${invoices.firstViewedAt} IS NULL THEN ${now} ELSE ${invoices.firstViewedAt} END`
+  }).where(eq(invoices.id, invoiceId));
   if (inv.firstViewedAt === null) await emitInvoiceEvent({ type: 'invoice.viewed', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId });
 }

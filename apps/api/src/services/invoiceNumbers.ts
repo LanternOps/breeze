@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { InvoiceServiceError } from './invoiceTypes';
 
 export function formatInvoiceNumber(prefix: string, year: number, counter: number): string {
   return `${prefix}-${year}-${String(counter).padStart(4, '0')}`;
@@ -33,6 +34,6 @@ export async function allocateInvoiceCounter(partnerId: string, year: number): P
     )
   );
   const counter = Number((rows as unknown as Array<{ counter: number }>)[0]?.counter);
-  if (!Number.isFinite(counter) || counter < 1) throw new Error('Failed to allocate invoice number');
+  if (!Number.isFinite(counter) || counter < 1) throw new InvoiceServiceError('Failed to allocate invoice number', 500, 'NUMBER_ALLOCATION_FAILED');
   return counter;
 }

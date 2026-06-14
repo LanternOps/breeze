@@ -21,12 +21,14 @@ export type InvoiceServiceErrorCode =
   | 'SOURCE_ALREADY_BILLED'
   | 'OVERPAYMENT'
   | 'INVALID_STATE'
-  | 'LINE_NOT_FOUND';
+  | 'LINE_NOT_FOUND'
+  | 'PAYMENT_NOT_FOUND'
+  | 'NUMBER_ALLOCATION_FAILED';
 
 export class InvoiceServiceError extends Error {
   constructor(
     message: string,
-    public status: 400 | 403 | 404 | 409 = 400,
+    public status: 400 | 403 | 404 | 409 | 500 = 400,
     public code?: InvoiceServiceErrorCode
   ) {
     super(message);

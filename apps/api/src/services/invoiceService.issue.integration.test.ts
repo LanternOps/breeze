@@ -184,6 +184,48 @@ describe.runIf(RUN)('voidInvoice + runOverdueSweep', () => {
     expect(te.every((r) => r.s === 'not_billed')).toBe(true);
   });
 
+  it('void+reissue preserves bundle hierarchy: cloned child lines point at the cloned parent', async () => {
+    const f = await seedFixture();
+    const { invoice } = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromOrg({ orgId: f.orgId, from: dayBefore(), to: dayAfter() }, actor(f)));
+    const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+
+    // Inject a bundle parent + a child line under it into the issued invoice
+    // (system context bypasses the draft guard). This mirrors what addBundleLine
+    // produces: a parent (parent_line_id NULL) and child rows with parent_line_id set.
+    const { parentId, childId } = await withSystemDbAccessContext(async () => {
+      const [parent] = await db.insert(invoiceLines).values({
+        invoiceId: issued.id, orgId: f.orgId, sourceType: 'bundle', sourceId: null, catalogItemId: null,
+        parentLineId: null, ticketId: null, description: 'Bundle A', quantity: '1', unitPrice: '500.00',
+        costBasis: null, taxable: true, customerVisible: true, lineTotal: '500.00', isUnapprovedTime: false, sortOrder: 10
+      }).returning({ id: invoiceLines.id });
+      const [child] = await db.insert(invoiceLines).values({
+        invoiceId: issued.id, orgId: f.orgId, sourceType: 'bundle', sourceId: null, catalogItemId: null,
+        parentLineId: parent!.id, ticketId: null, description: 'Bundle component', quantity: '1', unitPrice: '0.00',
+        costBasis: null, taxable: false, customerVisible: true, lineTotal: '0.00', isUnapprovedTime: false, sortOrder: 10
+      }).returning({ id: invoiceLines.id });
+      return { parentId: parent!.id, childId: child!.id };
+    });
+    expect(parentId).toBeTruthy();
+    expect(childId).toBeTruthy();
+
+    const result = await withDbAccessContext(ctx(f), () => svc.voidInvoice(issued.id, 'rebuild', { reissue: true }, actor(f)));
+    expect(result.invoice.status).toBe('draft');
+
+    // The cloned draft must contain a bundle parent (parentLineId NULL) and a
+    // child whose parentLineId points at the cloned parent's id (not the old one).
+    const cloned = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, result.invoice.id)));
+    const clonedParent = cloned.find((l) => l.sourceType === 'bundle' && l.parentLineId === null && l.description === 'Bundle A');
+    const clonedChild = cloned.find((l) => l.description === 'Bundle component');
+    expect(clonedParent).toBeTruthy();
+    expect(clonedChild).toBeTruthy();
+    expect(clonedChild!.parentLineId).not.toBeNull();
+    expect(clonedChild!.parentLineId).toBe(clonedParent!.id);
+    // Remap is to the NEW parent, never the original.
+    expect(clonedChild!.parentLineId).not.toBe(parentId);
+  });
+
   it('runOverdueSweep flips a past-due sent invoice to overdue', async () => {
     const f = await seedFixture();
     const { invoice } = await withDbAccessContext(ctx(f), () =>
