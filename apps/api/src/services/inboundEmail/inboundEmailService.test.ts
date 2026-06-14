@@ -485,6 +485,46 @@ describe('processInboundEmail', () => {
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
+  // INGEST-TIME SELF-LOOP DROP (spec §5): mail whose sender is on our OWN inbound
+  // domain (e.g. our own outbound reply or an autoresponse bounce looping back) must
+  // be dropped EARLY — logged `ignored` with a self-loop note — before any
+  // match/create/quarantine decision. This is the ingest-time guard; the autoresponse-
+  // time `self-domain` rule in loopPrevention.ts is the separate backstop.
+  it('drops self-loop mail (sender on our own inbound domain) as ignored, before any create/match', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    // Sender's domain equals the inbound domain (tickets.example.com from the config mock).
+    await processInboundEmail(email({ from: 'acme@TICKETS.example.com', subject: 'looped back' }));
+
+    // No ticket, no comment, no quarantine — the dedup SELECT/match never run.
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(log[0]!.partnerId).toBe('p-1');
+    expect(log[0]!.ticketId).toBeNull();
+    expect(String(log[0]!.error)).toContain('self-loop');
+  });
+
+  it('does NOT drop normal mail when the sender domain differs from the inbound domain', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-normal', internalNumber: 'T-2026-0014' });
+
+    // jane@customer.com — different domain, must flow to the created path.
+    await processInboundEmail(email({ subject: 'real new issue' }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('created');
+  });
+
   // TEST 4 — partner-active gate: a suspended/inactive partner causes a `skipped` log
   // with no ticket creation and no comment append.
   it('partner-active gate: suspended partner yields skipped log, no ticket, no comment', async () => {

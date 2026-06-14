@@ -129,6 +129,21 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
       return;
     }
 
+    // (1c) Self-loop DROP (spec §5). If the SENDER is on our own inbound domain
+    // (`tickets.<domain>`), this is almost certainly our own outbound mail — a reply
+    // we sent, or an autoresponse that bounced — looping back in. Ingesting it would
+    // spawn a bogus ticket (or autoresponse) and potentially feed a mail loop. Drop
+    // it EARLY, before any match/create/quarantine decision, logging `ignored` with a
+    // self-loop note for the audit trail. (The autoresponse-time `self-domain` rule in
+    // loopPrevention.ts is the separate, defense-in-depth backstop.) When no platform
+    // domain is configured (self-hosted without TICKETS_INBOUND_DOMAIN) the helper
+    // returns null and this guard is skipped — nothing to compare against.
+    const inboundDomain = inboundDomainOrNull();
+    if (inboundDomain && senderDomain(n.from) === inboundDomain.toLowerCase()) {
+      await logInbound(n, partnerId, 'ignored', null, `self-loop: sender is inbound domain ${inboundDomain}`);
+      return;
+    }
+
     // (2) Idempotency — provider retries / at-least-once delivery. Scoped to the partner.
     // This SELECT alone is NOT the exactly-once guarantee: under CONCURRENT delivery two
     // workers can both miss the dup here and race to insert. Exactly-once is enforced by the
@@ -329,6 +344,14 @@ function inboundDomainOrNull(): string | null {
   } catch {
     return null;
   }
+}
+
+// Lower-cased domain part of an email address (everything after the last '@'),
+// or '' when the address is malformed. Used by the ingest-time self-loop drop.
+function senderDomain(addr: string): string {
+  const a = (addr || '').trim().toLowerCase();
+  const at = a.lastIndexOf('@');
+  return at >= 0 ? a.slice(at + 1) : '';
 }
 
 async function createFromEmail(
