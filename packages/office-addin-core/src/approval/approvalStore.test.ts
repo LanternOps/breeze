@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApprovalStore, type Execute, type ToolRequest } from './approvalStore';
-import type { WritePreview } from '../api/types';
+import type { ToolResultBody, WritePreview } from '../api/types';
 
 function writeRequest(toolUseId = 'tu-w1'): ToolRequest {
   return {
@@ -32,8 +32,13 @@ function gridPreview(before: string[][], after: string[][]): WritePreview {
 function makeStore(overrides: {
   execute?: Execute;
   buildPreview?: (toolName: string, input: Record<string, unknown>) => Promise<WritePreview>;
+  postToolResult?: (result: ToolResultBody) => Promise<void>;
+  reportPostError?: (err: unknown) => void;
 } = {}) {
-  const postToolResult = vi.fn(async () => undefined);
+  const postToolResult = vi.fn<(result: ToolResultBody) => Promise<void>>(
+    overrides.postToolResult ?? (async () => undefined),
+  );
+  const reportPostError = overrides.reportPostError ?? vi.fn();
   const execute: Execute =
     overrides.execute ??
     vi.fn(async () => ({
@@ -45,8 +50,8 @@ function makeStore(overrides: {
     vi.fn(async (_toolName: string, input: Record<string, unknown>) =>
       gridPreview([['']], (input.cells as string[][]) ?? [['hello']]),
     );
-  const store = new ApprovalStore({ postToolResult, execute, buildPreview });
-  return { store, postToolResult, execute, buildPreview };
+  const store = new ApprovalStore({ postToolResult, execute, buildPreview, reportPostError });
+  return { store, postToolResult, execute, buildPreview, reportPostError };
 }
 
 describe('ApprovalStore', () => {
@@ -210,6 +215,54 @@ describe('ApprovalStore', () => {
       toolUseId: 'tu-w4',
       status: 'error',
       output: { error: expect.stringContaining('Unsupported address') },
+    });
+  });
+
+  describe('postToolResult failure routing', () => {
+    it('apply routes a rejected post to reportPostError (does not throw, does not hang)', async () => {
+      const boom = new Error('network down');
+      const postToolResult = vi.fn(async () => {
+        throw boom;
+      });
+      const reportPostError = vi.fn();
+      const { store } = makeStore({ postToolResult, reportPostError });
+      await store.enqueue(writeRequest('tu-fail1'));
+      // The Apply must resolve (no unhandled rejection) even though the post failed.
+      await expect(store.apply('tu-fail1')).resolves.toBeUndefined();
+      expect(reportPostError).toHaveBeenCalledWith(boom);
+      // The local write still happened and was recorded — only the post failed.
+      expect(store.getAppliedChanges()).toHaveLength(1);
+    });
+
+    it('reject routes a rejected post to reportPostError', async () => {
+      const boom = new Error('5xx');
+      const postToolResult = vi.fn(async () => {
+        throw boom;
+      });
+      const reportPostError = vi.fn();
+      const { store } = makeStore({ postToolResult, reportPostError });
+      await store.enqueue(writeRequest('tu-fail2'));
+      await expect(store.reject('tu-fail2')).resolves.toBeUndefined();
+      expect(reportPostError).toHaveBeenCalledWith(boom);
+    });
+
+    it('auto-apply routes a rejected post to reportPostError', async () => {
+      const boom = new Error('timeout');
+      const postToolResult = vi.fn(async () => {
+        throw boom;
+      });
+      const reportPostError = vi.fn();
+      const { store } = makeStore({ postToolResult, reportPostError });
+      store.setAutoApply(true);
+      await expect(store.enqueue(writeRequest('tu-fail3'))).resolves.toBeUndefined();
+      expect(reportPostError).toHaveBeenCalledWith(boom);
+    });
+
+    it('a successful post never calls reportPostError', async () => {
+      const { store, reportPostError } = makeStore();
+      await store.enqueue(writeRequest('tu-ok'));
+      await store.apply('tu-ok');
+      expect(reportPostError).not.toHaveBeenCalled();
     });
   });
 

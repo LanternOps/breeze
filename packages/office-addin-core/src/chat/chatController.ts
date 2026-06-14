@@ -188,6 +188,10 @@ export class ChatController {
       // Bind execution to the host's tool layer so apply/auto-apply/revert use
       // the same executors as the dispatcher.
       execute: (toolName, input) => runTool(toolName, input, host.toolExecutors),
+      // A failed Apply/Reject/auto-apply post must NOT vanish: surface it (or
+      // swallow the benign post-timeout 404) instead of letting the model's
+      // parked turn hang until the bridge timeout.
+      reportPostError: (err) => this.handlePostError(err),
     });
   }
 
@@ -404,7 +408,39 @@ export class ChatController {
       return;
     }
     const { status, output } = await runTool(request.toolName, request.input, this.host.toolExecutors);
-    await this.api.postToolResult(sessionId, { toolUseId: request.toolUseId, status, output });
+    // A non-mutating tool result posts directly (no approval card). The post can
+    // still be rejected (network/5xx, or the post-timeout 404) — surface it via
+    // the same classifier the approval store uses instead of letting the parked
+    // turn hang silently.
+    try {
+      await this.api.postToolResult(sessionId, { toolUseId: request.toolUseId, status, output });
+    } catch (err) {
+      this.handlePostError(err);
+    }
+  }
+
+  /**
+   * Classify a FAILED postToolResult. A post-timeout 404 `unknown_tool_request`
+   * is BENIGN — the server already gave up on that parked request (unknown id /
+   * already resolved / timed out), so re-reporting it does nothing useful: we
+   * swallow it (debug log only, no banner). ANY other failure (network error,
+   * 5xx) is surfaced to the user as an error banner AND logged, because the
+   * model's turn is now stuck waiting for a result that will never arrive.
+   */
+  private handlePostError(err: unknown): void {
+    if (err instanceof ApiError && err.status === 404 && err.code === 'unknown_tool_request') {
+      // eslint-disable-next-line no-console
+      console.debug('client-ai: tool result post hit a benign 404 (server already gave up)', err);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.error('client-ai: failed to post tool result to server', err);
+    this.update({
+      banner: {
+        kind: 'error',
+        text: "Couldn't send your change to Breeze. Check your connection and try again.",
+      },
+    });
   }
 
   /** After an SSE reconnect: replace the local thread with server history (already redacted). */

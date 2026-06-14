@@ -77,6 +77,15 @@ export type ApprovalDeps = {
    * card, or a non-Excel host's equivalent) via the HostAdapter.
    */
   buildPreview: BuildPreview;
+  /**
+   * Sink for a FAILED postToolResult (network error, 5xx, or the post-timeout
+   * 404 unknown_tool_request). OPTIONAL — when unset, post failures are
+   * swallowed (back-compat). The composition root (ChatController) binds this to
+   * classify benign-vs-surfaced and route to the pane banner + a log. Without
+   * it a rejected post would vanish: no banner, no log, and the parked SDK turn
+   * hangs until the 300s bridge timeout.
+   */
+  reportPostError?: (err: unknown) => void;
 };
 
 export class ApprovalStore {
@@ -101,6 +110,21 @@ export class ApprovalStore {
 
   private notify(): void {
     for (const listener of [...this.listeners]) listener();
+  }
+
+  /**
+   * Post a tool result to the server, surfacing (not swallowing) a rejected
+   * post. A failed post means the model's parked turn never gets its result —
+   * left silent it would hang until the 300s bridge timeout. We route the error
+   * to `reportPostError` (the pane decides benign-vs-surface + logs); the local
+   * Office.js write has already happened, so we don't unwind it.
+   */
+  private async postResult(result: ToolResultBody): Promise<void> {
+    try {
+      await this.deps.postToolResult(result);
+    } catch (err) {
+      this.deps.reportPostError?.(err);
+    }
   }
 
   getPending(): readonly PendingApproval[] {
@@ -153,7 +177,7 @@ export class ApprovalStore {
       // Malformed input (bad address etc.): tell the model now instead of
       // rendering a broken card the user can't reason about. (Same in Auto
       // mode — a write we can't preview is one we won't silently execute.)
-      await this.deps.postToolResult({
+      await this.postResult({
         toolUseId: request.toolUseId,
         status: 'error',
         output: { error: err instanceof Error ? err.message : String(err) },
@@ -167,7 +191,7 @@ export class ApprovalStore {
       const run = this.deps.execute;
       const { status, output } = await run(request.toolName, request.input);
       if (status === 'success') this.recordApplied(request.toolUseId, preview);
-      await this.deps.postToolResult({ toolUseId: request.toolUseId, status, output });
+      await this.postResult({ toolUseId: request.toolUseId, status, output });
       return;
     }
     this.queue = [
@@ -199,14 +223,14 @@ export class ApprovalStore {
     const run = this.deps.execute;
     const { status, output } = await run(pending.toolName, pending.input);
     if (status === 'success') this.recordApplied(toolUseId, pending.preview);
-    await this.deps.postToolResult({ toolUseId, status, output });
+    await this.postResult({ toolUseId, status, output });
   }
 
   /** Reject → report 'rejected' WITHOUT executing anything. */
   async reject(toolUseId: string, reason = 'User rejected the change'): Promise<void> {
     const pending = this.take(toolUseId);
     if (!pending) return;
-    await this.deps.postToolResult({ toolUseId, status: 'rejected', output: { reason } });
+    await this.postResult({ toolUseId, status: 'rejected', output: { reason } });
   }
 
   /**
