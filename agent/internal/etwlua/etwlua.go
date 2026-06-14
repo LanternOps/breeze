@@ -120,6 +120,16 @@ type Event struct {
 	ObservedAt time.Time `json:"observed_at"`
 }
 
+// ElevationOutcome is the server's synchronous ingest decision for a posted
+// uac_intercept elevation request, parsed from the POST response body
+// {"id":"<uuid>","status":"<status>"}. Status is one of "pending",
+// "auto_approved", "denied", or "ignored". RequestID is empty when the
+// server suppressed the request (status "ignored", id null).
+type ElevationOutcome struct {
+	RequestID string
+	Status    string
+}
+
 // Subscriber abstracts the ETW event source. Real Windows builds use
 // etwSession from etwlua_windows.go; tests pass a fake.
 type Subscriber interface {
@@ -137,7 +147,10 @@ type Subscriber interface {
 // create a cycle once heartbeat imports etwlua for the SendElevationRequest
 // handler).
 type HeartbeatPoster interface {
-	SendElevationRequest(req Event) error
+	// SendElevationRequest posts the detected prompt and returns the
+	// server's ingest decision. A non-nil error means the post failed
+	// (network/5xx) and the event should be queued for retry.
+	SendElevationRequest(req Event) (ElevationOutcome, error)
 	// IsUACInterceptionEnabled reports the server-resolved 'pam' config
 	// policy state. While false, handleEvent drops events entirely (no
 	// post, no offline queue) and the periodic queue drain is paused.
@@ -259,7 +272,7 @@ func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queu
 		return
 	}
 
-	if err := hb.SendElevationRequest(ev); err != nil {
+	if _, err := hb.SendElevationRequest(ev); err != nil {
 		log.Warn("etwlua: post failed, queueing",
 			"user", ev.SubjectUsername,
 			"path", ev.TargetExecutablePath,

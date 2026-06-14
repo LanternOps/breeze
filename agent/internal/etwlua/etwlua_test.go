@@ -25,18 +25,18 @@ func (f *fakeHB) IsUACInterceptionEnabled() bool {
 	return !f.disabled.Load()
 }
 
-func (f *fakeHB) SendElevationRequest(req Event) error {
+func (f *fakeHB) SendElevationRequest(req Event) (ElevationOutcome, error) {
 	if remaining := f.failNext.Load(); remaining > 0 {
 		f.failNext.Add(-1)
 		if f.failErr != nil {
-			return f.failErr
+			return ElevationOutcome{}, f.failErr
 		}
-		return errors.New("fakeHB: forced failure")
+		return ElevationOutcome{}, errors.New("fakeHB: forced failure")
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.received = append(f.received, req)
-	return nil
+	return ElevationOutcome{}, nil
 }
 
 func (f *fakeHB) Received() []Event {
