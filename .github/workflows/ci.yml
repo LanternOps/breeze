@@ -252,6 +252,33 @@ jobs:
       - name: Run Excel Add-in tests
         run: pnpm test --filter=@breeze/excel-addin
 
+  test-word-addin:
+    name: Test Word Add-in
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Word Add-in tests
+        run: pnpm test --filter=@breeze/word-addin
+
+      - name: Typecheck Word Add-in
+        run: pnpm --filter=@breeze/word-addin exec tsc --noEmit
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -892,7 +919,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, test-office-addin-core, test-excel-addin, security-audit, build-api, build-web, build-agent, test-agent, integration-test, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-web, test-office-addin-core, test-excel-addin, test-word-addin, security-audit, build-api, build-web, build-agent, test-agent, integration-test, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -903,6 +930,7 @@ jobs:
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
           TEST_EXCEL_ADDIN_RESULT: ${{ needs.test-excel-addin.result }}
+          TEST_WORD_ADDIN_RESULT: ${{ needs.test-word-addin.result }}
           SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
           BUILD_API_RESULT: ${{ needs.build-api.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
@@ -919,6 +947,7 @@ jobs:
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
              [[ "${TEST_EXCEL_ADDIN_RESULT}" != "success" ]] || \
+             [[ "${TEST_WORD_ADDIN_RESULT}" != "success" ]] || \
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
