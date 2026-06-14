@@ -3,6 +3,15 @@ import { dlpConfigSchema, DEFAULT_DLP_CONFIG } from '@breeze/shared/validators';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
 import { CLIENT_HOSTS } from '../../services/clientAiHosts';
 
+/**
+ * Mirrors `DLP_MAX_TOTAL_CHARS` in services/clientAiDlp.ts — the engine's
+ * fail-closed total-char limit. Inlined (not imported) so this schema module
+ * never depends on the DLP service, which route tests routinely `vi.mock`
+ * (an imported value would resolve to `undefined` under the mock and break
+ * schema construction at import time).
+ */
+const WB_TEXT_MAX_CHARS = 2_000_000;
+
 // ============================================
 // Constants (mirrors routes/portal/schemas.ts)
 // ============================================
@@ -142,6 +151,12 @@ export const workbookContextSchema = z.object({
     .array(z.array(z.union([z.string().max(32767), z.number(), z.boolean(), z.null()])).max(500))
     .max(5000)
     .optional(),
+  /** Linear-text context for grid-less hosts (Word/PowerPoint/Outlook). Excel
+   *  never sets it — its chip is grid-shaped (`cells`). Capped at the DLP
+   *  engine's total-char fail-closed limit so it's always scannable. Without
+   *  this field the client's `WorkbookContext.text` was silently dropped at
+   *  `.parse()`, so ingress never interpolated or DLP-scanned it. */
+  text: z.string().max(WB_TEXT_MAX_CHARS).optional(),
 });
 
 export const sendClientMessageSchema = z.object({

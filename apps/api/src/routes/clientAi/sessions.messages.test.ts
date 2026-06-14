@@ -283,6 +283,68 @@ describe('POST /client-ai/sessions/:id/messages', () => {
     expect(pushed).not.toContain('4111111111111111');
   });
 
+  it('workbookContext.text (Word/PPT grid-less host) is interpolated into the model prompt — not the literal placeholder', async () => {
+    const res = await postMessage({
+      content: 'summarize the deck',
+      workbookContext: { kind: 'sheet', text: 'Slide 1: Q3 roadmap\nSlide 2: budget' },
+    });
+    expect(res.status).toBe(202);
+
+    const pushed = (activeSession.inputController as { pushMessage: ReturnType<typeof vi.fn> }).pushMessage.mock.calls[0]![0] as string;
+    expect(pushed).toContain('[Workbook context');
+    expect(pushed).toContain('Slide 1: Q3 roadmap');
+    expect(pushed).not.toContain('(no cell data provided)');
+  });
+
+  it('workbookContext.text goes through applyDlp and the redacted text is interpolated + persisted', async () => {
+    applyDlpMock
+      .mockResolvedValueOnce({ action: 'allow', text: 'review this', redactions: [] }) // prompt pass
+      .mockResolvedValueOnce({
+        action: 'allow',
+        text: 'card [REDACTED:creditCard] in slide notes',
+        redactions: [{ rule: 'creditCard', count: 1, location: 'text' }],
+      }); // wb.text pass
+    const valuesSpy = vi.fn(() => Promise.resolve());
+    dbInsertMock.mockImplementation(() => ({ values: valuesSpy }));
+
+    const res = await postMessage({
+      content: 'review this',
+      workbookContext: { kind: 'sheet', text: 'card 4111111111111111 in slide notes' },
+    });
+    expect(res.status).toBe(202);
+
+    // wb.text leaves Breeze too — scanned at the same chokepoint as cells
+    expect(applyDlpMock).toHaveBeenNthCalledWith(2, {
+      text: 'card 4111111111111111 in slide notes',
+      dlpConfig: policyState.policy.dlpConfig,
+      orgId: ORG_ID,
+    });
+
+    // The model sees the redacted text, never the raw card number
+    const pushed = (activeSession.inputController as { pushMessage: ReturnType<typeof vi.fn> }).pushMessage.mock.calls[0]![0] as string;
+    expect(pushed).toContain('[REDACTED:creditCard]');
+    expect(pushed).not.toContain('4111111111111111');
+    expect(JSON.stringify(valuesSpy.mock.calls)).not.toContain('4111111111111111');
+  });
+
+  it('wb.text DLP block → 400, nothing pushed (governance gap for mail closed)', async () => {
+    applyDlpMock
+      .mockResolvedValueOnce({ action: 'allow', text: 'review this', redactions: [] }) // prompt pass
+      .mockResolvedValueOnce({
+        action: 'block',
+        blockReason: 'dlp_blocked:iban',
+        redactions: [{ rule: 'iban', count: 1, location: 'text' }],
+      }); // wb.text blocked
+
+    const res = await postMessage({
+      content: 'review this',
+      workbookContext: { kind: 'sheet', text: 'acct DE89370400440532013000' },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).reason).toBe('dlp_blocked:iban');
+    expect(dbInsertMock).not.toHaveBeenCalled();
+  });
+
   it('409s when a message is already processing', async () => {
     managerMock.tryTransitionToProcessing.mockReturnValue(false);
     expect((await postMessage({ content: 'hi' })).status).toBe(409);

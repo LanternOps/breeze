@@ -7,6 +7,7 @@ import {
   createClientSessionSchema,
   templateBodySchema,
   templateUpdateSchema,
+  workbookContextSchema,
   USAGE_MONTH_REGEX,
 } from './schemas';
 
@@ -111,6 +112,27 @@ describe('createClientSessionSchema', () => {
     for (const host of ['excel', 'word', 'powerpoint', 'outlook']) {
       expect(createClientSessionSchema.safeParse({ host }).success).toBe(true);
     }
+  });
+});
+
+describe('workbookContextSchema', () => {
+  it('preserves the linear-text field (Word/PPT grid-less hosts) — was silently dropped pre-fix', () => {
+    const parsed = workbookContextSchema.parse({ kind: 'sheet', text: 'Slide 1: Q3 plan' });
+    expect(parsed.text).toBe('Slide 1: Q3 plan');
+  });
+
+  it('still accepts the grid-shaped Excel chip (cells, no text)', () => {
+    const parsed = workbookContextSchema.parse({ kind: 'selection', address: 'A1', cells: [['x']] });
+    expect(parsed.cells).toEqual([['x']]);
+    expect(parsed.text).toBeUndefined();
+  });
+
+  it('caps text at the DLP total-char fail-closed limit (drift guard)', async () => {
+    // The cap is inlined in schemas.ts to avoid coupling to the mockable DLP
+    // service; this guard fails loudly if the two ever diverge.
+    const { DLP_MAX_TOTAL_CHARS } = await import('../../services/clientAiDlp');
+    expect(workbookContextSchema.safeParse({ kind: 'sheet', text: 'x'.repeat(DLP_MAX_TOTAL_CHARS) }).success).toBe(true);
+    expect(workbookContextSchema.safeParse({ kind: 'sheet', text: 'x'.repeat(DLP_MAX_TOTAL_CHARS + 1) }).success).toBe(false);
   });
 });
 
