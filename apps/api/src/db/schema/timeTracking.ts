@@ -6,6 +6,7 @@ import {
 import { partners, organizations } from './orgs';
 import { users } from './users';
 import { tickets } from './portal';
+import { catalogItems } from './catalog';
 
 export const billingStatusEnum = pgEnum('billing_status', ['not_billed', 'billed', 'no_charge', 'contract']);
 
@@ -57,6 +58,7 @@ export const ticketParts = pgTable('ticket_parts', {
   isBillable: boolean('is_billable').notNull().default(true),
   billingStatus: billingStatusEnum('billing_status').notNull().default('not_billed'),
   addedBy: uuid('added_by').references(() => users.id),
+  catalogItemId: uuid('catalog_item_id').references(() => catalogItems.id, { onDelete: 'set null' }),
   notes: text('notes'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
