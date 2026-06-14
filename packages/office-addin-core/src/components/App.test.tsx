@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
 import type { HostAdapter } from '../host/types';
@@ -35,5 +35,31 @@ describe('App (core, host-parameterized)', () => {
     // Error (not AuthBlockedError) → the phase machine lands on `signin`.
     render(<App host={fakeHost()} clientHost="word" />);
     await waitFor(() => expect(screen.getByTestId('signin-button')).toBeTruthy());
+  });
+
+  it('re-reads the active context label when the subscribed selection/item-change callback fires', async () => {
+    // A pinned Outlook pane survives item switches: mailbox.item is replaced per
+    // selection, so the App must re-read the context (NOT start a fresh session)
+    // when host.subscribeSelectionChanged fires. Reuses the same subscription the
+    // Excel selection chip already wires.
+    let fire: (() => void) | undefined;
+    const captureName = vi.fn(async () => 'first message');
+    const subscribeSelectionChanged = vi.fn((cb: () => void) => {
+      fire = cb;
+      return () => {};
+    });
+    render(
+      <App
+        host={fakeHost({ captureName, subscribeSelectionChanged })}
+        clientHost="outlook"
+      />,
+    );
+    // App subscribes on mount and reads the context label once.
+    await waitFor(() => expect(subscribeSelectionChanged).toHaveBeenCalled());
+    await waitFor(() => expect(captureName).toHaveBeenCalledTimes(1));
+    // Simulate an item switch — the subscribed callback fires and the App
+    // re-reads the context label rather than binding the stale one.
+    fire?.();
+    await waitFor(() => expect(captureName).toHaveBeenCalledTimes(2));
   });
 });

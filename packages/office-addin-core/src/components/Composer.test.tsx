@@ -81,4 +81,37 @@ describe('Composer', () => {
     fireEvent.change(screen.getByTestId('composer-input'), { target: { value: 'hi' } });
     expect(onDraftChange).toHaveBeenCalledWith('hi');
   });
+
+  it('uses the Excel default context options and placeholder when none are provided', () => {
+    render(<Composer {...baseProps} {...selectionProps(undefined)} />);
+    const options = Array.from(
+      screen.getByTestId('context-select').querySelectorAll('option'),
+    ).map((o) => o.textContent);
+    expect(options).toEqual(['Selection', 'Whole sheet', 'No workbook data']);
+    expect(screen.getByTestId('composer-input').getAttribute('placeholder')).toBe(
+      'Ask about this workbook…',
+    );
+  });
+
+  it('renders host-supplied contextOptions and composerPlaceholder when provided', () => {
+    const contextOptions = [
+      { value: 'selection' as WorkbookContextKind, label: 'This email' },
+      { value: 'none' as WorkbookContextKind, label: 'No email data' },
+    ];
+    render(
+      <Composer
+        {...baseProps}
+        {...selectionProps(undefined)}
+        contextOptions={contextOptions}
+        composerPlaceholder="Ask about this email…"
+      />,
+    );
+    const options = Array.from(
+      screen.getByTestId('context-select').querySelectorAll('option'),
+    ).map((o) => o.textContent);
+    expect(options).toEqual(['This email', 'No email data']);
+    expect(screen.getByTestId('composer-input').getAttribute('placeholder')).toBe(
+      'Ask about this email…',
+    );
+  });
 });

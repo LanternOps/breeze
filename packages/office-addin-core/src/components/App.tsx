@@ -32,6 +32,26 @@ type Phase =
 export function App({ host, clientHost }: { host: HostAdapter; clientHost: ClientHost }) {
   const [phase, setPhase] = useState<Phase>({ name: 'loading' });
 
+  // Item-changed rebinding (the mail-model behavior). A pinned Outlook pane
+  // survives item switches: `mailbox.item` is replaced per selection, so the
+  // core must re-read the active context when the host signals a change. We
+  // reuse the SAME subscription the Excel selection chip already wires
+  // (`host.subscribeSelectionChanged`, now documented to cover mailbox-item
+  // changes too) and re-read the context label via `host.captureName`. Policy
+  // is re-read context, NOT start a fresh session — for document hosts this is
+  // a harmless extra label read on selection moves.
+  useEffect(() => {
+    // Re-read the active context label so a stale (replaced) item is never the
+    // one the next session binds. The read itself must never throw in a way that
+    // breaks the pane.
+    const reread = () => {
+      void host.captureName().catch(() => undefined);
+    };
+    reread();
+    const unsubscribe = host.subscribeSelectionChanged(reread);
+    return unsubscribe;
+  }, [host]);
+
   useEffect(() => {
     const restored = getStoredSession();
     if (restored) {

@@ -52,12 +52,31 @@ export type HostAdapter = {
    */
   captureSelectionAddress: () => Promise<string | undefined>;
   /**
-   * Subscribe to host selection changes; invokes `cb` whenever the selection
-   * moves so the core can re-read via `captureSelectionAddress`. Returns an
-   * unsubscribe function. The Excel impl wires `DocumentSelectionChanged` and
-   * returns a no-op unsubscribe (it never removes the handler — see
-   * host/excelSelection.ts). REQUIRED: a one-shot capture alone would freeze the
-   * live selection chip, a regression.
+   * Subscribe to host context changes; invokes `cb` whenever the active context
+   * changes (selection / mailbox item) so the core can re-read via
+   * `captureSelectionAddress` (and re-read the context label). Returns an
+   * unsubscribe function. For document hosts (Excel/Word/PPT) this fires on
+   * selection moves — the impl wires `DocumentSelectionChanged` and returns a
+   * no-op unsubscribe (it never removes the handler — see
+   * host/excelSelection.ts). For the mail model (Outlook) it fires when the
+   * pinned pane's `mailbox.item` is replaced (item switch). REQUIRED: a one-shot
+   * capture alone would freeze the live selection chip and, for a pinned mail
+   * pane, bind the stale item — both regressions.
    */
   subscribeSelectionChanged: (cb: () => void) => () => void;
+  /**
+   * OPTIONAL host-specific composer context-picker options. When present, the
+   * Composer renders these instead of the Excel defaults
+   * (Selection / Whole sheet / No workbook data) — e.g. Outlook supplies
+   * "This email" / "No email data". Excel/Word/PowerPoint leave this unset and
+   * inherit the workbook-flavored defaults.
+   */
+  contextOptions?: Array<{ value: WorkbookContextKind; label: string }>;
+  /**
+   * OPTIONAL host-specific composer input placeholder. When present, the
+   * Composer uses it instead of the Excel default ("Ask about this workbook…")
+   * — e.g. Outlook supplies "Ask about this email…". Unset hosts inherit the
+   * default.
+   */
+  composerPlaceholder?: string;
 };

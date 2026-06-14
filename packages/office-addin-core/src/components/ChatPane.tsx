@@ -132,6 +132,8 @@ export function ChatPane({
         onDraftChange={(text) => controller.setDraft(text)}
         onContextKindChange={(kind) => controller.setContextKind(kind)}
         onSend={() => void controller.send()}
+        {...(host.contextOptions ? { contextOptions: host.contextOptions } : {})}
+        {...(host.composerPlaceholder ? { composerPlaceholder: host.composerPlaceholder } : {})}
       />
       <BrandingFooter branding={session.branding} />
 
