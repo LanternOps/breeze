@@ -20,6 +20,7 @@ import { ApprovalStore } from '../approval/approvalStore';
 import type { HostAdapter } from '../host/types';
 import type {
   ClientAiStreamEvent,
+  ClientHost,
   CreateSessionBody,
   SendMessageBody,
   SessionCreated,
@@ -63,7 +64,7 @@ export type ChatApi = {
   postToolResult: (sessionId: string, result: ToolResultBody) => Promise<void>;
   streamEvents: (sessionId: string, callbacks: StreamCallbacks) => StreamHandle;
   getSession: (sessionId: string) => Promise<SessionHistory>;
-  listSessions: () => Promise<SessionListItem[]>;
+  listSessions: (host?: ClientHost) => Promise<SessionListItem[]>;
   flagSession: (sessionId: string, reason?: string) => Promise<void>;
 };
 
@@ -130,6 +131,15 @@ export type ChatControllerDeps = {
    */
   host: HostAdapter;
   /**
+   * Which Office host this pane runs inside (distinct from the `host` adapter
+   * above — this is the wire discriminant, not the object-model seam). Threaded
+   * to the server on createSession/listSessions so it serves the matching tool
+   * registry + system prompt. Defaults to 'excel' for back-compat: without it
+   * the server defaults to 'excel' too, so an unthreaded pane would silently get
+   * Excel tools.
+   */
+  clientHost?: ClientHost;
+  /**
    * Direct overrides for the context-capture seams. Take precedence over the
    * host adapter so existing tests that inject these keep working; production
    * leaves them unset and the host adapter supplies them.
@@ -158,12 +168,14 @@ export class ChatController {
   private nextId = 1;
   private api: ChatApi;
   private host: HostAdapter;
+  private clientHost: ClientHost;
   private capture: (kind: WorkbookContextKind) => Promise<WorkbookContext | undefined>;
   private captureName: () => Promise<string | undefined>;
 
   constructor(deps: ChatControllerDeps) {
     this.api = deps.api ?? realApi;
     this.host = deps.host;
+    this.clientHost = deps.clientHost ?? 'excel';
     this.capture = deps.captureContext ?? this.host.captureContext;
     this.captureName = deps.captureName ?? this.host.captureName;
     const host = this.host;
@@ -247,7 +259,10 @@ export class ChatController {
     } catch {
       workbookName = undefined; // workbook-name capture must never block session creation
     }
-    const created = await this.api.createSession(workbookName ? { workbookName } : {});
+    const created = await this.api.createSession({
+      host: this.clientHost,
+      ...(workbookName ? { workbookName } : {}),
+    });
     this.sessionId = created.sessionId;
     // Surface the effective org write policy so the pane can render (or hide)
     // the Auto/Ask toggle. Auto is impossible unless the org opted in.
@@ -270,7 +285,7 @@ export class ChatController {
 
   /** History list (per-user, workbook-tagged) for the resume picker. */
   listSessions(): Promise<SessionListItem[]> {
-    return this.api.listSessions();
+    return this.api.listSessions(this.clientHost);
   }
 
   /** "New chat" — tear down the current session/stream and reset the thread. */

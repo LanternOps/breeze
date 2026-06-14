@@ -10,6 +10,7 @@ import {
   CLIENT_AI_SSE_EVENTS,
   type ClientAiStreamEvent,
   type ClientAiTemplate,
+  type ClientHost,
   type CreateSessionBody,
   type SendMessageBody,
   type SessionCreated,
@@ -100,9 +101,17 @@ export async function createSession(
   };
 }
 
-/** GET /client-ai/sessions → { sessions: [...] } — THIS user's history (workbook-tagged). */
-export async function listSessions(fetchImpl?: FetchLike): Promise<SessionListItem[]> {
-  const body = await expectOk(await apiFetch('/client-ai/sessions', {}, fetchImpl));
+/**
+ * GET /client-ai/sessions → { sessions: [...] } — THIS user's history
+ * (workbook-tagged). The host is forwarded as `?host=<host>` so a non-Excel pane
+ * lists only its own host's sessions.
+ */
+export async function listSessions(
+  host?: ClientHost,
+  fetchImpl?: FetchLike,
+): Promise<SessionListItem[]> {
+  const path = host ? `/client-ai/sessions?host=${encodeURIComponent(host)}` : '/client-ai/sessions';
+  const body = await expectOk(await apiFetch(path, {}, fetchImpl));
   if (body && typeof body === 'object' && Array.isArray((body as { sessions?: unknown }).sessions))
     return (body as { sessions: SessionListItem[] }).sessions;
   return [];

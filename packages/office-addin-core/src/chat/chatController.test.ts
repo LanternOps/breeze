@@ -139,7 +139,7 @@ describe('ChatController — send', () => {
     await controller.send('What does column B total to?');
     await controller.send('And C?');
     expect(api.createSession).toHaveBeenCalledTimes(1); // the busy guard makes the 2nd send a no-op
-    expect(api.createSession).toHaveBeenCalledWith({ workbookName: 'Q3 Budget.xlsx' });
+    expect(api.createSession).toHaveBeenCalledWith({ host: 'excel', workbookName: 'Q3 Budget.xlsx' });
     expect(api.streamEvents).toHaveBeenCalledTimes(1);
     expect(api.sendMessage).toHaveBeenCalledWith('sess-1', {
       content: 'What does column B total to?',
@@ -298,7 +298,7 @@ describe('ChatController — conversation history', () => {
       captureName: async () => undefined,
     });
     await controller.send('hello');
-    expect(api.createSession).toHaveBeenCalledWith({});
+    expect(api.createSession).toHaveBeenCalledWith({ host: 'excel' });
   });
 
   it("never lets a captureName failure block session creation", async () => {
@@ -312,7 +312,7 @@ describe('ChatController — conversation history', () => {
       },
     });
     await controller.send('hello');
-    expect(api.createSession).toHaveBeenCalledWith({});
+    expect(api.createSession).toHaveBeenCalledWith({ host: 'excel' });
     expect(api.sendMessage).toHaveBeenCalled();
   });
 
@@ -330,6 +330,38 @@ describe('ChatController — conversation history', () => {
     const api = stubApi({ listSessions: vi.fn(async () => [item]) });
     const controller = new ChatController({ api, host: fakeHost() });
     await expect(controller.listSessions()).resolves.toEqual([item]);
+  });
+
+  it('threads clientHost through createSession and listSessions (Word pane → Word registry/prompt)', async () => {
+    const api = stubApi();
+    const controller = new ChatController({
+      api,
+      host: fakeHost(),
+      clientHost: 'word',
+      captureContext: async () => undefined,
+      captureName: async () => undefined,
+    });
+    await controller.send('summarize this document');
+    expect(api.createSession).toHaveBeenCalledWith({ host: 'word' });
+    await controller.listSessions();
+    expect(api.listSessions).toHaveBeenCalledWith('word');
+  });
+
+  it('defaults clientHost to excel and passes it to listSessions', async () => {
+    const item = {
+      id: 's1',
+      title: null,
+      workbookName: null,
+      status: 'active',
+      createdAt: '',
+      lastActivityAt: null,
+      updatedAt: '',
+      messageCount: 0,
+    };
+    const api = stubApi({ listSessions: vi.fn(async () => [item]) });
+    const controller = new ChatController({ api, host: fakeHost() });
+    await controller.listSessions();
+    expect(api.listSessions).toHaveBeenCalledWith('excel');
   });
 
   it('resumeSession adopts the id, rehydrates history, and opens the stream', async () => {
