@@ -5,7 +5,7 @@
  */
 import { buildWritePreview, type WritePreview } from './buildPreview';
 import { executeTool, type ToolRequest } from '../tools/dispatcher';
-import type { ToolResultBody } from '../api/types';
+import type { CellValue, ToolResultBody } from '../api/types';
 
 export type PendingApproval = {
   toolUseId: string;
@@ -14,6 +14,38 @@ export type PendingApproval = {
   preview: WritePreview;
   requestedAt: number;
 };
+
+/**
+ * One entry in the client-facing "Changes applied" log — the trust/governance
+ * record of what the assistant did to this workbook. Newest-first in the panel.
+ *
+ * `revertible` is true ONLY when a real before-grid was captured (grid previews
+ * from write_range / insert_formula). Summary-only tools (create_sheet/table/
+ * chart/pivot, format/clear/sort) are recorded as applied-but-not-revertible:
+ * we never captured a before-state to restore, so we must not claim we can undo.
+ */
+export type AppliedChange = {
+  id: string;
+  toolUseId: string;
+  toolName: string;
+  /** Sheet-qualified target the change landed on (e.g. "Sheet1!B2:F40"). */
+  target: string;
+  appliedAt: number;
+  /** True only when a before-grid exists and the change can be reverted. */
+  revertible: boolean;
+  /** Set once the user undoes the change. */
+  reverted: boolean;
+  /** Pre-change grid (revertible writes only) — what revertChange restores. */
+  before?: CellValue[][];
+  /** Post-change grid (revertible writes only) — informational. */
+  after?: CellValue[][];
+};
+
+let changeSeq = 0;
+function nextChangeId(): string {
+  changeSeq += 1;
+  return `chg-${Date.now()}-${changeSeq}`;
+}
 
 export type ApprovalDeps = {
   postToolResult: (result: ToolResultBody) => Promise<void>;
@@ -31,6 +63,8 @@ export class ApprovalStore {
    * (the server is the real gate; this is the convenience switch).
    */
   private autoApply = false;
+  /** Client-facing "Changes applied" log (newest-first). */
+  private applied: readonly AppliedChange[] = [];
 
   constructor(private deps: ApprovalDeps) {}
 
@@ -45,6 +79,33 @@ export class ApprovalStore {
 
   getPending(): readonly PendingApproval[] {
     return this.queue;
+  }
+
+  /** The applied-changes log, newest-first. useSyncExternalStore-compatible. */
+  getAppliedChanges(): readonly AppliedChange[] {
+    return this.applied;
+  }
+
+  /**
+   * Record an applied mutation in the change log. Called from BOTH the
+   * Apply-card path and the auto-apply path (only when execution succeeded).
+   * A 'grid' preview carries before/after → revertible; anything else is logged
+   * applied-but-not-revertible.
+   */
+  private recordApplied(toolUseId: string, preview: WritePreview): void {
+    const grid = preview.kind === 'grid' ? preview : null;
+    const entry: AppliedChange = {
+      id: nextChangeId(),
+      toolUseId,
+      toolName: preview.toolName,
+      target: preview.target,
+      appliedAt: Date.now(),
+      revertible: grid !== null,
+      reverted: false,
+      ...(grid ? { before: grid.before, after: grid.after } : {}),
+    };
+    this.applied = [entry, ...this.applied];
+    this.notify();
   }
 
   isAutoApply(): boolean {
@@ -78,6 +139,7 @@ export class ApprovalStore {
     if (this.autoApply) {
       const run = this.deps.execute ?? executeTool;
       const { status, output } = await run(request.toolName, request.input);
+      if (status === 'success') this.recordApplied(request.toolUseId, preview);
       await this.deps.postToolResult({ toolUseId: request.toolUseId, status, output });
       return;
     }
@@ -109,6 +171,7 @@ export class ApprovalStore {
     if (!pending) return;
     const run = this.deps.execute ?? executeTool;
     const { status, output } = await run(pending.toolName, pending.input);
+    if (status === 'success') this.recordApplied(toolUseId, pending.preview);
     await this.deps.postToolResult({ toolUseId, status, output });
   }
 
@@ -117,5 +180,22 @@ export class ApprovalStore {
     const pending = this.take(toolUseId);
     if (!pending) return;
     await this.deps.postToolResult({ toolUseId, status: 'rejected', output: { reason } });
+  }
+
+  /**
+   * Undo a logged change by re-writing its captured before-grid back to the
+   * target — through the SAME write_range executor the original write used (no
+   * duplicated Office.js). This is a user-initiated undo, NOT a model turn, so
+   * we do NOT post a tool result. No-op for non-revertible / already-reverted /
+   * unknown ids. On success the entry is marked reverted.
+   */
+  async revertChange(id: string): Promise<void> {
+    const entry = this.applied.find((c) => c.id === id) ?? null;
+    if (!entry || !entry.revertible || entry.reverted || !entry.before) return;
+    const run = this.deps.execute ?? executeTool;
+    const { status } = await run('write_range', { address: entry.target, cells: entry.before });
+    if (status !== 'success') return;
+    this.applied = this.applied.map((c) => (c.id === id ? { ...c, reverted: true } : c));
+    this.notify();
   }
 }

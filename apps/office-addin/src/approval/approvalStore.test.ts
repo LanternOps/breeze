@@ -162,4 +162,143 @@ describe('ApprovalStore', () => {
       output: { error: expect.stringContaining('Unsupported address') },
     });
   });
+
+  describe('applied-changes log', () => {
+    it('records a revertible grid entry when a write_range Apply succeeds', async () => {
+      const { store } = makeStore();
+      // Seed the cell so before != after — a real diff to undo.
+      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      const seen: number[] = [];
+      store.subscribe(() => seen.push(store.getAppliedChanges().length));
+
+      await store.enqueue(writeRequest('tu-log1'));
+      await store.apply('tu-log1');
+
+      const changes = store.getAppliedChanges();
+      expect(changes).toHaveLength(1);
+      expect(changes[0]).toMatchObject({
+        toolUseId: 'tu-log1',
+        toolName: 'write_range',
+        target: 'Sheet1!B2',
+        revertible: true,
+        reverted: false,
+      });
+      expect(typeof changes[0]!.id).toBe('string');
+      expect(typeof changes[0]!.appliedAt).toBe('number');
+      // The captured before-grid is the pre-write value (what revert restores).
+      expect(changes[0]!.before).toEqual([['original']]);
+      expect(changes[0]!.after).toEqual([['hello']]);
+      // Subscribers were notified about the new entry.
+      expect(seen.at(-1)).toBe(1);
+    });
+
+    it('does NOT record an entry when Apply fails (nothing changed)', async () => {
+      const { store } = makeStore();
+      await store.enqueue({
+        type: 'tool_request',
+        toolUseId: 'tu-log-err',
+        toolName: 'create_sheet',
+        input: { name: 'Sheet1' }, // already exists → executor error
+        mutating: true,
+      });
+      await store.apply('tu-log-err');
+      expect(store.getAppliedChanges()).toHaveLength(0);
+    });
+
+    it('records a non-revertible (summary) entry for tools without a before grid', async () => {
+      const { store } = makeStore();
+      await store.enqueue({
+        type: 'tool_request',
+        toolUseId: 'tu-log-sheet',
+        toolName: 'create_sheet',
+        input: { name: 'Budget' },
+        mutating: true,
+      });
+      await store.apply('tu-log-sheet');
+      const changes = store.getAppliedChanges();
+      expect(changes).toHaveLength(1);
+      expect(changes[0]).toMatchObject({
+        toolName: 'create_sheet',
+        target: 'Budget',
+        revertible: false,
+        reverted: false,
+      });
+      expect(changes[0]!.before).toBeUndefined();
+    });
+
+    it('records an entry on the AUTO-APPLY path too', async () => {
+      const { store } = makeStore();
+      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      store.setAutoApply(true);
+      await store.enqueue(writeRequest('tu-log-auto'));
+      const changes = store.getAppliedChanges();
+      expect(changes).toHaveLength(1);
+      expect(changes[0]).toMatchObject({
+        toolUseId: 'tu-log-auto',
+        target: 'Sheet1!B2',
+        revertible: true,
+      });
+      expect(changes[0]!.before).toEqual([['original']]);
+    });
+
+    it('does NOT record an applied entry on Reject', async () => {
+      const { store } = makeStore();
+      await store.enqueue(writeRequest('tu-log-rej'));
+      await store.reject('tu-log-rej');
+      expect(store.getAppliedChanges()).toHaveLength(0);
+    });
+
+    it('revertChange re-writes the captured before-grid and marks the entry reverted', async () => {
+      const { store, postToolResult } = makeStore();
+      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      await store.enqueue(writeRequest('tu-rev1'));
+      await store.apply('tu-rev1');
+      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['hello']]);
+
+      const id = store.getAppliedChanges()[0]!.id;
+      postToolResult.mockClear();
+      await store.revertChange(id);
+
+      // The cell is back to its original value.
+      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['original']]);
+      // The entry is now marked reverted.
+      expect(store.getAppliedChanges()[0]).toMatchObject({ id, reverted: true });
+      // Revert reuses the write_range executor path — it does NOT post a tool
+      // result to the model (this is a user-initiated undo, not a model turn).
+      expect(postToolResult).not.toHaveBeenCalled();
+    });
+
+    it('revertChange is a no-op for a non-revertible entry', async () => {
+      const { store } = makeStore();
+      await store.enqueue({
+        type: 'tool_request',
+        toolUseId: 'tu-rev-sum',
+        toolName: 'create_sheet',
+        input: { name: 'Budget' },
+        mutating: true,
+      });
+      await store.apply('tu-rev-sum');
+      const id = store.getAppliedChanges()[0]!.id;
+      await store.revertChange(id);
+      expect(store.getAppliedChanges()[0]).toMatchObject({ id, reverted: false });
+    });
+
+    it('revertChange is a no-op (no throw) for an unknown id', async () => {
+      const { store } = makeStore();
+      await expect(store.revertChange('does-not-exist')).resolves.toBeUndefined();
+    });
+
+    it('revertChange twice does not double-apply (already reverted is a no-op)', async () => {
+      const { store } = makeStore();
+      getOfficeMock().setValues('Sheet1', 'B2', [['original']]);
+      await store.enqueue(writeRequest('tu-rev2'));
+      await store.apply('tu-rev2');
+      const id = store.getAppliedChanges()[0]!.id;
+      await store.revertChange(id);
+      // Mutate the cell after the revert; a second revert must NOT clobber it.
+      getOfficeMock().setValues('Sheet1', 'B2', [['user-typed']]);
+      await store.revertChange(id);
+      expect(getOfficeMock().getValues('Sheet1', 'B2')).toEqual([['user-typed']]);
+    });
+  });
 });
