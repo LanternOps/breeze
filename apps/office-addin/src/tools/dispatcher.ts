@@ -59,8 +59,9 @@ export type ToolRequest = Extract<ClientAiStreamEvent, { type: 'tool_request' }>
 export async function executeTool(
   toolName: string,
   input: Record<string, unknown>,
+  executors: Record<string, ToolExecutor> = TOOL_EXECUTORS,
 ): Promise<{ status: 'success' | 'error'; output: unknown }> {
-  const executor = TOOL_EXECUTORS[toolName];
+  const executor = executors[toolName];
   if (!executor) return { status: 'error', output: { error: `Unknown tool: ${toolName}` } };
   try {
     return { status: 'success', output: await executor(input) };
@@ -72,16 +73,20 @@ export async function executeTool(
 export type DispatcherDeps = {
   postToolResult: (result: ToolResultBody) => Promise<void>;
   enqueueApproval: (request: ToolRequest) => void | Promise<void>;
+  /** Host tool layer; defaults to the Excel dispatcher constants. */
+  executors?: Record<string, ToolExecutor>;
+  mutatingTools?: ReadonlySet<string>;
 };
 
 export async function dispatchToolRequest(request: ToolRequest, deps: DispatcherDeps): Promise<void> {
+  const mutatingTools = deps.mutatingTools ?? MUTATING_TOOLS;
   // Defense-in-depth: the server flag is OR-ed with the local set so a server
   // bug can never auto-execute a write.
-  const mutating = request.mutating || MUTATING_TOOLS.has(request.toolName);
+  const mutating = request.mutating || mutatingTools.has(request.toolName);
   if (mutating) {
     await deps.enqueueApproval(request);
     return;
   }
-  const { status, output } = await executeTool(request.toolName, request.input);
+  const { status, output } = await executeTool(request.toolName, request.input, deps.executors);
   await deps.postToolResult({ toolUseId: request.toolUseId, status, output });
 }

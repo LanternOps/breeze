@@ -146,6 +146,23 @@ describe('ApprovalStore', () => {
     });
   });
 
+  it('uses an injected buildPreview (the HostAdapter seam) instead of the Excel default', async () => {
+    const postToolResult = vi.fn(async () => undefined);
+    const buildPreview = vi.fn(async (toolName: string) => ({
+      kind: 'summary' as const,
+      toolName,
+      target: 'mail-draft',
+      description: 'draft reply',
+    }));
+    const store = new ApprovalStore({ postToolResult, buildPreview });
+    await store.enqueue(writeRequest('tu-host'));
+    expect(buildPreview).toHaveBeenCalledWith('write_range', { address: 'B2', cells: [['hello']] });
+    expect(store.getPending()[0]).toMatchObject({
+      toolUseId: 'tu-host',
+      preview: { kind: 'summary', target: 'mail-draft' },
+    });
+  });
+
   it('enqueue with unbuildable input posts an immediate error instead of a broken card', async () => {
     const { store, postToolResult } = makeStore();
     await store.enqueue({

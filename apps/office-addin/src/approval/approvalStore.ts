@@ -7,6 +7,12 @@ import { buildWritePreview, type WritePreview } from './buildPreview';
 import { executeTool, type ToolRequest } from '../tools/dispatcher';
 import type { CellValue, ToolResultBody } from '../api/types';
 
+/** Shape of the preview builder — injectable so non-Excel hosts can supply their own. */
+export type BuildPreview = (
+  toolName: string,
+  input: Record<string, unknown>,
+) => Promise<WritePreview>;
+
 export type PendingApproval = {
   toolUseId: string;
   toolName: string;
@@ -51,6 +57,12 @@ export type ApprovalDeps = {
   postToolResult: (result: ToolResultBody) => Promise<void>;
   /** Injectable for tests; defaults to the real Office.js executor. */
   execute?: typeof executeTool;
+  /**
+   * Injectable preview builder. Defaults to the Excel before/after card so
+   * existing behavior is preserved; a non-Excel host supplies its own via the
+   * HostAdapter.
+   */
+  buildPreview?: BuildPreview;
 };
 
 export class ApprovalStore {
@@ -120,8 +132,9 @@ export class ApprovalStore {
 
   async enqueue(request: ToolRequest): Promise<void> {
     let preview: WritePreview;
+    const buildPreview = this.deps.buildPreview ?? buildWritePreview;
     try {
-      preview = await buildWritePreview(request.toolName, request.input);
+      preview = await buildPreview(request.toolName, request.input);
     } catch (err) {
       // Malformed input (bad address etc.): tell the model now instead of
       // rendering a broken card the user can't reason about. (Same in Auto

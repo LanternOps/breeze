@@ -16,9 +16,10 @@ import {
   type StreamCallbacks,
   type StreamHandle,
 } from '../api/client';
-import { dispatchToolRequest, type ToolRequest } from '../tools/dispatcher';
+import { dispatchToolRequest, executeTool, type ToolRequest } from '../tools/dispatcher';
 import { ApprovalStore } from '../approval/approvalStore';
-import { captureWorkbookContext, captureWorkbookName } from './captureContext';
+import { excelHostAdapter } from '../host/excel';
+import type { HostAdapter } from '../host/types';
 import type {
   ClientAiStreamEvent,
   CreateSessionBody,
@@ -100,6 +101,16 @@ function bannerText(err: unknown): string {
 
 export type ChatControllerDeps = {
   api?: ChatApi;
+  /**
+   * The concrete host (Excel by default). The single place the host is chosen;
+   * the controller routes capture/preview/tool execution through it.
+   */
+  host?: HostAdapter;
+  /**
+   * Direct overrides for the context-capture seams. Take precedence over the
+   * host adapter so existing tests that inject these keep working; production
+   * leaves them unset and the host adapter supplies them.
+   */
   captureContext?: (kind: WorkbookContextKind) => Promise<WorkbookContext | undefined>;
   captureName?: () => Promise<string | undefined>;
 };
@@ -123,18 +134,25 @@ export class ChatController {
   private stream: StreamHandle | null = null;
   private nextId = 1;
   private api: ChatApi;
+  private host: HostAdapter;
   private capture: (kind: WorkbookContextKind) => Promise<WorkbookContext | undefined>;
   private captureName: () => Promise<string | undefined>;
 
   constructor(deps: ChatControllerDeps = {}) {
     this.api = deps.api ?? realApi;
-    this.capture = deps.captureContext ?? captureWorkbookContext;
-    this.captureName = deps.captureName ?? captureWorkbookName;
+    this.host = deps.host ?? excelHostAdapter;
+    this.capture = deps.captureContext ?? this.host.captureContext;
+    this.captureName = deps.captureName ?? this.host.captureName;
+    const host = this.host;
     this.approvals = new ApprovalStore({
       postToolResult: async (result) => {
         if (!this.sessionId) throw new Error('No active session for tool result');
         await this.api.postToolResult(this.sessionId, result);
       },
+      buildPreview: host.buildPreview,
+      // Bind execution to the host's tool layer so apply/auto-apply/revert use
+      // the same executors as the dispatcher.
+      execute: (toolName, input) => executeTool(toolName, input, host.toolExecutors),
     });
   }
 
@@ -343,6 +361,8 @@ export class ChatController {
     await dispatchToolRequest(request, {
       postToolResult: (result) => this.api.postToolResult(sessionId, result),
       enqueueApproval: (req) => this.approvals.enqueue(req),
+      executors: this.host.toolExecutors,
+      mutatingTools: this.host.mutatingTools,
     });
   }
 

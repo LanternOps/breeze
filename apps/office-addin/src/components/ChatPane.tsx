@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { ChatController } from '../chat/chatController';
+import { excelHostAdapter } from '../host/excel';
 import { ChatThread } from './ChatThread';
 import { ChatToolbar } from './ChatToolbar';
 import { Composer } from './Composer';
@@ -11,7 +12,8 @@ import { ChangesPanel } from './ChangesPanel';
 import type { ClientSession } from '../auth/session';
 
 export function ChatPane({ session }: { session: ClientSession }) {
-  const controller = useMemo(() => new ChatController(), []);
+  // The pane is the single place the concrete host is chosen and injected.
+  const controller = useMemo(() => new ChatController({ host: excelHostAdapter }), []);
   useEffect(() => () => controller.dispose(), [controller]);
 
   const [historyOpen, setHistoryOpen] = useState(false);

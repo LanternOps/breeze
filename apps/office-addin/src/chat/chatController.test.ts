@@ -157,6 +157,50 @@ describe('ChatController — send', () => {
     expect(api.postToolResult).not.toHaveBeenCalled();
   });
 
+  it('routes tool execution through an injected HostAdapter (the seam, not the Excel default)', async () => {
+    const api = stubApi();
+    const executed: string[] = [];
+    // A fake non-Excel host: a single non-mutating tool that records calls and
+    // an empty mutating set. If the controller still used the Excel default it
+    // would treat write_range as mutating and never hit this executor.
+    const fakeHost = {
+      captureContext: async () => undefined,
+      captureName: async () => undefined,
+      toolExecutors: {
+        echo: async (input: Record<string, unknown>) => {
+          executed.push(String(input.value));
+          return { ok: true };
+        },
+      },
+      mutatingTools: new Set<string>(),
+      buildPreview: async (toolName: string, _input: Record<string, unknown>) => ({
+        kind: 'summary' as const,
+        toolName,
+        target: 'x',
+        description: 'x',
+      }),
+    };
+    const controller = new ChatController({ api, host: fakeHost });
+    await controller.send('go'); // establishes sessionId
+    controller.handleEvent({
+      type: 'tool_request',
+      toolUseId: 'tu-echo',
+      toolName: 'echo',
+      input: { value: 'hi' },
+      mutating: false,
+    });
+    await vi.waitFor(() =>
+      expect(api.postToolResult).toHaveBeenCalledWith('sess-1', {
+        toolUseId: 'tu-echo',
+        status: 'success',
+        output: { ok: true },
+      }),
+    );
+    expect(executed).toEqual(['hi']);
+    // Nothing parked: this host has no mutating tools.
+    expect(controller.approvals.getPending()).toHaveLength(0);
+  });
+
   it('keeps writeApproval=ask out of the pane state under the default policy', async () => {
     const api = stubApi();
     const controller = new ChatController({ api, captureContext: async () => undefined });
