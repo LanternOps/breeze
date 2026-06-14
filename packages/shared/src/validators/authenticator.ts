@@ -14,3 +14,11 @@ export const assertionProofSchema = z.object({
 });
 
 export type AssertionProof = z.infer<typeof assertionProofSchema>;
+
+/**
+ * Approver PIN — a 4-6 digit numeric secret used as the L3 step-up factor.
+ * Stored argon2-hashed server-side; this only constrains the wire format.
+ */
+export const approverPinSchema = z.string().regex(/^\d{4,6}$/);
+
+export type ApproverPin = z.infer<typeof approverPinSchema>;
