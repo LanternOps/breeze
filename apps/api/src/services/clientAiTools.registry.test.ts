@@ -95,12 +95,6 @@ describe('host-keyed registry map', () => {
     expect(CLIENT_TOOL_REGISTRY).toBe(EXCEL_CLIENT_TOOL_REGISTRY);
   });
 
-  it('outlook registry is empty (unsupported until built)', () => {
-    expect(Object.keys(CLIENT_TOOL_REGISTRIES.outlook)).toHaveLength(0);
-    expect(isClientHostSupported('excel')).toBe(true);
-    expect(isClientHostSupported('outlook')).toBe(false);
-  });
-
   it('MCP server name + prefix are host-keyed', () => {
     expect(clientMcpServerName('excel')).toBe('excel');
     expect(clientMcpToolPrefix('excel')).toBe('mcp__excel__');
@@ -232,6 +226,70 @@ describe('powerpoint', () => {
     expect(readonly.sort()).toEqual([
       'mcp__powerpoint__get_presentation_overview',
       'mcp__powerpoint__read_selection',
+    ]);
+  });
+});
+
+const OUTLOOK_PINNED_NAMES = [
+  'draft_reply',
+  'extract_action_items',
+  'get_message_metadata',
+  'summarize_thread',
+];
+
+const OUTLOOK_PINNED_MUTATING = ['draft_reply'];
+
+describe('outlook', () => {
+  it('contains exactly the 4 baseline Outlook tools', () => {
+    expect(Object.keys(CLIENT_TOOL_REGISTRIES.outlook).sort()).toEqual(OUTLOOK_PINNED_NAMES);
+    expect(clientToolNames('outlook').slice().sort()).toEqual(OUTLOOK_PINNED_NAMES);
+  });
+
+  it('flags exactly the 1 write tool as mutating', () => {
+    const mutating = Object.entries(CLIENT_TOOL_REGISTRIES.outlook)
+      .filter(([, def]) => def.mutating)
+      .map(([name]) => name)
+      .sort();
+    expect(mutating).toEqual(OUTLOOK_PINNED_MUTATING);
+  });
+
+  it('is supported once the registry is populated', () => {
+    expect(isClientHostSupported('outlook')).toBe(true);
+  });
+
+  it('every tool has a non-empty description and an inputSchema object', () => {
+    for (const def of Object.values(CLIENT_TOOL_REGISTRIES.outlook)) {
+      expect(def.description.length).toBeGreaterThan(20);
+      expect(typeof def.inputSchema).toBe('object');
+    }
+  });
+
+  it('uses the mcp__outlook__ namespace for every tool', () => {
+    expect(clientMcpServerName('outlook')).toBe('outlook');
+    expect(clientMcpToolPrefix('outlook')).toBe('mcp__outlook__');
+    const names = clientMcpToolNames('outlook');
+    expect(names).toHaveLength(4);
+    for (const name of names) {
+      expect(name.startsWith('mcp__outlook__')).toBe(true);
+      expect(BREEZE_MCP_TOOL_NAMES).not.toContain(name);
+    }
+  });
+
+  it('shares no tool name with the technician registries', () => {
+    for (const name of clientToolNames('outlook')) {
+      expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBeUndefined();
+      expect(aiTools.has(name)).toBe(false);
+    }
+  });
+
+  it('readwrite exposes all 4 tools; readonly strips the 1 mutating (length 3)', () => {
+    expect(clientMcpToolNamesForWriteMode('outlook', 'readwrite')).toHaveLength(4);
+    const readonly = clientMcpToolNamesForWriteMode('outlook', 'readonly');
+    expect(readonly).toHaveLength(3);
+    expect(readonly.sort()).toEqual([
+      'mcp__outlook__extract_action_items',
+      'mcp__outlook__get_message_metadata',
+      'mcp__outlook__summarize_thread',
     ]);
   });
 });
