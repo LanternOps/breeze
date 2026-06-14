@@ -332,6 +332,8 @@ GET /patches/compliance
 
 This returns `compliancePercent` (a value from 0 to 100) and aggregated counts broken down by device patch status. Results are computed in real time from the current state of the fleet and are not cached.
 
+Outstanding patches are split into **Approved** and **Pending Approval**: approved patches have cleared the approval workflow and are eligible for installation, while pending-approval patches are detected but not yet reviewed. A bulk install acts on the **approved** patches only — pending-approval patches are never deployed until they are reviewed and approved, so compliance reporting and deployment stay aligned with your approval posture. When patch settings come from a policy with [update rings](#patch-scheduling-via-configuration-policies), approval is driven automatically by the ring each device belongs to.
+
 ---
 
 ## Patch Scheduling via Configuration Policies
@@ -347,9 +349,14 @@ Content-Type: application/json
 {
   "featureType": "patch",
   "inlineSettings": {
-    "sources": ["microsoft", "third_party"],
+    "sources": ["os", "third_party"],
     "autoApprove": true,
     "autoApproveSeverities": ["critical", "important"],
+    "autoApproveDeferralDays": 7,
+    "apps": [
+      { "source": "third_party", "packageId": "Mozilla.Firefox", "action": "block" },
+      { "source": "third_party", "packageId": "Google.Chrome", "action": "pin", "pinnedVersion": "120.0.1" }
+    ],
     "scheduleFrequency": "weekly",
     "scheduleTime": "02:00",
     "scheduleDayOfWeek": "sun",
@@ -362,16 +369,45 @@ Content-Type: application/json
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `sources` | string[] | Patch sources to include: `microsoft`, `apple`, `linux`, `third_party`, `custom` |
+| `sources` | string[] | Which patch sources this policy covers — **at least one is required**. See [Patch Sources](#patch-sources-1) below |
 | `autoApprove` | boolean | Automatically approve patches matching the configured severities |
-| `autoApproveSeverities` | string[] | Severities eligible for auto-approval: `critical`, `important`, `moderate`, `low` |
+| `autoApproveSeverities` | string[] | Severities eligible for auto-approval: `critical`, `important`, `moderate`, `low`. An empty list means nothing is auto-approved |
+| `autoApproveDeferralDays` | integer | A deferral window (0–60 days) applied before an auto-approved patch is released. A patch is held this many days after it becomes available, giving newly published updates time to soak before they reach devices. `0` approves immediately |
+| `apps` | object[] | Per-application **block** and **pin** rules. See [Application Rules](#application-rules) below |
 | `scheduleFrequency` | string | How often to run patching: `daily`, `weekly`, or `monthly` |
 | `scheduleTime` | string | Time of day in `HH:MM` format (24-hour, UTC unless timezone configured at site level) |
-| `scheduleDayOfWeek` | string | For weekly schedules: `sun`, `mon`, `tue`, `wed`, `thu`, `fri`, `sat` |
-| `scheduleDayOfMonth` | integer | For monthly schedules: day 1–31 |
-| `rebootPolicy` | string | Post-patch reboot behavior: `never`, `if_required`, or `always` |
+| `scheduleDayOfWeek` | string | For weekly schedules: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
+| `scheduleDayOfMonth` | integer | For monthly schedules: day 1–28 |
+| `rebootPolicy` | string | Post-patch reboot behavior: `never`, `if_required`, `always`, or `maintenance_window` |
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
+
+When a device is assigned to an [update ring](#patch-scheduling-via-configuration-policies), the ring's approval rules take precedence over the policy-level auto-approve settings — the ring decides which severities and categories are approved (and after what deferral) for the devices it covers.
+
+#### Patch Sources
+
+Each patch policy must declare which **patch sources** it manages, and at least one is required. This separates operating-system updates from third-party application updates so you can, for example, auto-approve OS security fixes while reviewing application updates manually.
+
+| Source | Covers |
+|--------|--------|
+| `os` | Operating-system updates (Windows Update, Apple Software Update, and Linux distribution packages) |
+| `third_party` | Non-OS application updates detected via the third-party package catalog |
+| `custom` | Internally published updates distributed through Breeze's custom patch channel |
+| `firmware` | Firmware updates |
+| `drivers` | Device driver updates |
+
+#### Application Rules
+
+Application rules give you per-app control over third-party and custom updates within a policy. Each rule targets a specific package and chooses one of two actions:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | string | `third_party` or `custom` |
+| `packageId` | string | The catalog package identifier the rule applies to (e.g., `Mozilla.Firefox`) |
+| `action` | string | `block` to prevent the application from being updated, or `pin` to hold it at a specific version |
+| `pinnedVersion` | string | **Required when `action` is `pin`** — the version the application is held at. Updates beyond this version are withheld until the pin is changed |
+
+A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A policy can carry up to 200 application rules.
 
 ### Creating a patch deployment job from a policy
 

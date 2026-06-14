@@ -149,12 +149,15 @@ Registration is rate-limited to 5 attempts per IP per hour (3 for partner regist
 
 ## Multi-Factor Authentication (MFA)
 
-MFA is enabled by default (controlled by the `ENABLE_2FA` environment variable). Two methods are supported:
+MFA is enabled by default (controlled by the `ENABLE_2FA` environment variable). Three methods are supported:
 
 | Method | Description |
 |---|---|
 | **TOTP** | Time-based one-time passwords via authenticator apps (Google Authenticator, Authy, etc.). |
 | **SMS** | One-time codes sent to a verified phone number via Twilio. |
+| **Passkey** | WebAuthn/FIDO2 credentials (platform authenticators such as Touch ID / Windows Hello, or roaming security keys). Phishing-resistant; the private key never leaves the device. |
+
+The `users.mfa_method` field records a single primary method (`totp`, `sms`, or `passkey`) that determines which challenge is offered at login. A user can enrol a passkey alongside an existing TOTP or SMS factor — enrolling the first passkey only promotes it to the primary method when no TOTP/SMS factor is already configured.
 
 <Aside type="note">
   Organisation administrators can enforce MFA for all users via the organisation `settings.security.requireMfa` flag. When enforced, users cannot disable MFA.
@@ -182,14 +185,29 @@ Alternatively, use `POST /auth/mfa/enable` with `{ "code": "123456" }` after the
   SMS MFA can be disallowed at the organisation level via `settings.security.allowedMfaMethods.sms`. If disabled, users in that organisation cannot enable the SMS method.
 </Aside>
 
+### Passkey (WebAuthn) Setup Flow
+
+Passkeys are registered from the self-service profile screen (`/settings/profile`) and are protected by a current-password step-up — registration cannot proceed without re-entering the account password.
+
+<Steps>
+1. Call `POST /auth/passkeys/register/options` with `{ "currentPassword": "...", "name": "..." }`. The password is re-verified (rate-limited, separate from login) and the response contains the WebAuthn registration challenge.
+2. The browser completes the WebAuthn attestation ceremony (Touch ID / Windows Hello / security key).
+3. Call `POST /auth/passkeys/register/verify` with the resulting credential. The passkey is stored in the `user_passkeys` table and MFA is activated for the account.
+</Steps>
+
+Enrolled passkeys are managed from the same screen: `GET /auth/passkeys` lists them, `PATCH /auth/passkeys/:id` renames one, and `DELETE /auth/passkeys/:id` removes one. Deleting a passkey also requires a current-password step-up and is blocked if it would strip the account's last MFA factor under a force-MFA policy.
+
+WebAuthn is implemented with `@simplewebauthn/server`. Registration and authentication challenges are held in Redis with a 5-minute TTL and consumed atomically (read-and-delete) to prevent reuse. Each credential stores a monotonic signature counter for clone/replay detection.
+
 ### MFA During Login
 
-When MFA is enabled, login returns `mfaRequired: true` and a `tempToken` (valid for 5 minutes). The flow continues:
+When MFA is enabled, login returns `mfaRequired: true`, the primary `mfaMethod` (`totp`, `sms`, or `passkey`), and a `tempToken` (valid for 5 minutes). The flow continues based on the method:
 
 <Steps>
 1. (If SMS) Call `POST /auth/mfa/sms/send` with the `tempToken` to trigger an SMS code.
-2. Call `POST /auth/mfa/verify` with `{ "code": "123456", "tempToken": "..." }`.
-3. On success, full JWT tokens are issued with the `mfa: true` claim.
+2. (TOTP/SMS) Call `POST /auth/mfa/verify` with `{ "code": "123456", "tempToken": "..." }`.
+3. (Passkey) Call `POST /auth/mfa/passkey/options` with the `tempToken` to obtain a WebAuthn authentication challenge, complete the assertion in the browser, then call `POST /auth/mfa/passkey/verify` with `{ "tempToken": "...", "credential": { ... } }`.
+4. On success, full JWT tokens are issued with the `mfa: true` claim.
 </Steps>
 
 MFA verification is rate-limited separately from login.
@@ -457,6 +475,13 @@ Auth endpoints are mounted under `/api/v1/auth`. Public endpoints do not require
 | `POST` | `/auth/phone/confirm` | Authenticated | Confirm phone verification code. |
 | `POST` | `/auth/mfa/sms/enable` | Authenticated | Enable SMS MFA (requires verified phone). |
 | `POST` | `/auth/mfa/sms/send` | Public | Send SMS code during MFA login (requires `tempToken`). |
+| `POST` | `/auth/passkeys/register/options` | Authenticated | Begin passkey registration (requires current password). |
+| `POST` | `/auth/passkeys/register/verify` | Authenticated | Complete passkey registration. |
+| `GET` | `/auth/passkeys` | Authenticated | List the current user's registered passkeys. |
+| `PATCH` | `/auth/passkeys/:id` | Authenticated | Rename a passkey. |
+| `DELETE` | `/auth/passkeys/:id` | Authenticated | Delete a passkey (requires current password). |
+| `POST` | `/auth/mfa/passkey/options` | Public | Get a passkey challenge during MFA login (requires `tempToken`). |
+| `POST` | `/auth/mfa/passkey/verify` | Public | Verify a passkey assertion during MFA login (requires `tempToken`). |
 
 ### SSO Endpoints
 
@@ -494,7 +519,7 @@ SSO endpoints are mounted under `/api/v1/sso`.
 | `mfa_recovery_codes` | `jsonb` | Hashed recovery codes. |
 | `phone_number` | `text` | E.164 phone number for SMS MFA. |
 | `phone_verified` | `boolean` | Whether the phone number has been verified. |
-| `mfa_method` | `enum` | `totp` or `sms`. |
+| `mfa_method` | `enum` | `totp`, `sms`, or `passkey`. Primary method used at login. |
 | `status` | `enum` | `active`, `invited`, or `disabled`. |
 | `avatar_url` | `text` | Profile image URL. |
 | `last_login_at` | `timestamp` | Last successful login time. |
@@ -588,6 +613,8 @@ All user and role management actions are recorded in the audit log. Key audit ev
 | `auth.mfa.setup` | MFA is enabled for an account. |
 | `auth.mfa.disable` | MFA is disabled. |
 | `auth.mfa.recovery_codes.rotate` | Recovery codes are regenerated. |
+| `auth.mfa.passkey.register` | A passkey is registered. |
+| `auth.mfa.passkey.delete` | A passkey is deleted. |
 | `sso.provider.create` | An SSO provider is created. |
 | `sso.provider.update` | An SSO provider is updated. |
 | `sso.provider.delete` | An SSO provider is deleted. |

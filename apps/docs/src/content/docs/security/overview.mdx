@@ -25,7 +25,7 @@ Every request passes through multiple security layers before reaching applicatio
 | Rate Limiting | Redis sliding window with in-memory fallback (100K entry cap) |
 | Authentication | JWT + MFA + session tokens |
 | Authorization | RBAC with permission middleware |
-| Tenant Isolation | PostgreSQL row-level scoping |
+| Tenant Isolation | PostgreSQL row-level security (enabled + forced) under an unprivileged DB role, plus app-layer site-scope enforcement |
 | Audit | Structured event logging on all security-relevant actions |
 | Encryption at Rest | AES-256-GCM for secrets, Argon2id for passwords |
 
@@ -46,7 +46,8 @@ Breeze implements multi-factor authentication with defense-in-depth:
 | **Session tokens** | Cryptographically random (nanoid 48), SHA-256 hashed in DB |
 | **MFA** | TOTP (RFC 6238), 10 recovery codes (XXXX-XXXX format) |
 | **SMS MFA** | Optional Twilio integration for SMS-based codes |
-| **Token revocation** | Explicit session invalidation, bulk logout per user |
+| **Passkey MFA** | WebAuthn/FIDO2 (`@simplewebauthn/server`) — phishing-resistant platform authenticators and security keys; per-credential signature counter for clone detection. Enrolment requires a current-password step-up. |
+| **Token revocation** | Explicit session invalidation, bulk logout per user; refresh-token family reuse detection (a replayed rotated token revokes the entire family) |
 
 Plaintext tokens are never stored. All token storage uses SHA-256 hashes.
 
@@ -81,7 +82,9 @@ Every entity is scoped to this hierarchy. A user at one organization can never a
 
 ### Database-Level Tenant Isolation
 
-Breeze sets PostgreSQL session variables on every request:
+The API connects to PostgreSQL as an **unprivileged role** (`breeze_app`) — never as the database owner or a superuser. Every tenant-scoped table has **row-level security enabled and `FORCED`**, with policies that constrain visibility to the caller's tenant. Because RLS is forced, the policies apply even to the table owner; a SQL-injection foothold or a logic bug in a single query cannot read or write across tenants, because the database itself rejects out-of-tenant rows.
+
+Tenant context is supplied per request through PostgreSQL session variables:
 
 ```
 breeze.scope             = 'system' | 'partner' | 'organization'
@@ -89,7 +92,9 @@ breeze.org_id            = UUID of current organization
 breeze.accessible_org_ids = comma-separated list or '*'
 ```
 
-These variables are set via `set_config()` within the request transaction context using Node.js `AsyncLocalStorage`. Queries that don't have proper context set will fail — there is no default permissive state.
+These variables are set via `set_config()` within the request transaction context using Node.js `AsyncLocalStorage`. Queries that don't have proper context set will fail — there is no default permissive state, and the bare connection pool is forbidden in request code.
+
+Coverage is enforced mechanically: a contract test asserts that every tenant-scoped table carries the correct RLS policy shape, so a new table cannot ship without isolation. Cross-tenant writes are additionally validated by forging an out-of-tenant insert as `breeze_app` and confirming PostgreSQL rejects it with a row-level-security violation.
 
 ### Role-Based Access Control
 
@@ -111,6 +116,22 @@ Three scope levels control data visibility:
 
 Scope is computed once per request via `resolveOrgAccess()` and applied to all downstream queries.
 
+### Site-Scope Enforcement
+
+Organization users can be restricted to specific **sites** (via `organization_users.site_ids`). Site is a sub-organization authorization axis that is **not** covered by PostgreSQL RLS — it is enforced in the application layer, layered above org-level row-level security. The caller's allowed site set is resolved once during auth middleware into a `canAccessSite()` closure that every device-acting path consults before doing work.
+
+A site-restricted technician is gated on every path that acts on a device:
+
+- **Device mutations** — device `PATCH`, including moving a device to a new site (the *target* site is checked).
+- **Script execution** — the device's site is verified before scripts are listed or run.
+- **Automations** — create, update, and manual trigger reject any automation whose resolved target set escapes the caller's allowed sites (no unbounded org-wide automations for site-restricted users).
+- **Playbooks** — execution and execution updates verify the target device's site.
+- **Configuration-policy patch jobs** — target devices outside the caller's sites are rejected.
+- **AI tools** — read/enumeration tools that lack an explicit device filter narrow their results to the caller's in-scope devices; a technician with no in-scope devices gets empty results.
+- **Security threat actions** — quarantine/remove/restore verify the threat's device site before queueing.
+
+A device outside the technician's site allowlist is unreachable even though it belongs to the same organization.
+
 ---
 
 ## Agent Security
@@ -127,6 +148,10 @@ The agent runs on customer endpoints with elevated privileges. Its security is p
 | **Config directory** | `0750` (rwxr-x---) — agent owner + group read for Helper |
 | **Config file** | `0640` (rw-r-----) for `agent.yaml`, `0600` (rw-------) for `secrets.yaml` — auth token isolated in root-only secrets file |
 | **Message validation** | All incoming WebSocket messages validated against Zod discriminated union schema |
+
+### Provisioning Credential Delivery
+
+When a device is provisioned, the API does **not** return the long-lived agent secrets inline. Instead it returns a short-TTL, **single-use fetch URL**. The credential bundle (agent auth token, watchdog and helper tokens, mTLS private key, manifest trust keys) is retrievable exactly once: the fetch is consumed with an atomic `UPDATE ... WHERE consumed_at IS NULL`, and the stored plaintext is hard-deleted immediately after the first successful read. The handle expires after `PROVISION_HANDLE_TTL_MINUTES` (default 5 minutes); a replay returns `404`, and the fetch is additionally org-access-checked as defense-in-depth on top of the token. This keeps agent secrets out of logs, command history, and any persistent at-rest store.
 
 ### Mutual TLS (Optional)
 
@@ -460,8 +485,8 @@ We follow coordinated disclosure:
 
 | Domain | Controls | Status |
 |--------|----------|--------|
-| Authentication | JWT + MFA + Sessions + API Keys | Implemented |
-| Authorization | RBAC + Scope-based multi-tenancy | Implemented |
+| Authentication | JWT + MFA (TOTP/SMS/Passkey) + Sessions + API Keys | Implemented |
+| Authorization | RBAC + scope-based multi-tenancy + app-layer site-scope | Implemented |
 | Encryption (at rest) | AES-256-GCM, Argon2id, SHA-256 | Implemented |
 | Encryption (in transit) | TLS 1.2+ / HSTS / WSS | Implemented |
 | Rate limiting | Redis sliding window (fail-closed) | Implemented |

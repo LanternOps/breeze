@@ -7,6 +7,7 @@
  */
 
 import { db } from '../db';
+import { pgErrorCode } from '../utils/pgErrors';
 import { patchPolicies } from '../db/schema/patches';
 import { softwarePolicies } from '../db/schema/softwarePolicies';
 import { peripheralPolicies } from '../db/schema/peripheralControl';
@@ -33,7 +34,7 @@ function safeHandler(toolName: string, fn: Handler): Handler {
       return await fn(input, auth);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
-      const code = (err as { code?: string }).code;
+      const code = pgErrorCode(err);
       console.error(`[policy-prereq:${toolName}]`, input.action, message, err);
       if (code === '23503') return JSON.stringify({ error: 'Referenced record not found.' });
       if (code === '23505') return JSON.stringify({ error: 'Duplicate entry — a record with this name already exists.' });

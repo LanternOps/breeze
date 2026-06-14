@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -267,9 +268,9 @@ async function stopRunningEntry(
   return rows[0] ?? null;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
-}
+// Unwraps the DrizzleQueryError `.cause` so the retry/409 path actually fires
+// (a bare `err.code` check missed every wrapped insert). See utils/pgErrors.
+const isUniqueViolation = (err: unknown): boolean => isPgUniqueViolation(err);
 
 export async function startTimer(input: { ticketId?: string; description?: string }, actor: TimeEntryActor) {
   let partnerId = actor.partnerId;

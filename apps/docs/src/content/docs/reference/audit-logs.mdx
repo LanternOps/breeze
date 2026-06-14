@@ -93,9 +93,11 @@ The following actions are flagged as security events and appear in the security 
 
 Audit log rows are append-only at the database layer. Postgres triggers refuse `UPDATE`, `DELETE`, and `TRUNCATE` against the table — even a superuser cannot rewrite history without explicit administrative privileges.
 
-In addition to row-level immutability, each row carries `prevChecksum` linking to the previous audit row in the same organization. Together with `checksum`, this produces a per-org SHA-256 hash chain. Verifying the chain end-to-end detects insertion, deletion, or alteration of any row between two timestamps.
+In addition to row-level immutability, each row carries `prevChecksum` linking to the previous audit row in the same organization. Together with `checksum`, this produces a per-org SHA-256 hash chain. The link is **sealed at commit time** under a per-organization advisory lock, so concurrent writes from agents and users cannot fork the chain. Verifying the chain end-to-end detects insertion, deletion, or alteration of any row between two timestamps.
 
-Retention pruning is the one supported path that removes audit rows. It requires both the `breeze_audit_admin` Postgres role and the `breeze.allow_audit_retention='1'` session GUC, and re-anchors the chain on the surviving rows so the integrity check continues to pass after old data ages out. The platform's audit retention worker handles this — operators do not prune by hand.
+Retention pruning is the one supported path that removes audit rows, and it operates by **prefix-cut**: the contiguous oldest segment that has aged past the retention window is deleted, and the first surviving row becomes the new chain head. There is **no re-anchoring** — the verifier accepts a null `prevChecksum` on the earliest retained row as evidence of a pruned prefix rather than a break, so the integrity check continues to pass after old data ages out.
+
+Pruning is protected by **connection-level privilege separation**. The API's normal database role (`breeze_app`) holds only `SELECT`/`INSERT` on the audit tables and cannot delete rows at all. Retention runs on a separate, dedicated connection authenticated as `breeze_audit_admin` (configured via `AUDIT_ADMIN_DATABASE_URL`) and still gated behind the `breeze.allow_audit_retention='1'` session GUC. Because deletion lives on a connection the request path never touches, a compromise of the API cannot destroy audit history. The platform's audit retention worker is the only caller — operators do not prune by hand.
 
 ### Compliance Actions
 

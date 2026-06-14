@@ -815,6 +815,95 @@
       "docs": [
         "features/ticketing.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/pam.ts",
+      "docs": [
+        "features/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/elevationRequests.ts",
+      "docs": [
+        "features/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/pamSettings.ts",
+      "docs": [
+        "features/pam.mdx",
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/pam/**",
+      "docs": [
+        "features/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/PamTab.tsx",
+      "docs": [
+        "features/pam.mdx",
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/google.ts",
+      "docs": [
+        "features/identity-console.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/m365.ts",
+      "docs": [
+        "features/identity-console.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsGoogle.ts",
+      "docs": [
+        "features/identity-console.mdx",
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsM365.ts",
+      "docs": [
+        "features/identity-console.mdx",
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/GoogleWorkspaceIntegration.tsx",
+      "docs": [
+        "features/identity-console.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/M365Integration.tsx",
+      "docs": [
+        "features/identity-console.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/OrgEventLogSettings.tsx",
+      "docs": [
+        "features/event-log-forwarding.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/PartnerEventLogsTab.tsx",
+      "docs": [
+        "features/event-log-forwarding.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auth/passkeys.ts",
+      "docs": [
+        "reference/users-and-roles.mdx",
+        "security/overview.mdx"
+      ]
     }
   ]
 }

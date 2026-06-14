@@ -1,0 +1,168 @@
+---
+title: Privileged Access Management
+description: Eliminate standing admin rights with just-in-time elevation -- intercept Windows UAC prompts, route them to an approver, and grant temporary admin access that revokes itself.
+sidebar:
+  label: "Privileged Access"
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Privileged Access Management (PAM) lets you take admin rights *away* from everyday user accounts and hand them back only when they're actually needed -- for a few minutes, on one machine, with a recorded decision behind it. Instead of standing local-administrator membership that sits on every endpoint waiting to be abused, a user requests elevation in the moment, an approver says yes or no, and the access disappears on its own when the window closes.
+
+Open **Privileged Access** from the Security section of the left sidebar to work the console.
+
+PAM covers three kinds of elevation, all of which land in the same queue:
+
+| Flow | What it is |
+|---|---|
+| **UAC intercept** | A user hits a Windows UAC consent prompt; Breeze captures it and routes it for approval instead of letting the local password decide. |
+| **Tech JIT admin** | A technician requests temporary local-admin access on a device for hands-on work. |
+| **AI tool action** | A privileged action proposed by the Breeze AI agent (Brain) or Helper that requires a human to sign off before it runs. |
+
+<Aside type="tip">
+  PAM never lets a request self-approve. An AI- or Helper-initiated elevation, and a UAC prompt with no matching rule, always default to **pending** -- waiting on a person -- so automation can never quietly relax its own approval.
+</Aside>
+
+---
+
+## The Privileged Access Console
+
+The console is organized into four tabs. A **Live / Offline** indicator in the header shows whether the page is receiving real-time updates -- when an elevation is requested, decided, activated, expired, or revoked anywhere in the fleet, the open tab refreshes itself.
+
+### Overview
+
+The Overview tab is the at-a-glance dashboard:
+
+- **Active elevations** -- how many approval windows are currently open, with a table showing the device, user, target, flow, and a live **expires-in** countdown for each.
+- **Pending requests** -- how many requests are waiting on a decision right now.
+- **Recent decisions** -- the latest approvals, denials, expirations, and revocations, each tagged with who or what decided it.
+
+On a brand-new instance the tab shows a short "Getting started" checklist instead of empty stat cards.
+
+### Requests
+
+The Requests tab is the working queue. It opens filtered to **Pending** -- the requests waiting on you -- and you can re-filter by status (Pending, Approved, Auto-approved, Denied, Expired, Revoked, Actuating) and by flow type (UAC intercept, Tech JIT admin, AI tool action). Each row shows when the request came in, the device, the requesting user, the target (the executable being elevated, or the AI tool being called), and the current status. AI tool actions also carry a **risk-tier** badge (T2 / T3).
+
+To decide a request:
+
+<Steps>
+
+1. Click **Respond** on a pending row.
+
+2. Choose **Approve** or **Deny**.
+
+3. For an approval, set the **approval window** in minutes (1 to 1440 -- a 24-hour maximum). This is how long the granted access stays live before it revokes itself.
+
+4. Add a **reason**. It's optional on an approval and recommended on a denial; either way it's recorded in the audit trail.
+
+5. Submit. The decision is recorded immediately and the requester's elevation proceeds or is blocked.
+
+</Steps>
+
+While an approved elevation is still live you can end it early -- click **Revoke** on any active row, supply a reason (required), and the access is pulled back at once.
+
+Every row also has a **Rule…** action that opens the rule editor pre-filled from that request, so a one-off decision you keep making can become an automatic one.
+
+<Aside>
+  If two people (or an automatic expiry job) act on the same request at the same time, only the first decision wins. The loser sees a friendly "already actioned" notice and the queue refreshes -- a request can never be approved and denied at once.
+</Aside>
+
+### Rules
+
+Rules let you decide elevations automatically so routine, trusted cases don't sit in the queue. Each rule has a **priority** (lowest number runs first), a set of **criteria**, and a **verdict**.
+
+A rule's verdict is one of:
+
+| Verdict | Effect |
+|---|---|
+| **Auto-approve** | Matching requests are granted immediately for the rule's approval window. |
+| **Auto-deny** | Matching requests are blocked immediately. |
+| **Require approval** | Matching requests are held as pending for a human decision. |
+| **Ignore** | The observation is recorded but no request is queued (UAC/executable rules only). |
+
+Criteria identify *what* is being elevated and *who* is asking. A rule must carry at least one identifying criterion -- you can't write a rule that matches everything:
+
+- **Executable rules** match on code-signer, file hash, file path (glob), or parent process.
+- **AI tool-action rules** match on the tool name and risk tier.
+- Both shapes can additionally narrow by **user**, **AD group**, and a **time window** (with day-of-week and time-zone awareness, including windows that wrap past midnight).
+
+Evaluation order is: a **Software Policy** allowlist/blocklist match decides first; if nothing there applies, PAM rules run in priority order and the first match wins. Use the enable/disable switch to retire a rule without deleting it, or **Add rule** to create one from scratch.
+
+### Audit
+
+The Audit tab is the permanent record of every elevation decision. Filter by status, flow, and date range, and export the filtered set to CSV for compliance reporting. Each entry names the decider -- the approver or denier **by name** for human decisions, or the software policy / PAM rule that made an automatic call -- so there's never ambiguity about who granted access.
+
+---
+
+## The Windows UAC Approval Flow
+
+The flagship PAM flow turns a standard Windows UAC consent prompt into a governed approval. End-to-end, it works like this:
+
+<Steps>
+
+1. A user on a managed Windows device does something that triggers a **UAC elevation prompt** (installing software, changing a system setting, and so on).
+
+2. The Breeze agent observes the prompt and creates an **elevation request** describing the executable -- its path, signer, hash, and the requesting user.
+
+3. PAM evaluates the request. If a rule auto-approves or auto-denies it, the decision is instant. Otherwise the request becomes **pending** and is routed to an approver.
+
+4. The approver makes the call from any of three surfaces:
+   - The **Privileged Access console** in the web dashboard (Requests tab).
+   - The **Helper desktop app**, which raises a native approval dialog on the user's own screen.
+   - The **mobile app**, which renders the elevation -- showing the executable, signer, and the requester's reason -- with biometric step-up.
+
+5. On approval, a **just-in-time admin window** opens for the granted duration. On denial, the elevation is blocked.
+
+6. The decision is written to the audit trail, attributed to the person or rule that made it.
+
+</Steps>
+
+<Aside type="caution">
+  The approver is always a separate identity from the requester. A user can't approve their own elevation, and an AI agent or Helper session can't sign off on the action it proposed -- approval requires a human with the right permission, confirmed with MFA.
+</Aside>
+
+---
+
+## How Just-in-Time Admin Works
+
+PAM grants temporary admin rights without ever creating a permanent privileged account or sending a password over the network.
+
+On a managed Windows device, the agent maintains a dormant, disabled, hidden local admin account. It sits idle and powerless until an elevation is approved:
+
+<Steps>
+
+1. **At rest** -- the account exists but is disabled and removed from the Administrators group. If it's ever found with admin membership when no elevation is active (for example after a crash), the agent automatically strips the rights and re-randomizes its password to recover.
+
+2. **On approval** -- the agent generates a fresh random password locally, enables the account, and adds it to the local Administrators group for exactly the approved window.
+
+3. **When the window closes** -- whether the timer expires, the elevation is revoked, or the work simply finishes, the agent removes the account from Administrators, re-randomizes the password, and disables it again.
+
+</Steps>
+
+The credential is minted and rotated entirely on the device and is never written to the agent's configuration file or transmitted to the server -- the elevation request itself carries no password. The result is admin access that is genuinely just-in-time: it exists only for the moment it's needed and cleans itself up automatically afterward.
+
+---
+
+## Enabling and Disabling UAC Interception
+
+Whether a device captures UAC prompts at all is controlled through a **Configuration Policy**, using the **Privileged Access** feature tab. This lets you scope capture across the full hierarchy -- partner, organization, site, device group, or individual device -- with the usual closest-wins precedence.
+
+<Steps>
+
+1. Open **Configuration Policies** and edit (or create) a policy.
+
+2. Open the **Privileged Access** feature tab.
+
+3. Toggle **Capture Windows UAC elevation prompts** on or off, then save.
+
+4. Assign the policy to the partner, organization, site, group, or device you want it to govern.
+
+</Steps>
+
+<Aside>
+  UAC interception is **ON by default at every level**. Existing deployments keep capturing prompts with no action needed; you opt a scope *out* by assigning a policy that turns the toggle off. When capture is disabled, the agent stops surfacing new UAC elevation requests for those devices.
+</Aside>
+
+<Aside type="note">
+  The Configuration Policy toggle **only** controls whether devices capture elevation prompts. It does **not** govern the rule chain. PAM elevation rules -- the auto-approve / deny / require-approval logic, the request queue, and the audit history -- are scoped to the **organization and site** and managed in the Privileged Access console. Closest-wins policy precedence deliberately does *not* apply to rule chains: a device-level policy must never silently shadow an organization's security baseline rules.
+</Aside>

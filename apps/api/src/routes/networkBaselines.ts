@@ -11,6 +11,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { enqueueBaselineScan } from '../jobs/networkBaselineWorker';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   normalizeBaselineAlertSettings,
   normalizeBaselineScanSchedule
@@ -305,8 +306,7 @@ networkBaselineRoutes.post(
 
       return c.json(mapBaselineRow(created), 201);
     } catch (error) {
-      const pgError = error as { code?: string };
-      if (pgError.code === '23505') {
+      if (isPgUniqueViolation(error)) {
         return c.json({ error: 'Baseline already exists for this org/site/subnet' }, 409);
       }
       throw error;

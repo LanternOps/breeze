@@ -5,6 +5,7 @@ import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middlewa
 import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   getConfigPolicy,
   addFeatureLink,
@@ -126,8 +127,8 @@ featureLinkRoutes.post(
       });
 
       return c.json(link, 201);
-    } catch (err: any) {
-      if (err?.code === '23505') {
+    } catch (err: unknown) {
+      if (isPgUniqueViolation(err)) {
         return c.json({ error: `Feature type "${data.featureType}" already linked to this policy` }, 409);
       }
       throw err;
