@@ -18,7 +18,47 @@ export class MailgunInboundProvider implements InboundEmailProvider {
     return a.length === b.length && timingSafeEqual(a, b);
   }
 
-  async parse(_req: HonoRequest): Promise<NormalizedInboundEmail> {
-    throw new Error('not implemented'); // Task 6
+  async parse(req: HonoRequest): Promise<NormalizedInboundEmail> {
+    const b = (await req.parseBody()) as Record<string, string>;
+    const from = extractEmail(b.sender || b.from || '');
+    const fromName = extractName(b.from || '');
+    const refs = (b['References'] || '').trim();
+    return {
+      provider: this.name,
+      providerMessageId: b['Message-Id'] || b['message-id'] || `${b.recipient}:${b.timestamp ?? ''}`,
+      to: extractEmail(b.recipient || ''),
+      from,
+      fromName: fromName || undefined,
+      subject: b.subject || '',
+      text: b['stripped-text'] || b['body-plain'] || '',
+      html: b['body-html'] || undefined,
+      messageId: b['Message-Id'] || undefined,
+      inReplyTo: b['In-Reply-To'] || undefined,
+      references: refs ? refs.split(/\s+/) : undefined,
+      autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
+      precedence: parseHeader(b['message-headers'], 'Precedence'),
+      attachments: [],
+      raw: b
+    };
   }
+}
+
+// `Jane Doe <jane@x.com>` → `jane@x.com`; bare address passes through.
+function extractEmail(s: string): string {
+  const m = s.match(/<([^>]+)>/);
+  return (m ? (m[1] ?? s) : s).trim().toLowerCase();
+}
+
+function extractName(s: string): string {
+  const m = s.match(/^\s*"?([^"<]+?)"?\s*</);
+  return m ? (m[1] ?? '').trim() : '';
+}
+
+function parseHeader(headersJson: string | undefined, name: string): string | undefined {
+  if (!headersJson) return undefined;
+  try {
+    const arr = JSON.parse(headersJson) as [string, string][];
+    const hit = arr.find(([k]) => k.toLowerCase() === name.toLowerCase());
+    return hit?.[1];
+  } catch { return undefined; }
 }
