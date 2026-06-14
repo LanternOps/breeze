@@ -1,0 +1,297 @@
+---
+title: PAM API
+description: REST reference for the Privileged Access Management endpoints -- elevation requests, approvals, revocation, rules, and the actuation surface.
+sidebar:
+  label: PAM API
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This reference covers the Privileged Access Management (PAM) REST surface: the admin control plane under `/api/v1/pam`, the device actuation endpoint, and the agent-side ingest endpoint. For the administrative workflow these endpoints back, see [Privileged Access Management](/features/pam/); for the trust model, see the [PAM Security Model](/security/pam/).
+
+All paths are relative to the API base URL and version prefix (`/api/v1`). See the [API Overview](/reference/api/) for authentication, base URL, and common conventions.
+
+## Authentication and authorization
+
+The `/pam/*` control-plane endpoints require a JWT bearer token (or API key) and run under **organization, partner, or system** scope. Authorization maps to the device permission set:
+
+| Operation class | Permission | Extra gate |
+|---|---|---|
+| Read (list, active, rules) | `devices:read` | -- |
+| Rule create / update / delete | `devices:write` | MFA |
+| Approve / deny / revoke | `devices:execute` | MFA |
+
+Tenant isolation is enforced by row-level security on every query. Site-restricted technicians are additionally narrowed to their allowed sites: requests outside those sites are filtered from reads and rejected on writes with `403`.
+
+<Aside type="note">
+  Every mutating call records an entry in both the platform audit log and the dedicated elevation audit ledger. Approvals, denials, and revocations are attributed to the calling user by id.
+</Aside>
+
+---
+
+## Elevation requests
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/pam/elevation-requests` | List and filter elevation requests (Requests and Audit tabs). |
+| `GET` | `/pam/active` | List currently-active (unexpired, approved) elevations. |
+| `POST` | `/pam/elevation-requests/:id/respond` | Approve or deny a pending request. |
+| `POST` | `/pam/elevation-requests/:id/revoke` | Revoke an active elevation before it expires. |
+
+### List elevation requests
+
+`GET /pam/elevation-requests`
+
+Query parameters (all optional):
+
+| Param | Type | Notes |
+|---|---|---|
+| `status` | enum | `pending`, `approved`, `auto_approved`, `denied`, `expired`, `revoked`, `actuating` |
+| `flowType` | enum | `uac_intercept`, `tech_jit_admin`, `ai_tool_action` |
+| `deviceId` | uuid | Filter to one device |
+| `siteId` | uuid | Filter to one site (must be within the caller's site scope) |
+| `from` / `to` | ISO-8601 | Bound by request time |
+| `page` / `limit` | int | `limit` max 100, default 50 |
+
+Response:
+
+```json
+{
+  "success": true,
+  "requests": [
+    {
+      "id": "…",
+      "orgId": "…",
+      "deviceId": "…",
+      "deviceHostname": "WIN-ACCT-04",
+      "siteName": "HQ",
+      "flowType": "uac_intercept",
+      "status": "pending",
+      "subjectUsername": "acme\\sarah",
+      "targetExecutablePath": "C:\\Users\\sarah\\Downloads\\FirefoxSetup.exe",
+      "targetExecutableSigner": "Mozilla Corporation",
+      "requestedAt": "2026-06-13T14:02:11Z",
+      "approvedByName": null,
+      "deniedByName": null,
+      "revokedByName": null,
+      "matchedPolicyName": null,
+      "pamRuleId": null,
+      "pamRuleName": null,
+      "decisionSource": null
+    }
+  ],
+  "pagination": { "page": 1, "limit": 50, "total": 1 }
+}
+```
+
+`decisionSource` is derived: `software_policy`, `pam_rule`, `human`, or `null` (still pending). AI tool-action rows additionally carry `toolName`, `riskTier`, and `actionDigest`.
+
+### List active elevations
+
+`GET /pam/active`
+
+Returns up to 500 elevations whose status is `approved`, `auto_approved`, or `actuating` and whose `expiresAt` is in the future. No query parameters. Used to render the live "active windows" view with expiry countdowns.
+
+```json
+{ "success": true, "active": [ { "id": "…", "expiresAt": "2026-06-13T14:17:00Z", "…": "…" } ] }
+```
+
+### Respond (approve / deny)
+
+`POST /pam/elevation-requests/:id/respond` — requires `devices:execute` + MFA.
+
+Request body:
+
+```json
+{
+  "decision": "approve",
+  "reason": "Approved per change CHG-1042",
+  "durationMinutes": 30
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `decision` | enum | `approve` or `deny` (required) |
+| `reason` | string | Optional on approve, recommended on deny; max 2000 chars |
+| `durationMinutes` | int | Approval window, 1–1440 (24h max). Defaults to 15 |
+
+Only a `pending` request can be decided. The transition is an atomic compare-and-swap on `pending`, so concurrent decisions are safe.
+
+| Status | Meaning |
+|---|---|
+| `200` | `{ "success": true, "id": "…", "status": "approved" \| "denied" }` |
+| `400` | Invalid id or body |
+| `403` | Site access denied, or MFA not satisfied |
+| `404` | Request not found (or outside the caller's org) |
+| `409` | Request is no longer pending (lost the race), or a linked AI tool execution already timed out |
+
+<Aside>
+  For an `ai_tool_action` request, an approval is mirrored onto the linked AI tool execution inside the same transaction. If that execution already timed out, the whole decision is rolled back and the call returns `409` rather than recording a grant that can never take effect.
+</Aside>
+
+### Revoke
+
+`POST /pam/elevation-requests/:id/revoke` — requires `devices:execute` + MFA.
+
+Ends an active elevation early.
+
+```json
+{ "reason": "Maintenance window cancelled" }
+```
+
+`reason` is **required** (1–2000 chars). Only an active elevation (`approved`, `auto_approved`, or `actuating`) can be revoked; a stale or already-finished row returns `409`.
+
+```json
+{ "success": true, "id": "…", "status": "revoked" }
+```
+
+---
+
+## Rules
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/pam/rules` | List rules in priority order. |
+| `POST` | `/pam/rules` | Create a rule. |
+| `POST` | `/pam/rules/preview` | Dry-run draft criteria against request history. |
+| `PATCH` | `/pam/rules/:id` | Update a rule. |
+| `DELETE` | `/pam/rules/:id` | Delete a rule. |
+
+### Create / update a rule
+
+`POST /pam/rules` (create) and `PATCH /pam/rules/:id` (partial update) — require `devices:write` + MFA.
+
+```json
+{
+  "name": "Auto-approve signed Mozilla installers",
+  "verdict": "auto_approve",
+  "priority": 50,
+  "enabled": true,
+  "matchSigner": "Mozilla Corporation",
+  "approvalDurationMinutes": 30,
+  "siteId": null
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Required, 1–255 chars |
+| `verdict` | enum | `auto_approve`, `auto_deny`, `require_approval`, `ignore` |
+| `priority` | int | Lower runs first; default 100 |
+| `enabled` | bool | Default true |
+| `siteId` | uuid \| null | Narrow to one site; null = org-wide |
+| `matchSigner` | string | Code-signer (executable rule) |
+| `matchHash` | string | SHA-256 hex digest (executable rule) |
+| `matchPathGlob` | string | File-path glob (executable rule) |
+| `matchParentImage` | string | Parent process (executable rule) |
+| `matchUser` | string | Narrow by requesting user |
+| `matchAdGroup` | string | Narrow by AD group |
+| `matchToolName` | string | AI tool name (tool-action rule) |
+| `matchRiskTier` | int | Risk tier 0–4 (tool-action rule) |
+| `timeWindow` | object | `{ start, end, days?, timezone? }`, `HH:MM` 24h, days 0–6 (Sun–Sat) |
+| `approvalDurationMinutes` | int | 1–1440; null falls back to the org default |
+
+Rule-shape validation (enforced on create and on the merged result of an update):
+
+- A rule must carry **at least one identifying criterion** (signer/hash/path/parent/user/group/tool/tier). A rule scoped only by time window -- or nothing -- is rejected with `400`.
+- A rule is either **executable-shaped** (signer/hash/path/parent) or **tool-action-shaped** (tool name / risk tier). Mixing the two is rejected, because no single observation carries both.
+- `verdict: "ignore"` is not valid for tool-action rules -- a tool action must be decided.
+
+Create returns `201` with the full rule; update returns `200`.
+
+### Preview a rule
+
+`POST /pam/rules/preview` — requires `devices:write`.
+
+Dry-runs draft criteria against historical requests so you can see what a rule *would* have matched before saving it. Accepts the same criteria fields as a rule, plus `windowDays` (1–90, default 30) and an optional `flowType`.
+
+```json
+{
+  "success": true,
+  "totalMatched": 12,
+  "totalScanned": 480,
+  "windowDays": 30,
+  "truncated": false,
+  "statusBreakdown": { "pending": 2, "approved": 7, "auto_approved": 3, "denied": 0, "expired": 0, "revoked": 0, "actuating": 0 },
+  "sample": [ { "id": "…", "requestedAt": "…", "flowType": "uac_intercept", "status": "approved" } ]
+}
+```
+
+The preview is a pure per-rule match -- it does not replay priority shadowing or the software-policy bridge. Historical rows do not store AD groups, so any draft containing `matchAdGroup` reports zero matches.
+
+---
+
+## Device actuation
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/devices/:id/actuate-elevation` | Queue an `actuate_elevation` command for an approved UAC elevation. |
+
+`POST /devices/:id/actuate-elevation` — organization/partner/system scope, `devices:execute`, MFA.
+
+Queues the agent "go" signal for a `consent.exe` prompt that is already waiting on the user's screen. The command payload carries **only** the elevation request id and a timeout -- the dormant-admin credential is minted locally by the agent and never crosses the wire.
+
+```json
+{ "elevationRequestId": "…", "timeoutMs": 8000 }
+```
+
+The route is single-use: it atomically transitions the request from `approved` to `actuating` in the same transaction that queues the command. A request that is not `approved`, or that another caller already claimed, is refused.
+
+| Status | Meaning |
+|---|---|
+| `201` | Command queued; returns the command id and `elevationRequestId` |
+| `400` | Invalid body, or device decommissioned |
+| `403` | PAM actuator disabled, site access denied, or MFA not satisfied |
+| `404` | Device or elevation request not found |
+| `409` | Request not approved (`wrong_status`) or already being actuated (`race_lost`) |
+
+<Aside type="caution">
+  The actuator is **disabled by default in every environment** and must be explicitly enabled server-side once just-in-time credentials and agent-side re-validation are deployed. While disabled, this endpoint returns `403`.
+</Aside>
+
+---
+
+## Agent ingest
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/agents/:id/elevation-requests` | Agent reports an observed UAC consent prompt. |
+
+This endpoint is called **by the agent**, authenticated with the agent bearer token (not a user JWT), and is documented here for completeness. It records a UAC observation as an `elevation_requests` row with `flowType: uac_intercept`, runs the decisioning chain (software-policy bridge → PAM rules → pending), and emits the corresponding event and audit rows.
+
+Request body (synthesized fields like `reason` are written server-side; the agent only sends discovery data):
+
+```json
+{
+  "subject_username": "acme\\sarah",
+  "target_executable_path": "C:\\Users\\sarah\\Downloads\\FirefoxSetup.exe",
+  "target_executable_hash": "<sha256>",
+  "target_executable_signer": "Mozilla Corporation",
+  "pid": 4812,
+  "parent_image": "C:\\Windows\\explorer.exe",
+  "command_line": "…",
+  "observed_at": "2026-06-13T14:02:11Z"
+}
+```
+
+| Status | Meaning |
+|---|---|
+| `201` | `{ "id": "…", "status": "pending" \| "auto_approved" \| "denied" }` |
+| `200` | `{ "id": null, "status": "ignored" }` -- an `ignore` rule matched; no request row is created |
+| `413` | Body exceeds 32 KB |
+| `429` | Per-device rate limit exceeded (about 10 requests/second) |
+
+Decisioning fails safe: if either evaluator errors, the request is recorded as `pending` rather than auto-approved.
+
+---
+
+## Configuration policy: enabling UAC capture
+
+Whether a device captures UAC prompts at all is governed by the **`pam`** configuration-policy feature, resolved through the normal policy hierarchy (partner → org → site → group → device, closest-wins). The feature's inline settings shape is a single flag:
+
+```json
+{ "uacInterceptionEnabled": true }
+```
+
+`uacInterceptionEnabled` defaults to **true** at every level, so upgrades are behavior-preserving; admins opt a scope *out* by assigning a policy that turns it off. This toggle controls only whether devices *capture* elevation prompts -- it does not govern the rule chain, request queue, or audit history, which are scoped to the organization and site and managed in the Privileged Access console. See [Configuration Policies](/features/configuration-policies/) for how feature settings resolve.
