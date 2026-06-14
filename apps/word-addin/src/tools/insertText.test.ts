@@ -24,7 +24,7 @@ describe('insert_text', () => {
     expect(mock.bodyText).toBe('abc!');
   });
 
-  it('lowercases the location to a Word.InsertLocation enum value', async () => {
+  it('passes a validated PascalCase location straight through as a Word.InsertLocation value', async () => {
     const mock = getOfficeMock();
     mock.setBody('xy');
     mock.select(0, 0);

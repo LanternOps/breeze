@@ -14,6 +14,11 @@
  * Documented leniencies (do NOT rely on these in src/ production code):
  *  - Font property *writes* are accepted before sync (Office.js queues them too)
  *  - InsertLocation strings are not validated by the mock (the executor validates)
+ *  - load() calls are recorded (state.loadCalls) but NOT enforced: a read is gated
+ *    on sync() having hydrated it, not on a matching load(). Real Office.js throws
+ *    PropertyNotLoaded for a never-load()-ed property even after sync — so a missing
+ *    .load() can pass here. (Same documented stance as the Excel mock; all current
+ *    executors load() correctly. Harden both mocks together if this ever bites.)
  */
 import { vi } from 'vitest';
 
