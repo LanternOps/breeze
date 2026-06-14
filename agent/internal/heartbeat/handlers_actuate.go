@@ -60,7 +60,7 @@ var newActuator = pamactuator.New
 // newElevationAccountManager is test-swappable for handler safety tests.
 var newElevationAccountManager = elevaccount.New
 
-func handleActuateElevation(_ *Heartbeat, cmd Command) tools.CommandResult {
+func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
 	payload, err := parseActuatePayload(cmd.Payload)
@@ -78,36 +78,7 @@ func handleActuateElevation(_ *Heartbeat, cmd Command) tools.CommandResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout)
 	defer cancel()
 
-	manager := newElevationAccountManager()
-	cred, err := manager.Promote(ctx)
-	if err != nil {
-		out := actuateResult{
-			ElevationRequestID: payload.ElevationRequestID,
-			Success:            false,
-			Reason:             promoteFailureReason(err),
-			Message:            err.Error(),
-		}
-		return tools.NewSuccessResult(out, time.Since(start).Milliseconds())
-	}
-	defer func() {
-		demoteCtx, demoteCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer demoteCancel()
-		if err := manager.Demote(demoteCtx); err != nil {
-			log.Warn("actuate_elevation: demote failed",
-				"elevationRequestId", payload.ElevationRequestID,
-				"error", err.Error(),
-			)
-		}
-	}()
-	defer zeroCredential(&cred)
-
-	act := newActuator()
-	res := act.Trigger(ctx, pamactuator.Request{
-		ElevationRequestID: payload.ElevationRequestID,
-		Username:           cred.Username,
-		Password:           cred.Password,
-		TimeoutMs:          payload.TimeoutMs,
-	})
+	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs)
 
 	out := actuateResult{
 		ElevationRequestID: payload.ElevationRequestID,
@@ -121,6 +92,40 @@ func handleActuateElevation(_ *Heartbeat, cmd Command) tools.CommandResult {
 	// of the firmup: the server is the one deciding retry/escalate based
 	// on the Reason code, not the agent.
 	return tools.NewSuccessResult(out, time.Since(start).Milliseconds())
+}
+
+// actuateElevation runs the dormant-admin promote → consent.exe type →
+// guaranteed-demote pipeline and returns the actuator result. Shared by the
+// remote actuate_elevation command handler and the local etwlua-driven flow.
+func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, timeoutMs int) pamactuator.Result {
+	manager := newElevationAccountManager()
+	cred, err := manager.Promote(ctx)
+	if err != nil {
+		return pamactuator.Result{
+			Success:       false,
+			Reason:        promoteFailureReason(err),
+			DetailMessage: err.Error(),
+		}
+	}
+	defer func() {
+		demoteCtx, demoteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer demoteCancel()
+		if err := manager.Demote(demoteCtx); err != nil {
+			log.Warn("actuate_elevation: demote failed",
+				"elevationRequestId", requestID,
+				"error", err.Error(),
+			)
+		}
+	}()
+	defer zeroCredential(&cred)
+
+	act := newActuator()
+	return act.Trigger(ctx, pamactuator.Request{
+		ElevationRequestID: requestID,
+		Username:           cred.Username,
+		Password:           cred.Password,
+		TimeoutMs:          timeoutMs,
+	})
 }
 
 // parseActuatePayload validates the incoming payload. Required fields:
