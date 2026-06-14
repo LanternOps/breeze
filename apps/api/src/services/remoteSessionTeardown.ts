@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
@@ -10,6 +10,138 @@ import { captureException } from './sentry';
 // `ne(status,'disconnected')`) would also sweep historical `failed` rows and
 // overwrite their `endedAt`, corrupting session history for no benefit.
 const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as const;
+
+/** A session row a teardown has just marked `disconnected`. */
+type DisconnectedSession = { id: string; type: string; deviceId: string };
+
+// Lazy import of the terminal WS module to break the import cycle
+// (terminalWs → agentWs → terminalWs already exists; routing this through a
+// dynamic import keeps remoteSessionTeardown out of that static cluster).
+let _terminalWs: typeof import('../routes/terminalWs') | null = null;
+async function getTerminalWs() {
+  if (!_terminalWs) _terminalWs = await import('../routes/terminalWs');
+  return _terminalWs;
+}
+
+/**
+ * Given session rows already marked `disconnected`, push the per-session
+ * teardown that the DB UPDATE alone does NOT achieve: revoke the viewer token,
+ * signal the owning agent to stop the OS-level stream, and close any live
+ * terminal socket on this instance.
+ *
+ * Shared by every teardown trigger — user suspension, device
+ * quarantine/decommission, and the admin `/stale` sweep — so all of them tear
+ * down the peer-to-peer stream identically. Before this existed, callers only
+ * marked the row + revoked the viewer token, which blocks reconnect but leaves
+ * the live WebRTC desktop (Flow-B) and the live terminal PTY running with the
+ * API server out of the loop.
+ *
+ * Per-session calls are best-effort: a failure on one session is logged and
+ * does not prevent the others from being torn down.
+ *   - desktop → `stop_desktop` to the agent (handles direct + SYSTEM-helper).
+ *   - terminal → `terminal_stop` to the agent (kills the PTY, also across
+ *     instances) AND `closeTerminalSession` to drop any live socket held on
+ *     this instance.
+ *   - file_transfer → viewer-token revoke only (no streaming channel to stop).
+ */
+export async function teardownDisconnectedSessions(
+  disconnected: DisconnectedSession[]
+): Promise<void> {
+  if (disconnected.length === 0) return;
+
+  // Resolve the owning agent id for each affected device so we can signal the
+  // OS-level teardown. One targeted SELECT keyed on the device ids we just
+  // disconnected (agentId lives on devices, not remoteSessions). A failure here
+  // is non-fatal: the rows are already disconnected and viewer tokens are
+  // revoked below regardless — we just can't push stop_desktop/terminal_stop.
+  const agentByDevice = new Map<string, string | null>();
+  try {
+    const deviceIds = Array.from(new Set(disconnected.map((s) => s.deviceId)));
+    const deviceRows = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        return db
+          .select({ id: devices.id, agentId: devices.agentId })
+          .from(devices)
+          .where(inArray(devices.id, deviceIds));
+      })
+    );
+    for (const row of deviceRows) {
+      agentByDevice.set(row.id, row.agentId ?? null);
+    }
+  } catch (err) {
+    console.error(
+      `[remoteSessionTeardown] Failed to resolve agents (stop signals skipped):`,
+      err
+    );
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
+  // Best-effort viewer-token revocation per session. A rejection on one does
+  // not block the rest; an unexpected throw is logged, never swallowed bare.
+  await Promise.all(
+    disconnected.map((row) =>
+      revokeViewerSession(row.id).catch((err) =>
+        console.error(
+          `[remoteSessionTeardown] Failed to revoke viewer session ${row.id}:`,
+          err
+        )
+      )
+    )
+  );
+
+  // Signal each session's agent to tear down its stream / PTY, and drop any
+  // live terminal socket held locally.
+  for (const row of disconnected) {
+    const agentId = agentByDevice.get(row.deviceId);
+    if (row.type === 'desktop' && agentId) {
+      try {
+        sendCommandToAgent(agentId, {
+          id: `desk-stop-${row.id}`,
+          type: 'stop_desktop',
+          payload: { sessionId: row.id },
+        });
+      } catch (err) {
+        console.error(
+          `[remoteSessionTeardown] Failed to send stop_desktop for session ${row.id}:`,
+          err
+        );
+      }
+    } else if (row.type === 'terminal') {
+      // Close the live terminal socket on THIS instance if present;
+      // closeTerminalSession also sends `terminal_stop` to the agent and
+      // returns true when it closed a local socket. When the socket is NOT
+      // local (false — e.g. it lives on another API instance), fall back to
+      // signalling the agent directly so the PTY still dies. This dispatches a
+      // single `terminal_stop` per case; any redundant one from a racing
+      // path (e.g. the ping-loop backstop) reuses the same `term-stop-<id>`
+      // command id and is dropped by the agent's command dedup.
+      let closedLocally = false;
+      try {
+        const { closeTerminalSession } = await getTerminalWs();
+        closedLocally = closeTerminalSession(row.id);
+      } catch (err) {
+        console.error(
+          `[remoteSessionTeardown] Failed to close terminal socket for session ${row.id}:`,
+          err
+        );
+      }
+      if (!closedLocally && agentId) {
+        try {
+          sendCommandToAgent(agentId, {
+            id: `term-stop-${row.id}`,
+            type: 'terminal_stop',
+            payload: { sessionId: row.id },
+          });
+        } catch (err) {
+          console.error(
+            `[remoteSessionTeardown] Failed to send terminal_stop for session ${row.id}:`,
+            err
+          );
+        }
+      }
+    }
+  }
+}
 
 /**
  * Sentinel returned by {@link terminateUserRemoteSessions} when teardown
@@ -30,11 +162,13 @@ export const TEARDOWN_FAILED = -1;
  * flow peer-to-peer to the agent with the API server out of the loop. So for
  * each active session this:
  *   1. marks the row `disconnected` (session list reflects reality),
- *   2. revokes the viewer token — blocks reconnect, and the desktop-WS ping
- *      loop closes any live legacy (Flow-A) socket within one interval (#4),
- *   3. sends `stop_desktop` to the owning agent so the peer-to-peer WebRTC
- *      (Flow-B) stream is torn down immediately (#2); the agent's
- *      `handleStopDesktop` handles both direct and SYSTEM-helper sessions.
+ *   2. revokes the viewer token — blocks reconnect, and the WS ping loop
+ *      closes any live legacy (Flow-A) socket within one interval (#4),
+ *   3. signals the owning agent to tear down the live stream immediately via
+ *      {@link teardownDisconnectedSessions}: `stop_desktop` for desktop
+ *      (peer-to-peer Flow-B WebRTC) and `terminal_stop` + local-socket close
+ *      for terminal (the live PTY). Without this a suspended operator keeps
+ *      screen/input or a live shell after being cut off.
  *
  * Runs in a fresh system DB scope so it is safe to call from a request handler
  * (PATCH /users/:id) or a background/admin context: `runOutsideDbContext`
@@ -51,11 +185,46 @@ export const TEARDOWN_FAILED = -1;
  *   A `-1` is reported to Sentry here and MUST be surfaced by callers.
  */
 export async function terminateUserRemoteSessions(userId: string): Promise<number> {
-  let disconnected: Array<{ id: string; type: string; deviceId: string }>;
+  return disconnectAndTeardown(
+    eq(remoteSessions.userId, userId),
+    `user ${userId}`
+  );
+}
 
-  // Single statement: mark this user's active sessions disconnected and return
-  // the rows we touched. Collapses the previous SELECT+innerJoin enumeration
-  // followed by a second UPDATE that re-evaluated the same predicate.
+/**
+ * Force-terminate every live remote session targeting a device. Called when a
+ * device is quarantined (mTLS cert expiry / compromise) or decommissioned so an
+ * isolated/offboarded device cannot keep a live remote-control session open.
+ * Device-keyed analog of {@link terminateUserRemoteSessions}: same
+ * disconnect → viewer-revoke → agent-stop teardown, scoped by `deviceId`
+ * instead of `userId`.
+ *
+ * @returns the number of sessions marked disconnected (`0` = nothing to do),
+ *   or {@link TEARDOWN_FAILED} (`-1`) when the bulk disconnect itself failed.
+ */
+export async function terminateDeviceRemoteSessions(deviceId: string): Promise<number> {
+  return disconnectAndTeardown(
+    eq(remoteSessions.deviceId, deviceId),
+    `device ${deviceId}`
+  );
+}
+
+/**
+ * Mark every active session matching `scopePredicate` as `disconnected`
+ * (returning the touched rows) and run {@link teardownDisconnectedSessions} on
+ * them. Shared core of the user- and device-keyed terminate functions.
+ *
+ * Runs in a fresh system DB scope so it is safe to call from a request handler
+ * or a background/admin context: `runOutsideDbContext` first breaks out of any
+ * caller transaction/RLS context, then `withSystemDbAccessContext` establishes
+ * system scope on a separate connection.
+ */
+async function disconnectAndTeardown(
+  scopePredicate: SQL,
+  label: string
+): Promise<number> {
+  let disconnected: DisconnectedSession[];
+
   try {
     disconnected = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
@@ -64,7 +233,7 @@ export async function terminateUserRemoteSessions(userId: string): Promise<numbe
           .set({ status: 'disconnected', endedAt: new Date() })
           .where(
             and(
-              eq(remoteSessions.userId, userId),
+              scopePredicate,
               inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
             )
           )
@@ -76,12 +245,12 @@ export async function terminateUserRemoteSessions(userId: string): Promise<numbe
       })
     );
   } catch (err) {
-    // Hard failure: the suspend-time teardown did not run. Alert via Sentry so
-    // it is not silently swallowed, and signal the caller (sentinel) so it can
-    // surface a degraded/partial result instead of reporting a clean success
-    // while the operator may retain live screen/input/clipboard control.
+    // Hard failure: the teardown did not run. Alert via Sentry so it is not
+    // silently swallowed, and signal the caller (sentinel) so it can surface a
+    // degraded/partial result instead of reporting a clean success while an
+    // operator may retain live screen/input/clipboard control.
     console.error(
-      `[remoteSessionTeardown] Failed to disconnect sessions for user ${userId}:`,
+      `[remoteSessionTeardown] Failed to disconnect sessions for ${label}:`,
       err
     );
     captureException(err instanceof Error ? err : new Error(String(err)));
@@ -92,64 +261,6 @@ export async function terminateUserRemoteSessions(userId: string): Promise<numbe
     return 0;
   }
 
-  // Resolve the owning agent id for each affected device so we can signal the
-  // OS-level desktop teardown. One targeted SELECT keyed on the device ids we
-  // just disconnected (agentId lives on devices, not remoteSessions). A failure
-  // here is non-fatal: the rows are already disconnected and viewer tokens are
-  // revoked below regardless — we just can't push stop_desktop.
-  const agentByDevice = new Map<string, string | null>();
-  try {
-    const deviceIds = Array.from(new Set(disconnected.map((s) => s.deviceId)));
-    const deviceRows = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(async () => {
-        return db
-          .select({ id: devices.id, agentId: devices.agentId })
-          .from(devices)
-          .where(inArray(devices.id, deviceIds));
-      })
-    );
-    for (const row of deviceRows) {
-      agentByDevice.set(row.id, row.agentId ?? null);
-    }
-  } catch (err) {
-    console.error(
-      `[remoteSessionTeardown] Failed to resolve agents for user ${userId} (stop_desktop skipped):`,
-      err
-    );
-    captureException(err instanceof Error ? err : new Error(String(err)));
-  }
-
-  // Best-effort viewer-token revocation per session. A rejection on one does
-  // not block the rest; an unexpected throw is logged, never swallowed bare.
-  await Promise.all(
-    disconnected.map((row) =>
-      revokeViewerSession(row.id).catch((err) =>
-        console.error(
-          `[remoteSessionTeardown] Failed to revoke viewer session ${row.id}:`,
-          err
-        )
-      )
-    )
-  );
-
-  // Signal each desktop session's agent to tear down the peer-to-peer stream.
-  for (const row of disconnected) {
-    const agentId = agentByDevice.get(row.deviceId);
-    if (row.type === 'desktop' && agentId) {
-      try {
-        sendCommandToAgent(agentId, {
-          id: `desk-stop-${row.id}`,
-          type: 'stop_desktop',
-          payload: { sessionId: row.id },
-        });
-      } catch (err) {
-        console.error(
-          `[remoteSessionTeardown] Failed to send stop_desktop for session ${row.id}:`,
-          err
-        );
-      }
-    }
-  }
-
+  await teardownDisconnectedSessions(disconnected);
   return disconnected.length;
 }
