@@ -20,24 +20,35 @@ func TestRunPamFlow(t *testing.T) {
 	dismissed := ipc.PamDialogResult{Approved: false, DismissedByUser: true}
 
 	cases := []struct {
-		name          string
-		status        string
-		dialog        ipc.PamDialogResult
+		name   string
+		status etwlua.ElevationStatus
+		dialog ipc.PamDialogResult
 		// returnErr, when non-nil, is returned by the pamRequestDialog seam to
 		// simulate a broker round-trip failure. RunPamFlow must coerce that to
 		// deny+dismiss regardless of the (ignored) dialog result.
-		returnErr     error
-		noSession     bool
+		returnErr error
+		noSession bool
 		// noBroker builds the heartbeat with nil swappable fields (pamFindSession,
 		// pamRequestDialog) AND a nil sessionBroker, reproducing production wiring
 		// where the broker is absent. Proves RunPamFlow never panics in that shape.
-		noBroker      bool
+		noBroker bool
 		// wantDialog asserts whether the broker dialog round-trip was reached.
 		wantDialog    bool
 		wantTriggered bool
 		wantDismissed bool
 		// wantActuated asserts the promote→demote credential pipeline ran.
 		wantActuated bool
+		// promoteErr, when non-nil, makes the fake elevation manager's Promote
+		// fail. actuateElevation returns early (no Trigger, no deferred Demote),
+		// proving RunPamFlow tolerates a failed actuation cleanly.
+		promoteErr error
+		// wantPromoteAttempt asserts Promote was called exactly once even though
+		// the actuation did not complete (used with promoteErr).
+		wantPromoteAttempt bool
+		// dismissResult, when non-nil, overrides the fake actuator's Dismiss
+		// return so the deny-path logging switch can be exercised against the
+		// benign "no_consent_window" and the genuine-failure reasons.
+		dismissResult *pamactuator.Result
 	}{
 		{
 			name:          "policy hard-deny dismisses without dialog",
@@ -142,6 +153,49 @@ func TestRunPamFlow(t *testing.T) {
 			wantDismissed: false,
 			wantActuated:  false,
 		},
+		{
+			// FIX I: auto-approved + user-approved, but the credential Promote
+			// fails (e.g. ErrUnsupportedPlatform). actuateElevation returns the
+			// failure early — Trigger is never reached as success, no Demote runs,
+			// and no spurious dismiss occurs. Proves the local flow tolerates a
+			// failed actuation cleanly without panicking.
+			name:               "auto-approved promote failure tolerated, no dismiss",
+			status:             "auto_approved",
+			dialog:             approved,
+			promoteErr:         elevaccount.ErrUnsupportedPlatform,
+			wantDialog:         true,
+			wantTriggered:      false, // Promote fails before Trigger
+			wantDismissed:      false, // actuate path never dismisses
+			wantActuated:       false, // promote→demote pipeline did not complete
+			wantPromoteAttempt: true,  // Promote attempted exactly once
+		},
+		{
+			// FIX B: deny path where Dismiss reports the prompt was already gone.
+			// no_consent_window is the desired deny end-state, not a failure — the
+			// flow must not panic and must still have invoked Dismiss. (The only
+			// observable difference vs a hard failure is log level.)
+			name:          "deny with dismiss no_consent_window is benign",
+			status:        "denied",
+			dialog:        approved, // ignored — denied short-circuits
+			dismissResult: &pamactuator.Result{Success: false, Reason: "no_consent_window"},
+			wantDialog:    false,
+			wantTriggered: false,
+			wantDismissed: true,
+			wantActuated:  false,
+		},
+		{
+			// FIX B: deny path where Dismiss genuinely failed (send_input_failed).
+			// This is the real "enforcement FAILED" case; the flow must still not
+			// panic and must have invoked Dismiss.
+			name:          "deny with dismiss send_input_failed does not panic",
+			status:        "denied",
+			dialog:        approved, // ignored
+			dismissResult: &pamactuator.Result{Success: false, Reason: "send_input_failed"},
+			wantDialog:    false,
+			wantTriggered: false,
+			wantDismissed: true,
+			wantActuated:  false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -157,13 +211,17 @@ func TestRunPamFlow(t *testing.T) {
 					},
 					dismiss: func(context.Context) pamactuator.Result {
 						dismissed = true
+						if tc.dismissResult != nil {
+							return *tc.dismissResult
+						}
 						return pamactuator.Result{Success: true, Reason: "dismissed"}
 					},
 				}
 			})
 
 			manager := &fakeElevationManager{
-				cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"},
+				cred:       elevaccount.Credential{Username: "~breeze_elev", Password: "x"},
+				promoteErr: tc.promoteErr,
 			}
 			swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
 
@@ -220,10 +278,14 @@ func TestRunPamFlow(t *testing.T) {
 				t.Errorf("dialogCalled = %v, want %v", dialogCalled, tc.wantDialog)
 			}
 
-			// The actuate path runs Promote then a deferred Demote.
+			// The actuate path runs Promote then a deferred Demote. When Promote
+			// fails (promoteErr), actuateElevation returns before registering the
+			// Demote defer, so Promote is attempted once but Demote never runs.
 			wantPromote, wantDemote := 0, 0
 			if tc.wantActuated {
 				wantPromote, wantDemote = 1, 1
+			} else if tc.wantPromoteAttempt {
+				wantPromote = 1 // promote attempted, then failed → no Demote
 			}
 			if manager.promoteSeen != wantPromote {
 				t.Errorf("Promote called %d times, want %d", manager.promoteSeen, wantPromote)

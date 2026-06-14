@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -60,6 +61,13 @@ func (h *Heartbeat) SendElevationRequest(req etwlua.Event) (etwlua.ElevationOutc
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	}
-	_ = json.Unmarshal(respBody, &decoded)
-	return etwlua.ElevationOutcome{RequestID: decoded.ID, Status: decoded.Status}, nil
+	if uerr := json.Unmarshal(respBody, &decoded); uerr != nil && len(bytes.TrimSpace(respBody)) > 0 {
+		// The request was accepted (2xx) but the ingest-decision body did not
+		// parse. Non-fatal — we still return a zero-value outcome and nil error
+		// so the event is not re-queued — but warn so a server-contract drift is
+		// observable instead of the local PAM flow silently never starting.
+		log.Warn("elevation-requests: accepted but ingest-decision body unparseable; local PAM flow will be skipped",
+			"statusCode", resp.StatusCode, "error", uerr.Error())
+	}
+	return etwlua.ElevationOutcome{RequestID: decoded.ID, Status: etwlua.ElevationStatus(decoded.Status)}, nil
 }

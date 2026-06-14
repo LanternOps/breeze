@@ -43,13 +43,13 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	}()
 
 	switch outcome.Status {
-	case "denied":
+	case etwlua.ElevationDenied:
 		h.denyConsent(ctx, outcome.RequestID, "policy_denied") // policy hard-deny, no dialog
 		return
-	case "auto_approved", "pending":
+	case etwlua.ElevationAutoApproved, etwlua.ElevationPending:
 		// fall through to the dialog gate
 	default:
-		log.Debug("pam: no local flow for status", "status", outcome.Status, "elevationRequestId", outcome.RequestID)
+		log.Debug("pam: no local flow for status", "status", string(outcome.Status), "elevationRequestId", outcome.RequestID)
 		return
 	}
 
@@ -80,12 +80,22 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	dialog, err := ask(session, outcome.RequestID, buildPamRequestDialog(ev), pamDialogTimeout)
 	if err != nil {
 		log.Warn("pam: dialog round-trip error; treating as deny", "elevationRequestId", outcome.RequestID, "error", err.Error())
-		dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true}
+		dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "dialog_roundtrip_error"}
 	}
 
-	verdict := sessionbroker.PamPolicyEndUserAllowed
-	if outcome.Status == "pending" {
+	var verdict string
+	switch outcome.Status {
+	case etwlua.ElevationAutoApproved:
+		verdict = sessionbroker.PamPolicyEndUserAllowed
+	case etwlua.ElevationPending:
 		verdict = sessionbroker.PamPolicyRequireApproval
+	default:
+		// Unreachable today (the switch above only lets these two through),
+		// but fail closed if a new fall-through status is ever added upstream:
+		// never actuate on a status we don't recognize.
+		log.Warn("pam: unexpected status at verdict mapping; denying", "status", string(outcome.Status), "elevationRequestId", outcome.RequestID)
+		h.denyConsent(ctx, outcome.RequestID, "unexpected_status")
+		return
 	}
 
 	switch sessionbroker.ComposePamDecision(verdict, dialog, nil) {
@@ -121,11 +131,16 @@ func (h *Heartbeat) denyConsent(ctx context.Context, requestID, reason string) {
 	res := newActuator().Dismiss(ctx)
 	h.pamActuateMu.Unlock()
 
-	if res.Success {
+	switch {
+	case res.Success:
 		log.Info("pam: denied elevation, dismissed consent prompt",
-			"elevationRequestId", requestID, "reason", reason,
-			"dismiss_success", true, "dismiss_reason", res.Reason)
-	} else {
+			"elevationRequestId", requestID, "reason", reason, "dismiss_reason", res.Reason)
+	case res.Reason == "no_consent_window":
+		// Prompt already gone (user closed it, self-timeout, or a prior dismiss) —
+		// the deny is satisfied, not a failure.
+		log.Info("pam: deny — consent prompt already closed",
+			"elevationRequestId", requestID, "reason", reason)
+	default:
 		log.Warn("pam: deny enforcement FAILED — consent.exe may still be live",
 			"elevationRequestId", requestID, "reason", reason,
 			"dismiss_reason", res.Reason, "dismiss_message", res.DetailMessage)
@@ -136,11 +151,11 @@ func (h *Heartbeat) denyConsent(ctx context.Context, requestID, reason string) {
 // Reason/IntentSummary are left empty (AI intent summary is Phase 2).
 func buildPamRequestDialog(ev etwlua.Event) ipc.PamRequestDialog {
 	return ipc.PamRequestDialog{
-		ExePath:        ev.TargetExecutablePath,
-		Signer:         ev.TargetExecutableSigner,
-		Hash:           ev.TargetExecutableHash,
-		SubjectUser:    ev.SubjectUsername,
-		CommandLine:    ev.CommandLine,
+		ExePath:     ev.TargetExecutablePath,
+		Signer:      ev.TargetExecutableSigner,
+		Hash:        ev.TargetExecutableHash,
+		SubjectUser: ev.SubjectUsername,
+		CommandLine: ev.CommandLine,
 		// TimeoutSeconds is informational only today: the authoritative
 		// round-trip timeout is enforced broker-side via the pamDialogTimeout
 		// arg to RequestPamApproval, and the user-helper MessageBox does not
