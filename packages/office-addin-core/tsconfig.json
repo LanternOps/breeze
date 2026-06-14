@@ -10,6 +10,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "useDefineForClassFields": true,
     "types": ["office-js", "vitest/globals", "vite/client"]

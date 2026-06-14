@@ -1,0 +1,122 @@
+{
+  "excel": {
+    "clear_range": {
+      "mutating": true,
+      "paramKeys": ["address", "sheetName", "what"]
+    },
+    "create_chart": {
+      "mutating": true,
+      "paramKeys": ["chartType", "seriesBy", "sheetName", "sourceAddress", "title"]
+    },
+    "create_pivot_table": {
+      "mutating": true,
+      "paramKeys": ["columns", "destinationAddress", "rows", "sheetName", "sourceAddress", "values"]
+    },
+    "create_sheet": {
+      "mutating": true,
+      "paramKeys": ["name"]
+    },
+    "create_table": {
+      "mutating": true,
+      "paramKeys": ["address", "hasHeaders", "sheetName", "tableName"]
+    },
+    "format_range": {
+      "mutating": true,
+      "paramKeys": ["address", "format", "sheetName"]
+    },
+    "get_workbook_overview": {
+      "mutating": false,
+      "paramKeys": []
+    },
+    "insert_formula": {
+      "mutating": true,
+      "paramKeys": ["address", "formula", "sheetName"]
+    },
+    "read_cell_details": {
+      "mutating": false,
+      "paramKeys": ["address", "sheetName"]
+    },
+    "read_range": {
+      "mutating": false,
+      "paramKeys": ["address", "sheetName"]
+    },
+    "read_selection": {
+      "mutating": false,
+      "paramKeys": []
+    },
+    "search_workbook": {
+      "mutating": false,
+      "paramKeys": ["matchCase", "query", "sheetName"]
+    },
+    "sort_range": {
+      "mutating": true,
+      "paramKeys": ["address", "columns", "hasHeaders", "sheetName"]
+    },
+    "write_range": {
+      "mutating": true,
+      "paramKeys": ["address", "cells", "sheetName"]
+    }
+  },
+  "outlook": {
+    "draft_reply": {
+      "mutating": true,
+      "paramKeys": ["body", "replyAll"]
+    },
+    "extract_action_items": {
+      "mutating": false,
+      "paramKeys": []
+    },
+    "get_message_metadata": {
+      "mutating": false,
+      "paramKeys": []
+    },
+    "summarize_thread": {
+      "mutating": false,
+      "paramKeys": []
+    }
+  },
+  "powerpoint": {
+    "add_slide": {
+      "mutating": true,
+      "paramKeys": ["layoutName"]
+    },
+    "format_selection": {
+      "mutating": true,
+      "paramKeys": ["format"]
+    },
+    "get_presentation_overview": {
+      "mutating": false,
+      "paramKeys": []
+    },
+    "insert_text_box": {
+      "mutating": true,
+      "paramKeys": ["slideIndex", "text"]
+    },
+    "read_selection": {
+      "mutating": false,
+      "paramKeys": []
+    }
+  },
+  "word": {
+    "find_replace": {
+      "mutating": true,
+      "paramKeys": ["matchCase", "matchWholeWord", "query", "replace"]
+    },
+    "format_text": {
+      "mutating": true,
+      "paramKeys": ["format"]
+    },
+    "get_document_overview": {
+      "mutating": false,
+      "paramKeys": []
+    },
+    "insert_text": {
+      "mutating": true,
+      "paramKeys": ["location", "text"]
+    },
+    "read_selection": {
+      "mutating": false,
+      "paramKeys": []
+    }
+  }
+}
