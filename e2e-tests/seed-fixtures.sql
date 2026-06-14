@@ -1,4 +1,12 @@
--- E2E test fixtures for fresh-DB runs.
+-- E2E test fixtures for fresh-DB runs (raw-SQL fallback).
+--
+-- PREFER the app-layer seed: `pnpm --filter @breeze/api db:seed:e2e`
+-- (apps/api/src/db/seedE2eFixtures.ts). It runs through Drizzle inside
+-- withSystemDbAccessContext, so it works anywhere the API can reach the DB —
+-- not just where a `breeze-postgres` container happens to be named — and is
+-- kept in sync with the schema by the type-checker. This SQL file is retained
+-- only as a zero-dependency fallback for psql-only environments.
+--
 -- Run via:
 --   docker exec -i breeze-postgres psql -U breeze -d breeze < e2e-tests/seed-fixtures.sql
 --

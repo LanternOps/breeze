@@ -9,11 +9,21 @@ import {
   index,
   uniqueIndex,
   date,
+  boolean,
 } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { organizations } from './orgs';
 
-export const warrantyStatusEnum = pgEnum('warranty_status', ['active', 'expiring', 'expired', 'unknown']);
+// 'subscription_active' = recurring AppleCare subscription with no fixed end date;
+// warrantyEndDate reflects the next renewal/billing date, not a true expiry, so
+// the warranty-expiry alert is suppressed for this status.
+export const warrantyStatusEnum = pgEnum('warranty_status', [
+  'active',
+  'expiring',
+  'expired',
+  'unknown',
+  'subscription_active',
+]);
 
 export const deviceWarranty = pgTable('device_warranty', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -24,6 +34,9 @@ export const deviceWarranty = pgTable('device_warranty', {
   status: warrantyStatusEnum('status').notNull().default('unknown'),
   warrantyStartDate: date('warranty_start_date'),
   warrantyEndDate: date('warranty_end_date'),
+  // True when coverage is an active recurring subscription (AppleCare), in which
+  // case warrantyEndDate is the next renewal date rather than a real expiry.
+  isSubscription: boolean('is_subscription').notNull().default(false),
   entitlements: jsonb('entitlements').notNull().default([]),
   dataSource: varchar('data_source', { length: 50 }).default('provider'),
   lastSyncAt: timestamp('last_sync_at'),

@@ -46,6 +46,11 @@ const pollInterval = 100 * time.Millisecond
 // causes occasional dropped characters on slower VMs.
 const settleDelay = 25 * time.Millisecond
 
+// defaultConsentTimeoutMs is the fallback consent.exe wait window used when a
+// Request carries no TimeoutMs (Trigger) and for the deny path (Dismiss, which
+// has no Request at all).
+const defaultConsentTimeoutMs = 8000
+
 func (a *windowsActuator) Trigger(ctx context.Context, req Request) Result {
 	// SetThreadDesktop is per-thread; the rest of the actuator must stay on
 	// the same OS thread or the desktop binding goes with the original
@@ -81,7 +86,7 @@ func (a *windowsActuator) Trigger(ctx context.Context, req Request) Result {
 
 	timeoutMs := req.TimeoutMs
 	if timeoutMs <= 0 {
-		timeoutMs = 8000
+		timeoutMs = defaultConsentTimeoutMs
 	}
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 
@@ -141,6 +146,77 @@ func (a *windowsActuator) Trigger(ctx context.Context, req Request) Result {
 		Success:       true,
 		Reason:        "ok",
 		DetailMessage: "consent.exe closed after credential submission",
+	}
+}
+
+// Dismiss cancels the live consent.exe prompt by sending Escape on the
+// input desktop (deny path). It mirrors Trigger's secure-desktop attach
+// scaffolding — lock the OS thread, OpenInputDesktop, SetThreadDesktop,
+// poll for the consent window — then presses Escape instead of typing
+// credentials and waits for the window to close. There is no Request
+// here (the deny path carries no credential), so it uses the same default
+// 8000ms window Trigger falls back to when TimeoutMs<=0.
+func (a *windowsActuator) Dismiss(ctx context.Context) Result {
+	// SetThreadDesktop is per-thread; stay on the same OS thread for the
+	// duration so the desktop binding doesn't follow a reparked goroutine.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	hDesk, _, openErr := winProcOpenInputDesktop.Call(0, 0, uintptr(winDesktopGenericAll))
+	if hDesk == 0 {
+		slog.Warn("pamactuator: OpenInputDesktop failed (dismiss)",
+			"error", openErr.Error(),
+		)
+		return Result{
+			Success:       false,
+			Reason:        "desktop_open_failed",
+			DetailMessage: "OpenInputDesktop returned 0: " + openErr.Error(),
+		}
+	}
+	defer winProcCloseDesktop.Call(hDesk)
+
+	if ret, _, setErr := winProcSetThreadDesktop.Call(hDesk); ret == 0 {
+		slog.Warn("pamactuator: SetThreadDesktop failed (dismiss)",
+			"error", setErr.Error(),
+		)
+		return Result{
+			Success:       false,
+			Reason:        "set_thread_desktop_failed",
+			DetailMessage: "SetThreadDesktop returned 0: " + setErr.Error(),
+		}
+	}
+
+	deadline := time.Now().Add(defaultConsentTimeoutMs * time.Millisecond)
+
+	hwnd := waitForConsent(ctx, deadline)
+	if hwnd == 0 {
+		return Result{
+			Success:       false,
+			Reason:        "no_consent_window",
+			DetailMessage: "consent.exe did not appear within the timeout window",
+		}
+	}
+
+	if err := pressVK(vkEscape); err != nil {
+		return Result{
+			Success:       false,
+			Reason:        "send_input_failed",
+			DetailMessage: "Escape: " + err.Error(),
+		}
+	}
+
+	if !waitForConsentClose(ctx, hwnd, deadline) {
+		return Result{
+			Success:       false,
+			Reason:        "consent_did_not_close",
+			DetailMessage: "consent.exe still present after Escape",
+		}
+	}
+
+	return Result{
+		Success:       true,
+		Reason:        "ok",
+		DetailMessage: "consent.exe closed after Escape (deny)",
 	}
 }
 

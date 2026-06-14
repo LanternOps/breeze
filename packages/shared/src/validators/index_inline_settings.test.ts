@@ -138,8 +138,23 @@ describe('eventLogInlineSettingsSchema', () => {
       expect(result.data.minimumLevel).toBe('info');
       expect(result.data.collectionIntervalMinutes).toBe(5);
       expect(result.data.rateLimitPerHour).toBe(12000);
-      expect(result.data.enableFullTextSearch).toBe(true);
-      expect(result.data.enableCorrelation).toBe(true);
+      // The dead enableFullTextSearch / enableCorrelation toggles were removed (#1323).
+      expect('enableFullTextSearch' in result.data).toBe(false);
+      expect('enableCorrelation' in result.data).toBe(false);
+    }
+  });
+
+  it('strips removed enableFullTextSearch / enableCorrelation toggles (#1323)', () => {
+    // Back-compat: clients/rows that still send the old flags should parse without error,
+    // and the parsed result must not surface them.
+    const result = eventLogInlineSettingsSchema.safeParse({
+      enableFullTextSearch: false,
+      enableCorrelation: false,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('enableFullTextSearch' in result.data).toBe(false);
+      expect('enableCorrelation' in result.data).toBe(false);
     }
   });
 

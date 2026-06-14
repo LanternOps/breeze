@@ -320,6 +320,16 @@ export const agentWarrantyInfoSchema = z.object({
   coverageEndDate: warrantyDateSchema,
   coverageStartDate: warrantyDateSchema,
   coverageType: z.string().max(200).optional(),
+  // Coverage kind derived from the macOS NDO label verb: 'subscription'
+  // ("Renews ...") vs 'fixed' ("Expires ..."). Empty/absent when unknown.
+  // Accept '' for back-compat: older agents (and timestamp-only/labelless/
+  // localized/plist-fallback coverage) send an empty string, which a bare
+  // enum rejects with invalid_enum_value → a 400 that silently drops the
+  // ENTIRE warranty-info update. Treat '' as undefined/fixed downstream (#1320).
+  coverageKind: z
+    .enum(['subscription', 'fixed'])
+    .or(z.literal(''))
+    .optional(),
   deviceName: z.string().max(200).optional(),
 });
 

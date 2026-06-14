@@ -9,6 +9,8 @@ import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Privileged Access Management (PAM) lets you take admin rights *away* from everyday user accounts and hand them back only when they're actually needed -- for a few minutes, on one machine, with a recorded decision behind it. Instead of standing local-administrator membership that sits on every endpoint waiting to be abused, a user requests elevation in the moment, an approver says yes or no, and the access disappears on its own when the window closes.
 
+This page is the operator's guide. For the trust model behind PAM -- how credentials are minted on the endpoint and never transmitted, what PAM does and does not defend against -- see the [PAM Security Model](/security/pam/). For the REST endpoints, see the [PAM API](/reference/pam-api/).
+
 Open **Privileged Access** from the Security section of the left sidebar to work the console.
 
 PAM covers three kinds of elevation, all of which land in the same queue:
@@ -166,3 +168,45 @@ Whether a device captures UAC prompts at all is controlled through a **Configura
 <Aside type="note">
   The Configuration Policy toggle **only** controls whether devices capture elevation prompts. It does **not** govern the rule chain. PAM elevation rules -- the auto-approve / deny / require-approval logic, the request queue, and the audit history -- are scoped to the **organization and site** and managed in the Privileged Access console. Closest-wins policy precedence deliberately does *not* apply to rule chains: a device-level policy must never silently shadow an organization's security baseline rules.
 </Aside>
+
+### Per-organization and per-device overrides
+
+Because UAC capture is a Configuration Policy feature, you turn it on or off at any level of the hierarchy and let the closest assignment win:
+
+- **Disable for one organization** -- assign a policy with **Capture Windows UAC elevation prompts** turned off to that organization. Every device under it stops surfacing new UAC elevation requests, unless a closer (site, group, or device) assignment re-enables it.
+- **Disable for one device** -- assign the "off" policy directly to that device (or a device group). A device-level assignment is the closest match, so it wins over the organization baseline.
+- **Re-enable a narrower scope** -- because the toggle is independent at every level, you can disable capture org-wide but turn it back on for a single high-touch site or device by assigning an "on" policy there.
+
+Disabling capture is the safe "kill switch" for the UAC-intercept flow on a scope: the agent simply stops reporting new prompts, native UAC behaves exactly as Windows ships it, and existing approved windows finish out their timers. It does not delete rules or audit history.
+
+---
+
+## Operational notes
+
+### Exporting the audit trail for compliance
+
+The **Audit** tab is the permanent, immutable record of every elevation decision. To produce a report:
+
+<Steps>
+
+1. Open **Privileged Access** and select the **Audit** tab.
+
+2. Filter by status, flow type, and date range to scope the report (for example, all approvals in the previous quarter).
+
+3. Export the filtered set to **CSV**.
+
+</Steps>
+
+Each row names the decider -- the approver or denier by name for human decisions, or the software policy / PAM rule that made an automatic call -- alongside the device, requesting user, target, and timestamps. Auto-decided and human-decided requests appear on the same ledger, so a single export shows the complete decision history with no gaps.
+
+### Running alongside other RMM or security agents
+
+PAM's UAC-intercept flow interacts with whatever else is installed on the endpoint, because it works with the live Windows `consent.exe` prompt. Before enabling capture broadly on a fleet that also runs another vendor's agent, validate the interaction on a pilot group.
+
+<Aside type="caution">
+  There is a documented, production-breaking interaction between the **N-able N-Central agent** and `consent.exe` on idle or locked machines: UAC prompts accept credentials and then hang for **4-5 minutes** because of a deadlock in N-able's signature-verification hooks (Microsoft Q&A 5733506). This is an N-able issue addressed by their `Framework.dll` hotfixes, but any UAC-touching code -- including Breeze PAM -- shares the same surface. If your customers run N-Central concurrently, test PAM against it before turning capture on org-wide, and keep the [per-scope disable](#per-organization-and-per-device-overrides) switch in mind as an immediate mitigation.
+</Aside>
+
+### Platform support
+
+The UAC-intercept flow, the just-in-time admin window, and the dormant-admin credential lifecycle are **Windows-only**. Tech JIT admin and AI tool-action governance are platform-independent at the approval layer, but the on-device elevation primitives apply to Windows endpoints.

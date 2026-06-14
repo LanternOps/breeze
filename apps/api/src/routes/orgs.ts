@@ -20,7 +20,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
-import { isAllowedLauncherScheme } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone } from '@breeze/shared';
 import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
@@ -120,18 +120,8 @@ const listSitesSchema = z.object({
   limit: z.string().optional()
 });
 
-// Intl.supportedValuesOf('timeZone') omits UTC, GMT, and the Etc/* zones, so
-// a Set-membership check against that list rejects 'UTC' (the default).
-// Constructing Intl.DateTimeFormat throws RangeError on unknown zones and
-// accepts everything Intl recognizes, including those omissions.
-function isValidIanaTimezone(tz: string): boolean {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
-}
+// IANA timezone validation lives in @breeze/shared (`isValidIanaTimezone`) so
+// the API route, workers, and web all share one implementation (issue #1318).
 
 // Stored as-is into a JSONB column; `.passthrough()` keeps unknown keys for
 // forward compatibility. Email format is policed when present so downstream
@@ -307,7 +297,9 @@ const dayScheduleSchema = z.object({
 });
 
 const partnerSettingsSchema = z.object({
-  timezone: z.string().optional(),
+  // Partner tz is the canonical default for every downstream tz field (#1318),
+  // so police it as a real IANA zone on write (was previously unvalidated).
+  timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
   language: z.literal('en').optional(),
@@ -537,6 +529,18 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
   if (body.name) updateData.name = body.name;
   if (body.billingEmail) updateData.billingEmail = body.billingEmail;
 
+  // Keep the first-class `partners.timezone` column in sync with the legacy
+  // `settings.timezone` JSONB key the UI writes (issue #1318). The column is the
+  // source of truth for `resolveEffectiveTimezone`; the validator above already
+  // guarantees a valid IANA zone here, and canonicalizeTimezone folds any UTC
+  // casing ('utc' -> 'UTC') so the sentinel comparison in the resolver holds.
+  if (typeof body.settings?.timezone === 'string' && body.settings.timezone.length > 0) {
+    const canonicalTz = canonicalizeTimezone(body.settings.timezone);
+    if (canonicalTz !== null) {
+      updateData.timezone = canonicalTz;
+    }
+  }
+
   const [partner] = await db
     .update(partners)
     .set(updateData)
@@ -609,6 +613,35 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
           currentPartner.settings,
           updates.settings as Record<string, unknown>,
         );
+      }
+
+      // Keep the first-class `partners.timezone` column in sync with the
+      // settings.timezone JSONB key on this system-scoped wholesale write — the
+      // same mirroring PATCH /partners/me does (issue #1318). Without this, a
+      // platform-admin settings write would update the JSONB key but leave the
+      // column stale, and resolveEffectiveTimezone reads the column first, so
+      // the partner-tz default would silently desync.
+      //
+      // updatePartnerSchema uses `settings: z.any()`, so unlike /partners/me
+      // there is no zod IANA refine here. Validate the tz on the system path
+      // too: an invalid value (e.g. 'Mars/Olympus_Mons') must be REJECTED, not
+      // silently dropped — otherwise canonicalizeTimezone(null) skips the column
+      // write while the garbage persists in the JSONB, the exact column<->
+      // settings desync #1318 exists to prevent. canonicalizeTimezone folds any
+      // UTC casing ('utc' -> 'UTC') and returns null for a non-IANA value.
+      // Read the value BEFORE encryption (settings is plaintext here).
+      const settingsObj = updates.settings as Record<string, unknown>;
+      const rawTz = settingsObj.timezone;
+      if (rawTz !== undefined && rawTz !== null) {
+        const canonicalTz = canonicalizeTimezone(rawTz);
+        if (canonicalTz === null) {
+          return c.json({ error: 'Invalid IANA timezone in settings.timezone' }, 400);
+        }
+        // Write the canonical form back into settings so the JSONB and the
+        // column hold the identical value (e.g. 'utc' is normalized to 'UTC' in
+        // both places, never one casing in JSONB and another in the column).
+        settingsObj.timezone = canonicalTz;
+        updates.timezone = canonicalTz;
       }
     }
     // Encrypt secret-bearing fields in partners.settings before writing.
