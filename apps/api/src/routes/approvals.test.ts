@@ -80,13 +80,41 @@ function buildApp() {
 }
 
 function mockUpdateReturning(rows: unknown[]) {
-  const returning = vi.fn().mockResolvedValue(rows);
-  vi.mocked(db.update).mockReturnValue({
-    set: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning }),
+  const set = vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }),
+  });
+  vi.mocked(db.update).mockReturnValue({ set } as any);
+  return set;
+}
+
+// Wires the decideHandler flow: a pre-fetch select followed by the CAS update.
+// Returns the captured `.set(...)` argument so callers can assert the factor
+// columns persisted alongside status/decidedAt.
+//
+// Uses persistent `mockReturnValue` (NOT `mockReturnValueOnce`) on purpose:
+// `vi.clearAllMocks()` in beforeEach clears call history but does NOT drain a
+// queued `mockReturnValueOnce`, so an early-return decide case (404/409/410
+// never reaches the update) would otherwise leave an unconsumed update-once in
+// the queue and poison a later test's `db.update`.
+function mockDecideFlow(opts: {
+  existing: unknown | null;
+  updateReturns: unknown[];
+}) {
+  // 1) pre-fetch select (existing row, or [] for 404)
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(opts.existing ? [opts.existing] : []),
     }),
   } as any);
-  return returning;
+
+  // 2) CAS update — capture the set arg
+  const set = vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue(opts.updateReturns),
+    }),
+  });
+  vi.mocked(db.update).mockReturnValue({ set } as any);
+  return set;
 }
 
 function mockSelectResolves(rows: unknown[]) {
@@ -109,6 +137,15 @@ function mockTenantJoinResolves(rows: unknown[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks only clears call history; it does NOT drain a queued
+  // mockReturnValueOnce or reset a persistent mockReturnValue. Reset the db
+  // method mocks explicitly so neither bleeds across tests (the decide path now
+  // pre-fetches via select before the CAS update, so stray queued/persistent
+  // returns would otherwise poison later tests like report-suspicious).
+  vi.mocked(db.select).mockReset();
+  vi.mocked(db.update).mockReset();
+  vi.mocked(db.insert).mockReset();
+  vi.mocked(db.delete).mockReset();
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -278,26 +315,50 @@ describe('POST /approvals/:id/approve', () => {
   };
 
   it('approves a pending non-expired request', async () => {
-    const returning = mockUpdateReturning([updatedRow]);
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(returning).toHaveBeenCalled();
+    expect(set).toHaveBeenCalled();
     const body = await res.json();
     expect(body.approval.id).toBe('a1');
     expect(body.approval.status).toBe('approved');
   });
 
+  it('records session_tap factor columns on approve', async () => {
+    const set = mockDecideFlow({
+      // riskTier 'high' would require L3, but Phase 1 records L1 session_tap.
+      existing: { ...updatedRow, status: 'pending', riskTier: 'high' },
+      updateReturns: [{ ...updatedRow, riskTier: 'high' }],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'approved',
+        decidedVia: 'session_tap',
+        decidedAssuranceLevel: 1,
+        authenticatorDeviceId: null,
+        pinVerified: false,
+      }),
+    );
+  });
+
   it('returns 409 with finalStatus when already decided', async () => {
-    mockUpdateReturning([]);
-    mockSelectResolves([
-      {
+    mockDecideFlow({
+      existing: {
         id: 'a1',
         userId: TEST_USER.id,
         status: 'denied',
+        riskTier: 'low',
         expiresAt: new Date(Date.now() + 60_000),
       },
-    ]);
+      updateReturns: [],
+    });
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
     expect(res.status).toBe(409);
@@ -305,16 +366,17 @@ describe('POST /approvals/:id/approve', () => {
     expect(body.finalStatus).toBe('denied');
   });
 
-  it('returns 410 with finalStatus expired when row exists but UPDATE missed', async () => {
-    mockUpdateReturning([]);
-    mockSelectResolves([
-      {
+  it('returns 410 with finalStatus expired when row exists but is expired', async () => {
+    mockDecideFlow({
+      existing: {
         id: 'a1',
         userId: TEST_USER.id,
         status: 'pending',
+        riskTier: 'low',
         expiresAt: new Date(Date.now() - 1000),
       },
-    ]);
+      updateReturns: [],
+    });
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
     expect(res.status).toBe(410);
@@ -323,8 +385,7 @@ describe('POST /approvals/:id/approve', () => {
   });
 
   it('returns 404 when the approval does not exist for this user', async () => {
-    mockUpdateReturning([]);
-    mockSelectResolves([]);
+    mockDecideFlow({ existing: null, updateReturns: [] });
 
     const res = await buildApp().request('/approvals/missing/approve', { method: 'POST' });
     expect(res.status).toBe(404);
@@ -332,8 +393,13 @@ describe('POST /approvals/:id/approve', () => {
 
   it('mirrors approval to ai_tool_executions when executionId is linked', async () => {
     const linkedRow = { ...updatedRow, executionId: 'exec-42' };
-    // First update (approval_requests) returns the row; second update
-    // (ai_tool_executions) just resolves.
+    // Pre-fetch select returns the pending row; first update (approval_requests)
+    // returns the row; second update (ai_tool_executions) just resolves.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ ...linkedRow, status: 'pending' }]),
+      }),
+    } as any);
     const aiSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const approvalReturning = vi.fn().mockResolvedValue([linkedRow]);
     const approvalSet = vi.fn().mockReturnValue({
@@ -354,26 +420,28 @@ describe('POST /approvals/:id/approve', () => {
 
 describe('POST /approvals/:id/deny', () => {
   it('denies a pending non-expired request', async () => {
-    mockUpdateReturning([
-      {
-        id: 'a1',
-        userId: TEST_USER.id,
-        requestingClientLabel: 'Claude Desktop',
-        requestingMachineLabel: null,
-        requestingClientId: null,
-        requestingSessionId: null,
-        actionLabel: 'x',
-        actionToolName: 'y',
-        actionArguments: {},
-        riskTier: 'low',
-        riskSummary: 'z',
-        status: 'denied',
-        expiresAt: new Date(Date.now() + 60_000),
-        decidedAt: new Date(),
-        decisionReason: 'no thanks',
-        createdAt: new Date(),
-      },
-    ]);
+    const deniedRow = {
+      id: 'a1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'Claude Desktop',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'x',
+      actionToolName: 'y',
+      actionArguments: {},
+      riskTier: 'low',
+      riskSummary: 'z',
+      status: 'denied',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: new Date(),
+      decisionReason: 'no thanks',
+      createdAt: new Date(),
+    };
+    mockDecideFlow({
+      existing: { ...deniedRow, status: 'pending' },
+      updateReturns: [deniedRow],
+    });
 
     const res = await buildApp().request('/approvals/a1/deny', {
       method: 'POST',
@@ -387,15 +455,16 @@ describe('POST /approvals/:id/deny', () => {
   });
 
   it('returns 409 with finalStatus when already decided', async () => {
-    mockUpdateReturning([]);
-    mockSelectResolves([
-      {
+    mockDecideFlow({
+      existing: {
         id: 'a1',
         userId: TEST_USER.id,
         status: 'approved',
+        riskTier: 'low',
         expiresAt: new Date(Date.now() + 60_000),
       },
-    ]);
+      updateReturns: [],
+    });
 
     const res = await buildApp().request('/approvals/a1/deny', {
       method: 'POST',
@@ -427,6 +496,11 @@ describe('POST /approvals/:id/deny', () => {
       executionId: 'exec-77',
       createdAt: new Date(),
     };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ ...deniedRow, status: 'pending' }]),
+      }),
+    } as any);
     const aiSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const approvalReturning = vi.fn().mockResolvedValue([deniedRow]);
     const approvalSet = vi.fn().mockReturnValue({
