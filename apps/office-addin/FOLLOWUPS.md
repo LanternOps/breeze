@@ -97,6 +97,20 @@ DLP path + tests**, not just an API wrapper (the governance tax). Mapping the AP
 technically straightforward; the real budget is tool-count (prompt/model accuracy) and
 product judgment about what a client end-user actually needs.
 
+## Multi-host (Word / PowerPoint / Outlook) — shared-core architecture
+
+Agreed plan (full detail in the `client-ai` skill). ~70% of the add-in + 100% of the
+server control plane is already host-neutral; only `tools/*`, `buildPreview.ts`,
+`captureContext.ts`, `useSelectionAddress.ts` (+ the server prompt/registry identifiers)
+touch `Excel.*`.
+
+- [ ] **Extract a shared core + `HostAdapter` seam** (`{ captureContext, toolExecutors, buildPreview, mutatingTools }`), designed general enough for the **mail model** (context = cell selection OR email thread; preview = cell grid OR draft-reply diff). Per-host apps provide a manifest + adapter. Server session becomes `host`-aware (`excel_client | word_client | powerpoint_client | outlook_client`), keying registry + prompt by host. **Do this BEFORE building the 2nd host** — copy-paste forks and drifts.
+- [ ] **Word add-in** — baseline effort once the core exists: Word tools (insert/format text, find/replace, comments, content controls) + manifest.
+- [ ] **PowerPoint add-in** — ≈ Word; PPT's Office.js API is less mature (some ops need an OOXML fallback).
+- [ ] **Outlook add-in** — more work (mail add-in manifest + read/compose activation, `mailbox.item` model, summarize/draft/extract surface) but highest demand. The shared core + DLP still apply.
+
+Effort ranking on top of the core: **Word ≈ PowerPoint < Outlook**.
+
 ## Notes
 - These came out of the live Excel Tier-B session; see `docs/testing/FEATURE_TEST_LOG.md`
   for the verified state and the real bugs fixed during bring-up.
