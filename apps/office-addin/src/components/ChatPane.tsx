@@ -6,6 +6,7 @@ import { Composer } from './Composer';
 import { TemplatePicker } from './TemplatePicker';
 import { BrandingFooter } from './BrandingFooter';
 import { HistoryPanel } from './HistoryPanel';
+import { ChangesPanel } from './ChangesPanel';
 import type { ClientSession } from '../auth/session';
 
 export function ChatPane({ session }: { session: ClientSession }) {
@@ -13,6 +14,8 @@ export function ChatPane({ session }: { session: ClientSession }) {
   useEffect(() => () => controller.dispose(), [controller]);
 
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Changelog: the client-facing "here's what the assistant changed" panel.
+  const [changesOpen, setChangesOpen] = useState(false);
 
   const state = useSyncExternalStore(
     useCallback((cb: () => void) => controller.subscribe(cb), [controller]),
@@ -21,6 +24,10 @@ export function ChatPane({ session }: { session: ClientSession }) {
   const approvals = useSyncExternalStore(
     useCallback((cb: () => void) => controller.approvals.subscribe(cb), [controller]),
     () => controller.approvals.getPending(),
+  );
+  const appliedChanges = useSyncExternalStore(
+    useCallback((cb: () => void) => controller.approvals.subscribe(cb), [controller]),
+    () => controller.approvals.getAppliedChanges(),
   );
 
   const empty = state.thread.length === 0 && !state.streamingText;
@@ -47,14 +54,32 @@ export function ChatPane({ session }: { session: ClientSession }) {
         >
           + New chat
         </button>
-        <button
-          type="button"
-          onClick={() => setHistoryOpen(true)}
-          className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
-          data-testid="history-button"
-        >
-          History
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setChangesOpen(true)}
+            className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
+            data-testid="changes-button"
+          >
+            Changes
+            {appliedChanges.length > 0 && (
+              <span
+                className="ml-1 rounded-full bg-blue-100 px-1.5 text-blue-700"
+                data-testid="changes-count"
+              >
+                {appliedChanges.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
+            data-testid="history-button"
+          >
+            History
+          </button>
+        </div>
       </div>
       <ChatToolbar
         writeApproval={state.writeApproval}
@@ -84,6 +109,14 @@ export function ChatPane({ session }: { session: ClientSession }) {
 
       {historyOpen && (
         <HistoryPanel load={loadHistory} onResume={resume} onClose={() => setHistoryOpen(false)} />
+      )}
+
+      {changesOpen && (
+        <ChangesPanel
+          changes={appliedChanges}
+          onRevert={(id) => void controller.approvals.revertChange(id)}
+          onClose={() => setChangesOpen(false)}
+        />
       )}
     </div>
   );
