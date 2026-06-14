@@ -54,11 +54,17 @@ export function textCoercionType(): string {
   return (globalThis as { Office?: typeof Office }).Office?.CoercionType?.Text ?? 'text';
 }
 
-/** Read the item body as plain text via the async callback API, promisified. */
+/** Read the item body as plain text via the async callback API, promisified.
+ *  On a failed getAsync, reject with the host error rather than collapsing to
+ *  '' — otherwise the model is told to summarize an email it never read. */
 export function readBodyText(item: MailboxItem): Promise<string> {
-  return new Promise<string>((resolve) => {
+  return new Promise<string>((resolve, reject) => {
     item.body.getAsync(textCoercionType(), (result) => {
-      resolve(result.status === 'succeeded' ? (result.value ?? '') : '');
+      if (result.status === 'succeeded') {
+        resolve(result.value ?? '');
+      } else {
+        reject(new Error(result.error?.message ?? 'Failed to read the message body (getAsync failed).'));
+      }
     });
   });
 }

@@ -29,11 +29,20 @@ export async function draftReply(input: Record<string, unknown>): Promise<unknow
   const replyAll = input.replyAll === true;
   const item = getMailboxItem();
 
-  // Compose mode: write the open draft body directly.
+  // Compose mode: write the open draft body directly. Honour the AsyncResult
+  // status — resolve only on 'succeeded'; on failure reject with the host error
+  // so chatController collapses it to { status:'error' } rather than reporting a
+  // false success (the body was never written).
   if (typeof item.body.setAsync === 'function') {
     const setAsync = item.body.setAsync;
-    await new Promise<void>((resolve) => {
-      setAsync(body, { coercionType: 'html' }, () => resolve());
+    await new Promise<void>((resolve, reject) => {
+      setAsync(body, { coercionType: 'html' }, (result) => {
+        if (result.status === 'succeeded') {
+          resolve();
+        } else {
+          reject(new Error(result.error?.message ?? 'Failed to write the draft body (setAsync failed).'));
+        }
+      });
     });
     return { mode: 'compose', replyAll: false };
   }

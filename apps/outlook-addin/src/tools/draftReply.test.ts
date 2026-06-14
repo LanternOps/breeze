@@ -38,6 +38,17 @@ describe('draft_reply — mode-dependent (mutating)', () => {
     expect(mock.displayedReplies).toEqual([]);
   });
 
+  it('compose mode rejects when setAsync fails (no false success)', async () => {
+    const mock = getOfficeMock();
+    mock.setItem({ subject: 'Draft', body: '' }, 'compose');
+    mock.failBodySet = true;
+    // setAsync failed → the body was never written, so the tool must reject
+    // (chatController collapses this to { status:'error' }) rather than report
+    // a false success.
+    await expect(draftReply({ body: 'Never written.' })).rejects.toThrow(/setAsync failed/);
+    expect(mock.composeSetBodies).toEqual([]);
+  });
+
   it('returns a clear error when neither path is available', async () => {
     const mock = getOfficeMock();
     // Seed a read item, then strip both reply forms so neither path exists —

@@ -62,6 +62,10 @@ function succeeded<T>(value: T): AsyncResult<T> {
   return { status: 'succeeded', value };
 }
 
+function failed<T>(value: T, message: string): AsyncResult<T> {
+  return { status: 'failed', value, error: { name: 'AsyncError', message, code: 9001 } };
+}
+
 /**
  * One mailbox item. The set of *methods* present depends on `mode`:
  *  - read:    body.getAsync, displayReplyForm, displayReplyAllForm (NO body.setAsync)
@@ -103,7 +107,14 @@ export class MockMailboxItem {
     this.body = {
       getAsync(coercionType: string, cb: (r: AsyncResult<string>) => void): void {
         state.bodyGetCalls.push({ coercionType });
-        cb(succeeded(self.bodyText));
+        // Faithfulness: the real host can hand back a failed AsyncResult (offline,
+        // permissions, large-body limits). state.failBodyGet flips the next read
+        // to 'failed' so the readBodyText reject path is testable.
+        if (state.failBodyGet) {
+          cb(failed('', 'getAsync failed (simulated host error)'));
+        } else {
+          cb(succeeded(self.bodyText));
+        }
       },
     };
 
@@ -114,6 +125,12 @@ export class MockMailboxItem {
         _options: unknown,
         cb?: (r: AsyncResult<void>) => void,
       ): void => {
+        // state.failBodySet flips the write to 'failed' (without mutating the
+        // body) so the draft_reply false-success guard is testable.
+        if (state.failBodySet) {
+          cb?.(failed(undefined, 'setAsync failed (simulated host error)'));
+          return;
+        }
         self.bodyText = data;
         state.composeSetBodies.push(data);
         cb?.(succeeded(undefined));
@@ -147,6 +164,10 @@ export class MockMailboxState {
   composeSetBodies: string[] = [];
   /** Reply forms displayed via read-mode displayReply(All)Form (seam inspection). */
   displayedReplies: DisplayedReply[] = [];
+  /** When true, body.getAsync returns a failed AsyncResult (host-error sim). */
+  failBodyGet = false;
+  /** When true, compose body.setAsync returns a failed AsyncResult (host-error sim). */
+  failBodySet = false;
 
   constructor() {
     this.item = new MockMailboxItem(this, this.mode, {});

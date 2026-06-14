@@ -42,4 +42,13 @@ describe('summarize_thread', () => {
     const result = (await summarizeThread({})) as { cells: string[][] };
     expect(result.cells).toEqual([]);
   });
+
+  it('rejects when body.getAsync fails (does not summarize an unread body)', async () => {
+    const mock = getOfficeMock();
+    mock.setItem({ subject: 'Unreadable', body: 'secret' }, 'read');
+    mock.failBodyGet = true;
+    // getAsync failed → readBodyText must reject rather than collapse to '' and
+    // hand the model an empty body to summarize.
+    await expect(summarizeThread({})).rejects.toThrow(/getAsync failed/);
+  });
 });
