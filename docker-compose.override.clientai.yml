@@ -1,8 +1,0 @@
-# EPHEMERAL local-testing override (uncommitted) — maps the new
-# CLIENT_AI_ENTRA_CLIENT_ID env var into the api container so the
-# /client-ai admin surface is enabled for Tier-A verification.
-# The PR does not yet map this var in tracked compose (reviewer checkbox).
-services:
-  api:
-    environment:
-      CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
