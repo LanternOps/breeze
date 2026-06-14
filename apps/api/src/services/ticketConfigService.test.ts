@@ -108,6 +108,9 @@ vi.mock('../db/schema', () => ({
     subject: 'subject', parseStatus: 'parseStatus', error: 'error', ticketId: 'ticketId',
     raw: 'raw', createdAt: 'createdAt',
   },
+  organizations: {
+    id: 'id', partnerId: 'partnerId',
+  },
 }));
 
 // ticketStatusEnum is read at module load for CoreTicketStatus type/values.
@@ -120,11 +123,19 @@ vi.mock('../db/schema/portal', () => ({
 const { configRef } = vi.hoisted(() => ({ configRef: { current: { TICKETS_INBOUND_DOMAIN: 'tickets.example.com' as string | undefined } } }));
 vi.mock('../config/validate', () => ({ getConfig: () => configRef.current }));
 
+// createTicket lives in ./ticketService — mock it so convert doesn't hit the
+// real ticket-creation service (DB inserts, event emission, SLA resolution).
+const { createTicketMock } = vi.hoisted(() => ({ createTicketMock: vi.fn() }));
+vi.mock('./ticketService', async () => {
+  const actual = await vi.importActual<typeof import('./ticketService')>('./ticketService');
+  return { ...actual, createTicket: createTicketMock };
+});
+
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
   upsertPrioritySettings, upsertOrgTicketSettings, getOrgTicketSettings,
   TicketConfigServiceError, findStatusByName, listActiveStatusNames,
-  listEmailInboundQueue,
+  listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
 } from './ticketConfigService';
 
 const PARTNER = 'p-1';
@@ -441,5 +452,66 @@ describe('listEmailInboundQueue', () => {
     const res = await listEmailInboundQueue('p-1', { page: 0, limit: 9999 });
     expect(res.pagination.limit).toBe(100);
     expect(res.pagination.page).toBe(1);
+  });
+});
+
+// ── convertEmailInbound / dismissEmailInbound ─────────────────────────────
+
+const ACTOR = { userId: 'admin-u-1', name: 'Ada Admin' };
+
+describe('convertEmailInbound', () => {
+  beforeEach(() => createTicketMock.mockReset());
+
+  it('creates a source:email ticket for the chosen org and links the row', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { text: 'help' } }]); // row read
+    dbMocks.selectResults.push([{ id: 'o-1' }]); // org guard read
+    dbMocks.updateResult = [{ id: 'r-1', fromAddress: 'jane@x.com', toAddress: 'acme@tickets.example.com', subject: 'printer', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
+    createTicketMock.mockResolvedValue({ id: 't-9', internalNumber: 'T-2026-0007' });
+    const row = await convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR);
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'o-1', source: 'email', submitterEmail: 'jane@x.com' }),
+      ACTOR,
+    );
+    expect(row.ticketId).toBe('t-9');
+    expect(row.parseStatus).toBe('created');
+  });
+  it('throws INBOUND_ROW_NOT_FOUND when the row is not under this partner', async () => {
+    dbMocks.selectResults.push([]); // scoped row read → []
+    await expect(convertEmailInbound('p-1', 'r-x', 'o-1', ACTOR)).rejects.toMatchObject({ code: 'INBOUND_ROW_NOT_FOUND' });
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+  it('throws INBOUND_ROW_ALREADY_RESOLVED for a non-queue row (idempotency)', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'created' }]);
+    await expect(convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR)).rejects.toMatchObject({ code: 'INBOUND_ROW_ALREADY_RESOLVED' });
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+  it('throws INBOUND_ROW_NO_SENDER when the row has no from address', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: null, subject: 'x', toAddress: 'acme@tickets.example.com', raw: {} }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]); // org guard (still read before the sender check; order tolerant)
+    await expect(convertEmailInbound('p-1', 'r-1', 'o-1', ACTOR)).rejects.toMatchObject({ code: 'INBOUND_ROW_NO_SENDER' });
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+  it('throws ORG_NOT_ACCESSIBLE when the chosen org is not under the partner', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'x', toAddress: 'acme@tickets.example.com', raw: {} }]);
+    dbMocks.selectResults.push([]); // org guard read → []
+    await expect(convertEmailInbound('p-1', 'r-1', 'o-other', ACTOR)).rejects.toMatchObject({ code: 'ORG_NOT_ACCESSIBLE' });
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('dismissEmailInbound', () => {
+  it("sets parse_status='ignored' scoped to (id, partnerId)", async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'failed' }]); // row read
+    dbMocks.updateResult = [{ id: 'r-1', fromAddress: null, toAddress: null, subject: null, parseStatus: 'ignored', error: null, ticketId: null, createdAt: new Date() }];
+    const row = await dismissEmailInbound('p-1', 'r-1');
+    expect(row.parseStatus).toBe('ignored');
+  });
+  it('throws INBOUND_ROW_NOT_FOUND for a foreign-partner row', async () => {
+    dbMocks.selectResults.push([]); // scoped read returns []
+    await expect(dismissEmailInbound('p-1', 'r-x')).rejects.toMatchObject({ code: 'INBOUND_ROW_NOT_FOUND' });
+  });
+  it('throws INBOUND_ROW_ALREADY_RESOLVED for an already-ignored row', async () => {
+    dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'ignored' }]);
+    await expect(dismissEmailInbound('p-1', 'r-1')).rejects.toMatchObject({ code: 'INBOUND_ROW_ALREADY_RESOLVED' });
   });
 });

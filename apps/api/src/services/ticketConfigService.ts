@@ -1,10 +1,11 @@
 // Owns ticketing configuration: custom statuses, priority SLA settings, and org-level overrides — per 2026-06-12 spec.
 
 import { eq, and, asc, desc, inArray, count } from 'drizzle-orm';
-import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound } from '../db/schema';
+import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound, organizations } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
 import { getConfig } from '../config/validate';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
@@ -611,4 +612,125 @@ export async function listEmailInboundQueue(
   const total = countRows[0]?.total ?? 0;
 
   return { data, pagination: { page, limit, total: Number(total) } };
+}
+
+// The columns returned by convert/dismiss — same projection as the queue list so
+// the card can drop the resolved row into its local state without a refetch.
+const returnQueueCols = {
+  id: ticketEmailInbound.id,
+  fromAddress: ticketEmailInbound.fromAddress,
+  toAddress: ticketEmailInbound.toAddress,
+  subject: ticketEmailInbound.subject,
+  parseStatus: ticketEmailInbound.parseStatus,
+  error: ticketEmailInbound.error,
+  ticketId: ticketEmailInbound.ticketId,
+  createdAt: ticketEmailInbound.createdAt,
+};
+
+/**
+ * Load a review-queue row scoped to (id, partnerId) and assert it is still in a
+ * resolvable state. Shared by convert + dismiss so both share the same NOT_FOUND
+ * / ALREADY_RESOLVED guards. The (id, partnerId) filter is the tenant boundary
+ * (defense-in-depth atop the partner-axis RLS policy): a row belonging to
+ * another partner reads as NOT_FOUND, never leaking its existence.
+ */
+async function readQueueRow(partnerId: string, id: string) {
+  const [row] = await db
+    .select({
+      id: ticketEmailInbound.id,
+      partnerId: ticketEmailInbound.partnerId,
+      parseStatus: ticketEmailInbound.parseStatus,
+      fromAddress: ticketEmailInbound.fromAddress,
+      toAddress: ticketEmailInbound.toAddress,
+      subject: ticketEmailInbound.subject,
+      raw: ticketEmailInbound.raw,
+    })
+    .from(ticketEmailInbound)
+    .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
+    .limit(1);
+  if (!row) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+  if (!(REVIEW_STATUSES as readonly string[]).includes(row.parseStatus)) {
+    // Idempotency: a second convert/dismiss on an already-handled row is a
+    // no-op-error, not a silent re-create. The card refetches and the row drops.
+    throw new TicketConfigServiceError('This inbound email has already been handled', 409, 'INBOUND_ROW_ALREADY_RESOLVED');
+  }
+  return row;
+}
+
+/**
+ * Convert a quarantined/failed inbound email into a source:'email' ticket in the
+ * chosen org, then link the row (ticket_id + parse_status='created'). Tenancy-
+ * critical — it creates a ticket in an operator-chosen org:
+ *   - the row must belong to the resolved partner (404 if not);
+ *   - the row must be unresolved (409 idempotency guard);
+ *   - the chosen org must belong to the resolved partner (ORG_NOT_ACCESSIBLE);
+ *   - the row must carry a usable sender address (INBOUND_ROW_NO_SENDER) — a
+ *     reply-less email-source ticket defeats the submitterEmail extension.
+ * `actor` is the REAL authenticated admin threaded from the route, giving correct
+ * audit attribution (no synthetic all-zero-UUID sentinel).
+ */
+export async function convertEmailInbound(partnerId: string, id: string, orgId: string, actor: TicketActor): Promise<EmailInboundQueueRow> {
+  const row = await readQueueRow(partnerId, id);
+
+  // Guard (spec §6): the chosen org must belong to the resolved partner. Without
+  // this, an admin could convert an email into a ticket in an org outside their
+  // partner. RLS on organizations already scopes the request context, but the
+  // explicit partner_id equality is the security boundary, not the read.
+  const [orgOk] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, partnerId)))
+    .limit(1);
+  if (!orgOk) throw new TicketConfigServiceError('That organization is not in your partner', 400, 'ORG_NOT_ACCESSIBLE');
+
+  // A ticket with no sender email can never receive a reply — the whole point of
+  // source:'email' is the submitterEmail recipient (spec §6). Block instead of
+  // silently creating a reply-less ticket.
+  const submitterEmail = (row.fromAddress ?? '').trim();
+  if (!submitterEmail) {
+    throw new TicketConfigServiceError('This email has no usable sender address; it cannot be converted to a ticket', 400, 'INBOUND_ROW_NO_SENDER');
+  }
+
+  const raw = (row.raw as Record<string, unknown> | null) ?? {};
+  const description = typeof raw.text === 'string' ? raw.text : (typeof raw['stripped-text'] === 'string' ? raw['stripped-text'] as string : '');
+  const fromName = typeof raw.fromName === 'string' ? raw.fromName : undefined;
+
+  const ticket = await createTicket(
+    {
+      orgId,
+      subject: row.subject?.trim() || '(no subject)',
+      description,
+      source: 'email',
+      submitterEmail,
+      submitterName: fromName,
+    },
+    actor,
+  );
+
+  const [updated] = await db
+    .update(ticketEmailInbound)
+    .set({ ticketId: ticket.id, parseStatus: 'created' })
+    .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
+    .returning(returnQueueCols);
+  // TOCTOU guard: the row was read at the top, but a concurrent delete/dismiss
+  // could win the race before this UPDATE. An empty update means the row is gone.
+  if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+  return updated;
+}
+
+/**
+ * Drop a quarantined/failed inbound email out of the review queue by marking it
+ * parse_status='ignored' (PR 1's terminal "do not process" value — no new enum
+ * value). The row stays in the table for audit; the queue lists only
+ * quarantined/failed, so an ignored row disappears. No ticket is created.
+ */
+export async function dismissEmailInbound(partnerId: string, id: string): Promise<EmailInboundQueueRow> {
+  await readQueueRow(partnerId, id);
+  const [updated] = await db
+    .update(ticketEmailInbound)
+    .set({ parseStatus: 'ignored' })
+    .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
+    .returning(returnQueueCols);
+  if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+  return updated;
 }

@@ -49,6 +49,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { ticketConfigRoutes } from './ticketConfig';
+import { TicketConfigServiceError } from '../services/ticketConfigService';
 
 const ADMIN_PERMS = { permissions: [{ resource: '*', action: '*' }] };
 const STATUS_ID = '3f2f1d8e-1111-4222-8333-444455556666';
@@ -211,5 +212,67 @@ describe('GET /ticket-config/email-inbound', () => {
     const body = await res.json();
     expect(body.data[0].id).toBe('r-1');
     expect(serviceMocks.listEmailInboundQueue).toHaveBeenCalledWith('p-1', { page: 1, limit: 50 });
+  });
+});
+
+const INBOUND_ID = '00000000-0000-0000-0000-000000000001';
+const ORG_ID = '00000000-0000-0000-0000-0000000000aa';
+
+describe('POST /ticket-config/email-inbound/:id/convert', () => {
+  it('403 for non-admin (default perms)', async () => {
+    const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(403);
+  });
+  it('400 when orgId is missing/not a uuid', async () => {
+    permsRef.current = ADMIN_PERMS;
+    const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+  it('converts and forwards the authenticated admin as the actor', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.convertEmailInbound.mockResolvedValue({ id: 'r-1', parseStatus: 'created', ticketId: 't-9' });
+    const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.convertEmailInbound).toHaveBeenCalledWith('p-1', INBOUND_ID, ORG_ID, { userId: 'u-1', name: 'Tess Tech' });
+  });
+  it('surfaces ORG_NOT_ACCESSIBLE as 400 with code', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.convertEmailInbound.mockRejectedValue(new TicketConfigServiceError('no', 400, 'ORG_NOT_ACCESSIBLE'));
+    const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('ORG_NOT_ACCESSIBLE');
+  });
+  it('surfaces INBOUND_ROW_NO_SENDER as 400 with code', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.convertEmailInbound.mockRejectedValue(new TicketConfigServiceError('no sender', 400, 'INBOUND_ROW_NO_SENDER'));
+    const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('INBOUND_ROW_NO_SENDER');
+  });
+});
+
+describe('PATCH /ticket-config/email-inbound/:id/dismiss', () => {
+  it('dismisses and returns the row', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.dismissEmailInbound.mockResolvedValue({ id: 'r-1', parseStatus: 'ignored' });
+    const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/dismiss`, { method: 'PATCH' });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.dismissEmailInbound).toHaveBeenCalledWith('p-1', INBOUND_ID);
+  });
+  it('surfaces INBOUND_ROW_ALREADY_RESOLVED as 409', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.dismissEmailInbound.mockRejectedValue(new TicketConfigServiceError('done', 409, 'INBOUND_ROW_ALREADY_RESOLVED'));
+    const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/dismiss`, { method: 'PATCH' });
+    expect(res.status).toBe(409);
   });
 });
