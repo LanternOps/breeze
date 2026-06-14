@@ -35,7 +35,7 @@ PAM spans three trust domains, each with a distinct identity and a distinct set 
 |---|---|---|---|
 | **Endpoint agent** (Windows service) | Local `SYSTEM` | The dormant-admin account lifecycle and credential minting | Decide its own approvals; reach across tenants |
 | **Breeze control plane** (API) | Unprivileged DB role under row-level security | The request ledger, rule chain, and decisions | See or transmit any endpoint credential |
-| **Approver** (technician / mobile / Helper) | Authenticated user with MFA | The approve/deny/revoke decision | Approve a request they originated |
+| **Approver** (technician / mobile / Helper) | Authenticated user with MFA | The approve/deny/revoke decision | Relax automation's own verdict (AI/unmatched actions default to pending) |
 
 The single most important property of this split: **the credential that satisfies a UAC prompt is minted on the endpoint, used on the endpoint, and destroyed on the endpoint.** It is never written to the agent's configuration file and never transmitted to the server. The control plane records *that* an elevation was approved; it never holds the secret that exercises it.
 
@@ -92,11 +92,15 @@ The PAM actuator is additionally **disabled by default in every environment** an
 
 ## Separation of duties
 
-The approver is always a separate identity from the requester:
+The separation-of-duties property the system enforces today is **automation cannot self-grant**:
 
-- A user **cannot approve their own elevation.**
-- An AI agent or Helper session **cannot sign off on the action it proposed** -- AI tool actions and unmatched UAC prompts always default to **pending**, waiting on a human. Automation can never quietly relax its own approval.
-- The mobile app guards self-approval (when a user's own phone approves a request for that same user) behind a deliberate 5-second hold-to-confirm, so a momentarily unlocked phone cannot rubber-stamp a self-issued request.
+- An AI agent or Helper session **cannot sign off on the action it proposed** -- AI tool actions and unmatched UAC prompts always default to **pending**, waiting on a human (see [Decisioning chain and fail-safe behavior](#decisioning-chain-and-fail-safe-behavior)). Automation can never quietly relax its own approval, and an evaluator outage degrades to pending rather than to an auto-grant.
+
+<Aside type="caution">
+  **Human requester-vs-approver separation is not yet enforced.** The respond route does not compare the approving user against the requester, and the elevation flows that matter here (`uac_intercept`, `tech_jit_admin`) do not record an originating user identity at all (`subjectUserId` is `null` on every insert), so the control plane has nothing to compare against. Today, a user who holds `devices:execute` + MFA can approve a request -- including one tied to their own work. Treat requester/approver separation as an **operational** control: rely on approval reasons, the requester/device context surfaced in the UI, and anomaly alerting, not on a system-enforced block.
+
+  A self-approval gate is planned but **not active in production**. The mobile *hold-to-confirm* step-up (a deliberate 5-second hold when a user's own phone approves a request for that same user) lives on the separate Helper/mobile approval-request path and is keyed on an `isRecursive` flag. That flag's derivation currently returns `false` for all real traffic -- the requesting-client identity is not yet plumbed through the AI-agent/mobile-MCP path -- so the hold-to-confirm gate does not fire today. It will become active once the mobile-MCP step-up path lands.
+</Aside>
 
 Every approve, deny, and revoke is gated by:
 
@@ -163,7 +167,7 @@ The **Audit** tab of the Privileged Access console renders this ledger -- filter
 
 - **Standing local-administrator sprawl.** Endpoints carry no permanently privileged user account; admin exists only inside approved windows.
 - **Credential exposure.** The elevation credential is minted, used, and destroyed on the endpoint and never transits the network or lands in a config file.
-- **Self-approval and automation self-grant.** Requester and approver are always distinct identities, enforced with MFA.
+- **Automation self-grant.** AI tool actions and unmatched UAC prompts default to **pending** and wait on a human, so automation can never approve the action it proposed. (Note: human requester-vs-approver separation is *not* yet system-enforced -- see [Separation of duties](#separation-of-duties).)
 - **Replay of an approval.** Single-use actuation makes an approved request non-replayable.
 - **Tenant cross-contamination.** Forced row-level security plus a composite-FK audit tie keep every request, rule, and audit entry inside its own organization.
 - **Silent failure of the decision engine.** Evaluator errors fail safe to pending, never to auto-approve.
@@ -172,6 +176,7 @@ The **Audit** tab of the Privileged Access console renders this ledger -- filter
 **PAM does not protect against:**
 
 - **A compromised approver.** If an authenticated, MFA-satisfied operator approves a malicious request, PAM grants it. Mitigations are operational: approval reasons, requester history surfaced in the UI, per-tenant approval-rate limits, and anomaly alerting on approval-rate spikes. Treat approver accounts as the high-value identities they are.
+- **Human self-approval.** The respond route does not yet block a user from approving a request tied to their own work, and the elevation flows do not record an originating user identity, so there is no system-enforced requester-vs-approver split for human-decided requests today. The mobile hold-to-confirm gate that will cover this is not active in production yet. See [Separation of duties](#separation-of-duties).
 - **An existing local-administrator adversary on the endpoint.** The offline staleness gate and self-heal assume an attacker without prior SYSTEM/admin control. A box that is already fully compromised is outside PAM's threat model -- PAM is a privilege-*reduction* control, not endpoint EDR.
 - **Third-party agent-stack interactions.** UAC-touching code interacts with whatever else is installed. There is a documented production-breaking deadlock between the N-able N-Central agent and `consent.exe` on idle or locked machines that hangs UAC prompts for 4-5 minutes. Validate PAM against the agent stack your customers actually run before enabling it broadly. See the [admin guide's operational notes](/features/pam/#operational-notes).
 - **Non-Windows endpoints.** The dormant-admin lifecycle, secure-desktop injection, and UAC interception are Windows-only. On other platforms the elevation primitives are no-ops.

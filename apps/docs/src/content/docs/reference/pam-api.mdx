@@ -230,11 +230,15 @@ The preview is a pure per-rule match -- it does not replay priority shadowing or
 
 `POST /devices/:id/actuate-elevation` — organization/partner/system scope, `devices:execute`, MFA.
 
-Queues the agent "go" signal for a `consent.exe` prompt that is already waiting on the user's screen. The command payload carries **only** the elevation request id and a timeout -- the dormant-admin credential is minted locally by the agent and never crosses the wire.
+Queues the agent "go" signal for a `consent.exe` prompt that is already waiting on the user's screen. The command payload that reaches the agent carries **only** the elevation request id and a timeout -- the dormant-admin credential is minted locally by the agent and never crosses the wire.
 
 ```json
 { "elevationRequestId": "…", "timeoutMs": 8000 }
 ```
+
+<Aside type="note">
+  The request schema also accepts optional `username` and `password` fields, but they are **vestigial** -- the handler never reads them and never forwards them into the queued command, and they never appear in the audit log. A reader auditing the schema directly will see a `password` field; it is inert and exists only as a leftover of an earlier design. The credential is minted on the endpoint, not supplied over the API.
+</Aside>
 
 The route is single-use: it atomically transitions the request from `approved` to `actuating` in the same transaction that queues the command. A request that is not `approved`, or that another caller already claimed, is refused.
 
@@ -266,7 +270,7 @@ Request body (synthesized fields like `reason` are written server-side; the agen
 {
   "subject_username": "acme\\sarah",
   "target_executable_path": "C:\\Users\\sarah\\Downloads\\FirefoxSetup.exe",
-  "target_executable_hash": "<sha256>",
+  "target_executable_hash": "<agent-reported file hash>",
   "target_executable_signer": "Mozilla Corporation",
   "pid": 4812,
   "parent_image": "C:\\Windows\\explorer.exe",
@@ -274,6 +278,10 @@ Request body (synthesized fields like `reason` are written server-side; the agen
   "observed_at": "2026-06-13T14:02:11Z"
 }
 ```
+
+<Aside type="note">
+  `target_executable_hash` is a **free-form string of up to 128 characters** -- the ingest schema does not validate it as hex or pin it to a 64-character SHA-256 digest. It is the value the agent reports and is stored as-is for display and rule matching. By contrast, the rule-side [`matchHash`](#create--update-a-rule) criterion **is** strictly validated as a 64-character SHA-256 hex digest, so a rule can only match on a well-formed hash.
+</Aside>
 
 | Status | Meaning |
 |---|---|
