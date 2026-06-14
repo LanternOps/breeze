@@ -309,7 +309,10 @@ func handleEvent(ctx context.Context, ev Event, limiter *ipc.RateLimiter, hb Hea
 	)
 
 	// Drive the local elevation flow. The dedupe above already prevents
-	// stacked dialogs for re-fired ETW events on one prompt.
+	// stacked dialogs for re-fired ETW events on one prompt. Note this only
+	// fires for live posts: events replayed later via Queue.Drain discard the
+	// outcome and deliberately skip the flow — a drained event is a stale
+	// prompt whose consent.exe dialog is long gone, so actuating it is wrong.
 	if pam != nil && outcome.RequestID != "" && outcome.Status != "ignored" {
 		pam.RunPamFlow(ctx, ev, outcome)
 	}
