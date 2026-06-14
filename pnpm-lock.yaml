@@ -72,10 +72,10 @@ importers:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.50
-        version: 0.2.50(zod@3.25.76)
+        version: 0.2.50(zod@4.4.3)
       '@anthropic-ai/sdk':
         specifier: ^0.96.0
-        version: 0.96.0(zod@3.25.76)
+        version: 0.96.0(zod@4.4.3)
       '@aws-sdk/client-s3':
         specifier: ^3.1065.0
         version: 3.1065.0
@@ -108,7 +108,7 @@ importers:
         version: 1.3.1(@hono/node-server@2.0.4(hono@4.12.25))(hono@4.12.25)
       '@hono/zod-validator':
         specifier: ^0.8.0
-        version: 0.8.0(hono@4.12.25)(zod@3.25.76)
+        version: 0.8.0(hono@4.12.25)(zod@4.4.3)
       '@network-utils/vendor-lookup':
         specifier: ^1.0.12
         version: 1.0.12
@@ -185,8 +185,8 @@ importers:
         specifier: ^5.12.1
         version: 5.12.1
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/archiver':
         specifier: ^7.0.0
@@ -425,8 +425,8 @@ importers:
         specifier: ^3.6.0
         version: 3.6.0
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.4.3
+        version: 4.4.3
       zustand:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.17)(immer@11.1.8)(react@19.2.7)(use-sync-external-store@1.6.0(react@19.2.7))
@@ -607,8 +607,8 @@ importers:
         specifier: ^3.6.0
         version: 3.6.0
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.4.3
+        version: 4.4.3
       zustand:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.17)(immer@11.1.8)(react@19.2.7)(use-sync-external-store@1.6.0(react@19.2.7))
@@ -671,8 +671,8 @@ importers:
         specifier: ^1.0.62
         version: 1.0.62
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       typescript:
         specifier: ^5.7.2
@@ -2234,8 +2234,8 @@ packages:
   '@nodable/entities@2.1.0':
     resolution: {integrity: sha512-nyT7T3nbMyBI/lvr6L5TyWbFJAI9FTgVRakNoBqCD+PmID8DzFrrNdLLtHMwMszOtqZa8PAOV24ZqDnQrhQINA==}
 
-  '@nodable/entities@2.1.1':
-    resolution: {integrity: sha512-Pig3HxDIoMgjdEH8OCf/dkcTmLFjJRjWuq8jSnklu284/TKOPibSRERmOykiwmyXTtv61mP+44f3GMx0tLAyjg==}
+  '@nodable/entities@2.2.0':
+    resolution: {integrity: sha512-9uGyhaQavEUMC8AIddIjau4NsnsXhou+j5sBAGojCM1oxmQpVKTWR/9JxABD6UAv12vpIms55fPZKFQEhG6uBg==}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -6366,8 +6366,8 @@ packages:
     resolution: {integrity: sha512-/imKNG4EbWNrVjoNC/1H5/9GFy+tqjGBHCaSsN+P2RnPqjsLmv6UD3Ej+Kj8nBWaRAwyk7kK5ZUc+OEatnTR3A==}
     hasBin: true
 
-  joi@17.13.3:
-    resolution: {integrity: sha512-otDA4ldcIx+ZXsKHWmp0YizCweVRZG96J10b0FevjfuncLO1oX59THoAmHkNubYJ+9gWsYsp5k8v4ib6oDv1fA==}
+  joi@17.13.4:
+    resolution: {integrity: sha512-1RuuER6kmt8K8I3nIWvPZKi5RQCb568ZPyY4Pwjlua+yo+63ZTmIwxLZH0heBmiKN4uxjvCiarDrjaeH84xicQ==}
 
   jose@4.15.9:
     resolution: {integrity: sha512-1vUQX+IdDMVPj4k8kOxgUqlcK518yluMuGZwqlr44FS1ppZB/5GWh4rZG89erpOBOJjU/OBsnCVFfapsRz6nEA==}
@@ -9411,9 +9411,9 @@ snapshots:
 
   '@alloc/quick-lru@5.2.0': {}
 
-  '@anthropic-ai/claude-agent-sdk@0.2.50(zod@3.25.76)':
+  '@anthropic-ai/claude-agent-sdk@0.2.50(zod@4.4.3)':
     dependencies:
-      zod: 3.25.76
+      zod: 4.4.3
     optionalDependencies:
       '@img/sharp-darwin-arm64': 0.34.5
       '@img/sharp-darwin-x64': 0.34.5
@@ -9425,12 +9425,12 @@ snapshots:
       '@img/sharp-win32-arm64': 0.34.5
       '@img/sharp-win32-x64': 0.34.5
 
-  '@anthropic-ai/sdk@0.96.0(zod@3.25.76)':
+  '@anthropic-ai/sdk@0.96.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
     optionalDependencies:
-      zod: 3.25.76
+      zod: 4.4.3
 
   '@asamuzakjp/css-color@5.1.11':
     dependencies:
@@ -11229,10 +11229,10 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.8.0(hono@4.12.25)(zod@3.25.76)':
+  '@hono/zod-validator@0.8.0(hono@4.12.25)(zod@4.4.3)':
     dependencies:
       hono: 4.12.25
-      zod: 3.25.76
+      zod: 4.4.3
 
   '@hookform/resolvers@5.4.0(react-hook-form@7.78.0(react@19.2.7))':
     dependencies:
@@ -11492,7 +11492,7 @@ snapshots:
 
   '@nodable/entities@2.1.0': {}
 
-  '@nodable/entities@2.1.1':
+  '@nodable/entities@2.2.0':
     optional: true
 
   '@nodelib/fs.scandir@2.1.5':
@@ -11745,7 +11745,7 @@ snapshots:
       cosmiconfig: 5.2.1
       deepmerge: 4.3.1
       glob: 7.2.3
-      joi: 17.13.3
+      joi: 17.13.4
     transitivePeerDependencies:
       - encoding
     optional: true
@@ -11854,7 +11854,7 @@ snapshots:
 
   '@react-native-community/cli-types@12.1.1':
     dependencies:
-      joi: 17.13.3
+      joi: 17.13.4
     optional: true
 
   '@react-native-community/cli@12.1.1':
@@ -12061,7 +12061,9 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.85.3': {}
 
@@ -15359,7 +15361,7 @@ snapshots:
 
   fast-xml-parser@5.8.0:
     dependencies:
-      '@nodable/entities': 2.1.1
+      '@nodable/entities': 2.2.0
       fast-xml-builder: 1.2.0
       path-expression-matcher: 1.5.0
       strnum: 2.4.0
@@ -16263,7 +16265,7 @@ snapshots:
 
   jiti@1.21.7: {}
 
-  joi@17.13.3:
+  joi@17.13.4:
     dependencies:
       '@hapi/hoek': 9.3.0
       '@hapi/topo': 5.1.0
