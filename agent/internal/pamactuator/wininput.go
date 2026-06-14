@@ -34,6 +34,7 @@ const (
 const (
 	vkTab    = 0x09
 	vkReturn = 0x0D
+	vkEscape = 0x1B
 )
 
 // keybdInput mirrors the Win32 KEYBDINPUT struct. Layout matches the

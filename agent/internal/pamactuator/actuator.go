@@ -88,6 +88,12 @@ type Actuator interface {
 	// goroutine; the impl locks an OS thread internally before touching
 	// the secure desktop.
 	Trigger(ctx context.Context, req Request) Result
+
+	// Dismiss cancels the live consent.exe prompt by sending Escape on the
+	// input desktop (deny path). Returns Reason "ok" on a confirmed close,
+	// "no_consent_window" if none was found, or a desktop-attach failure
+	// reason mirroring Trigger.
+	Dismiss(ctx context.Context) Result
 }
 
 // New returns the platform-default Actuator. On non-Windows this returns
