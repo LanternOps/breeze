@@ -183,7 +183,8 @@ export class EmailService {
         subject,
         html,
         text,
-        replyTo
+        replyTo,
+        headers,
       });
       return;
     }
@@ -485,6 +486,15 @@ async function sendViaMailgun(
     const replyTos = Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo];
     for (const replyTo of replyTos) {
       body.append('h:Reply-To', replyTo);
+    }
+  }
+
+  if (params.headers) {
+    for (const [name, value] of Object.entries(params.headers)) {
+      // Reply-To is already mapped above via the replyTo param — skip to avoid
+      // double-encoding if a caller also passes it in headers.
+      if (name.toLowerCase() === 'reply-to') continue;
+      body.set(`h:${name}`, value);
     }
   }
 
