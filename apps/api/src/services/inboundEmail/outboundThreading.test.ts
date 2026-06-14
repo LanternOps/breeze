@@ -55,4 +55,21 @@ describe('outbound threading helpers', () => {
     expect(mod.partnerInboundAddress('acme', 'support@helpdesk.theirmsp.com'))
       .toBe('support@helpdesk.theirmsp.com');
   });
+
+  it('degrades to no-headers / null address when getConfig() THROWS (uninitialized config on the worker path)', async () => {
+    // On the notify-worker path getConfig() throws if config was never validated;
+    // domain() must catch and degrade, never propagate the throw.
+    vi.resetModules();
+    vi.doMock('../../config/validate', () => ({
+      getConfig: () => { throw new Error('config not initialized'); }
+    }));
+    const mod = await import('./outboundThreading');
+    expect(() => mod.buildThreadingHeaders({ ticketId: 't-1', commentId: 'c-9' })).not.toThrow();
+    expect(mod.buildThreadingHeaders({ ticketId: 't-1', commentId: 'c-9' })).toEqual({});
+    expect(mod.ticketThreadAnchor('t-1')).toBeNull();
+    expect(mod.partnerInboundAddress('acme', undefined)).toBeNull();
+    // A configured override still wins (it never reads the domain).
+    expect(mod.partnerInboundAddress('acme', 'support@helpdesk.theirmsp.com'))
+      .toBe('support@helpdesk.theirmsp.com');
+  });
 });

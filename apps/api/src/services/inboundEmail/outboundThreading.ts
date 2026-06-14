@@ -1,7 +1,16 @@
 import { getConfig } from '../../config/validate';
 
+// Resolve TICKETS_INBOUND_DOMAIN defensively. These helpers run on the notify-worker
+// path (handleTicketEvent) where an uninitialized config would make getConfig() throw
+// — and a config read must never crash threading. Degrade to undefined (threading off:
+// no headers, null Reply-To) instead, mirroring inboundEmailService's
+// inboundDomainOrNull / autoresponder's inboundDomainOrUndefined.
 function domain(): string | undefined {
-  return getConfig().TICKETS_INBOUND_DOMAIN;
+  try {
+    return getConfig().TICKETS_INBOUND_DOMAIN;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The conversation thread anchor — stored as tickets.email_thread_key and used
@@ -22,7 +31,14 @@ export function commentMessageId(ticketId: string, commentId: string): string | 
  * default ({slug}@TICKETS_INBOUND_DOMAIN), OVERRIDABLE for self-hosted via
  * partners.settings.ticketing.inbound.address. The override wins (and is used
  * even when no platform domain is configured); a blank/whitespace override is
- * ignored. Must match what PR1's resolvePartnerByRecipient accepts as inbound.
+ * ignored.
+ *
+ * NOTE: the override is emitted VERBATIM as Reply-To — the resolver does NOT
+ * validate it. For inbound replies to thread back, the operator MUST register
+ * the override's domain in `partner_inbound_domains` (or use the derived
+ * {slug}@TICKETS_INBOUND_DOMAIN form). Replies sent to an UNregistered override
+ * domain resolve to no partner and are dropped as `ignored`. This is an operator
+ * constraint, not a code invariant enforced here.
  */
 export function partnerInboundAddress(
   partnerSlug: string,

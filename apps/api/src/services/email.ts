@@ -193,6 +193,14 @@ export class EmailService {
       throw new Error('SMTP transport is not initialized');
     }
 
+    // Lift Message-ID / In-Reply-To / References (case-insensitive) out of the
+    // generic `headers` map into nodemailer's dedicated options. Passing a
+    // `Message-ID` header AND letting nodemailer auto-generate its own would emit
+    // TWO Message-Id headers; using the `messageId` option makes our anchor the
+    // single canonical Message-Id so SMTP threading round-trips. The remaining
+    // headers (e.g. Auto-Submitted) stay in the generic map.
+    const { messageId, inReplyTo, references, rest } = liftThreadingHeaders(headers);
+
     await this.smtpTransport.sendMail({
       from: sender,
       to,
@@ -200,7 +208,10 @@ export class EmailService {
       html,
       text,
       replyTo,
-      headers,
+      messageId,
+      inReplyTo,
+      references,
+      headers: rest,
     });
   }
 
@@ -458,6 +469,48 @@ function resolveEmailProviderConfig(): ResolvedProviderConfig {
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '');
+}
+
+/**
+ * Split the threading headers (Message-ID / In-Reply-To / References) — matched
+ * case-insensitively — out of the generic `headers` map so they can be passed via
+ * nodemailer's dedicated `messageId` / `inReplyTo` / `references` options. This
+ * prevents a duplicate Message-Id (nodemailer auto-generates one when the option
+ * is absent, so passing it ALSO in `headers` would emit two). The `rest` map
+ * carries everything else (e.g. Auto-Submitted) unchanged.
+ */
+function liftThreadingHeaders(headers: Record<string, string> | undefined): {
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
+  rest: Record<string, string> | undefined;
+} {
+  if (!headers) return { rest: undefined };
+  let messageId: string | undefined;
+  let inReplyTo: string | undefined;
+  let references: string | undefined;
+  const rest: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    switch (name.toLowerCase()) {
+      case 'message-id':
+        messageId = value;
+        break;
+      case 'in-reply-to':
+        inReplyTo = value;
+        break;
+      case 'references':
+        references = value;
+        break;
+      default:
+        rest[name] = value;
+    }
+  }
+  return {
+    messageId,
+    inReplyTo,
+    references,
+    rest: Object.keys(rest).length > 0 ? rest : undefined,
+  };
 }
 
 function buildMailgunEndpoint(config: MailgunProviderConfig): string {

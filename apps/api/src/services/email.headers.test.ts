@@ -50,17 +50,46 @@ describe('SendEmailParams.headers — SMTP', () => {
     delete process.env.RESEND_API_KEY;
   });
 
-  it('merges custom headers into nodemailer mailOptions', async () => {
+  it('lifts Message-ID / In-Reply-To / References into nodemailer options (no duplicate Message-Id) and keeps other headers in the generic map', async () => {
     const { EmailService } = await import('./email');
     const svc = new EmailService();
     await svc.sendEmail({
       to: 'jane@x.com',
       subject: 's',
       html: '<p>hi</p>',
-      headers: { 'Message-ID': '<m@x>', References: '<a> <b>' },
+      headers: {
+        'Message-ID': '<m@x>',
+        'In-Reply-To': '<irt@x>',
+        References: '<a> <b>',
+        'Auto-Submitted': 'auto-replied',
+      },
     });
     const arg = smtpSendMock.mock.calls[0]![0];
-    expect(arg.headers).toEqual({ 'Message-ID': '<m@x>', References: '<a> <b>' });
+    // Threading headers are lifted to nodemailer's dedicated options so it does NOT
+    // also auto-generate a second Message-Id.
+    expect(arg.messageId).toBe('<m@x>');
+    expect(arg.inReplyTo).toBe('<irt@x>');
+    expect(arg.references).toBe('<a> <b>');
+    // The generic headers map keeps only the non-threading headers — and must NOT
+    // contain a Message-ID (which would duplicate the option above).
+    expect(arg.headers).toEqual({ 'Auto-Submitted': 'auto-replied' });
+    expect(arg.headers['Message-ID']).toBeUndefined();
+  });
+
+  it('uses the supplied anchor as the canonical SMTP messageId (no duplicate in the headers map)', async () => {
+    const { EmailService } = await import('./email');
+    const svc = new EmailService();
+    const anchor = '<ticket-t1@tickets.example.com>';
+    await svc.sendEmail({
+      to: 'jane@x.com',
+      subject: '[T-2026-0001] New reply',
+      html: '<p>hi</p>',
+      headers: { 'Message-ID': anchor, 'Auto-Submitted': 'auto-replied' },
+    });
+    const arg = smtpSendMock.mock.calls[0]![0];
+    expect(arg.messageId).toBe(anchor);
+    // No Message-ID left in the generic headers map (would duplicate the option).
+    expect(arg.headers).toEqual({ 'Auto-Submitted': 'auto-replied' });
   });
 });
 
