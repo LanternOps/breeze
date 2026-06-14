@@ -12,6 +12,20 @@ const categoryRuleSchema = z.object({
   deferralDaysOverride: z.coerce.number().int().min(0).max(365).nullable().optional(),
 });
 
+const ringAutoApproveFormSchema = z.object({
+  enabled: z.boolean(),
+  severities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])),
+  deferralDays: z.coerce.number().int().min(0).max(365),
+}).superRefine((data, ctx) => {
+  if (data.enabled && data.severities.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['severities'],
+      message: 'Select at least one severity for auto-approval.',
+    });
+  }
+});
+
 const ringSchema = z.object({
   name: z.string().min(1, 'Ring name is required'),
   description: z.string().optional(),
@@ -19,6 +33,8 @@ const ringSchema = z.object({
   deferralDays: z.coerce.number().int().min(0).max(365),
   deadlineDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
   gracePeriodHours: z.coerce.number().int().min(0).max(168),
+  // Ring-owned approval gate (#1317): the WHAT-installs auto-approval.
+  autoApprove: ringAutoApproveFormSchema,
   categoryRules: z.array(categoryRuleSchema).optional(),
 });
 
@@ -71,6 +87,7 @@ export default function UpdateRingForm({
       deferralDays: 0,
       deadlineDays: null,
       gracePeriodHours: 4,
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
       categoryRules: [],
       ...defaultValues,
     },
@@ -85,7 +102,17 @@ export default function UpdateRingForm({
   const usedCategories = watchCategoryRules.map((r) => r.category);
   const availableCategories = categoryOptions.filter((c) => !usedCategories.includes(c.value));
 
+  const autoApprove = watch('autoApprove');
+
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+
+  const toggleAutoApproveSeverity = (severity: 'critical' | 'important' | 'moderate' | 'low') => {
+    const current = autoApprove?.severities ?? [];
+    const next = current.includes(severity)
+      ? current.filter((s) => s !== severity)
+      : [...current, severity];
+    setValue('autoApprove.severities', next, { shouldDirty: true });
+  };
 
   const toggleSeverity = (ruleIndex: number, severity: string) => {
     const current = watchCategoryRules[ruleIndex]?.autoApproveSeverities ?? [];
@@ -159,6 +186,66 @@ export default function UpdateRingForm({
           className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           placeholder="Optional description"
         />
+      </div>
+
+      {/* Ring-level Auto-Approve (#1317) — the ring owns approval rules */}
+      <div className="rounded-md border p-3" data-testid="ring-auto-approve-section">
+        <label className="flex items-center gap-2 text-sm font-semibold">
+          <input
+            type="checkbox"
+            {...register('autoApprove.enabled')}
+            data-testid="ring-auto-approve-enabled"
+            className="h-4 w-4 rounded border-muted"
+          />
+          Auto-approve patches
+        </label>
+        <p className="mt-1 text-xs text-muted-foreground">
+          When off, every patch in this ring requires manual approval. When on, patches matching the
+          selected severities auto-approve after the deferral window below.
+        </p>
+
+        {autoApprove?.enabled && (
+          <div className="mt-3 space-y-3">
+            <div>
+              <span className="text-xs font-medium">Auto-approve severities</span>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {severityOptions.map((sev) => (
+                  <button
+                    key={sev.value}
+                    type="button"
+                    data-testid={`ring-auto-approve-severity-${sev.value}`}
+                    onClick={() => toggleAutoApproveSeverity(sev.value)}
+                    className={cn(
+                      'rounded-full border px-2.5 py-1 text-xs font-medium transition',
+                      (autoApprove.severities ?? []).includes(sev.value)
+                        ? sev.color
+                        : 'border-muted text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    {sev.label}
+                  </button>
+                ))}
+              </div>
+              {errors.autoApprove?.severities && (
+                <p className="mt-1 text-xs text-destructive">
+                  {errors.autoApprove.severities.message}
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium">Deferral (days after release)</label>
+              <input
+                type="number"
+                min={0}
+                max={365}
+                data-testid="ring-auto-approve-deferral"
+                {...register('autoApprove.deferralDays')}
+                className="h-8 w-20 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Category Rules */}

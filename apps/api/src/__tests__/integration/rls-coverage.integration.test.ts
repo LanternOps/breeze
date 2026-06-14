@@ -114,6 +114,13 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // as an ordinary shape-1 org-tenant table.
   ['catalog_items', 'partner_id'],
   ['catalog_bundle_components', 'partner_id'],
+  // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
+  // ticket_email_inbound (only system scope may write null-partner rows);
+  // NOT NULL on partner_inbound_domains. Policy:
+  //   breeze_current_scope()='system' OR breeze_has_partner_access(partner_id)
+  // Functional cross-partner forge proof: emailInboundRls.integration.test.ts.
+  ['ticket_email_inbound', 'partner_id'],
+  ['partner_inbound_domains', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

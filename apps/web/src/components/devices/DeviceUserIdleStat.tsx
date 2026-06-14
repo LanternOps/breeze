@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Timer } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -61,35 +61,58 @@ type DeviceUserIdleStatProps = {
 
 export default function DeviceUserIdleStat({ deviceId }: DeviceUserIdleStatProps) {
   const [sessions, setSessions] = useState<ActiveSession[]>([]);
+  const [error, setError] = useState(false);
+
+  const fetchSessions = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await fetchWithAuth(`/devices/${deviceId}/sessions/active`);
+      if (signal?.aborted) return;
+      if (!res.ok) {
+        setError(true);
+        return;
+      }
+      const body = await res.json();
+      if (signal?.aborted) return;
+      setSessions(body?.data?.activeUsers ?? []);
+      setError(false);
+    } catch {
+      if (!signal?.aborted) setError(true);
+    }
+  }, [deviceId]);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetchWithAuth(`/devices/${deviceId}/sessions/active`);
-        if (!res.ok) return;
-        const body = await res.json();
-        if (!cancelled) setSessions(body?.data?.activeUsers ?? []);
-      } catch {
-        // Read-only stat: on failure leave the em-dash placeholder.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId]);
+    const controller = new AbortController();
+    setError(false);
+    void fetchSessions(controller.signal);
+    return () => controller.abort();
+  }, [fetchSessions]);
 
   const selected = selectIdleSession(sessions);
 
   return (
     <div>
-      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
         <Timer className="h-3.5 w-3.5" />
         User Idle
       </div>
-      <p className="mt-1 text-lg font-semibold" title={tooltip(sessions)}>
-        {formatIdle(selected)}
-      </p>
+      {error ? (
+        // Distinct from the legitimate "—" empty state: a fetch failure is
+        // interactive (click to retry) and labelled, so a tech can tell
+        // "no active session" apart from "couldn't load".
+        <button
+          type="button"
+          onClick={() => { setError(false); void fetchSessions(); }}
+          title="Couldn't load idle status — click to retry"
+          aria-label="Couldn't load idle status — retry"
+          className="mt-1 text-lg font-semibold text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
+        >
+          —
+        </button>
+      ) : (
+        <p className="mt-1 text-lg font-semibold" title={tooltip(sessions)}>
+          {formatIdle(selected)}
+        </p>
+      )}
     </div>
   );
 }

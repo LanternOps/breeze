@@ -15,11 +15,7 @@ export const ENABLE_ENDPOINT_AV_FEATURES = parseBoolean(
   false
 );
 
-export const ENABLE_REGISTRATION = parseBoolean(
-  import.meta.env.PUBLIC_ENABLE_REGISTRATION,
-  true
-);
-
-if (!ENABLE_REGISTRATION) {
-  console.warn('[web] Registration is disabled (PUBLIC_ENABLE_REGISTRATION=false). Registration pages will redirect to /login.');
-}
+// NOTE: registration enablement is intentionally NOT a build-time flag. A
+// prebuilt web image can't honor a PUBLIC_ env at runtime, so the UI reads the
+// runtime ENABLE_REGISTRATION value from GET /api/v1/config instead (see
+// useRegistrationGate in stores/featuresStore). Issue #1308.

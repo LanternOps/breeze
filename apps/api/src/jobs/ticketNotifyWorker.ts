@@ -202,7 +202,9 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         return;
       }
       case 'ticket.commented': {
-        if (event.payload.isPublic) {
+        // Skip requester email for inbound comments — the comment originated FROM the
+        // requester's email, so echoing it back would create a mail loop.
+        if (event.payload.isPublic && !event.payload.inbound) {
           emailPayloads = await collectRequesterEmail(
             event,
             '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',

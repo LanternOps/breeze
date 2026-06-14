@@ -157,6 +157,18 @@ vi.mock('../../services/redis', () => ({
   getRedis: vi.fn(() => redisMock),
 }));
 
+// Boundary mock: the device-teardown service pulls in the agentWs → terminalWs
+// → remoteAccessPolicy chain at module load, which this test's partial schema
+// mock doesn't satisfy. The handler only needs it to be called on
+// quarantine/deny; its internals are covered by remoteSessionTeardown.test.ts.
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  terminateDeviceRemoteSessions: vi.fn().mockResolvedValue(0),
+  // mtls.ts imports TEARDOWN_FAILED too; the real value is -1. The mock must
+  // export it or the route's `teardownResult === TEARDOWN_FAILED` audit branch
+  // would compare against undefined.
+  TEARDOWN_FAILED: -1,
+}));
+
 // Use the real rate-limit helper with the stub above.
 
 // -------------------------------------------------------------------
@@ -164,6 +176,7 @@ vi.mock('../../services/redis', () => ({
 // -------------------------------------------------------------------
 
 import { mtlsRoutes } from './mtls';
+import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -250,6 +263,73 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
       headers: { Authorization: 'Bearer brz_wrong' },
     });
     expect(resp.status).toBe(401);
+  });
+});
+
+describe('remote-session teardown wiring on quarantine / deny', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisState.clear();
+    issueCertMock.mockReset();
+    revokeCertMock.mockReset();
+    mockDbUpdateOk();
+  });
+
+  it('POST /renew-cert quarantine branch tears down live remote sessions', async () => {
+    // Expired cert + org expiredCertPolicy 'quarantine' (the getOrgMtlsSettings
+    // mock default) drives the renew handler into the quarantine branch, which
+    // must cut any in-flight desktop/terminal session to the now-isolated
+    // device. Dropping that call silently leaves live control running.
+    const deviceRow = {
+      id: DEVICE_ID,
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      hostname: 'host-1',
+      status: 'online',
+      agentTokenHash: TOKEN_HASH,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
+      // Expired one hour ago — triggers the quarantine path.
+      mtlsCertExpiresAt: new Date(Date.now() - 3600 * 1000),
+      mtlsCertCfId: null,
+    };
+
+    mockDeviceLookup(deviceRow);
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.quarantined).toBe(true);
+    // The certificate must NOT be issued on the quarantine path.
+    expect(issueCertMock).not.toHaveBeenCalled();
+    // Wiring under test: live remote control to the quarantined device is cut.
+    expect(terminateDeviceRemoteSessions).toHaveBeenCalledWith(DEVICE_ID);
+  });
+
+  it('POST /:id/deny tears down live remote sessions for the denied device', async () => {
+    // Denying a quarantined device decommissions it and must tear down any
+    // live remote-control session — the status flip alone is only checked at
+    // connect time.
+    mockDeviceLookup({
+      id: DEVICE_ID,
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      hostname: 'host-1',
+      status: 'quarantined',
+    });
+
+    const res = await buildApp().request(`/agents/${DEVICE_ID}/deny`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(terminateDeviceRemoteSessions).toHaveBeenCalledWith(DEVICE_ID);
   });
 });
 

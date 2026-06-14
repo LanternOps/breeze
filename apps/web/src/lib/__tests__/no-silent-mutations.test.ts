@@ -29,6 +29,7 @@ const REPO_ROOT = resolve(WEB_ROOT, '../../..');
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
   'src/components/alerts/NotificationChannelsPage.tsx',
+  'src/components/alerts/AlertsPage.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/patches/PatchesPage.tsx',
   'src/components/settings/RolesPage.tsx',

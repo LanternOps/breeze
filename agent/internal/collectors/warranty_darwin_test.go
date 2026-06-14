@@ -19,6 +19,7 @@ func TestParseAppleWarrantyPlist(t *testing.T) {
 		wantEnd      string
 		wantStart    string
 		wantType     string
+		wantKind     string
 		wantNil      bool
 		wantErr      bool
 	}{
@@ -41,6 +42,43 @@ func TestParseAppleWarrantyPlist(t *testing.T) {
 			wantEnd:   "2027-06-15",
 			wantStart: "2024-06-15",
 			wantType:  "AppleCare+",
+			wantKind:  "", // no expiration label ⇒ kind stays empty (heartbeat omits it)
+		},
+		{
+			name: "plist with Renews expiration label derives subscription kind",
+			plistContent: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>coverageEndDate</key>
+	<string>2027-06-15</string>
+	<key>coverageType</key>
+	<string>AppleCare+</string>
+	<key>coverageExpirationLabel</key>
+	<string>Renews June 15, 2027</string>
+</dict>
+</plist>`,
+			wantEnd:  "2027-06-15",
+			wantType: "AppleCare+",
+			wantKind: coverageKindSubscription,
+		},
+		{
+			name: "plist with Expires expiration label derives fixed kind",
+			plistContent: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>coverageEndDate</key>
+	<string>2027-06-15</string>
+	<key>coverageType</key>
+	<string>Limited Warranty</string>
+	<key>coverageExpirationLabel</key>
+	<string>Expires June 15, 2027</string>
+</dict>
+</plist>`,
+			wantEnd:  "2027-06-15",
+			wantType: "Limited Warranty",
+			wantKind: coverageKindFixed,
 		},
 		{
 			name: "plist with RFC3339 date",
@@ -116,6 +154,9 @@ func TestParseAppleWarrantyPlist(t *testing.T) {
 			if tt.wantType != "" && info.CoverageType != tt.wantType {
 				t.Errorf("CoverageType: got %q, want %q", info.CoverageType, tt.wantType)
 			}
+			if info.CoverageKind != tt.wantKind {
+				t.Errorf("CoverageKind: got %q, want %q", info.CoverageKind, tt.wantKind)
+			}
 		})
 	}
 }
@@ -163,20 +204,37 @@ func TestParseCoverageDetailsJSON(t *testing.T) {
 		json     string
 		wantEnd  string
 		wantType string
+		wantKind string
 		wantNil  bool
 		wantErr  bool
 	}{
 		{
-			name:     "AppleCare+ with unix timestamp",
+			name:     "AppleCare+ subscription (Renews) with unix timestamp",
 			json:     `{"serialNumber":"ABC123","coverageLabel":"AppleCare+","settingsCoverageSection":{"coverageExpirationLabel":"Renews April 17, 2026","offer":{"expiration":"1776495599"}}}`,
 			wantEnd:  "2026-04-18",
 			wantType: "AppleCare+",
+			wantKind: coverageKindSubscription,
 		},
 		{
-			name:     "Limited Warranty with label only",
+			name:     "Limited Warranty fixed-term (Expires) with label only",
 			json:     `{"serialNumber":"XYZ789","coverageLabel":"Limited Warranty","settingsCoverageSection":{"coverageExpirationLabel":"Expires October 20, 2026","offer":{"expiration":"0"}}}`,
 			wantEnd:  "2026-10-20",
 			wantType: "Limited Warranty",
+			wantKind: coverageKindFixed,
+		},
+		{
+			name:     "AppleCare fixed-term (Expires) with timestamp keeps fixed kind",
+			json:     `{"serialNumber":"DEF456","coverageLabel":"AppleCare+","settingsCoverageSection":{"coverageExpirationLabel":"Expires October 20, 2026","offer":{"expiration":"1776495599"}}}`,
+			wantEnd:  "2026-04-18",
+			wantType: "AppleCare+",
+			wantKind: coverageKindFixed,
+		},
+		{
+			name:     "no label verb leaves kind empty",
+			json:     `{"serialNumber":"GHI789","coverageLabel":"AppleCare+","settingsCoverageSection":{"coverageExpirationLabel":"","offer":{"expiration":"1776495599"}}}`,
+			wantEnd:  "2026-04-18",
+			wantType: "AppleCare+",
+			wantKind: "",
 		},
 		{
 			name:    "empty coverage label",
@@ -223,6 +281,9 @@ func TestParseCoverageDetailsJSON(t *testing.T) {
 			if info.CoverageType != tt.wantType {
 				t.Errorf("CoverageType: got %q, want %q", info.CoverageType, tt.wantType)
 			}
+			if info.CoverageKind != tt.wantKind {
+				t.Errorf("CoverageKind: got %q, want %q", info.CoverageKind, tt.wantKind)
+			}
 		})
 	}
 }
@@ -259,19 +320,25 @@ func TestParseCoverageExpiration(t *testing.T) {
 		timestamp string
 		label     string
 		want      string
+		wantKind  string
 	}{
-		{"unix timestamp", "1776495599", "", "2026-04-18"},
-		{"zero timestamp with label", "0", "Expires October 20, 2026", "2026-10-20"},
-		{"renews label", "", "Renews April 17, 2026", "2026-04-17"},
-		{"empty both", "", "", ""},
-		{"zero both", "0", "", ""},
+		{"unix timestamp no label", "1776495599", "", "2026-04-18", ""},
+		{"zero timestamp with expires label", "0", "Expires October 20, 2026", "2026-10-20", coverageKindFixed},
+		{"renews label", "", "Renews April 17, 2026", "2026-04-17", coverageKindSubscription},
+		{"renews label with timestamp", "1776495599", "Renews April 17, 2026", "2026-04-18", coverageKindSubscription},
+		{"empty both", "", "", "", ""},
+		{"zero both", "0", "", "", ""},
+		{"unrecognized verb leaves kind empty", "0", "Active until April 17, 2026", "", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseCoverageExpiration(tt.timestamp, tt.label)
+			got, gotKind := parseCoverageExpiration(tt.timestamp, tt.label)
 			if got != tt.want {
-				t.Errorf("parseCoverageExpiration(%q, %q) = %q, want %q", tt.timestamp, tt.label, got, tt.want)
+				t.Errorf("parseCoverageExpiration(%q, %q) date = %q, want %q", tt.timestamp, tt.label, got, tt.want)
+			}
+			if gotKind != tt.wantKind {
+				t.Errorf("parseCoverageExpiration(%q, %q) kind = %q, want %q", tt.timestamp, tt.label, gotKind, tt.wantKind)
 			}
 		})
 	}

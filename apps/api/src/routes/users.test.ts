@@ -214,6 +214,7 @@ import { db } from '../db';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { revokeUserAccess } from '../services/userSuspension';
 import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
 // Mocked above — imported to drive failure paths via mockResolvedValueOnce.
 import { writeAvatar, deleteAvatar, readAvatarBuffer } from '../services/avatarStorage';
@@ -1302,6 +1303,9 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
       expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
+      // OAuth grants/refresh tokens (e.g. MCP) must also be revoked so a
+      // removed user's refresh token can't keep minting access tokens.
+      expect(revokeUserAccess).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
@@ -1341,6 +1345,28 @@ describe('user routes', () => {
       expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
+    it('still 200s (partner branch) when OAuth grant revocation fails (best-effort)', async () => {
+      // revokeUserAccess (OAuth grants/refresh tokens) is best-effort: a failure
+      // here (e.g. OAuth store down) must NOT roll back the already-deleted
+      // partner_users row. The .catch in DELETE /:id isolates it, mirroring the
+      // revokeAllUserTokens best-effort case above.
+      vi.mocked(revokeUserAccess).mockRejectedValueOnce(new Error('oauth store down'));
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
+        })
+      } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(revokeUserAccess).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
     it('removes an organization user and revokes their JWTs', async () => {
       // Same shape for organization-scope removals — org-scoped JWTs also
       // carry an accessibleOrgIds claim that must be invalidated.
@@ -1368,6 +1394,37 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       expect(revokeAllUserTokens).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
       expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
+      expect(revokeUserAccess).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
+    });
+
+    it('still 200s (org branch) when OAuth grant revocation fails (best-effort)', async () => {
+      // Org-scope removal: same best-effort isolation for revokeUserAccess. The
+      // organization_users row is already deleted; an OAuth-store failure must
+      // not roll the response back.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-456',
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+      vi.mocked(revokeUserAccess).mockRejectedValueOnce(new Error('oauth store down'));
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'link-2' }])
+        })
+      } as any);
+
+      const res = await app.request('/users/22222222-2222-2222-2222-222222222222', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
+      expect(revokeUserAccess).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
     });
   });
 

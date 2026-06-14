@@ -110,6 +110,18 @@ export interface BreezeEvent<T = Record<string, unknown>> {
   id: string;
   type: EventType;
   orgId: string;
+  /**
+   * Site this event is attributable to, when known. Used by the events WS
+   * layer to deliver in-site events to site-restricted users (the app-layer
+   * SITE-scope axis; RLS only enforces ORG). See `buildSiteFilter` in
+   * `routes/eventWs.ts`, which fails closed when no `siteId` is present.
+   *
+   * Omitted for genuinely org-level events with no site context. The WS filter
+   * treats a missing `siteId` as "not deliverable to a site-restricted user"
+   * (fail-closed) — unrestricted users are unaffected either way. Device-scoped
+   * publishers should set this whenever the device's site is cheaply available.
+   */
+  siteId?: string;
   source: string;
   priority: EventPriority;
   payload: T;
@@ -126,6 +138,13 @@ export interface PublishOptions {
   correlationId?: string;
   causationId?: string;
   userId?: string;
+  /**
+   * Site this event is attributable to. Surfaces as a top-level `siteId` on the
+   * published `BreezeEvent` so the events-WS site filter can deliver it to
+   * site-restricted users. Pass it whenever the originating device's site is
+   * known. `null`/`undefined` ⇒ org-level (no site attribution).
+   */
+  siteId?: string | null;
 }
 
 export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) => Promise<void>;
@@ -191,10 +210,16 @@ class EventBus {
     const eventId = randomUUID();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
+    // Normalise an empty-string siteId to "no attribution" so the WS filter
+    // never matches against a blank id.
+    const siteId =
+      typeof options.siteId === 'string' && options.siteId.length > 0 ? options.siteId : undefined;
+
     const event: BreezeEvent<T> = {
       id: eventId,
       type,
       orgId,
+      ...(siteId ? { siteId } : {}),
       source,
       priority: options.priority || 'normal',
       payload,
@@ -515,7 +540,8 @@ class EventBus {
         priority: event.priority,
         correlationId: event.metadata.correlationId,
         causationId: event.id, // Original event becomes causation
-        userId: event.metadata.userId
+        userId: event.metadata.userId,
+        siteId: event.siteId, // preserve site attribution on retry
       }
     );
 

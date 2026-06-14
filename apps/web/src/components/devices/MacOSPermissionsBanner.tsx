@@ -72,13 +72,13 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
   const remoteDesktopMissing = tcc.remoteDesktop === false;
 
   return (
-    <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-      <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0 text-amber-600" />
+    <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3">
+      <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0 text-warning" />
       <div className="min-w-0">
-        <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+        <p className="text-sm font-medium text-foreground">
           {fdaMissing ? 'Full Disk Access Required' : remoteDesktopMissing ? 'Remote Desktop Permission Required' : 'Permissions Configuring'}
         </p>
-        <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
+        <p className="mt-1 text-sm text-muted-foreground">
           {fdaMissing
             ? 'Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.'
             : remoteDesktopMissing
@@ -88,13 +88,13 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
         {(fdaMissing || remoteDesktopMissing) && (
           <div className="mt-2 flex flex-wrap gap-2">
             {fdaMissing && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-red-400/40 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
+              <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/15 px-2.5 py-0.5 text-xs font-medium text-destructive">
                 <XCircle className="h-3 w-3" />
                 Full Disk Access
               </span>
             )}
             {remoteDesktopMissing && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-red-400/40 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
+              <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/15 px-2.5 py-0.5 text-xs font-medium text-destructive">
                 <XCircle className="h-3 w-3" />
                 Remote Desktop
               </span>

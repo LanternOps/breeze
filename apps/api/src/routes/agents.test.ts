@@ -126,6 +126,13 @@ vi.mock('../db/schema', () => ({
   softwarePolicies: {},
   sensitiveDataPolicies: {},
   peripheralPolicies: {},
+  // networkBaseline.ts reads discoveredAssetTypeEnum.enumValues at module load;
+  // an import reachable from this suite pulls it in, so the partial schema mock
+  // must expose the enum or the whole file fails to load.
+  discoveredAssetTypeEnum: { enumValues: [
+    'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
+    'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown',
+  ] },
 }));
 
 vi.mock('../services/enrollmentKeySecurity', () => ({

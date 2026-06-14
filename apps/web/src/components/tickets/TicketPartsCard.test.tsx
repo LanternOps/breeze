@@ -40,10 +40,37 @@ describe('TicketPartsCard', () => {
     });
   });
 
-  it('deletes a part via /tickets/parts/:id', async () => {
+  it('requires confirmation before deleting — first Delete click does not call the API', async () => {
     render(<TicketPartsCard ticketId="tk-1" />);
     fireEvent.click(await screen.findByTestId('ticket-part-delete-p-1'));
+    // Confirm affordance appears; no DELETE request yet
+    expect(await screen.findByTestId('ticket-part-delete-confirm-p-1')).toBeTruthy();
+    expect(
+      fetchWithAuth.mock.calls.some(
+        (args) => args[0] === '/tickets/parts/p-1' && (args[1] as RequestInit)?.method === 'DELETE',
+      ),
+    ).toBe(false);
+  });
+
+  it('deletes a part via /tickets/parts/:id after confirming', async () => {
+    render(<TicketPartsCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-part-delete-p-1'));
+    fireEvent.click(await screen.findByTestId('ticket-part-delete-confirm-yes-p-1'));
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/tickets/parts/p-1', expect.objectContaining({ method: 'DELETE' })));
+  });
+
+  it('cancel dismisses the confirm without deleting', async () => {
+    render(<TicketPartsCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-part-delete-p-1'));
+    fireEvent.click(await screen.findByTestId('ticket-part-delete-confirm-cancel-p-1'));
+    await waitFor(() => expect(screen.queryByTestId('ticket-part-delete-confirm-p-1')).toBeNull());
+    expect(
+      fetchWithAuth.mock.calls.some(
+        (args) => args[0] === '/tickets/parts/p-1' && (args[1] as RequestInit)?.method === 'DELETE',
+      ),
+    ).toBe(false);
+    // Delete button is back
+    expect(screen.getByTestId('ticket-part-delete-p-1')).toBeTruthy();
   });
 
   it('edits a part — preserves costBasis as number, omits sparse fields', async () => {

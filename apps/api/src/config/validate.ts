@@ -484,6 +484,13 @@ const envSchema = z
     PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
     IP_ALLOWLIST_ENFORCEMENT_MODE: z.enum(['enforce', 'off']).default('enforce'),
 
+    // -- Email-to-ticket ingest (Phase 4) ------------------------------------
+    // Both optional. If MAILGUN_INBOUND_SIGNING_KEY is unset, `verify()` returns
+    // false and the webhook responds 401 (permanent — the provider does NOT retry).
+    // TICKETS_INBOUND_DOMAIN gates the slug-address resolver.
+    MAILGUN_INBOUND_SIGNING_KEY: z.string().optional(),
+    TICKETS_INBOUND_DOMAIN: z.string().optional(),
+
     // -- Alternative LLM backend (openai-compatible, e.g. vLLM) ---------------
     // Off by default. Chat-only PoC; tool-calling is not supported on this path.
     MCP_LLM_PROVIDER: z.enum(['anthropic', 'openai-compatible']).default('anthropic'),
@@ -1224,6 +1231,8 @@ export function validateConfig(): AppConfig {
     MCP_LLM_MODEL: env.MCP_LLM_MODEL,
     MCP_LLM_PRICE_INPUT_PER_M_USD: env.MCP_LLM_PRICE_INPUT_PER_M_USD,
     MCP_LLM_PRICE_OUTPUT_PER_M_USD: env.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
+    MAILGUN_INBOUND_SIGNING_KEY: env.MAILGUN_INBOUND_SIGNING_KEY,
+    TICKETS_INBOUND_DOMAIN: env.TICKETS_INBOUND_DOMAIN,
   });
 
   if (!result.success) {

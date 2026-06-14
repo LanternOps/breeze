@@ -71,7 +71,8 @@ type Result struct {
 	// Reason is a short stable code suitable for switch statements on
 	// the server side. One of: "ok", "no_consent_window", "desktop_open_failed",
 	// "set_thread_desktop_failed", "send_input_failed", "consent_did_not_close",
-	// "unsupported_platform".
+	// "unsupported_platform". Dismiss returns from this same code set (it shares
+	// Trigger's desktop-attach / input / close-verification failure reasons).
 	Reason string
 
 	// DetailMessage is a free-form human-readable string for logs. Never
@@ -88,6 +89,14 @@ type Actuator interface {
 	// goroutine; the impl locks an OS thread internally before touching
 	// the secure desktop.
 	Trigger(ctx context.Context, req Request) Result
+
+	// Dismiss cancels the live consent.exe prompt by sending Escape on the
+	// input desktop (deny path). Returns Reason "ok" on a confirmed close,
+	// "no_consent_window" if none was found, or one of Trigger's failure
+	// reasons for desktop-attach / input / close-verification failures
+	// ("desktop_open_failed", "set_thread_desktop_failed", "send_input_failed",
+	// "consent_did_not_close", "unsupported_platform").
+	Dismiss(ctx context.Context) Result
 }
 
 // New returns the platform-default Actuator. On non-Windows this returns

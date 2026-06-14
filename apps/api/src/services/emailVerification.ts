@@ -1,8 +1,9 @@
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import { emailVerificationTokens, partners, users } from '../db/schema';
+import { shouldActivatePendingPartner, activatePartnerRow } from './partnerActivation';
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -128,39 +129,29 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
         .where(eq(partners.id, row.partnerId))
         .limit(1);
 
+      // Pay-then-verify ordering (#718): email is being verified now, so
+      // evaluate the shared activation predicate as if email_verified_at were
+      // already set (it is, in this same transaction). The predicate keeps the
+      // gate identical to partnerGuard's verify-then-pay self-heal — both
+      // require status=pending AND a confirmed payment attachment, never time.
       const shouldAutoActivate =
         !!partnerBefore &&
-        partnerBefore.status === 'pending' &&
-        !!partnerBefore.paymentMethodAttachedAt;
+        shouldActivatePendingPartner({
+          status: partnerBefore.status,
+          emailVerifiedAt: now,
+          paymentMethodAttachedAt: partnerBefore.paymentMethodAttachedAt,
+        });
+
+      // Always stamp email_verified_at. When both preconditions are met,
+      // activatePartnerRow additionally flips status and clears the inactive
+      // banner (shared with partnerGuard so the two paths can't drift).
+      await tx
+        .update(partners)
+        .set({ emailVerifiedAt: now, updatedAt: now })
+        .where(eq(partners.id, row.partnerId));
 
       if (shouldAutoActivate) {
-        // Auto-activate AND clear the "Awaiting email verification" banner
-        // settings keys that breeze-billing wrote when payment landed
-        // before verification. Mirrors the JSONB-null pattern in
-        // breeze-billing/src/services/partnerSync.ts:activatePartner.
-        await tx
-          .update(partners)
-          .set({
-            emailVerifiedAt: now,
-            status: 'active' as const,
-            settings: sql`jsonb_set(
-              jsonb_set(
-                jsonb_set(
-                  COALESCE(${partners.settings}, '{}'::jsonb),
-                  '{statusMessage}', 'null'::jsonb
-                ),
-                '{statusActionUrl}', 'null'::jsonb
-              ),
-              '{statusActionLabel}', 'null'::jsonb
-            )`,
-            updatedAt: now,
-          })
-          .where(eq(partners.id, row.partnerId));
-      } else {
-        await tx
-          .update(partners)
-          .set({ emailVerifiedAt: now, updatedAt: now })
-          .where(eq(partners.id, row.partnerId));
+        await activatePartnerRow(tx, row.partnerId, now);
       }
 
       return {

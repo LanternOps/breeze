@@ -53,6 +53,10 @@ select {
     --success-foreground: 0 0% 100%;
     --warning: 36 88% 50%;
     --warning-foreground: 28 60% 16%;
+    /* Info — a clear sky-blue, distinct from the slate-blue primary so an
+       "info"/"updating" state never reads as a primary action. */
+    --info: 205 85% 38%;
+    --info-foreground: 0 0% 100%;
 
     /* Warm borders and inputs */
     --border: 220 16% 90%;
@@ -89,6 +93,8 @@ select {
     --success-foreground: 152 50% 8%;
     --warning: 40 90% 52%;
     --warning-foreground: 28 60% 10%;
+    --info: 205 80% 62%;
+    --info-foreground: 210 60% 10%;
 
     /* Warm dark borders */
     --border: 224 18% 18%;

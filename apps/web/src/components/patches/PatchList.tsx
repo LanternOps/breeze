@@ -3,6 +3,9 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
   CheckCircle,
   XCircle,
   Clock,
@@ -39,7 +42,8 @@ type PatchListProps = {
   onView?: (patch: Patch) => void;
   onBulkApprove?: (patchIds: string[]) => Promise<void>;
   onBulkDecline?: (patchIds: string[]) => Promise<void>;
-  pageSize?: number;
+  /** Initial rows-per-page; user can change it via the page-size selector. */
+  initialPageSize?: number;
   loading?: boolean;
   error?: string;
   onRetry?: () => void;
@@ -65,6 +69,58 @@ function formatDate(dateString: string): string {
   return date.toLocaleDateString();
 }
 
+type SortKey = 'title' | 'severity' | 'source' | 'os' | 'releaseDate' | 'approvalStatus';
+type SortDir = 'asc' | 'desc';
+
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
+const DEFAULT_PAGE_SIZE = 25;
+
+// Semantic ordering for severity / approval so a sort reflects priority rather
+// than raw alphabetical order of the enum value.
+//
+// WARNING (sort divergence): this client-side severity sort uses SEMANTIC
+// priority (critical=0 … low=3), whereas the API sorts severity ALPHABETICALLY
+// (asc(patches.severity) in routes/patches/list.ts). These currently never
+// disagree because the web does 100% client-side sort/paginate over a fixed
+// `limit=200` fetch and never sends sortBy/sortDir. Whoever later pushes
+// sorting down to the server (via fetchPatches) MUST reconcile the two or
+// severity ordering will silently change. Note also that `os` and
+// `approvalStatus` are SortKeys here with no matching column in the API's
+// PATCH_SORT_COLUMNS — they can't be pushed down without server-side support.
+const severityRank: Record<PatchSeverity, number> = {
+  critical: 0,
+  important: 1,
+  moderate: 2,
+  low: 3
+};
+
+const approvalRank: Record<PatchApprovalStatus, number> = {
+  pending: 0,
+  deferred: 1,
+  approved: 2,
+  declined: 3
+};
+
+function compareBySort(a: Patch, b: Patch, key: SortKey): number {
+  switch (key) {
+    case 'severity':
+      return severityRank[a.severity] - severityRank[b.severity];
+    case 'approvalStatus':
+      return approvalRank[a.approvalStatus] - approvalRank[b.approvalStatus];
+    case 'releaseDate': {
+      const at = new Date(a.releaseDate).getTime();
+      const bt = new Date(b.releaseDate).getTime();
+      const aValid = Number.isNaN(at) ? -Infinity : at;
+      const bValid = Number.isNaN(bt) ? -Infinity : bt;
+      return aValid - bValid;
+    }
+    default:
+      return String(a[key] ?? '').localeCompare(String(b[key] ?? ''), undefined, {
+        sensitivity: 'base'
+      });
+  }
+}
+
 export default function PatchList({
   patches,
   onReview,
@@ -72,7 +128,7 @@ export default function PatchList({
   onView,
   onBulkApprove,
   onBulkDecline,
-  pageSize = 8,
+  initialPageSize = DEFAULT_PAGE_SIZE,
   loading,
   error,
   onRetry
@@ -84,7 +140,25 @@ export default function PatchList({
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(initialPageSize);
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [bulkLoading, setBulkLoading] = useState(false);
+
+  // Clicking a header toggles direction when it's already the active sort,
+  // otherwise selects that column ascending. Resetting to page 1 keeps the
+  // user from landing on an out-of-range page after a re-sort.
+  const handleSort = useCallback((key: SortKey) => {
+    setSortKey(prevKey => {
+      if (prevKey === key) {
+        setSortDir(prevDir => (prevDir === 'asc' ? 'desc' : 'asc'));
+        return key;
+      }
+      setSortDir('asc');
+      return key;
+    });
+    setCurrentPage(1);
+  }, []);
 
   const availableSources = useMemo(() => {
     const sources = new Set(patches.map(patch => patch.source));
@@ -114,9 +188,16 @@ export default function PatchList({
     });
   }, [patches, query, severityFilter, statusFilter, osFilter, sourceFilter]);
 
-  const totalPages = Math.ceil(filteredPatches.length / pageSize);
+  const sortedPatches = useMemo(() => {
+    if (!sortKey) return filteredPatches;
+    const dirFactor = sortDir === 'asc' ? 1 : -1;
+    // Copy before sort so we don't mutate the memoized filtered array.
+    return [...filteredPatches].sort((a, b) => compareBySort(a, b, sortKey) * dirFactor);
+  }, [filteredPatches, sortKey, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedPatches.length / pageSize));
   const startIndex = (currentPage - 1) * pageSize;
-  const paginatedPatches = filteredPatches.slice(startIndex, startIndex + pageSize);
+  const paginatedPatches = sortedPatches.slice(startIndex, startIndex + pageSize);
 
   const paginatedIds = useMemo(() => paginatedPatches.map(p => p.id), [paginatedPatches]);
   const { selectedIds, allPageSelected, somePageSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(paginatedIds);
@@ -373,12 +454,38 @@ export default function PatchList({
                     )}
                   </button>
                 </th>
-                <th className="px-4 py-3">Patch</th>
-                <th className="px-4 py-3">Severity</th>
-                <th className="px-4 py-3">Source</th>
-                <th className="px-4 py-3">OS</th>
-                <th className="px-4 py-3">Release</th>
-                <th className="px-4 py-3">Approval</th>
+                {([
+                  ['title', 'Patch'],
+                  ['severity', 'Severity'],
+                  ['source', 'Source'],
+                  ['os', 'OS'],
+                  ['releaseDate', 'Release'],
+                  ['approvalStatus', 'Approval']
+                ] as Array<[SortKey, string]>).map(([key, label]) => {
+                  const active = sortKey === key;
+                  const SortIcon = active
+                    ? sortDir === 'asc'
+                      ? ChevronUp
+                      : ChevronDown
+                    : ChevronsUpDown;
+                  return (
+                    <th key={key} className="px-4 py-3" aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                      <button
+                        type="button"
+                        onClick={() => handleSort(key)}
+                        data-testid={`patch-sort-${key}`}
+                        className={cn(
+                          'group flex items-center gap-1 uppercase tracking-wide hover:text-foreground',
+                          active ? 'text-foreground' : 'text-muted-foreground'
+                        )}
+                        title={`Sort by ${label}`}
+                      >
+                        {label}
+                        <SortIcon className={cn('h-3.5 w-3.5', active ? 'opacity-100' : 'opacity-40 group-hover:opacity-70')} />
+                      </button>
+                    </th>
+                  );
+                })}
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -502,29 +609,54 @@ export default function PatchList({
         </div>
       )}
 
-      {totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
-          <span>
-            Page {currentPage} of {totalPages}
-          </span>
+      {!loading && !(error && patches.length === 0) && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-              disabled={currentPage === 1}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
+            <label htmlFor="patch-page-size" className="whitespace-nowrap">
+              Rows per page
+            </label>
+            <select
+              id="patch-page-size"
+              data-testid="patch-page-size"
+              value={pageSize}
+              onChange={event => {
+                setPageSize(Number(event.target.value));
+                setCurrentPage(1);
+              }}
+              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-              disabled={currentPage === totalPages}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
+              {PAGE_SIZE_OPTIONS.map(size => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
           </div>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-3">
+              <span>
+                Page {currentPage} of {totalPages}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                  disabled={currentPage === 1}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                  disabled={currentPage === totalPages}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
