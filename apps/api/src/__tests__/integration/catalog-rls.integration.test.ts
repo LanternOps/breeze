@@ -6,23 +6,35 @@
  * enforced. If `.env.test` is missing the symlink that pins this to the
  * breeze_app role, these tests would pass vacuously on a BYPASSRLS admin
  * connection (see memory: worktree_env_test_rls_vacuous) — the forged-insert
- * assertion (case c) is the guard that catches that.
+ * assertions (cases c, d) are the guard that catches that.
  *
- * Fixture topology (seeded under system scope, which bypasses RLS):
+ * Fixture topology (seeded fresh per test under system scope, which bypasses
+ * RLS — see "why no memoization" below):
  *   partnerA → orgA
  *   partnerB → orgB
- *   itemA      = catalog_items row under partnerA
- *   pricingA   = catalog_item_org_pricing override for itemA under orgA
+ *   itemA       = catalog_items row under partnerA
+ *   componentA  = a second catalog_items row under partnerA (bundle component)
+ *   pricingA    = catalog_item_org_pricing override for itemA under orgA
  *
- * Required coverage (3 cases):
+ * Required coverage (4 cases):
  *   (a) partner B context reading partner A's catalog_items row → 0 rows
  *   (b) org B context reading org A's catalog_item_org_pricing row → 0 rows
  *   (c) a forged cross-partner catalog_items INSERT (partner B context,
- *       partnerId=partnerA) is rejected with an RLS violation.
+ *       partnerId=partnerA) is rejected with an RLS violation (42501).
+ *   (d) a forged cross-partner catalog_bundle_components INSERT (partner B
+ *       context, partnerId=partnerA, referencing partner A's items) is rejected
+ *       with an RLS violation (42501). This is the only behavioral guard on the
+ *       flat denormalized-partner_id policy added in this same commit — the
+ *       rls-coverage contract test only proves the policy exists, not that it
+ *       isolates at runtime (the #1016 / custom_field_definitions blindspot).
  *
- * Teardown: delete only the partners this file seeds; FK cascades remove the
- * catalog rows (catalog_item_org_pricing → catalog_items ON DELETE CASCADE;
- * catalog_items → partners via FK, deleted explicitly in order).
+ * Why NO memoization: setup.ts runs cleanupDatabase() in a beforeEach that
+ * TRUNCATE ... CASCADEs partners/organizations before every test, which
+ * cascades through the catalog FKs and wipes every catalog row. A module-level
+ * fixture cache would therefore hand cases (b)/(c)/(d) rows that no longer
+ * exist, making the RLS assertions vacuous (a 0-row read passes even if RLS is
+ * broken; a forged insert can surface an incidental FK 23503 instead of 42501).
+ * Each it() re-seeds fresh — matching every sibling *-rls.integration.test.ts.
  */
 import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -36,6 +48,7 @@ import {
 import {
   catalogItems,
   catalogItemOrgPricing,
+  catalogBundleComponents,
   organizations,
   partners,
 } from '../../db/schema';
@@ -43,6 +56,9 @@ import { createOrganization, createPartner } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
+// Partner ids seeded by this file, accumulated for the best-effort afterAll
+// safety net (see teardown note). setup.ts's beforeEach already wipes core
+// tenant tables, so afterAll is purely defensive.
 const seededPartnerIds: string[] = [];
 
 interface Fixture {
@@ -51,17 +67,18 @@ interface Fixture {
   partnerB: { id: string };
   orgB: { id: string };
   itemA: { id: string };
+  componentA: { id: string };
   pricingA: { id: string };
   partnerBContext: DbAccessContext;
   orgBContext: DbAccessContext;
 }
 
-let fixture: Fixture | null = null;
-
+// Re-seeds fresh on every call. Intentionally NOT memoized: setup.ts's
+// beforeEach cleanupDatabase() TRUNCATEs partners/organizations CASCADE before
+// each test, so any cached rows would already be deleted by the time an
+// assertion runs (proven by a vacuity probe during review).
 async function seedFixture(): Promise<Fixture> {
-  if (fixture) return fixture;
-
-  fixture = await withSystemDbAccessContext(async () => {
+  return withSystemDbAccessContext(async () => {
     const partnerA = await createPartner();
     const orgA = await createOrganization({ partnerId: partnerA.id });
     const partnerB = await createPartner();
@@ -80,6 +97,21 @@ async function seedFixture(): Promise<Fixture> {
       })
       .returning({ id: catalogItems.id });
     if (!itemA) throw new Error('failed to seed catalog item A');
+
+    // A second catalog_items row under partner A, used as a bundle component in
+    // case (d). Both items belong to partner A so the forged bundle-component
+    // insert's FK references resolve — isolating the RLS WITH CHECK as the only
+    // reason the insert can fail (a 42501, never an incidental 23503 FK error).
+    const [componentA] = await db
+      .insert(catalogItems)
+      .values({
+        partnerId: partnerA.id,
+        itemType: 'service',
+        name: 'A-only component',
+        unitPrice: '2.00',
+      })
+      .returning({ id: catalogItems.id });
+    if (!componentA) throw new Error('failed to seed catalog component A');
 
     // Per-customer sell-price override for itemA under org A (shape-1 org-axis).
     const [pricingA] = await db
@@ -116,15 +148,19 @@ async function seedFixture(): Promise<Fixture> {
       partnerB: { id: partnerB.id },
       orgB: { id: orgB.id },
       itemA: { id: itemA.id },
+      componentA: { id: componentA.id },
       pricingA: { id: pricingA.id },
       partnerBContext,
       orgBContext,
     };
   });
-
-  return fixture;
 }
 
+// Best-effort safety net only. setup.ts's beforeEach already TRUNCATEs
+// partners/organizations CASCADE before every test (which cascades through the
+// catalog FKs), so by the time this runs the catalog rows are already gone and
+// these DELETEs typically match zero rows. Kept defensively in case the suite's
+// cleanup contract ever changes; it does no harm and never fails the suite.
 afterAll(async () => {
   if (seededPartnerIds.length === 0) return;
   await withSystemDbAccessContext(async () => {
@@ -132,9 +168,10 @@ afterAll(async () => {
       seededPartnerIds.map((id) => sql`${id}`),
       sql`, `
     );
-    // catalog_item_org_pricing cascades from catalog_items (ON DELETE CASCADE)
-    // and catalog_items cascades nothing into partners — delete items by
-    // partner first, then orgs, then partners.
+    // Delete order respects FKs: bundle components → items → orgs → partners.
+    await db
+      .delete(catalogBundleComponents)
+      .where(sql`${catalogBundleComponents.partnerId} IN (${partnerList})`);
     await db
       .delete(catalogItems)
       .where(sql`${catalogItems.partnerId} IN (${partnerList})`);
@@ -172,7 +209,7 @@ describe('catalog RLS isolation (breeze_app)', () => {
     expect(rowsB).toHaveLength(0);
   });
 
-  // (c) A forged cross-partner insert is rejected by RLS.
+  // (c) A forged cross-partner catalog_items insert is rejected by RLS.
   // Drizzle wraps the driver error: the top-level message becomes
   // "Failed query: insert into ...", and the original Postgres error
   // ("new row violates row-level security policy for table
@@ -180,7 +217,7 @@ describe('catalog RLS isolation (breeze_app)', () => {
   // the wrapper's `cause`. We assert on `cause.code` to match the verified
   // sibling pattern (time-entries-rls.integration.test.ts) rather than the
   // wrapper message, which does not contain the RLS phrase.
-  runDb('a forged cross-partner insert is rejected by RLS', async () => {
+  runDb('a forged cross-partner catalog_items insert is rejected by RLS', async () => {
     const { partnerA, partnerBContext } = await seedFixture();
 
     await expect(
@@ -190,6 +227,27 @@ describe('catalog RLS isolation (breeze_app)', () => {
           itemType: 'service',
           name: 'forged',
           unitPrice: '1.00',
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (d) A forged cross-partner catalog_bundle_components insert is rejected by
+  // RLS. This exercises the flat denormalized-partner_id WITH CHECK policy
+  // (deliberately not a nested EXISTS, to avoid the #1016 bound-param bug). The
+  // referenced bundle/component items both belong to partner A, so their FKs
+  // resolve — the ONLY reason the insert fails is the RLS partner check, which
+  // must surface as 42501 (insufficient_privilege), not a 23503 FK violation.
+  runDb('a forged cross-partner catalog_bundle_components insert is rejected by RLS', async () => {
+    const { partnerA, itemA, componentA, partnerBContext } = await seedFixture();
+
+    await expect(
+      withDbAccessContext(partnerBContext, () =>
+        db.insert(catalogBundleComponents).values({
+          partnerId: partnerA.id, // wrong partner — RLS must reject
+          bundleItemId: itemA.id,
+          componentItemId: componentA.id,
+          quantity: '1',
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
