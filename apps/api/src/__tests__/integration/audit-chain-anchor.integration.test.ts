@@ -55,7 +55,8 @@ async function readHead(orgId: string): Promise<HeadRow> {
     SELECT head_chain_seq, head_chain_checksum, entry_count
     FROM audit_chain_read_head(${orgId}::uuid)
   `)) as unknown as HeadRow[];
-  return rows[0]!;
+  // entry_count is a pg bigint → returned as a string; coerce so numeric assertions hold.
+  return { ...rows[0]!, entry_count: Number(rows[0]!.entry_count) };
 }
 
 async function writeAnchor(orgId: string): Promise<AnchorRow> {
@@ -64,7 +65,7 @@ async function writeAnchor(orgId: string): Promise<AnchorRow> {
       SELECT anchor_seq, head_chain_seq, entry_count, signed
       FROM audit_chain_anchor_head(${orgId}::uuid)
     `)) as unknown as AnchorRow[];
-    return rows[0]!;
+    return { ...rows[0]!, entry_count: Number(rows[0]!.entry_count) };
   });
 }
 
@@ -277,7 +278,7 @@ describe('audit_chain_anchors external anchor', () => {
     expect(
       (updateErr as { cause?: { message?: string } })?.cause?.message ??
         String(updateErr),
-    ).toMatch(/append-only/i);
+    ).toMatch(/append-only|permission denied/i); // both layers (grant REVOKE + trigger) enforce immutability for breeze_app
 
     // DELETE must also be rejected (no retention GUC set).
     let deleteErr: unknown;
@@ -294,7 +295,7 @@ describe('audit_chain_anchors external anchor', () => {
     expect(
       (deleteErr as { cause?: { message?: string } })?.cause?.message ??
         String(deleteErr),
-    ).toMatch(/append-only/i);
+    ).toMatch(/append-only|permission denied/i); // both layers (grant REVOKE + trigger) enforce immutability for breeze_app
 
     // The anchor row is still present and unchanged.
     const remaining = (await getTestDb().execute(sql`
