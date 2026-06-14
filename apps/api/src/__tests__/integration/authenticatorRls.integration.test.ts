@@ -131,6 +131,10 @@ afterAll(async () => {
   await adminDb.execute(
     sql`DELETE FROM authenticator_devices WHERE user_id IN (SELECT id FROM users WHERE partner_id IN (${partnerList}))`
   );
+  // users carry the composite FK users_org_partner_fk (org_id, partner_id) ->
+  // organizations(id, partner_id); they MUST be deleted before their orgs or the
+  // org delete below is blocked. Scoped to this test's own partners.
+  await adminDb.execute(sql`DELETE FROM users WHERE partner_id IN (${partnerList})`);
   if (seededOrgIds.length > 0) {
     const orgList = sql.join(seededOrgIds.map((id) => sql`${id}`), sql`, `);
     await adminDb.delete(organizations).where(sql`${organizations.id} IN (${orgList})`);
