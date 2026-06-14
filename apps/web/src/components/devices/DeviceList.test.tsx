@@ -319,6 +319,27 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     }
   });
 
+  it('reflects sort state via aria-sort on the active header (a11y parity with Patches)', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-0000000000a1', hostname: 'host-b' },
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-0000000000a2', hostname: 'host-a' },
+    ];
+    render(<DeviceList devices={devices} />);
+
+    const hostHeader = screen.getByTitle('Sort by hostname');
+    const osHeader = screen.getByTitle('Sort by operating system');
+    // Unsorted: every header advertises aria-sort="none".
+    expect(hostHeader.getAttribute('aria-sort')).toBe('none');
+    expect(osHeader.getAttribute('aria-sort')).toBe('none');
+
+    fireEvent.click(hostHeader);
+    expect(hostHeader.getAttribute('aria-sort')).toBe('ascending');
+    expect(osHeader.getAttribute('aria-sort')).toBe('none');
+
+    fireEvent.click(hostHeader);
+    expect(hostHeader.getAttribute('aria-sort')).toBe('descending');
+  });
+
   // Seeds hostname first (keeps the rowOrder helper's td:nth-child(2) valid)
   // plus the named extra column, so default-hidden columns can be sorted.
   const seedColumns = (...extra: string[]) =>

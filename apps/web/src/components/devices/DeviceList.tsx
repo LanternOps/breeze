@@ -498,6 +498,7 @@ export default function DeviceList({
       key={id}
       className={`px-3 py-3 cursor-pointer select-none hover:text-foreground${alignRight ? ' text-right' : ''}`}
       title={hint}
+      aria-sort={sortField === id ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
       onClick={() => handleSort(id)}
     >
       <span className="inline-flex items-center gap-1">
