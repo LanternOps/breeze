@@ -104,6 +104,29 @@ describe('handleTicketEvent', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  it('inbound public comment does NOT email the requester (echo-guard)', async () => {
+    // An inbound comment originates FROM the requester's own email — emailing them
+    // back would create a mail loop. The guard is: isPublic && !inbound.
+    selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
+    await handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { commentId: 'c-1', isPublic: true, inbound: true }
+    });
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('non-inbound public comment still emails the requester', async () => {
+    // Sanity-check that the guard only fires when inbound:true.
+    selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
+    await handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { commentId: 'c-2', isPublic: true, inbound: false }
+    });
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'enduser@acme.example'
+    }));
+  });
+
   it('works without an email service configured (in-app only)', async () => {
     getEmailServiceMock.mockReturnValue(null);
     selectMock

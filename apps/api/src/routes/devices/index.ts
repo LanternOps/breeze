@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { coreRoutes } from './core';
 import { metricsRoutes } from './metrics';
+import { processSamplesRoutes } from './processSamples';
 import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
 import { hardwareRoutes } from './hardware';
@@ -46,6 +47,7 @@ deviceRoutes.route('/', coreRoutes);
 
 // Mount sub-resource routes
 deviceRoutes.route('/', metricsRoutes);
+deviceRoutes.route('/', processSamplesRoutes);
 // Mount softwareActionsRoutes BEFORE softwareRoutes so the POST /:id/software/update
 // + /:id/software/uninstall handlers are registered ahead of any future
 // software.ts handlers that might shadow them. Different verbs today (POST vs

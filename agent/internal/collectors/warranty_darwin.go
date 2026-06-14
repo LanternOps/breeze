@@ -12,12 +12,27 @@ import (
 	"time"
 )
 
+// Coverage kind values describing whether coverage is an active recurring
+// subscription (AppleCare monthly/annual) or fixed-term coverage with a real
+// end date. Derived from the NDO coverageExpirationLabel verb ("Renews ..." vs
+// "Expires ..."). Empty means unknown / could not be determined.
+const (
+	coverageKindSubscription = "subscription" // "Renews <date>" — recurring, no fixed end
+	coverageKindFixed        = "fixed"         // "Expires <date>" — true warranty end date
+)
+
 // AppleWarrantyInfo contains warranty data extracted from local macOS plists.
 type AppleWarrantyInfo struct {
 	CoverageEndDate   string `json:"coverageEndDate,omitempty"`
 	CoverageStartDate string `json:"coverageStartDate,omitempty"`
 	DeviceName        string `json:"deviceName,omitempty"`
 	CoverageType      string `json:"coverageType,omitempty"`
+	// CoverageKind distinguishes an active AppleCare subscription ("subscription",
+	// from a "Renews <date>" label) from fixed-term coverage ("fixed", from an
+	// "Expires <date>" label). Empty when the verb is absent/unrecognized.
+	// For a subscription, CoverageEndDate is the next renewal/billing date, NOT a
+	// true warranty end — consumers should suppress expiry alerts in that case.
+	CoverageKind string `json:"coverageKind,omitempty"`
 	// Raw contains all plist fields for debugging / future use.
 	Raw map[string]any `json:"raw,omitempty"`
 }
@@ -158,8 +173,9 @@ func parseCoverageDetailsJSON(path string) (*AppleWarrantyInfo, error) {
 		DeviceName:   truncateCollectorString(cd.SerialNumber),
 	}
 
-	// Parse end date from Unix timestamp or human-readable label
-	info.CoverageEndDate = parseCoverageExpiration(
+	// Parse end date from Unix timestamp or human-readable label, and derive the
+	// coverage kind (subscription vs fixed-term) from the label verb.
+	info.CoverageEndDate, info.CoverageKind = parseCoverageExpiration(
 		cd.SettingsCoverageSection.Offer.Expiration,
 		cd.SettingsCoverageSection.CoverageExpirationLabel,
 	)
@@ -175,30 +191,54 @@ func parseCoverageDetailsJSON(path string) (*AppleWarrantyInfo, error) {
 
 // parseCoverageExpiration extracts a YYYY-MM-DD date from either a Unix timestamp
 // string or a human-readable label like "Renews April 17, 2026" / "Expires October 20, 2026".
-func parseCoverageExpiration(timestampStr, label string) string {
+// It also returns the coverage kind derived from the label verb: "subscription"
+// for a "Renews ..." label (recurring AppleCare — date is the next renewal, not a
+// true warranty end) or "fixed" for an "Expires ..." label (real end date). The
+// kind is "" when no recognized verb is present (e.g. timestamp-only with no label).
+func parseCoverageExpiration(timestampStr, label string) (date string, kind string) {
+	kind = coverageKindFromLabel(label)
+
 	// Try Unix timestamp first (non-zero)
 	if timestampStr != "" && timestampStr != "0" {
 		var ts int64
 		if _, err := fmt.Sscanf(timestampStr, "%d", &ts); err == nil && ts > 0 {
-			return time.Unix(ts, 0).UTC().Format("2006-01-02")
+			return time.Unix(ts, 0).UTC().Format("2006-01-02"), kind
 		}
 	}
 
 	// Parse human-readable label: strip "Renews " / "Expires " prefix
 	if label != "" {
-		dateStr := label
-		for _, prefix := range []string{"Renews ", "Expires "} {
+		dateStr := strings.TrimSpace(label)
+		for prefix := range coverageLabelVerbs {
 			if strings.HasPrefix(dateStr, prefix) {
-				dateStr = strings.TrimPrefix(dateStr, prefix)
+				dateStr = strings.TrimSpace(strings.TrimPrefix(dateStr, prefix))
 				break
 			}
 		}
 		// Parse "January 2, 2006" format
 		if t, err := time.Parse("January 2, 2006", dateStr); err == nil {
-			return t.Format("2006-01-02")
+			return t.Format("2006-01-02"), kind
 		}
 	}
 
+	return "", kind
+}
+
+// coverageLabelVerbs maps an NDO coverageExpirationLabel prefix to a coverage kind.
+var coverageLabelVerbs = map[string]string{
+	"Renews ":  coverageKindSubscription,
+	"Expires ": coverageKindFixed,
+}
+
+// coverageKindFromLabel returns the coverage kind implied by the label verb, or
+// "" if the label has no recognized "Renews "/"Expires " prefix.
+func coverageKindFromLabel(label string) string {
+	label = strings.TrimSpace(label)
+	for prefix, kind := range coverageLabelVerbs {
+		if strings.HasPrefix(label, prefix) {
+			return kind
+		}
+	}
 	return ""
 }
 
@@ -298,6 +338,17 @@ func parseAppleWarrantyPlist(path string) (*AppleWarrantyInfo, error) {
 		case lower == "coveragetype" || lower == "coverage_type" || lower == "warrantytype":
 			if s, ok := val.(string); ok {
 				info.CoverageType = truncateCollectorString(s)
+			}
+		case lower == "coverageexpirationlabel" || lower == "coverage_expiration_label" || lower == "expirationlabel":
+			// Derive the coverage kind from a "Renews ..."/"Expires ..." verb if
+			// the plist happens to carry the NDO expiration label. Most legacy
+			// plists do NOT — in that case CoverageKind stays "" (the heartbeat
+			// omits it and the API treats absence as fixed-term, which is the
+			// safe default since plist fallbacks lack subscription metadata).
+			if s, ok := val.(string); ok {
+				if k := coverageKindFromLabel(s); k != "" {
+					info.CoverageKind = k
+				}
 			}
 		}
 	}

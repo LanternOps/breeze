@@ -36,7 +36,7 @@ describe('PatchesPage', () => {
         return makeJsonResponse({ data: [] });
       }
 
-      if (url === '/patches') {
+      if (url === '/patches?limit=200') {
         return makeJsonResponse({
           data: [
             {
@@ -105,7 +105,7 @@ describe('PatchesPage', () => {
         return makeJsonResponse({ data: [] });
       }
 
-      if (url === '/patches') {
+      if (url === '/patches?limit=200') {
         return makeJsonResponse({ data: [] });
       }
 
@@ -178,7 +178,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -220,7 +220,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({ error: 'internal server error' }, false, 500);
@@ -254,7 +254,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -291,7 +291,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -340,7 +340,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -377,7 +377,7 @@ describe('PatchesPage', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
           data: [
@@ -432,7 +432,7 @@ describe('PatchesPage', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
           data: Array.from({ length: 10 }, (_, i) => ({ id: `device-${i + 1}`, hostname: `W${i + 1}` })),
@@ -479,7 +479,7 @@ describe('PatchesPage', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
           data: Array.from({ length: 5 }, (_, i) => ({ id: `device-${i + 1}`, hostname: `W${i + 1}` })),
