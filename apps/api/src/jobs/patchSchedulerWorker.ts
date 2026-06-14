@@ -15,9 +15,11 @@ import {
   devices,
   deviceGroupMemberships,
   organizations,
+  partners,
   sites,
 } from '../db/schema';
 import { and, eq, gte, inArray } from 'drizzle-orm';
+import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 import { enqueuePatchJob } from './patchJobExecutor';
@@ -86,6 +88,18 @@ function parseOrgTimezone(settings: unknown): string | null {
   if (!settings || typeof settings !== 'object') return null;
   const timezone = (settings as Record<string, unknown>).timezone;
   return typeof timezone === 'string' && timezone.length > 0 ? timezone : null;
+}
+
+// Partner tz with the column as source of truth and the legacy
+// `settings.timezone` JSONB key as a non-destructive fallback (issue #1318).
+// canonicalizeTimezone folds a non-canonical stored 'utc' to the 'UTC' sentinel
+// so it is treated as "still at the default" rather than an explicit choice.
+function parsePartnerTimezone(column: string | null | undefined, settings: unknown): string | null {
+  const canonicalColumn = canonicalizeTimezone(column);
+  if (canonicalColumn !== null && canonicalColumn !== 'UTC') return canonicalColumn;
+  const fromSettings = parseOrgTimezone(settings);
+  if (fromSettings) return fromSettings;
+  return canonicalColumn;
 }
 
 function normalizeTimezone(timezone: string | null | undefined): string {
@@ -233,16 +247,42 @@ async function loadDeviceSchedulingContexts(deviceIds: string[]): Promise<Device
       orgId: devices.orgId,
       siteTimezone: sites.timezone,
       orgSettings: organizations.settings,
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
     })
     .from(devices)
     .innerJoin(organizations, eq(devices.orgId, organizations.id))
+    // leftJoin (not inner) on partners: the partners SELECT RLS policy is
+    // breeze_has_partner_access(id), which is FALSE for an org-scoped request,
+    // so an inner join would drop the entire device row when the partner row is
+    // RLS-invisible. This worker runs under system scope (partners visible), but
+    // a left join is the correct, defensive shape: if the partner row is ever
+    // invisible the device still gets a context, with partnerTimezone null so
+    // resolveEffectiveTimezone falls through site -> org -> UTC (#1318).
+    .leftJoin(partners, eq(organizations.partnerId, partners.id))
     .leftJoin(sites, eq(devices.siteId, sites.id))
     .where(inArray(devices.id, deviceIds));
 
   return rows.map((row) => ({
     deviceId: row.deviceId,
     orgId: row.orgId,
-    timezone: normalizeTimezone(row.siteTimezone || parseOrgTimezone(row.orgSettings) || 'UTC'),
+    // explicit (n/a) -> site -> org -> partner -> UTC (issue #1318). The
+    // resolver IANA-validates each candidate, so normalizeTimezone here just
+    // guards the (already-valid) result for the older call shape.
+    //
+    // BEHAVIORAL CHANGE (intended): adding the `partner` branch means an
+    // existing device under a partner that has set a non-UTC tz now has its
+    // patch window evaluated in partner-LOCAL time instead of UTC — so its
+    // scheduled patch occurrence effectively shifts on upgrade. This is the
+    // explicit intent of #1318 (partner tz is the default), not a regression.
+    // Partners left at the 'UTC' default are unaffected.
+    timezone: normalizeTimezone(
+      resolveEffectiveTimezone({
+        siteTz: row.siteTimezone,
+        orgTz: parseOrgTimezone(row.orgSettings),
+        partnerTz: parsePartnerTimezone(row.partnerTimezone, row.partnerSettings),
+      }),
+    ),
   }));
 }
 
@@ -276,9 +316,15 @@ async function hasExistingOccurrenceJob(
   });
 }
 
-async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }> {
+async function scanAndCreateJobs(): Promise<{ created: number; scanned: number; enqueueJobIds: string[] }> {
   const now = new Date();
   let created = 0;
+  // Job ids to enqueue to Redis AFTER the system DB access-context transaction
+  // closes. Enqueuing inside it held the pooled connection idle-in-transaction
+  // across BullMQ/Redis round-trips — a contributor to the #1105 pool-poisoning
+  // pattern (txn around slow non-DB work). DB writes stay in the context; the
+  // Redis enqueue happens outside it (see the worker processor).
+  const enqueueJobIds: string[] = [];
 
   const patchPoliciesWithSchedules = await db
     .select({
@@ -394,7 +440,7 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
           .returning();
 
         if (job) {
-          await enqueuePatchJob(job.id);
+          enqueueJobIds.push(job.id);
           created += 1;
           console.log(
             `[PatchScheduler] Created job ${job.id} for config policy ${row.configPolicyId} (${eligibleDeviceIds.length} devices, ${group.timezone}, ${group.occurrenceKey})`
@@ -409,14 +455,14 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
     }
   }
 
-  return { created, scanned: patchPoliciesWithSchedules.length };
+  return { created, scanned: patchPoliciesWithSchedules.length, enqueueJobIds };
 }
 
 function createSchedulerWorker(): Worker {
   return new Worker(
     QUEUE_NAME,
     async (_job: Job) => {
-      return runWithSystemDbAccess(async () => {
+      const result = await runWithSystemDbAccess(async () => {
         try {
           return await scanAndCreateJobs();
         } catch (error: unknown) {
@@ -425,11 +471,31 @@ function createSchedulerWorker(): Worker {
               _configPolicyTableWarningLogged = true;
               console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
             }
-            return { created: 0, scanned: 0 };
+            return { created: 0, scanned: 0, enqueueJobIds: [] };
           }
           throw error;
         }
       });
+
+      // Enqueue OUTSIDE the system DB access-context transaction (#1105). All
+      // DB writes (incl. the patch_jobs inserts) committed when the context
+      // above returned; doing the Redis enqueue here keeps the pooled
+      // connection from sitting idle-in-transaction across BullMQ round-trips.
+      // A job that fails to enqueue is logged (its row already exists) and is
+      // skipped by the occurrence-idempotency guard on the next scan — same
+      // outcome as the prior in-transaction failure path.
+      for (const jobId of result.enqueueJobIds) {
+        try {
+          await enqueuePatchJob(jobId);
+        } catch (err) {
+          console.error(
+            `[PatchScheduler] Failed to enqueue patch job ${jobId}:`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
+
+      return { created: result.created, scanned: result.scanned };
     },
     {
       connection: getBullMQConnection(),
@@ -499,3 +565,9 @@ export async function shutdownPatchSchedulerWorker(): Promise<void> {
     schedulerQueue = null;
   }
 }
+
+// Exported for unit tests of the partner-tz scheduling-context resolution
+// (#1318). Internal helper, not part of the worker's public surface.
+export const __testOnly = {
+  loadDeviceSchedulingContexts,
+};

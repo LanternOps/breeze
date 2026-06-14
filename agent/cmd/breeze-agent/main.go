@@ -508,6 +508,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		"agentId", cfg.AgentID,
 	)
 
+	// Surface a failed systemd unit auto-heal (reconcileServiceUnitIfNeeded /
+	// the reconcile-unit subcommand) to the fleet now that the log shipper is
+	// up — those failure paths run before the shipper or in a transient unit
+	// whose journal is GC'd, so they'd otherwise be invisible (#1201). No-op
+	// off Linux and when there's nothing recorded.
+	startReconcileFailureReporter()
+
 	// Load mTLS client certificate if configured
 	var tlsCfg *tls.Config
 	if cfg.MtlsCertPEM != "" {

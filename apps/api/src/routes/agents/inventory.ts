@@ -214,6 +214,7 @@ inventoryRoutes.put(
       coverageEndDate: data.coverageEndDate ?? null,
       coverageStartDate: data.coverageStartDate ?? null,
       coverageType: data.coverageType ?? null,
+      coverageKind: data.coverageKind ?? null,
     });
 
     return c.json({ success: true });

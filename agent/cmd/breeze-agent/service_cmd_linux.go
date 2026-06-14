@@ -77,6 +77,7 @@ func reconcileServiceUnitIfNeeded() {
 					"Warning: could not read %s to check for an outdated systemd unit: %v. "+
 						"If the remote terminal/scripts hit privilege errors, run: "+
 						"sudo breeze-agent service install\n", linuxUnitDst, err)
+				recordReconcileFailure(fmt.Sprintf("could not read unit file %s: %v", linuxUnitDst, err))
 			}
 			return
 		}
@@ -88,6 +89,8 @@ func reconcileServiceUnitIfNeeded() {
 				"Warning: breeze-agent systemd unit is outdated (pre-v%d) and systemd-run is "+
 					"unavailable to auto-heal it. The remote terminal/scripts may hit privilege "+
 					"errors (e.g. apt). Fix: sudo breeze-agent service install\n", currentUnitVersion)
+			recordReconcileFailure(fmt.Sprintf(
+				"systemd-run unavailable to auto-heal outdated unit (pre-v%d)", currentUnitVersion))
 			return
 		}
 		// TRANSIENT SERVICE, deliberately NOT --scope: a scope child is forked
@@ -104,6 +107,7 @@ func reconcileServiceUnitIfNeeded() {
 			fmt.Fprintf(os.Stderr,
 				"Warning: failed to auto-heal outdated systemd unit via systemd-run: %s. "+
 					"Fix: sudo breeze-agent service install\n", strings.TrimSpace(string(out)))
+			recordReconcileFailure(fmt.Sprintf("systemd-run launch failed: %s", strings.TrimSpace(string(out))))
 		}
 	})
 }
@@ -419,9 +423,11 @@ var serviceReconcileUnitCmd = &cobra.Command{
 		// so the next startup won't re-attempt the restart — the relaxed sandbox
 		// then applies on the following natural service restart rather than now.
 		if err := os.WriteFile(linuxUnitDst, []byte(linuxUnit), 0644); err != nil {
+			recordReconcileFailure(fmt.Sprintf("reconcile subcommand: write unit: %v", err))
 			return fmt.Errorf("write unit: %w", err)
 		}
 		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+			recordReconcileFailure(fmt.Sprintf("reconcile subcommand: daemon-reload: %s", strings.TrimSpace(string(out))))
 			return fmt.Errorf("daemon-reload: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 		fmt.Printf("Reconciled %s to unit version %d; restarting service.\n", linuxUnitDst, currentUnitVersion)
@@ -429,8 +435,14 @@ var serviceReconcileUnitCmd = &cobra.Command{
 		// the old agent; we run as a systemd-run transient service whose parent
 		// is PID 1 (not the agent), so this child survives to finish the restart.
 		if out, err := exec.Command("systemctl", "restart", linuxServiceName).CombinedOutput(); err != nil {
+			// The unit is v2 on disk but the live process is still sandboxed and
+			// won't re-attempt on its own — this is the silent worst case #1201
+			// exists to surface. The still-running old agent's reporter ships it.
+			recordReconcileFailure(fmt.Sprintf("reconcile subcommand: restart: %s", strings.TrimSpace(string(out))))
 			return fmt.Errorf("restart: %w: %s", err, strings.TrimSpace(string(out)))
 		}
+		// Heal succeeded — drop any stale failure breadcrumb from a prior attempt.
+		clearReconcileStatus()
 		return nil
 	},
 }

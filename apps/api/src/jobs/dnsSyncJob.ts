@@ -444,7 +444,12 @@ async function processSyncAll(): Promise<{ queued: number }> {
   return { queued: dueIntegrations.length };
 }
 
-async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
+// Exported for focused catch-block coverage (#1035 item 2): a unit test mocks
+// the provider to throw a DnsProviderHttpError carrying a distinctive upstream
+// body marker and asserts the SSRF read-oracle invariant — the tenant-visible
+// `lastSyncError` column gets only the body-free status line while the full
+// (redacted) body lands in the server-side log.
+export async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
   integrationId: string;
   fetched: number;
   inserted: number;
@@ -653,7 +658,10 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
   }
 }
 
-async function processPolicySync(data: SyncPolicyJobData): Promise<{
+// Exported for focused catch-block coverage (#1035 item 2) — same invariant as
+// processSyncIntegration, but for the policy-sync path's tenant-visible
+// `dns_policies.syncError` column.
+export async function processPolicySync(data: SyncPolicyJobData): Promise<{
   policyId: string;
   added: number;
   removed: number;

@@ -109,6 +109,14 @@ export const softwareQuerySchema = z.object({
   search: z.string().optional()
 });
 
+export const processSamplesQuerySchema = z.object({
+  at: z.string().datetime().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional()
+}).refine((q) => q.at || (q.from && q.to), {
+  message: 'Provide either ?at=<ts> or both ?from and ?to'
+});
+
 export const createCommandSchema = z.object({
   // 'wake' is the user-facing wake action. Internally it dispatches via the
   // wakeOnLan service and writes a deviceCommands row of type 'wake_on_lan'

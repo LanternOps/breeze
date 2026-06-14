@@ -513,8 +513,6 @@ export const eventLogInlineSettingsSchema = z.object({
   minimumLevel: z.enum(['info', 'warning', 'error', 'critical']).default('info'),
   collectionIntervalMinutes: z.number().int().min(1).max(60).default(5),
   rateLimitPerHour: z.number().int().min(100).max(100000).default(12000),
-  enableFullTextSearch: z.boolean().default(true),
-  enableCorrelation: z.boolean().default(true),
 });
 
 export const sensitiveDataInlineSettingsSchema = z.object({

@@ -108,6 +108,12 @@ vi.mock('../db/schema', () => ({
     partnerId: 'organizations.partnerId',
     settings: 'organizations.settings',
   },
+  // resolveDeviceTimezone joins partners for the #1318 partner-tz fallback.
+  partners: {
+    id: 'partners.id',
+    timezone: 'partners.timezone',
+    settings: 'partners.settings',
+  },
   deviceGroupMemberships: {
     deviceId: 'deviceGroupMemberships.deviceId',
     groupId: 'deviceGroupMemberships.groupId',

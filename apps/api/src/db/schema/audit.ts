@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, bigserial } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, bigserial, bigint } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 
 export const actorTypeEnum = pgEnum('actor_type', ['user', 'api_key', 'agent', 'system']);
@@ -39,6 +39,25 @@ export const auditLogChain = pgTable('audit_log_chain', {
   prevChainChecksum: varchar('prev_chain_checksum', { length: 128 }),
   chainChecksum: varchar('chain_checksum', { length: 128 }).notNull(),
   sealedAt: timestamp('sealed_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// External-anchor snapshots for the audit chain (issue #916). Append-only:
+// breeze_app may INSERT but never UPDATE/DELETE (enforced via grants + the
+// audit_chain_anchor_immutable trigger in migration 2026-06-13-c). Each row
+// snapshots the audit_log_chain head (seq + checksum) and entry count for one
+// org at a point in time so a forged-chain-after-DELETE — which leaves
+// audit_log_verify_chain internally consistent — is still detectable as a
+// backwards move / shrink against the last anchor. signature/signingKeyId are
+// the app-layer Ed25519 seam (NULL when AUDIT_ANCHOR_SIGNING is not configured).
+export const auditChainAnchors = pgTable('audit_chain_anchors', {
+  anchorSeq: bigserial('anchor_seq', { mode: 'number' }).primaryKey(),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
+  headChainSeq: bigint('head_chain_seq', { mode: 'number' }).notNull(),
+  headChainChecksum: varchar('head_chain_checksum', { length: 128 }),
+  entryCount: bigint('entry_count', { mode: 'number' }).notNull(),
+  signature: text('signature'),
+  signingKeyId: varchar('signing_key_id', { length: 128 }),
+  anchoredAt: timestamp('anchored_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const auditRetentionPolicies = pgTable('audit_retention_policies', {
