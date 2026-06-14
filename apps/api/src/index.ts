@@ -151,7 +151,7 @@ import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
-import { initializeProcessSampleRetention } from './jobs/processSampleRetention';
+import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
 import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
@@ -1202,6 +1202,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAgentLogRetention,
     shutdownIPHistoryRetention,
     shutdownReliabilityRetention,
+    shutdownProcessSampleRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownAuditRetentionWorker,

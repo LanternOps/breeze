@@ -26,6 +26,19 @@ const DEFAULT_RETENTION_DAYS = Math.min(14, Math.max(1, parseInt(process.env.PRO
 
 type RetentionJobData = { retentionDays?: number };
 
+/**
+ * postgres-js / drizzle row-count extraction. The result may expose `.count`
+ * (postgres-js DELETE), `.rowCount`, or — when the driver returns rows as an
+ * array — fall back to `.length`. Mirrors `auditRetention.extractRowCount` and
+ * `ipHistoryRetention` so we never report 0 when rows were actually deleted.
+ */
+function extractRowCount(result: unknown): number {
+  const raw = result as { rowCount?: number; count?: number };
+  if (typeof raw.rowCount === 'number') return raw.rowCount;
+  if (typeof raw.count === 'number') return raw.count;
+  return Array.isArray(result) ? (result as unknown[]).length : 0;
+}
+
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
 
@@ -55,7 +68,7 @@ export function createProcessSampleRetentionWorker(): Worker<RetentionJobData> {
               LIMIT ${BATCH_SIZE}
             )
           `);
-          const n = (result as unknown as { count?: number }).count ?? 0;
+          const n = extractRowCount(result);
           deleted += n;
           if (n < BATCH_SIZE) break;
         }
