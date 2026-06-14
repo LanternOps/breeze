@@ -51,9 +51,14 @@ export class MockShapeState {
   }
 }
 
+let slideIdCounter = 0;
+
 /** Seed-state for a single slide. shapes[0] is treated as the title placeholder. */
 export class MockSlideState {
   shapes: MockShapeState[];
+  /** Stable per-slide id (PowerPoint.Slide.id) — lets the selected-slide index be
+   *  resolved by matching getSelectedSlides() against the deck, as the real API does. */
+  readonly id: string = `slide-${(slideIdCounter += 1)}`;
   /** How the slide was created — lets a test assert the add_slide fallback path. */
   createdVia: 'seed' | 'native' | 'ooxml' = 'seed';
   constructor(shapes: MockShapeState[] = []) {
@@ -301,7 +306,11 @@ class MockShapeCollection implements Syncable {
 
 class MockSlide {
   readonly shapes: MockShapeCollection;
-  private hydrated = false;
+  // Slides are populated *by* their collection's _sync (load('items/id') hydrates
+  // each item's scalar in the same round-trip, as real Office.js does) — so a
+  // slide is born hydrated, like the Word mock's MockParagraph. The read gate that
+  // matters (an un-synced collection) lives on the collection's `.items` getter.
+  private hydrated = true;
   constructor(
     private ctx: MockPowerPointContext,
     readonly state: MockSlideState,
@@ -312,6 +321,10 @@ class MockSlide {
   load(props: unknown): this {
     this.ctx.state.loadCalls.push({ target: 'slide', props });
     return this;
+  }
+  get id(): string {
+    if (!this.hydrated) throw new Error('PropertyNotLoaded: Slide.id read before context.sync()');
+    return this.state.id;
   }
   get title(): string {
     if (!this.hydrated)
