@@ -1,7 +1,7 @@
 import { afterAll, describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, users, organizations, invoices, invoiceLines } from '../../db/schema';
+import { partners, users, organizations, invoices, invoiceLines, invoiceDocuments } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 import { automations, automationRuns } from '../../db/schema/automations';
@@ -1832,5 +1832,75 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
     const message = cause?.cause?.message ?? cause?.message ?? '';
     expect(message).toMatch(/violates foreign key constraint|invoice_lines_invoice_org_fkey/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invoice_documents — shape 1 (direct/denormalized org_id) forge test (Phase 5)
+// ---------------------------------------------------------------------------
+// invoice_documents carries a direct org_id column (denormalized RLS axis) and
+// is auto-discovered by the coverage scan above. This block forges a cross-org
+// INSERT and SELECT as `breeze_app` to prove the policies contain a hostile
+// write/read, mirroring the invoices forge.
+describe('invoice_documents RLS forge (shape 1, org-axis)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let partnerId = '';
+  let orgAId = '';
+  let orgBId = '';
+  let invoiceAId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS InvDocs Partner ${runSuffix}`, slug: `rls-invdocs-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active'
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for invoice_documents forge');
+      partnerId = partner.id;
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { partnerId: partner.id, name: 'RLS InvDocs Org A', slug: `rls-invdocs-a-${runSuffix}` },
+        { partnerId: partner.id, name: 'RLS InvDocs Org B', slug: `rls-invdocs-b-${runSuffix}` }
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for invoice_documents forge');
+      orgAId = orgA.id; orgBId = orgB.id;
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      invoiceAId = inv!.id;
+    });
+  }
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot INSERT a document for org A's invoice", async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(invoiceDocuments).values({
+          invoiceId: invoiceAId, orgId: orgAId, pdf: Buffer.from('%PDF-forged'), sha256: 'a'.repeat(64)
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "invoice_documents"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot SELECT org A's invoice document", async () => {
+    await ensureFixtures();
+    let createdId = '';
+    await withSystemDbAccessContext(async () => {
+      const [doc] = await db.insert(invoiceDocuments).values({
+        invoiceId: invoiceAId, orgId: orgAId, pdf: Buffer.from('%PDF-stored'), sha256: 'b'.repeat(64)
+      }).returning({ id: invoiceDocuments.id });
+      createdId = doc!.id;
+    });
+    const visible = await withDbAccessContext(orgContext(orgBId), async () =>
+      db.select({ id: invoiceDocuments.id }).from(invoiceDocuments).where(eq(invoiceDocuments.id, createdId))
+    );
+    expect(visible).toHaveLength(0);
   });
 });

@@ -7,6 +7,12 @@ import {
   renderLayout,
 } from './emailLayout';
 
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+}
+
 export interface SendEmailParams {
   to: string | string[];
   subject: string;
@@ -18,6 +24,16 @@ export interface SendEmailParams {
   // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
   // provider maps it natively (Resend/SMTP `headers`, Mailgun `h:` fields).
   headers?: Record<string, string>;
+  attachments?: EmailAttachment[];
+}
+
+export interface InvoiceEmailParams {
+  invoiceNumber: string;
+  partnerName: string;
+  total: string;
+  dueDate: string;
+  portalUrl: string;
+  supportEmail?: string;
 }
 
 export interface PasswordResetEmailParams {
@@ -149,7 +165,7 @@ export class EmailService {
   }
 
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, subject, html, text, from, replyTo, headers } = params;
+    const { to, subject, html, text, from, replyTo, headers, attachments } = params;
     const sender = from ?? this.defaultFrom;
 
     if (this.provider === 'resend') {
@@ -165,6 +181,11 @@ export class EmailService {
         text,
         replyTo,
         headers,
+        attachments: attachments?.map((a) => ({
+          filename: a.filename,
+          content: a.content,
+          contentType: a.contentType
+        }))
       });
       if (error) {
         throw new Error(`Resend error: ${error.message}`);
@@ -185,6 +206,7 @@ export class EmailService {
         text,
         replyTo,
         headers,
+        attachments
       });
       return;
     }
@@ -212,6 +234,11 @@ export class EmailService {
       inReplyTo,
       references,
       headers: rest,
+      attachments: attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        contentType: a.contentType
+      }))
     });
   }
 
@@ -521,7 +548,9 @@ async function sendViaMailgun(
   config: MailgunProviderConfig,
   params: SendEmailParams & { from: string }
 ): Promise<void> {
-  const body = new URLSearchParams();
+  // Attachments require multipart/form-data; without them a urlencoded body is
+  // smaller, but FormData works for both so we use it uniformly.
+  const body = new FormData();
   body.set('from', params.from);
   body.set('subject', params.subject);
 
@@ -551,14 +580,21 @@ async function sendViaMailgun(
     }
   }
 
+  for (const attachment of params.attachments ?? []) {
+    const blob = new Blob([new Uint8Array(attachment.content)], {
+      type: attachment.contentType ?? 'application/octet-stream'
+    });
+    body.append('attachment', blob, attachment.filename);
+  }
+
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
   const response = await fetch(buildMailgunEndpoint(config), {
     method: 'POST',
     headers: {
-      Authorization: `Basic ${authToken}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
+      // Let fetch set the multipart Content-Type boundary automatically.
+      Authorization: `Basic ${authToken}`
     },
-    body: body.toString()
+    body
   });
 
   if (!response.ok) {
@@ -674,6 +710,42 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
     `Accept invitation: ${params.inviteUrl}`,
     "This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.",
     support ? `Questions? Contact ${support}.` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
+}
+
+export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate {
+  const number = params.invoiceNumber.trim();
+  const subject = `Invoice ${number} from ${params.partnerName}`;
+  const preheader = `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`;
+  const dueLine = params.dueDate
+    ? `<p style="${BODY_PARA}">Amount due: <strong>${escapeHtml(params.total)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
+    : `<p style="${BODY_PARA}">Amount due: <strong>${escapeHtml(params.total)}</strong>.</p>`;
+  const body = `
+      <p style="${BODY_PARA}">Hi there,</p>
+      <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you invoice <strong>${escapeHtml(number)}</strong>. A PDF copy is attached to this email.</p>
+      ${dueLine}
+      ${renderButton('View invoice', params.portalUrl)}
+      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time from your customer portal.</p>
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: `Invoice ${number}`,
+    body,
+    footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
+  });
+
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    'Hi there,',
+    `${params.partnerName} has sent you invoice ${number}. A PDF copy is attached.`,
+    params.dueDate ? `Amount due: ${params.total} by ${params.dueDate}.` : `Amount due: ${params.total}.`,
+    `View invoice: ${params.portalUrl}`,
+    support ? `Questions about this invoice? Contact ${support}.` : null,
   ]
     .filter(Boolean)
     .join('\n');

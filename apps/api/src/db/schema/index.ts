@@ -83,3 +83,4 @@ export * from './ticketConfig';
 export * from './catalog';
 export * from './timeTracking';
 export * from './invoices';
+export * from './invoiceDocuments';
