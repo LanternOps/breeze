@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-// Mirrors the sessions.*.test.ts harness/mocks. Focuses on the HOST routing
-// added in Task 4: the create handler stores `${host}_client`, rejects an
-// unsupported host with 400, and the use path (ensureActiveClientSession)
-// refuses to start a stored word_client row in Phase 1 (no Word registry yet).
+// Mirrors the sessions.*.test.ts harness/mocks. Focuses on the HOST routing:
+// the create handler stores `${host}_client`, rejects an unsupported host with
+// 400, and the use path (ensureActiveClientSession) refuses to start a stored
+// session whose host has no tool registry/prompt yet. Phase 4 flips Word to a
+// fully supported host (registry + prompt), so the still-unpopulated fail-loud
+// host is now powerpoint/outlook.
 
 const {
   CLIENT_USER_ID, ORG_ID, SESSION_ID,
@@ -79,6 +81,7 @@ vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
 
 import { clientAiSessionRoutes } from './sessions';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
+import { WORD_CLIENT_SYSTEM_PROMPT } from '../../services/clientAiSessions';
 
 const EXCEL_SESSION_ROW = {
   id: SESSION_ID, orgId: ORG_ID, clientUserId: CLIENT_USER_ID, type: 'excel_client',
@@ -160,9 +163,33 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
     expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
-  it('rejects an unsupported (known but unpopulated) host with 400 unsupported_host', async () => {
+  it('creates a word_client session for host:"word" (Phase 4 seam) with the Word prompt', async () => {
+    const valuesSpy = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: SESSION_ID }])) }));
+    dbInsertMock.mockImplementation(() => ({ values: valuesSpy }));
+
     const res = await buildApp().request('/client-ai/sessions', {
       method: 'POST', body: JSON.stringify({ host: 'word' }), headers: AUTHED,
+    });
+    expect(res.status).toBe(201);
+    // Stored type encodes the host; the stored prompt is the Word system prompt
+    // (default writeMode 'readwrite' ⇒ no readonly addendum).
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'word_client',
+      systemPrompt: WORD_CLIENT_SYSTEM_PROMPT,
+    }));
+    // The create audit records the resolved host.
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai.client_session.create',
+        details: expect.objectContaining({ host: 'word' }),
+      }),
+    );
+  });
+
+  it('rejects powerpoint with 400 unsupported_host (still unpopulated in Phase 4)', async () => {
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({ host: 'powerpoint' }), headers: AUTHED,
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe('unsupported_host');
@@ -170,23 +197,21 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
     expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
-  it('rejects powerpoint and outlook with 400 unsupported_host in Phase 1', async () => {
-    for (const host of ['powerpoint', 'outlook']) {
-      const res = await buildApp().request('/client-ai/sessions', {
-        method: 'POST', body: JSON.stringify({ host }), headers: AUTHED,
-      });
-      expect(res.status).toBe(400);
-      expect((await res.json()).error).toBe('unsupported_host');
-    }
+  it('rejects outlook with 400 unsupported_host (still unpopulated in Phase 4)', async () => {
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({ host: 'outlook' }), headers: AUTHED,
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('unsupported_host');
   });
 });
 
 describe('use-path host guard (ensureActiveClientSession)', () => {
-  it('refuses to start a stored word_client session in Phase 1 (400 on /messages)', async () => {
-    // A word_client row exists (e.g. created before the registry shipped), but
-    // Word has no tool registry/prompt yet — the use path must fail loud, not
-    // build a zero-tool MCP server.
-    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'word_client' }]));
+  it('refuses to start a stored powerpoint_client session (400 on /messages)', async () => {
+    // A powerpoint_client row exists, but PowerPoint has no tool registry/prompt
+    // yet — the use path must fail loud, not build a zero-tool MCP server.
+    // (Word is now fully supported in Phase 4, so it is no longer the fail-loud host.)
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'powerpoint_client' }]));
     applyDlpMock.mockImplementation(async (input: { text?: string; cells?: unknown[][] }) => ({
       action: 'allow',
       ...(input.text !== undefined ? { text: input.text } : {}),
@@ -202,8 +227,8 @@ describe('use-path host guard (ensureActiveClientSession)', () => {
     expect(managerMock.getOrCreate).not.toHaveBeenCalled();
   });
 
-  it('refuses to open the SSE channel for a stored word_client session (400 on /events)', async () => {
-    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'word_client' }]));
+  it('refuses to open the SSE channel for a stored powerpoint_client session (400 on /events)', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'powerpoint_client' }]));
 
     const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/events`, { headers: AUTHED });
     expect(res.status).toBe(400);

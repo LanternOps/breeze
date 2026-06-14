@@ -270,11 +270,76 @@ export const EXCEL_CLIENT_TOOL_REGISTRY = {
 
 export type ClientToolName = keyof typeof EXCEL_CLIENT_TOOL_REGISTRY;
 
-/** Per-host tool registries. Only Excel is populated today; Word/PowerPoint/
- *  Outlook are filled in as each host's tools land (Phase 4+). */
+/**
+ * AI for Office — Word baseline tool registry (Phase 4). Five tools mirroring
+ * the add-in's Word HostAdapter executors. inputSchema keys are BYTE-IDENTICAL
+ * to the client executor read keys (the cells-vs-values no-op bug, MEMORY.md):
+ *   get_document_overview  {}                                     (read)
+ *   read_selection         {}                                     (read)
+ *   insert_text            text, location                         (mutating)
+ *   format_text            format{bold?,italic?,underline?,fontColor?,fontSize?}
+ *   find_replace           query, replace, matchCase?, matchWholeWord?
+ */
+export const WORD_CLIENT_TOOL_REGISTRY = {
+  get_document_overview: {
+    description:
+      'Summarize the open Word document: paragraph and word counts plus the leading paragraphs of text. Call this first to orient yourself before reading or editing the document.',
+    mutating: false,
+    inputSchema: {},
+  },
+  read_selection: {
+    description:
+      "Read the user's current selection in the document: its text, broken into paragraphs. Use when the user refers to 'this', 'the selected text', or similar.",
+    mutating: false,
+    inputSchema: {},
+  },
+  insert_text: {
+    description:
+      'Insert text into the document at the current selection. The user sees a preview in the task pane and must click Apply before anything changes.',
+    mutating: true,
+    inputSchema: {
+      text: z.string().min(1).max(100000).describe('The text to insert'),
+      location: z
+        .enum(['Replace', 'Start', 'End', 'Before', 'After'])
+        .describe(
+          'Where to insert relative to the selection: Replace the selection, or at its Start/End/Before/After',
+        ),
+    },
+  },
+  format_text: {
+    description:
+      'Apply character formatting to the current selection: bold/italic/underline, font color (hex), and font size. Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      format: z
+        .object({
+          bold: z.boolean().optional(),
+          italic: z.boolean().optional(),
+          underline: z.boolean().optional(),
+          fontColor: z.string().max(20).optional().describe('Hex color, e.g. "#1F4E79"'),
+          fontSize: z.number().min(6).max(72).optional(),
+        })
+        .strict(),
+    },
+  },
+  find_replace: {
+    description:
+      'Find every occurrence of a text query in the document and replace it. Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      query: z.string().min(1).max(255).describe('Text to search for'),
+      replace: z.string().max(100000).describe('Replacement text (use an empty string to delete matches)'),
+      matchCase: z.boolean().optional(),
+      matchWholeWord: z.boolean().optional(),
+    },
+  },
+} as const satisfies Record<string, ClientWorkbookTool>;
+
+/** Per-host tool registries. Excel + Word are populated; PowerPoint/Outlook
+ *  are filled in as each host's tools land (Phase 5+). */
 export const CLIENT_TOOL_REGISTRIES: Record<ClientHost, Record<string, ClientWorkbookTool>> = {
   excel: EXCEL_CLIENT_TOOL_REGISTRY,
-  word: {},
+  word: WORD_CLIENT_TOOL_REGISTRY,
   powerpoint: {},
   outlook: {},
 };

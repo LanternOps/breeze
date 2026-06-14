@@ -11,6 +11,7 @@ vi.mock('./rate-limit', () => ({ rateLimiter: rateLimiterMock }));
 import {
   DEFAULT_CLIENT_AI_MODEL,
   EXCEL_CLIENT_SYSTEM_PROMPT,
+  WORD_CLIENT_SYSTEM_PROMPT,
   buildExcelClientSystemPrompt,
   buildClientSystemPrompt,
   buildClientAuthContext,
@@ -144,7 +145,37 @@ describe('buildClientSystemPrompt', () => {
     expect(p.startsWith(EXCEL_CLIENT_SYSTEM_PROMPT)).toBe(true);
     expect(p).toContain('READ-ONLY');
   });
-  it('throws fail-loud for a host with no prompt (e.g. word in Phase 1)', () => {
-    expect(() => buildClientSystemPrompt('word', 'readwrite')).toThrow(/unsupported|no prompt/i);
+  it('returns the Word prompt for the word host (readwrite)', () => {
+    expect(buildClientSystemPrompt('word', 'readwrite')).toBe(WORD_CLIENT_SYSTEM_PROMPT);
+  });
+  it('appends the read-only addendum under readonly for word', () => {
+    const p = buildClientSystemPrompt('word', 'readonly');
+    expect(p.startsWith(WORD_CLIENT_SYSTEM_PROMPT)).toBe(true);
+    expect(p).toContain('READ-ONLY');
+  });
+  it('throws fail-loud for a host with no prompt (e.g. powerpoint in Phase 4)', () => {
+    expect(() => buildClientSystemPrompt('powerpoint', 'readwrite')).toThrow(/unsupported|no prompt/i);
+  });
+});
+
+describe('WORD_CLIENT_SYSTEM_PROMPT', () => {
+  it('pins the document-only scope and the no-RMM-claims rule', () => {
+    expect(WORD_CLIENT_SYSTEM_PROMPT).toContain('Microsoft Word');
+    expect(WORD_CLIENT_SYSTEM_PROMPT).toContain('never claim or imply such capabilities');
+    expect(WORD_CLIENT_SYSTEM_PROMPT).toContain('click Apply');
+    expect(WORD_CLIENT_SYSTEM_PROMPT).toContain('[REDACTED:');
+    expect(WORD_CLIENT_SYSTEM_PROMPT).toContain('Be concise');
+  });
+
+  it('advertises the 5 baseline Word tools', () => {
+    for (const tool of [
+      'get_document_overview',
+      'read_selection',
+      'insert_text',
+      'format_text',
+      'find_replace',
+    ]) {
+      expect(WORD_CLIENT_SYSTEM_PROMPT).toContain(tool);
+    }
   });
 });
