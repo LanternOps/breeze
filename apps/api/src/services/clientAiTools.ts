@@ -342,7 +342,7 @@ export const WORD_CLIENT_TOOL_REGISTRY = {
  * bug, MEMORY.md):
  *   get_presentation_overview {}                                  (read)
  *   read_selection            {}                                  (read)
- *   add_slide                 layoutName?, title?                 (mutating)
+ *   add_slide                 layoutName?                         (mutating)
  *   insert_text_box           text, slideIndex?                   (mutating)
  *   format_selection          format{bold?,italic?,underline?,fontColor?,fontSize?}
  *
@@ -364,11 +364,10 @@ export const POWERPOINT_CLIENT_TOOL_REGISTRY = {
   },
   add_slide: {
     description:
-      'Add a new slide to the presentation. Optionally choose a layout by name and set the slide title. The user sees a preview in the task pane and must click Apply before anything changes.',
+      'Add a new slide to the presentation. Optionally choose a layout by name. To put text on the slide, follow up with insert_text_box. The user sees a preview in the task pane and must click Apply before anything changes.',
     mutating: true,
     inputSchema: {
       layoutName: z.string().min(1).max(255).optional().describe('Slide layout name; defaults to the first available layout'),
-      title: z.string().max(255).optional().describe('Title text for the new slide'),
     },
   },
   insert_text_box: {

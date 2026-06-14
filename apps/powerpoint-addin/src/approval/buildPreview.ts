@@ -14,14 +14,12 @@ export async function buildPptPreview(
   switch (toolName) {
     case 'add_slide': {
       const layoutName = optionalString(input, 'layoutName');
-      const title = optionalString(input, 'title');
       const layoutPart = layoutName ? ` with layout "${layoutName}"` : '';
-      const titlePart = title ? ` titled "${title}"` : '';
       return {
         kind: 'summary',
         toolName,
         target: layoutName ?? 'deck',
-        description: `Add a slide${layoutPart}${titlePart}`,
+        description: `Add a slide${layoutPart}`,
       };
     }
     case 'insert_text_box': {

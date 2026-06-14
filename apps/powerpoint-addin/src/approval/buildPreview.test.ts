@@ -3,7 +3,7 @@ import { buildPptPreview } from './buildPreview';
 
 describe('buildPptPreview', () => {
   it('summarizes add_slide with its layout', async () => {
-    const preview = await buildPptPreview('add_slide', { layoutName: 'Title Slide', title: 'Intro' });
+    const preview = await buildPptPreview('add_slide', { layoutName: 'Title Slide' });
     expect(preview.kind).toBe('summary');
     expect(preview.toolName).toBe('add_slide');
     const desc = (preview as { description: string }).description;
