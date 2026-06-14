@@ -6,16 +6,15 @@ import {
 } from '../db/schema';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus } from './invoiceMath';
 import { resolvePrice, computeBundleEconomics } from './catalogService';
-import { allocateInvoiceCounter, formatInvoiceNumber } from './invoiceNumbers';
+// formatInvoiceNumber is shared with the standalone allocator; issueInvoice
+// inlines the counter upsert itself (rather than calling allocateInvoiceCounter)
+// to keep allocation atomic with the number write inside its single transaction.
+import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
-
-// `allocateInvoiceCounter` is imported for type/symbol parity with the standalone
-// allocation path; `issueInvoice` deliberately inlines the same upsert (see below).
-void allocateInvoiceCounter;
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
