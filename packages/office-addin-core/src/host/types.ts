@@ -3,10 +3,13 @@
  * machine, approval queue, history, DLP-aware UI) and the host-BOUND surface
  * that actually touches a specific Office application's object model.
  *
- * Today there is exactly one implementation (Excel — see ./excel.ts). The point
- * of the seam is that adding Word / PowerPoint / Outlook means writing a new
- * adapter, not editing the core: the core consumes the adapter through this
- * interface and never imports `Excel.*` (or any other host) directly.
+ * There are four implementations, one per Office host, each living in its own
+ * add-in app rather than beside this file: apps/excel-addin/src/host/excel.ts,
+ * apps/word-addin/src/host/word.ts, apps/powerpoint-addin/src/host/powerpoint.ts,
+ * and apps/outlook-addin/src/host/outlook.ts. The point of the seam is that
+ * adding (or changing) a host means writing/editing an adapter, not editing the
+ * core: the core consumes each adapter through this interface and never imports
+ * `Excel.*` / `Word.*` / `PowerPoint.*` / the Outlook mailbox API directly.
  *
  * Naming is deliberately host-NEUTRAL so the same shape fits the mail model too:
  *   - `captureContext(kind)` → a cell selection / used range (Excel) OR an email

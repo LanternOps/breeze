@@ -122,10 +122,11 @@ Rules:
 - Be concise. Business users want clear summaries, crisp action items, and ready-to-send replies — not essays.
 - If a request is unrelated to this email or to reading/replying to mail, politely explain that you can only help with the open email.`;
 
-/** Host-keyed system prompts. A host is "supported" only when it has BOTH a
- *  non-empty tool registry (isClientHostSupported) AND a prompt here — Phase 6
- *  adds Outlook to both. */
-const CLIENT_SYSTEM_PROMPTS: Partial<Record<ClientHost, string>> = {
+/** Host-keyed system prompts. TOTAL over ClientHost: a host with a tool
+ *  registry but no prompt would be a compile error here, not a runtime 500.
+ *  A host is "supported" only when it has BOTH a non-empty tool registry
+ *  (isClientHostSupported) AND a prompt here. */
+export const CLIENT_SYSTEM_PROMPTS: Record<ClientHost, string> = {
   excel: EXCEL_CLIENT_SYSTEM_PROMPT,
   word: WORD_CLIENT_SYSTEM_PROMPT,
   powerpoint: POWERPOINT_CLIENT_SYSTEM_PROMPT,
@@ -134,10 +135,9 @@ const CLIENT_SYSTEM_PROMPTS: Partial<Record<ClientHost, string>> = {
 
 export function buildClientSystemPrompt(host: ClientHost, writeMode: 'readwrite' | 'readonly'): string {
   const base = CLIENT_SYSTEM_PROMPTS[host];
-  // Fail-loud: an unsupported host must never reach prompt-building (the
-  // create-session route guards with isClientHostSupported; the use path
-  // guards in ensureActiveClientSession). No generic fallback — we never ship
-  // an untested half-baked prompt.
+  // The total type guarantees every ClientHost has a prompt at compile time;
+  // this guard only fires when a caller forces an out-of-vocabulary host with
+  // an `as ClientHost` cast. Fail loud — never ship a generic/half-baked prompt.
   if (!base) throw new Error(`No client system prompt for unsupported host: ${host}`);
   return writeMode === 'readonly' ? base + READONLY_ADDENDUM : base;
 }

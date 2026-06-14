@@ -14,13 +14,15 @@ import {
   WORD_CLIENT_SYSTEM_PROMPT,
   POWERPOINT_CLIENT_SYSTEM_PROMPT,
   OUTLOOK_CLIENT_SYSTEM_PROMPT,
+  CLIENT_SYSTEM_PROMPTS,
   buildExcelClientSystemPrompt,
   buildClientSystemPrompt,
   buildClientAuthContext,
   checkClientRateLimits,
   generateClientSessionTitle,
 } from './clientAiSessions';
-import type { ClientHost } from './clientAiHosts';
+import { CLIENT_HOSTS, type ClientHost } from './clientAiHosts';
+import { CLIENT_TOOL_REGISTRIES, isClientHostSupported } from './clientAiTools';
 import { defaultClientAiPolicy } from './clientAiPolicy';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -174,6 +176,26 @@ describe('buildClientSystemPrompt', () => {
   });
   it('throws fail-loud for a host with no prompt (synthetic keynote — no generic fallback ships)', () => {
     expect(() => buildClientSystemPrompt('keynote' as ClientHost, 'readwrite')).toThrow(/unsupported|no prompt/i);
+  });
+});
+
+describe('supported-host invariant', () => {
+  // A host that ships a tool registry (isClientHostSupported) but no system
+  // prompt would 500 at session-create time. The total CLIENT_SYSTEM_PROMPTS
+  // type catches this at compile time; this asserts the runtime invariant too.
+  it('every supported host (non-empty tool registry) has a CLIENT_SYSTEM_PROMPTS entry', () => {
+    const supported = (Object.keys(CLIENT_TOOL_REGISTRIES) as ClientHost[]).filter(isClientHostSupported);
+    // Sanity: at least one host is supported (the registries are not all empty).
+    expect(supported.length).toBeGreaterThan(0);
+    for (const host of supported) {
+      expect(CLIENT_SYSTEM_PROMPTS[host], `missing system prompt for supported host "${host}"`).toBeTruthy();
+    }
+  });
+
+  it('CLIENT_SYSTEM_PROMPTS is total over CLIENT_HOSTS', () => {
+    for (const host of CLIENT_HOSTS) {
+      expect(CLIENT_SYSTEM_PROMPTS[host], `missing system prompt for host "${host}"`).toBeTruthy();
+    }
   });
 });
 

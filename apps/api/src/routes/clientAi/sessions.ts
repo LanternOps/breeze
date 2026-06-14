@@ -293,8 +293,10 @@ clientAiSessionRoutes.post('/', async (c) => {
   });
 
   // Expose the effective write governance so the pane can render the Auto/Ask
-  // toggle. writeApproval is the server-side gate: 'ask' means the toggle is
-  // hidden and auto-apply is impossible regardless of what the pane requests.
+  // toggle. writeMode='readonly' is the SERVER-enforced gate (write tools are
+  // stripped/rejected server-side). writeApproval is a CLIENT-enforced policy
+  // hint: the server returns it but does not enforce 'ask' — the pane is
+  // responsible for honouring it (showing the preview/approval card).
   return c.json(
     {
       sessionId: session.id,

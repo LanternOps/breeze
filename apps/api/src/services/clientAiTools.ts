@@ -1,16 +1,17 @@
 /**
- * AI for Office — client workbook tool registry (spec §5).
+ * AI for Office — per-host client tool registries (spec §5).
  *
- * A SEPARATE registry from the technician aiTools map / TOOL_TIERS — client
- * sessions can only ever see these 14 tools (hard allowlist; proven by
- * clientAiTools.registry.test.ts). Tools do NOT execute on the server:
- * Office.js only runs inside Excel, so the handler (Task 6) round-trips
- * through services/clientAiToolBridge.ts to the add-in.
+ * SEPARATE from the technician aiTools map / TOOL_TIERS. There is one registry
+ * per Office host (CLIENT_TOOL_REGISTRIES[host]: excel/word/powerpoint/outlook);
+ * a client session can only ever see the tools in its own host's registry (hard
+ * allowlist; proven by clientAiTools.registry.test.ts). Tools do NOT execute on
+ * the server: Office.js runs inside the host add-in, so the handler round-trips
+ * through services/clientAiToolBridge.ts to that add-in.
  *
  * inputSchema entries are zod RAW SHAPES consumed by the Agent SDK's tool()
  * helper (the aiAgentSdkTools.ts:766+ convention). They describe/validate the
- * model's arguments; actual workbook semantics live in the add-in's Office.js
- * executor (Plan 5).
+ * model's arguments; actual host semantics live in each add-in's Office.js
+ * executor.
  */
 
 import { z } from 'zod';
@@ -752,10 +753,10 @@ export function makeClientToolHandler(
 }
 
 /**
- * SDK MCP server for a client session — constructed ONLY from
- * CLIENT_TOOL_REGISTRY (hard isolation; registry.test.ts). Plugged into
- * streamingSessionManager.getOrCreate via the mcpServerFactory parameter
- * (the scriptAi.ts:211-215 precedent).
+ * SDK MCP server for a client session — constructed ONLY from the host's own
+ * registry, CLIENT_TOOL_REGISTRIES[host] (hard cross-host isolation;
+ * registry.test.ts). Plugged into streamingSessionManager.getOrCreate via the
+ * mcpServerFactory parameter (the scriptAi.ts:211-215 precedent).
  */
 export function createClientWorkbookMcpServer(host: ClientHost, getSession: () => ActiveSession) {
   return createSdkMcpServer({
