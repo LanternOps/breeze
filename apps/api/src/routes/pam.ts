@@ -31,6 +31,7 @@ import {
   elevationRequests,
   pamRules,
   sites,
+  softwarePolicies,
   users,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -38,6 +39,7 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/pe
 import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
+import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import { resolveOrgIdForWrite } from './softwarePolicies';
 
 /**
@@ -70,6 +72,12 @@ const requirePamExecute = requirePermission(
 // default in routes/agents/elevationRequests.ts.
 const DEFAULT_APPROVAL_DURATION_MINUTES = 15;
 const MAX_APPROVAL_DURATION_MINUTES = 24 * 60;
+
+// Bounds for the rule preview endpoint.
+const PREVIEW_MAX_WINDOW_DAYS = 90;
+const PREVIEW_DEFAULT_WINDOW_DAYS = 30;
+const PREVIEW_SCAN_CAP = 5000; // rows pulled into JS — totalScanned/truncated keep this honest
+const PREVIEW_SAMPLE_CAP = 10;
 
 const ACTIVE_STATUSES = ['approved', 'auto_approved', 'actuating'] as const;
 
@@ -164,6 +172,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
         approvedByName: approvedByUser.name,
         deniedByName: deniedByUser.name,
         revokedByName: revokedByUser.name,
+        matchedPolicyName: softwarePolicies.name,
       })
       .from(elevationRequests)
       .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
@@ -171,6 +180,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
       .leftJoin(approvedByUser, eq(elevationRequests.approvedByUserId, approvedByUser.id))
       .leftJoin(deniedByUser, eq(elevationRequests.deniedByUserId, deniedByUser.id))
       .leftJoin(revokedByUser, eq(elevationRequests.revokedByUserId, revokedByUser.id))
+      .leftJoin(softwarePolicies, eq(elevationRequests.softwarePolicyMatchId, softwarePolicies.id))
       .where(where)
       .orderBy(desc(elevationRequests.requestedAt))
       .limit(limit)
@@ -183,14 +193,33 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
 
   return c.json({
     success: true,
-    requests: rows.map((r) => ({
-      ...r.request,
-      deviceHostname: r.deviceHostname,
-      siteName: r.siteName,
-      approvedByName: r.approvedByName,
-      deniedByName: r.deniedByName,
-      revokedByName: r.revokedByName,
-    })),
+    requests: rows.map((r) => {
+      const meta = (r.request.metadata ?? {}) as Record<string, unknown>;
+      const pamRuleId = typeof meta.pam_rule_id === 'string' ? meta.pam_rule_id : null;
+      const pamRuleName = typeof meta.pam_rule_name === 'string' ? meta.pam_rule_name : null;
+      // Note: revokedByUserId also maps to 'human' — for auto-decided-then-revoked rows the
+      // ORIGINAL decision source is policy/rule (still reflected via softwarePolicyMatchId/metadata);
+      // the web layer prefers the revoker for display.
+      const decisionSource = r.request.softwarePolicyMatchId
+        ? ('software_policy' as const)
+        : pamRuleId
+          ? ('pam_rule' as const)
+          : r.request.approvedByUserId || r.request.deniedByUserId || r.request.revokedByUserId
+            ? ('human' as const)
+            : null;
+      return {
+        ...r.request,
+        deviceHostname: r.deviceHostname,
+        siteName: r.siteName,
+        approvedByName: r.approvedByName,
+        deniedByName: r.deniedByName,
+        revokedByName: r.revokedByName,
+        matchedPolicyName: r.matchedPolicyName,
+        pamRuleId,
+        pamRuleName,
+        decisionSource,
+      };
+    }),
     pagination: { page, limit, total: countRows[0]?.total ?? 0 },
   });
 });
@@ -562,13 +591,10 @@ const timeWindowSchema = z.object({
   timezone: z.string().max(64).optional(),
 });
 
-const ruleBaseSchema = z.object({
-  orgId: z.string().uuid().optional(),
+// Criteria fields shared verbatim between ruleBaseSchema and previewRuleSchema.
+// Spread into both z.object calls so any validator change applies to both.
+const ruleCriteriaValidators = {
   siteId: z.string().uuid().nullable().optional(),
-  name: z.string().min(1).max(255),
-  description: z.string().max(2000).nullable().optional(),
-  enabled: z.boolean().optional(),
-  priority: z.number().int().min(0).max(100000).optional(),
   matchSigner: z.string().min(1).max(255).nullable().optional(),
   matchHash: z
     .string()
@@ -582,6 +608,15 @@ const ruleBaseSchema = z.object({
   matchToolName: z.string().min(1).max(100).nullable().optional(),
   matchRiskTier: z.number().int().min(0).max(4).nullable().optional(),
   timeWindow: timeWindowSchema.nullable().optional(),
+};
+
+const ruleBaseSchema = z.object({
+  orgId: z.string().uuid().optional(),
+  ...ruleCriteriaValidators,
+  name: z.string().min(1).max(255),
+  description: z.string().max(2000).nullable().optional(),
+  enabled: z.boolean().optional(),
+  priority: z.number().int().min(0).max(100000).optional(),
   verdict: z.enum(['auto_approve', 'auto_deny', 'require_approval', 'ignore']),
   approvalDurationMinutes: z
     .number()
@@ -652,6 +687,24 @@ const createRuleSchema = ruleBaseSchema.superRefine((rule, ctx) => {
   if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
 });
 
+// Preview schema: subset of criteria fields (no name/verdict/priority — those
+// are irrelevant to matching), plus windowDays/flowType overrides.
+// Hand-rolled (not .pick) to avoid Zod inference issues with superRefine on
+// a picked object; criteria validators are structurally shared via ruleCriteriaValidators.
+const previewRuleSchema = z
+  .object({
+    ...ruleCriteriaValidators,
+    windowDays: z.number().int().min(1).max(PREVIEW_MAX_WINDOW_DAYS).optional(),
+    flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
+  })
+  .superRefine((rule, ctx) => {
+    // Same shape rules as create (≥1 criterion, no executable/tool mixing).
+    // validateRuleShape rejects tool-action rules with verdict 'ignore'; inject any
+    // non-'ignore' verdict so that create-only constraint can't fire on previews.
+    const err = validateRuleShape({ ...rule, verdict: 'require_approval' });
+    if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
+  });
+
 pamRoutes.get('/rules', requirePamRead, async (c) => {
   const auth = c.get('auth');
   const rows = await db
@@ -711,6 +764,137 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
 
   return c.json({ success: true, rule: created }, 201);
 });
+
+// ============================================================
+// Rules — preview (dry-run draft criteria against history)
+// ============================================================
+// Pure per-rule matching: "would these criteria match these historical
+// requests". NOT a chain replay (no priority shadowing, no software-policy
+// bridge) — that variant is future work. Known limitation: historical rows
+// don't store AD groups, so ANY draft containing matchAdGroup reports 0 matches
+// (criteria are ANDed) — including tech_jit_admin rows where groups matched live
+// but weren't persisted.
+pamRoutes.post(
+  '/rules/preview',
+  requirePamWrite,
+  zValidator('json', previewRuleSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const body = c.req.valid('json');
+
+    const windowDays = body.windowDays ?? PREVIEW_DEFAULT_WINDOW_DAYS;
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+    const conditions: (SQL | undefined)[] = [
+      auth.orgCondition(elevationRequests.orgId),
+      siteScopeCondition(perms),
+      gte(elevationRequests.requestedAt, since),
+    ];
+    if (body.flowType) conditions.push(eq(elevationRequests.flowType, body.flowType));
+    if (body.siteId) {
+      if (perms && !canAccessSite(perms, body.siteId)) {
+        return c.json({ error: 'Site access denied' }, 403);
+      }
+      conditions.push(eq(elevationRequests.siteId, body.siteId));
+    }
+
+    const rows = await db
+      .select({
+        id: elevationRequests.id,
+        requestedAt: elevationRequests.requestedAt,
+        flowType: elevationRequests.flowType,
+        status: elevationRequests.status,
+        subjectUsername: elevationRequests.subjectUsername,
+        targetExecutablePath: elevationRequests.targetExecutablePath,
+        targetExecutableHash: elevationRequests.targetExecutableHash,
+        targetExecutableSigner: elevationRequests.targetExecutableSigner,
+        toolName: elevationRequests.toolName,
+        riskTier: elevationRequests.riskTier,
+        metadata: elevationRequests.metadata,
+      })
+      .from(elevationRequests)
+      .where(and(...conditions.filter((cn): cn is SQL => cn !== undefined)))
+      .orderBy(desc(elevationRequests.requestedAt))
+      .limit(PREVIEW_SCAN_CAP);
+
+    // Engine-shaped draft rule; matching reads match*/timeWindow/enabled only.
+    const draftRule = {
+      id: 'preview',
+      orgId: auth.orgId ?? '',
+      siteId: body.siteId ?? null,
+      name: 'preview',
+      description: null,
+      enabled: true,
+      priority: 0,
+      verdict: 'require_approval' as const,
+      approvalDurationMinutes: null,
+      createdByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      matchSigner: body.matchSigner ?? null,
+      matchHash: body.matchHash ? body.matchHash.toLowerCase() : null,
+      matchPathGlob: body.matchPathGlob ?? null,
+      matchParentImage: body.matchParentImage ?? null,
+      matchUser: body.matchUser ?? null,
+      matchAdGroup: body.matchAdGroup ?? null,
+      matchToolName: body.matchToolName ?? null,
+      matchRiskTier: body.matchRiskTier ?? null,
+      timeWindow: body.timeWindow ?? null,
+    };
+
+    let totalMatched = 0;
+    const statusBreakdown: Record<string, number> = {
+      pending: 0,
+      approved: 0,
+      auto_approved: 0,
+      denied: 0,
+      expired: 0,
+      revoked: 0,
+      actuating: 0,
+    };
+    const sample: Array<Record<string, unknown>> = [];
+
+    for (const r of rows) {
+      const meta = (r.metadata ?? {}) as Record<string, unknown>;
+      const candidate: PamRuleCandidate = {
+        targetExecutablePath: r.targetExecutablePath ?? undefined,
+        targetExecutableHash: r.targetExecutableHash ?? undefined,
+        targetExecutableSigner: r.targetExecutableSigner ?? undefined,
+        subjectUsername: r.subjectUsername,
+        parentImage: typeof meta.parent_image === 'string' ? meta.parent_image : undefined,
+        toolName: r.toolName ?? undefined,
+        riskTier: r.riskTier ?? undefined,
+        at: r.requestedAt,
+      };
+      if (evaluatePamRules([draftRule], candidate)) {
+        totalMatched++;
+        statusBreakdown[r.status] = (statusBreakdown[r.status] ?? 0) + 1;
+        if (sample.length < PREVIEW_SAMPLE_CAP) {
+          sample.push({
+            id: r.id,
+            requestedAt: r.requestedAt,
+            flowType: r.flowType,
+            subjectUsername: r.subjectUsername,
+            targetExecutablePath: r.targetExecutablePath ?? null,
+            toolName: r.toolName ?? null,
+            status: r.status,
+          });
+        }
+      }
+    }
+
+    return c.json({
+      success: true,
+      totalMatched,
+      totalScanned: rows.length,
+      windowDays,
+      truncated: rows.length === PREVIEW_SCAN_CAP,
+      statusBreakdown,
+      sample,
+    });
+  },
+);
 
 const updateRuleSchema = ruleBaseSchema.partial().omit({ orgId: true });
 

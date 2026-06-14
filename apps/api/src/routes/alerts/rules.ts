@@ -3,8 +3,9 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertRules, alertTemplates, alerts, devices } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import {
   listAlertRulesSchema,
   createAlertRuleSchema,
@@ -26,6 +27,8 @@ import {
 } from './helpers';
 
 export const rulesRoutes = new Hono();
+
+const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 // GET /alerts/rules - List alert rules with pagination
 rulesRoutes.get(
@@ -130,6 +133,8 @@ rulesRoutes.get(
 rulesRoutes.post(
   '/rules',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', createAlertRuleSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -251,6 +256,8 @@ rulesRoutes.post(
 rulesRoutes.put(
   '/rules/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', updateAlertRuleSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -431,6 +438,8 @@ rulesRoutes.put(
 rulesRoutes.delete(
   '/rules/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const ruleId = c.req.param('id')!;

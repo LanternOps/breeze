@@ -29,15 +29,31 @@ import {
   peripheralPolicies,
 } from '../db/schema';
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { z } from 'zod';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 
 // ============================================
+// Inline settings schemas
+// ============================================
+
+// Exported so the route can import the same schema (single source of truth).
+// uacInterceptionEnabled defaults to true on the read side (parsePamSettings),
+// so {} is well-formed. Non-boolean values are rejected to prevent the silent-
+// inversion bug where "false" (string) is coerced back to true on read-back.
+// .strict() matches the posture of patch/backup: unknown keys are rejected.
+export const pamInlineSettingsSchema = z
+  .object({
+    uacInterceptionEnabled: z.boolean().optional(),
+  })
+  .strict();
+
+// ============================================
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access' | 'pam';
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -456,6 +472,7 @@ async function decomposeInlineSettings(
     case 'warranty':
     case 'helper':
     case 'remote_access':
+    case 'pam':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -509,6 +526,7 @@ async function deleteNormalizedRows(
     case 'warranty':
     case 'helper':
     case 'remote_access':
+    case 'pam':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -649,8 +667,6 @@ async function assembleInlineSettings(
         minimumLevel: row.minimumLevel,
         collectionIntervalMinutes: row.collectionIntervalMinutes,
         rateLimitPerHour: row.rateLimitPerHour,
-        enableFullTextSearch: row.enableFullTextSearch,
-        enableCorrelation: row.enableCorrelation,
       };
     }
 
@@ -772,6 +788,7 @@ async function assembleInlineSettings(
     case 'warranty':
     case 'helper':
     case 'remote_access':
+    case 'pam':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -790,6 +807,10 @@ export async function addFeatureLink(
   featurePolicyId?: string | null,
   inlineSettings?: unknown
 ) {
+  if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
+    pamInlineSettingsSchema.parse(inlineSettings);
+  }
+
   return db.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
@@ -835,6 +856,10 @@ export async function updateFeatureLink(
       .where(and(...conditions))
       .limit(1);
     if (!existing) return null;
+
+    if (existing.featureType === 'pam' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      pamInlineSettingsSchema.parse(updates.inlineSettings);
+    }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
     const normalizedInlineSettings =

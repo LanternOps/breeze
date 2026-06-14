@@ -6,10 +6,11 @@ import {
   type ElevationFlowType,
   type ElevationRequest,
   type ElevationStatus,
+  FLOW_ICONS,
   FLOW_LABELS,
   type Pagination,
   STATUS_LABELS,
-  decidedByLabel,
+  decisionAttribution,
   requestTarget,
   statusBadgeClass,
 } from './types';
@@ -56,6 +57,9 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
     'revokedBy',
     'approvedAt',
     'expiresAt',
+    'decisionSource',
+    'matchedPolicyName',
+    'pamRuleName',
   ];
   const lines = [header.join(',')];
   for (const r of rows) {
@@ -83,6 +87,9 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
         r.revokedByName ?? r.revokedByUserId ?? '',
         r.approvedAt ?? '',
         r.expiresAt ?? '',
+        r.decisionSource ?? '',
+        r.matchedPolicyName ?? '',
+        r.pamRuleName ?? '',
       ]
         .map(csvEscape)
         .join(','),
@@ -308,7 +315,7 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const decidedBy = decidedByLabel(r);
+                const attribution = decisionAttribution(r);
                 return (
                 <tr key={r.id} className="border-b last:border-0" data-testid={`pam-audit-row-${r.id}`}>
                   <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
@@ -336,20 +343,30 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
                       )}
                     </div>
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2">{FLOW_LABELS[r.flowType]}</td>
+                  <td className="whitespace-nowrap px-3 py-2">
+                    {(() => {
+                      const FlowIcon = FLOW_ICONS[r.flowType];
+                      return (
+                        <span className="inline-flex items-center gap-1.5">
+                          <FlowIcon aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
+                          {FLOW_LABELS[r.flowType]}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="px-3 py-2">
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
                     >
                       {STATUS_LABELS[r.status]}
                     </span>
-                    {decidedBy && (
+                    {attribution && (
                       <div
                         className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
                         data-testid={`pam-audit-decided-by-${r.id}`}
-                        title={`by ${decidedBy}`}
+                        title={attribution}
                       >
-                        by {decidedBy}
+                        {attribution}
                       </div>
                     )}
                   </td>

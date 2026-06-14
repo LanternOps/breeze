@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { serviceMocks, timeEntryMocks } = vi.hoisted(() => ({
+const { serviceMocks, timeEntryMocks, ticketConfigMocks } = vi.hoisted(() => ({
   serviceMocks: {
     createTicket: vi.fn(),
     changeTicketStatus: vi.fn(),
@@ -11,6 +11,10 @@ const { serviceMocks, timeEntryMocks } = vi.hoisted(() => ({
     createTimeEntry: vi.fn(),
     startTimer: vi.fn(),
     stopTimer: vi.fn()
+  },
+  ticketConfigMocks: {
+    findStatusByName: vi.fn(),
+    listActiveStatusNames: vi.fn()
   }
 }));
 
@@ -22,6 +26,11 @@ vi.mock('./ticketService', async () => {
 vi.mock('./timeEntryService', async () => {
   const actual = await vi.importActual<typeof import('./timeEntryService')>('./timeEntryService');
   return { ...actual, ...timeEntryMocks };
+});
+
+vi.mock('./ticketConfigService', async () => {
+  const actual = await vi.importActual<typeof import('./ticketConfigService')>('./ticketConfigService');
+  return { ...actual, ...ticketConfigMocks };
 });
 
 // Mutable handle so individual tests can override the limit() return value
@@ -126,6 +135,9 @@ describe('manage_tickets tool', () => {
     vi.clearAllMocks();
     // Default: ticket not found (empty rows).
     mockLimit.mockResolvedValue([]);
+    // Default: status name resolution finds nothing.
+    ticketConfigMocks.findStatusByName.mockResolvedValue(null);
+    ticketConfigMocks.listActiveStatusNames.mockResolvedValue([]);
   });
 
   it('registers with deviceArgs gating and tier 1 (mutations escalated via TIER2_ACTIONS)', () => {
@@ -251,7 +263,7 @@ describe('manage_tickets tool', () => {
     );
     expect(serviceMocks.changeTicketStatus).toHaveBeenCalledWith(
       't-1',
-      'resolved',
+      expect.objectContaining({ status: 'resolved' }),
       expect.objectContaining({ resolutionNote: 'Done' }),
       expect.objectContaining({ userId: 'u-1' })
     );
@@ -267,6 +279,86 @@ describe('manage_tickets tool', () => {
     expect(parsed).toHaveProperty('error');
     expect(parsed.error).toMatch(/not found/i);
     expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+
+  // ── update_status by statusName ───────────────────────────────────────────
+
+  it('update_status with statusName resolves the partner row and calls changeTicketStatus with statusId', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    ticketConfigMocks.findStatusByName.mockResolvedValue({
+      id: 'status-uuid-vendor',
+      partnerId: 'p-1',
+      coreStatus: 'pending',
+      name: 'Waiting on vendor',
+      isActive: true,
+      isSystem: false
+    });
+    serviceMocks.changeTicketStatus.mockResolvedValue({ id: 't-1', status: 'pending' });
+    const out = await getTool().handler(
+      { action: 'update_status', ticketId: 't-1', statusName: 'Waiting on vendor' },
+      auth
+    );
+    expect(ticketConfigMocks.findStatusByName).toHaveBeenCalledWith('p-1', 'Waiting on vendor');
+    expect(serviceMocks.changeTicketStatus).toHaveBeenCalledWith(
+      't-1',
+      { statusId: 'status-uuid-vendor' },
+      expect.objectContaining({}),
+      expect.objectContaining({ userId: 'u-1' })
+    );
+    expect(JSON.parse(out)).toHaveProperty('ticket');
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: expect.anything() }),
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it('update_status with unknown statusName returns error listing active names', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    ticketConfigMocks.findStatusByName.mockResolvedValue(null);
+    ticketConfigMocks.listActiveStatusNames.mockResolvedValue(['New', 'Open', 'Waiting on vendor']);
+    const out = await getTool().handler(
+      { action: 'update_status', ticketId: 't-1', statusName: 'Does not exist' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/does not exist/i);
+    expect(parsed.error).toMatch(/"New"/);
+    expect(parsed.error).toMatch(/"Open"/);
+    expect(parsed.error).toMatch(/"Waiting on vendor"/);
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+
+  it('update_status with both status and statusName returns error about providing only one', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    const out = await getTool().handler(
+      { action: 'update_status', ticketId: 't-1', status: 'pending', statusName: 'Waiting on vendor' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/only one/i);
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+    expect(ticketConfigMocks.findStatusByName).not.toHaveBeenCalled();
+  });
+
+  it('update_status with core status value still works (existing path unchanged)', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    serviceMocks.changeTicketStatus.mockResolvedValue({ id: 't-1', status: 'open' });
+    const out = await getTool().handler(
+      { action: 'update_status', ticketId: 't-1', status: 'open' },
+      auth
+    );
+    expect(serviceMocks.changeTicketStatus).toHaveBeenCalledWith(
+      't-1',
+      { status: 'open' },
+      expect.objectContaining({}),
+      expect.objectContaining({ userId: 'u-1' })
+    );
+    expect(JSON.parse(out)).toHaveProperty('ticket');
+    expect(ticketConfigMocks.findStatusByName).not.toHaveBeenCalled();
   });
 
   // ── unknown action ────────────────────────────────────────────────────────
@@ -299,7 +391,7 @@ describe('manage_tickets tool', () => {
     const out = await getTool().handler({ action: 'update_status', ticketId: 't-1' }, auth);
     const parsed = JSON.parse(out);
     expect(parsed).toHaveProperty('error');
-    expect(parsed.error).toMatch(/status is required/i);
+    expect(parsed.error).toMatch(/status or statusName is required/i);
     expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
   });
 
@@ -324,6 +416,8 @@ describe('manage_tickets list — site-axis scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLimit.mockResolvedValue([]);
+    ticketConfigMocks.findStatusByName.mockResolvedValue(null);
+    ticketConfigMocks.listActiveStatusNames.mockResolvedValue([]);
   });
 
   it('applies the site condition (devices IN-subquery) for a site-restricted caller', async () => {
@@ -363,6 +457,8 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLimit.mockResolvedValue([]);
+    ticketConfigMocks.findStatusByName.mockResolvedValue(null);
+    ticketConfigMocks.listActiveStatusNames.mockResolvedValue([]);
   });
 
   // log_time_entry
@@ -545,6 +641,24 @@ describe('manage_tickets — validateToolInput schema registry', () => {
 
   it('rejects an unknown status value', () => {
     const result = validateToolInput('manage_tickets', { action: 'update_status', status: 'unknown_status' });
+    expect(result.success).toBe(false);
+  });
+
+  it('passes for a valid update_status with statusName', () => {
+    const result = validateToolInput('manage_tickets', {
+      action: 'update_status',
+      ticketId: '00000000-0000-0000-0000-000000000002',
+      statusName: 'Waiting on vendor',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a statusName exceeding 60 characters', () => {
+    const result = validateToolInput('manage_tickets', {
+      action: 'update_status',
+      ticketId: '00000000-0000-0000-0000-000000000002',
+      statusName: 'x'.repeat(61),
+    });
     expect(result.success).toBe(false);
   });
 

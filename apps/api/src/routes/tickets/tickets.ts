@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { tickets, ticketComments, ticketAlertLinks, devices, organizations, users, alerts } from '../../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, devices, organizations, users, alerts, ticketStatuses } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from './siteScope';
 import { PERMISSIONS } from '../../services/permissions';
@@ -271,12 +271,15 @@ ticketsRoutes.get(
         slaPausedMinutes: tickets.slaPausedMinutes,
         slaBreachReason: tickets.slaBreachReason,
         createdAt: tickets.createdAt,
-        updatedAt: tickets.updatedAt
+        updatedAt: tickets.updatedAt,
+        statusName: ticketStatuses.name,
+        statusColor: ticketStatuses.color
       })
       .from(tickets)
       .leftJoin(organizations, eq(tickets.orgId, organizations.id))
       .leftJoin(devices, eq(tickets.deviceId, devices.id))
       .leftJoin(users, eq(tickets.assignedTo, users.id))
+      .leftJoin(ticketStatuses, eq(tickets.statusId, ticketStatuses.id))
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(q.limit)
@@ -346,15 +349,18 @@ ticketsRoutes.get(
       .select({
         orgName: organizations.name,
         deviceHostname: devices.hostname,
-        assigneeName: users.name
+        assigneeName: users.name,
+        statusName: ticketStatuses.name,
+        statusColor: ticketStatuses.color
       })
       .from(tickets)
       .leftJoin(organizations, eq(tickets.orgId, organizations.id))
       .leftJoin(devices, eq(tickets.deviceId, devices.id))
       .leftJoin(users, eq(tickets.assignedTo, users.id))
+      .leftJoin(ticketStatuses, eq(tickets.statusId, ticketStatuses.id))
       .where(eq(tickets.id, ticket.id))
       .limit(1);
-    const { orgName = null, deviceHostname = null, assigneeName = null } = decorationRows[0] ?? {};
+    const { orgName = null, deviceHostname = null, assigneeName = null, statusName = null, statusColor = null } = decorationRows[0] ?? {};
 
     const comments = await db
       .select()
@@ -375,7 +381,7 @@ ticketsRoutes.get(
       .leftJoin(alerts, eq(ticketAlertLinks.alertId, alerts.id))
       .where(eq(ticketAlertLinks.ticketId, id));
 
-    return c.json({ data: { ...ticket, orgName, deviceHostname, assigneeName, comments, alertLinks } });
+    return c.json({ data: { ...ticket, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
   }
 );
 
@@ -447,10 +453,11 @@ ticketsRoutes.post(
     if (!found) return c.json({ error: 'Ticket not found' }, 404);
 
     try {
-      const ticket = await changeTicketStatus(id, body.status, {
-        resolutionNote: body.resolutionNote,
-        pendingReason: body.pendingReason
-      }, actorFrom(c));
+      const ticket = await changeTicketStatus(id,
+        { status: body.status, statusId: body.statusId },
+        { resolutionNote: body.resolutionNote, pendingReason: body.pendingReason },
+        actorFrom(c)
+      );
       return c.json({ data: ticket });
     } catch (err) {
       return handleServiceError(c, err);

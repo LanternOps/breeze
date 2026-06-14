@@ -64,6 +64,7 @@ export default defineConfig({
               label: 'Security & Compliance',
               items: [
                 { slug: 'features/security' },
+                { slug: 'features/pam' },
                 { slug: 'features/cis-hardening' },
                 { slug: 'features/audit-baselines' },
                 { slug: 'features/browser-security' },
@@ -97,6 +98,7 @@ export default defineConfig({
                 { slug: 'features/change-tracking' },
                 { slug: 'features/filesystem-analysis' },
                 { slug: 'features/log-shipping' },
+                { slug: 'features/event-log-forwarding' },
                 { slug: 'features/agent-diagnostics' },
               ],
             },
@@ -124,6 +126,7 @@ export default defineConfig({
               label: 'Platform',
               items: [
                 { slug: 'features/integrations' },
+                { slug: 'features/identity-console' },
                 { slug: 'features/webhooks' },
                 { slug: 'features/plugins' },
                 { slug: 'features/branding' },

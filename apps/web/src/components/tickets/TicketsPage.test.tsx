@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TicketsPage from './TicketsPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import type { TicketSummary } from './ticketConfig';
 
 vi.mock('../../stores/auth', () => ({
@@ -11,6 +12,13 @@ vi.mock('../../stores/auth', () => ({
     getState: () => ({ user: { id: 'user-1' } })
   })
 }));
+
+// Stub fetchTicketConfig; real display helpers (statusLabel/priorityLabel) run unchanged.
+vi.mock('../../lib/ticketConfigApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/ticketConfigApi')>();
+  return { ...actual, fetchTicketConfig: vi.fn().mockResolvedValue(null) };
+});
+const fetchConfigMock = vi.mocked(fetchTicketConfig);
 
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
@@ -125,6 +133,7 @@ describe('TicketsPage', () => {
     capturedWorkbenchProps.length = 0;
     // Default to partner scope so existing tests behave as before.
     mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
+    fetchConfigMock.mockResolvedValue(null);
     // jsdom defaults to 1024, which is below the 1100px split-pane breakpoint;
     // select() would navigate to the full page instead of selecting in-pane.
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
@@ -676,6 +685,57 @@ describe('TicketsPage', () => {
 
       await waitFor(() => {
         expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '3 updated' });
+      });
+    });
+  });
+
+  describe('custom-status queue chips', () => {
+    const CONFIG: TicketConfig = {
+      statuses: [
+        { id: 'st-open', name: 'Open', coreStatus: 'open', color: null, sortOrder: 0, isSystem: true, isActive: true },
+        { id: 'st-waiting', name: 'Waiting on customer', coreStatus: 'pending', color: '#ffaa00', sortOrder: 1, isSystem: false, isActive: true }
+      ],
+      priorities: {
+        urgent: { label: 'Urgent', responseSlaMinutes: null, resolutionSlaMinutes: null },
+        high: { label: 'High', responseSlaMinutes: null, resolutionSlaMinutes: null },
+        normal: { label: 'Normal', responseSlaMinutes: null, resolutionSlaMinutes: null },
+        low: { label: 'Low', responseSlaMinutes: null, resolutionSlaMinutes: null }
+      }
+    };
+
+    it('row chip prefers statusName over the core label and shows the color dot', async () => {
+      fetchConfigMock.mockResolvedValue(CONFIG);
+      const custom = makeTicket({
+        id: 'tk-custom',
+        internalNumber: 'T-2026-0009',
+        subject: 'Custom status ticket',
+        status: 'pending',
+        statusName: 'Waiting on customer',
+        statusColor: '#ffaa00'
+      });
+      mockListApi([custom]);
+      render(<TicketsPage />);
+
+      const row = await screen.findByTestId('ticket-row-tk-custom');
+      await waitFor(() => {
+        expect(row).toHaveTextContent('Waiting on customer');
+      });
+      // Core label is replaced, not appended.
+      expect(row).not.toHaveTextContent('Pending');
+      // The color dot renders an inline style accent.
+      const dot = row.querySelector('span[style*="background"]');
+      expect(dot).not.toBeNull();
+    });
+
+    it('falls back to the core label when statusName is null', async () => {
+      fetchConfigMock.mockResolvedValue(CONFIG);
+      const legacy = makeTicket({ id: 'tk-legacy', internalNumber: 'T-2026-0010', status: 'open', statusName: null });
+      mockListApi([legacy]);
+      render(<TicketsPage />);
+
+      const row = await screen.findByTestId('ticket-row-tk-legacy');
+      await waitFor(() => {
+        expect(row).toHaveTextContent('Open');
       });
     });
   });

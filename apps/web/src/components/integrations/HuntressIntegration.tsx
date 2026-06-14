@@ -343,7 +343,19 @@ export default function HuntressIntegration() {
           <span>{statusError}</span>
         </div>
       )}
-      {!isPartnerView && !mappedForOrg && (
+      {!isPartnerView && !integration && (
+        <div className="rounded-xl border bg-card p-8 text-center shadow-sm">
+          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <Unplug className="h-5 w-5" />
+          </div>
+          <h2 className="mt-3 text-lg font-semibold">Huntress isn&apos;t connected yet</h2>
+          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+            Huntress is configured once at the partner level and shared across every organization. Switch your scope to{' '}
+            <span className="font-medium text-foreground">All orgs</span> to add the API Key and Secret.
+          </p>
+        </div>
+      )}
+      {!isPartnerView && integration && !mappedForOrg && (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
           This Breeze organization is not mapped to a Huntress organization yet. Switch to All orgs as a partner admin to map it.
         </div>

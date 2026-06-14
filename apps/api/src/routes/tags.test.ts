@@ -22,6 +22,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'id',
     orgId: 'orgId',
+    siteId: 'siteId',
     hostname: 'hostname',
     displayName: 'displayName',
     status: 'status',
@@ -42,7 +43,24 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  // `x-restrict-site` -> single-site allowlist; `x-restrict-site-empty` ->
+  // empty allowlist (zero accessible sites). Absent -> unset (full org access).
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    const restrictSite = c.req.header('x-restrict-site');
+    const emptyAllowlist = c.req.header('x-restrict-site-empty');
+    let allowedSiteIds: string[] | undefined;
+    if (emptyAllowlist) allowedSiteIds = [];
+    else if (restrictSite) allowedSiteIds = [restrictSite];
+    c.set('permissions', {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: ORG_ID,
+      roleId: 'role-1',
+      scope: 'organization',
+      ...(allowedSiteIds !== undefined ? { allowedSiteIds } : {})
+    });
+    return next();
+  }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
@@ -396,6 +414,126 @@ describe('tag routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.total).toBe(1);
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // Site-scope enforcement (Finding #2)
+  //
+  // RLS enforces the org axis only; the site axis (permissions.allowedSiteIds)
+  // is app-layer. A site-restricted user must not see the tag taxonomy or the
+  // device list for devices in sites outside their allowlist. Mirrors the
+  // devices/core.ts semantics: empty allowlist -> no rows; unset -> full org.
+  //
+  // The mock DB ignores the WHERE clause (it just resolves the rows we rig),
+  // so these tests assert on the WHERE *condition* the handler builds — the
+  // narrowing must be present — and on the empty-allowlist short-circuit.
+  // ----------------------------------------------------------------
+  const ALLOWED_SITE_ID = 'site-a';
+
+  function captureWhere(rows: unknown[]) {
+    const where = vi.fn().mockResolvedValue(rows);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where })
+    } as any);
+    return where;
+  }
+
+  // Serialize the drizzle WHERE condition the handler passes to .where() so we
+  // can assert the constructed SQL actually contains the site-axis narrowing
+  // (the mock DB ignores the WHERE, so an `expect.anything()` check would still
+  // pass even if the `inArray(devices.siteId, ...)` push were removed). Mirrors
+  // the `conditionText` technique in cisHardening_site_scope.test.ts. The
+  // schema mock maps `devices.siteId -> 'siteId'`, so an in-site filter
+  // serializes to include that column token and the site id.
+  function conditionText(value: unknown): string {
+    return JSON.stringify(value, (_key, nested) =>
+      typeof nested === 'function' ? '[function]' : nested
+    );
+  }
+
+  describe('site-scope enforcement', () => {
+    it('GET /tags narrows the taxonomy to the site allowlist', async () => {
+      // Only the allowed-site device's tags come back from the (narrowed) query.
+      const where = captureWhere([{ tags: ['finance'] }]);
+
+      const res = await app.request('/tags', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': ALLOWED_SITE_ID }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(1);
+      expect(body.data[0].tag).toBe('finance');
+      // The handler must have built a WHERE that actually narrows by site —
+      // serialize the condition and assert it carries the site-axis filter
+      // (column + allowed site id), not just "some object".
+      expect(where).toHaveBeenCalledTimes(1);
+      const whereText = conditionText(where.mock.calls[0]?.[0]);
+      expect(whereText).toContain('siteId');
+      expect(whereText).toContain(ALLOWED_SITE_ID);
+    });
+
+    it('GET /tags/devices excludes out-of-site devices via the site allowlist', async () => {
+      // The narrowed query only returns the in-site device.
+      const where = captureWhere([
+        { id: 'dev-a', hostname: 'host-a', displayName: 'A', status: 'online', osType: 'linux', tags: ['finance'] }
+      ]);
+
+      const res = await app.request('/tags/devices?tag=finance', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': ALLOWED_SITE_ID }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(1);
+      expect(body.data[0].id).toBe('dev-a');
+      expect(where).toHaveBeenCalledTimes(1);
+      const whereText = conditionText(where.mock.calls[0]?.[0]);
+      expect(whereText).toContain('siteId');
+      expect(whereText).toContain(ALLOWED_SITE_ID);
+    });
+
+    it('GET /tags emits a never-true (sql`false`) condition when the allowlist is empty', async () => {
+      // Empty allowlist = zero accessible sites. The handler can't know which
+      // rows Postgres would drop (the unit mock ignores WHERE), so we assert the
+      // contract that guarantees zero rows in real PG: a `sql\`false\`` fragment
+      // is pushed into the WHERE. Mirrors devices/core.ts' `sql\`false\`` branch.
+      const where = captureWhere([]);
+
+      const res = await app.request('/tags', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site-empty': '1' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      // Inspect the constructed WHERE: an `and(...)` of real drizzle conditions.
+      // The serialized SQL must contain the literal `false` short-circuit.
+      expect(where).toHaveBeenCalledTimes(1);
+      const whereArg = where.mock.calls[0]?.[0];
+      expect(JSON.stringify(whereArg)).toContain('false');
+    });
+
+    it('GET /tags applies no site filter when allowlist is unset (full org access)', async () => {
+      const where = captureWhere([{ tags: ['a'] }, { tags: ['b'] }]);
+
+      // No x-restrict-site header -> allowedSiteIds undefined.
+      const res = await app.request('/tags', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(2);
+      expect(where).toHaveBeenCalledTimes(1);
+      // Unset allowlist = full org access: the WHERE must NOT carry a site
+      // filter (only the org-axis condition).
+      expect(conditionText(where.mock.calls[0]?.[0])).not.toContain('siteId');
     });
   });
 });

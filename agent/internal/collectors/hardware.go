@@ -48,8 +48,12 @@ func (c *HardwareCollector) CollectSystemInfo() (*SystemInfo, error) {
 	hostInfo, err := host.Info()
 	if err == nil {
 		info.OSType = normalizeOSType(hostInfo.OS)
-		info.OSVersion = hostInfo.Platform + " " + hostInfo.PlatformVersion
-		info.OSBuild = hostInfo.KernelVersion
+		info.OSVersion, info.OSBuild = normalizeOSVersionBuild(
+			info.OSType, hostInfo.Platform, hostInfo.PlatformVersion, hostInfo.KernelVersion)
+		// Platform-specific enrichment (Windows: registry feature label +
+		// authoritative build). No-op on other platforms. Best-effort —
+		// failures leave the gopsutil-derived values untouched.
+		enrichOSInfo(info)
 	}
 
 	// Resolve hostname via the fallback chain (os.Hostname → platform
@@ -80,6 +84,70 @@ func normalizeOSType(os string) string {
 		return "macos"
 	}
 	return os
+}
+
+// normalizeOSVersionBuild derives a clean, separated OS version and build
+// string from gopsutil's host.Info fields.
+//
+// On Linux/macOS gopsutil already separates these cleanly: PlatformVersion is
+// the distro/OS version (e.g. "12.12", "15.7.7") and KernelVersion is the
+// build (e.g. "6.8.12-1-pve"). On Windows, however, gopsutil packs the full
+// build into BOTH PlatformVersion and KernelVersion (e.g.
+// "10.0.26200.8457 Build 26200.8457"), so the naive
+// "Platform + ' ' + PlatformVersion" duplicated the build into the version
+// column and left both fields verbose (issue #1302). Platform on Windows is
+// already the clean product name including the correct major release
+// ("Microsoft Windows 11 Pro" — gopsutil resolves the Win11-reports-10
+// registry quirk), so we use it verbatim as the version and extract just the
+// build.UBR for the build column.
+//
+// This is a pure function (no syscalls) so it is fully unit-testable and
+// produces correct output even when the Windows registry enrichment in
+// enrichOSInfo is unavailable.
+func normalizeOSVersionBuild(osType, platform, platformVersion, kernelVersion string) (osVersion, osBuild string) {
+	platform = strings.TrimSpace(platform)
+	platformVersion = strings.TrimSpace(platformVersion)
+	kernelVersion = strings.TrimSpace(kernelVersion)
+
+	if osType == "windows" {
+		// Version = product name only (build-free). Build = the canonical
+		// "<CurrentBuildNumber>.<UBR>" extracted from the gopsutil string.
+		build := platformVersion
+		if build == "" {
+			build = kernelVersion
+		}
+		return platform, extractWindowsBuild(build)
+	}
+
+	// Non-Windows: preserve gopsutil's already-clean separation.
+	osVersion = strings.TrimSpace(platform + " " + platformVersion)
+	return osVersion, kernelVersion
+}
+
+// extractWindowsBuild reduces a gopsutil Windows version string to the
+// canonical "<build>.<UBR>" form admins recognize. Inputs seen in the wild:
+//   - "10.0.26200.8457 Build 26200.8457" -> "26200.8457"
+//   - "10.0.26200.8457"                  -> "26200.8457"
+//   - "26200.8457"                       -> "26200.8457"
+//
+// Anything unrecognized is returned trimmed and unchanged so we never lose
+// information.
+func extractWindowsBuild(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	// Prefer the explicit "Build <x>" token (case-insensitive); take the last.
+	if idx := strings.LastIndex(strings.ToLower(v), "build "); idx >= 0 {
+		if tail := strings.TrimSpace(v[idx+len("build "):]); tail != "" {
+			return tail
+		}
+	}
+	// Else strip a leading NT major.minor ("10.0.") from a dotted quad.
+	if strings.HasPrefix(v, "10.0.") {
+		return strings.TrimPrefix(v, "10.0.")
+	}
+	return v
 }
 
 func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {

@@ -4,8 +4,8 @@ import { orgRoutes } from './orgs';
 
 vi.mock('../services', () => ({}));
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const db: Record<string, unknown> = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => Object.assign(Promise.resolve([]), {
@@ -31,14 +31,21 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     }))
-  },
-  withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
-  runOutsideDbContext: vi.fn((fn: any) => fn()),
-  SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
-}));
+  };
+  // POST /orgs/partners wraps insert + status seeding in db.transaction; the tx
+  // delegates to the same mock so per-test db.insert overrides flow through.
+  db.transaction = vi.fn(async (cb: any) => cb(db));
+  return {
+    db,
+    withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
+    runOutsideDbContext: vi.fn((fn: any) => fn()),
+    SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
+  };
+});
 
 vi.mock('../db/schema', () => ({
+  ticketStatuses: {},
   partners: {},
   organizations: {},
   sites: {},

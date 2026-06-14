@@ -170,4 +170,30 @@ describe('buildAuditCsv', () => {
     const fallbackCsv = buildAuditCsv([{ ...decided, deniedByName: null }]);
     expect(fallbackCsv.split('\n')[1]).toContain('deadbeef-0000-4000-8000-000000000001');
   });
+
+  it('exports decision provenance columns (source + matched policy/rule names)', () => {
+    const csv = buildAuditCsv([
+      {
+        ...decided,
+        decisionSource: 'pam_rule',
+        pamRuleName: 'Allow run_script',
+        matchedPolicyName: null,
+      },
+    ]);
+    const lines = csv.split('\n');
+    expect(lines[0]).toContain('decisionSource');
+    expect(lines[0]).toContain('matchedPolicyName');
+    expect(lines[0]).toContain('pamRuleName');
+    expect(lines[1]).toContain('pam_rule');
+    expect(lines[1]).toContain('Allow run_script');
+  });
+
+  it('emits empty provenance cells when null', () => {
+    const csv = buildAuditCsv([decided]);
+    const header = csv.split('\n')[0].split(',');
+    const row = csv.split('\n')[1].split(',');
+    for (const col of ['decisionSource', 'matchedPolicyName', 'pamRuleName']) {
+      expect(row[header.indexOf(col)]).toBe('');
+    }
+  });
 });

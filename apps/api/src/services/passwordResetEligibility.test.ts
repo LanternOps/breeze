@@ -117,6 +117,10 @@ describe('getPasswordResetEligibility', () => {
 
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe('tenant_inactive');
+    // #719 residual 1: the specific blocking status is recorded server-side
+    // so the audit trail distinguishes a deliberate suspension from a benign
+    // pending signup.
+    expect(result.detail).toBe('partner:suspended');
   });
 
   it('blocks reset for churned partner', async () => {
@@ -129,9 +133,10 @@ describe('getPasswordResetEligibility', () => {
 
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe('tenant_inactive');
+    expect(result.detail).toBe('partner:churned');
   });
 
-  it('blocks reset for soft-deleted partner', async () => {
+  it('blocks reset for soft-deleted partner (detail maps to missing, not the raw status)', async () => {
     setupSelects(
       [{ id: 'u-1', email: 'gone@acme.com', status: 'active', partnerId: 'p-1', orgId: null }],
       [{ status: 'active', deletedAt: new Date('2026-01-01') }],
@@ -141,6 +146,9 @@ describe('getPasswordResetEligibility', () => {
 
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe('tenant_inactive');
+    // Soft-deleted collapses to `missing` so a purged-vs-soft-deleted partner
+    // can't be distinguished from the audit detail.
+    expect(result.detail).toBe('partner:missing');
   });
 
   it('blocks reset for disabled users', async () => {
@@ -165,6 +173,7 @@ describe('getPasswordResetEligibility', () => {
 
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe('tenant_inactive');
+    expect(result.detail).toBe('org:suspended');
   });
 
   it('blocks reset for SSO-enforced org users', async () => {

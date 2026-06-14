@@ -250,3 +250,17 @@ Helper chat → tool call → preToolUse gate
   ingest routing, status bridge, `/respond` integration.
 - RLS/site-scope contract coverage for the new `ai_tool_action` rows.
 - No change to `waitForApproval`'s polling contract — verified by reuse.
+
+## Addendum (2026-06-12): Config-Policy enablement split
+
+UAC interception enablement is now a `pam` config-policy feature (inline
+settings `{uacInterceptionEnabled: boolean}`, default ON, closest-wins),
+delivered to the agent via the heartbeat `uacInterceptionEnabled` field and
+gated in `etwlua.handleEvent`. Rule authoring, the elevation request queue,
+and audit remain org/site-scoped in the standalone `/pam` control plane —
+closest-wins override semantics are intentionally NOT applied to the rule
+chain (a device-level policy must not silently shadow org baseline security
+rules). If partner-level rule baselines or device-group rule scoping become
+a requirement, revisit as a Pattern A linked feature with explicit
+merge (not override) semantics. Plan:
+`docs/superpowers/plans/2026-06-12-pam-config-policy-enablement.md`.

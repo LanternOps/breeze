@@ -4,16 +4,19 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import PamRespondModal from './PamRespondModal';
 import PamRevokeModal from './PamRevokeModal';
+import PamRuleModal from './PamRuleModal';
 import {
   ACTIVE_STATUSES,
   type ElevationFlowType,
   type ElevationRequest,
   type ElevationStatus,
+  FLOW_ICONS,
   FLOW_LABELS,
   type Pagination,
   STATUS_LABELS,
-  decidedByLabel,
+  decisionAttribution,
   requestTarget,
+  requestToRuleDraft,
   statusBadgeClass,
 } from './types';
 
@@ -39,6 +42,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
   const [error, setError] = useState<string | null>(null);
   const [responding, setResponding] = useState<ElevationRequest | null>(null);
   const [revoking, setRevoking] = useState<ElevationRequest | null>(null);
+  const [ruleDraft, setRuleDraft] = useState<ElevationRequest | null>(null);
 
   const fetchRequests = useCallback(
     async (signal?: AbortSignal) => {
@@ -142,7 +146,15 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           <Inbox className="mx-auto h-8 w-8 text-muted-foreground" />
           <p className="mt-2 text-sm font-medium">No elevation requests</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Requests matching the current filters will appear here.
+            {status === 'pending'
+              ? 'Nothing waiting on you. New UAC prompts, JIT admin requests, and AI tool actions queue here.'
+              : 'Requests matching the current filters will appear here.'}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Not seeing expected requests? UAC capture is controlled per device by{' '}
+            <a href="/configuration-policies" className="underline underline-offset-2 hover:text-foreground">
+              Configuration Policies → Privileged Access
+            </a>.
           </p>
         </div>
       ) : (
@@ -163,7 +175,11 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
               {requests.map((r) => {
                 const canRespond = r.status === 'pending';
                 const canRevoke = (ACTIVE_STATUSES as readonly string[]).includes(r.status);
-                const decidedBy = decidedByLabel(r);
+                const attribution = decisionAttribution(r);
+                // Policy/rule denials already name their source — the raw
+                // "Blocked by…" string is then redundant.
+                const showDenialReason =
+                  r.decisionSource === 'human' || r.decisionSource == null;
                 return (
                   <tr key={r.id} className="border-b align-top last:border-0" data-testid={`pam-request-row-${r.id}`}>
                     <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
@@ -201,23 +217,33 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         </div>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2">{FLOW_LABELS[r.flowType]}</td>
+                    <td className="whitespace-nowrap px-3 py-2">
+                      {(() => {
+                        const FlowIcon = FLOW_ICONS[r.flowType];
+                        return (
+                          <span className="inline-flex items-center gap-1.5">
+                            <FlowIcon aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
+                            {FLOW_LABELS[r.flowType]}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
                       >
                         {STATUS_LABELS[r.status]}
                       </span>
-                      {decidedBy && (
+                      {attribution && (
                         <div
                           className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
                           data-testid={`pam-decided-by-${r.id}`}
-                          title={`by ${decidedBy}`}
+                          title={attribution}
                         >
-                          by {decidedBy}
+                          {attribution}
                         </div>
                       )}
-                      {r.denialReason && (
+                      {showDenialReason && r.denialReason && (
                         <div className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground" title={r.denialReason}>
                           {r.denialReason}
                         </div>
@@ -244,6 +270,15 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                           Revoke
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => setRuleDraft(r)}
+                        data-testid={`pam-create-rule-btn-${r.id}`}
+                        title="Create a PAM rule pre-filled from this request"
+                        className="ml-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                      >
+                        Rule…
+                      </button>
                     </td>
                   </tr>
                 );
@@ -283,6 +318,21 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           onClose={() => setResponding(null)}
           onActioned={() => {
             setResponding(null);
+            void fetchRequests();
+          }}
+          onCreateRule={() => {
+            setRuleDraft(responding);
+            setResponding(null);
+          }}
+        />
+      )}
+      {ruleDraft && (
+        <PamRuleModal
+          rule={null}
+          initial={requestToRuleDraft(ruleDraft)}
+          onClose={() => setRuleDraft(null)}
+          onSaved={() => {
+            setRuleDraft(null);
             void fetchRequests();
           }}
         />

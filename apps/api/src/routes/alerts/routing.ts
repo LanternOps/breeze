@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { db } from '../../db';
 import { notificationRoutingRules } from '../../db/schema';
 import { eq, and, asc } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 
 const createRoutingRuleSchema = z.object({
   name: z.string().min(1).max(255),
@@ -35,6 +36,8 @@ const updateRoutingRuleSchema = z.object({
 
 export const routingRoutes = new Hono();
 
+const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
 routingRoutes.get(
   '/routing-rules',
   requireScope('organization', 'partner', 'system'),
@@ -63,6 +66,8 @@ routingRoutes.get(
 routingRoutes.post(
   '/routing-rules',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', createRoutingRuleSchema),
   async (c) => {
     try {
@@ -106,6 +111,8 @@ routingRoutes.post(
 routingRoutes.patch(
   '/routing-rules/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', updateRoutingRuleSchema),
   async (c) => {
     try {
@@ -161,6 +168,8 @@ routingRoutes.patch(
 routingRoutes.delete(
   '/routing-rules/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     try {
       const auth = c.get('auth');

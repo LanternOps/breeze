@@ -30,6 +30,7 @@ vi.mock('drizzle-orm', () => {
     and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
     eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
     inArray: (left: unknown, right: unknown) => ({ op: 'inArray', left, right }),
+    asc: (value: unknown) => ({ op: 'asc', value }),
     desc: (value: unknown) => ({ op: 'desc', value }),
     sql
   };
@@ -198,6 +199,35 @@ function selectPatchListResult(rows: unknown[]) {
   };
 }
 
+// Like selectPatchListResult but records the orderBy/limit/offset args so a test
+// can assert how sort + pagination params were translated into the query.
+function selectPatchListCapture(rows: unknown[], capture: {
+  orderBy?: unknown;
+  limit?: unknown;
+  offset?: unknown;
+}) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockImplementation((arg: unknown) => {
+          capture.orderBy = arg;
+          return {
+            limit: vi.fn().mockImplementation((lim: unknown) => {
+              capture.limit = lim;
+              return {
+                offset: vi.fn().mockImplementation((off: unknown) => {
+                  capture.offset = off;
+                  return Promise.resolve(rows);
+                })
+              };
+            })
+          };
+        })
+      })
+    })
+  };
+}
+
 function selectSourceCountsResult(rows: Array<{ source: string; count: number }> = []) {
   return {
     from: vi.fn().mockReturnValue({
@@ -337,6 +367,104 @@ describe('patch routes', () => {
     expect(body.data).toHaveLength(1);
     expect(body.data[0].cveIds).toEqual(['CVE-2024-1234']);
     expect(body.data[0].version).toBe('128.0.3');
+  });
+
+  it('defaults to newest-first (desc createdAt) when no sort params are supplied', async () => {
+    const capture: { orderBy?: unknown; limit?: unknown; offset?: unknown } = {};
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.orderBy).toEqual({ op: 'desc', value: 'patches.createdAt' });
+  });
+
+  it('maps a whitelisted sortBy/sortDir to the matching column and direction', async () => {
+    const capture: { orderBy?: unknown; limit?: unknown; offset?: unknown } = {};
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches?sortBy=title&sortDir=desc', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.orderBy).toEqual({ op: 'desc', value: 'patches.title' });
+  });
+
+  it('defaults sort direction to asc when sortBy is given without sortDir', async () => {
+    const capture: { orderBy?: unknown; limit?: unknown; offset?: unknown } = {};
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches?sortBy=severity', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.orderBy).toEqual({ op: 'asc', value: 'patches.severity' });
+  });
+
+  it('rejects an unknown sortBy column with 400', async () => {
+    const res = await app.request('/patches?sortBy=dropTable', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an invalid sortDir with 400', async () => {
+    const res = await app.request('/patches?sortBy=title&sortDir=sideways', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('honors a page size up to the raised 200 cap', async () => {
+    const capture: { orderBy?: unknown; limit?: unknown; offset?: unknown } = {};
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches?limit=200', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.limit).toBe(200);
+  });
+
+  it('clamps a limit above the 200 cap down to 200', async () => {
+    const capture: { orderBy?: unknown; limit?: unknown; offset?: unknown } = {};
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches?limit=5000', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.limit).toBe(200);
   });
 
   it('infers patch os from associated device when source is third_party', async () => {

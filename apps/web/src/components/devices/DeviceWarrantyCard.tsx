@@ -70,6 +70,7 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
   const [warranty, setWarranty] = useState<WarrantyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(false);
 
   const fetchWarranty = async () => {
     try {
@@ -77,9 +78,12 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
       if (res.ok) {
         const data = await res.json();
         setWarranty(data.warranty);
+        setError(false);
+      } else {
+        setError(true);
       }
     } catch {
-      // silent
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -120,7 +124,23 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
             <ShieldCheck className="h-4 w-4" />
             Warranty
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">No warranty information</p>
+          {error ? (
+            // A fetch failure is distinct from a device that genuinely has no
+            // warranty record — surface it with a retry rather than the
+            // identical "No warranty information" empty state.
+            <p className="mt-2 text-sm text-muted-foreground">
+              Couldn&apos;t load warranty.{' '}
+              <button
+                type="button"
+                onClick={() => { setError(false); setLoading(true); fetchWarranty(); }}
+                className="font-medium text-primary hover:underline"
+              >
+                Retry
+              </button>
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground">No warranty information</p>
+          )}
         </div>
       );
     }

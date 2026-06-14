@@ -53,7 +53,18 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => (c: any, next: any) => next())
+  requireScope: vi.fn(() => (c: any, next: any) => next()),
+  // The RBAC gate added in this PR. The gate middleware is built once at import
+  // time, so it consults a mutable global flag rather than relying on a
+  // re-mocked implementation: tests flip `__denyPermission` to assert a user
+  // lacking the permission gets 403. Default (false) lets every gate pass so
+  // the existing route tests keep exercising the happy path.
+  requirePermission: vi.fn(() => async (_c: any, next: any) => {
+    if ((globalThis as any).__denyPermission) {
+      return _c.json({ error: 'Permission denied' }, 403);
+    }
+    await next();
+  })
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -157,6 +168,7 @@ describe('security routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    (globalThis as any).__denyPermission = false;
     vi.mocked(listLatestSecurityPosture).mockResolvedValue([]);
     vi.mocked(getSecurityPostureTrend).mockResolvedValue([]);
     vi.mocked(getLatestSecurityPostureForDevice).mockResolvedValue(null);
@@ -304,6 +316,20 @@ describe('security routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    it('should return 403 when caller lacks the devices:execute permission', async () => {
+      (globalThis as any).__denyPermission = true;
+
+      const res = await app.request('/security/scan/f1bd7f85-1df4-44aa-8147-6b4dba0b7e05', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scanType: 'quick' })
+      });
+
+      expect(res.status).toBe(403);
+      // Gate runs before the handler — no command should be dispatched.
+      expect(queueCommand).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /security/scans/:deviceId', () => {
@@ -340,6 +366,65 @@ describe('security routes', () => {
       const body = await res.json();
       expect(body.data.length).toBeGreaterThan(0);
       expect(body.data.every((scan: any) => scan.status === 'completed')).toBe(true);
+    });
+  });
+
+  describe('POST /security/threats/:id/{quarantine,remove,restore} RBAC gate', () => {
+    const threatId = '9b0ce8f4-21c0-4f65-8b0a-0b9f8bbf9a11';
+
+    it.each(['quarantine', 'remove', 'restore'] as const)(
+      'should return 403 on /%s when caller lacks devices:execute',
+      async (action) => {
+        (globalThis as any).__denyPermission = true;
+
+        const res = await app.request(`/security/threats/${threatId}/${action}`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+
+        expect(res.status).toBe(403);
+        // Destructive agent command must not be dispatched when RBAC denies.
+        expect(queueCommand).not.toHaveBeenCalled();
+      }
+    );
+  });
+
+  describe('POST/PUT /security/policies RBAC gate', () => {
+    const validPolicyBody = {
+      name: 'Test AV Policy',
+      scanSchedule: 'weekly',
+      realTimeProtection: true,
+      autoQuarantine: true,
+      severityThreshold: 'medium',
+      exclusions: []
+    };
+
+    it('should return 403 on POST when caller lacks devices:write', async () => {
+      (globalThis as any).__denyPermission = true;
+
+      const res = await app.request('/security/policies', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(validPolicyBody)
+      });
+
+      expect(res.status).toBe(403);
+      // Gate runs before the handler — nothing should be written.
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('should return 403 on PUT when caller lacks devices:write', async () => {
+      (globalThis as any).__denyPermission = true;
+
+      const res = await app.request('/security/policies/9b0ce8f4-21c0-4f65-8b0a-0b9f8bbf9a11', {
+        method: 'PUT',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 

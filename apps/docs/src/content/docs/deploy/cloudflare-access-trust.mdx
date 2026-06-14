@@ -46,6 +46,29 @@ The Cloudflare Access JWT does not carry an MFA claim — it tells you the user 
 - `CF_ACCESS_TRUSTS_MFA=false` (default) — even on a valid JWT, if the matched Breeze user has MFA enrolled, the middleware issues a `tempToken` and the SPA's normal MFA challenge runs. The user does not have to re-enter their password, but they do enter their TOTP code.
 - `CF_ACCESS_TRUSTS_MFA=true` — the minted Breeze session is marked as MFA-satisfied. Only turn this on if your CF Access policy actually requires step-up. The setting is honoured deployment-wide; it does not vary per partner or per user.
 
+## Redirect login flow
+
+The header short-circuit on `POST /api/v1/auth/login` covers the normal SPA login XHR, but top-level browser navigations (deep links, an SSO-style redirect into Breeze) can't attach a Bearer token or read a JSON response. For that case there is a dedicated `GET /api/v1/auth/cf-access-login` endpoint:
+
+1. A top-level navigation hits `GET /api/v1/auth/cf-access-login?next=/dashboard`. Cloudflare Access attaches the `Cf-Access-Jwt-Assertion` header automatically.
+2. The handler verifies the JWT (same signature/issuer/audience checks as the middleware), looks up the user by `email`, confirms the account is `active`, and resolves the partner/org context.
+3. On success it mints a Breeze token pair, sets the refresh cookie, and issues a `302` to the sanitized `next` path with a `?cf-access-login=success` marker. The SPA detects the marker and bootstraps from the refresh cookie.
+4. On any failure it redirects to `/login?error=cf-access&reason=…` (e.g. `invalid-jwt`, `no-user`, `mfa-required`) so the user falls back to the normal login form.
+
+The `next` target is sanitized to a single leading-slash relative path, so the endpoint cannot be used as an open redirect.
+
+## Sign-out and token lifecycle
+
+CF Access-minted sessions behave exactly like password-login sessions for the full token lifecycle — there is no weaker "edge-trusted" session class.
+
+- **Logout revokes everything.** `GET /api/v1/auth/cf-access-logout` reads the refresh cookie, verifies it, and then calls the same bulk revocation as password logout: it revokes **all** of the user's access and refresh tokens and the specific refresh-token JTI, then clears the cookie. An access or refresh token exfiltrated before sign-out is dead the moment the user signs out, rather than living to its natural expiry.
+- **Refresh-family reuse detection.** Both CF Access mint paths (the `POST /login` header short-circuit and the `GET /cf-access-login` redirect) issue refresh tokens inside a bound token family, identical to password login. Replaying a previously rotated refresh token trips reuse detection and revokes the whole family. Before this parity fix, CF-minted tokens skipped family binding and were exempt from reuse detection.
+- **Origin-validated logout redirect.** The post-logout redirect target is built from the configured `DASHBOARD_URL` / `PUBLIC_APP_URL` origin, never from the request `Host` header, and falls back to an `https`-only scheme. A spoofed `Host` cannot bounce the user off-domain after Cloudflare clears its session.
+
+<Aside type="caution">
+  For sign-out to clear the Cloudflare Access session too, `GET /api/v1/auth/cf-access-logout` must itself be enforced by your Access application (not swallowed by a blanket `/api/*` bypass rule). See the path list in **Recommended Cloudflare Access setup** below.
+</Aside>
+
 ## Configuration
 
 | Variable | Required when trust is on | Description |

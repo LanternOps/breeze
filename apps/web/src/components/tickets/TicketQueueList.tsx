@@ -1,12 +1,15 @@
 import { cn } from '@/lib/utils';
 import SlaChip from './SlaChip';
 import { statusConfig, priorityConfig, type TicketSummary } from './ticketConfig';
+import { priorityLabel, statusLabel, type TicketConfig } from '../../lib/ticketConfigApi';
 
 interface Props {
   tickets: TicketSummary[];
   selectedId: string | null;
   onSelect: (t: TicketSummary) => void;
   loading: boolean;
+  /** Ticket config for custom-status names/colors and priority labels; null falls back to core config. */
+  config?: TicketConfig | null;
   /** When set, the empty state offers a "Clear filters" action (UI brief: "View empty (filters)"). */
   onClearFilters?: () => void;
   /** Bulk selection (UI brief §6). Checkboxes render only when onToggleSelect is provided. */
@@ -21,7 +24,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(mins / (60 * 24))}d ago`;
 }
 
-export default function TicketQueueList({ tickets, selectedId, onSelect, loading, onClearFilters, bulkSelectedIds, onToggleSelect }: Props) {
+export default function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect }: Props) {
   const anyBulkSelected = (bulkSelectedIds?.size ?? 0) > 0;
 
   if (loading) {
@@ -97,12 +100,19 @@ export default function TicketQueueList({ tickets, selectedId, onSelect, loading
               <span
                 className={cn('inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium', priorityConfig[t.priority].color)}
               >
-                {priorityConfig[t.priority].label}
+                {priorityLabel(config, t.priority)}
               </span>
               <span
-                className={cn('inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium', statusConfig[t.status].color)}
+                className={cn('inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium', statusConfig[t.status].color)}
               >
-                {statusConfig[t.status].label}
+                {t.statusColor && (
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: t.statusColor }}
+                    aria-hidden="true"
+                  />
+                )}
+                {statusLabel(config, t.status, t.statusName)}
               </span>
               <span className="truncate">{t.orgName ?? ''}</span>
               <span className="ml-auto shrink-0 flex items-center gap-2">

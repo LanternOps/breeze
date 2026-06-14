@@ -5,6 +5,7 @@ import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middlewa
 import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   getConfigPolicy,
   addFeatureLink,
@@ -12,6 +13,7 @@ import {
   removeFeatureLink,
   listFeatureLinks,
   validateFeaturePolicyExists,
+  pamInlineSettingsSchema,
 } from '../../services/configurationPolicy';
 import {
   addFeatureLinkSchema,
@@ -96,6 +98,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'pam' && data.inlineSettings) {
+      const parsed = pamInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          { error: 'Invalid pam settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     try {
       const link = await addFeatureLink(
         id,
@@ -114,8 +127,8 @@ featureLinkRoutes.post(
       });
 
       return c.json(link, 201);
-    } catch (err: any) {
-      if (err?.code === '23505') {
+    } catch (err: unknown) {
+      if (isPgUniqueViolation(err)) {
         return c.json({ error: `Feature type "${data.featureType}" already linked to this policy` }, 409);
       }
       throw err;
@@ -174,6 +187,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             { error: 'Invalid backup settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'pam') {
+        const parsed = pamInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            { error: 'Invalid pam settings', details: parsed.error.flatten(), issues: parsed.error.issues },
             400
           );
         }

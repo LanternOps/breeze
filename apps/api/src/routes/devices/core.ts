@@ -625,6 +625,7 @@ coreRoutes.get(
         status: d.status,
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,
+        pendingReboot: d.pendingReboot,
         lastSeenAt: d.lastSeenAt,
         enrolledAt: d.enrolledAt,
         tags: d.tags,

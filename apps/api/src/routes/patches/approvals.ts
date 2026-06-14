@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
+import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { patches, patchApprovals } from '../../db/schema';
 import {
@@ -66,6 +67,8 @@ approvalsRoutes.get(
 approvalsRoutes.post(
   '/bulk-approve',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', bulkApproveSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -123,6 +126,8 @@ approvalsRoutes.post(
 approvalsRoutes.post(
   '/:id/approve',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', patchIdParamSchema),
   zValidator('json', approvalActionSchema),
   async (c) => {
@@ -182,6 +187,8 @@ approvalsRoutes.post(
 approvalsRoutes.post(
   '/:id/decline',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', patchIdParamSchema),
   zValidator('json', approvalActionSchema),
   async (c) => {
@@ -238,6 +245,8 @@ approvalsRoutes.post(
 approvalsRoutes.post(
   '/:id/defer',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', patchIdParamSchema),
   zValidator('json', deferSchema),
   async (c) => {

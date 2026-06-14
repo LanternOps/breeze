@@ -30,13 +30,23 @@ export const updateTicketSchema = z.object({
 });
 
 export const changeTicketStatusSchema = z.object({
-  status: ticketStatusSchema,
+  status: ticketStatusSchema.optional(),
+  statusId: z.string().uuid().optional(),
   resolutionNote: z.string().min(1).max(10_000).optional(),
   pendingReason: z.string().max(500).optional()
-}).refine(
-  (v) => v.status !== 'resolved' || (v.resolutionNote !== undefined && v.resolutionNote.length > 0),
-  { message: 'resolutionNote is required when resolving', path: ['resolutionNote'] }
-);
+}).superRefine((v, ctx) => {
+  const hasStatus = v.status !== undefined;
+  const hasStatusId = v.statusId !== undefined;
+  if (hasStatus && hasStatusId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide either status or statusId, not both', path: ['status'] });
+  }
+  if (!hasStatus && !hasStatusId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Either status or statusId is required', path: [] });
+  }
+  if (hasStatus && v.status === 'resolved' && (!v.resolutionNote || v.resolutionNote.length === 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'resolutionNote is required when resolving', path: ['resolutionNote'] });
+  }
+});
 
 export const assignTicketSchema = z.object({
   assigneeId: z.string().uuid().nullable()

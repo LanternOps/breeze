@@ -72,8 +72,18 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../services/softwarePolicyService', () => ({
+  recordSoftwarePolicyAudit: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { softwareInventoryRoutes } from './softwareInventory';
 import { db } from '../db';
+import { writeRouteAudit } from '../services/auditEvents';
+import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
 
 const ORG_ID = 'org-111';
 const POLICY_ID = '11111111-1111-1111-1111-111111111111';
@@ -311,6 +321,24 @@ describe('software inventory routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.policyId).toBe(POLICY_ID);
+
+      // Audit chain must record the approval
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: ORG_ID,
+          action: 'software_policy.inventory_approve',
+          resourceType: 'software_policy',
+          resourceId: POLICY_ID,
+        }),
+      );
+      expect(recordSoftwarePolicyAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orgId: ORG_ID,
+          policyId: POLICY_ID,
+          action: 'inventory_approve',
+        }),
+      );
     });
 
     it('adds to existing allowlist if one exists', async () => {
@@ -352,6 +380,19 @@ describe('software inventory routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.policyId).toBe(POLICY_ID);
+
+      // Audit chain must record the approval on the existing policy
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'software_policy.inventory_approve',
+          resourceType: 'software_policy',
+          resourceId: POLICY_ID,
+        }),
+      );
+      expect(recordSoftwarePolicyAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'inventory_approve', policyId: POLICY_ID }),
+      );
     });
 
     it('returns 400 when org context missing', async () => {

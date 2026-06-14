@@ -189,6 +189,32 @@ Partner self-registration is controlled by an environment variable that can be s
 
 ---
 
+## Admin IP Allowlist
+
+A partner can restrict dashboard and API access to a list of approved source IPs. The allowlist lives in `partners.settings.security.ipAllowlist` as an array of literal addresses and/or CIDR ranges, and accepts both **IPv4 and IPv6** (including IPv4-mapped IPv6 forms). An **empty array means the allowlist is disabled** — no restriction is applied.
+
+When the allowlist is non-empty, it is enforced at three points:
+
+- **At login** — after credentials are verified but before any token is minted, a request from a non-allowed IP is rejected (`401`, `IP_NOT_ALLOWED`).
+- **On every authenticated request** — a guard runs after authentication resolves the partner context and denies non-allowed IPs (`403`, `IP_NOT_ALLOWED`).
+- **On partner-scoped MCP / OAuth API keys** — partner-scoped programmatic access is held to the same allowlist.
+
+**Agents are exempt.** Agent enrollment, heartbeats, and command traffic authenticate through a separate path that never passes through the user IP-allowlist guard, so restricting admin access does not strand the device fleet.
+
+### Configuration
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `settings.security.ipAllowlist` | `string[]` | Literal IPv4/IPv6 addresses and CIDR ranges (e.g. `203.0.113.10`, `10.0.0.0/8`, `2001:db8::/32`). Each entry is validated on write; invalid entries are rejected with `400`. Empty array = disabled. |
+
+Because the allowlist depends on knowing the true client IP, the API refuses to enable it unless trusted-proxy parsing is configured (`TRUST_PROXY_HEADERS` plus `TRUSTED_PROXY_CIDRS`); turning it on without that returns `400 proxy_trust_required`. If the source IP cannot be trusted at runtime (a proxy misconfiguration), enforcement fails **open** and logs a rate-limited warning rather than locking everyone out; a database/read error during the check fails **closed** (`503`). A `PATCH` to partner settings that omits `ipAllowlist` preserves the existing list — you must send `ipAllowlist: []` to deliberately clear it.
+
+<Aside type="caution">
+  An incorrect allowlist will lock you (and every other admin) out of the dashboard and API. Before saving, confirm your current IP — and any VPN/egress ranges your team uses — are covered, and prefer CIDR ranges over single addresses for connections with dynamic IPs. Changes propagate to other API instances within roughly 30 seconds (the allowlist is cached per partner). A deployment-wide break-glass switch (`IP_ALLOWLIST_ENFORCEMENT_MODE=off`) disables all enforcement if you are locked out and have host access.
+</Aside>
+
+---
+
 ## Managing Partners
 
 ### Creating Partners (System Scope)

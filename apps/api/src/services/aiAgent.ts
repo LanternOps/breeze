@@ -16,7 +16,10 @@ import { escapeLike } from '../utils/sql';
 import { AI_SYSTEM_PROMPT_BASE } from './aiAgentSystemPrompt';
 import { getActiveDeviceContext } from './brainDeviceContext';
 
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
+// Current model id so the Claude Agent SDK can price it natively. A stale id makes the
+// SDK report total_cost_usd: 0 → $0.00 cost tracking (issue #1326). Successor to the
+// previous default claude-sonnet-4-5-20250929, at the same $3/$15 per-MTok tier.
+const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 // ============================================
 // Session Management

@@ -40,9 +40,16 @@ func startETWLua(ctx context.Context, hb *heartbeat.Heartbeat) <-chan struct{} {
 		close(done)
 		return done
 	}
+	// The local PAM elevation flow (dialog → actuate) needs the user-helper
+	// session broker. When it's absent (e.g. an interactive agent with no
+	// user-helper), pass a nil PamRunner so etwlua stays detection-only.
+	var pam etwlua.PamRunner
+	if hb.SessionBroker() != nil {
+		pam = hb
+	}
 	go func() {
 		defer close(done)
-		if err := etwlua.Start(ctx, sub, hb); err != nil {
+		if err := etwlua.Start(ctx, sub, hb, pam); err != nil {
 			log.Warn("etwlua Start returned error", "error", err.Error())
 		}
 	}()

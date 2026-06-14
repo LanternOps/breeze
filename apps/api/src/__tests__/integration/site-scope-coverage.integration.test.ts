@@ -345,6 +345,12 @@ describe('site-scope coverage — input-sourced / list-style', () => {
 // Vetted-safe: confirmed NOT a dead gate despite matching the static shape.
 // Each entry MUST carry a one-line justification.
 const DEAD_PERMS_GATE_EXEMPT: ReadonlySet<string> = new Set<string>([
+  // ws-ticket mint route sources its site gate from `auth.allowedSiteIds`
+  // (set unconditionally by authMiddleware via getUserPermissions — the same
+  // source as `permissions.allowedSiteIds`), not the `permissions` context, so
+  // the gate is live without requirePermission. Gating event-ticket minting
+  // behind DEVICES_READ would lock non-device roles out of org-level events.
+  'routes/eventWs.ts:POST /ws-ticket',
 ]);
 
 // BASELINE RATCHET — routes whose perms-sourced site gate is dead RIGHT NOW,

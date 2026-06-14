@@ -175,6 +175,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     description: z.string().max(50_000).optional(),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
     status: z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']).optional(),
+    statusName: z.string().min(1).max(60).optional(),
     resolutionNote: z.string().max(10000).optional(),
     content: z.string().max(50_000).optional(),
     isPublic: z.boolean().optional(),

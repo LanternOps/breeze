@@ -13,7 +13,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-import { addFeatureLink, updateFeatureLink, listFeatureLinks } from './configurationPolicy';
+import { addFeatureLink, updateFeatureLink, listFeatureLinks, pamInlineSettingsSchema } from './configurationPolicy';
 import { db } from '../db';
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
@@ -331,5 +331,174 @@ describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () =>
 
     const result = await listFeatureLinks('policy-1');
     expect(result[0]!.inlineSettings).toEqual(helperSettings);
+  });
+});
+
+// ============================================================
+// pamInlineSettingsSchema — unit tests for the exported schema
+// ============================================================
+
+describe('pamInlineSettingsSchema', () => {
+  it('accepts {} (all fields optional)', () => {
+    expect(() => pamInlineSettingsSchema.parse({})).not.toThrow();
+  });
+
+  it('accepts { uacInterceptionEnabled: true }', () => {
+    const result = pamInlineSettingsSchema.parse({ uacInterceptionEnabled: true });
+    expect(result.uacInterceptionEnabled).toBe(true);
+  });
+
+  it('accepts { uacInterceptionEnabled: false }', () => {
+    const result = pamInlineSettingsSchema.parse({ uacInterceptionEnabled: false });
+    expect(result.uacInterceptionEnabled).toBe(false);
+  });
+
+  it('rejects uacInterceptionEnabled as string "false"', () => {
+    expect(() => pamInlineSettingsSchema.parse({ uacInterceptionEnabled: 'false' })).toThrow();
+  });
+
+  it('rejects uacInterceptionEnabled as number 0', () => {
+    expect(() => pamInlineSettingsSchema.parse({ uacInterceptionEnabled: 0 })).toThrow();
+  });
+
+  it('rejects unknown keys (strict)', () => {
+    expect(() => pamInlineSettingsSchema.parse({ uacInterceptionEnabled: true, extra: 'nope' })).toThrow();
+  });
+});
+
+// ============================================================
+// addFeatureLink — pam inlineSettings service-layer validation
+// ============================================================
+
+describe('addFeatureLink — pam inlineSettings service-layer validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws ZodError before entering the transaction when uacInterceptionEnabled is string "false"', async () => {
+    // transaction should never be called — validation is pre-transaction
+    await expect(
+      addFeatureLink('policy-1', 'pam', null, { uacInterceptionEnabled: 'false' })
+    ).rejects.toThrow();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('throws ZodError for unknown extra key on pam inlineSettings', async () => {
+    await expect(
+      addFeatureLink('policy-1', 'pam', null, { uacInterceptionEnabled: true, rogue: 'x' })
+    ).rejects.toThrow();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('does not throw and enters the transaction for valid pam inlineSettings { uacInterceptionEnabled: false }', async () => {
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(() =>
+            Promise.resolve([
+              { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: { uacInterceptionEnabled: false } },
+            ])
+          ),
+        })),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const link = await addFeatureLink('policy-1', 'pam', null, { uacInterceptionEnabled: false });
+    expect(link).toBeDefined();
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledOnce();
+  });
+
+  it('does not throw and enters the transaction for valid pam inlineSettings {}', async () => {
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(() =>
+            Promise.resolve([
+              { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: {} },
+            ])
+          ),
+        })),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const link = await addFeatureLink('policy-1', 'pam', null, {});
+    expect(link).toBeDefined();
+  });
+
+  it('skips pam validation when inlineSettings is null/undefined', async () => {
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(() =>
+            Promise.resolve([
+              { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: null },
+            ])
+          ),
+        })),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    // Should not throw — pam validation is skipped for null/undefined inlineSettings
+    await expect(addFeatureLink('policy-1', 'pam', null, null)).resolves.toBeDefined();
+    await expect(addFeatureLink('policy-1', 'pam', null, undefined)).resolves.toBeDefined();
+  });
+});
+
+// ============================================================
+// updateFeatureLink — pam inlineSettings service-layer validation
+// ============================================================
+
+describe('updateFeatureLink — pam inlineSettings service-layer validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeTxWithExistingPamLink() {
+    const tx: any = {
+      select: vi.fn(() => selectLimitRows([
+        { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: {} },
+      ])),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([{ id: 'link-pam', featureType: 'pam' }])),
+          })),
+        })),
+      })),
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+      insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve([])) })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return tx;
+  }
+
+  it('throws ZodError when updating pam link with uacInterceptionEnabled as string "false"', async () => {
+    makeTxWithExistingPamLink();
+    await expect(
+      updateFeatureLink('link-pam', { inlineSettings: { uacInterceptionEnabled: 'false' } }, 'policy-1')
+    ).rejects.toThrow();
+  });
+
+  it('throws ZodError when updating pam link with unknown extra key', async () => {
+    makeTxWithExistingPamLink();
+    await expect(
+      updateFeatureLink('link-pam', { inlineSettings: { rogue: true } }, 'policy-1')
+    ).rejects.toThrow();
+  });
+
+  it('succeeds when updating pam link with valid inlineSettings { uacInterceptionEnabled: false }', async () => {
+    makeTxWithExistingPamLink();
+    const result = await updateFeatureLink('link-pam', { inlineSettings: { uacInterceptionEnabled: false } }, 'policy-1');
+    expect(result).not.toBeNull();
+  });
+
+  it('succeeds when updating pam link with inlineSettings: null (clear settings)', async () => {
+    makeTxWithExistingPamLink();
+    // null inlineSettings means "clear" — pam validation is skipped
+    const result = await updateFeatureLink('link-pam', { inlineSettings: null }, 'policy-1');
+    expect(result).not.toBeNull();
   });
 });

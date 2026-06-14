@@ -37,7 +37,7 @@ The Huntress integration syncs agent inventory and incident reports from your Hu
 ### Setting Up Huntress
 
 <Steps>
-1. In the Breeze dashboard, navigate to **Integrations**, open the **Security** tab, and select **Huntress**.
+1. Set your scope selector to **All orgs**, then navigate to **Integrations**, open the **Security** tab, and select **Huntress**. Huntress is configured once for the whole partner.
 2. Provide a **name** for the integration (e.g., "Production Huntress").
 3. Enter your **Huntress API Key** and **API Secret** as shown in the Huntress portal. Paste each value into its own field — do not paste a Base64-encoded combination of the two; Breeze formats the API request automatically. Both values are encrypted at rest using AES before being stored.
 4. Optionally provide your **Huntress account ID**. (A custom API base URL can be set via the Breeze API; the default is `https://api.huntress.io/v1`.)
@@ -46,7 +46,7 @@ The Huntress integration syncs agent inventory and incident reports from your Hu
 </Steps>
 
 <Aside>
-  The Huntress integration is configured per organization. If your scope selector is set to **All orgs**, switch to a single organization before configuring or viewing the integration.
+  The Huntress integration is configured at the **partner** level — one Huntress account serves all of your customer organizations. Configure it with your scope selector set to **All orgs**; the connection and credential fields are only available in that view. You then map each Huntress organization to a Breeze organization (see [Organization Mappings](#organization-mappings) below). Organization users can view the agents and incidents for their mapped org but cannot change the connection or mappings.
 </Aside>
 
 <Aside>
@@ -83,6 +83,19 @@ When Breeze receives a Huntress webhook, it needs to determine which integration
 3. `x-huntress-account-id` header or account ID extracted from the payload
 
 If multiple active integrations match the same account and no explicit integration ID is provided, the webhook returns a 409 conflict.
+
+### Organization Mappings
+
+Because the Huntress integration is partner-scoped, Breeze discovers the organizations in your Huntress account during each sync and lets you map each one to a Breeze organization. Mapping an organization attributes its agents and incidents to the correct customer, so organization users only see their own data.
+
+<Steps>
+1. With your scope selector set to **All orgs**, open **Integrations > Security > Huntress** and find the **Organization mapping** section.
+2. Review the list of Huntress organizations discovered during sync, each shown with its agent and incident counts.
+3. For each Huntress organization, select the Breeze organization it should map to.
+4. The mapping saves immediately. Agents and incidents from that Huntress organization are attributed to the selected Breeze organization.
+</Steps>
+
+To remove a mapping, clear the selected Breeze organization. Unmapped Huntress organizations remain visible in the partner view, but their agents and incidents are no longer attributed to a specific customer.
 
 ### Data Model (For Integrators)
 

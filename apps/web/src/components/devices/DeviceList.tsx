@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Rows3, Rows4, AlignJustify } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3 } from 'lucide-react';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
@@ -21,11 +21,9 @@ import {
   type ColumnId,
 } from './columnVisibility';
 import {
-  DENSITY_OPTIONS,
   densityTableClasses,
   readDensity,
   subscribeDensity,
-  writeDensity,
   type Density,
 } from '@/lib/density';
 import { OSIcon } from './osIcons';
@@ -176,8 +174,53 @@ const osLabels: Record<OSType, string> = {
   linux: 'Linux'
 };
 
-type SortField = 'hostname' | 'status' | 'cpuPercent' | 'ramPercent' | 'lastSeen' | null;
+type SortField = ColumnId | null;
 type SortDirection = 'asc' | 'desc';
+
+// Meaningful ordering for the Status sort. Raw enum alphabetics would put
+// "decommissioned" before "online"; rank by operational severity instead.
+const statusSortRank: Record<DeviceStatus, number> = {
+  online: 0,
+  updating: 1,
+  pending: 2,
+  maintenance: 3,
+  quarantined: 4,
+  offline: 5,
+  decommissioned: 6,
+};
+
+// One comparable value per column, mirroring what the cell displays.
+// `null` means "renders as a dash" — those rows sort last in BOTH
+// directions so blanks never bury the real data. Strings compare with
+// numeric collation (host-2 < host-10, agent 0.9.x < 0.10.x).
+const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
+  hostname: d => d.displayName || d.hostname,
+  organization: d => d.orgName || null,
+  site: d => d.siteName || null,
+  os: d => osLabels[d.os],
+  osVersion: d => d.osVersion || null,
+  osBuild: d => d.osBuild || null,
+  architecture: d => d.architecture || null,
+  role: d => getDeviceRoleLabel(d.deviceRole ?? 'unknown'),
+  isHeadless: d => (typeof d.isHeadless === 'boolean' ? (d.isHeadless ? 1 : 0) : null),
+  status: d => statusSortRank[d.status],
+  // false/absent renders as a dash (see the cell), so it maps to null like
+  // isHeadless — keeping the blanks-last invariant consistent for booleans.
+  pendingReboot: d => (d.pendingReboot ? 1 : null),
+  cpu: d => (d.status === 'online' ? d.cpuPercent : null),
+  ram: d => (d.status === 'online' ? d.ramPercent : null),
+  cpuModel: d => d.hardware?.cpuModel || null,
+  cores: d => (typeof d.hardware?.cpuCores === 'number' ? d.hardware.cpuCores : null),
+  ramTotal: d => (typeof d.hardware?.ramTotalMb === 'number' ? d.hardware.ramTotalMb : null),
+  diskTotal: d => (typeof d.hardware?.diskTotalGb === 'number' ? d.hardware.diskTotalGb : null),
+  lastSeen: d => new Date(d.lastSeen).getTime() || null,
+  agentVersion: d => d.agentVersion || null,
+  tags: d => (d.tags && d.tags.length > 0 ? d.tags.join(', ') : null),
+  lastUser: d => d.lastUser || null,
+  uptime: d => (d.status === 'online' && d.uptimeSeconds != null ? d.uptimeSeconds : null),
+  enrolled: d => (d.enrolledAt ? new Date(d.enrolledAt).getTime() || null : null),
+  desktopAccess: d => d.desktopAccess?.mode || null,
+};
 
 export default function DeviceList({
   devices,
@@ -222,15 +265,11 @@ export default function DeviceList({
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => readColumnOrder());
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
-  // Table density preference (account-wide via localStorage). Subscribe so
-  // a sibling instance on the same page that flips density updates this
-  // one without a reload.
+  // Table density reflects the account-wide preference (breeze.density),
+  // which is now set from the top-bar theme/display menu. Subscribe so the
+  // table re-renders when it changes, without a reload.
   const [density, setDensity] = useState<Density>(() => readDensity());
   useEffect(() => subscribeDensity(setDensity), []);
-  const handleDensityChange = (next: Density) => {
-    setDensity(next);
-    writeDensity(next);
-  };
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
@@ -363,7 +402,7 @@ export default function DeviceList({
     });
   }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, groupFilter, groupMembershipMap, serverFilterIds]);
 
-  const handleSort = (field: SortField) => {
+  const handleSort = (field: ColumnId) => {
     if (sortField === field) {
       setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
     } else {
@@ -374,30 +413,19 @@ export default function DeviceList({
 
   const sortedDevices = useMemo(() => {
     if (!sortField) return filteredDevices;
+    const value = sortValue[sortField];
+    const dir = sortDirection === 'desc' ? -1 : 1;
 
     return [...filteredDevices].sort((a, b) => {
-      let cmp = 0;
-      switch (sortField) {
-        case 'hostname':
-          cmp = a.hostname.localeCompare(b.hostname);
-          break;
-        case 'status':
-          cmp = a.status.localeCompare(b.status);
-          break;
-        case 'cpuPercent':
-          cmp = a.cpuPercent - b.cpuPercent;
-          break;
-        case 'ramPercent':
-          cmp = a.ramPercent - b.ramPercent;
-          break;
-        case 'lastSeen': {
-          const aTime = new Date(a.lastSeen).getTime() || 0;
-          const bTime = new Date(b.lastSeen).getTime() || 0;
-          cmp = aTime - bTime;
-          break;
-        }
-      }
-      return sortDirection === 'desc' ? -cmp : cmp;
+      const av = value(a);
+      const bv = value(b);
+      // Dash cells sort last regardless of direction.
+      if (av === null || bv === null) return av === bv ? 0 : av === null ? 1 : -1;
+      const cmp =
+        typeof av === 'number' && typeof bv === 'number'
+          ? av - bv
+          : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+      return dir * cmp;
     });
   }, [filteredDevices, sortField, sortDirection]);
 
@@ -457,17 +485,19 @@ export default function DeviceList({
   const renderedColumns = columnOrder.filter(id => visibleColumns.has(id));
 
   // sortHeader factors out the repeated header pattern for sortable
-  // columns to keep the column-defs table below readable.
-  const sortHeader = (id: ColumnId, label: string, sortKey: SortField, hint: string) => (
+  // columns to keep the column-defs table below readable. The column id
+  // doubles as the sort key.
+  const sortHeader = (id: ColumnId, label: string, hint: string, alignRight = false) => (
     <th
       key={id}
-      className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+      className={`px-3 py-3 cursor-pointer select-none hover:text-foreground${alignRight ? ' text-right' : ''}`}
       title={hint}
-      onClick={() => handleSort(sortKey)}
+      aria-sort={sortField === id ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+      onClick={() => handleSort(id)}
     >
       <span className="inline-flex items-center gap-1">
         {label}
-        {sortField === sortKey ? (
+        {sortField === id ? (
           sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
         ) : (
           <ArrowUpDown className="h-3 w-3 opacity-30" />
@@ -512,7 +542,7 @@ export default function DeviceList({
   const dash = <span className="text-muted-foreground">&mdash;</span>;
   const columnDefs: Record<ColumnId, { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }> = {
     hostname: {
-      header: () => sortHeader('hostname', 'Hostname', 'hostname', 'Sort by hostname'),
+      header: () => sortHeader('hostname', 'Hostname', 'Sort by hostname'),
       cell: (device) => (
         <td key="hostname" className="max-w-[200px] px-3 py-3 text-sm font-medium">
           <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
@@ -520,7 +550,7 @@ export default function DeviceList({
       ),
     },
     organization: {
-      header: () => <th key="organization" className="px-3 py-3">Organization</th>,
+      header: () => sortHeader('organization', 'Organization', 'Sort by organization'),
       cell: (device) => (
         <td key="organization" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
           <span className="block truncate" title={device.orgName}>{device.orgName}</span>
@@ -528,7 +558,7 @@ export default function DeviceList({
       ),
     },
     site: {
-      header: () => <th key="site" className="px-3 py-3">Site</th>,
+      header: () => sortHeader('site', 'Site', 'Sort by site'),
       cell: (device) => (
         <td key="site" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
           <span className="block truncate" title={device.siteName}>{device.siteName}</span>
@@ -536,7 +566,7 @@ export default function DeviceList({
       ),
     },
     os: {
-      header: () => <th key="os" className="px-3 py-3">OS</th>,
+      header: () => sortHeader('os', 'OS', 'Sort by operating system'),
       cell: (device) => (
         <td key="os" className="px-3 py-3 text-sm">
           <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />
@@ -544,7 +574,7 @@ export default function DeviceList({
       ),
     },
     osVersion: {
-      header: () => <th key="osVersion" className="px-3 py-3">OS Version</th>,
+      header: () => sortHeader('osVersion', 'OS Version', 'Sort by OS version'),
       cell: (device) => (
         <td key="osVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {device.osVersion || dash}
@@ -552,7 +582,7 @@ export default function DeviceList({
       ),
     },
     osBuild: {
-      header: () => <th key="osBuild" className="px-3 py-3">OS Build</th>,
+      header: () => sortHeader('osBuild', 'OS Build', 'Sort by OS build'),
       cell: (device) => (
         <td key="osBuild" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {device.osBuild || dash}
@@ -560,7 +590,7 @@ export default function DeviceList({
       ),
     },
     architecture: {
-      header: () => <th key="architecture" className="px-3 py-3">Arch</th>,
+      header: () => sortHeader('architecture', 'Arch', 'Sort by architecture'),
       cell: (device) => (
         <td key="architecture" className="px-3 py-3 text-sm text-muted-foreground">
           {device.architecture || dash}
@@ -568,7 +598,7 @@ export default function DeviceList({
       ),
     },
     role: {
-      header: () => <th key="role" className="px-3 py-3">Role</th>,
+      header: () => sortHeader('role', 'Role', 'Sort by role'),
       cell: (device) => {
         const role = device.deviceRole ?? 'unknown';
         const RoleIcon = getDeviceRoleIcon(role);
@@ -587,7 +617,7 @@ export default function DeviceList({
       },
     },
     isHeadless: {
-      header: () => <th key="isHeadless" className="px-3 py-3">Headless</th>,
+      header: () => sortHeader('isHeadless', 'Headless', 'Sort by headless flag'),
       cell: (device) => (
         <td key="isHeadless" className="px-3 py-3 text-sm text-muted-foreground">
           {typeof device.isHeadless === 'boolean' ? (device.isHeadless ? 'Yes' : 'No') : dash}
@@ -595,7 +625,7 @@ export default function DeviceList({
       ),
     },
     status: {
-      header: () => sortHeader('status', 'Status', 'status', 'Sort by status'),
+      header: () => sortHeader('status', 'Status', 'Sort by status'),
       cell: (device) => (
         <td key="status" className="px-3 py-3 text-sm">
           <div className="flex flex-wrap items-center gap-1">
@@ -628,7 +658,7 @@ export default function DeviceList({
       ),
     },
     pendingReboot: {
-      header: () => <th key="pendingReboot" className="px-3 py-3">Pending Reboot</th>,
+      header: () => sortHeader('pendingReboot', 'Pending Reboot', 'Sort by pending reboot'),
       cell: (device) => (
         <td key="pendingReboot" className="px-3 py-3 text-sm whitespace-nowrap">
           {device.pendingReboot ? (
@@ -642,19 +672,19 @@ export default function DeviceList({
       ),
     },
     cpu: {
-      header: () => sortHeader('cpu', 'CPU %', 'cpuPercent', 'Sort by CPU usage'),
+      header: () => sortHeader('cpu', 'CPU %', 'Sort by CPU usage'),
       cell: (device) => (
         <td key="cpu" className="px-3 py-3 text-sm">{metricBar(device.cpuPercent, device.status === 'online')}</td>
       ),
     },
     ram: {
-      header: () => sortHeader('ram', 'RAM %', 'ramPercent', 'Sort by RAM usage'),
+      header: () => sortHeader('ram', 'RAM %', 'Sort by RAM usage'),
       cell: (device) => (
         <td key="ram" className="px-3 py-3 text-sm">{metricBar(device.ramPercent, device.status === 'online')}</td>
       ),
     },
     cpuModel: {
-      header: () => <th key="cpuModel" className="px-3 py-3">CPU Model</th>,
+      header: () => sortHeader('cpuModel', 'CPU Model', 'Sort by CPU model'),
       cell: (device) => (
         <td key="cpuModel" className="max-w-[220px] px-3 py-3 text-sm text-muted-foreground">
           <span className="block truncate" title={device.hardware?.cpuModel ?? ''}>
@@ -664,7 +694,7 @@ export default function DeviceList({
       ),
     },
     cores: {
-      header: () => <th key="cores" className="px-3 py-3 text-right">Cores</th>,
+      header: () => sortHeader('cores', 'Cores', 'Sort by core count', true),
       cell: (device) => (
         <td key="cores" className="px-3 py-3 text-right text-sm tabular-nums">
           {typeof device.hardware?.cpuCores === 'number' ? device.hardware.cpuCores : dash}
@@ -672,7 +702,7 @@ export default function DeviceList({
       ),
     },
     ramTotal: {
-      header: () => <th key="ramTotal" className="px-3 py-3 text-right">RAM</th>,
+      header: () => sortHeader('ramTotal', 'RAM', 'Sort by total RAM', true),
       cell: (device) => (
         <td key="ramTotal" className="px-3 py-3 text-right text-sm tabular-nums">
           {fmtRamGb(device.hardware?.ramTotalMb) ?? dash}
@@ -680,7 +710,7 @@ export default function DeviceList({
       ),
     },
     diskTotal: {
-      header: () => <th key="diskTotal" className="px-3 py-3 text-right">Disk</th>,
+      header: () => sortHeader('diskTotal', 'Disk', 'Sort by total disk', true),
       cell: (device) => (
         <td key="diskTotal" className="px-3 py-3 text-right text-sm tabular-nums">
           {fmtDiskGb(device.hardware?.diskTotalGb) ?? dash}
@@ -688,7 +718,7 @@ export default function DeviceList({
       ),
     },
     lastSeen: {
-      header: () => sortHeader('lastSeen', 'Last Seen', 'lastSeen', 'Sort by last seen time'),
+      header: () => sortHeader('lastSeen', 'Last Seen', 'Sort by last seen time'),
       cell: (device) => (
         <td key="lastSeen" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {formatLastSeen(device.lastSeen, effectiveTimezone)}
@@ -696,7 +726,7 @@ export default function DeviceList({
       ),
     },
     agentVersion: {
-      header: () => <th key="agentVersion" className="px-3 py-3">Agent Version</th>,
+      header: () => sortHeader('agentVersion', 'Agent Version', 'Sort by agent version'),
       cell: (device) => (
         <td key="agentVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {device.agentVersion || dash}
@@ -704,7 +734,7 @@ export default function DeviceList({
       ),
     },
     tags: {
-      header: () => <th key="tags" className="px-3 py-3">Tags</th>,
+      header: () => sortHeader('tags', 'Tags', 'Sort by tags'),
       cell: (device) => (
         <td key="tags" className="max-w-[220px] px-3 py-3 text-sm text-muted-foreground">
           {device.tags && device.tags.length > 0 ? (
@@ -728,7 +758,7 @@ export default function DeviceList({
       ),
     },
     lastUser: {
-      header: () => <th key="lastUser" className="px-3 py-3">Last User</th>,
+      header: () => sortHeader('lastUser', 'Last User', 'Sort by last user'),
       cell: (device) => (
         <td key="lastUser" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
           <span className="block truncate" title={device.lastUser ?? ''}>{device.lastUser || dash}</span>
@@ -736,7 +766,7 @@ export default function DeviceList({
       ),
     },
     uptime: {
-      header: () => <th key="uptime" className="px-3 py-3">Uptime</th>,
+      header: () => sortHeader('uptime', 'Uptime', 'Sort by uptime'),
       cell: (device) => (
         <td key="uptime" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {device.status === 'online' && device.uptimeSeconds != null
@@ -746,7 +776,7 @@ export default function DeviceList({
       ),
     },
     enrolled: {
-      header: () => <th key="enrolled" className="px-3 py-3">Enrolled</th>,
+      header: () => sortHeader('enrolled', 'Enrolled', 'Sort by enrollment date'),
       cell: (device) => (
         <td key="enrolled" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {fmtDate(device.enrolledAt) ?? dash}
@@ -754,7 +784,7 @@ export default function DeviceList({
       ),
     },
     desktopAccess: {
-      header: () => <th key="desktopAccess" className="px-3 py-3">Desktop Access</th>,
+      header: () => sortHeader('desktopAccess', 'Desktop Access', 'Sort by desktop access'),
       cell: (device) => {
         const da = device.desktopAccess;
         if (!da) return <td key="desktopAccess" className="px-3 py-3 text-sm text-muted-foreground">{dash}</td>;
@@ -839,32 +869,10 @@ export default function DeviceList({
                 </span>
               )}
             </button>
-            {/* Density toggle: comfortable / compact / dense. Single
-                account-wide preference (breeze.density in localStorage),
-                applied to descendant td/th via Tailwind arbitrary
-                variants on the table element. */}
-            <div className="inline-flex h-10 items-center rounded-md border" role="group" aria-label="Row density">
-              {DENSITY_OPTIONS.map((opt, idx) => {
-                const Icon = opt === 'comfortable' ? Rows3 : opt === 'compact' ? Rows4 : AlignJustify;
-                const label = opt.charAt(0).toUpperCase() + opt.slice(1);
-                const isActive = density === opt;
-                return (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => handleDensityChange(opt)}
-                    aria-pressed={isActive}
-                    aria-label={`${label} row density`}
-                    title={`${label} row density`}
-                    className={`flex h-full items-center justify-center px-2.5 text-sm transition ${
-                      isActive ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60'
-                    } ${idx === 0 ? 'rounded-l-md' : ''} ${idx === DENSITY_OPTIONS.length - 1 ? 'rounded-r-md' : 'border-r'}`}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </button>
-                );
-              })}
-            </div>
+            {/* Interface density is now an account-wide control in the
+                top-bar theme/display menu (Header.tsx). The table still
+                reflects the saved preference via densityTableClasses +
+                subscribeDensity below. */}
             <div className="relative" ref={columnsMenuRef}>
               <button
                 type="button"

@@ -558,6 +558,8 @@
       "How it works",
       "Failure semantics",
       "MFA",
+      "Redirect login flow",
+      "Sign-out and token lifecycle",
       "Configuration",
       "Recommended Cloudflare Access setup",
       "Disabling"
@@ -1344,6 +1346,7 @@
       "Overview",
       "Setting Up Huntress",
       "Webhook Configuration",
+      "Organization Mappings",
       "Data Model (For Integrators)",
       "Status Dashboard",
       "Listing Incidents",
@@ -1363,6 +1366,7 @@
       "API Reference",
       "Huntress",
       "SentinelOne",
+      "Automation Events",
       "Security",
       "Credential Storage",
       "Webhook Verification",
@@ -1374,6 +1378,20 @@
       "SentinelOne isolation returns 502",
       "Unmapped agents",
       "\"API token is required for new integrations\""
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/event-log-forwarding/",
+    "title": "Event Log Forwarding",
+    "description": "Forward managed-device event logs to any Elasticsearch- or OpenSearch-compatible store, configured per organization or partner-wide.",
+    "headings": [
+      "Supported Destinations",
+      "What You Configure",
+      "Per-Organization Configuration",
+      "Partner-Wide Configuration",
+      "What Gets Shipped",
+      "Troubleshooting"
     ],
     "section": "features"
   },
@@ -1420,6 +1438,23 @@
       "Incremental scan returns minimal results",
       "Scan shows \"partial: true\" in the snapshot",
       "Permission denied errors in scan results"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/identity-console/",
+    "title": "Identity Console",
+    "description": "Connect a customer's Google Workspace and Microsoft 365 tenant, view identity posture, and run AI-assisted identity actions with approval gating.",
+    "headings": [
+      "Connecting a Tenant",
+      "Viewing Identity Posture",
+      "Google Workspace",
+      "Microsoft 365",
+      "AI-Assisted Identity Actions",
+      "Google Workspace actions",
+      "Microsoft 365 actions",
+      "Fix with AI",
+      "Troubleshooting"
     ],
     "section": "features"
   },
@@ -1864,6 +1899,27 @@
       "Creating a channel",
       "Testing a channel",
       "Troubleshooting"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/pam/",
+    "title": "Privileged Access Management",
+    "description": "Eliminate standing admin rights with just-in-time elevation -- intercept Windows UAC prompts, route them to an approver, and grant temporary admin access that revokes itself.",
+    "headings": [
+      "The Privileged Access Console",
+      "Overview",
+      "Requests",
+      "Rules",
+      "Audit",
+      "The Windows UAC Approval Flow",
+      "How Just-in-Time Admin Works",
+      "Enabling and Disabling UAC Interception",
+      "Per-organization and per-device overrides",
+      "Operational notes",
+      "Exporting the audit trail for compliance",
+      "Running alongside other RMM or security agents",
+      "Platform support"
     ],
     "section": "features"
   },
@@ -2629,12 +2685,23 @@
     "description": "Built-in ticketing for MSP workflows -- a triage queue, public replies and internal notes, SLA chips, and tickets linked to alerts and devices.",
     "headings": [
       "The Queue",
+      "Site-scoped technicians",
       "Working a Ticket",
       "Replies and Internal Notes",
       "Keyboard Shortcuts",
       "Bulk Actions",
       "Creating Tickets",
       "Categories and SLAs",
+      "Custom Statuses & SLA Configuration",
+      "Custom ticket statuses",
+      "Priority labels and partner-wide SLA defaults",
+      "Per-organization SLA tiers",
+      "Time Tracking & Parts",
+      "Timer widget",
+      "Manual time entry",
+      "Parts",
+      "Timesheet",
+      "Billables export",
       "Tickets on a Device"
     ],
     "section": "features"
@@ -3198,6 +3265,26 @@
     "section": "reference"
   },
   {
+    "path": "/reference/pam-api/",
+    "title": "PAM API",
+    "description": "REST reference for the Privileged Access Management endpoints -- elevation requests, approvals, revocation, rules, and the actuation surface.",
+    "headings": [
+      "Authentication and authorization",
+      "Elevation requests",
+      "List elevation requests",
+      "List active elevations",
+      "Respond (approve / deny)",
+      "Revoke",
+      "Rules",
+      "Create / update a rule",
+      "Preview a rule",
+      "Device actuation",
+      "Agent ingest",
+      "Configuration policy: enabling UAC capture"
+    ],
+    "section": "reference"
+  },
+  {
     "path": "/reference/partner-management/",
     "title": "Partner Management",
     "description": "Partner self-registration, multi-tenant partner hierarchy, feature flag controls, and partner administration.",
@@ -3213,6 +3300,8 @@
       "Password Strength Indicator",
       "Feature Flags",
       "`ENABLE_REGISTRATION` / `ENABLE_PARTNER_REGISTRATION`",
+      "Admin IP Allowlist",
+      "Configuration",
       "Managing Partners",
       "Creating Partners (System Scope)",
       "Partner Fields",
@@ -3343,6 +3432,7 @@
       "Multi-Factor Authentication (MFA)",
       "TOTP Setup Flow",
       "SMS MFA Setup Flow",
+      "Passkey (WebAuthn) Setup Flow",
       "MFA During Login",
       "Disabling MFA",
       "Recovery Codes",
@@ -3471,8 +3561,10 @@
       "Database-Level Tenant Isolation",
       "Role-Based Access Control",
       "Scope Enforcement",
+      "Site-Scope Enforcement",
       "Agent Security",
       "Token and Config Security",
+      "Provisioning Credential Delivery",
       "Mutual TLS (Optional)",
       "Command Execution Auditing",
       "Encryption",
@@ -3510,6 +3602,26 @@
       "C1 — Confidentiality",
       "Vulnerability Disclosure",
       "Security Controls Summary"
+    ],
+    "section": "security"
+  },
+  {
+    "path": "/security/pam/",
+    "title": "Privileged Access Management Security Model",
+    "description": "Trust boundaries, elevation primitives, the dormant-admin pattern, separation of duties, and the audit guarantees behind Breeze just-in-time elevation -- for security teams evaluating PAM.",
+    "headings": [
+      "What PAM is for",
+      "Trust boundaries",
+      "Elevation primitives",
+      "The dormant-admin pattern",
+      "Secure-desktop credential injection (Flavor A)",
+      "Single-use actuation",
+      "Separation of duties",
+      "Decisioning chain and fail-safe behavior",
+      "Offline rule enforcement and staleness",
+      "Audit guarantees",
+      "What PAM does and does not protect against",
+      "Platform-evolution and liability notes"
     ],
     "section": "security"
   },

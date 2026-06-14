@@ -75,6 +75,82 @@ describe('matchPathGlob', () => {
   });
 });
 
+describe('matchPathGlob — semantic table & ReDoS hardening', () => {
+  it('matches a representative Program Files ** glob', () => {
+    expect(matchPathGlob('C:\\Program Files\\Adobe\\**\\*.exe',
+      'c:/program files/adobe/reader/11/acrord32.exe')).toBe(true);
+    // readme.txt does not end in .exe, and is directly under adobe/
+    expect(matchPathGlob('C:\\Program Files\\Adobe\\**\\*.exe',
+      'c:/program files/adobe/readme.txt')).toBe(false);
+  });
+
+  it('single * does not cross a path separator', () => {
+    expect(matchPathGlob('C:\\Tools\\*.exe', 'c:/tools/a.exe')).toBe(true);
+    expect(matchPathGlob('C:\\Tools\\*.exe', 'c:/tools/sub/a.exe')).toBe(false);
+  });
+
+  it('** at start, middle, and end', () => {
+    expect(matchPathGlob('**\\foo.exe', 'c:/a/b/foo.exe')).toBe(true);
+    expect(matchPathGlob('c:\\**\\foo.exe', 'c:/a/b/foo.exe')).toBe(true);
+    expect(matchPathGlob('c:\\a\\**', 'c:/a/b/c/foo.exe')).toBe(true);
+  });
+
+  it('bare ** matches everything (including empty)', () => {
+    expect(matchPathGlob('**', 'c:/anything/at/all.exe')).toBe(true);
+    expect(matchPathGlob('**', '')).toBe(true);
+    expect(matchPathGlob('**', 'x')).toBe(true);
+  });
+
+  it('empty glob matches only the empty path', () => {
+    expect(matchPathGlob('', '')).toBe(true);
+    expect(matchPathGlob('', 'x')).toBe(false);
+  });
+
+  it('regex-meta characters are literal (?, (, ), [, ], ., +)', () => {
+    // `?` is a LITERAL in this dialect, not a single-char wildcard
+    expect(matchPathGlob('c:\\a?.exe', 'c:/a?.exe')).toBe(true);
+    expect(matchPathGlob('c:\\a?.exe', 'c:/ab.exe')).toBe(false);
+    expect(matchPathGlob('c:\\f(x).exe', 'c:/f(x).exe')).toBe(true);
+    expect(matchPathGlob('c:\\f[1].exe', 'c:/f[1].exe')).toBe(true);
+    expect(matchPathGlob('c:\\a.exe', 'c:/axexe')).toBe(false); // `.` literal
+    expect(matchPathGlob('c:\\a+b.exe', 'c:/a+b.exe')).toBe(true);
+    expect(matchPathGlob('c:\\a+b.exe', 'c:/ab.exe')).toBe(false); // `+` literal
+  });
+
+  it('is case-insensitive and slash-agnostic', () => {
+    expect(matchPathGlob('C:\\FOO\\*.EXE', 'c:/foo/bar.exe')).toBe(true);
+    expect(matchPathGlob('c:/foo/*.exe', 'C:\\FOO\\BAR.EXE')).toBe(true);
+  });
+
+  it('* matches zero chars', () => {
+    expect(matchPathGlob('c:\\foo\\*.exe', 'c:/foo/.exe')).toBe(true);
+    expect(matchPathGlob('c:\\foo*bar', 'c:/foobar')).toBe(true);
+  });
+
+  it('preserves *** semantics (** greedy first, then single *)', () => {
+    // Empirically pinned against the prior regex impl: *** => `.*[^/]*`
+    expect(matchPathGlob('***', 'abc/def')).toBe(true);
+    expect(matchPathGlob('***', '')).toBe(true);
+    expect(matchPathGlob('a***b', 'a/x/b')).toBe(true);
+    expect(matchPathGlob('a***b', 'ab')).toBe(true);
+    // **** => `.*.*` (two ** blocks), still matches across separators
+    expect(matchPathGlob('a****b', 'a/x/y/b')).toBe(true);
+  });
+
+  it('runs in linear time on a catastrophic-backtracking glob (ReDoS guard)', () => {
+    // The prior regex impl translated this to `^a[^/]*a[^/]*...b$`, which
+    // exhibits catastrophic backtracking against an all-`a` non-matching
+    // path: it hangs for >8s. The iterative matcher must return promptly.
+    const evil = 'a*'.repeat(20) + 'b';
+    const path = 'a'.repeat(50);
+    const t0 = Date.now();
+    const result = matchPathGlob(evil, path);
+    const elapsed = Date.now() - t0;
+    expect(result).toBe(false);
+    expect(elapsed).toBeLessThan(1000);
+  });
+});
+
 describe('matchPoliciesAgainst — single-policy match by field', () => {
   it('matches by hash (strongest)', () => {
     const v = matchPoliciesAgainst(adobeInstall, [

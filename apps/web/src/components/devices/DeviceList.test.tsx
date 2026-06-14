@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
+import { COLUMN_IDS } from './columnVisibility';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -166,6 +167,233 @@ describe('DeviceList — advanced filter via serverFilterIds prop (uncapped id s
     expect(screen.getByText('host-aa')).toBeTruthy();
     expect(screen.getByText('host-bb')).toBeTruthy();
     expect(screen.queryByText(/Advanced filter active/i)).toBeNull();
+  });
+});
+
+describe('DeviceList — sortable columns (every column sorts on header click)', () => {
+  // Hostnames of rendered rows, in DOM order. Each fixture uses a unique
+  // hostname so order assertions read naturally.
+  const rowOrder = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('tbody tr td:nth-child(2) span')).map(el => el.textContent);
+
+  const clickHeader = (title: string) => fireEvent.click(screen.getByTitle(title));
+
+  // Install a fresh in-memory localStorage per test (same stub shape as
+  // columnVisibility.test.ts). The point is isolation: jsdom's storage
+  // persists across tests within a file, so a column-visibility write in
+  // one test (e.g. the agentVersion opt-in below) would leak into later
+  // tests. afterEach restores whatever the environment had, so describe
+  // blocks running after this one keep exercising the real fallback path.
+  let originalLocalStorage: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    originalLocalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    const data = new Map<string, string>();
+    Object.defineProperty(window, 'localStorage', {
+      value: {
+        get length() {
+          return data.size;
+        },
+        clear: () => data.clear(),
+        getItem: (key: string) => data.get(key) ?? null,
+        setItem: (key: string, value: string) => void data.set(key, String(value)),
+        removeItem: (key: string) => void data.delete(key),
+        key: (i: number) => Array.from(data.keys())[i] ?? null,
+      },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    if (originalLocalStorage) {
+      Object.defineProperty(window, 'localStorage', originalLocalStorage);
+    } else {
+      Reflect.deleteProperty(window, 'localStorage');
+    }
+  });
+
+  it('sorts a previously-unsortable column (Organization) alphabetically and toggles direction on second click', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-000000000001', hostname: 'host-zeta', orgName: 'Zeta Corp' },
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-000000000002', hostname: 'host-acme', orgName: 'Acme' },
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-000000000003', hostname: 'host-mid', orgName: 'Midway' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by organization');
+    expect(rowOrder(container)).toEqual(['host-acme', 'host-mid', 'host-zeta']);
+
+    clickHeader('Sort by organization');
+    expect(rowOrder(container)).toEqual(['host-zeta', 'host-mid', 'host-acme']);
+  });
+
+  it('sorts hostnames with numeric collation (host-2 before host-10)', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000001', hostname: 'host-10' },
+      { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000002', hostname: 'host-2' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by hostname');
+    expect(rowOrder(container)).toEqual(['host-2', 'host-10']);
+  });
+
+  it('sorts status by operational rank, not enum alphabetics, across every co-renderable status', () => {
+    // All statuses except decommissioned, which can never co-render with the
+    // others (the default "all" filter hides it; selecting it shows only it),
+    // so its rank entry is untestable through the rendered table. A dropped
+    // statusSortRank entry for any of these six would produce NaN comparisons
+    // and scramble this expected order.
+    const devices: Device[] = [
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000001', hostname: 'host-off', status: 'offline' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000002', hostname: 'host-quar', status: 'quarantined' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000003', hostname: 'host-on', status: 'online' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000004', hostname: 'host-pend', status: 'pending' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000005', hostname: 'host-maint', status: 'maintenance' },
+      { ...baseDevice, id: 'c1c1c1c1-0000-0000-0000-000000000006', hostname: 'host-upd', status: 'updating' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by status');
+    expect(rowOrder(container)).toEqual(['host-on', 'host-upd', 'host-pend', 'host-maint', 'host-quar', 'host-off']);
+  });
+
+  it('keeps dash cells last in BOTH directions (offline device has no CPU reading)', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'd1d1d1d1-0000-0000-0000-000000000001', hostname: 'host-no-cpu', status: 'offline', cpuPercent: 0 },
+      { ...baseDevice, id: 'd1d1d1d1-0000-0000-0000-000000000002', hostname: 'host-busy', cpuPercent: 90 },
+      { ...baseDevice, id: 'd1d1d1d1-0000-0000-0000-000000000003', hostname: 'host-idle', cpuPercent: 5 },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by CPU usage');
+    expect(rowOrder(container)).toEqual(['host-idle', 'host-busy', 'host-no-cpu']);
+
+    clickHeader('Sort by CPU usage');
+    expect(rowOrder(container)).toEqual(['host-busy', 'host-idle', 'host-no-cpu']);
+  });
+
+  it('sorts agent versions numerically aware (0.9.0 before 0.10.0) on an opted-in column', () => {
+    // agentVersion is not in DEFAULT_VISIBLE_COLUMNS; opt it in via the same
+    // versioned localStorage shape columnVisibility.ts persists.
+    window.localStorage.setItem(
+      'breeze.devices.columns',
+      JSON.stringify({ v: 1, columns: [{ id: 'agentVersion', visible: true }] }),
+    );
+    const devices: Device[] = [
+      { ...baseDevice, id: 'e1e1e1e1-0000-0000-0000-000000000001', hostname: 'host-ten', agentVersion: '0.10.0' },
+      { ...baseDevice, id: 'e1e1e1e1-0000-0000-0000-000000000002', hostname: 'host-nine', agentVersion: '0.9.0' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by agent version');
+    // agentVersion was stored first, so it renders as the first data column.
+    const hostCol = Array.from(container.querySelectorAll('tbody tr td:nth-child(3) span')).map(el => el.textContent);
+    expect(hostCol).toEqual(['host-nine', 'host-ten']);
+  });
+
+  it('renders all 24 catalog columns with a sort hint and pointer cursor when every column is visible', () => {
+    // Default visibility shows only 9 columns, which would let the other 15
+    // silently regress to plain <th> elements. Opt every catalog column in.
+    window.localStorage.setItem(
+      'breeze.devices.columns',
+      JSON.stringify({ v: 1, columns: COLUMN_IDS.map(id => ({ id, visible: true })) }),
+    );
+
+    const { container } = render(<DeviceList devices={[baseDevice]} />);
+
+    const headers = Array.from(container.querySelectorAll('thead th'));
+    // First (checkbox) and last (Actions) are structural; everything between
+    // must carry the "Sort by ..." hint and the clickable styling. (The
+    // click-actually-reorders behavior is covered by the row-order tests.)
+    const dataHeaders = headers.slice(1, -1);
+    expect(dataHeaders.length).toBe(COLUMN_IDS.length);
+    for (const th of dataHeaders) {
+      expect(th.getAttribute('title')).toMatch(/^Sort by /);
+      expect(th.className).toContain('cursor-pointer');
+    }
+  });
+
+  it('reflects sort state via aria-sort on the active header (a11y parity with Patches)', () => {
+    const devices: Device[] = [
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-0000000000a1', hostname: 'host-b' },
+      { ...baseDevice, id: 'a1a1a1a1-0000-0000-0000-0000000000a2', hostname: 'host-a' },
+    ];
+    render(<DeviceList devices={devices} />);
+
+    const hostHeader = screen.getByTitle('Sort by hostname');
+    const osHeader = screen.getByTitle('Sort by operating system');
+    // Unsorted: every header advertises aria-sort="none".
+    expect(hostHeader.getAttribute('aria-sort')).toBe('none');
+    expect(osHeader.getAttribute('aria-sort')).toBe('none');
+
+    fireEvent.click(hostHeader);
+    expect(hostHeader.getAttribute('aria-sort')).toBe('ascending');
+    expect(osHeader.getAttribute('aria-sort')).toBe('none');
+
+    fireEvent.click(hostHeader);
+    expect(hostHeader.getAttribute('aria-sort')).toBe('descending');
+  });
+
+  // Seeds hostname first (keeps the rowOrder helper's td:nth-child(2) valid)
+  // plus the named extra column, so default-hidden columns can be sorted.
+  const seedColumns = (...extra: string[]) =>
+    window.localStorage.setItem(
+      'breeze.devices.columns',
+      JSON.stringify({ v: 1, columns: ['hostname', ...extra].map(id => ({ id, visible: true })) }),
+    );
+
+  it('sorts tags by the joined displayed list with untagged rows last in both directions', () => {
+    seedColumns('tags');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'f1f1f1f1-0000-0000-0000-000000000001', hostname: 'host-zulu', tags: ['zulu'] },
+      { ...baseDevice, id: 'f1f1f1f1-0000-0000-0000-000000000002', hostname: 'host-untagged', tags: [] },
+      { ...baseDevice, id: 'f1f1f1f1-0000-0000-0000-000000000003', hostname: 'host-alpha', tags: ['alpha', 'beta'] },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by tags');
+    expect(rowOrder(container)).toEqual(['host-alpha', 'host-zulu', 'host-untagged']);
+
+    clickHeader('Sort by tags');
+    expect(rowOrder(container)).toEqual(['host-zulu', 'host-alpha', 'host-untagged']);
+  });
+
+  it('sorts uptime only for online devices — a non-online device with uptimeSeconds renders a dash and sorts last', () => {
+    seedColumns('uptime');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'a2a2a2a2-0000-0000-0000-000000000001', hostname: 'host-offline-stale', status: 'offline', uptimeSeconds: 999_999 },
+      { ...baseDevice, id: 'a2a2a2a2-0000-0000-0000-000000000002', hostname: 'host-long-up', uptimeSeconds: 50_000 },
+      { ...baseDevice, id: 'a2a2a2a2-0000-0000-0000-000000000003', hostname: 'host-fresh-boot', uptimeSeconds: 100 },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by uptime');
+    expect(rowOrder(container)).toEqual(['host-fresh-boot', 'host-long-up', 'host-offline-stale']);
+  });
+
+  it('treats pendingReboot false/absent as a dash cell: sorts last in both directions, true rows first', () => {
+    seedColumns('pendingReboot');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'b2b2b2b2-0000-0000-0000-000000000001', hostname: 'host-clean', pendingReboot: false },
+      { ...baseDevice, id: 'b2b2b2b2-0000-0000-0000-000000000002', hostname: 'host-needs-reboot', pendingReboot: true },
+      { ...baseDevice, id: 'b2b2b2b2-0000-0000-0000-000000000003', hostname: 'host-old-agent' },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by pending reboot');
+    expect(rowOrder(container)).toEqual(['host-needs-reboot', 'host-clean', 'host-old-agent']);
+
+    clickHeader('Sort by pending reboot');
+    expect(rowOrder(container)).toEqual(['host-needs-reboot', 'host-clean', 'host-old-agent']);
   });
 });
 

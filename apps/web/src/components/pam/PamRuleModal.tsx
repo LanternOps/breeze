@@ -3,13 +3,59 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
-import { type PamRule, type PamVerdict, VERDICT_LABELS } from './types';
+import {
+  type ElevationStatus,
+  type PamRule,
+  type PamRuleDraft,
+  type PamVerdict,
+  STATUS_LABELS,
+  VERDICT_LABELS,
+} from './types';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/**
+ * Pull a human-readable message out of an API error body. The preview route
+ * returns either a plain `{ error: string }` (e.g. 'Site access denied') or the
+ * @hono/zod-validator 400 shape `{ success:false, error: { issues: [{ message }] } }`
+ * (a serialized ZodError — the superRefine criterion/shape messages, the
+ * sha256 hash validator). Without this, those messages collapse to a bare HTTP
+ * status. Returns '' when no message can be extracted.
+ */
+function extractApiError(body: unknown): string {
+  if (!body || typeof body !== 'object') return '';
+  const b = body as { message?: unknown; error?: unknown; issues?: unknown };
+  if (typeof b.message === 'string' && b.message) return b.message;
+  if (typeof b.error === 'string' && b.error) return b.error;
+  const issues =
+    (b.error as { issues?: Array<{ message?: unknown }> } | undefined)?.issues ??
+    (b.issues as Array<{ message?: unknown }> | undefined);
+  const zodMsg = issues?.[0]?.message;
+  return typeof zodMsg === 'string' && zodMsg ? zodMsg : '';
+}
 
 interface NamedOption {
   id: string;
   name: string;
+}
+
+interface PreviewSampleRow {
+  id: string;
+  requestedAt: string;
+  subjectUsername: string;
+  targetExecutablePath?: string | null;
+  toolName?: string | null;
+  status: string;
+}
+
+interface PreviewResult {
+  success: boolean;
+  totalMatched: number;
+  totalScanned: number;
+  windowDays: number;
+  truncated: boolean;
+  statusBreakdown: Record<string, number>;
+  sample: PreviewSampleRow[];
 }
 
 /**
@@ -24,31 +70,49 @@ interface NamedOption {
  */
 export default function PamRuleModal({
   rule,
+  initial,
   onClose,
   onSaved,
 }: {
   rule: PamRule | null;
+  initial?: PamRuleDraft;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const isEdit = rule !== null;
-  const [name, setName] = useState(rule?.name ?? '');
+  // Seed create-mode initializers from a request-derived draft. Only applies
+  // when there's no rule being edited; verdict/priority/timeWindow are left at
+  // their defaults intentionally.
+  const seed = rule === null ? initial : undefined;
+  // Narrowed accessors for the discriminated-union seed: executable-only and
+  // tool-only fields are read via `in` guards so each branch typechecks.
+  const seedExec = seed?.shape === 'executable' ? seed : undefined;
+  const seedTool = seed?.shape === 'tool' ? seed : undefined;
+  const [name, setName] = useState(rule?.name ?? seed?.name ?? '');
   const [description, setDescription] = useState(rule?.description ?? '');
   const [priority, setPriority] = useState(String(rule?.priority ?? 100));
   const [verdict, setVerdict] = useState<PamVerdict>(rule?.verdict ?? 'require_approval');
   const [enabled, setEnabled] = useState(rule?.enabled ?? true);
   const [shape, setShape] = useState<'executable' | 'tool'>(
-    rule && (rule.matchToolName || typeof rule.matchRiskTier === 'number') ? 'tool' : 'executable',
+    rule
+      ? rule.matchToolName || typeof rule.matchRiskTier === 'number'
+        ? 'tool'
+        : 'executable'
+      : seed?.shape ?? 'executable',
   );
-  const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? '');
-  const [matchHash, setMatchHash] = useState(rule?.matchHash ?? '');
-  const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? '');
+  const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? seedExec?.matchSigner ?? '');
+  const [matchHash, setMatchHash] = useState(rule?.matchHash ?? seedExec?.matchHash ?? '');
+  const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? seedExec?.matchPathGlob ?? '');
   const [matchParentImage, setMatchParentImage] = useState(rule?.matchParentImage ?? '');
-  const [matchUser, setMatchUser] = useState(rule?.matchUser ?? '');
+  const [matchUser, setMatchUser] = useState(rule?.matchUser ?? seedExec?.matchUser ?? '');
   const [matchAdGroup, setMatchAdGroup] = useState(rule?.matchAdGroup ?? '');
-  const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? '');
+  const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? seedTool?.matchToolName ?? '');
   const [matchRiskTier, setMatchRiskTier] = useState(
-    rule?.matchRiskTier !== null && rule?.matchRiskTier !== undefined ? String(rule.matchRiskTier) : '',
+    rule?.matchRiskTier !== null && rule?.matchRiskTier !== undefined
+      ? String(rule.matchRiskTier)
+      : seedTool?.matchRiskTier !== null && seedTool?.matchRiskTier !== undefined
+        ? String(seedTool.matchRiskTier)
+        : '',
   );
   const [windowStart, setWindowStart] = useState(rule?.timeWindow?.start ?? '');
   const [windowEnd, setWindowEnd] = useState(rule?.timeWindow?.end ?? '');
@@ -62,11 +126,19 @@ export default function PamRuleModal({
   // ("orgId is required for this scope" — resolveOrgIdForWrite).
   const [orgs, setOrgs] = useState<NamedOption[]>([]);
   const [orgsLoaded, setOrgsLoaded] = useState(false);
-  const [selectedOrgId, setSelectedOrgId] = useState('');
+  // Seed the org from the originating request so a rule-from-request keeps the
+  // request's org. This initial value wins over the orgs-load default because
+  // that effect only fills an empty selection (`prev || items[0]`).
+  const [selectedOrgId, setSelectedOrgId] = useState(seed?.orgId ?? '');
   const [sites, setSites] = useState<NamedOption[]>([]);
-  const [siteId, setSiteId] = useState(rule?.siteId ?? '');
+  const [siteId, setSiteId] = useState(rule?.siteId ?? seed?.siteId ?? '');
+  // Surfaced when a seeded site can't survive the selected org (cross-org
+  // request → org-wide fallback), so the scope change isn't silent.
+  const [siteScopeNotice, setSiteScopeNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   const nameId = useId();
   const descId = useId();
@@ -106,6 +178,19 @@ export default function PamRuleModal({
           const data = await res.json();
           const items = (data.data ?? data.sites ?? data ?? []) as NamedOption[];
           setSites(items.map((s) => ({ id: s.id, name: s.name })));
+          setSiteId((prev) => {
+            if (prev && !items.some((s) => s.id === prev)) {
+              // The seeded site doesn't belong to the selected org — fall back to
+              // org-wide and tell the user rather than silently re-scoping.
+              if (!isEdit && prev === (seed?.siteId ?? '')) {
+                setSiteScopeNotice(
+                  "The site from the original request isn't available in the selected organization — scope reset to org-wide.",
+                );
+              }
+              return '';
+            }
+            return prev;
+          });
         }
       })
       .catch(() => {});
@@ -122,17 +207,44 @@ export default function PamRuleModal({
     }
   }, [windowStart, windowEnd]);
 
+  // A draft change invalidates a stale preview result so the user never reads
+  // a "would match N" line that no longer reflects the on-screen criteria.
+  useEffect(() => {
+    setPreview(null);
+  }, [
+    shape,
+    matchSigner,
+    matchHash,
+    matchPathGlob,
+    matchParentImage,
+    matchUser,
+    matchAdGroup,
+    matchToolName,
+    matchRiskTier,
+    windowStart,
+    windowEnd,
+    windowDays,
+    windowTimezone,
+    siteId,
+  ]);
+
   const toggleDay = (day: number) => {
     setWindowDays((prev) =>
       prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b),
     );
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (submitting) return;
-    setError(null);
-
+  /**
+   * Assemble the active match criteria + time window from the form, applying
+   * the shared shape validation (≥1 criterion, window start/end pairing). On a
+   * validation failure it sets the inline `error` and returns null. Shared by
+   * submit and preview; the tool/verdict 'ignore' check stays submit-only since
+   * preview is verdict-independent.
+   */
+  const buildCriteria = (): {
+    activeCriteria: Record<string, unknown>;
+    timeWindow: Record<string, unknown> | null;
+  } | null => {
     const executable = {
       matchSigner: matchSigner.trim() || null,
       matchHash: matchHash.trim() || null,
@@ -165,15 +277,11 @@ export default function PamRuleModal({
     );
     if (!hasCriterion) {
       setError('At least one match criterion is required.');
-      return;
-    }
-    if (shape === 'tool' && verdict === 'ignore') {
-      setError('Tool-action rules cannot use the Ignore verdict.');
-      return;
+      return null;
     }
     if (Boolean(windowStart) !== Boolean(windowEnd)) {
       setError('Time window start and end must both be set (or both left empty).');
-      return;
+      return null;
     }
 
     // Omit days when none or all are selected — the rule engine treats a
@@ -181,6 +289,67 @@ export default function PamRuleModal({
     const days =
       windowDays.length > 0 && windowDays.length < 7 ? [...windowDays].sort((a, b) => a - b) : undefined;
     const timezone = windowTimezone.trim() || undefined;
+
+    const timeWindow =
+      windowStart && windowEnd
+        ? {
+            start: windowStart,
+            end: windowEnd,
+            ...(days ? { days } : {}),
+            ...(timezone ? { timezone } : {}),
+          }
+        : null;
+
+    return { activeCriteria, timeWindow };
+  };
+
+  const handlePreview = async () => {
+    if (previewing) return;
+    setError(null);
+    const built = buildCriteria();
+    if (!built) return;
+    setPreviewing(true);
+    setPreview(null);
+    try {
+      // runaction-exempt: read-only dry-run (POST carries the draft criteria); failures render inline in the modal, no toast
+      const res = await fetchWithAuth('/pam/rules/preview', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...built.activeCriteria,
+          timeWindow: built.timeWindow,
+          siteId: siteId || null,
+        }),
+      });
+      if (!res.ok) {
+        let msg = `Preview failed (HTTP ${res.status})`;
+        try {
+          msg = extractApiError(await res.json()) || msg;
+        } catch {
+          /* non-JSON body — keep status fallback */
+        }
+        throw new Error(msg);
+      }
+      setPreview((await res.json()) as PreviewResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Preview failed');
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setError(null);
+
+    const built = buildCriteria();
+    if (!built) return;
+    const { activeCriteria, timeWindow } = built;
+
+    if (shape === 'tool' && verdict === 'ignore') {
+      setError('Tool-action rules cannot use the Ignore verdict.');
+      return;
+    }
 
     const payload: Record<string, unknown> = {
       name: name.trim(),
@@ -193,15 +362,7 @@ export default function PamRuleModal({
       // Create only: the server resolves the org when omitted; multi-org
       // partner users must send an explicit choice. PATCH never carries orgId.
       ...(!isEdit && orgs.length > 1 && selectedOrgId ? { orgId: selectedOrgId } : {}),
-      timeWindow:
-        windowStart && windowEnd
-          ? {
-              start: windowStart,
-              end: windowEnd,
-              ...(days ? { days } : {}),
-              ...(timezone ? { timezone } : {}),
-            }
-          : null,
+      timeWindow,
       approvalDurationMinutes: approvalDuration
         ? Number.parseInt(approvalDuration, 10) || null
         : null,
@@ -309,6 +470,7 @@ export default function PamRuleModal({
                   onChange={(e) => {
                     setSelectedOrgId(e.target.value);
                     setSiteId('');
+                    setSiteScopeNotice(null);
                   }}
                   data-testid="pam-rule-org"
                   className={inputClass}
@@ -329,7 +491,10 @@ export default function PamRuleModal({
             <select
               id={siteSelectId}
               value={siteId}
-              onChange={(e) => setSiteId(e.target.value)}
+              onChange={(e) => {
+                setSiteId(e.target.value);
+                setSiteScopeNotice(null);
+              }}
               data-testid="pam-rule-site"
               className={inputClass}
             >
@@ -340,6 +505,11 @@ export default function PamRuleModal({
                 </option>
               ))}
             </select>
+            {siteScopeNotice && (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="pam-rule-site-scope-notice">
+                {siteScopeNotice}
+              </p>
+            )}
           </div>
         </div>
 
@@ -486,6 +656,52 @@ export default function PamRuleModal({
             {error}
           </div>
         )}
+
+        <div className="rounded-md border bg-muted/20 p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Preview against recent requests</p>
+            <button
+              type="button"
+              onClick={() => void handlePreview()}
+              disabled={previewing}
+              data-testid="pam-rule-preview-btn"
+              className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+            >
+              {previewing ? 'Previewing…' : 'Preview matches'}
+            </button>
+          </div>
+          {preview && (
+            <div className="mt-2 space-y-2 text-sm" data-testid="pam-rule-preview-result">
+              <p>
+                Would have matched <span className="font-semibold">{preview.totalMatched}</span> of{' '}
+                {preview.totalScanned} requests in the last {preview.windowDays} days
+                {preview.truncated ? ' (newest 5000 scanned)' : ''}.
+              </p>
+              {preview.totalMatched > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {Object.entries(preview.statusBreakdown)
+                    .filter(([, n]) => n > 0)
+                    .map(([s, n]) => `${n} ${(STATUS_LABELS[s as ElevationStatus] ?? s).toLowerCase()}`)
+                    .join(' · ')}
+                </p>
+              )}
+              <ul className="space-y-1">
+                {preview.sample.slice(0, 5).map((s) => (
+                  <li key={s.id} className="truncate text-xs text-muted-foreground">
+                    {new Date(s.requestedAt).toLocaleString()} · {s.subjectUsername} ·{' '}
+                    {s.targetExecutablePath ?? s.toolName ?? '—'}
+                  </li>
+                ))}
+              </ul>
+              {matchAdGroup.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  Note: historical requests don't record AD groups, so any draft that includes an AD
+                  group criterion previews as 0 matches.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">

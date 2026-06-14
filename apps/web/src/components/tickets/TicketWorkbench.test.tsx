@@ -3,11 +3,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TicketWorkbench from './TicketWorkbench';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import type { TicketDetail } from './ticketConfig';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
+
+// Stub only fetchTicketConfig; the real display/grouping helpers run unchanged.
+vi.mock('../../lib/ticketConfigApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/ticketConfigApi')>();
+  return { ...actual, fetchTicketConfig: vi.fn().mockResolvedValue(null) };
+});
+const fetchConfigMock = vi.mocked(fetchTicketConfig);
 
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
@@ -635,5 +643,190 @@ describe('TicketWorkbench host-supplied assignees prop', () => {
     await screen.findByTestId('ticket-workbench-unassign');
     expect(screen.queryByTestId('ticket-workbench-assignee')).toBeNull();
     expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/users')).toHaveLength(0);
+  });
+});
+
+// ─── Custom statuses (config path) ───────────────────────────────────────────
+
+const makeConfig = (overrides: Partial<TicketConfig> = {}): TicketConfig => ({
+  statuses: [
+    { id: 'st-new', name: 'New', coreStatus: 'new', color: null, sortOrder: 0, isSystem: true, isActive: true },
+    { id: 'st-open', name: 'Open', coreStatus: 'open', color: null, sortOrder: 0, isSystem: true, isActive: true },
+    { id: 'st-waiting', name: 'Waiting on customer', coreStatus: 'pending', color: '#ffaa00', sortOrder: 1, isSystem: false, isActive: true },
+    { id: 'st-pending', name: 'Pending', coreStatus: 'pending', color: null, sortOrder: 0, isSystem: true, isActive: true },
+    { id: 'st-hold', name: 'On hold', coreStatus: 'on_hold', color: null, sortOrder: 0, isSystem: true, isActive: true },
+    { id: 'st-done', name: 'Done & verified', coreStatus: 'resolved', color: '#00aa55', sortOrder: 1, isSystem: false, isActive: true },
+    { id: 'st-resolved', name: 'Resolved', coreStatus: 'resolved', color: null, sortOrder: 0, isSystem: true, isActive: true },
+    { id: 'st-closed', name: 'Closed', coreStatus: 'closed', color: null, sortOrder: 0, isSystem: true, isActive: true }
+  ],
+  priorities: {
+    urgent: { label: 'Urgent', responseSlaMinutes: null, resolutionSlaMinutes: null },
+    high: { label: 'High', responseSlaMinutes: null, resolutionSlaMinutes: null },
+    normal: { label: 'Normal', responseSlaMinutes: null, resolutionSlaMinutes: null },
+    low: { label: 'Low', responseSlaMinutes: null, resolutionSlaMinutes: null }
+  },
+  ...overrides
+});
+
+describe('TicketWorkbench custom-status select (config path)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchConfigMock.mockResolvedValue(null);
+  });
+
+  it('renders optgroups from config and selecting a non-gated custom status posts {statusId}', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    // optgroups render once config resolves.
+    await waitFor(() => {
+      expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('option', { name: 'Waiting on customer' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Done & verified' })).toBeInTheDocument();
+
+    // Pick the built-in Closed row → posts statusId, never status.
+    fireEvent.change(select, { target: { value: 'st-closed' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ statusId: 'st-closed' }) })
+      );
+    });
+  });
+
+  it('picking a custom RESOLVED-core status opens the resolve form and submits {statusId, resolutionNote}', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+
+    fireEvent.change(select, { target: { value: 'st-done' } });
+
+    // Same resolve form as the core path; no mutation until the note submits.
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+    expect(mutationCalls()).toHaveLength(0);
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), {
+      target: { value: 'Verified the fix.' }
+    });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ statusId: 'st-done', resolutionNote: 'Verified the fix.' })
+        })
+      );
+    });
+  });
+
+  it('picking a custom PENDING-core status opens the pending form and submits {statusId, pendingReason}', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+
+    fireEvent.change(select, { target: { value: 'st-waiting' } });
+
+    expect(screen.getByTestId('ticket-workbench-pending-form')).toBeInTheDocument();
+    expect(mutationCalls()).toHaveLength(0);
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-pending-reason'), {
+      target: { value: 'Awaiting reply' }
+    });
+    fireEvent.click(screen.getByTestId('ticket-workbench-pending-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ statusId: 'st-waiting', pendingReason: 'Awaiting reply' })
+        })
+      );
+    });
+  });
+
+  it('fallback path: with config null the select posts {status} (core enum), never statusId', async () => {
+    fetchConfigMock.mockResolvedValue(null);
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    // No optgroups in the fallback select.
+    expect(select.querySelectorAll('optgroup')).toHaveLength(0);
+
+    fireEvent.change(select, { target: { value: 'closed' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ status: 'closed' }) })
+      );
+    });
+  });
+
+  it('current status display prefers statusName over the core label', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'pending', statusName: 'Waiting on customer' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-status') as HTMLSelectElement;
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+    // Selected option is the matching custom row.
+    await waitFor(() => expect(select.value).toBe('st-waiting'));
+  });
+
+  it('cancelling the resolve form clears pendingStatusId so a subsequent `e` shortcut posts {status:resolved}', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
+    const { rerender } = render(<TicketWorkbench ticketId="tk-1" resolveRequestToken={0} />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+
+    // Step 1: pick the custom resolved-core status → sets pendingStatusId='st-done', opens resolve form.
+    fireEvent.change(select, { target: { value: 'st-done' } });
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+
+    // Step 2: click Cancel → form closes, pendingStatusId must be cleared.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('ticket-workbench-resolve-form')).toBeNull();
+
+    // Step 3: press `e` (resolveRequestToken increment) → reopens the resolve form.
+    rerender(<TicketWorkbench ticketId="tk-1" resolveRequestToken={1} />);
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+
+    // Step 4: submit with a note → must POST {status:'resolved'}, NOT {statusId:'st-done'}.
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), {
+      target: { value: 'Fixed it.' }
+    });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: 'Fixed it.' })
+        })
+      );
+    });
+    // Sanity: must NOT have posted statusId at all.
+    const statusCalls = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'POST' && String(url).endsWith('/status')
+    );
+    expect(statusCalls).toHaveLength(1);
+    expect(statusCalls[0][1]?.body).not.toContain('statusId');
   });
 });

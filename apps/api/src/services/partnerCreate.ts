@@ -10,6 +10,7 @@ import {
   sites,
 } from '../db/schema';
 import type { PartnerStatus } from '../db/schema/orgs';
+import { seedSystemTicketStatuses } from './ticketConfigService';
 
 export interface CreatePartnerInput {
   orgName: string;
@@ -163,6 +164,9 @@ export async function createPartner(input: CreatePartnerInput): Promise<CreatePa
     if (!newOrg) {
       throw new Error('Failed to create default organization');
     }
+
+    // Seed the six system ticket statuses for this partner.
+    await seedSystemTicketStatuses(tx, newPartner.id);
 
     // Default site.
     const [newSite] = await tx

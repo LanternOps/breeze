@@ -120,6 +120,7 @@ vi.mock('./networkShared', () => ({
 
 import { cisHardeningRoutes } from './cisHardening';
 import { db } from '../db';
+import { scheduleCisRemediationWithResult } from '../jobs/cisJobs';
 
 const ORG_ID = 'org-111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
@@ -436,6 +437,100 @@ describe('CIS hardening — site-scope enforcement', () => {
 
       expect(res.status).toBe(200);
       expect(conditionText(countWhere)).not.toContain('devices.siteId');
+    });
+  });
+
+  describe('POST /cis/remediate/approve', () => {
+    const ACTION_ID = '44444444-4444-4444-4444-444444444444';
+
+    // Approve handler issues: (1) select actions, (2) select devices for the
+    // site re-check (only when allowedSiteIds is set), (3) update + queue.
+    function rigActionsLookup(rows: unknown[]) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows),
+        }),
+      } as never);
+    }
+
+    function rigDevicesSiteLookup(rows: unknown[]) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows),
+        }),
+      } as never);
+    }
+
+    it('returns 403 when an action targets a device outside the site allowlist', async () => {
+      rigActionsLookup([
+        {
+          id: ACTION_ID,
+          orgId: ORG_ID,
+          deviceId: DEVICE_ID,
+          status: 'pending_approval',
+          approvalStatus: 'pending',
+        },
+      ]);
+      // Target device lives in the FORBIDDEN site
+      rigDevicesSiteLookup([{ id: DEVICE_ID, siteId: FORBIDDEN_SITE_ID }]);
+
+      const res = await app.request('/cis/remediate/approve', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          'x-restrict-site': DEVICE_SITE_ID,
+        },
+        body: JSON.stringify({ actionIds: [ACTION_ID], approved: true }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site/i);
+      expect(body.deniedActionIds).toEqual([ACTION_ID]);
+      // No status flip / queue dispatch should have occurred
+      expect(scheduleCisRemediationWithResult).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('approves and queues when the action device is within the site allowlist', async () => {
+      rigActionsLookup([
+        {
+          id: ACTION_ID,
+          orgId: ORG_ID,
+          deviceId: DEVICE_ID,
+          status: 'pending_approval',
+          approvalStatus: 'pending',
+        },
+      ]);
+      // Target device lives in the ALLOWED site
+      rigDevicesSiteLookup([{ id: DEVICE_ID, siteId: DEVICE_SITE_ID }]);
+      // Approval update
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      } as never);
+      vi.mocked(scheduleCisRemediationWithResult).mockResolvedValueOnce({
+        queuedActionIds: [ACTION_ID],
+        failedActionIds: [],
+      } as never);
+
+      const res = await app.request('/cis/remediate/approve', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          'x-restrict-site': DEVICE_SITE_ID,
+        },
+        body: JSON.stringify({ actionIds: [ACTION_ID], approved: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.approved).toBe(true);
+      expect(body.queued).toBe(1);
+      expect(scheduleCisRemediationWithResult).toHaveBeenCalledWith([ACTION_ID]);
     });
   });
 

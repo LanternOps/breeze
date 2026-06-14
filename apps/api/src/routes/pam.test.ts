@@ -49,6 +49,15 @@ vi.mock('../db/schema', () => ({
     approvedByUserId: 'approvedByUserId',
     deniedByUserId: 'deniedByUserId',
     revokedByUserId: 'revokedByUserId',
+    softwarePolicyMatchId: 'softwarePolicyMatchId',
+    metadata: 'metadata',
+    subjectUsername: 'subjectUsername',
+    targetExecutablePath: 'targetExecutablePath',
+    targetExecutableHash: 'targetExecutableHash',
+    targetExecutableSigner: 'targetExecutableSigner',
+    toolName: 'toolName',
+    riskTier: 'riskTier',
+    denialReason: 'denialReason',
   },
   elevationAudit: { id: 'id' },
   pamRules: {
@@ -58,6 +67,7 @@ vi.mock('../db/schema', () => ({
     createdAt: 'createdAt',
   },
   aiToolExecutions: { id: 'id', status: 'status' },
+  softwarePolicies: { id: 'id', name: 'name' },
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -232,6 +242,119 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     expect(projection).toHaveProperty('approvedByName');
     expect(projection).toHaveProperty('deniedByName');
     expect(projection).toHaveProperty('revokedByName');
+  });
+
+  it('surfaces software-policy provenance as first-class fields', async () => {
+    const policyRow = {
+      request: {
+        id: REQ_ID,
+        orgId: ORG_ID,
+        deviceId: 'dev-1',
+        flowType: 'uac_intercept',
+        status: 'denied',
+        approvedByUserId: null,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: 'policy-1',
+        metadata: {},
+      },
+      deviceHostname: 'WS-ALPHA',
+      siteName: 'HQ',
+      approvedByName: null,
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: 'Engineering Blocklist',
+    };
+    mockListSelect([policyRow], 1);
+
+    const res = await app().request('/pam/elevation-requests');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.requests[0];
+    expect(row.matchedPolicyName).toBe('Engineering Blocklist');
+    expect(row.decisionSource).toBe('software_policy');
+  });
+
+  it('surfaces pam-rule provenance from metadata and computes decisionSource', async () => {
+    const ruleRow = {
+      request: {
+        id: REQ_ID,
+        orgId: ORG_ID,
+        deviceId: 'dev-1',
+        flowType: 'uac_intercept',
+        status: 'auto_approved',
+        approvedByUserId: null,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: null,
+        metadata: { pam_rule_id: 'rule-1', pam_rule_name: 'Allow signed installers' },
+      },
+      deviceHostname: 'WS-BETA',
+      siteName: 'Branch',
+      approvedByName: null,
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: null,
+    };
+    mockListSelect([ruleRow], 1);
+
+    const res = await app().request('/pam/elevation-requests');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.requests[0];
+    expect(row.pamRuleId).toBe('rule-1');
+    expect(row.pamRuleName).toBe('Allow signed installers');
+    expect(row.decisionSource).toBe('pam_rule');
+  });
+
+  it('computes decisionSource=human for human-decided rows and null for pending', async () => {
+    const humanRow = {
+      request: {
+        id: REQ_ID,
+        orgId: ORG_ID,
+        deviceId: 'dev-1',
+        flowType: 'uac_intercept',
+        status: 'approved',
+        approvedByUserId: USER_ID,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: null,
+        metadata: {},
+      },
+      deviceHostname: 'WS-ALPHA',
+      siteName: 'HQ',
+      approvedByName: 'Jane Admin',
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: null,
+    };
+    const pendingRow = {
+      request: {
+        id: '7b41c9a2-0000-4000-8000-000000000099',
+        orgId: ORG_ID,
+        deviceId: 'dev-2',
+        flowType: 'uac_intercept',
+        status: 'pending',
+        approvedByUserId: null,
+        deniedByUserId: null,
+        revokedByUserId: null,
+        softwarePolicyMatchId: null,
+        metadata: {},
+      },
+      deviceHostname: 'WS-GAMMA',
+      siteName: 'HQ',
+      approvedByName: null,
+      deniedByName: null,
+      revokedByName: null,
+      matchedPolicyName: null,
+    };
+    mockListSelect([humanRow, pendingRow], 2);
+
+    const res = await app().request('/pam/elevation-requests');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.requests[0].decisionSource).toBe('human');
+    expect(body.requests[1].decisionSource).toBeNull();
   });
 });
 
@@ -620,5 +743,316 @@ describe('PATCH /pam/rules/:id shape validation (Phase 1)', () => {
     });
     expect(res.status).toBe(400);
     expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /pam/rules/preview', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  // Helper: builds a minimal elevation_requests row for the preview SELECT.
+  const previewRow = (over: Partial<Record<string, unknown>> = {}): Record<string, unknown> => ({
+    id: 'er-1',
+    requestedAt: new Date('2026-06-10T18:00:00Z'),
+    flowType: 'uac_intercept',
+    status: 'pending',
+    subjectUsername: 'ACME\\jdoe',
+    targetExecutablePath: 'C:\\Tools\\installer.exe',
+    targetExecutableHash: null,
+    targetExecutableSigner: 'Acme Corp',
+    toolName: null,
+    riskTier: null,
+    metadata: {},
+    ...over,
+  });
+
+  /** Rig db.select so it resolves to `rows` (no count branch needed for preview). */
+  function mockPreviewSelect(rows: unknown[]) {
+    vi.mocked(db.select).mockImplementation((() => {
+      const chain: any = Promise.resolve(rows);
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      return chain;
+    }) as any);
+  }
+
+  it('counts signer matches case-insensitively', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', targetExecutableSigner: 'Acme Corp' }),
+      previewRow({ id: 'er-2', targetExecutableSigner: 'ACME CORP' }),
+      previewRow({ id: 'er-3', targetExecutableSigner: 'acme corp' }),
+      previewRow({ id: 'er-4', targetExecutableSigner: 'Other Inc' }),
+      previewRow({ id: 'er-5', targetExecutableSigner: 'Other Inc' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'acme corp', windowDays: 30 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(3);
+    expect(body.totalScanned).toBe(5);
+    expect(body.sample).toHaveLength(3);
+  });
+
+  it('does not match tool-action rows against executable criteria', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', flowType: 'uac_intercept', targetExecutableSigner: 'Acme Corp', toolName: null }),
+      previewRow({ id: 'er-2', flowType: 'ai_tool_action', targetExecutableSigner: null, toolName: 'manage_services' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(1);
+  });
+
+  it('evaluates timeWindow against each row requestedAt', async () => {
+    // 23:00 row is inside the overnight window (22:00–06:00); 12:00 row is not
+    const rows = [
+      previewRow({ id: 'er-1', requestedAt: new Date('2026-06-10T23:00:00Z') }),
+      previewRow({ id: 'er-2', requestedAt: new Date('2026-06-10T12:00:00Z') }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matchUser: 'ACME\\jdoe',
+        timeWindow: { start: '22:00', end: '06:00', timezone: 'UTC' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(1);
+  });
+
+  it('returns zeroed shape on empty scan', async () => {
+    mockPreviewSelect([]);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(0);
+    expect(body.totalScanned).toBe(0);
+    expect(body.truncated).toBe(false);
+    expect(body.sample).toEqual([]);
+  });
+
+  it('rejects criterion-less, mixed, and out-of-range bodies', async () => {
+    // No criteria
+    const r1 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(r1.status).toBe(400);
+
+    // Mixed executable + tool-action
+    const r2 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'x', matchToolName: 'y' }),
+    });
+    expect(r2.status).toBe(400);
+
+    // windowDays = 0 (below min 1)
+    const r3 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'x', windowDays: 0 }),
+    });
+    expect(r3.status).toBe(400);
+
+    // windowDays = 91 (above max 90)
+    const r4 = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'x', windowDays: 91 }),
+    });
+    expect(r4.status).toBe(400);
+  });
+
+  it('caps sample at 10 and tallies statusBreakdown', async () => {
+    // 14 matching rows: 9 pending, 5 auto_approved
+    const rows = [
+      ...Array.from({ length: 9 }, (_, i) =>
+        previewRow({ id: `er-p${i}`, status: 'pending', targetExecutableSigner: 'Acme Corp' }),
+      ),
+      ...Array.from({ length: 5 }, (_, i) =>
+        previewRow({ id: `er-a${i}`, status: 'auto_approved', targetExecutableSigner: 'Acme Corp' }),
+      ),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalMatched).toBe(14);
+    expect(body.sample.length).toBe(10);
+    expect(body.statusBreakdown.pending).toBe(9);
+    expect(body.statusBreakdown.auto_approved).toBe(5);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Gap 3: preview site-scope authorization
+  // ---------------------------------------------------------------------------
+
+  it('Gap 3a: site-scoped technician posting siteId outside their allowedSiteIds → 403 Site access denied', async () => {
+    const ALLOWED_SITE = '7b41c9a2-0000-4000-8000-000000000010';
+    const OTHER_SITE = '7b41c9a2-0000-4000-8000-000000000011';
+
+    // Auth sets permissions with allowedSiteIds that does NOT include OTHER_SITE.
+    authMocks.authMiddlewareMock.mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: USER_ID, email: 't@example.com' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+      });
+      c.set('permissions', { allowedSiteIds: [ALLOWED_SITE] });
+      return next();
+    });
+
+    mockPreviewSelect([]);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp', siteId: OTHER_SITE }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Site access denied');
+  });
+
+  it('Gap 3b: site-scoped technician WITHOUT body.siteId — siteScopeCondition narrows rows to allowed sites', async () => {
+    // NOTE: The WHERE predicate from siteScopeCondition is injected into the Drizzle query,
+    // which our mocked db ignores (mock returns all rows regardless of WHERE). We therefore
+    // assert the observable outcome: only rows whose siteId is in allowedSiteIds are
+    // actually matched — the route's JS-layer matching does NOT filter siteId, but
+    // the DB layer would. Since we cannot assert SQL WHERE through a mock, we test what IS
+    // assertable: the request succeeds (200) and the full scan is returned. The actual
+    // site-narrowing is an integration-test concern.
+    //
+    // We DO assert the 403 path via Gap 3a above (which exercises the route's explicit
+    // siteId+canAccessSite check). This test ensures the no-siteId path reaches the DB
+    // without error when the tech is site-scoped.
+    const ALLOWED_SITE = '7b41c9a2-0000-4000-8000-000000000010';
+
+    authMocks.authMiddlewareMock.mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: USER_ID, email: 't@example.com' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+      });
+      c.set('permissions', { allowedSiteIds: [ALLOWED_SITE] });
+      return next();
+    });
+
+    mockPreviewSelect([previewRow({ id: 'er-1' })]);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'Acme Corp' }),
+    });
+
+    // Request should succeed; site narrowing is applied at DB layer (not testable via mock).
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Gap 4: non-UTC timeWindow wiring
+  //
+  // Timestamp analysis:
+  //   Window: 00:00–05:00 in America/Chicago (UTC-5 in standard time, UTC-6 in DST).
+  //   requestedAt: 2026-06-10T06:00:00Z
+  //   In UTC: 06:00 — outside the window 00:00–05:00 UTC.
+  //   In America/Chicago (CDT = UTC-5 in June 2026):
+  //     06:00Z - 5h = 01:00 CDT → inside window 00:00–05:00.
+  //
+  //   Test A (Chicago): window 00:00–05:00, timezone: 'America/Chicago'
+  //     → 06:00Z = 01:00 Chicago → INSIDE → totalMatched = 1
+  //   Test B (UTC):     window 00:00–05:00, timezone: 'UTC'
+  //     → 06:00Z = 06:00 UTC → OUTSIDE → totalMatched = 0
+  //
+  //   This discriminates: different values from the same row + same window + different TZ.
+  // ---------------------------------------------------------------------------
+
+  it('Gap 4a: timezone America/Chicago — 06:00Z falls inside 00:00–05:00 Chicago window (match)', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', requestedAt: new Date('2026-06-10T06:00:00Z'), subjectUsername: 'ACME\\jdoe' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matchUser: 'ACME\\jdoe',
+        timeWindow: { start: '00:00', end: '05:00', timezone: 'America/Chicago' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // 06:00Z = 01:00 America/Chicago (CDT, UTC-5) → inside 00:00–05:00
+    expect(body.totalMatched).toBe(1);
+    expect(body.totalScanned).toBe(1);
+  });
+
+  it('Gap 4b: same window 00:00–05:00 in UTC — 06:00Z falls OUTSIDE (no match)', async () => {
+    const rows = [
+      previewRow({ id: 'er-1', requestedAt: new Date('2026-06-10T06:00:00Z'), subjectUsername: 'ACME\\jdoe' }),
+    ];
+    mockPreviewSelect(rows);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matchUser: 'ACME\\jdoe',
+        timeWindow: { start: '00:00', end: '05:00', timezone: 'UTC' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // 06:00Z = 06:00 UTC → outside 00:00–05:00
+    expect(body.totalMatched).toBe(0);
+    expect(body.totalScanned).toBe(1);
   });
 });

@@ -182,6 +182,56 @@ describe('PamRequestsTab', () => {
     expect(screen.getByTestId('pam-decided-by-req-4')).toHaveTextContent('by deadbeef…');
   });
 
+  it('attributes an auto-approved request to its PAM rule', async () => {
+    const autoApproved: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-rule',
+      status: 'auto_approved',
+      decisionSource: 'pam_rule',
+      pamRuleName: 'Allow signed installers',
+    };
+    fetchWithAuthMock.mockResolvedValueOnce(listResponse([autoApproved]));
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-rule'));
+    expect(screen.getByTestId('pam-decided-by-req-rule')).toHaveTextContent(
+      'Rule · Allow signed installers',
+    );
+  });
+
+  it('attributes a denied request to the matched software policy', async () => {
+    const denied: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-policy',
+      status: 'denied',
+      decisionSource: 'software_policy',
+      matchedPolicyName: 'Engineering Blocklist',
+      denialReason: 'Blocked by software policy',
+    };
+    fetchWithAuthMock.mockResolvedValueOnce(listResponse([denied]));
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-policy'));
+    expect(screen.getByTestId('pam-decided-by-req-policy')).toHaveTextContent(
+      'Policy · Engineering Blocklist',
+    );
+    // The raw denialReason is redundant once the policy is named, so it is hidden.
+    expect(screen.queryByText('Blocked by software policy')).toBeNull();
+  });
+
+  it('attributes a human revoke over the original auto-decision', async () => {
+    const revoked: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-revoked',
+      status: 'revoked',
+      decisionSource: 'pam_rule',
+      pamRuleName: 'Allow signed installers',
+      revokedByName: 'Jane Admin',
+    };
+    fetchWithAuthMock.mockResolvedValueOnce(listResponse([revoked]));
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-revoked'));
+    expect(screen.getByTestId('pam-decided-by-req-revoked')).toHaveTextContent('by Jane Admin');
+  });
+
   it('fetches page=2 on Next and updates the footer range', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
       const requestedPage = Number(
@@ -235,6 +285,84 @@ describe('PamRequestsTab', () => {
         ),
       ).toBe(true);
     });
+  });
+
+  it('shows a Rule… action on every row and opens the rule modal pre-filled', async () => {
+    const signedPending: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-signed',
+      targetExecutableSigner: 'Acme Corp',
+      targetExecutablePath: 'C:\\Temp\\installer.exe',
+    };
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      return listResponse([signedPending]);
+    });
+
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-signed'));
+    // Every row has a create-rule button regardless of status.
+    expect(screen.getByTestId('pam-create-rule-btn-req-signed')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('pam-create-rule-btn-req-signed'));
+    // The rule modal opens in create mode, seeded from the request.
+    await waitFor(() => {
+      expect(screen.getByTestId('pam-rule-submit')).toHaveTextContent('Create rule');
+    });
+    await waitFor(() => {
+      expect((screen.getByTestId('pam-rule-signer') as HTMLInputElement).value).toBe('Acme Corp');
+    });
+  });
+
+  it('seeds the rule modal org select from the request org for multi-org users', async () => {
+    // pendingRequest.orgId is 'org-1'; with two accessible orgs the modal must
+    // default the org select to the request's org, not items[0] (#1286 Fix A).
+    const signedPending: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-org',
+      orgId: 'org-2',
+      targetExecutableSigner: 'Acme Corp',
+    };
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations'))
+        return makeJsonResponse({
+          data: [
+            { id: 'org-1', name: 'Acme' },
+            { id: 'org-2', name: 'Globex' },
+          ],
+        });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      return listResponse([signedPending]);
+    });
+
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-create-rule-btn-req-org'));
+    fireEvent.click(screen.getByTestId('pam-create-rule-btn-req-org'));
+
+    await waitFor(() => {
+      expect((screen.getByTestId('pam-rule-org') as HTMLSelectElement).value).toBe('org-2');
+    });
+  });
+
+  it('offers a create-rule link in the respond modal that swaps to the rule modal', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      return listResponse([pendingRequest]);
+    });
+
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-respond-btn-req-1'));
+    fireEvent.click(screen.getByTestId('pam-respond-btn-req-1'));
+    await waitFor(() => screen.getByTestId('pam-respond-create-rule'));
+
+    fireEvent.click(screen.getByTestId('pam-respond-create-rule'));
+    await waitFor(() => {
+      expect(screen.getByTestId('pam-rule-submit')).toHaveTextContent('Create rule');
+    });
+    // The respond modal is dismissed when switching to the rule modal.
+    expect(screen.queryByTestId('pam-respond-submit')).toBeNull();
   });
 
   it('revokes an active elevation with a required reason', async () => {

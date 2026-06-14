@@ -10,7 +10,7 @@ import { and, desc, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
-import { ticketSiteScopeCondition } from '../routes/tickets/siteScope';
+import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
   createTicket,
@@ -25,6 +25,7 @@ import {
   stopTimer,
   TimeEntryServiceError
 } from './timeEntryService';
+import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 
 function actorFrom(auth: AuthContext) {
   return { userId: auth.user.id, name: auth.user.name };
@@ -35,6 +36,7 @@ function timeEntryActorFrom(auth: AuthContext) {
     userId: auth.user.id,
     name: auth.user.name,
     partnerId: auth.partnerId,
+    accessibleOrgIds: auth.accessibleOrgIds,
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
     manageAll: false as const
   };
@@ -47,14 +49,24 @@ function timeEntryActorFrom(auth: AuthContext) {
  * (getScopedTicketOr404) — build orgCondition-scoped conditions so neither
  * a cross-org nor a cross-partner ticket ID resolves.
  *
- * Returns the ticket row, or null when not found in the caller's scope.
+ * Site axis: RLS enforces only the org axis, so a site-restricted
+ * org user must also be gated on the SITE axis here. After the org-scoped load,
+ * a device-bound ticket is resolved only when its device's site is in the
+ * caller's allowlist (deviceInSiteScope); deviceless (org-level) tickets stay
+ * accessible at org scope — matching getScopedTicketOr404 in the HTTP route.
+ *
+ * Returns the ticket row, or null when not found / out of the caller's scope.
  */
 async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(tickets.id, ticketId)];
   const orgCond = auth.orgCondition(tickets.orgId);
   if (orgCond) conditions.push(orgCond);
   const [ticket] = await db.select().from(tickets).where(and(...conditions)).limit(1);
-  return ticket ?? null;
+  if (!ticket) return null;
+  if (ticket.deviceId && !(await deviceInSiteScope(auth, ticket.deviceId))) {
+    return null;
+  }
+  return ticket;
 }
 
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
@@ -100,7 +112,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           status: {
             type: 'string',
             enum: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'],
-            description: 'Target status (update_status) or filter (list)'
+            description: 'Target core status (update_status) or filter (list). Mutually exclusive with statusName — provide only one.'
+          },
+          statusName: {
+            type: 'string',
+            description: 'A custom status name configured by the partner (e.g. "Waiting on vendor"); alternative to status for update_status. Mutually exclusive with status — provide only one.'
           },
           resolutionNote: {
             type: 'string',
@@ -256,13 +272,49 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
-        if (!input.status) return JSON.stringify({ error: 'status is required for update_status action' });
+        if (!input.status && !input.statusName) return JSON.stringify({ error: 'status or statusName is required for update_status action' });
+        // Exactly one of status / statusName must be provided.
+        if (input.status && input.statusName) {
+          return JSON.stringify({ error: 'Provide only one of status or statusName, not both' });
+        }
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
+
+        let changeTarget: { status: TicketStatus } | { statusId: string };
+
+        if (input.statusName) {
+          // Resolve custom status name to a statusId. auth.partnerId may be null for
+          // org-scope callers — fall back to the ticket's partner via found.partnerId
+          // (tickets row has a partnerId column set at create time).
+          const partnerId = auth.partnerId ?? found.partnerId;
+          if (!partnerId) {
+            return JSON.stringify({ error: 'Cannot resolve statusName: partner context unavailable' });
+          }
+          const statusRow = await findStatusByName(partnerId, String(input.statusName));
+          if (!statusRow) {
+            const activeNames = await listActiveStatusNames(partnerId);
+            let nameList: string;
+            if (activeNames.length === 0) {
+              nameList = '(none)';
+            } else {
+              const names = activeNames.slice(0, 20).map((n) => `"${n}"`).join(', ');
+              nameList = activeNames.length > 20
+                ? `${names}, …and ${activeNames.length - 20} more`
+                : names;
+            }
+            return JSON.stringify({
+              error: `Unknown status name "${input.statusName}". Active status names for this partner: ${nameList}`
+            });
+          }
+          changeTarget = { statusId: statusRow.id };
+        } else {
+          changeTarget = { status: input.status as TicketStatus };
+        }
+
         const ticket = await changeTicketStatus(
           String(input.ticketId),
-          input.status as TicketStatus,
+          changeTarget,
           {
             resolutionNote: input.resolutionNote ? String(input.resolutionNote) : undefined,
             pendingReason: input.pendingReason ? String(input.pendingReason) : undefined

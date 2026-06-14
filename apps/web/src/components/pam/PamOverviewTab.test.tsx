@@ -84,6 +84,45 @@ describe('PamOverviewTab', () => {
     expect(screen.getByText('No decided requests yet.')).toBeInTheDocument();
   });
 
+  it('renders the first-run setup block with a Configuration Policies link when all-zero', async () => {
+    fetchWithAuthMock.mockImplementation(async () =>
+      makeJsonResponse({
+        success: true,
+        active: [],
+        requests: [],
+        pagination: { page: 1, limit: 10, total: 0 },
+      }),
+    );
+    render(<PamOverviewTab liveTick={0} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('pam-setup-steps')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('pam-setup-steps')).toHaveTextContent('Configuration Policy');
+  });
+
+  it('hides the first-run setup block once there is activity', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url === '/pam/active') {
+        return makeJsonResponse({ success: true, active: [activeElevation] });
+      }
+      if (url.includes('status=pending')) {
+        return makeJsonResponse({
+          success: true,
+          requests: [],
+          pagination: { page: 1, limit: 1, total: 0 },
+        });
+      }
+      return makeJsonResponse({
+        success: true,
+        requests: [],
+        pagination: { page: 1, limit: 10, total: 0 },
+      });
+    });
+    render(<PamOverviewTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-active-row-act-1'));
+    expect(screen.queryByTestId('pam-setup-steps')).toBeNull();
+  });
+
   it('shows the decider display name on recent decisions when joined by the API', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string) => {
       if (url === '/pam/active') {

@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions } from '../db/schema';
+import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
@@ -226,6 +226,19 @@ async function isTunnelDeviceSiteDenied(deviceId: string, perms: UserPermissions
   return !device || typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId);
 }
 
+// Confirm a siteId belongs to the resolved org before it is stored on an
+// allowlist rule. Mirrors the site-belongs-to-org checks in networkBaselines.ts
+// / groups.ts. RLS does NOT defend the site axis, so an unchecked body.siteId
+// could otherwise scope (or mask) a rule against an arbitrary site uuid.
+async function siteBelongsToOrg(siteId: string, orgId: string): Promise<boolean> {
+  const [site] = await db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+    .limit(1);
+  return !!site;
+}
+
 async function getActiveAllowlistPatterns(orgId: string): Promise<string[]> {
   const rules = await db
     .select({ pattern: tunnelAllowlists.pattern })
@@ -436,6 +449,8 @@ tunnelRoutes.get(
 tunnelRoutes.post(
   '/allowlist',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', allowlistRuleSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -444,6 +459,12 @@ tunnelRoutes.post(
     const orgId = orgResult.orgId;
 
     const body = c.req.valid('json');
+
+    // A body.siteId is an arbitrary uuid until proven to belong to the resolved
+    // org — RLS does not defend the site axis. Reject cross-org site ids.
+    if (body.siteId && !(await siteBelongsToOrg(body.siteId, orgId))) {
+      return c.json({ error: 'Site not found for this organization' }, 404);
+    }
 
     const [rule] = await db
       .insert(tunnelAllowlists)
@@ -467,6 +488,8 @@ tunnelRoutes.post(
 tunnelRoutes.put(
   '/allowlist/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', allowlistIdParamSchema),
   zValidator('json', updateAllowlistSchema),
   async (c) => {
@@ -507,6 +530,8 @@ tunnelRoutes.put(
 tunnelRoutes.delete(
   '/allowlist/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', allowlistIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

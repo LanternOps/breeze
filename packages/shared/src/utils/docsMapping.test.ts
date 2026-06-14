@@ -19,6 +19,18 @@ describe('getDocsForPath', () => {
       const result = getDocsForPath('/scripts');
       expect(result.label).toBe('Scripts');
     });
+
+    it('/pam maps to privileged access docs', () => {
+      const result = getDocsForPath('/pam');
+      expect(result.label).toBe('Privileged Access');
+      expect(result.url).toContain('/features/pam/');
+    });
+
+    it('/timesheet maps to ticketing docs', () => {
+      const result = getDocsForPath('/timesheet');
+      expect(result.label).toBe('Timesheet');
+      expect(result.url).toContain('/features/ticketing/');
+    });
   });
 
   describe('prefix matches', () => {

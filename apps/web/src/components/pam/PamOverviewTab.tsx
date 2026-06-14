@@ -6,7 +6,7 @@ import {
   type ElevationRequest,
   FLOW_LABELS,
   STATUS_LABELS,
-  decidedByLabel,
+  decisionAttribution,
   requestTarget,
   statusBadgeClass,
 } from './types';
@@ -72,6 +72,9 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
     );
   }
 
+  const isFirstRun =
+    !!data && data.active.length === 0 && data.pendingTotal === 0 && data.recent.length === 0;
+
   return (
     <div className="space-y-6">
       {error && (
@@ -80,6 +83,23 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
           className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
         >
           {error}
+        </div>
+      )}
+
+      {isFirstRun && (
+        <div className="rounded-md border bg-muted/20 p-4" data-testid="pam-setup-steps">
+          <p className="text-sm font-medium">Getting started with Privileged Access</p>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+            <li>
+              UAC prompt capture is on by default. Scope it per device with a{' '}
+              <a href="/configuration-policies" className="underline underline-offset-2 hover:text-foreground">
+                Configuration Policy → Privileged Access
+              </a>{' '}
+              feature link.
+            </li>
+            <li>Elevation prompts, JIT admin requests, and AI tool actions queue in the Requests tab.</li>
+            <li>Approve or deny each request — or create a rule from it so the decision is automatic next time.</li>
+          </ol>
         </div>
       )}
 
@@ -163,7 +183,7 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
         ) : (
           <ul className="divide-y rounded-md border bg-card">
             {data.recent.map((r) => {
-              const decidedBy = decidedByLabel(r);
+              const attribution = decisionAttribution(r);
               return (
                 <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
                   <span className="min-w-0 flex-1 truncate" title={requestTarget(r)}>
@@ -171,12 +191,13 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
                     <span className="text-muted-foreground"> · {r.subjectUsername} · </span>
                     {requestTarget(r)}
                   </span>
-                  {decidedBy && (
+                  {attribution && (
                     <span
                       className="shrink-0 text-xs text-muted-foreground"
                       data-testid={`pam-decided-by-${r.id}`}
+                      title={attribution}
                     >
-                      by {decidedBy}
+                      {attribution}
                     </span>
                   )}
                   <span

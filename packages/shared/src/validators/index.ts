@@ -432,7 +432,7 @@ export const updateConfigPolicySchema = z.object({
 });
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam']),
   featurePolicyId: z.string().uuid().optional(),
   inlineSettings: z.record(z.unknown()).optional(),
 }).refine(
@@ -513,8 +513,6 @@ export const eventLogInlineSettingsSchema = z.object({
   minimumLevel: z.enum(['info', 'warning', 'error', 'critical']).default('info'),
   collectionIntervalMinutes: z.number().int().min(1).max(60).default(5),
   rateLimitPerHour: z.number().int().min(100).max(100000).default(12000),
-  enableFullTextSearch: z.boolean().default(true),
-  enableCorrelation: z.boolean().default(true),
 });
 
 export const sensitiveDataInlineSettingsSchema = z.object({
@@ -631,6 +629,7 @@ export * from './ai';
 export * from './tickets';
 export * from './timeEntries';
 export * from './portal';
+export * from './ticketConfig';
 
 // ============================================
 // Backup Target Validators

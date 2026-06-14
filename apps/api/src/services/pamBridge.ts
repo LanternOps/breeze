@@ -297,29 +297,90 @@ function matchRule(
 
 /**
  * Windows-style case-insensitive glob: `*` matches anything except path
- * separator, `**` matches anything including separators. Normalizes both
- * sides to forward slashes before comparison.
+ * separator, `**` matches anything including separators. All other characters
+ * — including `?`, `.`, `+`, `(`, spaces, etc. — are LITERAL (this dialect has
+ * no single-char wildcard). Normalizes both sides to forward slashes and
+ * lowercases before comparison; the match is full-string anchored.
  *
  * Mirrors the wildcard handling in softwarePolicyService.matchesSoftwareRule
  * (softwarePolicyService.ts:185-214) but extended for `**` since PAM rules
  * commonly say `C:\Program Files\Adobe\**\*.exe`.
+ *
+ * Implemented as a bottom-up dynamic-programming matcher (no RegExp, no
+ * recursion). The prior regex compilation (`*`→`[^/]*`, `**`→`.*`) exhibited
+ * catastrophic backtracking — a crafted, user-supplied glob such as
+ * `a*a*a*...*b` against an all-`a` path would pin an API worker for seconds
+ * (saved PAM rules + the `/pam/rules/preview` endpoint both feed
+ * attacker-influenced globs in). The DP table below visits each (glob token,
+ * text position) pair at most once, giving O(|glob|·|text|) worst case with no
+ * backtracking explosion and a stack depth independent of input. Matching
+ * characters literally also keeps a blocklist rule for
+ * `C:\Program Files\Evil.exe` from leaking into attacker-controlled
+ * non-default install paths like `c:/programXfilesY/evil.exe`.
  */
 export function matchPathGlob(glob: string, path: string): boolean {
   const norm = (s: string) => s.replace(/\\/g, '/').toLowerCase();
-  const target = norm(path);
-  // Use a NUL sentinel for `**` so a literal space in the glob (e.g. the
-  // `Program Files` segment of every Windows install path) can never be
-  // misinterpreted as the wildcard placeholder. A printable placeholder
-  // here is a security bug: a blocklist rule for `C:\Program Files\Evil.exe`
-  // would otherwise produce regex `^c:/program.*files/evil\.exe$` and match
-  // attacker-controlled non-default install paths like `c:/programXfilesY/`.
-  const escaped = norm(glob)
-    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')   // escape regex metas (space NOT included — good)
-    .replace(/\*\*/g, '\x00')                  // ** → NUL sentinel
-    .replace(/\*/g, '[^/]*')                   // * → single-segment wildcard
-    .replace(/\x00/g, '.*');                   // sentinel → real .*
-  const re = new RegExp(`^${escaped}$`);
-  return re.test(target);
+  const g = norm(glob);
+  const t = norm(path);
+
+  // Tokenize the glob into a flat program of literals and star spans. Each
+  // star span is collapsed from a run of consecutive `*`: two or more stars
+  // become a `**` span (crosses '/'); a lone `*` stays single-segment. This
+  // keeps `***` == `**` (a slash-crossing span), matching the legacy regex.
+  type Tok = { star: true; crossesSlash: boolean } | { star: false; ch: string };
+  const toks: Tok[] = [];
+  for (let i = 0; i < g.length; ) {
+    if (g[i] === '*') {
+      let count = 0;
+      while (i < g.length && g[i] === '*') {
+        i++;
+        count++;
+      }
+      toks.push({ star: true, crossesSlash: count >= 2 });
+    } else {
+      toks.push({ star: false, ch: g[i] as string });
+      i++;
+    }
+  }
+
+  const pn = toks.length;
+  const tn = t.length;
+
+  // Bottom-up DP, no recursion (glob runs may be up to the 4096-char schema
+  // cap; recursion depth must not scale with the path). dp[ti] = does the
+  // remaining glob (from the current token) match t[ti..]? We fill it for
+  // each token from the last token backward.
+  // dp after processing tokens [k..] : dp[ti] true ⇔ toks[k..] matches t[ti..].
+  let dp = new Array<boolean>(tn + 1).fill(false);
+  dp[tn] = true; // empty glob matches only empty remaining text
+
+  for (let k = pn - 1; k >= 0; k--) {
+    const tok = toks[k] as Tok;
+    const next = new Array<boolean>(tn + 1).fill(false);
+    if (tok.star) {
+      // A star span matches zero or more text chars. next[ti] is true if the
+      // span matches an empty span here (dp[ti]) OR it can absorb t[ti] and
+      // the span continues (next[ti+1]) — subject to the no-'/' constraint
+      // for a single `*`. Scanning ti high→low lets next[ti+1] feed next[ti].
+      for (let ti = tn; ti >= 0; ti--) {
+        let v = dp[ti] as boolean; // span matches empty here
+        if (!v && ti < tn && (tok.crossesSlash || t[ti] !== '/')) {
+          v = next[ti + 1] as boolean; // absorb one more char, span continues
+        }
+        next[ti] = v;
+      }
+    } else {
+      // Literal token: matches t[ti] iff equal, then defer to dp[ti+1].
+      const ch = tok.ch;
+      for (let ti = 0; ti < tn; ti++) {
+        next[ti] = ch === t[ti] && (dp[ti + 1] as boolean);
+      }
+      // next[tn] stays false: a literal cannot match past end of text.
+    }
+    dp = next;
+  }
+
+  return dp[0] as boolean;
 }
 
 // ============================================================

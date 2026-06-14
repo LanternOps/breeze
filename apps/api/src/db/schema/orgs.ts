@@ -16,6 +16,11 @@ export const partners = pgTable('partners', {
   status: partnerStatusEnum('status').notNull().default('active'),
   maxOrganizations: integer('max_organizations'),
   maxDevices: integer('max_devices'),
+  // First-class partner timezone (issue #1318). The canonical default that a tz
+  // field resolves to when no more-specific scope (explicit/site/org) is set.
+  // Kept in sync with the legacy `settings.timezone` JSONB key, which remains
+  // the UI write target until the full call-site migration lands.
+  timezone: varchar('timezone', { length: 64 }).notNull().default('UTC'),
   settings: jsonb('settings').default({}),
   ssoConfig: jsonb('sso_config'),
   billingEmail: varchar('billing_email', { length: 255 }),

@@ -69,7 +69,8 @@ vi.mock('../db/schema', () => ({
   portalBranding: {},
   portalUsers: {},
   ticketComments: {},
-  tickets: {}
+  tickets: {},
+  ticketStatuses: {}
 }));
 
 import { nanoid } from 'nanoid';

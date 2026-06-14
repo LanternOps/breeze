@@ -46,6 +46,12 @@ vi.mock('./ticketEvents', () => ({
 }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: vi.fn().mockResolvedValue('T-2026-C001') }));
+vi.mock('./ticketConfigService', () => ({
+  getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
+  getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
+  getSystemStatusId: vi.fn().mockResolvedValue(null),
+  getTicketStatusById: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock('../db', () => ({
   withSystemDbAccessContext: hoisted.withSystemDbAccessContextMock,
@@ -224,7 +230,7 @@ describe('ticket-events producer→consumer contract', () => {
     // Service: comment insert returning
     hoisted.insertReturningQueue.push([{ id: 'feed-1' }]);
 
-    await changeTicketStatus('t-c3', 'resolved', { resolutionNote: 'Fixed the printer.' }, actor);
+    await changeTicketStatus('t-c3', { status: 'resolved' }, { resolutionNote: 'Fixed the printer.' }, actor);
 
     expect(hoisted.emitCaptured).toHaveLength(1);
     const event = hoisted.emitCaptured[0] as TicketEvent;

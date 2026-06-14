@@ -228,14 +228,195 @@ describe('playbook routes', () => {
     expect(body.error).toContain('same organization');
   });
 
+  it('rejects execution when site-restricted caller targets a device outside their site allowlist', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PLAYBOOK_ID,
+              name: 'Service Restart',
+              category: 'service',
+              steps: [],
+              orgId: '11111111-1111-1111-1111-111111111111',
+              isBuiltIn: false,
+              isActive: true,
+              requiredPermissions: ['devices:execute'],
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DEVICE_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              siteId: SITE_FORBIDDEN,
+              hostname: 'server-01',
+            }]),
+          }),
+        }),
+      } as any);
+    vi.mocked(checkPlaybookRequiredPermissions).mockResolvedValueOnce({
+      allowed: true,
+      missingPermissions: [],
+    });
+
+    const res = await app.request(`/playbooks/${PLAYBOOK_ID}/execute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+        'x-restrict-site': SITE_ALLOWED,
+      },
+      body: JSON.stringify({ deviceId: DEVICE_ID }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Device not found or access denied');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('allows execution when site-restricted caller targets a device inside their site allowlist', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PLAYBOOK_ID,
+              name: 'Service Restart',
+              description: 'Restart a service',
+              category: 'service',
+              steps: [],
+              orgId: '11111111-1111-1111-1111-111111111111',
+              isBuiltIn: false,
+              isActive: true,
+              requiredPermissions: ['devices:execute'],
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DEVICE_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              siteId: SITE_ALLOWED,
+              hostname: 'server-01',
+            }]),
+          }),
+        }),
+      } as any);
+    vi.mocked(checkPlaybookRequiredPermissions).mockResolvedValueOnce({
+      allowed: true,
+      missingPermissions: [],
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: EXECUTION_ID,
+          status: 'pending',
+          currentStepIndex: 0,
+        }]),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/${PLAYBOOK_ID}/execute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+        'x-restrict-site': SITE_ALLOWED,
+      },
+      body: JSON.stringify({ deviceId: DEVICE_ID }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.execution.id).toBe(EXECUTION_ID);
+  });
+
+  it('rejects PATCH when site-restricted caller updates an execution for an out-of-site device', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'pending',
+              deviceSiteId: SITE_FORBIDDEN,
+            }]),
+          }),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+        'x-restrict-site': SITE_ALLOWED,
+      },
+      body: JSON.stringify({ status: 'running' }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Execution not found or access denied');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('allows PATCH when site-restricted caller updates an execution for an in-site device', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'pending',
+              deviceSiteId: SITE_ALLOWED,
+            }]),
+          }),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+        'x-restrict-site': SITE_ALLOWED,
+      },
+      body: JSON.stringify({ status: 'running' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.execution.status).toBe('running');
+  });
+
   it('rejects invalid execution status transitions', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{
-            id: EXECUTION_ID,
-            status: 'pending',
-          }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'pending',
+            }]),
+          }),
         }),
       }),
     } as any);
@@ -254,8 +435,10 @@ describe('playbook routes', () => {
   it('allows valid transition pending → running', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'pending' }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'pending' }]),
+          }),
         }),
       }),
     } as any);
@@ -281,8 +464,10 @@ describe('playbook routes', () => {
   it('allows valid transition running → completed', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+          }),
         }),
       }),
     } as any);
@@ -306,8 +491,10 @@ describe('playbook routes', () => {
   it('allows valid transition running → failed with error message', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+          }),
         }),
       }),
     } as any);
@@ -333,8 +520,10 @@ describe('playbook routes', () => {
   it('allows valid transition running → rolled_back', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+          }),
         }),
       }),
     } as any);
@@ -369,8 +558,10 @@ describe('playbook routes', () => {
   ])('rejects terminal transition %s → %s', async (from, to) => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: from }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: from }]),
+          }),
         }),
       }),
     } as any);
@@ -389,8 +580,10 @@ describe('playbook routes', () => {
   it('returns 409 on concurrent modification (optimistic lock)', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+          }),
         }),
       }),
     } as any);
@@ -447,8 +640,10 @@ describe('playbook routes', () => {
   it('updates step results and currentStepIndex without status change', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+          }),
         }),
       }),
     } as any);
