@@ -203,6 +203,8 @@ export type MockPivotTable = {
 export class MockWorkbookState {
   sheets: MockSheetState[] = [new MockSheetState('Sheet1')];
   activeSheetName = 'Sheet1';
+  /** Workbook file name, e.g. 'Q3 Budget.xlsx' (readable after load('name')). */
+  workbookName = 'Book1';
   /** Sheet-qualified selection, e.g. 'Sheet1!B2:F40'. */
   selectionAddress = 'Sheet1!A1';
   tables: Array<{ name: string; address: string; hasHeaders: boolean }> = [];
@@ -802,13 +804,30 @@ class MockTableCollection {
   }
 }
 
-class MockWorkbook {
+class MockWorkbook implements Syncable {
   readonly worksheets: MockWorksheetCollection;
   readonly tables: MockTableCollection;
+  private nameHydrated = false;
 
   constructor(private ctx: MockContext) {
     this.worksheets = new MockWorksheetCollection(ctx);
     this.tables = new MockTableCollection(ctx);
+    ctx.track(this);
+  }
+
+  load(props: unknown): this {
+    this.ctx.state.loadCalls.push({ target: 'workbook', props });
+    return this;
+  }
+
+  _sync(): void {
+    this.nameHydrated = true;
+  }
+
+  get name(): string {
+    if (!this.nameHydrated)
+      throw new Error('PropertyNotLoaded: Workbook.name read before context.sync()');
+    return this.ctx.state.workbookName;
   }
 
   getSelectedRange(): MockRange {

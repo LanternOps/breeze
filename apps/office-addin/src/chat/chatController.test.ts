@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChatController, type ChatApi } from './chatController';
-import { captureWorkbookContext } from './captureContext';
+import { captureWorkbookContext, captureWorkbookName } from './captureContext';
 import { getOfficeMock } from '../__tests__/officeMock';
 import { ApiError } from '../api/client';
 import type { WorkbookContext } from '../api/types';
@@ -16,6 +16,7 @@ function stubApi(overrides: Partial<ChatApi> = {}): ChatApi {
         id: 'sess-1',
         status: 'active',
         title: null,
+        workbookName: null,
         model: 'm',
         turnCount: 0,
         totalInputTokens: 0,
@@ -26,8 +27,14 @@ function stubApi(overrides: Partial<ChatApi> = {}): ChatApi {
       },
       messages: [],
     })),
+    listSessions: vi.fn(async () => []),
     ...overrides,
   };
+}
+
+/** Default deps: a deterministic workbook name so create-body assertions are stable. */
+function deps(api: ChatApi, captureContext: () => Promise<WorkbookContext | undefined>) {
+  return { api, captureContext, captureName: async () => 'Q3 Budget.xlsx' };
 }
 
 const SELECTION_CONTEXT: WorkbookContext = {
@@ -101,10 +108,11 @@ describe('ChatController — streaming', () => {
 describe('ChatController — send', () => {
   it('lazily creates the session, opens the stream once, and posts the pinned message body', async () => {
     const api = stubApi();
-    const controller = new ChatController({ api, captureContext: async () => SELECTION_CONTEXT });
+    const controller = new ChatController(deps(api, async () => SELECTION_CONTEXT));
     await controller.send('What does column B total to?');
     await controller.send('And C?');
     expect(api.createSession).toHaveBeenCalledTimes(1); // the busy guard makes the 2nd send a no-op
+    expect(api.createSession).toHaveBeenCalledWith({ workbookName: 'Q3 Budget.xlsx' });
     expect(api.streamEvents).toHaveBeenCalledTimes(1);
     expect(api.sendMessage).toHaveBeenCalledWith('sess-1', {
       content: 'What does column B total to?',
@@ -145,6 +153,106 @@ describe('ChatController — send', () => {
   });
 });
 
+describe('ChatController — conversation history', () => {
+  it('createSession with no captured workbook name sends an empty body', async () => {
+    const api = stubApi();
+    const controller = new ChatController({
+      api,
+      captureContext: async () => undefined,
+      captureName: async () => undefined,
+    });
+    await controller.send('hello');
+    expect(api.createSession).toHaveBeenCalledWith({});
+  });
+
+  it("never lets a captureName failure block session creation", async () => {
+    const api = stubApi();
+    const controller = new ChatController({
+      api,
+      captureContext: async () => undefined,
+      captureName: async () => {
+        throw new Error('Office unavailable');
+      },
+    });
+    await controller.send('hello');
+    expect(api.createSession).toHaveBeenCalledWith({});
+    expect(api.sendMessage).toHaveBeenCalled();
+  });
+
+  it('listSessions delegates to the api', async () => {
+    const item = {
+      id: 's9',
+      title: 'Old chat',
+      workbookName: 'Forecast.xlsx',
+      status: 'active',
+      createdAt: '',
+      lastActivityAt: null,
+      updatedAt: '',
+      messageCount: 2,
+    };
+    const api = stubApi({ listSessions: vi.fn(async () => [item]) });
+    const controller = new ChatController({ api });
+    await expect(controller.listSessions()).resolves.toEqual([item]);
+  });
+
+  it('resumeSession adopts the id, rehydrates history, and opens the stream', async () => {
+    const getSession = vi.fn(async () => ({
+      session: {
+        id: 'past-1',
+        status: 'active',
+        title: 'Budget review',
+        workbookName: 'Q3 Budget.xlsx',
+        model: 'm',
+        turnCount: 1,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostCents: 0,
+        createdAt: '',
+        lastActivityAt: null,
+      },
+      messages: [
+        { id: 'm1', role: 'user', content: 'hi', contentBlocks: null, toolName: null, toolInput: null, toolOutput: null, toolUseId: null, createdAt: '' },
+        { id: 'm2', role: 'assistant', content: 'hello', contentBlocks: null, toolName: null, toolInput: null, toolOutput: null, toolUseId: null, createdAt: '' },
+      ],
+    }));
+    const api = stubApi({ getSession });
+    const controller = new ChatController({ api });
+
+    await controller.resumeSession('past-1');
+
+    expect(getSession).toHaveBeenCalledWith('past-1');
+    expect(api.streamEvents).toHaveBeenCalledTimes(1);
+    expect(api.streamEvents).toHaveBeenCalledWith('past-1', expect.anything());
+    const thread = controller.getState().thread;
+    expect(thread).toEqual([
+      expect.objectContaining({ kind: 'user', text: 'hi' }),
+      expect.objectContaining({ kind: 'assistant', text: 'hello' }),
+    ]);
+    // A subsequent send reuses the resumed session (no new create).
+    await controller.send('next');
+    expect(api.createSession).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledWith('past-1', expect.objectContaining({ content: 'next' }));
+  });
+
+  it('startNewSession clears the thread and forces a fresh session on next send', async () => {
+    const api = stubApi();
+    const controller = new ChatController(deps(api, async () => undefined));
+    await controller.send('first'); // creates sess-1
+    expect(api.createSession).toHaveBeenCalledTimes(1);
+
+    controller.handleEvent({
+      type: 'turn_complete',
+      usage: { inputTokens: 1, outputTokens: 1, costCents: 0 },
+    });
+    controller.startNewSession();
+    expect(controller.getState().thread).toEqual([]);
+    expect(controller.getState().busy).toBe(false);
+
+    await controller.send('second');
+    expect(api.createSession).toHaveBeenCalledTimes(2); // a brand-new session
+  });
+});
+
 describe('ChatController — draft & templates', () => {
   it('insertTemplate fills an empty draft and appends to a non-empty one', () => {
     const controller = new ChatController({ api: stubApi() });
@@ -176,5 +284,13 @@ describe('captureWorkbookContext', () => {
       cells: [['x', 'y']],
     });
     await expect(captureWorkbookContext('none')).resolves.toEqual({ kind: 'none' });
+  });
+});
+
+describe('captureWorkbookName', () => {
+  it('reads the open workbook file name', async () => {
+    const mock = getOfficeMock();
+    mock.workbookName = 'Q3 Budget.xlsx';
+    await expect(captureWorkbookName()).resolves.toBe('Q3 Budget.xlsx');
   });
 });

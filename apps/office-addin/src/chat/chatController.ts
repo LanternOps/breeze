@@ -8,6 +8,7 @@ import {
   ApiError,
   createSession,
   getSession,
+  listSessions,
   postToolResult,
   sendMessage,
   streamEvents,
@@ -16,11 +17,13 @@ import {
 } from '../api/client';
 import { dispatchToolRequest, type ToolRequest } from '../tools/dispatcher';
 import { ApprovalStore } from '../approval/approvalStore';
-import { captureWorkbookContext } from './captureContext';
+import { captureWorkbookContext, captureWorkbookName } from './captureContext';
 import type {
   ClientAiStreamEvent,
+  CreateSessionBody,
   SendMessageBody,
   SessionHistory,
+  SessionListItem,
   ToolCompletedStatus,
   ToolResultBody,
   TurnUsage,
@@ -29,14 +32,22 @@ import type {
 } from '../api/types';
 
 export type ChatApi = {
-  createSession: () => Promise<string>;
+  createSession: (body?: CreateSessionBody) => Promise<string>;
   sendMessage: (sessionId: string, body: SendMessageBody) => Promise<void>;
   postToolResult: (sessionId: string, result: ToolResultBody) => Promise<void>;
   streamEvents: (sessionId: string, callbacks: StreamCallbacks) => StreamHandle;
   getSession: (sessionId: string) => Promise<SessionHistory>;
+  listSessions: () => Promise<SessionListItem[]>;
 };
 
-const realApi: ChatApi = { createSession, sendMessage, postToolResult, streamEvents, getSession };
+const realApi: ChatApi = {
+  createSession,
+  sendMessage,
+  postToolResult,
+  streamEvents,
+  getSession,
+  listSessions,
+};
 
 export type ThreadMessage =
   | { kind: 'user'; id: number; text: string; context?: WorkbookContext }
@@ -75,6 +86,7 @@ function bannerText(err: unknown): string {
 export type ChatControllerDeps = {
   api?: ChatApi;
   captureContext?: (kind: WorkbookContextKind) => Promise<WorkbookContext | undefined>;
+  captureName?: () => Promise<string | undefined>;
 };
 
 export class ChatController {
@@ -94,10 +106,12 @@ export class ChatController {
   private nextId = 1;
   private api: ChatApi;
   private capture: (kind: WorkbookContextKind) => Promise<WorkbookContext | undefined>;
+  private captureName: () => Promise<string | undefined>;
 
   constructor(deps: ChatControllerDeps = {}) {
     this.api = deps.api ?? realApi;
     this.capture = deps.captureContext ?? captureWorkbookContext;
+    this.captureName = deps.captureName ?? captureWorkbookName;
     this.approvals = new ApprovalStore({
       postToolResult: async (result) => {
         if (!this.sessionId) throw new Error('No active session for tool result');
@@ -139,8 +153,19 @@ export class ChatController {
 
   private async ensureSession(): Promise<string> {
     if (this.sessionId) return this.sessionId;
-    this.sessionId = await this.api.createSession();
-    this.stream = this.api.streamEvents(this.sessionId, {
+    let workbookName: string | undefined;
+    try {
+      workbookName = await this.captureName();
+    } catch {
+      workbookName = undefined; // workbook-name capture must never block session creation
+    }
+    this.sessionId = await this.api.createSession(workbookName ? { workbookName } : {});
+    this.openStream(this.sessionId);
+    return this.sessionId;
+  }
+
+  private openStream(sessionId: string): void {
+    this.stream = this.api.streamEvents(sessionId, {
       onEvent: (event) => this.handleEvent(event),
       onReconnect: () => this.resync(),
       onPermanentError: () =>
@@ -149,7 +174,40 @@ export class ChatController {
           banner: { kind: 'error', text: 'Connection to Breeze lost. Reload the task pane.' },
         }),
     });
-    return this.sessionId;
+  }
+
+  /** History list (per-user, workbook-tagged) for the resume picker. */
+  listSessions(): Promise<SessionListItem[]> {
+    return this.api.listSessions();
+  }
+
+  /** "New chat" — tear down the current session/stream and reset the thread. */
+  startNewSession(): void {
+    this.stream?.stop();
+    this.stream = null;
+    this.sessionId = null;
+    this.update({
+      thread: [],
+      streamingText: '',
+      busy: false,
+      banner: null,
+      draft: '',
+      usage: null,
+    });
+  }
+
+  /**
+   * Resume a past session: tear down any current stream, adopt the chosen id,
+   * rehydrate the thread from server history (already redacted), and reopen the
+   * live SSE stream so new turns flow.
+   */
+  async resumeSession(sessionId: string): Promise<void> {
+    this.stream?.stop();
+    this.stream = null;
+    this.sessionId = sessionId;
+    this.update({ thread: [], streamingText: '', busy: false, banner: null, usage: null });
+    await this.resync();
+    this.openStream(sessionId);
   }
 
   async send(content?: string): Promise<void> {

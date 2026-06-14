@@ -146,6 +146,17 @@ export const sendClientMessageSchema = z.object({
   workbookContext: workbookContextSchema.optional(),
 });
 
+/**
+ * Body of POST /sessions (create). The add-in tags the new session with the
+ * open workbook's name so it surfaces in the per-user history list. Optional
+ * — a missing/blank name persists as NULL (older clients send `{}`).
+ */
+export const createClientSessionSchema = z
+  .object({
+    workbookName: z.string().trim().min(1).max(500).optional(),
+  })
+  .strict();
+
 /** Body of POST /sessions/:id/tool-results (pinned bridge contract). */
 export const clientToolResultSchema = z.object({
   toolUseId: z.string().min(1).max(100),

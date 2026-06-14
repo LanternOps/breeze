@@ -51,6 +51,11 @@ export const aiSessions = pgTable('ai_sessions', {
   // ai_sessions_excel_client_principal_check (type='excel_client' ⇒ set).
   // Partial index ai_sessions_client_user_id_idx created via SQL migration.
   clientUserId: uuid('client_user_id').references(() => portalUsers.id),
+  // AI for Office: the name of the Excel workbook the session happened in,
+  // captured at create time so the per-user history list can tag/filter by
+  // file. Nullable (older rows, non-Office sessions). Added in
+  // 2026-06-13-c-ai-sessions-workbook-name.sql.
+  workbookName: varchar('workbook_name', { length: 500 }),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
