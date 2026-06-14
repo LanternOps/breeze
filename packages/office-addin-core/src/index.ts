@@ -1,4 +1,5 @@
 export type { HostAdapter } from './host/types';
+export { CLIENT_HOSTS } from './api/types';
 export type {
   WorkbookContext,
   WorkbookContextKind,
@@ -7,7 +8,10 @@ export type {
   ToolExecutor,
   ClientAiStreamEvent,
   ToolResultBody,
+  ClientHost,
+  CreateSessionBody,
 } from './api/types';
+export * from './tools/helpers';
 export * from './config';
 export * from './api/client';
 export * from './api/sse';
