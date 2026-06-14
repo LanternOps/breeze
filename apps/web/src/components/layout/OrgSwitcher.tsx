@@ -51,11 +51,15 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
 }
 
 function useCurrentPathname(): string {
-  const [pathname, setPathname] = useState(() =>
-    typeof window === 'undefined' ? '/' : window.location.pathname
-  );
+  // Initialize to '/' on BOTH the server and the first client render so the
+  // hydrated markup matches the SSR output (reading window.location.pathname
+  // in the initializer diverges on global routes → React hydration mismatch
+  // on every catalog page). The real pathname is read after mount, when the
+  // org selector flips global routes to "All Organizations".
+  const [pathname, setPathname] = useState('/');
   useEffect(() => {
     const update = () => setPathname(window.location.pathname);
+    update();
     document.addEventListener('astro:after-swap', update);
     window.addEventListener('popstate', update);
     return () => {
