@@ -209,6 +209,46 @@ describe('catalog RLS isolation (breeze_app)', () => {
     expect(rowsB).toHaveLength(0);
   });
 
+  // (b2) Cross-org WRITE isolation on catalog_item_org_pricing: the UPDATE and
+  // DELETE policies both use `USING breeze_has_org_access(org_id)`, so an org-B
+  // caller's UPDATE/DELETE targeting org A's override row matches zero rows
+  // (RLS USING filters it out of the command's scope — no error, just 0 rows
+  // affected). The row must remain intact when re-read under system scope. This
+  // is the write-side complement to case (b); without the USING clause an org-B
+  // caller could silently edit or delete another tenant's price override.
+  runDb('org B context UPDATE/DELETE on an org-A price override affects 0 rows; row survives', async () => {
+    const { pricingA, orgBContext } = await seedFixture();
+
+    // UPDATE under org B — RLS USING filters org A's row out, so 0 rows change.
+    const updated = await withDbAccessContext(orgBContext, () =>
+      db
+        .update(catalogItemOrgPricing)
+        .set({ unitPrice: '999.99' })
+        .where(eq(catalogItemOrgPricing.id, pricingA.id))
+        .returning({ id: catalogItemOrgPricing.id })
+    );
+    expect(updated).toHaveLength(0);
+
+    // DELETE under org B — same: 0 rows removed.
+    const deleted = await withDbAccessContext(orgBContext, () =>
+      db
+        .delete(catalogItemOrgPricing)
+        .where(eq(catalogItemOrgPricing.id, pricingA.id))
+        .returning({ id: catalogItemOrgPricing.id })
+    );
+    expect(deleted).toHaveLength(0);
+
+    // The override row is untouched: original price intact under system scope.
+    const survivor = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: catalogItemOrgPricing.id, unitPrice: catalogItemOrgPricing.unitPrice })
+        .from(catalogItemOrgPricing)
+        .where(eq(catalogItemOrgPricing.id, pricingA.id))
+    );
+    expect(survivor).toHaveLength(1);
+    expect(survivor[0]?.unitPrice).toBe('5.00'); // seeded value, not the forged 999.99
+  });
+
   // (c) A forged cross-partner catalog_items insert is rejected by RLS.
   // Drizzle wraps the driver error: the top-level message becomes
   // "Failed query: insert into ...", and the original Postgres error

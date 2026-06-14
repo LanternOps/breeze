@@ -11,7 +11,12 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
-    exclude: ['src/__tests__/integration/**'],
+    // *.integration.test.ts files (wherever they live) connect to a real
+    // Postgres via withDbAccessContext and only run under
+    // vitest.integration.config.ts. Exclude them from the unit run so the
+    // DB-less unit job (`vitest`, `test-api` in CI) doesn't try to execute
+    // them against a non-existent pool.
+    exclude: ['src/__tests__/integration/**', 'src/**/*.integration.test.ts'],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {
       provider: 'v8',
