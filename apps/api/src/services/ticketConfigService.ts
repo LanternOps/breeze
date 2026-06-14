@@ -628,16 +628,23 @@ export async function listEmailInboundQueue(
 
 // The columns returned by convert/dismiss — same projection as the queue list so
 // the card can drop the resolved row into its local state without a refetch.
-const returnQueueCols = {
-  id: ticketEmailInbound.id,
-  fromAddress: ticketEmailInbound.fromAddress,
-  toAddress: ticketEmailInbound.toAddress,
-  subject: ticketEmailInbound.subject,
-  parseStatus: ticketEmailInbound.parseStatus,
-  error: ticketEmailInbound.error,
-  ticketId: ticketEmailInbound.ticketId,
-  createdAt: ticketEmailInbound.createdAt,
-};
+// Built lazily (function, not a module-level const) so importing this module
+// never dereferences `ticketEmailInbound` at load time — a top-level reference
+// crashes any test that partially-mocks `../db/schema` and transitively imports
+// this service (e.g. via orgs.ts), the same module-load landmine as #1283's
+// networkBaseline ASSET_TYPE_SET.
+function returnQueueCols() {
+  return {
+    id: ticketEmailInbound.id,
+    fromAddress: ticketEmailInbound.fromAddress,
+    toAddress: ticketEmailInbound.toAddress,
+    subject: ticketEmailInbound.subject,
+    parseStatus: ticketEmailInbound.parseStatus,
+    error: ticketEmailInbound.error,
+    ticketId: ticketEmailInbound.ticketId,
+    createdAt: ticketEmailInbound.createdAt,
+  };
+}
 
 /**
  * Load a review-queue row scoped to (id, partnerId) and assert it is still in a
@@ -731,7 +738,7 @@ export async function convertEmailInbound(partnerId: string, id: string, orgId: 
       eq(ticketEmailInbound.partnerId, partnerId),
       inArray(ticketEmailInbound.parseStatus, REVIEW_STATUSES as unknown as string[]),
     ))
-    .returning(returnQueueCols);
+    .returning(returnQueueCols());
   if (!claimed) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
 
   // Only now create the ticket. If createTicket throws, the error propagates
@@ -753,7 +760,7 @@ export async function convertEmailInbound(partnerId: string, id: string, orgId: 
     .update(ticketEmailInbound)
     .set({ ticketId: ticket.id })
     .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
-    .returning(returnQueueCols);
+    .returning(returnQueueCols());
   // The row was claimed by THIS transaction a moment ago, so it must still exist;
   // an empty result would mean the row vanished mid-transaction (shouldn't happen).
   if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
@@ -772,7 +779,7 @@ export async function dismissEmailInbound(partnerId: string, id: string): Promis
     .update(ticketEmailInbound)
     .set({ parseStatus: 'ignored' })
     .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
-    .returning(returnQueueCols);
+    .returning(returnQueueCols());
   if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
   return updated;
 }
