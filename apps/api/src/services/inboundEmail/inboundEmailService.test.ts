@@ -129,7 +129,7 @@ vi.mock('../../db/schema', () => ({
   ticketEmailInbound: { __t: 'ticket_email_inbound', id: 'id', partnerId: 'partnerId', providerMessageId: 'providerMessageId' },
   tickets: {
     __t: 'tickets',
-    id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status',
+    id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status', subject: 'subject',
     emailThreadKey: 'emailThreadKey', internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt'
   },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
@@ -158,6 +158,13 @@ vi.mock('../ticketService', () => ({
 
 const { emitMock } = vi.hoisted(() => ({ emitMock: vi.fn() }));
 vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
+
+// PR3: createFromEmail's known-sender path now calls maybeSendAutoresponse. Stub it
+// so these dispatch-service tests don't reach into Redis/emit — the gate has its own
+// unit suite (autoresponder.test.ts). The `created`-path assertions here only care
+// that a ticket was created + the inbound row logged.
+const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
+vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
 
 import { processInboundEmail } from './inboundEmailService';
 import type { NormalizedInboundEmail } from './types';
@@ -194,6 +201,7 @@ beforeEach(() => {
   createTicketMock.mockReset();
   changeStatusMock.mockReset();
   emitMock.mockReset();
+  maybeSendAutoresponseMock.mockReset();
   captureExceptionMock.mockReset();
   createTicketMock.mockResolvedValue({ id: 't-new', internalNumber: 'T-2026-0009' });
 });
@@ -335,6 +343,32 @@ describe('processInboundEmail', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('created');
     expect(log[0]!.ticketId).toBe('t-created');
+
+    // The known-sender fresh-create path fires the autoresponder gate exactly once,
+    // with the resolved partner + the persisted ticket fields.
+    expect(maybeSendAutoresponseMock).toHaveBeenCalledTimes(1);
+    const [normalized, gatedPartner, gatedTicket] = maybeSendAutoresponseMock.mock.calls[0]!;
+    expect((normalized as { from: string }).from).toBe('jane@customer.com');
+    expect(gatedPartner).toBe('p-1');
+    expect((gatedTicket as { id: string; partnerId: string }).id).toBe('t-created');
+    expect((gatedTicket as { partnerId: string }).partnerId).toBe('p-1');
+  });
+
+  it('does NOT fire the autoresponder on the closed-continuation path (no submittedBy)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-closed', partnerId: 'p-1', orgId: 'o-1', status: 'closed',
+      emailThreadKey: '<thread-key-old>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-linked', internalNumber: 'T-2026-0011' });
+
+    await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer down', inReplyTo: '<thread-key-old>' }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    // A reply to a CLOSED ticket spawns a linked ticket but is NOT a fresh acknowledgement.
+    expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
   });
 
   it('stamps a stable generated anchor on email_thread_key when the inbound email has no Message-Id', async () => {

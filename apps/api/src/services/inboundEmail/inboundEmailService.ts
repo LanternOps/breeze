@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketEmailInbound, tickets, ticketComments, portalUsers, organizations, partners } from '../../db/schema';
 import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
+import { maybeSendAutoresponse } from './autoresponder';
 import { emitTicketEvent } from '../ticketEvents';
 import { captureException } from '../sentry';
 import { getConfig } from '../../config/validate';
@@ -399,6 +400,29 @@ async function createFromEmail(
   await db.update(tickets)
     .set({ emailThreadKey: carryThreadKey ?? n.messageId ?? generatedAnchor })
     .where(eq(tickets.id, ticket.id));
+
+  // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
+  // The known-sender create call passes `submittedBy` and a null `priorNumber`; the
+  // closed-continuation call passes `priorNumber` (and no `submittedBy`). Gating on
+  // `submittedBy && !priorNumber` therefore fires the autoresponder exactly once on
+  // the fresh known-sender path and NEVER on the quarantine path (which never calls
+  // createFromEmail) or the closed-continuation path (spec §5).
+  if (submittedBy && !priorNumber) {
+    // Read the PERSISTED subject (token-stripped by createTicket) + internalNumber.
+    // Never use raw n.subject — it may still carry the [T-...] token.
+    const persisted = await db
+      .select({ internalNumber: tickets.internalNumber, subject: tickets.subject })
+      .from(tickets)
+      .where(eq(tickets.id, ticket.id))
+      .limit(1);
+    await maybeSendAutoresponse(n, partnerId, {
+      id: ticket.id,
+      orgId,
+      partnerId,
+      internalNumber: persisted[0]?.internalNumber ?? null,
+      subject: persisted[0]?.subject ?? '',
+    });
+  }
   return ticket;
 }
 

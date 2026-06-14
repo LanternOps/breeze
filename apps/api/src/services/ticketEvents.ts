@@ -26,6 +26,11 @@ export type TicketEvent = TicketEventEnvelope & (
   | { type: 'ticket.commented'; payload: { commentId: string; isPublic: boolean; inbound?: boolean } }
   | { type: 'ticket.updated'; payload: { changed: string[] } }
   | { type: 'ticket.sla_breached'; payload: { target: 'response' | 'resolution'; internalNumber: string | null; subject: string; assigneeId: string | null } }
+  // One-time autoresponse acknowledgement for an email-created ticket (spec §5).
+  // Emitted by inboundEmail/autoresponder.ts (after loop-prevention + the per-sender
+  // Redis cap) and handled by ticketNotifyWorker — the single outbound code path.
+  // Payload-only: ticketId/orgId/partnerId come from TicketEventEnvelope.
+  | { type: 'ticket.autoresponse'; payload: { to: string; internalNumber: string | null; subject: string } }
 );
 
 export type TicketEventType = TicketEvent['type'];
