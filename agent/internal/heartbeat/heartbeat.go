@@ -1100,10 +1100,10 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 		"coverageType":      info.CoverageType,
 		"deviceName":        info.DeviceName,
 	}
-	// Only include coverageKind when derivable. The API schema rejects an empty
-	// string (invalid_enum_value) and a 400 there silently drops the entire
-	// warranty-info update, so omit it for timestamp-only/labelless/localized/
-	// plist-fallback coverage where the verb can't be classified (#1320).
+	// Only include coverageKind when the NDO verb is recognized; omit the key for
+	// timestamp-only/labelless/localized/plist-fallback coverage where it can't be
+	// classified (#1320). The API schema tolerates an empty/absent value and treats
+	// it as fixed for back-compat (#1344), so omitting it here is safe — no 400.
 	if info.CoverageKind != "" {
 		payload["coverageKind"] = info.CoverageKind
 	}
