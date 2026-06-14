@@ -41,30 +41,31 @@ type PolicyConfigStateProbe struct {
 }
 
 type Config struct {
-	AgentID                  string   `mapstructure:"agent_id"`
-	ServerURL                string   `mapstructure:"server_url"`
-	AuthToken                string   `mapstructure:"auth_token"`
-	WatchdogAuthToken        string   `mapstructure:"watchdog_auth_token"`
-	HelperAuthToken          string   `mapstructure:"helper_auth_token"`
-	OrgID                    string   `mapstructure:"org_id"`
-	SiteID                   string   `mapstructure:"site_id"`
-	HeartbeatIntervalSeconds int      `mapstructure:"heartbeat_interval_seconds"`
-	MetricsIntervalSeconds   int      `mapstructure:"metrics_interval_seconds"`
-	EnabledCollectors        []string `mapstructure:"enabled_collectors"`
-	BackupEnabled            bool     `mapstructure:"backup_enabled"`
-	BackupPaths              []string `mapstructure:"backup_paths"`
-	BackupSchedule           string   `mapstructure:"backup_schedule"`
-	BackupRetention          int      `mapstructure:"backup_retention"`
-	BackupProvider           string   `mapstructure:"backup_provider"`
-	BackupLocalPath          string   `mapstructure:"backup_local_path"`
-	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
-	BackupS3Region           string   `mapstructure:"backup_s3_region"`
-	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
-	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
-	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
-	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
-	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
-	BackupStagingDir         string   `mapstructure:"backup_staging_dir"`          // Staging directory for Hyper-V exports, MSSQL backups, etc. (empty = OS temp dir)
+	AgentID                      string   `mapstructure:"agent_id"`
+	ServerURL                    string   `mapstructure:"server_url"`
+	AuthToken                    string   `mapstructure:"auth_token"`
+	WatchdogAuthToken            string   `mapstructure:"watchdog_auth_token"`
+	HelperAuthToken              string   `mapstructure:"helper_auth_token"`
+	OrgID                        string   `mapstructure:"org_id"`
+	SiteID                       string   `mapstructure:"site_id"`
+	HeartbeatIntervalSeconds     int      `mapstructure:"heartbeat_interval_seconds"`
+	MetricsIntervalSeconds       int      `mapstructure:"metrics_interval_seconds"`
+	ProcessSampleIntervalSeconds int      `mapstructure:"process_sample_interval_seconds"`
+	EnabledCollectors            []string `mapstructure:"enabled_collectors"`
+	BackupEnabled                bool     `mapstructure:"backup_enabled"`
+	BackupPaths                  []string `mapstructure:"backup_paths"`
+	BackupSchedule               string   `mapstructure:"backup_schedule"`
+	BackupRetention              int      `mapstructure:"backup_retention"`
+	BackupProvider               string   `mapstructure:"backup_provider"`
+	BackupLocalPath              string   `mapstructure:"backup_local_path"`
+	BackupS3Bucket               string   `mapstructure:"backup_s3_bucket"`
+	BackupS3Region               string   `mapstructure:"backup_s3_region"`
+	BackupS3AccessKey            string   `mapstructure:"backup_s3_access_key"`
+	BackupS3SecretKey            string   `mapstructure:"backup_s3_secret_key"`
+	BackupVSSEnabled             bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
+	BackupSystemStateEnabled     bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
+	BackupBinaryPath             string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
+	BackupStagingDir             string   `mapstructure:"backup_staging_dir"`          // Staging directory for Hyper-V exports, MSSQL backups, etc. (empty = OS temp dir)
 
 	// Local vault (SMB share / USB drive) configuration
 	VaultEnabled        bool   `mapstructure:"vault_enabled"`
@@ -190,21 +191,22 @@ func ConfigDir() string {
 
 func Default() *Config {
 	return &Config{
-		HeartbeatIntervalSeconds: 60,
-		MetricsIntervalSeconds:   30,
-		EnabledCollectors:        []string{"hardware", "software", "metrics", "network"},
-		LogLevel:                 "info",
-		LogFormat:                "text",
-		LogFile:                  defaultLogFile(),
-		LogMaxSizeMB:             50,
-		LogMaxBackups:            3,
-		LogShippingLevel:         "warn",
-		PAMEnabled:               false,
-		MaxConcurrentCommands:    10,
-		CommandQueueSize:         100,
-		AuditEnabled:             true,
-		AuditMaxSizeMB:           50,
-		AuditMaxBackups:          3,
+		HeartbeatIntervalSeconds:     60,
+		MetricsIntervalSeconds:       30,
+		ProcessSampleIntervalSeconds: 180,
+		EnabledCollectors:            []string{"hardware", "software", "metrics", "network"},
+		LogLevel:                     "info",
+		LogFormat:                    "text",
+		LogFile:                      defaultLogFile(),
+		LogMaxSizeMB:                 50,
+		LogMaxBackups:                3,
+		LogShippingLevel:             "warn",
+		PAMEnabled:                   false,
+		MaxConcurrentCommands:        10,
+		CommandQueueSize:             100,
+		AuditEnabled:                 true,
+		AuditMaxSizeMB:               50,
+		AuditMaxBackups:              3,
 
 		AutoUpdate:                 true,
 		PatchExcludeFeatureUpdates: true,
