@@ -2,11 +2,15 @@ import { useSelectionAddress } from '../hooks/useSelectionAddress';
 import { parseAddress, stripSheet } from '../lib/address';
 import type { WorkbookContextKind } from '../api/types';
 
-const CONTEXT_OPTIONS: Array<{ value: WorkbookContextKind; label: string }> = [
+// Excel-flavored defaults. Hosts that don't fit the workbook vocabulary
+// (Outlook: mail) override these via the optional `contextOptions` /
+// `composerPlaceholder` props below; Excel/Word/PowerPoint inherit them.
+const DEFAULT_CONTEXT_OPTIONS: Array<{ value: WorkbookContextKind; label: string }> = [
   { value: 'selection', label: 'Selection' },
   { value: 'sheet', label: 'Whole sheet' },
   { value: 'none', label: 'No workbook data' },
 ];
+const DEFAULT_COMPOSER_PLACEHOLDER = 'Ask about this workbook…';
 
 export function Composer({
   draft,
@@ -17,6 +21,8 @@ export function Composer({
   onDraftChange,
   onContextKindChange,
   onSend,
+  contextOptions = DEFAULT_CONTEXT_OPTIONS,
+  composerPlaceholder = DEFAULT_COMPOSER_PLACEHOLDER,
 }: {
   draft: string;
   busy: boolean;
@@ -28,6 +34,10 @@ export function Composer({
   onDraftChange: (text: string) => void;
   onContextKindChange: (kind: WorkbookContextKind) => void;
   onSend: () => void;
+  // OPTIONAL host vocabulary (Outlook supplies mail-flavored strings); when
+  // omitted the Excel defaults above are used so Excel/Word/PPT are untouched.
+  contextOptions?: Array<{ value: WorkbookContextKind; label: string }>;
+  composerPlaceholder?: string;
 }) {
   const selection = useSelectionAddress({
     captureSelectionAddress,
@@ -56,7 +66,7 @@ export function Composer({
           onChange={(e) => onContextKindChange(e.target.value as WorkbookContextKind)}
           data-testid="context-select"
         >
-          {CONTEXT_OPTIONS.map((option) => (
+          {contextOptions.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
@@ -80,7 +90,7 @@ export function Composer({
             }
           }}
           rows={2}
-          placeholder="Ask about this workbook…"
+          placeholder={composerPlaceholder}
           className="flex-1 resize-none rounded border border-gray-300 p-2 text-sm"
           data-testid="composer-input"
         />
