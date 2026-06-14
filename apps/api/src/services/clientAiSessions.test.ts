@@ -13,12 +13,14 @@ import {
   EXCEL_CLIENT_SYSTEM_PROMPT,
   WORD_CLIENT_SYSTEM_PROMPT,
   POWERPOINT_CLIENT_SYSTEM_PROMPT,
+  OUTLOOK_CLIENT_SYSTEM_PROMPT,
   buildExcelClientSystemPrompt,
   buildClientSystemPrompt,
   buildClientAuthContext,
   checkClientRateLimits,
   generateClientSessionTitle,
 } from './clientAiSessions';
+import type { ClientHost } from './clientAiHosts';
 import { defaultClientAiPolicy } from './clientAiPolicy';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -162,8 +164,16 @@ describe('buildClientSystemPrompt', () => {
     expect(p.startsWith(POWERPOINT_CLIENT_SYSTEM_PROMPT)).toBe(true);
     expect(p).toContain('READ-ONLY');
   });
-  it('throws fail-loud for a host with no prompt (e.g. outlook in Phase 5)', () => {
-    expect(() => buildClientSystemPrompt('outlook', 'readwrite')).toThrow(/unsupported|no prompt/i);
+  it('returns the Outlook prompt for the outlook host (readwrite)', () => {
+    expect(buildClientSystemPrompt('outlook', 'readwrite')).toBe(OUTLOOK_CLIENT_SYSTEM_PROMPT);
+  });
+  it('appends the read-only addendum under readonly for outlook', () => {
+    const p = buildClientSystemPrompt('outlook', 'readonly');
+    expect(p.startsWith(OUTLOOK_CLIENT_SYSTEM_PROMPT)).toBe(true);
+    expect(p).toContain('READ-ONLY');
+  });
+  it('throws fail-loud for a host with no prompt (synthetic keynote — no generic fallback ships)', () => {
+    expect(() => buildClientSystemPrompt('keynote' as ClientHost, 'readwrite')).toThrow(/unsupported|no prompt/i);
   });
 });
 
@@ -207,6 +217,27 @@ describe('POWERPOINT_CLIENT_SYSTEM_PROMPT', () => {
       'format_selection',
     ]) {
       expect(POWERPOINT_CLIENT_SYSTEM_PROMPT).toContain(tool);
+    }
+  });
+});
+
+describe('OUTLOOK_CLIENT_SYSTEM_PROMPT', () => {
+  it('pins the mail-only scope and the no-RMM-claims rule', () => {
+    expect(OUTLOOK_CLIENT_SYSTEM_PROMPT).toContain('Microsoft Outlook');
+    expect(OUTLOOK_CLIENT_SYSTEM_PROMPT).toContain('never claim or imply such capabilities');
+    expect(OUTLOOK_CLIENT_SYSTEM_PROMPT).toContain('click Apply');
+    expect(OUTLOOK_CLIENT_SYSTEM_PROMPT).toContain('[REDACTED:');
+    expect(OUTLOOK_CLIENT_SYSTEM_PROMPT).toContain('Be concise');
+  });
+
+  it('advertises the 4 baseline Outlook tools', () => {
+    for (const tool of [
+      'summarize_thread',
+      'extract_action_items',
+      'get_message_metadata',
+      'draft_reply',
+    ]) {
+      expect(OUTLOOK_CLIENT_SYSTEM_PROMPT).toContain(tool);
     }
   });
 });

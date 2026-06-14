@@ -4,9 +4,10 @@ import { Hono } from 'hono';
 // Mirrors the sessions.*.test.ts harness/mocks. Focuses on the HOST routing:
 // the create handler stores `${host}_client`, rejects an unsupported host with
 // 400, and the use path (ensureActiveClientSession) refuses to start a stored
-// session whose host has no tool registry/prompt yet. Phase 4 flips Word to a
-// fully supported host (registry + prompt), so the still-unpopulated fail-loud
-// host is now powerpoint/outlook.
+// session whose host has no tool registry/prompt. Phase 6 flips Outlook to a
+// fully supported host (registry + prompt) — so every REAL Office host is now
+// served, and the still-unpopulated fail-loud host is a SYNTHETIC keynote
+// (out-of-vocab on the create schema; → null host on the stored use path).
 
 const {
   CLIENT_USER_ID, ORG_ID, SESSION_ID,
@@ -84,6 +85,7 @@ import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
 import {
   WORD_CLIENT_SYSTEM_PROMPT,
   POWERPOINT_CLIENT_SYSTEM_PROMPT,
+  OUTLOOK_CLIENT_SYSTEM_PROMPT,
 } from '../../services/clientAiSessions';
 
 const EXCEL_SESSION_ROW = {
@@ -214,22 +216,39 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
     );
   });
 
-  it('rejects outlook with 400 unsupported_host (still unpopulated in Phase 4)', async () => {
+  it('creates an outlook_client session for host:"outlook" (Phase 6 seam) with the Outlook prompt', async () => {
+    const valuesSpy = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: SESSION_ID }])) }));
+    dbInsertMock.mockImplementation(() => ({ values: valuesSpy }));
+
     const res = await buildApp().request('/client-ai/sessions', {
       method: 'POST', body: JSON.stringify({ host: 'outlook' }), headers: AUTHED,
     });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe('unsupported_host');
+    expect(res.status).toBe(201);
+    // Stored type encodes the host; the stored prompt is the Outlook system
+    // prompt (default writeMode 'readwrite' ⇒ no readonly addendum). Outlook is
+    // the mail-model host — no more real unsupported host remains.
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'outlook_client',
+      systemPrompt: OUTLOOK_CLIENT_SYSTEM_PROMPT,
+    }));
+    // The create audit records the resolved host.
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai.client_session.create',
+        details: expect.objectContaining({ host: 'outlook' }),
+      }),
+    );
   });
 });
 
 describe('use-path host guard (ensureActiveClientSession)', () => {
-  it('refuses to start a stored outlook_client session (400 on /messages)', async () => {
-    // An outlook_client row exists, but Outlook has no tool registry/prompt
-    // yet — the use path must fail loud, not build a zero-tool MCP server.
-    // (PowerPoint is now fully supported in Phase 5, so it is no longer the
-    // fail-loud host; Outlook is the remaining still-unpopulated baton.)
-    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'outlook_client' }]));
+  it('refuses to start a stored keynote_client session (400 on /messages)', async () => {
+    // Every REAL Office host (excel/word/powerpoint/outlook) is now fully
+    // supported, so the fail-loud baton moves to a SYNTHETIC keynote_client row:
+    // clientHostFromType('keynote_client') → null (not in CLIENT_HOSTS) → the
+    // use path must still fail loud, never building a zero-tool MCP server.
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'keynote_client' }]));
     applyDlpMock.mockImplementation(async (input: { text?: string; cells?: unknown[][] }) => ({
       action: 'allow',
       ...(input.text !== undefined ? { text: input.text } : {}),
@@ -245,8 +264,8 @@ describe('use-path host guard (ensureActiveClientSession)', () => {
     expect(managerMock.getOrCreate).not.toHaveBeenCalled();
   });
 
-  it('refuses to open the SSE channel for a stored outlook_client session (400 on /events)', async () => {
-    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'outlook_client' }]));
+  it('refuses to open the SSE channel for a stored keynote_client session (400 on /events)', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'keynote_client' }]));
 
     const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/events`, { headers: AUTHED });
     expect(res.status).toBe(400);

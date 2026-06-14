@@ -402,13 +402,57 @@ export const POWERPOINT_CLIENT_TOOL_REGISTRY = {
   },
 } as const satisfies Record<string, ClientWorkbookTool>;
 
-/** Per-host tool registries. Excel + Word + PowerPoint are populated; Outlook
- *  is filled in as the host's tools land (Phase 6). */
+/**
+ * AI for Office — Outlook baseline tool registry (Phase 6). Four tools mirroring
+ * the add-in's Outlook (mail-model) HostAdapter executors. Outlook is the
+ * outlier: no document/workbook surface — you work with the open email/thread
+ * via Office.context.mailbox.item, so the verbs are summarize/extract/metadata
+ * (read) and draft_reply (mutating). inputSchema keys are BYTE-IDENTICAL to the
+ * client executor read keys (the cells-vs-values no-op bug, MEMORY.md):
+ *   summarize_thread      {}                                       (read)
+ *   extract_action_items  {}                                       (read)
+ *   get_message_metadata  {}                                       (read)
+ *   draft_reply           body, replyAll?                          (mutating)
+ */
+export const OUTLOOK_CLIENT_TOOL_REGISTRY = {
+  summarize_thread: {
+    description:
+      'Read the body of the currently open email/thread so you can summarize it. Returns the message subject, sender, and the body broken into paragraphs. Call this before summarizing — never guess what the email says.',
+    mutating: false,
+    inputSchema: {},
+  },
+  extract_action_items: {
+    description:
+      'Read the body of the currently open email/thread so you can pull out action items, requests, deadlines, and questions. Returns the message subject and the body broken into paragraphs. Call this before listing action items — never guess what the email says.',
+    mutating: false,
+    inputSchema: {},
+  },
+  get_message_metadata: {
+    description:
+      'Return the metadata of the currently open email: subject, sender, recipients (to/cc), and date. Use this to answer who/when questions about the message without reading the full body.',
+    mutating: false,
+    inputSchema: {},
+  },
+  draft_reply: {
+    description:
+      'Draft a reply to the currently open email. The user sees a preview in the task pane and must click Apply before the reply form is opened or the draft is set. Set replyAll to reply to everyone on the thread instead of just the sender.',
+    mutating: true,
+    inputSchema: {
+      body: z.string().min(1).max(100000).describe('The reply body text'),
+      replyAll: z
+        .boolean()
+        .optional()
+        .describe('Reply to everyone on the thread (To + Cc) instead of just the sender'),
+    },
+  },
+} as const satisfies Record<string, ClientWorkbookTool>;
+
+/** Per-host tool registries. Excel + Word + PowerPoint + Outlook are populated. */
 export const CLIENT_TOOL_REGISTRIES: Record<ClientHost, Record<string, ClientWorkbookTool>> = {
   excel: EXCEL_CLIENT_TOOL_REGISTRY,
   word: WORD_CLIENT_TOOL_REGISTRY,
   powerpoint: POWERPOINT_CLIENT_TOOL_REGISTRY,
-  outlook: {},
+  outlook: OUTLOOK_CLIENT_TOOL_REGISTRY,
 };
 
 /** Back-compat alias for code/tests that only ever meant the Excel registry. */
