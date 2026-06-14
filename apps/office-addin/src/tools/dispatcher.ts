@@ -17,6 +17,8 @@ import { createSheet } from './createSheet';
 import { formatRange } from './formatRange';
 import { createTable } from './createTable';
 import { searchWorkbook } from './searchWorkbook';
+import { clearRange } from './clearRange';
+import { sortRange } from './sortRange';
 
 export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
 
@@ -30,6 +32,8 @@ export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   format_range: formatRange,
   create_table: createTable,
   search_workbook: searchWorkbook,
+  clear_range: clearRange,
+  sort_range: sortRange,
 };
 
 export const MUTATING_TOOLS = new Set([
@@ -38,6 +42,8 @@ export const MUTATING_TOOLS = new Set([
   'create_sheet',
   'format_range',
   'create_table',
+  'clear_range',
+  'sort_range',
 ]);
 
 export type ToolRequest = Extract<ClientAiStreamEvent, { type: 'tool_request' }>;

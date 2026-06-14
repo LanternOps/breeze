@@ -21,6 +21,15 @@ type Rect = { startRow: number; startCol: number; rows: number; cols: number };
 
 const key = (row: number, col: number): string => `${row},${col}`;
 
+function rectContains(outer: Rect, inner: Rect): boolean {
+  return (
+    inner.startRow >= outer.startRow &&
+    inner.startCol >= outer.startCol &&
+    inner.startRow + inner.rows <= outer.startRow + outer.rows &&
+    inner.startCol + inner.cols <= outer.startCol + outer.cols
+  );
+}
+
 function rectOf(address: string): Rect {
   const p = parseAddress(stripSheet(address));
   return {
@@ -35,6 +44,8 @@ export class MockSheetState {
   cells = new Map<string, CellValue>();
   formulas = new Map<string, string>();
   formats = new Map<string, Record<string, unknown>>();
+  /** Conditional-format rules applied to sub-rects of this sheet. */
+  conditionalFormats: Array<{ rect: Rect; type: string; detail: Record<string, unknown> }> = [];
 
   constructor(public name: string) {}
 
@@ -76,6 +87,72 @@ export class MockSheetState {
   formatAt(cellAddress: string): Record<string, unknown> | undefined {
     const p = parseAddress(stripSheet(cellAddress));
     return this.formats.get(key(p.startRow, p.startCol));
+  }
+
+  /** Mirror of Office.js Range.clear(applyTo): contents | formats | all. */
+  clear(rect: Rect, applyTo: 'contents' | 'formats' | 'all'): void {
+    for (let r = 0; r < rect.rows; r++) {
+      for (let c = 0; c < rect.cols; c++) {
+        const k = key(rect.startRow + r, rect.startCol + c);
+        if (applyTo === 'contents' || applyTo === 'all') {
+          this.cells.delete(k);
+          this.formulas.delete(k);
+        }
+        if (applyTo === 'formats' || applyTo === 'all') {
+          this.formats.delete(k);
+          this.conditionalFormats = this.conditionalFormats.filter((cf) => !rectContains(rect, cf.rect));
+        }
+      }
+    }
+  }
+
+  /** Rows of the rect sorted by sort keys (mirror of Range.sort.apply). */
+  sortRows(
+    rect: Rect,
+    fields: Array<{ key: number; ascending: boolean }>,
+    hasHeaders: boolean,
+  ): void {
+    const headerRows = hasHeaders ? 1 : 0;
+    const bodyStart = rect.startRow + headerRows;
+    const bodyRows = rect.rows - headerRows;
+    if (bodyRows <= 1) return;
+    type Row = { values: CellValue[]; formulas: (string | undefined)[]; formats: (Record<string, unknown> | undefined)[] };
+    const rows: Row[] = [];
+    for (let r = 0; r < bodyRows; r++) {
+      const values: CellValue[] = [];
+      const formulas: (string | undefined)[] = [];
+      const formats: (Record<string, unknown> | undefined)[] = [];
+      for (let c = 0; c < rect.cols; c++) {
+        const k = key(bodyStart + r, rect.startCol + c);
+        values.push(this.cells.get(k) ?? '');
+        formulas.push(this.formulas.get(k));
+        formats.push(this.formats.get(k));
+      }
+      rows.push({ values, formulas, formats });
+    }
+    const compare = (a: Row, b: Row): number => {
+      for (const f of fields) {
+        const av = a.values[f.key];
+        const bv = b.values[f.key];
+        let cmp = 0;
+        if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+        else cmp = String(av ?? '').localeCompare(String(bv ?? ''));
+        if (cmp !== 0) return f.ascending ? cmp : -cmp;
+      }
+      return 0;
+    };
+    rows.sort(compare);
+    rows.forEach((row, r) => {
+      for (let c = 0; c < rect.cols; c++) {
+        const k = key(bodyStart + r, rect.startCol + c);
+        if (row.values[c] === '' || row.values[c] === undefined) this.cells.delete(k);
+        else this.cells.set(k, row.values[c]!);
+        if (row.formulas[c] === undefined) this.formulas.delete(k);
+        else this.formulas.set(k, row.formulas[c]!);
+        if (row.formats[c] === undefined) this.formats.delete(k);
+        else this.formats.set(k, row.formats[c]!);
+      }
+    });
   }
 
   usedRect(): Rect | null {
@@ -163,14 +240,78 @@ class MockContext {
   };
 }
 
+/**
+ * Minimal stand-in for the Office.js ConditionalFormat proxy. The tool only
+ * reaches into `.colorScale.criteria` / `.cellValue.rule` / `.cellValue.format.*`,
+ * so we expose just-enough chainable setters and record the final shape.
+ */
+class MockConditionalFormat {
+  detail: Record<string, unknown> = {};
+  readonly colorScale: { criteria: unknown };
+  readonly cellValue: { rule: unknown; format: { font: { color: string; bold: boolean }; fill: { color: string } } };
+
+  constructor(public type: string) {
+    const self = this;
+    this.colorScale = {
+      set criteria(v: unknown) {
+        self.detail.criteria = v;
+      },
+    };
+    const ruleHolder: { rule?: unknown } = {};
+    this.cellValue = {
+      set rule(v: unknown) {
+        ruleHolder.rule = v;
+        self.detail.rule = v;
+      },
+      get rule() {
+        return ruleHolder.rule;
+      },
+      format: {
+        font: {
+          set color(v: string) {
+            ((self.detail.format ??= {}) as Record<string, unknown>).fontColor = v;
+          },
+          set bold(v: boolean) {
+            ((self.detail.format ??= {}) as Record<string, unknown>).bold = v;
+          },
+        } as { color: string; bold: boolean },
+        fill: {
+          set color(v: string) {
+            ((self.detail.format ??= {}) as Record<string, unknown>).fillColor = v;
+          },
+        } as { color: string },
+      },
+    };
+  }
+}
+
+interface MockBorder {
+  style: string;
+  color: string;
+}
+interface MockRangeFormat {
+  fill: { color: string };
+  font: { bold: boolean; italic: boolean; color: string; size: number };
+  horizontalAlignment: string;
+  verticalAlignment: string;
+  wrapText: boolean;
+  borders: { getItem(edge: string): MockBorder };
+}
+
 class MockRange implements Syncable {
   isNullObject: boolean;
-  readonly format: { fill: { color: string }; font: { bold: boolean; italic: boolean; color: string } };
+  readonly format: MockRangeFormat;
+  readonly sort: { apply(fields: unknown, matchCase?: boolean, hasHeaders?: boolean): void };
+  readonly conditionalFormats: { add(type: string): MockConditionalFormat };
   private hydrated = false;
   private pendingValues: CellValue[][] | null = null;
   private pendingFormulas: string[][] | null = null;
   private pendingNumberFormat: string[][] | null = null;
   private pendingFormat: Record<string, unknown> = {};
+  private pendingBorders: Record<string, Partial<MockBorder>> = {};
+  private pendingClear: 'contents' | 'formats' | 'all' | null = null;
+  private pendingSort: { fields: Array<{ key: number; ascending: boolean }>; hasHeaders: boolean } | null = null;
+  private pendingConditional: MockConditionalFormat[] = [];
   private _values: CellValue[][] = [];
   private _formulas: string[][] = [];
   private _address = '';
@@ -192,15 +333,76 @@ class MockRange implements Syncable {
       }
       return obj;
     };
-    this.format = {
+    const formatObj = {
       fill: setterObj<{ color: string }>({ color: 'fillColor' }),
-      font: setterObj<{ bold: boolean; italic: boolean; color: string }>({
+      font: setterObj<{ bold: boolean; italic: boolean; color: string; size: number }>({
         bold: 'bold',
         italic: 'italic',
         color: 'fontColor',
+        size: 'fontSize',
       }),
+      borders: {
+        getItem: (edge: string): MockBorder => {
+          const pending = (this.pendingBorders[edge] ??= {});
+          return {
+            set style(v: string) {
+              pending.style = v;
+            },
+            get style() {
+              return pending.style ?? '';
+            },
+            set color(v: string) {
+              pending.color = v;
+            },
+            get color() {
+              return pending.color ?? '';
+            },
+          };
+        },
+      },
+    } as MockRangeFormat;
+    Object.defineProperty(formatObj, 'horizontalAlignment', {
+      set: (v: string) => {
+        this.pendingFormat.horizontalAlignment = v;
+      },
+    });
+    Object.defineProperty(formatObj, 'verticalAlignment', {
+      set: (v: string) => {
+        this.pendingFormat.verticalAlignment = v;
+      },
+    });
+    Object.defineProperty(formatObj, 'wrapText', {
+      set: (v: boolean) => {
+        this.pendingFormat.wrapText = v;
+      },
+    });
+    this.format = formatObj;
+    this.sort = {
+      apply: (fields: unknown, _matchCase?: boolean, hasHeaders?: boolean) => {
+        const arr = (fields as Array<{ key: number; ascending?: boolean }>).map((f) => ({
+          key: f.key,
+          ascending: f.ascending !== false,
+        }));
+        this.pendingSort = { fields: arr, hasHeaders: hasHeaders === true };
+      },
+    };
+    this.conditionalFormats = {
+      add: (type: string): MockConditionalFormat => {
+        const cf = new MockConditionalFormat(type);
+        this.pendingConditional.push(cf);
+        return cf;
+      },
     };
     ctx.track(this);
+  }
+
+  clear(applyTo?: string): void {
+    const map: Record<string, 'contents' | 'formats' | 'all'> = {
+      Contents: 'contents',
+      Formats: 'formats',
+      All: 'all',
+    };
+    this.pendingClear = (applyTo !== undefined ? map[applyTo] : undefined) ?? 'contents';
   }
 
   load(props: unknown): this {
@@ -299,6 +501,24 @@ class MockRange implements Syncable {
     if (Object.keys(this.pendingFormat).length > 0) {
       sheet.mergeFormat(rect, this.pendingFormat);
       this.pendingFormat = {};
+    }
+    if (Object.keys(this.pendingBorders).length > 0) {
+      sheet.mergeFormat(rect, { borders: { ...this.pendingBorders } });
+      this.pendingBorders = {};
+    }
+    if (this.pendingConditional.length > 0) {
+      for (const cf of this.pendingConditional) {
+        sheet.conditionalFormats.push({ rect, type: cf.type, detail: cf.detail });
+      }
+      this.pendingConditional = [];
+    }
+    if (this.pendingSort) {
+      sheet.sortRows(rect, this.pendingSort.fields, this.pendingSort.hasHeaders);
+      this.pendingSort = null;
+    }
+    if (this.pendingClear) {
+      sheet.clear(rect, this.pendingClear);
+      this.pendingClear = null;
     }
     this._values = sheet.getValues(rect);
     this._formulas = sheet.getFormulas(rect);
@@ -443,6 +663,17 @@ export function installOfficeMock(): MockWorkbookState {
       await context.sync(); // Excel.run always performs a trailing sync
       return result;
     },
+    ClearApplyTo: { contents: 'Contents', formats: 'Formats', all: 'All' },
+    ConditionalFormatType: { colorScale: 'ColorScale', cellValue: 'CellValue' },
+    ConditionalCellValueOperator: {
+      greaterThan: 'GreaterThan',
+      lessThan: 'LessThan',
+      equalTo: 'EqualTo',
+      between: 'Between',
+      greaterThanOrEqual: 'GreaterThanOrEqual',
+      lessThanOrEqual: 'LessThanOrEqual',
+    },
+    BorderLineStyle: { continuous: 'Continuous', none: 'None' },
   };
   g.Office = {
     onReady: (cb?: (info: { host: string; platform: string }) => void) => {
