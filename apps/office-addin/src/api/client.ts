@@ -10,8 +10,10 @@ import {
   CLIENT_AI_SSE_EVENTS,
   type ClientAiStreamEvent,
   type ClientAiTemplate,
+  type CreateSessionBody,
   type SendMessageBody,
   type SessionHistory,
+  type SessionListItem,
   type ToolResultBody,
 } from './types';
 
@@ -73,12 +75,27 @@ async function expectOk(res: Response): Promise<unknown> {
   return body;
 }
 
-/** POST /client-ai/sessions {} → 201 { sessionId } */
-export async function createSession(fetchImpl?: FetchLike): Promise<string> {
-  const body = (await expectOk(
-    await apiFetch('/client-ai/sessions', { method: 'POST', body: '{}' }, fetchImpl),
+/** POST /client-ai/sessions { workbookName? } → 201 { sessionId } */
+export async function createSession(
+  body: CreateSessionBody = {},
+  fetchImpl?: FetchLike,
+): Promise<string> {
+  const res = (await expectOk(
+    await apiFetch(
+      '/client-ai/sessions',
+      { method: 'POST', body: JSON.stringify(body) },
+      fetchImpl,
+    ),
   )) as { sessionId: string };
-  return body.sessionId;
+  return res.sessionId;
+}
+
+/** GET /client-ai/sessions → { sessions: [...] } — THIS user's history (workbook-tagged). */
+export async function listSessions(fetchImpl?: FetchLike): Promise<SessionListItem[]> {
+  const body = await expectOk(await apiFetch('/client-ai/sessions', {}, fetchImpl));
+  if (body && typeof body === 'object' && Array.isArray((body as { sessions?: unknown }).sessions))
+    return (body as { sessions: SessionListItem[] }).sessions;
+  return [];
 }
 
 /** POST /client-ai/sessions/:id/messages → 202 { accepted: true }; the turn streams over GET /events. */

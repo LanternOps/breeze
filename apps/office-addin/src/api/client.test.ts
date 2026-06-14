@@ -4,6 +4,7 @@ import {
   createSession,
   decodeStreamFrame,
   getTemplates,
+  listSessions,
   sendMessage,
   streamEvents,
 } from './client';
@@ -52,11 +53,20 @@ beforeEach(() => {
 describe('apiFetch wrappers', () => {
   it('attaches the Authorization bearer header and returns the sessionId (201)', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(201, { sessionId: 'sess-1' }));
-    await expect(createSession(fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-1');
+    await expect(createSession({}, fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-1');
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('/client-ai/sessions');
     expect((init.headers as Headers).get('Authorization')).toBe('Bearer breeze-token');
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+  });
+
+  it('sends the workbookName in the create body when provided', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(201, { sessionId: 'sess-wb' }));
+    await expect(
+      createSession({ workbookName: 'Q3 Budget.xlsx' }, fetchImpl as unknown as typeof fetch),
+    ).resolves.toBe('sess-wb');
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ workbookName: 'Q3 Budget.xlsx' });
   });
 
   it('on 401 runs the single-flight re-exchange and retries once', async () => {
@@ -64,17 +74,42 @@ describe('apiFetch wrappers', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse(401, { error: 'invalid_token' }))
       .mockResolvedValueOnce(jsonResponse(201, { sessionId: 'sess-2' }));
-    await expect(createSession(fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-2');
+    await expect(createSession({}, fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-2');
     expect(reExchangeMock).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('propagates a 401 that survives the re-exchange and clears the session', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(401, { error: 'invalid_token' }));
-    const err = await createSession(fetchImpl as unknown as typeof fetch).catch((e: unknown) => e);
+    const err = await createSession({}, fetchImpl as unknown as typeof fetch).catch(
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(401);
     expect(clearSessionMock).toHaveBeenCalled();
+  });
+
+  it('listSessions returns the sessions array from the { sessions } envelope', async () => {
+    const item = {
+      id: 's1',
+      title: 'Budget review',
+      workbookName: 'Q3 Budget.xlsx',
+      status: 'active',
+      createdAt: '2026-06-13T10:00:00Z',
+      lastActivityAt: '2026-06-13T10:05:00Z',
+      updatedAt: '2026-06-13T10:05:00Z',
+      messageCount: 4,
+    };
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { sessions: [item] }));
+    await expect(listSessions(fetchImpl as unknown as typeof fetch)).resolves.toEqual([item]);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('/client-ai/sessions');
+    expect(init.method ?? 'GET').toBe('GET');
+  });
+
+  it('listSessions tolerates a malformed body by returning an empty list', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { not_sessions: true }));
+    await expect(listSessions(fetchImpl as unknown as typeof fetch)).resolves.toEqual([]);
   });
 
   it('surfaces server rejection codes (budget_exceeded) as ApiError', async () => {

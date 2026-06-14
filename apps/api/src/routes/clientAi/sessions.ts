@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { zValidator } from '@hono/zod-validator';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, count, desc, eq } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
 import {
@@ -52,6 +52,7 @@ import { failPendingForSession, resolveClientToolResult } from '../../services/c
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
 import {
   clientToolResultSchema,
+  createClientSessionSchema,
   sendClientMessageSchema,
   type ClientAiAuthContext,
 } from './schemas';
@@ -197,6 +198,21 @@ clientAiSessionRoutes.post('/', async (c) => {
   const auth = c.get('clientAiAuth');
   const policy = c.get('clientAiPolicy');
 
+  // Body is optional (older clients / no-body POSTs are valid: workbookName is
+  // the only field and it's optional). Parse leniently, then validate shape.
+  let rawBody: unknown = {};
+  try {
+    const text = await c.req.text();
+    if (text.trim().length > 0) rawBody = JSON.parse(text);
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const parsed = createClientSessionSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+  const { workbookName } = parsed.data;
+
   const rejection = await runClientPreflight(c, auth, policy);
   if (rejection) return rejection;
 
@@ -212,6 +228,7 @@ clientAiSessionRoutes.post('/', async (c) => {
       type: 'excel_client',
       model,
       systemPrompt,
+      workbookName: workbookName ?? null,
     })
     .returning({ id: aiSessions.id });
 
@@ -224,10 +241,52 @@ clientAiSessionRoutes.post('/', async (c) => {
   auditClient(c, auth, {
     action: 'ai.client_session.create',
     resourceId: session.id,
-    details: { model, writeMode: policy.writeMode },
+    details: { model, writeMode: policy.writeMode, workbookName: workbookName ?? null },
   });
 
   return c.json({ sessionId: session.id }, 201);
+});
+
+// ============================================
+// GET / — THIS user's conversation history (per-user, workbook-tagged).
+//
+// Strict tenancy: the WHERE pins clientUserId AND orgId AND type='excel_client'
+// (mirrors loadClientSession), so the list can only ever contain the
+// authenticated portal user's own Excel sessions — never another user's.
+// RLS on ai_sessions is a second, independent guard. messageCount comes from a
+// LEFT JOIN + COUNT so empty sessions still appear with 0.
+// ============================================
+
+const MAX_HISTORY_SESSIONS = 100;
+
+clientAiSessionRoutes.get('/', async (c) => {
+  const auth = c.get('clientAiAuth');
+
+  const rows = await db
+    .select({
+      id: aiSessions.id,
+      title: aiSessions.title,
+      workbookName: aiSessions.workbookName,
+      status: aiSessions.status,
+      createdAt: aiSessions.createdAt,
+      lastActivityAt: aiSessions.lastActivityAt,
+      updatedAt: aiSessions.updatedAt,
+      messageCount: count(aiMessages.id),
+    })
+    .from(aiSessions)
+    .leftJoin(aiMessages, eq(aiMessages.sessionId, aiSessions.id))
+    .where(
+      and(
+        eq(aiSessions.type, 'excel_client'),
+        eq(aiSessions.clientUserId, auth.clientUserId),
+        eq(aiSessions.orgId, auth.orgId),
+      ),
+    )
+    .groupBy(aiSessions.id)
+    .orderBy(desc(aiSessions.lastActivityAt))
+    .limit(MAX_HISTORY_SESSIONS);
+
+  return c.json({ sessions: rows });
 });
 
 // ============================================
@@ -264,6 +323,7 @@ clientAiSessionRoutes.get('/:id', async (c) => {
       id: session.id,
       status: session.status,
       title: session.title,
+      workbookName: session.workbookName,
       model: session.model,
       turnCount: session.turnCount,
       totalInputTokens: session.totalInputTokens,

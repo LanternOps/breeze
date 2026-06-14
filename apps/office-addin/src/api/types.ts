@@ -69,6 +69,7 @@ export type SessionSummary = {
   id: string;
   status: string;
   title: string | null;
+  workbookName: string | null;
   model: string;
   turnCount: number;
   totalInputTokens: number;
@@ -76,6 +77,21 @@ export type SessionSummary = {
   totalCostCents: number;
   createdAt: string;
   lastActivityAt: string | null;
+};
+
+/** Body of POST /client-ai/sessions — tags the session with the open workbook. */
+export type CreateSessionBody = { workbookName?: string };
+
+/** One row in the per-user conversation history list (GET /client-ai/sessions). */
+export type SessionListItem = {
+  id: string;
+  title: string | null;
+  workbookName: string | null;
+  status: string;
+  createdAt: string;
+  lastActivityAt: string | null;
+  updatedAt: string;
+  messageCount: number;
 };
 
 export type SessionMessage = {

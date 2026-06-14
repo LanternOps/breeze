@@ -11,6 +11,26 @@ import type { CellValue, WorkbookContext, WorkbookContextKind } from '../api/typ
 
 export const CONTEXT_CELL_CAP = 10_000;
 
+/**
+ * The open workbook's file name (e.g. "Q3 Budget.xlsx"), captured at session
+ * create so the per-user history list can tag/filter by file. Returns undefined
+ * when Office.js is unavailable or the name can't be read — capture must never
+ * block session creation.
+ */
+export async function captureWorkbookName(): Promise<string | undefined> {
+  try {
+    return await Excel.run(async (context) => {
+      const wb = context.workbook;
+      wb.load('name');
+      await context.sync();
+      const name = wb.name?.trim();
+      return name ? name : undefined;
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export async function captureWorkbookContext(
   kind: WorkbookContextKind,
 ): Promise<WorkbookContext | undefined> {

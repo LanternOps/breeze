@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { ChatController } from '../chat/chatController';
 import { ChatThread } from './ChatThread';
 import { Composer } from './Composer';
 import { TemplatePicker } from './TemplatePicker';
 import { BrandingFooter } from './BrandingFooter';
+import { HistoryPanel } from './HistoryPanel';
 import type { ClientSession } from '../auth/session';
 
 export function ChatPane({ session }: { session: ClientSession }) {
   const controller = useMemo(() => new ChatController(), []);
   useEffect(() => () => controller.dispose(), [controller]);
+
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const state = useSyncExternalStore(
     useCallback((cb: () => void) => controller.subscribe(cb), [controller]),
@@ -21,8 +24,36 @@ export function ChatPane({ session }: { session: ClientSession }) {
 
   const empty = state.thread.length === 0 && !state.streamingText;
 
+  const loadHistory = useCallback(() => controller.listSessions(), [controller]);
+  const resume = useCallback(
+    (sessionId: string) => {
+      setHistoryOpen(false);
+      void controller.resumeSession(sessionId);
+    },
+    [controller],
+  );
+
   return (
-    <div className="flex h-screen flex-col">
+    <div className="relative flex h-screen flex-col">
+      <div className="flex items-center justify-between border-b border-gray-100 px-3 py-1.5">
+        <button
+          type="button"
+          onClick={() => controller.startNewSession()}
+          className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
+          data-testid="new-chat-button"
+        >
+          + New chat
+        </button>
+        <button
+          type="button"
+          onClick={() => setHistoryOpen(true)}
+          className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
+          data-testid="history-button"
+        >
+          History
+        </button>
+      </div>
+
       {empty && <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />}
       <ChatThread
         state={state}
@@ -40,6 +71,10 @@ export function ChatPane({ session }: { session: ClientSession }) {
         onSend={() => void controller.send()}
       />
       <BrandingFooter branding={session.branding} />
+
+      {historyOpen && (
+        <HistoryPanel load={loadHistory} onResume={resume} onClose={() => setHistoryOpen(false)} />
+      )}
     </div>
   );
 }
