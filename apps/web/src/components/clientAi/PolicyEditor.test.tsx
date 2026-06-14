@@ -73,6 +73,9 @@ describe('PolicyEditor', () => {
 
     fireEvent.change(screen.getByTestId('ai-office-policy-enabled'), { target: { value: 'true' } });
     fireEvent.change(screen.getByTestId('ai-office-policy-writemode'), { target: { value: 'readonly' } });
+    fireEvent.change(screen.getByTestId('ai-office-policy-writeapproval'), {
+      target: { value: 'allow_auto' },
+    });
     fireEvent.click(screen.getByTestId('ai-office-policy-model-claude-sonnet-4-5-20250929'));
     fireEvent.change(screen.getByTestId('ai-office-policy-monthly-budget'), { target: { value: '25.00' } });
     fireEvent.change(screen.getByTestId('ai-office-policy-dlp-ssn'), { target: { value: 'block' } });
@@ -95,6 +98,7 @@ describe('PolicyEditor', () => {
       selectedUserIds: [],
       allowedModels: ['claude-sonnet-4-5-20250929'],
       writeMode: 'readonly',
+      writeApproval: 'allow_auto',
       dlpConfig: {
         builtins: {
           creditCard: 'redact',
@@ -166,6 +170,33 @@ describe('PolicyEditor', () => {
 
     fireEvent.change(screen.getByTestId('ai-office-policy-dlp-rule-pattern-0'), { target: { value: '(' } });
     expect(screen.getByTestId('ai-office-policy-dlp-rule-result-0').textContent).toContain('Pattern error');
+  });
+
+  it('defaults the writeApproval control to "ask" and loads a stored value', async () => {
+    mockApi({ ...DEFAULT_POLICY, writeApproval: 'allow_auto' });
+    render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('ai-office-policy-editor')).toBeInTheDocument());
+    expect((screen.getByTestId('ai-office-policy-writeapproval') as HTMLSelectElement).value).toBe(
+      'allow_auto'
+    );
+  });
+
+  it('defaults writeApproval to "ask" when the policy omits it (default-deny)', async () => {
+    mockApi(DEFAULT_POLICY); // no writeApproval field
+    render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('ai-office-policy-editor')).toBeInTheDocument());
+    expect((screen.getByTestId('ai-office-policy-writeapproval') as HTMLSelectElement).value).toBe(
+      'ask'
+    );
+    // And the saved payload carries 'ask'.
+    fireEvent.click(screen.getByTestId('ai-office-policy-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true)
+    );
+    const body = JSON.parse(
+      String(fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')![1]!.body)
+    );
+    expect(body.writeApproval).toBe('ask');
   });
 
   it('testPattern counts matches and reports compile errors', () => {

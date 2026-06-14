@@ -15,7 +15,22 @@ export default defineConfig(async () => {
   }
   return {
     plugins: [react()],
-    server: { port: 3000, strictPort: true, https },
+    server: {
+      port: 3000,
+      strictPort: true,
+      https,
+      // WebKit (Safari / Excel-mac WebView) blocks fetch from this https pane to a
+      // plain-http API as mixed content. Proxy /api/v1 same-origin so the browser
+      // only ever talks to https://localhost:3000 (trusted cert), and Vite forwards
+      // to the http API server-side. Also supplies the /api/v1 prefix the add-in omits.
+      proxy: {
+        '/api/v1': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
+    },
     build: {
       outDir: 'dist',
       rollupOptions: {

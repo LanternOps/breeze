@@ -185,6 +185,7 @@ clientAiAdminRoutes.put(
     if (body.allowedProviders !== undefined) set.allowedProviders = body.allowedProviders;
     if (body.allowedModels !== undefined) set.allowedModels = body.allowedModels;
     if (body.writeMode !== undefined) set.writeMode = body.writeMode;
+    if (body.writeApproval !== undefined) set.writeApproval = body.writeApproval;
     if (body.dlpConfig !== undefined) set.dlpConfig = body.dlpConfig;
     if (body.dailyBudgetCents !== undefined) set.dailyBudgetCents = body.dailyBudgetCents;
     if (body.monthlyBudgetCents !== undefined) set.monthlyBudgetCents = body.monthlyBudgetCents;

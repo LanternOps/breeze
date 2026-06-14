@@ -53,6 +53,7 @@ import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
 import {
   clientToolResultSchema,
   createClientSessionSchema,
+  flagSessionSchema,
   sendClientMessageSchema,
   type ClientAiAuthContext,
 } from './schemas';
@@ -241,10 +242,25 @@ clientAiSessionRoutes.post('/', async (c) => {
   auditClient(c, auth, {
     action: 'ai.client_session.create',
     resourceId: session.id,
-    details: { model, writeMode: policy.writeMode, workbookName: workbookName ?? null },
+    details: {
+      model,
+      writeMode: policy.writeMode,
+      writeApproval: policy.writeApproval,
+      workbookName: workbookName ?? null,
+    },
   });
 
-  return c.json({ sessionId: session.id }, 201);
+  // Expose the effective write governance so the pane can render the Auto/Ask
+  // toggle. writeApproval is the server-side gate: 'ask' means the toggle is
+  // hidden and auto-apply is impossible regardless of what the pane requests.
+  return c.json(
+    {
+      sessionId: session.id,
+      writeMode: policy.writeMode,
+      writeApproval: policy.writeApproval,
+    },
+    201,
+  );
 });
 
 // ============================================
@@ -358,6 +374,49 @@ clientAiSessionRoutes.post('/:id/close', async (c) => {
     .where(eq(aiSessions.id, sessionId));
 
   auditClient(c, auth, { action: 'ai.client_session.close', resourceId: sessionId });
+
+  return c.json({ success: true });
+});
+
+// ============================================
+// POST /:id/flag — the END USER flags their own conversation for review.
+//
+// Mirrors the admin flag (routes/clientAi/adminSessions.ts) but runs on the
+// portal-session path: the actor is the portal user, so flagged_by (which FKs
+// users.id) is left NULL; the flag_reason carries the end user's note. Admins
+// see it via the SessionsTab "Flagged only" filter (already wired).
+// ============================================
+
+clientAiSessionRoutes.post('/:id/flag', async (c) => {
+  const auth = c.get('clientAiAuth');
+  const sessionId = c.req.param('id')!;
+
+  const session = await loadClientSession(sessionId, auth);
+  if (!session) return c.json({ error: 'Session not found' }, 404);
+
+  // The body is optional (a flag may carry no reason at all). Parse defensively:
+  // a missing/empty body must not 400, then validate the shape so the reason
+  // length contract holds (mirrors the admin flag route).
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    raw = undefined;
+  }
+  const parsed = flagSessionSchema.safeParse(raw);
+  if (!parsed.success) return c.json({ error: 'Invalid request body' }, 400);
+  const reason = parsed.data?.reason ?? null;
+
+  await db
+    .update(aiSessions)
+    .set({ flaggedAt: new Date(), flaggedBy: null, flagReason: reason })
+    .where(eq(aiSessions.id, sessionId));
+
+  auditClient(c, auth, {
+    action: 'ai.client_session.flag',
+    resourceId: sessionId,
+    details: { reason },
+  });
 
   return c.json({ success: true });
 });

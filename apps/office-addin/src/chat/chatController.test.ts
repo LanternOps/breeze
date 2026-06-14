@@ -7,7 +7,11 @@ import type { WorkbookContext } from '../api/types';
 
 function stubApi(overrides: Partial<ChatApi> = {}): ChatApi {
   return {
-    createSession: vi.fn(async () => 'sess-1'),
+    createSession: vi.fn(async () => ({
+      sessionId: 'sess-1',
+      writeMode: 'readwrite' as const,
+      writeApproval: 'ask' as const,
+    })),
     sendMessage: vi.fn(async () => undefined),
     postToolResult: vi.fn(async () => undefined),
     streamEvents: vi.fn(() => ({ stop: vi.fn() })),
@@ -28,6 +32,7 @@ function stubApi(overrides: Partial<ChatApi> = {}): ChatApi {
       messages: [],
     })),
     listSessions: vi.fn(async () => []),
+    flagSession: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -150,6 +155,79 @@ describe('ChatController — send', () => {
     });
     await vi.waitFor(() => expect(controller.approvals.getPending()).toHaveLength(1));
     expect(api.postToolResult).not.toHaveBeenCalled();
+  });
+
+  it('keeps writeApproval=ask out of the pane state under the default policy', async () => {
+    const api = stubApi();
+    const controller = new ChatController({ api, captureContext: async () => undefined });
+    await controller.send('hi');
+    expect(controller.getState().writeApproval).toBe('ask');
+  });
+
+  it('surfaces writeApproval=allow_auto into pane state when the org opts in', async () => {
+    const api = stubApi({
+      createSession: vi.fn(async () => ({
+        sessionId: 'sess-1',
+        writeMode: 'readwrite' as const,
+        writeApproval: 'allow_auto' as const,
+      })),
+    });
+    const controller = new ChatController({ api, captureContext: async () => undefined });
+    await controller.send('hi');
+    expect(controller.getState().writeApproval).toBe('allow_auto');
+  });
+
+  it('ignores a setAutoApply request when the org policy is ask (server-side gate is the real one, but the pane refuses too)', async () => {
+    const api = stubApi(); // writeApproval: 'ask'
+    const controller = new ChatController({ api, captureContext: async () => undefined });
+    await controller.send('hi');
+    controller.setAutoApply(true);
+    expect(controller.approvals.isAutoApply()).toBe(false);
+  });
+
+  it('honors setAutoApply once the org policy allows auto', async () => {
+    const api = stubApi({
+      createSession: vi.fn(async () => ({
+        sessionId: 'sess-1',
+        writeMode: 'readwrite' as const,
+        writeApproval: 'allow_auto' as const,
+      })),
+    });
+    const controller = new ChatController({ api, captureContext: async () => undefined });
+    await controller.send('hi');
+    controller.setAutoApply(true);
+    expect(controller.approvals.isAutoApply()).toBe(true);
+  });
+});
+
+describe('ChatController — flag conversation', () => {
+  it('is a no-op before a session exists (nothing to flag)', async () => {
+    const api = stubApi();
+    const controller = new ChatController({ api, captureContext: async () => undefined });
+    await controller.flagConversation('looks wrong');
+    expect(api.flagSession).not.toHaveBeenCalled();
+  });
+
+  it('flags the current session with the reason and shows a confirmation banner', async () => {
+    const api = stubApi();
+    const controller = new ChatController({ api, captureContext: async () => undefined });
+    await controller.send('hi'); // establishes sessionId
+    await controller.flagConversation('looks wrong');
+    expect(api.flagSession).toHaveBeenCalledWith('sess-1', 'looks wrong');
+    expect(controller.getState().flagged).toBe(true);
+  });
+
+  it('surfaces an error banner and stays unflagged when flagging fails', async () => {
+    const api = stubApi({
+      flagSession: vi.fn(async () => {
+        throw new ApiError(500, 'server_error');
+      }),
+    });
+    const controller = new ChatController({ api, captureContext: async () => undefined });
+    await controller.send('hi');
+    await controller.flagConversation();
+    expect(controller.getState().flagged).toBe(false);
+    expect(controller.getState().banner?.kind).toBe('error');
   });
 });
 

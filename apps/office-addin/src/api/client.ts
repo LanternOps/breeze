@@ -12,6 +12,7 @@ import {
   type ClientAiTemplate,
   type CreateSessionBody,
   type SendMessageBody,
+  type SessionCreated,
   type SessionHistory,
   type SessionListItem,
   type ToolResultBody,
@@ -75,19 +76,28 @@ async function expectOk(res: Response): Promise<unknown> {
   return body;
 }
 
-/** POST /client-ai/sessions { workbookName? } → 201 { sessionId } */
+/**
+ * POST /client-ai/sessions { workbookName? } → 201 { sessionId, writeMode, writeApproval }.
+ * writeApproval is default-denied client-side too: any value other than the
+ * explicit 'allow_auto' collapses to 'ask', so a malformed/legacy response can
+ * never enable the pane's auto-apply toggle.
+ */
 export async function createSession(
   body: CreateSessionBody = {},
   fetchImpl?: FetchLike,
-): Promise<string> {
+): Promise<SessionCreated> {
   const res = (await expectOk(
     await apiFetch(
       '/client-ai/sessions',
       { method: 'POST', body: JSON.stringify(body) },
       fetchImpl,
     ),
-  )) as { sessionId: string };
-  return res.sessionId;
+  )) as Partial<SessionCreated> & { sessionId: string };
+  return {
+    sessionId: res.sessionId,
+    writeMode: res.writeMode === 'readonly' ? 'readonly' : 'readwrite',
+    writeApproval: res.writeApproval === 'allow_auto' ? 'allow_auto' : 'ask',
+  };
 }
 
 /** GET /client-ai/sessions → { sessions: [...] } — THIS user's history (workbook-tagged). */
@@ -123,6 +133,22 @@ export async function postToolResult(
     await apiFetch(
       `/client-ai/sessions/${sessionId}/tool-results`,
       { method: 'POST', body: JSON.stringify(result) },
+      fetchImpl,
+    ),
+  );
+}
+
+/** POST /client-ai/sessions/:id/flag — the end user flags their own conversation for review. */
+export async function flagSession(
+  sessionId: string,
+  reason?: string,
+  fetchImpl?: FetchLike,
+): Promise<void> {
+  const trimmed = reason?.trim();
+  await expectOk(
+    await apiFetch(
+      `/client-ai/sessions/${sessionId}/flag`,
+      { method: 'POST', body: JSON.stringify(trimmed ? { reason: trimmed } : {}) },
       fetchImpl,
     ),
   );

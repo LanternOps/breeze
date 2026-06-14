@@ -14,6 +14,9 @@ function baseState(overrides: Partial<ChatState> = {}): ChatState {
     draft: '',
     contextKind: 'selection',
     usage: null,
+    writeApproval: 'ask',
+    autoApply: false,
+    flagged: false,
     ...overrides,
   };
 }

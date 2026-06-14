@@ -238,6 +238,44 @@ describe('client-ai admin — policy', () => {
     );
   });
 
+  it('PUT persists writeApproval and audits it as a changed key', async () => {
+    getOrgPolicyMock.mockResolvedValue({ orgId: ORG_ID, enabled: true });
+    const valuesMock = vi.fn(() => ({
+      onConflictDoUpdate: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([MAPPING_ROW])),
+      })),
+    }));
+    dbInsertMock.mockImplementation(() => ({ values: valuesMock }));
+
+    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/policy`, {
+      method: 'PUT',
+      headers: AUTHED,
+      body: JSON.stringify({ writeApproval: 'allow_auto' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ writeApproval: 'allow_auto' })
+    );
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          changedKeys: expect.arrayContaining(['writeApproval']),
+        }),
+      })
+    );
+  });
+
+  it('PUT rejects an invalid writeApproval value (400)', async () => {
+    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/policy`, {
+      method: 'PUT',
+      headers: AUTHED,
+      body: JSON.stringify({ writeApproval: 'force_auto' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('404s policy routes for an inaccessible org', async () => {
     const res = await buildApp().request(`/client-ai/admin/orgs/${OTHER_ORG_ID}/policy`, {
       headers: AUTHED,

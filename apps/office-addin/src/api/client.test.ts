@@ -3,6 +3,7 @@ import {
   ApiError,
   createSession,
   decodeStreamFrame,
+  flagSession,
   getTemplates,
   listSessions,
   sendMessage,
@@ -51,9 +52,15 @@ beforeEach(() => {
 });
 
 describe('apiFetch wrappers', () => {
-  it('attaches the Authorization bearer header and returns the sessionId (201)', async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(201, { sessionId: 'sess-1' }));
-    await expect(createSession({}, fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-1');
+  it('attaches the Authorization bearer header and returns the session governance (201)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(201, { sessionId: 'sess-1', writeMode: 'readwrite', writeApproval: 'allow_auto' })
+    );
+    await expect(createSession({}, fetchImpl as unknown as typeof fetch)).resolves.toEqual({
+      sessionId: 'sess-1',
+      writeMode: 'readwrite',
+      writeApproval: 'allow_auto',
+    });
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('/client-ai/sessions');
     expect((init.headers as Headers).get('Authorization')).toBe('Bearer breeze-token');
@@ -64,9 +71,18 @@ describe('apiFetch wrappers', () => {
     const fetchImpl = vi.fn(async () => jsonResponse(201, { sessionId: 'sess-wb' }));
     await expect(
       createSession({ workbookName: 'Q3 Budget.xlsx' }, fetchImpl as unknown as typeof fetch),
-    ).resolves.toBe('sess-wb');
+    ).resolves.toMatchObject({ sessionId: 'sess-wb' });
     const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ workbookName: 'Q3 Budget.xlsx' });
+  });
+
+  it('default-denies writeApproval: a response without the field collapses to ask', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(201, { sessionId: 'sess-1' }));
+    await expect(createSession({}, fetchImpl as unknown as typeof fetch)).resolves.toEqual({
+      sessionId: 'sess-1',
+      writeMode: 'readwrite',
+      writeApproval: 'ask',
+    });
   });
 
   it('on 401 runs the single-flight re-exchange and retries once', async () => {
@@ -74,7 +90,9 @@ describe('apiFetch wrappers', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse(401, { error: 'invalid_token' }))
       .mockResolvedValueOnce(jsonResponse(201, { sessionId: 'sess-2' }));
-    await expect(createSession({}, fetchImpl as unknown as typeof fetch)).resolves.toBe('sess-2');
+    await expect(createSession({}, fetchImpl as unknown as typeof fetch)).resolves.toMatchObject({
+      sessionId: 'sess-2',
+    });
     expect(reExchangeMock).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
@@ -119,6 +137,22 @@ describe('apiFetch wrappers', () => {
     );
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).code).toBe('budget_exceeded');
+  });
+
+  it('flagSession POSTs the trimmed reason to /sessions/:id/flag', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { success: true }));
+    await flagSession('sess-9', '  looks wrong  ', fetchImpl as unknown as typeof fetch);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('/client-ai/sessions/sess-9/flag');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ reason: 'looks wrong' });
+  });
+
+  it('flagSession sends an empty body when no reason is given', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { success: true }));
+    await flagSession('sess-9', undefined, fetchImpl as unknown as typeof fetch);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({});
   });
 
   it('getTemplates accepts both the pinned bare array and a {data:[...]} envelope', async () => {
