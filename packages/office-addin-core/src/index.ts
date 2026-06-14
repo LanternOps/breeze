@@ -1,4 +1,5 @@
 export type { HostAdapter } from './host/types';
+export { CLIENT_HOSTS } from './api/types';
 export type {
   WorkbookContext,
   WorkbookContextKind,
@@ -7,7 +8,10 @@ export type {
   ToolExecutor,
   ClientAiStreamEvent,
   ToolResultBody,
+  ClientHost,
+  CreateSessionBody,
 } from './api/types';
+export * from './tools/helpers';
 export * from './config';
 export * from './api/client';
 export * from './api/sse';
@@ -29,5 +33,7 @@ export { TemplatePicker } from './components/TemplatePicker';
 export { BlockedScreen } from './components/BlockedScreen';
 export { BrandingFooter } from './components/BrandingFooter';
 export { SignInScreen } from './components/SignInScreen';
+export { App } from './components/App';
+export { ChatPane } from './components/ChatPane';
 export * from './lib/address';
 export * from './lib/markdown';

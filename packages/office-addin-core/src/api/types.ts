@@ -75,7 +75,20 @@ export type WorkbookContext = {
   address?: string;
   sheetName?: string;
   cells?: CellValue[][];
+  /**
+   * Linear-text context (Word and other grid-less hosts). Additive: Excel
+   * never sets it — its context chip is grid-shaped (`cells`/`address`).
+   */
+  text?: string;
 };
+
+/**
+ * Office hosts the add-in can run inside. Threaded from the per-host pane shell
+ * so the server serves the matching tool registry + system prompt — without it
+ * the server defaults to 'excel'.
+ */
+export const CLIENT_HOSTS = ['excel', 'word', 'powerpoint', 'outlook'] as const;
+export type ClientHost = (typeof CLIENT_HOSTS)[number];
 
 export type WriteMode = 'readwrite' | 'readonly';
 /** Org gate for pane auto-apply (server-authoritative). 'ask' = no auto-apply. */
@@ -114,8 +127,11 @@ export type SessionSummary = {
   lastActivityAt: string | null;
 };
 
-/** Body of POST /client-ai/sessions — tags the session with the open workbook. */
-export type CreateSessionBody = { workbookName?: string };
+/**
+ * Body of POST /client-ai/sessions — tags the session with the open workbook
+ * and (optionally) the host so the server serves the matching registry/prompt.
+ */
+export type CreateSessionBody = { workbookName?: string; host?: ClientHost };
 
 /** One row in the per-user conversation history list (GET /client-ai/sessions). */
 export type SessionListItem = {

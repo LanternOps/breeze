@@ -1,21 +1,33 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import {
-  ChatController,
-  ChatThread,
-  ChatToolbar,
-  Composer,
-  TemplatePicker,
-  QuickActions,
-  BrandingFooter,
-  HistoryPanel,
-  ChangesPanel,
-  type ClientSession,
-} from '@breeze/office-addin-core';
-import { excelHostAdapter } from '../host/excel';
+import { ChatController } from '../chat/chatController';
+import { ChatThread } from './ChatThread';
+import { ChatToolbar } from './ChatToolbar';
+import { Composer } from './Composer';
+import { TemplatePicker } from './TemplatePicker';
+import { QuickActions } from './QuickActions';
+import { BrandingFooter } from './BrandingFooter';
+import { HistoryPanel } from './HistoryPanel';
+import { ChangesPanel } from './ChangesPanel';
+import type { ClientHost } from '../api/types';
+import type { ClientSession } from '../auth/session';
+import type { HostAdapter } from '../host/types';
 
-export function ChatPane({ session }: { session: ClientSession }) {
-  // The pane is the single place the concrete host is chosen and injected.
-  const controller = useMemo(() => new ChatController({ host: excelHostAdapter }), []);
+/**
+ * The composition root: the single place the concrete host adapter is chosen and
+ * injected into the host-neutral controller/components. `host` is the
+ * object-model seam (Excel/Word/…); `clientHost` is the wire discriminant
+ * threaded to the server so it serves the matching tool registry + prompt.
+ */
+export function ChatPane({
+  session,
+  host,
+  clientHost,
+}: {
+  session: ClientSession;
+  host: HostAdapter;
+  clientHost: ClientHost;
+}) {
+  const controller = useMemo(() => new ChatController({ host, clientHost }), [host, clientHost]);
   useEffect(() => () => controller.dispose(), [controller]);
 
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -98,7 +110,7 @@ export function ChatPane({ session }: { session: ClientSession }) {
       {empty && (
         <>
           <QuickActions
-            capture={excelHostAdapter.captureContext.bind(null, 'selection')}
+            capture={host.captureContext.bind(null, 'selection')}
             onSelect={(prompt) => void controller.send(prompt)}
           />
           <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />
@@ -115,8 +127,8 @@ export function ChatPane({ session }: { session: ClientSession }) {
         draft={state.draft}
         busy={state.busy}
         contextKind={state.contextKind}
-        captureSelectionAddress={excelHostAdapter.captureSelectionAddress}
-        subscribeSelectionChanged={excelHostAdapter.subscribeSelectionChanged}
+        captureSelectionAddress={host.captureSelectionAddress}
+        subscribeSelectionChanged={host.subscribeSelectionChanged}
         onDraftChange={(text) => controller.setDraft(text)}
         onContextKindChange={(kind) => controller.setContextKind(kind)}
         onSend={() => void controller.send()}

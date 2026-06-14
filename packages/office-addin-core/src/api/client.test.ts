@@ -119,15 +119,23 @@ describe('apiFetch wrappers', () => {
       messageCount: 4,
     };
     const fetchImpl = vi.fn(async () => jsonResponse(200, { sessions: [item] }));
-    await expect(listSessions(fetchImpl as unknown as typeof fetch)).resolves.toEqual([item]);
+    await expect(listSessions(undefined, fetchImpl as unknown as typeof fetch)).resolves.toEqual([item]);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('/client-ai/sessions');
+    expect(url).not.toContain('host=');
     expect(init.method ?? 'GET').toBe('GET');
+  });
+
+  it('listSessions forwards the host as a ?host= query when provided', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { sessions: [] }));
+    await listSessions('word', fetchImpl as unknown as typeof fetch);
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toContain('/client-ai/sessions?host=word');
   });
 
   it('listSessions tolerates a malformed body by returning an empty list', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { not_sessions: true }));
-    await expect(listSessions(fetchImpl as unknown as typeof fetch)).resolves.toEqual([]);
+    await expect(listSessions(undefined, fetchImpl as unknown as typeof fetch)).resolves.toEqual([]);
   });
 
   it('surfaces server rejection codes (budget_exceeded) as ApiError', async () => {

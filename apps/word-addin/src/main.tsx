@@ -1,7 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from '@breeze/office-addin-core';
-import { excelHostAdapter } from './host/excel';
+import { wordHostAdapter } from './host/word';
 import './index.css';
 
 const rootEl = document.getElementById('root');
@@ -11,12 +11,12 @@ const root = createRoot(rootEl);
 function render(): void {
   root.render(
     <React.StrictMode>
-      <App host={excelHostAdapter} clientHost="excel" />
+      <App host={wordHostAdapter} clientHost="word" />
     </React.StrictMode>,
   );
 }
 
-// Inside Excel, wait for the host handshake; in a plain browser tab (dev
+// Inside Word, wait for the host handshake; in a plain browser tab (dev
 // convenience, ADDIN_NO_HTTPS debugging) Office is undefined — render anyway.
 if (typeof Office !== 'undefined' && typeof Office.onReady === 'function') {
   void Office.onReady(() => render());

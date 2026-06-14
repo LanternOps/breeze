@@ -4,32 +4,22 @@
  * DLP engine's fail-closed limit (Plan 3) — anything bigger would be refused
  * there anyway, so fail fast here with a message the model can act on.
  */
-import { parseAddress, stripSheet, type CellValue } from '@breeze/office-addin-core';
+import {
+  ToolInputError,
+  parseAddress,
+  requireString,
+  optionalString,
+  stripSheet,
+  type CellValue,
+} from '@breeze/office-addin-core';
+
+// Host-neutral validators now live in the core; re-exported here so the Excel
+// tool files (which import them from this module) need no edits.
+export { ToolInputError, requireString, optionalString };
 
 export const MAX_TOOL_CELLS = 50_000;
 export const SEARCH_RESULT_CAP = 200;
 export const OVERVIEW_HEADER_CAP = 50;
-
-export class ToolInputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ToolInputError';
-  }
-}
-
-export function requireString(input: Record<string, unknown>, key: string): string {
-  const value = input[key];
-  if (typeof value !== 'string' || value.length === 0)
-    throw new ToolInputError(`${key} must be a non-empty string`);
-  return value;
-}
-
-export function optionalString(input: Record<string, unknown>, key: string): string | undefined {
-  const value = input[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw new ToolInputError(`${key} must be a string`);
-  return value;
-}
 
 export function requireCellMatrix(input: Record<string, unknown>, key: string): CellValue[][] {
   const value = input[key];
