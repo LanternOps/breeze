@@ -165,6 +165,10 @@ type Heartbeat struct {
 	helperFinder     func(targetSession string) *sessionbroker.Session
 	spawnHelper      func(targetSession string) error
 	killStaleHelpers func(staleKey string)
+	// pamFindSession / pamRequestDialog default to the real broker methods in
+	// RunPamFlow when nil; overridden in pam_flow_test.go.
+	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
 	wsDesktopStart   func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners    sync.Map // desktop session ID -> helper session ID
 
