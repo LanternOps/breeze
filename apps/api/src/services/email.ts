@@ -14,6 +14,10 @@ export interface SendEmailParams {
   text?: string;
   from?: string;
   replyTo?: string | string[];
+  // Custom RFC headers for threading + loop-prevention (Phase 4):
+  // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
+  // provider maps it natively (Resend/SMTP `headers`, Mailgun `h:` fields).
+  headers?: Record<string, string>;
 }
 
 export interface PasswordResetEmailParams {
@@ -145,7 +149,7 @@ export class EmailService {
   }
 
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, subject, html, text, from, replyTo } = params;
+    const { to, subject, html, text, from, replyTo, headers } = params;
     const sender = from ?? this.defaultFrom;
 
     if (this.provider === 'resend') {
@@ -159,7 +163,8 @@ export class EmailService {
         subject,
         html,
         text,
-        replyTo
+        replyTo,
+        headers,
       });
       if (error) {
         throw new Error(`Resend error: ${error.message}`);
@@ -193,7 +198,8 @@ export class EmailService {
       subject,
       html,
       text,
-      replyTo
+      replyTo,
+      headers,
     });
   }
 
