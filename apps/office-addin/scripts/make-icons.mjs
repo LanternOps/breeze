@@ -3,7 +3,8 @@
 // (hand-built chunks: IHDR + zlib IDAT + IEND). Replace with real brand
 // icons later by dropping files at the same paths.
 import { deflateSync } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -51,8 +52,29 @@ function png(size, [r, g, b]) {
   ]);
 }
 
-const BREEZE_BLUE = [37, 99, 235];
-for (const size of [16, 32, 64, 80]) {
-  writeFileSync(path.join(outDir, `icon-${size}.png`), png(size, BREEZE_BLUE));
+// Real Breeze mark lives at public/assets/brand.svg (committed). We never
+// clobber an existing icon (the committed brand PNGs win); only MISSING icons
+// are generated — preferring an rsvg-convert rasterization of brand.svg, and
+// falling back to a flat dark badge (not a bright-blue placeholder).
+const BRAND_SVG = path.join(outDir, 'brand.svg');
+const BREEZE_DARK = [10, 10, 11]; // matches brand.svg badge fill
+
+function rasterizeBrand(size, out) {
+  if (!existsSync(BRAND_SVG)) return false;
+  try {
+    execFileSync('rsvg-convert', ['-w', String(size), '-h', String(size), BRAND_SVG, '-o', out], {
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false; // rsvg-convert not installed — fall back below
+  }
 }
-console.log(`[make-icons] wrote icon-16/32/64/80.png to ${outDir}`);
+
+for (const size of [16, 32, 64, 80]) {
+  const out = path.join(outDir, `icon-${size}.png`);
+  if (existsSync(out)) continue; // committed brand icon — leave it
+  if (rasterizeBrand(size, out)) continue;
+  writeFileSync(out, png(size, BREEZE_DARK));
+}
+console.log(`[make-icons] icons present in ${outDir}`);
