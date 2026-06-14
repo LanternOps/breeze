@@ -299,8 +299,9 @@ export function clientToolNames(host: ClientHost): string[] {
   return Object.keys(CLIENT_TOOL_REGISTRIES[host]);
 }
 export function clientMutatingToolNames(host: ClientHost): string[] {
-  const reg = CLIENT_TOOL_REGISTRIES[host];
-  return Object.keys(reg).filter((name) => reg[name].mutating);
+  return Object.entries(CLIENT_TOOL_REGISTRIES[host])
+    .filter(([, def]) => def.mutating)
+    .map(([name]) => name);
 }
 export function clientMcpToolNames(host: ClientHost): string[] {
   return clientToolNames(host).map((name) => `${clientMcpToolPrefix(host)}${name}`);
@@ -312,10 +313,9 @@ export function clientMcpToolNamesForWriteMode(
   host: ClientHost,
   writeMode: 'readwrite' | 'readonly',
 ): string[] {
-  const reg = CLIENT_TOOL_REGISTRIES[host];
-  return Object.keys(reg)
-    .filter((name) => writeMode === 'readwrite' || !reg[name].mutating)
-    .map((name) => `${clientMcpToolPrefix(host)}${name}`);
+  return Object.entries(CLIENT_TOOL_REGISTRIES[host])
+    .filter(([, def]) => writeMode === 'readwrite' || !def.mutating)
+    .map(([name]) => `${clientMcpToolPrefix(host)}${name}`);
 }
 
 // ============================================
@@ -476,7 +476,10 @@ export function makeClientToolHandler(
   toolName: string,
   getSession: () => ActiveSession,
 ) {
-  const entry: ClientWorkbookTool = CLIENT_TOOL_REGISTRIES[host][toolName];
+  const entry = CLIENT_TOOL_REGISTRIES[host][toolName];
+  if (!entry) {
+    throw new Error(`Unknown client tool '${toolName}' for host '${host}'`);
+  }
 
   return async (args: Record<string, unknown>): Promise<ClientToolHandlerResult> => {
     // Escape any inherited AsyncLocalStorage DB context from the SDK callback
@@ -579,12 +582,11 @@ export function makeClientToolHandler(
  * (the scriptAi.ts:211-215 precedent).
  */
 export function createClientWorkbookMcpServer(host: ClientHost, getSession: () => ActiveSession) {
-  const reg = CLIENT_TOOL_REGISTRIES[host];
   return createSdkMcpServer({
     name: clientMcpServerName(host),
     version: '1.0.0',
-    tools: Object.keys(reg).map((name) =>
-      tool(name, reg[name].description, reg[name].inputSchema, makeClientToolHandler(host, name, getSession)),
+    tools: Object.entries(CLIENT_TOOL_REGISTRIES[host]).map(([name, def]) =>
+      tool(name, def.description, def.inputSchema, makeClientToolHandler(host, name, getSession)),
     ),
   });
 }

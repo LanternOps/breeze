@@ -49,14 +49,17 @@ describe('CLIENT_TOOL_REGISTRY — pinned shape (Plans 3/4/5 depend on these nam
   });
 
   it('flags exactly the 9 write tools as mutating', () => {
-    const mutating = clientToolNames('excel').filter((n) => CLIENT_TOOL_REGISTRY[n].mutating).sort();
+    const mutating = Object.entries(CLIENT_TOOL_REGISTRY)
+      .filter(([, def]) => def.mutating)
+      .map(([name]) => name)
+      .sort();
     expect(mutating).toEqual(PINNED_MUTATING);
   });
 
   it('every tool has a non-empty description and an inputSchema object', () => {
-    for (const name of clientToolNames('excel')) {
-      expect(CLIENT_TOOL_REGISTRY[name].description.length).toBeGreaterThan(20);
-      expect(typeof CLIENT_TOOL_REGISTRY[name].inputSchema).toBe('object');
+    for (const def of Object.values(CLIENT_TOOL_REGISTRY)) {
+      expect(def.description.length).toBeGreaterThan(20);
+      expect(typeof def.inputSchema).toBe('object');
     }
   });
 });
