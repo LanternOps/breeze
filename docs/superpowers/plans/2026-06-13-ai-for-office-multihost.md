@@ -634,19 +634,21 @@ git commit -m "chore(client-ai): host-neutral bridge timeout message"
 Two host-bound usages bypass the `HostAdapter` today; close them so the core never touches `Excel.*`. **Scope note:** "host-clean" here means no `Excel.*` host-APP coupling. `Office.onReady` (`main.tsx`) and `OfficeRuntime.auth.getAccessToken` (`auth/entraToken.ts`) are cross-host **Office-platform** APIs — they are legitimately host-neutral and STAY (they move into the core in Phase 3). The grep-gate targets `Excel.*`, not all of Office.js.
 
 ### File structure
-- Modify: `apps/office-addin/src/host/types.ts` — add `captureSelectionAddress` and `subscribeSelectionChanged` to `HostAdapter` (BOTH **required** — see why below).
-- Modify: `apps/office-addin/src/host/excel.ts` — implement both members, wired to selection logic moved into an Excel module.
-- Create: `apps/office-addin/src/host/excelSelection.ts` — move the `Excel.run`/`Office.context.document.addHandlerAsync(DocumentSelectionChanged,…)` logic out of `hooks/useSelectionAddress.ts`.
-- Modify: `apps/office-addin/src/hooks/useSelectionAddress.ts` — becomes a host-neutral hook taking injected `{ captureSelectionAddress, subscribeSelectionChanged }`; no direct `Excel.*`/`Office.context`.
-- Modify: `apps/office-addin/src/components/QuickActions.tsx` — make `capture` a **required prop** (remove the host-bound default `capture = captureWorkbookContext.bind(null,'selection')` + the `../chat/captureContext` import).
-- Modify: `apps/office-addin/src/components/Composer.tsx` — accept the selection fn(s) as props instead of importing the hook's Excel binding directly.
-- Modify: `apps/office-addin/src/components/ChatPane.tsx` — the prop source: thread `excelHostAdapter.captureContext.bind(null,'selection')` to QuickActions and `{ captureSelectionAddress, subscribeSelectionChanged }` (from `excelHostAdapter`) to Composer. **ChatPane keeps the sole `excelHostAdapter` import in the core until Phase 3 hoists host selection to `App.tsx` — acceptable, call it out so reviewers don't expect ChatPane to be host-clean yet.**
-- Test (UPDATE, exists): `apps/office-addin/src/chat/chatController.test.ts` — the inline `fakeHost` literal (`:166`) must add `captureSelectionAddress: async () => undefined` and `subscribeSelectionChanged: () => () => {}` (adding required members breaks this structural type otherwise).
-- Test (UPDATE, exists): `apps/office-addin/src/host/excel.test.ts` — add `typeof adapter.captureSelectionAddress === 'function'` + `subscribeSelectionChanged` to the `satisfies HostAdapter` shape assertions.
-- Test (UPDATE, exists): `apps/office-addin/src/components/QuickActions.test.tsx` — ALREADY injects a `capture` fake in every case; only minor (the prop is now required, no behavior change).
-- Test (CREATE): `apps/office-addin/src/hooks/useSelectionAddress.test.ts` — render the hook with injected fakes; assert it reads once on mount AND re-reads when a simulated `subscribeSelectionChanged` callback fires.
-- Test (CREATE): `apps/office-addin/src/components/Composer.test.tsx` — Composer now takes selection props; cover render + the prop wiring.
-- Mock: `apps/office-addin/src/__tests__/officeMock.ts` — add `removeHandlerAsync` (currently only `addHandlerAsync` at `:914-924`), or document that the unsubscribe is a deliberate no-op.
+> **Post-Phase-3 path note:** these files were authored under `apps/office-addin/src/` and have since moved in the package split — host-neutral ones to `packages/office-addin-core/src/`, host-bound ones to `apps/excel-addin/src/`. The new locations are reflected below.
+
+- Modify: `packages/office-addin-core/src/host/types.ts` — add `captureSelectionAddress` and `subscribeSelectionChanged` to `HostAdapter` (BOTH **required** — see why below).
+- Modify: `apps/excel-addin/src/host/excel.ts` — implement both members, wired to selection logic moved into an Excel module.
+- Create: `apps/excel-addin/src/host/excelSelection.ts` — move the `Excel.run`/`Office.context.document.addHandlerAsync(DocumentSelectionChanged,…)` logic out of `hooks/useSelectionAddress.ts`.
+- Modify: `packages/office-addin-core/src/hooks/useSelectionAddress.ts` — becomes a host-neutral hook taking injected `{ captureSelectionAddress, subscribeSelectionChanged }`; no direct `Excel.*`/`Office.context`.
+- Modify: `packages/office-addin-core/src/components/QuickActions.tsx` — make `capture` a **required prop** (remove the host-bound default `capture = captureWorkbookContext.bind(null,'selection')` + the `../chat/captureContext` import).
+- Modify: `packages/office-addin-core/src/components/Composer.tsx` — accept the selection fn(s) as props instead of importing the hook's Excel binding directly.
+- Modify: `apps/excel-addin/src/components/ChatPane.tsx` — the prop source: thread `excelHostAdapter.captureContext.bind(null,'selection')` to QuickActions and `{ captureSelectionAddress, subscribeSelectionChanged }` (from `excelHostAdapter`) to Composer. **ChatPane keeps the sole `excelHostAdapter` import until Phase 3 hoists host selection to `App.tsx` — acceptable, call it out so reviewers don't expect ChatPane to be host-clean yet.**
+- Test (UPDATE, exists): `packages/office-addin-core/src/chat/chatController.test.ts` — the inline `fakeHost` literal (`:166`) must add `captureSelectionAddress: async () => undefined` and `subscribeSelectionChanged: () => () => {}` (adding required members breaks this structural type otherwise).
+- Test (UPDATE, exists): `apps/excel-addin/src/host/excel.test.ts` — add `typeof adapter.captureSelectionAddress === 'function'` + `subscribeSelectionChanged` to the `satisfies HostAdapter` shape assertions.
+- Test (UPDATE, exists): `packages/office-addin-core/src/components/QuickActions.test.tsx` — ALREADY injects a `capture` fake in every case; only minor (the prop is now required, no behavior change).
+- Test (CREATE): `packages/office-addin-core/src/hooks/useSelectionAddress.test.ts` — render the hook with injected fakes; assert it reads once on mount AND re-reads when a simulated `subscribeSelectionChanged` callback fires.
+- Test (CREATE): `packages/office-addin-core/src/components/Composer.test.tsx` — Composer now takes selection props; cover render + the prop wiring.
+- Mock: `apps/excel-addin/src/__tests__/officeMock.ts` — add `removeHandlerAsync` (currently only `addHandlerAsync` at `:914-924`), or document that the unsubscribe is a deliberate no-op.
 
 ### Why both members are REQUIRED (not optional)
 The current `useSelectionAddress` keeps a LIVE `Office.context.document.addHandlerAsync(DocumentSelectionChanged, refresh)` subscription that re-reads the address on every selection change (intentionally never removed — the always-mounted Composer + a `disposed` flag guards late `setState`). A one-shot `captureSelectionAddress()` alone would LOSE the live refresh and the selection chip would freeze — a regression. So `subscribeSelectionChanged(cb): () => void` is a required contract member; the Excel impl returns a no-op unsubscribe to preserve the never-remove behavior. The hook rhythm: call `captureSelectionAddress()` once on mount, then again inside each `subscribeSelectionChanged` callback.
@@ -662,6 +664,8 @@ The current `useSelectionAddress` keeps a LIVE `Office.context.document.addHandl
 ---
 
 ## Phase 3 — Physical Package Split (ROADMAP — expand into its own plan before executing)
+
+> **DONE (2026-06-13):** Phase 3 is complete — the split shipped per `docs/superpowers/plans/2026-06-13-ai-for-office-phase3-package-split.md`. `apps/office-addin` was renamed to `apps/excel-addin` and the host-neutral core extracted to `packages/office-addin-core`. The roadmap below is retained as the original design record.
 
 **Goal:** `packages/office-addin-core` (host-neutral, depends only on React + the wire types) imported by `apps/excel-addin` (host-bound: `tools/*`, `host/excel*.ts`, `approval/buildPreview.ts`, `chat/captureContext.ts`, manifest, vite). Renames `apps/office-addin` → `apps/excel-addin`.
 
