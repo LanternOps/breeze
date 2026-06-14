@@ -48,7 +48,8 @@ export const aiSessions = pgTable('ai_sessions', {
   delegantM365ConnectionId: uuid('delegant_m365_connection_id'),
   // AI for Office client principal (FK → portal_users). CHECKs in SQL:
   // ai_sessions_single_principal_check (never both user_id and client_user_id),
-  // ai_sessions_excel_client_principal_check (type='excel_client' ⇒ set).
+  // ai_sessions_client_principal_check (any client session — type matching the
+  // `${host}_client` convention, e.g. 'excel_client'/'word_client' — ⇒ set).
   // Partial index ai_sessions_client_user_id_idx created via SQL migration.
   clientUserId: uuid('client_user_id').references(() => portalUsers.id),
   // AI for Office: the name of the Excel workbook the session happened in,
