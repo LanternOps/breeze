@@ -16,6 +16,16 @@ describe('deriveUnitPrice', () => {
   it('returns explicit price when no markup/cost', () => {
     expect(deriveUnitPrice({ explicitPrice: 50, costBasis: null, markupPercent: null })).toBe('50.00');
   });
+  it('returns 0.00 when cost is given but markup is null (no derivation possible)', () => {
+    expect(deriveUnitPrice({ explicitPrice: undefined, costBasis: '100.00', markupPercent: null })).toBe('0.00');
+  });
+  it('returns 0.00 when everything is null/undefined', () => {
+    expect(deriveUnitPrice({ explicitPrice: undefined, costBasis: null, markupPercent: null })).toBe('0.00');
+  });
+  it('rounds the marked-up price to the nearest cent', () => {
+    // 33.33 * 1.10 = 36.663 -> rounds to 36.66
+    expect(deriveUnitPrice({ explicitPrice: undefined, costBasis: '33.33', markupPercent: '10' })).toBe('36.66');
+  });
 });
 
 describe('resolvePriceFrom', () => {
@@ -101,5 +111,29 @@ describe('computeBundleEconomicsFrom', () => {
       components: [{ quantity: '1', costBasis: '10.00', revenueAllocation: '40.00' }]
     });
     expect(r.allocationMatchesHeadline).toBe(false);
+  });
+  it('returns marginPct 0 (not NaN/Infinity) when the headline price is zero', () => {
+    const r = computeBundleEconomicsFrom({
+      headlinePrice: '0.00',
+      components: [
+        { quantity: '2', costBasis: '10.00', revenueAllocation: null },
+        { quantity: '1', costBasis: '30.00', revenueAllocation: null }
+      ]
+    });
+    expect(r.marginPct).toBe(0);
+    expect(Number.isFinite(r.marginPct)).toBe(true);
+    expect(r.totalCost).toBe('50.00');
+    expect(r.margin).toBe('-50.00');
+  });
+  it('treats an all-null allocation set as matching the headline with a zero total', () => {
+    const r = computeBundleEconomicsFrom({
+      headlinePrice: '100.00',
+      components: [
+        { quantity: '2', costBasis: '10.00', revenueAllocation: null },
+        { quantity: '1', costBasis: '30.00', revenueAllocation: null }
+      ]
+    });
+    expect(r.allocationMatchesHeadline).toBe(true);
+    expect(r.allocationTotal).toBe('0.00');
   });
 });

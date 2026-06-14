@@ -14,6 +14,11 @@ const money = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
 // in the 10000+ range are rejected up front instead of overflowing on insert.
 const markupPercent = z.number().min(0).max(9999.99).multipleOf(0.01);
 
+// Bundle component quantity is numeric(12,2) (max 9,999,999,999.99) in the schema.
+// Match the money ceiling so an oversized quantity is rejected with a 400 rather
+// than overflowing at insert (DB-layer 500).
+const bundleQuantity = z.number().positive().max(9_999_999_999.99).multipleOf(0.01);
+
 export const createCatalogItemSchema = z.object({
   itemType: catalogItemTypeSchema,
   name: z.string().min(1).max(255),
@@ -54,7 +59,7 @@ export type OrgPriceOverrideInput = z.infer<typeof orgPriceOverrideSchema>;
 
 export const bundleComponentSchema = z.object({
   componentItemId: z.string().uuid(),
-  quantity: z.number().positive().multipleOf(0.01),
+  quantity: bundleQuantity,
   showOnInvoice: z.boolean().default(false),
   revenueAllocation: money.nullable().optional()
 });

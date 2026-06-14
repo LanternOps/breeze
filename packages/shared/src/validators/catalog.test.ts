@@ -92,6 +92,18 @@ describe('setBundleComponentsSchema', () => {
     });
     expect(r.success).toBe(false);
   });
+  it('accepts a quantity at the numeric(12,2) ceiling', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: '11111111-1111-1111-1111-111111111111', quantity: 9_999_999_999.99 }]
+    });
+    expect(r.success).toBe(true);
+  });
+  it('rejects a quantity above the numeric(12,2) ceiling (would overflow on insert)', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: '11111111-1111-1111-1111-111111111111', quantity: 1e13 }]
+    });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe('listCatalogQuerySchema boolean params', () => {
