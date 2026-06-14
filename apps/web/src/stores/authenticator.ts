@@ -27,7 +27,9 @@ export interface ApproverDevice {
   isPlatformBound: boolean;
   createdAt: string;
   lastUsedAt: string | null;
-  disabledAt: string | null;
+  // The list endpoint already filters to active devices server-side, so the DTO
+  // omits this; kept optional for callers that defensively filter.
+  disabledAt?: string | null;
 }
 
 /**
@@ -53,7 +55,10 @@ export async function registerApproverDevice(label: string): Promise<void> {
 /** List the caller's active approver devices. */
 export async function listApproverDevices(): Promise<ApproverDevice[]> {
   const response = await fetchWithAuth('/me/approver-devices');
-  return response.json();
+  // The route returns `{ devices: [...] }` (GET /me/approver-devices). Unwrap
+  // it; tolerate a bare array for forward-compat.
+  const data = await response.json();
+  return Array.isArray(data) ? data : (data?.devices ?? []);
 }
 
 /** Revoke (disable) one of the caller's approver devices. */
@@ -81,6 +86,18 @@ export async function getApprovalAssertion(basePath: string, id: string): Promis
   const challengeData = await challengeResponse.json();
   const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
     challengeData.options ?? challengeData.optionsJSON ?? challengeData;
+
+  // No registered approver device → the challenge carries no allowCredentials.
+  // Signal this distinctly (name='NoApproverDeviceError') BEFORE the ceremony so
+  // callers can fall back to an L1 (session-tap) approval instead of firing a
+  // Windows Hello prompt the technician can't satisfy. Thrown before
+  // startAuthentication so it is never a DOMException (which callers treat as a
+  // genuine cancel/abort). P2 is opt-in, not required (enforcement is Phase 4).
+  if (!optionsJSON.allowCredentials || optionsJSON.allowCredentials.length === 0) {
+    const err = new Error('No registered approver device');
+    err.name = 'NoApproverDeviceError';
+    throw err;
+  }
 
   const response = await startAuthentication({ optionsJSON });
 

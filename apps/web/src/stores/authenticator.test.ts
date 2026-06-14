@@ -71,9 +71,10 @@ describe('authenticator store approver helpers', () => {
     });
   });
 
-  it('listApproverDevices GETs the approver-devices collection and returns the parsed body', async () => {
+  it('listApproverDevices GETs the collection and unwraps the { devices } envelope', async () => {
+    // The real route returns `{ devices: [...] }` — the store must unwrap it.
     const devices = [{ id: 'd1', label: 'Laptop' }];
-    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse(devices));
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ devices }));
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await listApproverDevices();
@@ -133,7 +134,7 @@ describe('authenticator store approver helpers', () => {
   });
 
   it('getApprovalAssertion normalizes a missing userHandle to null', async () => {
-    const options = { challenge: 'c', allowCredentials: [] };
+    const options = { challenge: 'c', allowCredentials: [{ id: 'cred-2', type: 'public-key' }] };
     const asseResp = {
       id: 'cred-2',
       rawId: 'cred-2',
@@ -152,5 +153,20 @@ describe('authenticator store approver helpers', () => {
     const proof = await getApprovalAssertion('/approvals', 'ap-1');
 
     expect(proof.userHandle).toBeNull();
+  });
+
+  it('getApprovalAssertion throws NoApproverDeviceError (no Hello prompt) when the challenge has no allowCredentials', async () => {
+    // A technician with no registered approver device → empty allowCredentials.
+    // The store must signal this BEFORE the ceremony so callers fall back to L1,
+    // never firing a Windows Hello prompt the tech can't satisfy.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ challenge: 'c', allowCredentials: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      getApprovalAssertion('/pam/elevation-requests', 'req-x'),
+    ).rejects.toMatchObject({ name: 'NoApproverDeviceError' });
+    expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
   });
 });
