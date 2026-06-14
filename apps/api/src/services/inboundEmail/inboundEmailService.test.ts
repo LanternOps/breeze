@@ -23,10 +23,36 @@ function tableName(tbl: unknown): string {
   return (tbl as { __t?: string })?.__t ?? 'unknown';
 }
 
+// Walk a drizzle SQL condition's queryChunks to find a `status <op> <literal>`
+// constraint, so the tickets-select mock can honor the ne(status,'closed') /
+// eq(status,'closed') split introduced by the thread-fork guard. The schema mock
+// makes `tickets.status` the plain string 'status', so a status comparison serializes
+// as the chunk sequence ["status", { value: [" <> "|" = " ] }, "<literal>"]. Returns
+// the operator and literal, or null.
+function extractStatusConstraint(cond: unknown): { op: string; value: string } | null {
+  const chunks = (cond as { queryChunks?: unknown[] })?.queryChunks;
+  if (!Array.isArray(chunks)) return null;
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    if (c === 'status') {
+      const opChunk = chunks[i + 1] as { value?: string[] } | undefined;
+      const op = opChunk?.value?.[0];
+      const literal = chunks[i + 2];
+      if (typeof op === 'string' && typeof literal === 'string') {
+        return { op, value: literal };
+      }
+    }
+    const nested = extractStatusConstraint(c);
+    if (nested) return nested;
+  }
+  return null;
+}
+
 vi.mock('../../db', () => {
   // select(cols).from(table).where().limit() and .innerJoin().where().limit()
   function makeSelect() {
     let resolvedTable = 'unknown';
+    let statusConstraint: { op: string; value: string } | null = null;
     const chain: Record<string, unknown> = {
       from(tbl: unknown) {
         resolvedTable = tableName(tbl);
@@ -35,15 +61,30 @@ vi.mock('../../db', () => {
       innerJoin(_tbl: unknown, _on: unknown) {
         return chain;
       },
-      where(_w: unknown) {
+      where(w: unknown) {
+        statusConstraint = extractStatusConstraint(w);
         return chain;
       },
       limit(_n: number) {
-        return Promise.resolve(state.selectRows[resolvedTable] ?? []);
+        let rows = state.selectRows[resolvedTable] ?? [];
+        // Honor a tickets `status` constraint so the mock can tell the live-match
+        // query (ne status closed) from the closed-original lookup (eq status closed).
+        if (resolvedTable === 'tickets' && statusConstraint) {
+          const { op, value } = statusConstraint;
+          rows = rows.filter((r) => {
+            const s = (r as { status?: string }).status;
+            return op.includes('<>') ? s !== value : s === value;
+          });
+        }
+        return Promise.resolve(rows);
       }
     };
     return chain;
   }
+  // runOutsideDbContext / withSystemDbAccessContext: just invoke the callback (the
+  // durable-failed log path in tests runs against the same in-memory db mock).
+  const runOutsideDbContext = <T,>(fn: () => T): T => fn();
+  const withSystemDbAccessContext = <T,>(fn: () => Promise<T> | T): Promise<T> | T => fn();
   function makeInsert(tbl: unknown) {
     const table = tableName(tbl);
     return {
@@ -78,7 +119,9 @@ vi.mock('../../db', () => {
       select: vi.fn(() => makeSelect()),
       insert: vi.fn((tbl: unknown) => makeInsert(tbl)),
       update: vi.fn((tbl: unknown) => makeUpdate(tbl))
-    }
+    },
+    runOutsideDbContext,
+    withSystemDbAccessContext
   };
 });
 
@@ -91,8 +134,12 @@ vi.mock('../../db/schema', () => ({
   },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
-  organizations: { __t: 'organizations', id: 'id', partnerId: 'partnerId' }
+  organizations: { __t: 'organizations', id: 'id', partnerId: 'partnerId' },
+  partners: { __t: 'partners', id: 'id', status: 'status' }
 }));
+
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
 const { resolveMock } = vi.hoisted(() => ({ resolveMock: vi.fn() }));
 vi.mock('./resolvePartner', () => ({ resolvePartnerByRecipient: resolveMock }));
@@ -134,6 +181,9 @@ function inboundOf(table = 'ticket_email_inbound') {
 
 beforeEach(() => {
   state.selectRows = {};
+  // Default: the resolved partner is active (the partner-status gate passes). Tests
+  // exercising the inactive-partner `skipped` path override this.
+  state.selectRows['partners'] = [{ status: 'active' }];
   state.inserts = [];
   state.updates = [];
   state.insertedCommentId = 'c-1';
@@ -141,6 +191,7 @@ beforeEach(() => {
   createTicketMock.mockReset();
   changeStatusMock.mockReset();
   emitMock.mockReset();
+  captureExceptionMock.mockReset();
   createTicketMock.mockResolvedValue({ id: 't-new', internalNumber: 'T-2026-0009' });
 });
 

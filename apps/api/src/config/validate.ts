@@ -485,8 +485,9 @@ const envSchema = z
     IP_ALLOWLIST_ENFORCEMENT_MODE: z.enum(['enforce', 'off']).default('enforce'),
 
     // -- Email-to-ticket ingest (Phase 4) ------------------------------------
-    // Both optional; the webhook 503s if MAILGUN_INBOUND_SIGNING_KEY is unset
-    // (provider retries). TICKETS_INBOUND_DOMAIN gates the slug-address resolver.
+    // Both optional. If MAILGUN_INBOUND_SIGNING_KEY is unset, `verify()` returns
+    // false and the webhook responds 401 (permanent — the provider does NOT retry).
+    // TICKETS_INBOUND_DOMAIN gates the slug-address resolver.
     MAILGUN_INBOUND_SIGNING_KEY: z.string().optional(),
     TICKETS_INBOUND_DOMAIN: z.string().optional(),
 

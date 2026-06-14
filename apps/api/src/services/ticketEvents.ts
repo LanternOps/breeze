@@ -21,8 +21,8 @@ export type TicketEvent = TicketEventEnvelope & (
   | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus; resolutionNote: string | null } }
   | { type: 'ticket.assigned'; payload: { assigneeId: string | null } }
   // `inbound` marks a comment that originated from an inbound customer email. The
-  // notify worker reads it to skip echoing the email back to the same sender
-  // (guard added in a later task); the field exists + is emitted here so no cast is needed.
+  // notify worker's live guard (ticketNotifyWorker.ts:205-207 reads `!event.payload.inbound`)
+  // skips echoing the email back to the same sender, preventing a mail loop.
   | { type: 'ticket.commented'; payload: { commentId: string; isPublic: boolean; inbound?: boolean } }
   | { type: 'ticket.updated'; payload: { changed: string[] } }
   | { type: 'ticket.sla_breached'; payload: { target: 'response' | 'resolution'; internalNumber: string | null; subject: string; assigneeId: string | null } }
