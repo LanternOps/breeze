@@ -36,6 +36,26 @@ describe('system prompt', () => {
     expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('Be concise');
   });
 
+  it('accurately advertises the full tool set (does not undersell capabilities)', () => {
+    for (const tool of [
+      'get_workbook_overview',
+      'read_selection',
+      'read_range',
+      'search_workbook',
+      'write_range',
+      'insert_formula',
+      'clear_range',
+      'create_sheet',
+      'create_table',
+      'sort_range',
+      'format_range',
+    ]) {
+      expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain(tool);
+    }
+    expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('conditional formatting');
+    expect(EXCEL_CLIENT_SYSTEM_PROMPT).toContain('Do not understate what you can do');
+  });
+
   it('readwrite mode returns the base prompt; readonly appends the read-only addendum', () => {
     expect(buildExcelClientSystemPrompt('readwrite')).toBe(EXCEL_CLIENT_SYSTEM_PROMPT);
     const ro = buildExcelClientSystemPrompt('readonly');

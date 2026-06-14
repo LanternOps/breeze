@@ -143,6 +143,23 @@ export async function buildWritePreview(
         description: `Create a ${chartType} chart from ${sourceAddress}${title ? ` titled "${title}"` : ''}`,
       };
     }
+    case 'clear_range': {
+      const address = requireString(input, 'address');
+      const what =
+        input.what === 'formats' || input.what === 'all' ? (input.what as string) : 'contents';
+      return { kind: 'summary', toolName, target: address, description: `Clear ${what} of ${address}` };
+    }
+    case 'sort_range': {
+      const address = requireString(input, 'address');
+      const cols = Array.isArray(input.columns) ? input.columns.length : 0;
+      const plural = cols === 1 ? 'column' : 'columns';
+      return {
+        kind: 'summary',
+        toolName,
+        target: address,
+        description: `Sort ${address} by ${cols} ${plural}`,
+      };
+    }
     default:
       return { kind: 'summary', toolName, target: '', description: `Run ${toolName}` };
   }

@@ -11,6 +11,7 @@ import { TOOL_TIERS, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import { aiTools } from './aiTools';
 
 const PINNED_NAMES = [
+  'clear_range',
   'create_chart',
   'create_pivot_table',
   'create_sheet',
@@ -21,26 +22,29 @@ const PINNED_NAMES = [
   'read_range',
   'read_selection',
   'search_workbook',
+  'sort_range',
   'write_range',
 ];
 
 const PINNED_MUTATING = [
+  'clear_range',
   'create_chart',
   'create_pivot_table',
   'create_sheet',
   'create_table',
   'format_range',
   'insert_formula',
+  'sort_range',
   'write_range',
 ];
 
 describe('CLIENT_TOOL_REGISTRY — pinned shape (Plans 3/4/5 depend on these names)', () => {
-  it('contains exactly the 11 pinned workbook tools', () => {
+  it('contains exactly the 13 pinned workbook tools', () => {
     expect(Object.keys(CLIENT_TOOL_REGISTRY).sort()).toEqual(PINNED_NAMES);
     expect(CLIENT_TOOL_NAMES.slice().sort()).toEqual(PINNED_NAMES);
   });
 
-  it('flags exactly the 7 write tools as mutating', () => {
+  it('flags exactly the 9 write tools as mutating', () => {
     const mutating = CLIENT_TOOL_NAMES.filter((n) => CLIENT_TOOL_REGISTRY[n].mutating).sort();
     expect(mutating).toEqual(PINNED_MUTATING);
   });

@@ -92,7 +92,7 @@ export const CLIENT_TOOL_REGISTRY = {
   },
   format_range: {
     description:
-      'Apply formatting to a range: bold/italic, font and fill colors (hex), number format string, font size. Approval-gated.',
+      'Apply formatting to a range: bold/italic, font and fill colors (hex), number format string, font size, borders, text alignment/wrapping, and a simple conditional format (color scale or cell-value rule). Approval-gated.',
     mutating: true,
     inputSchema: {
       address: addressSchema,
@@ -105,8 +105,88 @@ export const CLIENT_TOOL_REGISTRY = {
           fillColor: z.string().max(20).optional().describe('Hex color, e.g. "#FFF2CC"'),
           numberFormat: z.string().max(100).optional().describe('Excel number format, e.g. "$#,##0.00"'),
           fontSize: z.number().min(6).max(72).optional(),
+          borders: z
+            .object({
+              edges: z
+                .array(z.enum(['top', 'bottom', 'left', 'right', 'all']))
+                .max(5)
+                .optional()
+                .describe('Which edges to apply; "all" covers every outer + inner edge'),
+              style: z.enum(['continuous', 'none']).optional().describe('Border line style (default continuous)'),
+              color: z.string().max(20).optional().describe('Hex color, e.g. "#000000"'),
+            })
+            .strict()
+            .optional(),
+          alignment: z
+            .object({
+              horizontal: z.enum(['left', 'center', 'right']).optional(),
+              vertical: z.enum(['top', 'middle', 'bottom']).optional(),
+              wrapText: z.boolean().optional(),
+            })
+            .strict()
+            .optional(),
+          conditionalFormat: z
+            .union([
+              z.object({ type: z.literal('colorScale') }).strict(),
+              z
+                .object({
+                  type: z.literal('cellValue'),
+                  operator: z
+                    .enum(['greaterThan', 'lessThan', 'equalTo', 'between', 'greaterThanOrEqual', 'lessThanOrEqual'])
+                    .describe('Comparison operator for the rule'),
+                  formula1: z.string().min(1).max(255).describe('Threshold/value, e.g. "100" or "=$B$1"'),
+                  formula2: z.string().min(1).max(255).optional().describe('Second value for "between"'),
+                  format: z
+                    .object({
+                      fontColor: z.string().max(20).optional(),
+                      fillColor: z.string().max(20).optional(),
+                      bold: z.boolean().optional(),
+                    })
+                    .strict()
+                    .optional()
+                    .describe('Formatting applied to matching cells'),
+                })
+                .strict(),
+            ])
+            .optional()
+            .describe('Optional conditional formatting rule applied to the range'),
         })
         .strict(),
+    },
+  },
+  clear_range: {
+    description:
+      'Clear a range — its contents (values/formulas), its formats, or both. Defaults to clearing contents only. Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      address: addressSchema,
+      sheetName: sheetNameSchema,
+      what: z
+        .enum(['contents', 'formats', 'all'])
+        .optional()
+        .describe('What to clear: "contents" (values/formulas), "formats", or "all" (default "contents")'),
+    },
+  },
+  sort_range: {
+    description:
+      'Sort the rows of a range by one or more columns. Each column is a 0-based offset within the range. Approval-gated.',
+    mutating: true,
+    inputSchema: {
+      address: addressSchema,
+      sheetName: sheetNameSchema,
+      columns: z
+        .array(
+          z
+            .object({
+              column: z.number().int().min(0).max(16383).describe('0-based column offset within the range'),
+              ascending: z.boolean().optional().describe('Sort ascending (default true)'),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(64)
+        .describe('Sort keys, applied in order (first is primary)'),
+      hasHeaders: z.boolean().optional().describe('Treat the first row of the range as a header row'),
     },
   },
   create_table: {

@@ -19,8 +19,9 @@ function request(overrides: Partial<ToolRequest>): ToolRequest {
 }
 
 describe('registry shape', () => {
-  it('registers exactly the 11 spec §5 tools; 7 are mutating', () => {
+  it('registers exactly the 13 spec §5 tools; 9 are mutating', () => {
     expect(Object.keys(TOOL_EXECUTORS).sort()).toEqual([
+      'clear_range',
       'create_chart',
       'create_pivot_table',
       'create_sheet',
@@ -31,15 +32,18 @@ describe('registry shape', () => {
       'read_range',
       'read_selection',
       'search_workbook',
+      'sort_range',
       'write_range',
     ]);
     expect([...MUTATING_TOOLS].sort()).toEqual([
+      'clear_range',
       'create_chart',
       'create_pivot_table',
       'create_sheet',
       'create_table',
       'format_range',
       'insert_formula',
+      'sort_range',
       'write_range',
     ]);
   });
