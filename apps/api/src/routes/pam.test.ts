@@ -2,7 +2,7 @@
  * PAM admin route tests (#1163) — CAS guards on respond/revoke, the
  * no-criteria rule refine, and runAction-compatible bodies.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const authMocks = vi.hoisted(() => ({
@@ -68,10 +68,47 @@ vi.mock('../db/schema', () => ({
   },
   aiToolExecutions: { id: 'id', status: 'status' },
   softwarePolicies: { id: 'id', name: 'name' },
+  authenticatorDevices: {
+    id: 'id',
+    userId: 'user_id',
+    credentialId: 'credential_id',
+    kind: 'kind',
+    transports: 'transports',
+    disabledAt: 'disabled_at',
+  },
 }));
 
 vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
+}));
+
+// Phase 2: the respond path now resolves assurance through assertApprovalAssurance
+// (verifies an optional browser proof). Default the no-proof L1 result; tests
+// override per-case. resolveElevationAssurance stays exported for any callers.
+vi.mock('../services/authenticatorAssurance', () => ({
+  resolveElevationAssurance: vi.fn(() => ({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  })),
+  assertApprovalAssurance: vi.fn(async () => ({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  })),
+}));
+
+vi.mock('../services/approverWebAuthn', () => ({
+  generateApprovalAssertionOptions: vi.fn(async () => ({
+    challenge: 'chal-pam',
+    rpId: 'breeze.test',
+    allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
+    userVerification: 'required',
+  })),
 }));
 
 const busMocks = vi.hoisted(() => ({ publishEvent: vi.fn() }));
@@ -85,6 +122,8 @@ vi.mock('./softwarePolicies', () => ({
 
 import { db } from '../db';
 import { pamRoutes } from './pam';
+import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 
 const ORG_ID = '7b41c9a2-0000-4000-8000-000000000001';
 const REQ_ID = '7b41c9a2-0000-4000-8000-000000000002';
@@ -358,11 +397,31 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
   });
 });
 
+// clearAllMocks wipes the mocked-service implementations; re-establish the
+// no-proof (L1 session_tap) assurance default so the unchanged approve/deny
+// tests keep recording session_tap and per-case overrides start clean.
+function resetAssuranceDefaults() {
+  vi.mocked(assertApprovalAssurance).mockResolvedValue({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  });
+  vi.mocked(generateApprovalAssertionOptions).mockResolvedValue({
+    challenge: 'chal-pam',
+    rpId: 'breeze.test',
+    allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
+    userVerification: 'required',
+  } as any);
+}
+
 describe('POST /pam/elevation-requests/:id/respond', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
     busMocks.publishEvent.mockResolvedValue('evt');
+    resetAssuranceDefaults();
   });
 
   it('approves a pending request (CAS wins) and emits elevation.approved', async () => {
@@ -481,6 +540,197 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 1, factor: 'session_tap' },
     });
+  });
+});
+
+describe('POST /pam/elevation-requests/:id/assertion-challenge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    resetAssuranceDefaults();
+  });
+
+  // clearAllMocks does NOT drain a queued mockReturnValueOnce; reset the db
+  // method mocks after each case so a queued-but-unconsumed once can't leak
+  // into a later describe block.
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+  });
+
+  const elevRow = {
+    id: REQ_ID,
+    orgId: ORG_ID,
+    siteId: null,
+    status: 'pending',
+  };
+
+  it('returns assertion options for the caller active approver devices', async () => {
+    // 1) pending elevation lookup (scoped by canAccessOrg); 2) device list.
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([elevRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: 'dev-1', credentialId: 'cred-1', transports: ['internal'] },
+          ]),
+        }),
+      } as any);
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/assertion-challenge`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.options.challenge).toBe('chal-pam');
+    expect(generateApprovalAssertionOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: REQ_ID,
+        userId: USER_ID,
+        devices: [{ credentialId: 'cred-1', transports: ['internal'] }],
+      }),
+    );
+  });
+
+  it('404s when the elevation is not pending / not in the caller org', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/assertion-challenge`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+  });
+
+  it('404s when the elevation belongs to another org (canAccessOrg false)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ ...elevRow, orgId: 'other-org' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/assertion-challenge`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    busMocks.publishEvent.mockResolvedValue('evt');
+    resetAssuranceDefaults();
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+  });
+
+  const proof = {
+    credentialId: 'cred-1',
+    authenticatorData: 'AA',
+    clientDataJSON: 'BB',
+    signature: 'CC',
+    userHandle: null,
+  };
+
+  it('records webauthn_platform / L2 when a valid proof is presented', async () => {
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 2,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+      pinVerified: false,
+    });
+    const { updateSetCalls, auditInserts } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: REQ_ID, userId: USER_ID, proof }),
+    );
+    expect(updateSetCalls[0]).toMatchObject({
+      status: 'approved',
+      decidedVia: 'webauthn_platform',
+      decidedAssuranceLevel: 2,
+      authenticatorDeviceId: 'dev-1',
+      pinVerified: false,
+    });
+    expect(auditInserts[0]).toMatchObject({
+      details: { assurance_level: 2, factor: 'webauthn_platform' },
+    });
+  });
+
+  it('still records session_tap / L1 when no proof is presented (unchanged)', async () => {
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: REQ_ID, userId: USER_ID, proof: undefined }),
+    );
+    expect(updateSetCalls[0]).toMatchObject({
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: null,
+    });
+  });
+
+  it('401s assertion_failed when a presented proof fails verification (no silent downgrade)', async () => {
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(
+      new Error('assertion verification failed'),
+    );
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof }),
+    });
+
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe('assertion_failed');
+    // A failed assertion must NOT silently downgrade — the CAS update never runs.
+    expect(updateSetCalls.length).toBe(0);
+    expect(busMocks.publishEvent).not.toHaveBeenCalled();
   });
 });
 

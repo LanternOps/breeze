@@ -26,6 +26,7 @@ import { z } from 'zod';
 
 import { db } from '../db';
 import {
+  authenticatorDevices,
   devices,
   elevationAudit,
   elevationRequests,
@@ -40,7 +41,9 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
-import { resolveElevationAssurance } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import { assertionProofSchema, elevationRiskTierToName } from '@breeze/shared';
 import { resolveOrgIdForWrite } from './softwarePolicies';
 
 /**
@@ -53,6 +56,18 @@ import { resolveOrgIdForWrite } from './softwarePolicies';
 class StaleExecutionError extends Error {
   constructor() {
     super('Linked tool execution is no longer pending');
+  }
+}
+
+/**
+ * Thrown inside the respond transaction when a presented WebAuthn assertion
+ * proof fails verification (device not registered/disabled, or the assertion
+ * doesn't verify). A presented-but-bad proof is an error → 401, NOT a silent
+ * downgrade to an L1 session-tap approval.
+ */
+class AssertionFailedError extends Error {
+  constructor() {
+    super('assertion verification failed');
   }
 }
 
@@ -287,7 +302,72 @@ const respondSchema = z.object({
     .min(1)
     .max(MAX_APPROVAL_DURATION_MINUTES)
     .optional(),
+  // Phase 2: optional WebAuthn assertion proof. Absent → today's L1 session tap.
+  // Present-but-invalid → 401 (NOT a silent downgrade). Enforcement is Phase 4.
+  proof: assertionProofSchema.optional(),
 });
+
+// Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
+// {elevationId,userId} so the technician can satisfy a Windows-Hello / Touch-ID
+// step-up before approving. allowCredentials is the caller's active platform
+// approver devices; with none registered the options carry no allowCredentials
+// and the console falls back to an L1 (session-tap) approval — P2 is opt-in.
+pamRoutes.post(
+  '/elevation-requests/:id/assertion-challenge',
+  requirePamExecute,
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const id = c.req.param('id');
+    if (!id || !z.string().uuid().safeParse(id).success) {
+      return c.json({ error: 'Invalid elevation request id' }, 400);
+    }
+
+    const [row] = await db
+      .select({
+        id: elevationRequests.id,
+        orgId: elevationRequests.orgId,
+        siteId: elevationRequests.siteId,
+        status: elevationRequests.status,
+      })
+      .from(elevationRequests)
+      .where(and(eq(elevationRequests.id, id), eq(elevationRequests.status, 'pending')))
+      .limit(1);
+
+    // RLS already scopes the read to the caller's org; canAccessOrg / site
+    // checks are defense-in-depth (same posture as respond). A row outside the
+    // caller's reach is reported as not-found so we don't leak its existence.
+    if (!row || !auth.canAccessOrg(row.orgId)) {
+      return c.json({ error: 'Elevation request not found' }, 404);
+    }
+    if (perms && row.siteId && !canAccessSite(perms, row.siteId)) {
+      return c.json({ error: 'Site access denied' }, 403);
+    }
+
+    // Caller's active platform approver devices (RLS scopes to the user; the
+    // userId predicate is defense-in-depth — see reference memory: admin-list IDOR).
+    const approverDevices = await db
+      .select()
+      .from(authenticatorDevices)
+      .where(
+        and(
+          eq(authenticatorDevices.userId, auth.user.id),
+          eq(authenticatorDevices.kind, 'webauthn_platform'),
+          isNull(authenticatorDevices.disabledAt),
+        ),
+      );
+
+    const options = await generateApprovalAssertionOptions({
+      approvalId: id,
+      userId: auth.user.id,
+      devices: approverDevices
+        .filter((d) => d.credentialId)
+        .map((d) => ({ credentialId: d.credentialId!, transports: d.transports })),
+    });
+
+    return c.json({ options });
+  },
+);
 
 pamRoutes.post(
   '/elevation-requests/:id/respond',
@@ -339,9 +419,22 @@ pamRoutes.post(
           return { kind: 'forbidden' as const };
         }
 
-        // Phase 1 (dark foundation): resolve the factor-recording fields. This
-        // never blocks — every decision is still a logged-in session tap.
-        const assurance = resolveElevationAssurance(row.riskTier);
+        // Phase 2: verify an optional browser assertion proof and resolve the
+        // factor-recording fields. No proof → today's L1 session tap (never
+        // blocks). A presented-but-invalid proof throws → 401 (NOT a silent
+        // downgrade). Enforcement of "proof REQUIRED" is Phase 4.
+        let assurance;
+        try {
+          assurance = await assertApprovalAssurance({
+            approvalId: id,
+            userId: auth.user.id,
+            riskTier: elevationRiskTierToName(row.riskTier),
+            proof: body.proof,
+          });
+        } catch (err) {
+          console.error('[PAM] assertion verification failed:', err);
+          throw new AssertionFailedError();
+        }
 
         // CAS: only a pending row can be decided. The WHERE clause re-checks
         // status so a concurrent respond/reaper loses cleanly (0 rows).
@@ -412,6 +505,10 @@ pamRoutes.post(
         return { kind: 'ok' as const, row, newStatus: updated[0]!.status };
       });
     } catch (err) {
+      if (err instanceof AssertionFailedError) {
+        // Presented-but-bad proof — fail closed (401), never downgrade to L1.
+        return c.json({ success: false, error: 'assertion_failed' }, 401);
+      }
       if (err instanceof StaleExecutionError) {
         return c.json(
           {
