@@ -4,18 +4,24 @@
  *                              ↘ blocked (not_provisioned / disabled / no-access / inactive / retryable)
  *                              ↘ signin (silent failed; button triggers SSO→MSAL-popup chain)
  * A stored unexpired session short-circuits straight to ready.
+ *
+ * Host-NEUTRAL: App owns only auth + phase routing. It forwards the injected
+ * `host` (object-model seam) and `clientHost` (wire discriminant) straight to
+ * ChatPane once a session exists, and never touches a concrete host itself.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
   AuthBlockedError,
   getStoredSession,
   signIn,
-  BlockedScreen,
-  SignInScreen,
   type AuthBlockKind,
   type ClientSession,
-} from '@breeze/office-addin-core';
-import { ChatPane } from './components/ChatPane';
+} from '../auth/session';
+import { BlockedScreen } from './BlockedScreen';
+import { SignInScreen } from './SignInScreen';
+import { ChatPane } from './ChatPane';
+import type { ClientHost } from '../api/types';
+import type { HostAdapter } from '../host/types';
 
 type Phase =
   | { name: 'loading' }
@@ -23,7 +29,7 @@ type Phase =
   | { name: 'blocked'; kind: AuthBlockKind }
   | { name: 'ready'; session: ClientSession };
 
-export function App() {
+export function App({ host, clientHost }: { host: HostAdapter; clientHost: ClientHost }) {
   const [phase, setPhase] = useState<Phase>({ name: 'loading' });
 
   useEffect(() => {
@@ -75,6 +81,6 @@ export function App() {
         />
       );
     case 'ready':
-      return <ChatPane session={phase.session} />;
+      return <ChatPane session={phase.session} host={host} clientHost={clientHost} />;
   }
 }
