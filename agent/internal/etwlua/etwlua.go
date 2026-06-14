@@ -157,6 +157,21 @@ type HeartbeatPoster interface {
 	IsUACInterceptionEnabled() bool
 }
 
+// PamRunner drives the local elevation flow (dialog → decision →
+// actuate/deny) for one detected UAC prompt, using the server's ingest
+// decision. It is the single edge from etwlua into the session broker +
+// actuator, kept behind an interface so etwlua stays unit-testable without
+// a live broker or Windows. A nil PamRunner disables the flow (detection +
+// post only) — used on non-Windows builds and when the broker is absent.
+//
+// Implementations must be non-blocking-forever: bound the dialog round-trip
+// to consent.exe's lifetime. RunPamFlow is called synchronously from the
+// event loop; UAC prompts are modal and serial, so one in-flight flow at a
+// time is correct.
+type PamRunner interface {
+	RunPamFlow(ctx context.Context, ev Event, outcome ElevationOutcome)
+}
+
 // ErrNotPrivileged is returned by Start when the process is not running as
 // SYSTEM/Administrator. Callers should log+continue rather than crash.
 var ErrNotPrivileged = errors.New("etwlua: process not running with admin/SYSTEM privileges; ETW subscribe skipped")
@@ -190,7 +205,7 @@ const drainTickInterval = 60 * time.Second
 // containers — IsRunningAsRoot returns true there).
 //
 // Start does not spawn its own goroutine; callers should `go etwlua.Start(...)`.
-func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
+func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster, pam PamRunner) error {
 	if !privilege.IsRunningAsRoot() {
 		log.Warn(ErrNotPrivileged.Error())
 		return ErrNotPrivileged
@@ -226,7 +241,7 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 			if ev.ObservedAt.IsZero() {
 				ev.ObservedAt = time.Now().UTC()
 			}
-			handleEvent(ev, limiter, hb, q)
+			handleEvent(ctx, ev, limiter, hb, q, pam)
 
 		case <-ticker.C:
 			if q != nil && hb.IsUACInterceptionEnabled() {
@@ -244,7 +259,7 @@ func Start(ctx context.Context, sub Subscriber, hb HeartbeatPoster) error {
 
 // handleEvent is the per-event hot path, extracted so tests can exercise it
 // without spinning up the full Start loop.
-func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queue) {
+func handleEvent(ctx context.Context, ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queue, pam PamRunner) {
 	if !hb.IsUACInterceptionEnabled() {
 		dropCounter.Add(1)
 		if dropLogged.CompareAndSwap(false, true) {
@@ -272,7 +287,8 @@ func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queu
 		return
 	}
 
-	if _, err := hb.SendElevationRequest(ev); err != nil {
+	outcome, err := hb.SendElevationRequest(ev)
+	if err != nil {
 		log.Warn("etwlua: post failed, queueing",
 			"user", ev.SubjectUsername,
 			"path", ev.TargetExecutablePath,
@@ -291,6 +307,13 @@ func handleEvent(ev Event, limiter *ipc.RateLimiter, hb HeartbeatPoster, q *Queu
 		"user", ev.SubjectUsername,
 		"path", ev.TargetExecutablePath,
 	)
+
+	// Drive the local elevation flow. The dedupe above already prevents
+	// stacked dialogs for re-fired ETW events on one prompt.
+	if pam != nil && outcome.RequestID != "" && outcome.Status != "ignored" {
+		pam.RunPamFlow(ctx, ev, outcome)
+	}
+
 	// Opportunistic drain on every successful post — quickly catches up
 	// after a network blip.
 	// Mirror the ticker-drain gate: both drain sites must check the policy flag.
