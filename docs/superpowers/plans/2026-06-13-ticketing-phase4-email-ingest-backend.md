@@ -295,7 +295,7 @@ Create `apps/api/src/services/inboundEmail/mailgun.test.ts`:
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 
-vi.mock('../../config', () => ({ config: { MAILGUN_INBOUND_SIGNING_KEY: 'test-signing-key' } }));
+vi.mock('../../config/validate', () => ({ getConfig: () => ({ MAILGUN_INBOUND_SIGNING_KEY: 'test-signing-key' }) }));
 
 import { MailgunInboundProvider } from './mailgun';
 
@@ -335,12 +335,12 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement `verify`**
 
-Create `apps/api/src/services/inboundEmail/mailgun.ts` (confirm the config key name: `grep -n "MAILGUN" apps/api/src/config.ts` and match the real export; add `MAILGUN_INBOUND_SIGNING_KEY` to the config schema if absent):
+Create `apps/api/src/services/inboundEmail/mailgun.ts` (confirm the key: `grep -n "MAILGUN" apps/api/src/config/validate.ts`; if absent, add `MAILGUN_INBOUND_SIGNING_KEY: z.string().optional()` to the envSchema in `apps/api/src/config/validate.ts` (read via `getConfig()`)):
 
 ```typescript
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
-import { config } from '../../config';
+import { getConfig } from '../../config/validate';
 import type { InboundEmailProvider, NormalizedInboundEmail } from './types';
 
 export class MailgunInboundProvider implements InboundEmailProvider {
@@ -350,7 +350,7 @@ export class MailgunInboundProvider implements InboundEmailProvider {
     const body = (await req.parseBody()) as Record<string, string>;
     const { timestamp, token, signature } = body;
     if (!timestamp || !token || !signature) return false;
-    const key = config.MAILGUN_INBOUND_SIGNING_KEY;
+    const key = getConfig().MAILGUN_INBOUND_SIGNING_KEY;
     if (!key) return false;
     const expected = createHmac('sha256', key).update(timestamp + token).digest('hex');
     const a = Buffer.from(expected, 'hex');
@@ -375,7 +375,7 @@ Expected: PASS (the verify tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/inboundEmail/mailgun.ts apps/api/src/services/inboundEmail/mailgun.test.ts apps/api/src/config.ts
+git add apps/api/src/services/inboundEmail/mailgun.ts apps/api/src/services/inboundEmail/mailgun.test.ts apps/api/src/config/validate.ts
 git commit -m "feat(ticketing): Mailgun inbound HMAC verification (Phase 4)"
 ```
 
@@ -503,7 +503,7 @@ Create `apps/api/src/services/inboundEmail/resolvePartner.test.ts`:
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { dbMocks } = vi.hoisted(() => ({ dbMocks: { domainRows: [] as unknown[], partnerRows: [] as unknown[] } }));
-vi.mock('../../config', () => ({ config: { TICKETS_INBOUND_DOMAIN: 'tickets.example.com' } }));
+vi.mock('../../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -554,7 +554,7 @@ Create `apps/api/src/services/inboundEmail/resolvePartner.ts`:
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { partnerInboundDomains, partners } from '../../db/schema';
-import { config } from '../../config';
+import { getConfig } from '../../config/validate';
 
 /** Single tenant-identity chokepoint (spec §4). Read-only; caller is in system context. */
 export async function resolvePartnerByRecipient(recipient: string): Promise<string | null> {
@@ -570,7 +570,7 @@ export async function resolvePartnerByRecipient(recipient: string): Promise<stri
   if (dom[0]) return dom[0].partnerId;
 
   // (2) platform slug address: {slug}@TICKETS_INBOUND_DOMAIN
-  if (config.TICKETS_INBOUND_DOMAIN && domain === config.TICKETS_INBOUND_DOMAIN) {
+  if (getConfig().TICKETS_INBOUND_DOMAIN && domain === getConfig().TICKETS_INBOUND_DOMAIN) {
     const p = await db.select({ id: partners.id }).from(partners).where(eq(partners.slug, local)).limit(1);
     if (p[0]) return p[0].id;
   }
@@ -578,14 +578,14 @@ export async function resolvePartnerByRecipient(recipient: string): Promise<stri
 }
 ```
 
-(Add `TICKETS_INBOUND_DOMAIN` to `apps/api/src/config.ts` if absent.)
+(If absent, add `TICKETS_INBOUND_DOMAIN: z.string().optional()` to the envSchema in `apps/api/src/config/validate.ts`; read via `getConfig()`.)
 
 - [ ] **Step 4: Run to verify it passes.** Same command as Step 2 → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/inboundEmail/resolvePartner.ts apps/api/src/services/inboundEmail/resolvePartner.test.ts apps/api/src/config.ts
+git add apps/api/src/services/inboundEmail/resolvePartner.ts apps/api/src/services/inboundEmail/resolvePartner.test.ts apps/api/src/config/validate.ts
 git commit -m "feat(ticketing): resolvePartnerByRecipient (platform slug + Model-B seam)"
 ```
 
@@ -1121,6 +1121,6 @@ EOF
 ## Self-Review notes (for the implementer)
 
 - **`partner_id` nullable for `ignored` rows:** the Task 9 note requires making `ticket_email_inbound.partner_id` nullable (Tasks 1/2/3). Apply that before finishing Task 9; the RLS policy is unaffected (null partner is system-write-only).
-- **Config keys:** `TICKETS_INBOUND_DOMAIN` and `MAILGUN_INBOUND_SIGNING_KEY` must be added to `apps/api/src/config.ts` (Tasks 5/7) and to deploy env (`/opt/breeze/.env` + the compose `environment:` block — see CLAUDE.md "new required env var"). They are optional (feature off when unset): the webhook should 503/parse-fail closed without the signing key.
+- **Config keys:** `TICKETS_INBOUND_DOMAIN` and `MAILGUN_INBOUND_SIGNING_KEY` must be added to the envSchema in `apps/api/src/config/validate.ts` (Tasks 5/7) and to deploy env (`/opt/breeze/.env` + the compose `environment:` block — see CLAUDE.md "new required env var"). They are optional (feature off when unset): the webhook should 503/parse-fail closed without the signing key.
 - **`SYSTEM_ACTOR` user id:** `createTicket`/`changeTicketStatus` stamp `actor.userId` into audit/`created_by`. Confirm a real sentinel user row exists or that these columns accept the all-zero UUID; if a real system user is required, reuse whatever `source:'alert'` ticket creation uses (`grep -n "createTicket" apps/api/src/services/ticketService.ts:822` for the alert precedent) and mirror it.
 - **`ticket.commented` payload:** removing the `as never` cast depends on adding `inbound?: boolean` in Task 10 Step 1 — do that first if implementing out of order.
