@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { coreRoutes } from './core';
 import { metricsRoutes } from './metrics';
+import { processSamplesRoutes } from './processSamples';
 import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
 import { hardwareRoutes } from './hardware';
@@ -21,6 +22,7 @@ import { provisionRoutes } from './provision';
 import { moveOrgRoutes } from './moveOrg';
 import { actuateElevationRoutes } from './actuateElevation';
 import { softwareActionsRoutes } from './softwareActions';
+import { networkRoutes } from './network';
 
 export const deviceRoutes = new Hono();
 
@@ -41,11 +43,17 @@ deviceRoutes.route('/', filesystemRoutes);
 // with any future :id-prefixed match in core if registered after.
 deviceRoutes.route('/', moveOrgRoutes);
 
+// Mount the network arm of the unified Devices list (#1322) BEFORE core
+// routes — `GET /network` is a static path that must not be eaten by the
+// `/:id` matcher in coreRoutes.
+deviceRoutes.route('/', networkRoutes);
+
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);
 
 // Mount sub-resource routes
 deviceRoutes.route('/', metricsRoutes);
+deviceRoutes.route('/', processSamplesRoutes);
 // Mount softwareActionsRoutes BEFORE softwareRoutes so the POST /:id/software/update
 // + /:id/software/uninstall handlers are registered ahead of any future
 // software.ts handlers that might shadow them. Different verbs today (POST vs

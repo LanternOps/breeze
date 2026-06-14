@@ -243,8 +243,9 @@ for override in docker-compose.override.yml.ghcr docker-compose.override.yml.loc
 done
 reject_grep 'ENABLE_REGISTRATION:[[:space:]]+\$\{ENABLE_REGISTRATION:-true\}' docker-compose.override.yml.ghcr \
   "GHCR override must not default API registration on"
-reject_grep 'PUBLIC_ENABLE_REGISTRATION:[[:space:]]+\$\{PUBLIC_ENABLE_REGISTRATION:-true\}' docker-compose.override.yml.ghcr \
-  "GHCR override must not default public registration UI on"
+# Registration is now gated by a single runtime flag (ENABLE_REGISTRATION),
+# read by the UI from /api/v1/config — the build-time PUBLIC_ENABLE_REGISTRATION
+# was removed (#1308), so there is no separate UI flag to guard.
 
 reject_grep 'REDISCLI_AUTH' scripts/prod/deploy.sh \
   "production deploy script must not expose Redis auth through process environment"
@@ -273,8 +274,10 @@ require_grep 'envFlag..ENABLE_REGISTRATION., false' apps/api/src/routes/system.t
   "system config status must default registration to disabled"
 require_grep "envFlag\\('ENABLE_REGISTRATION', false\\)" apps/api/src/routes/auth/schemas.ts \
   "API registration must default to disabled"
-require_grep 'PUBLIC_ENABLE_REGISTRATION=false' .env.example \
-  "root env example must default public registration UI off"
+require_grep "envFlag\\('ENABLE_REGISTRATION', false\\)" apps/api/src/routes/config.ts \
+  "public /config must default the registration UI flag to disabled"
+require_grep 'ENABLE_REGISTRATION=false' .env.example \
+  "root env example must default registration off"
 require_grep 'ENABLE_REGISTRATION=false' deploy/.env.example \
   "deploy env example must default API registration off"
 

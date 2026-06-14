@@ -75,7 +75,10 @@ function OrgMenuItem({
   onSelect,
   sites,
   currentSiteId,
-  onSelectSite
+  onSelectSite,
+  isExpanded,
+  onToggleSites,
+  selectedSiteRef
 }: {
   org: Organization;
   isSelected: boolean;
@@ -83,10 +86,18 @@ function OrgMenuItem({
   sites: Site[];
   currentSiteId: string | null;
   onSelectSite: (siteId: string | null) => void;
+  // Expansion state is owned by the parent OrgSwitcher so it can be seeded
+  // from the current selection when the dropdown opens (#1319). This item is
+  // purely presentational for expansion.
+  isExpanded: boolean;
+  onToggleSites: () => void;
+  // The parent passes a ref it attaches to whichever org's currently-selected
+  // site row is rendered, so it can scrollIntoView after the submenu mounts.
+  selectedSiteRef: (el: HTMLButtonElement | null) => void;
 }) {
-  const [showSites, setShowSites] = useState(false);
   const orgSites = sites.filter((site) => site.orgId === org.id);
   const hasSites = orgSites.length > 0;
+  const showSites = isExpanded && hasSites;
 
   return (
     <div className="relative">
@@ -94,7 +105,7 @@ function OrgMenuItem({
         onClick={() => {
           onSelect();
           if (hasSites) {
-            setShowSites(!showSites);
+            onToggleSites();
           }
         }}
         className={cn(
@@ -121,7 +132,7 @@ function OrgMenuItem({
       </button>
 
       {/* Sites submenu */}
-      {showSites && hasSites && (
+      {showSites && (
         <div className="ml-6 mt-1 border-l pl-2">
           <button
             onClick={() => onSelectSite(null)}
@@ -138,6 +149,7 @@ function OrgMenuItem({
           {orgSites.map((site) => (
             <button
               key={site.id}
+              ref={currentSiteId === site.id ? selectedSiteRef : undefined}
               onClick={() => onSelectSite(site.id)}
               className={cn(
                 'flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted',
@@ -256,9 +268,16 @@ export default function OrgSwitcher() {
   // True from the moment a switch is initiated until the page reloads — shows a
   // spinner on the trigger and disables it so the bar never silently freezes.
   const [switching, setSwitching] = useState(false);
+  // Which org rows have their sites submenu expanded. Owned here (not per-item)
+  // so it can be seeded from the current selection when the dropdown opens
+  // (#1319) — a user whose scope is a site lands on it pre-expanded.
+  const [expandedOrgIds, setExpandedOrgIds] = useState<Set<string>>(new Set());
   const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Set by OrgMenuItem on whichever org renders the currently-selected site row,
+  // so the open effect can scroll it into view once the submenu has mounted.
+  const selectedSiteRef = useRef<HTMLButtonElement | null>(null);
 
   const {
     currentOrgId,
@@ -343,6 +362,33 @@ export default function OrgSwitcher() {
     return () => document.removeEventListener('keydown', handler);
   }, [isOpen]);
 
+  // Seed expansion + scroll-to-selection when the dropdown opens (#1319).
+  // When the active scope is a site, pre-expand its ancestor org (which is
+  // simply `currentOrgId` — sites are only fetched for the current org) so the
+  // user lands on their current context instead of a flat list of collapsed
+  // orgs. Re-seed on every open so re-opening reflects the live selection
+  // rather than stale manual toggles. In All-orgs scope there is no single
+  // "current" site, so don't auto-expand anything.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (orgScope === 'current' && currentSiteId && currentOrgId) {
+      setExpandedOrgIds(new Set([currentOrgId]));
+    } else {
+      setExpandedOrgIds(new Set());
+    }
+  }, [isOpen, orgScope, currentOrgId, currentSiteId]);
+
+  // After the submenu has mounted (next frame), scroll the selected site row
+  // into view so it's visible even on a long org list. jsdom stubs
+  // scrollIntoView as a no-op, so the guard keeps tests from throwing.
+  useEffect(() => {
+    if (!isOpen) return;
+    const raf = requestAnimationFrame(() => {
+      selectedSiteRef.current?.scrollIntoView?.({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isOpen, expandedOrgIds, currentSiteId]);
+
   // Get current selections
   const currentOrg = organizations.find((org) => org.id === currentOrgId);
   const currentSite = sites.find((site) => site.id === currentSiteId);
@@ -419,6 +465,25 @@ export default function OrgSwitcher() {
                   key={org.id}
                   org={org}
                   isSelected={org.id === currentOrgId && orgScope === 'current'}
+                  isExpanded={expandedOrgIds.has(org.id)}
+                  onToggleSites={() =>
+                    setExpandedOrgIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(org.id)) {
+                        next.delete(org.id);
+                      } else {
+                        next.add(org.id);
+                      }
+                      return next;
+                    })
+                  }
+                  selectedSiteRef={(el) => {
+                    // Callback ref on the currently-selected site row. React
+                    // calls it with the element on mount and null on unmount;
+                    // tracking both keeps the parent from scrolling a detached
+                    // node after the org is collapsed.
+                    selectedSiteRef.current = el;
+                  }}
                   onSelect={async () => {
                     // Picking a specific org from the dropdown implies the
                     // user wants to narrow to that org, so auto-flip the

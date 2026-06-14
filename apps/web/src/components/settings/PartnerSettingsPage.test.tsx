@@ -19,6 +19,18 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
+// Stub the embedded ticketing sub-tab group — we only assert that the Partner
+// hub mounts it on the Ticketing tab, not the (separately tested) sub-tab
+// behaviour. The stub records the `syncHash` prop so we can assert the hub
+// disables hash-sync to avoid colliding with its own top-level tab hash.
+const ticketingTabsProps: Array<{ syncHash?: boolean }> = [];
+vi.mock('./TicketingSettingsTabs', () => ({
+  default: (props: { syncHash?: boolean }) => {
+    ticketingTabsProps.push(props);
+    return <div data-testid="stub-ticketing-settings-tabs">TicketingTabsStub</div>;
+  },
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
@@ -86,6 +98,7 @@ describe('runPartnerSave', () => {
 describe('PartnerSettingsPage language control', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.location.hash = '';
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
   });
 
@@ -127,6 +140,7 @@ describe('PartnerSettingsPage language control', () => {
 describe('PartnerSettingsPage Company tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.location.hash = '';
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
   });
 
@@ -209,5 +223,73 @@ describe('PartnerSettingsPage Company tab', () => {
     const body = JSON.parse((patchCall![1] as RequestInit).body as string);
     expect(body.name).toBe('Acme MSP Inc.');
     expect(body.settings.address.city).toBe('Denver');
+  });
+});
+
+describe('PartnerSettingsPage Ticketing tab', () => {
+  const partnerResponse = {
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    ticketingTabsProps.length = 0;
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('exposes a Ticketing tab in the tab bar', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    expect(screen.getByRole('button', { name: /^ticketing$/i })).not.toBeNull();
+    // Not the active tab by default, so the embedded tabs are not mounted yet.
+    expect(screen.queryByTestId('stub-ticketing-settings-tabs')).toBeNull();
+  });
+
+  it('mounts the ticketing sub-tabs (hash-sync disabled) when the tab is clicked', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /^ticketing$/i }));
+
+    expect(screen.getByTestId('stub-ticketing-settings-tabs')).not.toBeNull();
+    // The hub owns the top-level tab hash, so the embedded group must NOT sync it.
+    expect(ticketingTabsProps.at(-1)).toMatchObject({ syncHash: false });
+    // Clicking the tab keeps the URL deep-linkable.
+    expect(window.location.hash).toBe('#ticketing');
+    // The inheritance banner is partner-config-only and must be hidden here.
+    expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
+  });
+
+  it('deep-links #ticketing straight to the Ticketing tab on mount', async () => {
+    window.location.hash = '#ticketing';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    expect(await screen.findByTestId('stub-ticketing-settings-tabs')).not.toBeNull();
   });
 });

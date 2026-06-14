@@ -15,6 +15,29 @@ import { backupConfigs } from '../db/schema/backup';
 import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { ringAutoApproveSchema } from '@breeze/shared/validators';
+
+/**
+ * Defense-in-depth (#1317): the manage_update_rings AI tool writes `autoApprove`
+ * straight to the rings JSONB. Without this, the AI could persist the fail-open
+ * shape (`enabled: true` with an empty/missing severity set) — harmless today
+ * because the read path (patchApprovalEvaluator) fail-closes such rows, but we
+ * still reject it at the WRITE boundary so the tool can never store a row that's
+ * more permissive than one written through the route's `ringAutoApproveSchema`.
+ *
+ * Returns the validated/normalized autoApprove object, or an error message
+ * string mirroring the route schema's refinement when the input is invalid.
+ */
+function validateRingAutoApprove(
+  raw: unknown
+): { value: Record<string, unknown> } | { error: string } {
+  const parsed = ringAutoApproveSchema.safeParse(raw);
+  if (!parsed.success) {
+    const message = parsed.error.issues[0]?.message ?? 'Invalid autoApprove configuration.';
+    return { error: message };
+  }
+  return { value: parsed.data as Record<string, unknown> };
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -75,7 +98,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
           sources: { type: 'array', items: { type: 'string' }, description: 'Patch sources: ["os","third_party"]' },
-          autoApprove: { type: 'object', description: 'Auto-approval rules (e.g. { enabled: true, severities: ["critical","important"] })' },
+          autoApprove: { type: 'object', description: 'Auto-approval rules (e.g. { enabled: true, severities: ["critical","important"], deferralDays: 0 }). severities must be a subset of ["critical","important","moderate","low"]. If enabled is true you MUST list at least one severity — an enabled rule with an empty severity set is rejected (it would auto-approve nothing).' },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },
@@ -133,6 +156,16 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
         if (!input.name) return JSON.stringify({ error: 'name is required' });
 
+        // Fail-closed autoApprove (#1317): reject enabled-without-severity at the
+        // write boundary, mirroring the route's ringAutoApproveSchema. Omitted →
+        // auto-approve nothing ({}).
+        let autoApprove: Record<string, unknown> = {};
+        if (input.autoApprove != null) {
+          const validated = validateRingAutoApprove(input.autoApprove);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          autoApprove = validated.value;
+        }
+
         const rows = await db.insert(patchPolicies).values({
           orgId,
           kind: 'ring',
@@ -144,7 +177,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           categories: (input.categories as string[]) ?? [],
           excludeCategories: (input.excludeCategories as string[]) ?? [],
           sources: (input.sources as any[]) ?? undefined,
-          autoApprove: (input.autoApprove as Record<string, unknown>) ?? {},
+          autoApprove,
           createdBy: auth.user.id,
         }).returning();
         const ring = rows[0];
@@ -176,7 +209,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (input.categories) updates.categories = input.categories;
         if (input.excludeCategories) updates.excludeCategories = input.excludeCategories;
         if (input.sources) updates.sources = input.sources;
-        if (input.autoApprove) updates.autoApprove = input.autoApprove;
+        if (input.autoApprove != null) {
+          // Fail-closed autoApprove (#1317): reject enabled-without-severity at
+          // the write boundary, mirroring the route's ringAutoApproveSchema.
+          const validated = validateRingAutoApprove(input.autoApprove);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          updates.autoApprove = validated.value;
+        }
         if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
 
         await db

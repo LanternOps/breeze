@@ -7,6 +7,9 @@ const {
   updateWhereMock,
   getEligibilityMock,
   getEligibilityForUserMock,
+  revokeOauthArtifactsMock,
+  revokeAllUserTokensMock,
+  recordFailedLoginMock,
 } = vi.hoisted(() => ({
   sendPasswordResetMock: vi.fn(async () => undefined),
   setexMock: vi.fn(async () => 'OK'),
@@ -14,6 +17,9 @@ const {
   updateWhereMock: vi.fn(async () => undefined),
   getEligibilityMock: vi.fn(),
   getEligibilityForUserMock: vi.fn(),
+  revokeOauthArtifactsMock: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 })),
+  revokeAllUserTokensMock: vi.fn(async () => undefined),
+  recordFailedLoginMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -47,7 +53,7 @@ vi.mock('../../services', () => ({
     getdel: getdelMock,
   })),
   invalidateAllUserSessions: vi.fn(async () => undefined),
-  revokeAllUserTokens: vi.fn(async () => undefined),
+  revokeAllUserTokens: revokeAllUserTokensMock,
 }));
 
 vi.mock('../../services/email', () => ({
@@ -59,6 +65,10 @@ vi.mock('../../services/email', () => ({
 vi.mock('../../services/passwordResetEligibility', () => ({
   getPasswordResetEligibility: getEligibilityMock,
   getPasswordResetEligibilityForUser: getEligibilityForUserMock,
+}));
+
+vi.mock('../../services/anomalyMetrics', () => ({
+  recordFailedLogin: recordFailedLoginMock,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -83,6 +93,10 @@ vi.mock('./helpers', async () => {
     revokeCurrentRefreshTokenJti: vi.fn(async () => undefined),
   };
 });
+
+vi.mock('../../oauth/grantRevocation', () => ({
+  revokeAllUserOauthArtifacts: revokeOauthArtifactsMock,
+}));
 
 vi.mock('./ssoPolicy', () => ({
   assertPasswordAuthAllowedBySso: vi.fn(async () => undefined),
@@ -133,6 +147,11 @@ describe('password reset eligibility (#719)', () => {
     updateWhereMock.mockReset();
     getEligibilityMock.mockReset();
     getEligibilityForUserMock.mockReset();
+    revokeOauthArtifactsMock.mockReset();
+    revokeOauthArtifactsMock.mockResolvedValue({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 });
+    revokeAllUserTokensMock.mockReset();
+    revokeAllUserTokensMock.mockResolvedValue(undefined);
+    recordFailedLoginMock.mockReset();
   });
 
   describe('POST /forgot-password', () => {
@@ -163,12 +182,15 @@ describe('password reset eligibility (#719)', () => {
           userId: 'u-pending',
         }),
       );
+      // A successful (allowed) reset must NOT pollute the inactive-tenant signal.
+      expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset for users in suspended partners (generic 200, no email sent)', async () => {
       getEligibilityMock.mockResolvedValue({
         allowed: false,
         reason: 'tenant_inactive',
+        detail: 'partner:suspended',
         userId: 'u-suspended',
         email: 'sus@x.com',
       });
@@ -176,8 +198,11 @@ describe('password reset eligibility (#719)', () => {
       const res = await postJson('/forgot-password', { email: 'sus@x.com' });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; error?: string };
       expect(body.success).toBe(true);
+      // Anti-enumeration: the blocking partner status NEVER appears in the
+      // response body.
+      expect(JSON.stringify(body)).not.toContain('suspended');
       expect(sendPasswordResetMock).not.toHaveBeenCalled();
       expect(setexMock).not.toHaveBeenCalled();
       expect(writeAuthAudit).toHaveBeenCalledWith(
@@ -187,8 +212,12 @@ describe('password reset eligibility (#719)', () => {
           result: 'denied',
           reason: 'tenant_inactive',
           userId: 'u-suspended',
+          // #719 residual 1: specific status recorded server-side for ops.
+          details: { detail: 'partner:suspended' },
         }),
       );
+      // #719 residual 2: inactive-tenant reset attempts feed the anomaly metric.
+      expect(recordFailedLoginMock).toHaveBeenCalledWith('reset_tenant_inactive');
     });
 
     it('refuses reset for unknown emails (generic 200, no email sent, no audit)', async () => {
@@ -205,6 +234,9 @@ describe('password reset eligibility (#719)', () => {
       // No audit log for unknown users — defeats enumeration via audit-trail
       // exposure or write-volume side-channels.
       expect(writeAuthAudit).not.toHaveBeenCalled();
+      // And no metric — an unknown email must be indistinguishable from a
+      // known-but-inactive one in every observable channel.
+      expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset for SSO-enforced org users', async () => {
@@ -228,6 +260,9 @@ describe('password reset eligibility (#719)', () => {
           userId: 'u-sso',
         }),
       );
+      // Only tenant_inactive feeds the inactive-tenant signal — sso_required
+      // is a separate, intentional policy and must not inflate it.
+      expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset for disabled users', async () => {
@@ -275,6 +310,9 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
       expect(updateWhereMock).toHaveBeenCalled();
+      // Stolen MCP OAuth refresh tokens must be revoked on reset, not just
+      // first-party JWTs.
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -285,7 +323,51 @@ describe('password reset eligibility (#719)', () => {
       );
     });
 
-    it('refuses reset completion if partner became suspended after token issue', async () => {
+    it('still revokes OAuth artifacts when the JWT revoke throws (ordering bug)', async () => {
+      getdelMock.mockResolvedValue('u-pending');
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-pending',
+        email: 'pending3@x.com',
+      });
+      // Redis blip: JWT revoke rejects. The OAuth revoke must NOT be
+      // short-circuited — it closes the (up to 14-day) stolen-refresh-token
+      // window and is the more durable threat.
+      revokeAllUserTokensMock.mockRejectedValue(new Error('redis down'));
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-pending');
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
+    });
+
+    it('still returns success when the OAuth revoke itself throws (best-effort)', async () => {
+      getdelMock.mockResolvedValue('u-pending');
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-pending',
+        email: 'pending4@x.com',
+      });
+      revokeOauthArtifactsMock.mockRejectedValue(new Error('oauth store down'));
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
+    });
+
+    it('does not revoke OAuth artifacts when the reset is denied', async () => {
       getdelMock.mockResolvedValue('u-suspended');
       getEligibilityForUserMock.mockResolvedValue({
         allowed: false,
@@ -299,9 +381,28 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(400);
+      expect(revokeOauthArtifactsMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses reset completion if partner became suspended after token issue', async () => {
+      getdelMock.mockResolvedValue('u-suspended');
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: false,
+        reason: 'tenant_inactive',
+        detail: 'partner:suspended',
+        userId: 'u-suspended',
+      });
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
       const body = await res.json() as { error: string };
       // Generic message — never leaks partner-status.
       expect(body.error).toBe('Invalid or expired reset token');
+      expect(JSON.stringify(body)).not.toContain('suspended');
       expect(updateWhereMock).not.toHaveBeenCalled();
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
@@ -310,8 +411,12 @@ describe('password reset eligibility (#719)', () => {
           result: 'denied',
           reason: 'tenant_inactive',
           userId: 'u-suspended',
+          details: { detail: 'partner:suspended' },
         }),
       );
+      // #719 residual 2: a tenant flipping inactive mid-flow is exactly the
+      // trap class we want alertable.
+      expect(recordFailedLoginMock).toHaveBeenCalledWith('reset_tenant_inactive');
     });
 
     it('returns 403 when org enforces SSO', async () => {
@@ -351,6 +456,58 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(400);
       expect(getEligibilityForUserMock).not.toHaveBeenCalled();
       expect(updateWhereMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /change-password', () => {
+    beforeEach(() => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{ passwordHash: 'existing-hash' }]) as any);
+      vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    });
+
+    it('revokes OAuth artifacts for the authenticated user on success', async () => {
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      // A previously authorized MCP OAuth refresh token must be revoked on a
+      // password change, not just first-party JWTs.
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
+    });
+
+    it('still revokes OAuth artifacts when the JWT revoke throws (ordering bug)', async () => {
+      // Redis blip: JWT revoke rejects. The OAuth revoke must NOT be
+      // short-circuited — it's the more durable threat.
+      revokeAllUserTokensMock.mockRejectedValue(new Error('redis down'));
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-1');
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
+    });
+
+    it('still returns success when the OAuth revoke itself throws (best-effort)', async () => {
+      revokeOauthArtifactsMock.mockRejectedValue(new Error('oauth store down'));
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean };
+      expect(body.success).toBe(true);
+      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
     });
   });
 });

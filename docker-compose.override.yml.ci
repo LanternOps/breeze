@@ -22,7 +22,6 @@ services:
       dockerfile: docker/Dockerfile.web
       args:
         PUBLIC_API_URL: ""
-        PUBLIC_ENABLE_REGISTRATION: "false"
     ports:
       - '4321:4321'
 

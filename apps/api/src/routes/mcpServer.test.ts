@@ -53,7 +53,11 @@ vi.mock('../services/aiTools', () => ({
 }));
 
 vi.mock('../services/aiGuardrails', () => ({
-  checkGuardrails: () => ({ allowed: true }),
+  // Return a finite tier (1) by default: the route computes the effective tier
+  // as Math.max(baseTier, guardrailCheck.tier), so tier-1 here is a benign
+  // floor that lets the per-test getToolTier base tier drive the gates. A
+  // non-finite tier would now (correctly) fail closed.
+  checkGuardrails: () => ({ allowed: true, tier: 1 }),
   checkToolPermission: async () => null,
   checkToolRateLimit: async () => null,
 }));
@@ -74,6 +78,26 @@ vi.mock('../services/rate-limit', () => ({
 vi.mock('../middleware/bearerTokenAuth', () => ({
   bearerTokenAuthMiddleware: async () => {
     throw new Error('should not be called without a Bearer header');
+  },
+  // mcpServer imports the canonical partner→org resolver from here (deduped
+  // from its former inline copy). Reimplement the real query logic against the
+  // mocked `db` so the per-case db shims (membership lookup via .limit, then org
+  // enumeration via awaited .where) still drive the partner-scope path.
+  resolvePartnerAccessibleOrgIds: async (partnerId: string, _userId: string) => {
+    const { db } = await import('../db');
+    const [membership] = await (db as any).select().from().where().limit(1);
+    if (!membership) return [];
+    if (membership.orgAccess === 'none') return [];
+    if (membership.orgAccess === 'selected') {
+      const selected = (membership.orgIds ?? []).filter(
+        (v: unknown): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (selected.length === 0) return [];
+      const rows = await (db as any).select().from().where();
+      return rows.map((r: any) => r.id);
+    }
+    const rows = await (db as any).select().from().where();
+    return rows.map((r: any) => r.id);
   },
 }));
 
@@ -1345,5 +1369,158 @@ describe('MCP bootstrap carve-out', () => {
       body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 2 }),
     });
     expect(badPrefix.status).toBe(400);
+  });
+
+  // -------------------------------------------------------------------------
+  // C2 — production gates apply to the ESCALATED effective tier, not the base
+  // tier. A base-tier-1 tool (registry_operations) with a TIER3 action
+  // (delete_key) escalates to tier 3, so the prod allowlist + execute_admin
+  // levers must fire exactly as they do for a statically-tier-3 tool. Uses the
+  // REAL aiGuardrails so the escalation is genuine.
+  // -------------------------------------------------------------------------
+
+  function mockKeyWithScopes(scopes: string[]) {
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-1',
+          orgId: 'org-1',
+          partnerId: 'partner-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes,
+          rateLimit: 1000,
+          createdBy: 'user-1',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+  }
+
+  function mockRealGuardrailsWithRegistryTier1() {
+    // registry_operations base tier 1; real aiGuardrails escalates
+    // action:'delete_key' → tier 3. Stub the RBAC/rate-limit checks (orthogonal).
+    vi.doMock('../services/aiGuardrails', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../services/aiGuardrails')>();
+      return {
+        ...actual,
+        checkToolPermission: vi.fn(async () => null),
+        checkToolRateLimit: vi.fn(async () => null),
+      };
+    });
+    vi.doMock('../services/aiTools', () => ({
+      getToolDefinitions: () => [{ name: 'registry_operations', description: '', input_schema: {} }],
+      executeTool: vi.fn(async () => JSON.stringify({ ok: true })),
+      getToolTier: (name: string) => (name === 'registry_operations' ? 1 : undefined),
+    }));
+    vi.doMock('../db', () => ({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
+          }),
+        }),
+        insert: () => ({
+          values: () => ({ returning: async () => [{ id: 'mcp-exec-1' }] }),
+        }),
+        update: () => ({
+          set: () => ({ where: async () => undefined }),
+        }),
+      },
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+      withSystemDbAccessContext: vi.fn(),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+    vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
+  }
+
+  it('C2: escalated tier-3 action NOT in the prod allowlist is denied', async () => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'production';
+    process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command'; // registry_operations absent
+    mockKeyWithScopes(['ai:read', 'ai:execute', 'ai:execute_admin']);
+    mockRealGuardrailsWithRegistryTier1();
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'registry_operations', arguments: { action: 'delete_key', key: 'HKLM\\foo' } },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.message).toContain('not in MCP_EXECUTE_TOOL_ALLOWLIST');
+  });
+
+  it('C2: escalated tier-3 action in the allowlist but key lacks ai:execute_admin is denied', async () => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'production';
+    process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'registry_operations';
+    delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
+    mockKeyWithScopes(['ai:read', 'ai:execute']); // no ai:execute_admin
+    mockRealGuardrailsWithRegistryTier1();
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'registry_operations', arguments: { action: 'delete_key', key: 'HKLM\\foo' } },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.message).toContain('requires ai:execute_admin');
+  });
+
+  // -------------------------------------------------------------------------
+  // Fail-closed: a malformed (non-finite) guardrail tier must DENY, not drop
+  // to the permissive base tier. checkGuardrails is stubbed to return a tier
+  // of undefined so the route's Number.isFinite guard fires.
+  // -------------------------------------------------------------------------
+  it('fail-closed: a non-finite guardrail tier is DENIED, executeTool not called', async () => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'development';
+    mockKeyWithScopes(['ai:read', 'ai:execute', 'ai:execute_admin']);
+
+    const executeTool = vi.fn(async () => JSON.stringify({ ok: true }));
+    vi.doMock('../services/aiTools', () => ({
+      getToolDefinitions: () => [{ name: 'manage_tags', description: '', input_schema: {} }],
+      executeTool,
+      getToolTier: (name: string) => (name === 'manage_tags' ? 1 : undefined),
+    }));
+    vi.doMock('../services/aiGuardrails', () => ({
+      checkGuardrails: () => ({ allowed: true, tier: undefined }),
+      checkToolPermission: async () => null,
+      checkToolRateLimit: async () => null,
+    }));
+    vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'manage_tags', arguments: { action: 'list' } },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32000);
+    expect(body.error?.message).toContain('Unable to evaluate tool guardrails');
+    expect(executeTool).not.toHaveBeenCalled();
   });
 });

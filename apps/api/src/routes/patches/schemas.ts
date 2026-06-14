@@ -1,5 +1,15 @@
 import { z } from 'zod';
 
+// Whitelisted sortable columns for the patches list. Never feed raw user input
+// into orderBy — list.ts maps these keys to real columns (issue #1316).
+export const PATCH_SORT_KEYS = [
+  'title',
+  'severity',
+  'source',
+  'releaseDate',
+  'createdAt'
+] as const;
+
 export const listPatchesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -7,7 +17,9 @@ export const listPatchesSchema = z.object({
   ringId: z.string().uuid().optional(),
   source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
-  os: z.enum(['windows', 'macos', 'linux']).optional()
+  os: z.enum(['windows', 'macos', 'linux']).optional(),
+  sortBy: z.enum(PATCH_SORT_KEYS).optional(),
+  sortDir: z.enum(['asc', 'desc']).optional()
 });
 
 export const patchIdParamSchema = z.object({

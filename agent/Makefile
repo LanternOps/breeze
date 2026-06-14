@@ -145,12 +145,10 @@ endif
 
 # Uninstall system service (requires sudo)
 uninstall-service:
-ifeq ($(shell uname -s),Darwin)
-	sudo bash scripts/install/uninstall-darwin.sh
-else ifeq ($(shell uname -s),Linux)
-	sudo bash scripts/install/uninstall-linux.sh
-else
+ifeq ($(OS),Windows_NT)
 	@echo "Unsupported OS for service uninstall."
+else
+	sudo bash scripts/install/uninstall.sh
 endif
 
 # Development run

@@ -1,10 +1,19 @@
 import { z } from 'zod';
 import { DEVICES_SORT_KEYS } from './cursor';
+import { discoveredAssetTypeEnum } from '../../db/schema/discovery';
 
 const DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',
   'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
 ] as const;
+
+/**
+ * Asset types for the network arm of the unified Devices list, sourced
+ * directly from the `discovered_asset_type` Postgres enum so the query
+ * validator can never silently drift from the column it filters against
+ * (the previous `z.enum(DEVICE_ROLES)` only coincidentally matched).
+ */
+const DISCOVERED_ASSET_TYPES = discoveredAssetTypeEnum.enumValues;
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
@@ -67,6 +76,25 @@ export const listDevicesSchema = z.object({
   search: z.string().optional()
 });
 
+// GET /devices/network — the network arm of the unified Devices list
+// (#1322). Surfaces approved, unlinked discovered_assets. Offset paginated;
+// keyset-across-union is deferred (see network.ts route doc).
+export const listNetworkDevicesSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  includeTotal: boolStr,
+
+  orgId: z.string().uuid().optional(),
+  siteId: z.string().uuid().optional(),
+  orgIds: csvUuidList,
+  siteIds: csvUuidList,
+
+  // Validated against the discovered_asset_type enum directly so it cannot
+  // drift from the discoveredAssets.assetType column (see DISCOVERED_ASSET_TYPES).
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).optional(),
+  search: z.string().optional(),
+});
+
 export const updateDeviceSchema = z.object({
   // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
   // can unset the name; the devices.display_name column is nullable. See PR #787.
@@ -107,6 +135,14 @@ export const softwareQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   search: z.string().optional()
+});
+
+export const processSamplesQuerySchema = z.object({
+  at: z.string().datetime().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional()
+}).refine((q) => q.at || (q.from && q.to), {
+  message: 'Provide either ?at=<ts> or both ?from and ?to'
 });
 
 export const createCommandSchema = z.object({

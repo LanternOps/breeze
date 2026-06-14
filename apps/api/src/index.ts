@@ -29,6 +29,7 @@ import { automationRoutes, automationWebhookRoutes } from './routes/automations'
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
+import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
@@ -145,6 +146,10 @@ import {
   initializeAuditChainVerifyWorker,
   shutdownAuditChainVerifyWorker,
 } from './jobs/auditChainVerify';
+import {
+  initializeAuditChainAnchorWorker,
+  shutdownAuditChainAnchorWorker,
+} from './jobs/auditChainAnchor';
 import { initializeTenantErasureWorker, shutdownTenantErasureWorker } from './jobs/tenantErasure';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
@@ -152,6 +157,7 @@ import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
+import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
 import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
@@ -728,6 +734,7 @@ api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
+api.route('/catalog', catalogRoutes);
 api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
@@ -1036,10 +1043,12 @@ async function initializeWorkers(): Promise<void> {
     ['agentLogRetention', initializeAgentLogRetention],
     ['ipHistoryRetention', initializeIPHistoryRetention],
     ['reliabilityRetention', initializeReliabilityRetention],
+    ['processSampleRetention', initializeProcessSampleRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
+    ['auditChainAnchor', initializeAuditChainAnchorWorker],
     ['tenantErasure', initializeTenantErasureWorker],
     ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
@@ -1206,10 +1215,12 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAgentLogRetention,
     shutdownIPHistoryRetention,
     shutdownReliabilityRetention,
+    shutdownProcessSampleRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,
+    shutdownAuditChainAnchorWorker,
     shutdownTenantErasureWorker,
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,

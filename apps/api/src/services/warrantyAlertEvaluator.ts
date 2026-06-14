@@ -24,15 +24,32 @@ interface WarrantyAlertSettings {
   criticalDays: number;
 }
 
+// Threshold defaults applied ONLY when an active warranty feature link exists but
+// omits a specific field. The `enabled` value here is the per-link default used
+// when a link is present without an explicit `enabled` flag — it is NOT the
+// no-policy default. Warranty alerting is opt-in: with no assigned/active warranty
+// config policy, settings resolve to DISABLED_SETTINGS so no alert fires (#1320).
 const DEFAULT_SETTINGS: WarrantyAlertSettings = {
   enabled: true,
   warnDays: 90,
   criticalDays: 30,
 };
 
+// Returned whenever there is no warranty policy in effect for a device, so the
+// `if (!settings.enabled) return null` gate trips and no alert is created.
+const DISABLED_SETTINGS: WarrantyAlertSettings = {
+  enabled: false,
+  warnDays: DEFAULT_SETTINGS.warnDays,
+  criticalDays: DEFAULT_SETTINGS.criticalDays,
+};
+
 /**
  * Resolve warranty inline settings for a device from configuration policies.
  * Uses a simplified resolution (closest-wins) without requiring auth context.
+ *
+ * Warranty alerting is opt-in: if no active warranty config policy is assigned to
+ * the device (directly or via group/site/org/partner), this returns
+ * DISABLED_SETTINGS so no alert fires (#1320).
  */
 async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertSettings> {
   const [device] = await db
@@ -41,7 +58,7 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
     .where(eq(devices.id, deviceId))
     .limit(1);
 
-  if (!device) return DEFAULT_SETTINGS;
+  if (!device) return DISABLED_SETTINGS;
 
   // Get device group IDs
   const groupRows = await db
@@ -77,7 +94,9 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
       )
     );
 
-  if (rows.length === 0) return DEFAULT_SETTINGS;
+  // No active warranty policy assigned to this device → alerting is opt-in, so
+  // resolve to disabled rather than the enabled-by-default thresholds (#1320).
+  if (rows.length === 0) return DISABLED_SETTINGS;
 
   // Sort by level priority (device=5, device_group=4, site=3, org=2, partner=1)
   const levelPriority: Record<string, number> = {
@@ -121,6 +140,15 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
     return null;
   }
 
+  // Active AppleCare subscription: the reported end date is the next renewal/billing
+  // date, not a true expiry, so it perpetually rolls ~30 days forward. A renewing
+  // subscription is the opposite of expiring — never alert, and clear any stale
+  // expiry alert left over from before the subscription was detected (#1320).
+  if (warranty.isSubscription || warranty.status === 'subscription_active') {
+    await autoResolveWarrantyAlerts(deviceId);
+    return null;
+  }
+
   // Load device info
   const [device] = await db
     .select()
@@ -134,6 +162,12 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
   const settings = await resolveWarrantySettings(deviceId);
 
   if (!settings.enabled) {
+    // Warranty alerting is opt-in (#1320). When it resolves to disabled (no/inactive
+    // policy, or an explicitly-disabled link) we must still clear any existing open
+    // warranty alert — otherwise a device that had an alert created under the old
+    // enabled-by-default behavior keeps it stranded active/acknowledged/suppressed
+    // forever, because no later evaluation reaches the auto-resolve paths below.
+    await autoResolveWarrantyAlerts(deviceId);
     return null;
   }
 
@@ -235,6 +269,10 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
  * Auto-resolve existing warranty alerts for a device
  */
 async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
+  // Resolve every non-terminal state the dedupe gate (line ~207) considers
+  // "open", including 'suppressed' — otherwise a stale suppressed expiry alert
+  // on a now-subscription/no-longer-expiring device would never clear yet still
+  // block a fresh alert from being created (#1320).
   const openAlerts = await db
     .select()
     .from(alerts)
@@ -242,7 +280,7 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
       and(
         eq(alerts.deviceId, deviceId),
         eq(alerts.configItemName, 'warranty_expiry'),
-        inArray(alerts.status, ['active', 'acknowledged'])
+        inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
       )
     );
 

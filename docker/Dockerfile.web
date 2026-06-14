@@ -16,10 +16,8 @@ COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_module
 COPY . .
 ARG PUBLIC_API_URL=""
 ARG PUBLIC_APP_VERSION="0.1.0"
-ARG PUBLIC_ENABLE_REGISTRATION="false"
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 ENV PUBLIC_APP_VERSION=${PUBLIC_APP_VERSION}
-ENV PUBLIC_ENABLE_REGISTRATION=${PUBLIC_ENABLE_REGISTRATION}
 RUN pnpm --filter @breeze/web build
 # Create a self-contained deployment (resolves pnpm symlinks).
 # pnpm 10's deploy command requires workspace deps be declared injected.

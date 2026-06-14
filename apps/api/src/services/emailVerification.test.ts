@@ -213,12 +213,17 @@ describe('consumeVerificationToken', () => {
 
     const tokenUpdate = chainUpdateReturning([{ id: 'evt-1' }]);
     const userUpdate = chainUpdateNoReturning();
-    const partnerUpdate = chainUpdateNoReturning();
+    // On the auto-activate path the partner write splits in two: first the
+    // email_verified_at stamp, then activatePartnerRow flips status + clears
+    // the inactive banner (shared with partnerGuard).
+    const partnerEmailUpdate = chainUpdateNoReturning();
+    const partnerActivateUpdate = chainUpdateNoReturning();
 
     vi.mocked(db.update)
       .mockReturnValueOnce(tokenUpdate as any)
       .mockReturnValueOnce(userUpdate as any)
-      .mockReturnValueOnce(partnerUpdate as any);
+      .mockReturnValueOnce(partnerEmailUpdate as any)
+      .mockReturnValueOnce(partnerActivateUpdate as any);
 
     const result = await consumeVerificationToken('rawtoken');
 
@@ -227,9 +232,12 @@ describe('consumeVerificationToken', () => {
       expect(result.autoActivated).toBe(true);
     }
 
-    const partnerSetCall = (partnerUpdate.set as any).mock.calls[0][0];
-    expect(partnerSetCall.status).toBe('active');
-    expect(partnerSetCall).toHaveProperty('emailVerifiedAt');
+    const emailSetCall = (partnerEmailUpdate.set as any).mock.calls[0][0];
+    expect(emailSetCall).toHaveProperty('emailVerifiedAt');
+
+    const activateSetCall = (partnerActivateUpdate.set as any).mock.calls[0][0];
+    expect(activateSetCall.status).toBe('active');
+    expect(activateSetCall).toHaveProperty('settings');
   });
 
   it('returns superseded when supersededAt is set on the row (resend invalidated this link)', async () => {

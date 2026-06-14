@@ -202,6 +202,77 @@ describe('eventBus service', () => {
     expect(event.payload.domain).toBe('malware.example.com');
   });
 
+  // ---------------------------------------------------------------------
+  // siteId attribution on the published event (#1280 — eventWs follow-up).
+  // The events-WS site filter (routes/eventWs.ts) delivers in-site live
+  // events to site-restricted users by reading the TOP-LEVEL `siteId` off the
+  // published BreezeEvent. These assert publish() puts it there from options.
+  // ---------------------------------------------------------------------
+
+  function lastPublishedEvent(): Record<string, unknown> {
+    const xaddMock = mockRedis.xadd as ReturnType<typeof vi.fn>;
+    const lastCall = xaddMock.mock.calls[xaddMock.mock.calls.length - 1]!;
+    const eventJson = lastCall[lastCall.length - 1] as string;
+    return JSON.parse(eventJson) as Record<string, unknown>;
+  }
+
+  it('puts options.siteId on the published event as a top-level field (#1280)', async () => {
+    const { publishEvent, EVENT_TYPES } = eventBusModule;
+
+    await publishEvent(
+      EVENT_TYPES.ALERT_TRIGGERED,
+      'org-1',
+      { deviceId: 'dev-1', alertId: 'a-1' },
+      'unit-test',
+      { siteId: 'site-a' },
+    );
+
+    const event = lastPublishedEvent();
+    expect(event.siteId).toBe('site-a');
+    // payload is left untouched — siteId lives at the top level where the
+    // WS filter reads it first.
+    expect((event.payload as Record<string, unknown>).siteId).toBeUndefined();
+  });
+
+  it('omits siteId entirely when no site context is provided (org-level event)', async () => {
+    const { publishEvent, EVENT_TYPES } = eventBusModule;
+
+    await publishEvent(EVENT_TYPES.USER_LOGIN, 'org-1', { userId: 'u-1' }, 'unit-test');
+
+    const event = lastPublishedEvent();
+    expect('siteId' in event).toBe(false);
+  });
+
+  it('normalises an empty-string siteId to "no attribution" (never matches a blank id)', async () => {
+    const { publishEvent, EVENT_TYPES } = eventBusModule;
+
+    await publishEvent(
+      EVENT_TYPES.DEVICE_OFFLINE,
+      'org-1',
+      { deviceId: 'dev-1' },
+      'unit-test',
+      { siteId: '' },
+    );
+
+    const event = lastPublishedEvent();
+    expect('siteId' in event).toBe(false);
+  });
+
+  it('treats a null siteId option as no attribution', async () => {
+    const { publishEvent, EVENT_TYPES } = eventBusModule;
+
+    await publishEvent(
+      EVENT_TYPES.DEVICE_OFFLINE,
+      'org-1',
+      { deviceId: 'dev-1' },
+      'unit-test',
+      { siteId: null },
+    );
+
+    const event = lastPublishedEvent();
+    expect('siteId' in event).toBe(false);
+  });
+
   it('should unsubscribe handlers', async () => {
     const { getEventBus, EVENT_TYPES } = eventBusModule;
     const bus = getEventBus();

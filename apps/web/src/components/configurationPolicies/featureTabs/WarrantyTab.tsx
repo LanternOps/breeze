@@ -85,11 +85,19 @@ export default function WarrantyTab({ policyId, existingLink, onLinkChanged, lin
       onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
     >
       <div className="space-y-6">
+        {/* Opt-in clarification: warranty alerting only happens when this feature is
+            assigned and enabled (#1320). */}
+        <p className="rounded-md border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+          Warranty alerting is opt-in: devices with no warranty policy assigned never alert.
+          Thresholds below apply to fixed-term coverage only — active AppleCare subscriptions
+          renew rather than expire, so their expiry alerts are always suppressed.
+        </p>
+
         {/* Enable toggle */}
         <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
           <div>
             <p className="text-sm font-medium">Enable warranty expiry alerts</p>
-            <p className="text-xs text-muted-foreground">Generate alerts when device warranties are approaching expiry.</p>
+            <p className="text-xs text-muted-foreground">Generate alerts when fixed-term device warranties are approaching expiry.</p>
           </div>
           <button
             type="button"

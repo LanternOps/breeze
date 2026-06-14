@@ -17,6 +17,8 @@ describe('featuresStore', () => {
     vi.clearAllMocks();
     useFeaturesStore.setState({
       features: { billing: false, support: false },
+      cfAccessLogin: { enabled: false },
+      registration: { enabled: false },
       loaded: false,
     });
   });
@@ -28,6 +30,18 @@ describe('featuresStore', () => {
     await useFeaturesStore.getState().load();
     expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true });
     expect(useFeaturesStore.getState().loaded).toBe(true);
+  });
+
+  it('loads runtime registration flag from /config (#1308)', async () => {
+    fetchMock.mockResolvedValueOnce(res({ registration: { enabled: true } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().registration).toEqual({ enabled: true });
+  });
+
+  it('defaults registration.enabled to false when /config omits it', async () => {
+    fetchMock.mockResolvedValueOnce(res({ features: { billing: true, support: true } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().registration).toEqual({ enabled: false });
   });
 
   it('leaves defaults on fetch failure', async () => {

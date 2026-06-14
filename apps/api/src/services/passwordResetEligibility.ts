@@ -14,6 +14,20 @@ export interface ResetEligibility {
   reason?: ResetIneligibleReason;
   userId?: string;
   email?: string;
+  /**
+   * Server-side-only diagnostic detail for the blocking condition (#719
+   * residual 1). For a `tenant_inactive` denial this is the SPECIFIC tenant
+   * status that blocked the reset — `partner:suspended`, `partner:churned`,
+   * `partner:missing`, `org:suspended`, `org:churned`, `org:missing` — so an
+   * operator reading the audit trail can tell a benign self-service `pending`
+   * signup (now ALLOWED) apart from a deliberate `suspended`/`churned` cutoff,
+   * and so the observability signal can be sliced by status.
+   *
+   * MUST NOT be surfaced in any HTTP response body — doing so would turn the
+   * reset flow into an account-enumeration / tenant-status oracle. Callers use
+   * it for audit logging and anomaly metrics only.
+   */
+  detail?: string;
 }
 
 interface UserLookupRow {
@@ -119,7 +133,13 @@ async function evaluateEligibility(user: UserLookupRow): Promise<ResetEligibilit
       .limit(1);
 
     if (!partner || partner.deletedAt || !RESET_ALLOWED_PARTNER_STATUSES.has(partner.status as string)) {
-      return { allowed: false, reason: 'tenant_inactive', userId: user.id, email: user.email };
+      // `detail` records the specific blocking status for the audit trail /
+      // anomaly metric (#719 residual 1). Soft-deleted and not-found both map
+      // to `missing` so a purged-vs-soft-deleted partner can't be told apart.
+      const detail = !partner || partner.deletedAt
+        ? 'partner:missing'
+        : `partner:${partner.status}`;
+      return { allowed: false, reason: 'tenant_inactive', detail, userId: user.id, email: user.email };
     }
   }
 
@@ -131,7 +151,10 @@ async function evaluateEligibility(user: UserLookupRow): Promise<ResetEligibilit
       .limit(1);
 
     if (!org || org.deletedAt || RESET_BLOCKED_ORG_STATUSES.has(org.status as string)) {
-      return { allowed: false, reason: 'tenant_inactive', userId: user.id, email: user.email };
+      const detail = !org || org.deletedAt
+        ? 'org:missing'
+        : `org:${org.status}`;
+      return { allowed: false, reason: 'tenant_inactive', detail, userId: user.id, email: user.email };
     }
   }
 

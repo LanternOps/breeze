@@ -1,11 +1,11 @@
 ---
 import AuthLayout from '../layouts/AuthLayout.astro';
 import PartnerRegisterPage from '../components/auth/PartnerRegisterPage';
-import { ENABLE_REGISTRATION } from '../lib/featureFlags';
 
-if (!ENABLE_REGISTRATION) {
-  return Astro.redirect('/login?reason=registration-disabled', 302);
-}
+// Whether registration is open is a runtime decision (ENABLE_REGISTRATION),
+// which a prebuilt static bundle can't read at build time. PartnerRegisterPage
+// gates itself on the runtime /api/v1/config flag and redirects to /login when
+// registration is disabled (#1308).
 ---
 
 <AuthLayout title="Register Your Company">

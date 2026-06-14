@@ -21,16 +21,17 @@ import { streamSSE } from 'hono/streaming';
 import type { z } from 'zod';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
-import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
+import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
-import { db, withSystemDbAccessContext } from '../db';
-import { devices, alerts, scripts, automations, partners, organizations, partnerUsers } from '../db/schema';
+import { db } from '../db';
+import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
 import { eq, and, asc, desc, inArray, isNull, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
 import { getUserPermissions } from '../services/permissions';
+import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToolsSiteScope';
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
@@ -901,10 +902,44 @@ async function handleToolsCall(
   }
 
   // Check scope-based access
-  const tier = getToolTier(toolName);
-  if (tier === undefined) {
+  const baseTier = getToolTier(toolName);
+  if (baseTier === undefined) {
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
+
+  // Run guardrails BEFORE the scope gates so the EFFECTIVE tier (which a
+  // per-action escalation can raise above the tool's static base tier — e.g.
+  // registry_operations base tier 1 but action:'delete_key' → tier 3) drives
+  // the scope gates, the production allowlist, the execute_admin lever, AND
+  // the ledger-creation condition below. checkGuardrails is pure (input-only,
+  // no auth-context or DB side effects), so reordering is safe. Without this,
+  // a destructive sub-action on a low-base-tier tool would sail past the gates
+  // on an ai:read-only key.
+  const guardrailCheck = checkGuardrails(toolName, toolInput);
+  if (!guardrailCheck.allowed) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify({ error: guardrailCheck.reason }) }],
+      isError: true
+    });
+  }
+
+  // Effective tier = max of the tool's static base tier and any per-action
+  // escalation from guardrails. checkGuardrails can also DOWNGRADE a sub-action
+  // (a read-only action on a high-base-tier tool returns tier 1 via
+  // TIER1_ACTIONS); Math.max DELIBERATELY ignores those downgrades so a
+  // sub-action can never weaken the scope requirement below the tool's static
+  // base tier. Do not "fix" this to honor the guardrail tier directly — that
+  // would silently weaken the gate.
+  //
+  // Fail CLOSED on a malformed guardrail tier: if checkGuardrails ever returns
+  // a non-finite tier (unreachable given current types, but a security gate
+  // must not fall through to the permissive base tier on a partial result),
+  // DENY rather than silently dropping to baseTier.
+  if (!Number.isFinite(guardrailCheck.tier)) {
+    console.error('[MCP] Guardrail check returned a non-finite tier for tool:', toolName, guardrailCheck.tier);
+    return jsonRpcError(id, -32000, 'Unable to evaluate tool guardrails');
+  }
+  const tier = Math.max(baseTier, guardrailCheck.tier);
 
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -924,15 +959,6 @@ async function handleToolsCall(
   // In production, enforce tool allowlist for tier 3+ (destructive) tools
   if (tier >= 3 && process.env.NODE_ENV === 'production' && !isExecuteToolAllowedInProd(toolName)) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" is not in MCP_EXECUTE_TOOL_ALLOWLIST for production`);
-  }
-
-  // Check guardrails
-  const guardrailCheck = checkGuardrails(toolName, toolInput);
-  if (!guardrailCheck.allowed) {
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify({ error: guardrailCheck.reason }) }],
-      isError: true
-    });
   }
 
   // RBAC permission check
@@ -1351,8 +1377,28 @@ async function handleResourcesRead(
 
   const orgCond = auth.orgCondition;
 
+  // Site axis (app-layer only; RLS does NOT enforce it). A site-restricted
+  // caller (auth.allowedSiteIds + canAccessSite) may only see devices/alerts
+  // for devices in their allowed sites. tools/call enforces this via
+  // verifyDeviceAccess, but resources/read previously applied only the org
+  // condition. We resolve the allowed device-id set once (per the caller's
+  // org) and narrow the device + alert list resources to it. No-op for
+  // unrestricted callers (resolveSiteAllowedDeviceIds returns null).
+  const siteOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+  const siteAllowedDeviceIds =
+    auth.canAccessSite && siteOrgId
+      ? await resolveSiteAllowedDeviceIds(siteOrgId, auth)
+      : null;
+
   try {
     if (uri === 'breeze://devices') {
+      const deviceSiteConditions: SQL[] =
+        siteAllowedDeviceIds === null
+          ? []
+          : siteAllowedDeviceIds.length === 0
+            ? // Restricted caller with zero in-scope devices — match no rows.
+              [inArray(devices.id, ['00000000-0000-0000-0000-000000000000'])]
+            : [inArray(devices.id, siteAllowedDeviceIds)];
       return await readOrgScopedResource(id, uri, devices, {
         id: devices.id,
         hostname: devices.hostname,
@@ -1361,10 +1407,25 @@ async function handleResourcesRead(
         osVersion: devices.osVersion,
         agentVersion: devices.agentVersion,
         lastSeenAt: devices.lastSeenAt
-      }, orgCond(devices.orgId), { limit: 500 });
+      }, orgCond(devices.orgId), { extraConditions: deviceSiteConditions, limit: 500 });
     }
 
     if (uri === 'breeze://alerts') {
+      const alertSiteConditions: SQL[] = [
+        eq(alerts.status, 'active' as typeof alerts.status.enumValues[number]),
+      ];
+      if (siteAllowedDeviceIds !== null) {
+        // Narrow alerts to those raised on devices the caller may see. Empty
+        // allowlist → impossible deviceId so no alert rows leak.
+        alertSiteConditions.push(
+          inArray(
+            alerts.deviceId,
+            siteAllowedDeviceIds.length === 0
+              ? ['00000000-0000-0000-0000-000000000000']
+              : siteAllowedDeviceIds,
+          ),
+        );
+      }
       return await readOrgScopedResource(id, uri, alerts, {
         id: alerts.id,
         title: alerts.title,
@@ -1373,7 +1434,7 @@ async function handleResourcesRead(
         deviceId: alerts.deviceId,
         triggeredAt: alerts.triggeredAt
       }, orgCond(alerts.orgId), {
-        extraConditions: [eq(alerts.status, 'active' as typeof alerts.status.enumValues[number])],
+        extraConditions: alertSiteConditions,
         limit: 200
       });
     }
@@ -1412,7 +1473,10 @@ async function handleResourcesRead(
         .where(and(...conditions))
         .limit(1);
 
-      if (!device) {
+      // Site axis (app-layer only): a site-restricted caller must not resolve a
+      // device outside their allowed sites — treat as not-found. siteId is in
+      // SAFE_DEVICE_RESOURCE_FIELDS so the projection already carries it.
+      if (!device || deviceSiteDenied(auth, device.siteId)) {
         return jsonRpcError(id, -32602, `Device not found: ${deviceId}`);
       }
 
@@ -1468,50 +1532,6 @@ async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
     console.error('[mcpServer] failed to resolve default orgId for partner', partnerId, err);
     return null;
   }
-}
-
-/**
- * Resolve the concrete org allowlist a partner-scope caller can reach.
- * Mirrors `computeAccessibleOrgIds` in middleware/auth.ts and
- * `resolvePartnerAccessibleOrgIds` in middleware/bearerTokenAuth.ts. Kept
- * inline here to avoid widening auth.ts' export surface; the cost is ~25
- * duplicated lines, intentionally accepted per CLAUDE.md.
- *
- * Pre-auth lookup runs under withSystemDbAccessContext because RLS GUCs for
- * the request's real scope haven't been set yet.
- */
-async function resolvePartnerAccessibleOrgIds(
-  partnerId: string,
-  userId: string,
-): Promise<string[]> {
-  return withSystemDbAccessContext(async () => {
-    const [membership] = await db
-      .select({ orgAccess: partnerUsers.orgAccess, orgIds: partnerUsers.orgIds })
-      .from(partnerUsers)
-      .where(and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, partnerId)))
-      .limit(1);
-
-    if (!membership) return [];
-    if (membership.orgAccess === 'none') return [];
-
-    if (membership.orgAccess === 'selected') {
-      const selected = (membership.orgIds ?? []).filter(
-        (v): v is string => typeof v === 'string' && v.length > 0,
-      );
-      if (selected.length === 0) return [];
-      const rows = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(and(eq(organizations.partnerId, partnerId), inArray(organizations.id, selected)));
-      return rows.map((r) => r.id);
-    }
-
-    const rows = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, partnerId));
-    return rows.map((r) => r.id);
-  });
 }
 
 /**

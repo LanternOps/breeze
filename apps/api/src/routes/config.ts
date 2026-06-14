@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cfAccessTrustEnabled } from '../config/env';
+import { envFlag } from '../utils/envFlag';
 
 export const configRoutes = new Hono();
 
@@ -15,6 +16,15 @@ configRoutes.get('/', (c) => {
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),
+    },
+    // Runtime source of truth for whether self-service MSP registration is
+    // open. The web bundle can't read PUBLIC_ENABLE_REGISTRATION at runtime
+    // (it's frozen into the prebuilt image at build time), so the UI gates the
+    // "Register your MSP" link and the register pages on this value instead —
+    // keeping it in lockstep with the same ENABLE_REGISTRATION env the
+    // /auth/register-partner enforcement reads (issue #1308).
+    registration: {
+      enabled: envFlag('ENABLE_REGISTRATION', false),
     },
   });
 });
