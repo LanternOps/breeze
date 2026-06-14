@@ -77,13 +77,13 @@ describe('hard isolation from the technician registry (spec §5: allowlist, not 
       expect(mcpName.startsWith('mcp__excel__')).toBe(true);
       expect(BREEZE_MCP_TOOL_NAMES).not.toContain(mcpName);
     }
-    expect(CLIENT_MCP_TOOL_NAMES).toHaveLength(11);
+    expect(CLIENT_MCP_TOOL_NAMES).toHaveLength(13);
   });
 });
 
 describe('clientMcpToolNamesForWriteMode', () => {
-  it('readwrite exposes all 11 tools', () => {
-    expect(clientMcpToolNamesForWriteMode('readwrite')).toHaveLength(11);
+  it('readwrite exposes all 13 tools', () => {
+    expect(clientMcpToolNamesForWriteMode('readwrite')).toHaveLength(13);
   });
 
   it('readonly strips every mutating tool from the toolset', () => {
