@@ -40,6 +40,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
+import { resolveElevationAssurance } from '../services/authenticatorAssurance';
 import { resolveOrgIdForWrite } from './softwarePolicies';
 
 /**
@@ -326,6 +327,7 @@ pamRoutes.post(
             flowType: elevationRequests.flowType,
             status: elevationRequests.status,
             executionId: elevationRequests.executionId,
+            riskTier: elevationRequests.riskTier,
           })
           .from(elevationRequests)
           .where(eq(elevationRequests.id, id))
@@ -336,6 +338,10 @@ pamRoutes.post(
         if (perms && row.siteId && !canAccessSite(perms, row.siteId)) {
           return { kind: 'forbidden' as const };
         }
+
+        // Phase 1 (dark foundation): resolve the factor-recording fields. This
+        // never blocks — every decision is still a logged-in session tap.
+        const assurance = resolveElevationAssurance(row.riskTier);
 
         // CAS: only a pending row can be decided. The WHERE clause re-checks
         // status so a concurrent respond/reaper loses cleanly (0 rows).
@@ -349,12 +355,20 @@ pamRoutes.post(
                   approvedAt: now,
                   expiresAt: new Date(now.getTime() + durationMinutes * 60_000),
                   updatedAt: now,
+                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                  decidedVia: assurance.decidedVia,
+                  authenticatorDeviceId: assurance.authenticatorDeviceId,
+                  pinVerified: assurance.pinVerified,
                 }
               : {
                   status: 'denied',
                   deniedByUserId: auth.user.id,
                   denialReason: body.reason ?? null,
                   updatedAt: now,
+                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                  decidedVia: assurance.decidedVia,
+                  authenticatorDeviceId: assurance.authenticatorDeviceId,
+                  pinVerified: assurance.pinVerified,
                 },
           )
           .where(and(eq(elevationRequests.id, id), eq(elevationRequests.status, 'pending')))
@@ -373,6 +387,8 @@ pamRoutes.post(
           details: {
             reason: body.reason,
             ...(approve ? { duration_minutes: durationMinutes } : {}),
+            assurance_level: assurance.decidedAssuranceLevel,
+            factor: assurance.decidedVia,
           },
           occurredAt: now,
         });

@@ -432,6 +432,56 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
 
     expect(res.status).toBe(404);
   });
+
+  it('records session_tap factor columns + audit assurance on elevation approve', async () => {
+    const { updateSetCalls, auditInserts } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateSetCalls[0]).toMatchObject({
+      status: 'approved',
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: null,
+      pinVerified: false,
+    });
+    expect(auditInserts[0]).toMatchObject({
+      details: { assurance_level: 1, factor: 'session_tap' },
+    });
+  });
+
+  it('records session_tap factor columns + audit assurance on elevation deny', async () => {
+    const { updateSetCalls, auditInserts } = rigTransaction({
+      row: { ...activeRow, riskTier: 4 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'deny', reason: 'nope' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateSetCalls[0]).toMatchObject({
+      status: 'denied',
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: null,
+      pinVerified: false,
+    });
+    expect(auditInserts[0]).toMatchObject({
+      details: { assurance_level: 1, factor: 'session_tap' },
+    });
+  });
 });
 
 describe('POST /pam/elevation-requests/:id/revoke', () => {
