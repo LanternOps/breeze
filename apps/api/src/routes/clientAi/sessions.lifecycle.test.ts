@@ -126,7 +126,12 @@ describe('POST /client-ai/sessions (create)', () => {
 
     const res = await buildApp().request('/client-ai/sessions', { method: 'POST', headers: AUTHED });
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ sessionId: SESSION_ID });
+    // The pane needs the effective write governance to render the Auto/Ask toggle.
+    expect(await res.json()).toEqual({
+      sessionId: SESSION_ID,
+      writeMode: 'readwrite',
+      writeApproval: 'ask',
+    });
 
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
       orgId: ORG_ID,
@@ -168,6 +173,21 @@ describe('POST /client-ai/sessions (create)', () => {
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
       systemPrompt: expect.stringContaining('READ-ONLY'),
     }));
+  });
+
+  it('exposes the effective writeApproval=allow_auto when the org policy opts in', async () => {
+    policyState.policy = {
+      ...defaultClientAiPolicy(ORG_ID),
+      enabled: true,
+      writeApproval: 'allow_auto',
+    };
+    const res = await buildApp().request('/client-ai/sessions', { method: 'POST', headers: AUTHED });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({
+      sessionId: SESSION_ID,
+      writeMode: 'readwrite',
+      writeApproval: 'allow_auto',
+    });
   });
 
   it('402s when the org budget is exhausted', async () => {
@@ -235,6 +255,60 @@ describe('POST /client-ai/sessions/:id/close', () => {
   it('404s for an inaccessible session', async () => {
     dbSelectMock.mockImplementation(() => selectChain([]));
     const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/close`, {
+      method: 'POST', headers: AUTHED,
+    });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /client-ai/sessions/:id/flag (end-user flag)', () => {
+  it('flags the session with the portal-user principal, stores the reason, audits', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+    dbUpdateMock.mockImplementation(() => ({ set: setSpy }));
+
+    const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/flag`, {
+      method: 'POST',
+      headers: AUTHED,
+      body: JSON.stringify({ reason: 'wrong total' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+
+    // flaggedBy must be NULL (the flagger is a portal user, not a Breeze user;
+    // flagged_by FKs users.id). The reason is persisted; flaggedAt is set.
+    expect(setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ flagReason: 'wrong total', flaggedBy: null }),
+    );
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai.client_session.flag',
+        resourceId: SESSION_ID,
+        actorType: 'user',
+        actorId: CLIENT_USER_ID,
+      }),
+    );
+  });
+
+  it('accepts a missing/empty body (reason is optional)', async () => {
+    const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/flag`, {
+      method: 'POST', headers: AUTHED,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an over-long reason (400)', async () => {
+    const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/flag`, {
+      method: 'POST',
+      headers: AUTHED,
+      body: JSON.stringify({ reason: 'x'.repeat(1001) }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s for an inaccessible session', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([]));
+    const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/flag`, {
       method: 'POST', headers: AUTHED,
     });
     expect(res.status).toBe(404);

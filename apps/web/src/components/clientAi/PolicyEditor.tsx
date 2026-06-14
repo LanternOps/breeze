@@ -51,6 +51,7 @@ interface PolicyDto {
   allowedProviders: string[];
   allowedModels: string[];
   writeMode: 'readwrite' | 'readonly';
+  writeApproval?: 'ask' | 'allow_auto';
   dlpConfig: {
     builtins?: Partial<Record<DlpBuiltinKey, DlpAction>>;
     customRules?: CustomRule[];
@@ -102,6 +103,7 @@ export default function PolicyEditor({ orgId, onBack }: { orgId: string; onBack:
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [allowedModels, setAllowedModels] = useState<string[]>([]);
   const [writeMode, setWriteMode] = useState<'readwrite' | 'readonly'>('readwrite');
+  const [writeApproval, setWriteApproval] = useState<'ask' | 'allow_auto'>('ask');
   const [builtins, setBuiltins] = useState<Record<DlpBuiltinKey, DlpAction>>(defaultBuiltins);
   const [customRules, setCustomRules] = useState<CustomRule[]>([]);
   const [dailyBudgetDollars, setDailyBudgetDollars] = useState('');
@@ -131,6 +133,8 @@ export default function PolicyEditor({ orgId, onBack }: { orgId: string; onBack:
       setSelectedUserIds(policy.selectedUserIds ?? []);
       setAllowedModels(policy.allowedModels ?? []);
       setWriteMode(policy.writeMode);
+      // Default-deny: anything other than the explicit 'allow_auto' is 'ask'.
+      setWriteApproval(policy.writeApproval === 'allow_auto' ? 'allow_auto' : 'ask');
       const cfg = policy.dlpConfig ?? {};
       setBuiltins({ ...defaultBuiltins(), ...(cfg.builtins ?? {}) });
       setCustomRules(cfg.customRules ?? []);
@@ -184,6 +188,7 @@ export default function PolicyEditor({ orgId, onBack }: { orgId: string; onBack:
     selectedUserIds: userAccess === 'selected' ? selectedUserIds : [],
     allowedModels,
     writeMode,
+    writeApproval,
     dlpConfig: {
       builtins,
       customRules: customRules.map((r) => ({
@@ -328,6 +333,22 @@ export default function PolicyEditor({ orgId, onBack }: { orgId: string; onBack:
               <option value="readwrite">Read &amp; write (writes approval-gated by the end user)</option>
               <option value="readonly">Read only (write tools removed from the model)</option>
             </select>
+          </label>
+          <label className="block text-sm">
+            <span className="text-muted-foreground">Workbook writes</span>
+            <select
+              value={writeApproval}
+              onChange={(e) => setWriteApproval(e.target.value as 'ask' | 'allow_auto')}
+              disabled={writeMode === 'readonly'}
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm disabled:opacity-50"
+              data-testid="ai-office-policy-writeapproval"
+            >
+              <option value="ask">Ask every time (end user approves each write)</option>
+              <option value="allow_auto">Allow auto-apply (end user may opt into auto)</option>
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Auto-apply is off by default and only possible when allowed here.
+            </p>
           </label>
           <div className="text-sm">
             <span className="text-muted-foreground">Allowed models</span>

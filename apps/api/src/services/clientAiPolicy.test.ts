@@ -44,6 +44,7 @@ describe('defaultClientAiPolicy', () => {
       allowedProviders: ['anthropic'],
       allowedModels: [],
       writeMode: 'readwrite',
+      writeApproval: 'ask',
       dlpConfig: {},
       dailyBudgetCents: null,
       monthlyBudgetCents: null,
@@ -72,6 +73,7 @@ describe('getOrgPolicy', () => {
       allowedProviders: ['anthropic'],
       allowedModels: ['claude-sonnet-4-5-20250929'],
       writeMode: 'readonly',
+      writeApproval: 'allow_auto',
       dlpConfig: { creditCards: 'redact' },
       dailyBudgetCents: 500,
       monthlyBudgetCents: 10000,
@@ -86,6 +88,7 @@ describe('getOrgPolicy', () => {
     expect(policy.userAccess).toBe('selected');
     expect(policy.selectedUserIds).toEqual([USER_A]);
     expect(policy.writeMode).toBe('readonly');
+    expect(policy.writeApproval).toBe('allow_auto');
     expect(policy.dailyBudgetCents).toBe(500);
     expect(policy.retentionDays).toBe(90);
     expect(policy.branding).toEqual({ displayName: 'Acme IT' });
@@ -115,6 +118,17 @@ describe('getOrgPolicy', () => {
     expect(policy.allowedModels).toEqual([]);
     expect(policy.dlpConfig).toEqual({});
     expect(policy.branding).toEqual({});
+  });
+
+  it('default-denies writeApproval: any non-allow_auto value normalizes to ask', async () => {
+    mockPolicyRow({
+      ...defaultClientAiPolicy(ORG_ID),
+      enabled: true,
+      // garbage / unknown / legacy-null value must NOT enable auto-apply
+      writeApproval: 'something_else',
+    });
+    const policy = await getOrgPolicy(ORG_ID);
+    expect(policy.writeApproval).toBe('ask');
   });
 });
 

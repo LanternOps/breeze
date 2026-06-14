@@ -53,6 +53,17 @@ export type WorkbookContext = {
   cells?: CellValue[][];
 };
 
+export type WriteMode = 'readwrite' | 'readonly';
+/** Org gate for pane auto-apply (server-authoritative). 'ask' = no auto-apply. */
+export type WriteApproval = 'ask' | 'allow_auto';
+
+/** POST /client-ai/sessions response — carries the effective write governance. */
+export type SessionCreated = {
+  sessionId: string;
+  writeMode: WriteMode;
+  writeApproval: WriteApproval;
+};
+
 export type SendMessageBody = { content: string; workbookContext?: WorkbookContext };
 
 export type ToolResultBody = { toolUseId: string; status: ToolResultStatus; output?: unknown };

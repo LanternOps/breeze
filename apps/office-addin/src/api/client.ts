@@ -11,6 +11,7 @@ import {
   type ClientAiStreamEvent,
   type ClientAiTemplate,
   type SendMessageBody,
+  type SessionCreated,
   type SessionHistory,
   type ToolResultBody,
 } from './types';
@@ -73,12 +74,21 @@ async function expectOk(res: Response): Promise<unknown> {
   return body;
 }
 
-/** POST /client-ai/sessions {} → 201 { sessionId } */
-export async function createSession(fetchImpl?: FetchLike): Promise<string> {
+/**
+ * POST /client-ai/sessions {} → 201 { sessionId, writeMode, writeApproval }.
+ * writeApproval is default-denied client-side too: any value other than the
+ * explicit 'allow_auto' collapses to 'ask', so a malformed/legacy response can
+ * never enable the pane's auto-apply toggle.
+ */
+export async function createSession(fetchImpl?: FetchLike): Promise<SessionCreated> {
   const body = (await expectOk(
     await apiFetch('/client-ai/sessions', { method: 'POST', body: '{}' }, fetchImpl),
-  )) as { sessionId: string };
-  return body.sessionId;
+  )) as Partial<SessionCreated> & { sessionId: string };
+  return {
+    sessionId: body.sessionId,
+    writeMode: body.writeMode === 'readonly' ? 'readonly' : 'readwrite',
+    writeApproval: body.writeApproval === 'allow_auto' ? 'allow_auto' : 'ask',
+  };
 }
 
 /** POST /client-ai/sessions/:id/messages → 202 { accepted: true }; the turn streams over GET /events. */
@@ -106,6 +116,22 @@ export async function postToolResult(
     await apiFetch(
       `/client-ai/sessions/${sessionId}/tool-results`,
       { method: 'POST', body: JSON.stringify(result) },
+      fetchImpl,
+    ),
+  );
+}
+
+/** POST /client-ai/sessions/:id/flag — the end user flags their own conversation for review. */
+export async function flagSession(
+  sessionId: string,
+  reason?: string,
+  fetchImpl?: FetchLike,
+): Promise<void> {
+  const trimmed = reason?.trim();
+  await expectOk(
+    await apiFetch(
+      `/client-ai/sessions/${sessionId}/flag`,
+      { method: 'POST', body: JSON.stringify(trimmed ? { reason: trimmed } : {}) },
       fetchImpl,
     ),
   );

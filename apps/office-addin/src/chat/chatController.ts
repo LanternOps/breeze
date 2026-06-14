@@ -7,6 +7,7 @@
 import {
   ApiError,
   createSession,
+  flagSession,
   getSession,
   postToolResult,
   sendMessage,
@@ -20,23 +21,33 @@ import { captureWorkbookContext } from './captureContext';
 import type {
   ClientAiStreamEvent,
   SendMessageBody,
+  SessionCreated,
   SessionHistory,
   ToolCompletedStatus,
   ToolResultBody,
   TurnUsage,
   WorkbookContext,
   WorkbookContextKind,
+  WriteApproval,
 } from '../api/types';
 
 export type ChatApi = {
-  createSession: () => Promise<string>;
+  createSession: () => Promise<SessionCreated>;
   sendMessage: (sessionId: string, body: SendMessageBody) => Promise<void>;
   postToolResult: (sessionId: string, result: ToolResultBody) => Promise<void>;
   streamEvents: (sessionId: string, callbacks: StreamCallbacks) => StreamHandle;
   getSession: (sessionId: string) => Promise<SessionHistory>;
+  flagSession: (sessionId: string, reason?: string) => Promise<void>;
 };
 
-const realApi: ChatApi = { createSession, sendMessage, postToolResult, streamEvents, getSession };
+const realApi: ChatApi = {
+  createSession,
+  sendMessage,
+  postToolResult,
+  streamEvents,
+  getSession,
+  flagSession,
+};
 
 export type ThreadMessage =
   | { kind: 'user'; id: number; text: string; context?: WorkbookContext }
@@ -58,6 +69,16 @@ export type ChatState = {
   draft: string;
   contextKind: WorkbookContextKind;
   usage: TurnUsage | null;
+  /**
+   * Effective org write-approval policy for this session (server-authoritative;
+   * 'ask' until the session is created). The pane only shows the Auto/Ask
+   * toggle when this is 'allow_auto'.
+   */
+  writeApproval: WriteApproval;
+  /** Mirror of approvals.isAutoApply() for the toggle UI. */
+  autoApply: boolean;
+  /** True once the end user has flagged this conversation (Feature 2). */
+  flagged: boolean;
 };
 
 const ERROR_BANNERS: Record<string, string> = {
@@ -87,6 +108,9 @@ export class ChatController {
     draft: '',
     contextKind: 'selection',
     usage: null,
+    writeApproval: 'ask',
+    autoApply: false,
+    flagged: false,
   };
   private listeners = new Set<() => void>();
   private sessionId: string | null = null;
@@ -137,9 +161,42 @@ export class ChatController {
     this.update({ banner: null });
   }
 
+  /**
+   * Auto/Ask toggle (Feature 1). Hard-gated on the org policy: a request to
+   * enable auto-apply is IGNORED unless writeApproval === 'allow_auto'. The
+   * server is the real gate (it refuses to mark the policy auto otherwise), but
+   * the pane refuses too so a UI bug can't silently auto-write.
+   */
+  setAutoApply(value: boolean): void {
+    const allowed = value && this.state.writeApproval === 'allow_auto';
+    const next = value ? allowed : false;
+    this.approvals.setAutoApply(next);
+    this.update({ autoApply: this.approvals.isAutoApply() });
+  }
+
+  /**
+   * Flag this conversation for the MSP admin to review (Feature 2). No-op
+   * before a session exists (nothing to flag). On success sets flagged=true so
+   * the action can render as done; on failure surfaces an error banner and
+   * leaves flagged false so the user can retry.
+   */
+  async flagConversation(reason?: string): Promise<void> {
+    if (!this.sessionId) return;
+    try {
+      await this.api.flagSession(this.sessionId, reason);
+      this.update({ flagged: true });
+    } catch (err) {
+      this.update({ banner: { kind: 'error', text: bannerText(err) } });
+    }
+  }
+
   private async ensureSession(): Promise<string> {
     if (this.sessionId) return this.sessionId;
-    this.sessionId = await this.api.createSession();
+    const created = await this.api.createSession();
+    this.sessionId = created.sessionId;
+    // Surface the effective org write policy so the pane can render (or hide)
+    // the Auto/Ask toggle. Auto is impossible unless the org opted in.
+    this.update({ writeApproval: created.writeApproval });
     this.stream = this.api.streamEvents(this.sessionId, {
       onEvent: (event) => this.handleEvent(event),
       onReconnect: () => this.resync(),

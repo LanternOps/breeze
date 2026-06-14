@@ -25,6 +25,14 @@ export interface ClientAiOrgPolicy {
   /** Empty = all models of the allowed providers (provider defaults). */
   allowedModels: string[];
   writeMode: 'readwrite' | 'readonly';
+  /**
+   * Workbook-write approval policy (spec §7). 'ask' = the end user approves
+   * every write in the pane (current behaviour). 'allow_auto' = the org permits
+   * the end user to flip the pane into auto-apply. DEFAULT (and the
+   * default-deny fallback) is always 'ask' — auto-apply is impossible unless the
+   * org explicitly opts in here, enforced server-side, not just in the pane.
+   */
+  writeApproval: 'ask' | 'allow_auto';
   dlpConfig: Record<string, unknown>;
   dailyBudgetCents: number | null;
   monthlyBudgetCents: number | null;
@@ -43,6 +51,7 @@ export function defaultClientAiPolicy(orgId: string): ClientAiOrgPolicy {
     allowedProviders: ['anthropic'],
     allowedModels: [],
     writeMode: 'readwrite',
+    writeApproval: 'ask',
     dlpConfig: {},
     dailyBudgetCents: null,
     monthlyBudgetCents: null,
@@ -83,6 +92,9 @@ export async function getOrgPolicy(orgId: string): Promise<ClientAiOrgPolicy> {
     allowedProviders: asStringArray(row.allowedProviders, defaults.allowedProviders),
     allowedModels: asStringArray(row.allowedModels, defaults.allowedModels),
     writeMode: row.writeMode === 'readonly' ? 'readonly' : 'readwrite',
+    // Default-deny: ONLY the explicit 'allow_auto' opens the door; anything else
+    // (legacy null, garbage, an unknown future value) collapses to 'ask'.
+    writeApproval: row.writeApproval === 'allow_auto' ? 'allow_auto' : 'ask',
     dlpConfig: asRecord(row.dlpConfig),
     dailyBudgetCents: row.dailyBudgetCents ?? null,
     monthlyBudgetCents: row.monthlyBudgetCents ?? null,

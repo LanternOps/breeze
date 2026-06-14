@@ -45,6 +45,8 @@ export const putPolicySchema = z
     allowedProviders: z.array(z.string().min(1).max(50)).min(1).max(10).optional(),
     allowedModels: z.array(z.string().min(1).max(100)).max(50).optional(),
     writeMode: z.enum(['readwrite', 'readonly']).optional(),
+    /** Org gate for pane auto-apply (spec §7). 'ask' is the default-deny value. */
+    writeApproval: z.enum(['ask', 'allow_auto']).optional(),
     /** Validated + normalized (defaults filled) — see packages/shared/src/validators/clientAiDlp.ts. */
     dlpConfig: dlpConfigSchema.optional(),
     dailyBudgetCents: z.number().int().min(0).nullable().optional(),

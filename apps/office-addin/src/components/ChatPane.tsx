@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { ChatController } from '../chat/chatController';
 import { ChatThread } from './ChatThread';
+import { ChatToolbar } from './ChatToolbar';
 import { Composer } from './Composer';
 import { TemplatePicker } from './TemplatePicker';
 import { BrandingFooter } from './BrandingFooter';
@@ -20,9 +21,19 @@ export function ChatPane({ session }: { session: ClientSession }) {
   );
 
   const empty = state.thread.length === 0 && !state.streamingText;
+  // The flag action only makes sense once a conversation exists.
+  const conversationStarted = state.thread.length > 0 || !!state.streamingText;
 
   return (
     <div className="flex h-screen flex-col">
+      <ChatToolbar
+        writeApproval={state.writeApproval}
+        autoApply={state.autoApply}
+        flagged={state.flagged}
+        canFlag={conversationStarted}
+        onToggleAuto={(value) => controller.setAutoApply(value)}
+        onFlag={() => void controller.flagConversation()}
+      />
       {empty && <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />}
       <ChatThread
         state={state}
