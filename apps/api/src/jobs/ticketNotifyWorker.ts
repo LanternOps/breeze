@@ -28,9 +28,10 @@
 import { Worker, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { tickets, userNotifications, users } from '../db/schema';
+import { partners, tickets, userNotifications, users } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
+import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -52,6 +53,8 @@ interface EmailPayload {
   subject: string;
   html: string;
   bestEffort?: boolean; // if true, swallow send errors
+  replyTo?: string;
+  headers?: Record<string, string>;
 }
 
 async function getTicket(ticketId: string) {
@@ -113,11 +116,20 @@ async function collectAssigneeNotification(
 
 /**
  * Returns collected email payloads (does not send).
+ *
+ * Threading is OPT-IN per call (Phase 4 §5): pass a `commentId` to thread the
+ * email (technician public-comment reply). When `commentId` is absent (e.g. the
+ * `ticket.status_changed` 'Resolved' email) the function behaves exactly as
+ * before — no Reply-To, no headers, no anchor stamp. This keeps the Resolved
+ * email from emitting a bare-anchor Message-ID that would collide with the
+ * autoresponse's Message-ID and confuse the requester's mail client + PR1's
+ * thread-key resolver.
  */
 async function collectRequesterEmail(
   event: TicketEvent,
   bodyHtml: string,
-  subjectPrefix: string
+  subjectPrefix: string,
+  commentId?: string
 ): Promise<EmailPayload[]> {
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
   const ticket = await getTicket(event.ticketId);
@@ -129,10 +141,47 @@ async function collectRequesterEmail(
 
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
+  // Un-threaded path (e.g. ticket.status_changed 'Resolved'): unchanged from before.
+  if (!commentId) {
+    return [{
+      to: ticket.submitterEmail,
+      subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
+      html: bodyHtml
+    }];
+  }
+
+  // Threaded path (Phase 4 §5): partner inbound address as Reply-To + deterministic
+  // Message-ID/In-Reply-To/References so the requester's client threads the reply.
+  let replyTo: string | undefined;
+  if (ticket.partnerId) {
+    const partnerRows = await db
+      .select({ slug: partners.slug, settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, ticket.partnerId))
+      .limit(1);
+    const slug = partnerRows[0]?.slug;
+    const override = (partnerRows[0]?.settings as
+      | { ticketing?: { inbound?: { address?: string } } }
+      | undefined)?.ticketing?.inbound?.address;
+    if (slug) replyTo = partnerInboundAddress(slug, override) ?? undefined;
+  }
+
+  const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
+  const headers = Object.keys(built).length > 0 ? built : undefined;
+
+  // Stamp the thread anchor onto the ticket the FIRST time so inbound replies match
+  // PR1's email_thread_key resolver (round-trips with the In-Reply-To/References above).
+  const anchor = ticketThreadAnchor(ticket.id);
+  if (anchor && !ticket.emailThreadKey) {
+    await db.update(tickets).set({ emailThreadKey: anchor }).where(eq(tickets.id, ticket.id));
+  }
+
   return [{
     to: ticket.submitterEmail,
     subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-    html: bodyHtml
+    html: bodyHtml,
+    replyTo,
+    headers
   }];
 }
 
@@ -208,7 +257,8 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
           emailPayloads = await collectRequesterEmail(
             event,
             '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',
-            'New reply'
+            'New reply',
+            event.payload.commentId
           );
         }
         return;
@@ -241,15 +291,22 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
   if (!email || emailPayloads.length === 0) return;
 
   for (const payload of emailPayloads) {
+    const sendArgs = {
+      to: payload.to,
+      subject: payload.subject,
+      html: payload.html,
+      replyTo: payload.replyTo,
+      headers: payload.headers
+    };
     if (payload.bestEffort) {
       try {
-        await email.sendEmail({ to: payload.to, subject: payload.subject, html: payload.html });
+        await email.sendEmail(sendArgs);
       } catch (err) {
         console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
       }
     } else {
       // Non-best-effort: let throw bubble up so BullMQ can retry.
-      await email.sendEmail({ to: payload.to, subject: payload.subject, html: payload.html });
+      await email.sendEmail(sendArgs);
     }
   }
 }
