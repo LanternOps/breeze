@@ -94,15 +94,18 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// remote handler (handlers_actuate.go). Deriving from ctx (not
 		// context.Background) preserves agent-shutdown cancellation while
 		// adding a flow-scoped timeout so a stuck desktop can't pin the
-		// etwlua loop goroutine forever.
-		actCtx, cancel := context.WithTimeout(ctx, 2*defaultActuateTimeoutMs*time.Millisecond)
-		res := h.actuateElevation(actCtx, outcome.RequestID, defaultActuateTimeoutMs)
-		cancel()
-		if res.Success {
-			log.Info("pam: local actuation complete", "elevationRequestId", outcome.RequestID, "success", true, "reason", res.Reason)
-		} else {
-			log.Warn("pam: local actuation failed", "elevationRequestId", outcome.RequestID, "reason", res.Reason, "message", res.DetailMessage)
-		}
+		// etwlua loop goroutine forever. Wrapped in a closure so defer cancel
+		// releases the timer even if actuateElevation panics (recovered above).
+		func() {
+			actCtx, cancel := context.WithTimeout(ctx, 2*defaultActuateTimeoutMs*time.Millisecond)
+			defer cancel()
+			res := h.actuateElevation(actCtx, outcome.RequestID, defaultActuateTimeoutMs)
+			if res.Success {
+				log.Info("pam: local actuation complete", "elevationRequestId", outcome.RequestID, "success", true, "reason", res.Reason)
+			} else {
+				log.Warn("pam: local actuation failed", "elevationRequestId", outcome.RequestID, "reason", res.Reason, "message", res.DetailMessage)
+			}
+		}()
 	case sessionbroker.PamActionDeny:
 		h.denyConsent(ctx, outcome.RequestID, dialog.Reason)
 	case sessionbroker.PamActionAwaitRemote:
