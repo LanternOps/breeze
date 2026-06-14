@@ -46,7 +46,8 @@ export function ChatPane({ session }: { session: ClientSession }) {
 
   return (
     <div className="relative flex h-screen flex-col">
-      <div className="flex items-center justify-between border-b border-gray-100 px-3 py-1.5">
+      {/* pr-10: keep the right-side buttons clear of Office's pinned top-right pane button (Mac). */}
+      <div className="flex items-center justify-between border-b border-gray-100 py-1.5 pl-3 pr-10">
         <button
           type="button"
           onClick={() => controller.startNewSession()}

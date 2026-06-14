@@ -59,7 +59,8 @@ export function HistoryPanel({
 
   return (
     <div className="absolute inset-0 z-10 flex flex-col bg-white" data-testid="history-panel">
-      <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
+      {/* pr-10: keep the close × clear of Office's pinned top-right pane button (Mac). */}
+      <div className="flex items-center justify-between border-b border-gray-100 py-2 pl-3 pr-10">
         <span className="text-sm font-semibold text-gray-800">Conversation history</span>
         <button
           type="button"
