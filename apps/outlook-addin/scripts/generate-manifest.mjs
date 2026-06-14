@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Renders manifest.template.xml -> manifest.xml from env / .env / CLI flags.
-//   node scripts/generate-manifest.mjs [--base-url https://localhost:3000] [--out manifest.xml]
+//   node scripts/generate-manifest.mjs [--base-url https://localhost:3004] [--out manifest.xml]
 // Precedence: process.env > .env file > defaults. Fails loudly on unreplaced tokens.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -27,7 +27,7 @@ const argValue = (flag) => {
   return i === -1 ? undefined : args[i + 1];
 };
 
-const baseUrl = (argValue('--base-url') ?? env.ADDIN_BASE_URL ?? 'https://localhost:3000').replace(/\/$/, '');
+const baseUrl = (argValue('--base-url') ?? env.ADDIN_BASE_URL ?? 'https://localhost:3004').replace(/\/$/, '');
 const apiBaseUrl = (env.VITE_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 const clientId = env.VITE_CLIENT_AI_ENTRA_CLIENT_ID ?? env.CLIENT_AI_ENTRA_CLIENT_ID ?? '00000000-0000-0000-0000-000000000000';
 // Stable add-in identity GUID. Override per environment (dev vs prod must differ
