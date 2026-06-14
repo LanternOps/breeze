@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, ilike, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { catalogItems, catalogItemOrgPricing, catalogBundleComponents } from '../db/schema';
 import { emitCatalogEvent } from './catalogEvents';
@@ -17,11 +17,16 @@ export type CatalogServiceErrorCode =
   | 'ITEM_NOT_FOUND'
   | 'NOT_A_BUNDLE'
   | 'DUPLICATE_SKU'
+  | 'ORG_DENIED'
+  | 'PRICE_OUT_OF_RANGE'
   | 'BUNDLE_SELF_REFERENCE'
   | 'BUNDLE_NESTED'
   | 'BUNDLE_CROSS_PARTNER'
   | 'BUNDLE_COMPONENT_NOT_FOUND'
   | 'BUNDLE_DUPLICATE_COMPONENT';
+
+// numeric(12,2) ceiling for any money column written by this service.
+const MAX_NUMERIC_12_2 = 9_999_999_999.99;
 
 export class CatalogServiceError extends Error {
   constructor(
@@ -37,6 +42,14 @@ export class CatalogServiceError extends Error {
 export interface CatalogActor {
   userId: string;
   partnerId: string | null;
+  /**
+   * auth.accessibleOrgIds — the org-axis allowlist (mirrors TimeEntryActor).
+   * `null` = system scope (unrestricted). A partner user with
+   * orgAccess='selected' carries only the granted org ids here, so an
+   * override write/read for a non-granted org under the same partner is
+   * denied here (mapped 403) rather than surfacing as a raw RLS 42501 -> 500.
+   */
+  accessibleOrgIds: string[] | null;
 }
 
 function requirePartner(actor: CatalogActor): string {
@@ -46,6 +59,23 @@ function requirePartner(actor: CatalogActor): string {
   return actor.partnerId;
 }
 
+// Org-axis guard mirroring resolveTicketLink's TICKET_ORG_DENIED check in
+// timeEntryService. Rejects a same-partner org the caller can't access before
+// touching the DB. `accessibleOrgIds === null` is system scope (unrestricted).
+function requireOrgAccess(actor: CatalogActor, orgId: string): void {
+  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(orgId)) {
+    throw new CatalogServiceError('Organization not accessible', 403, 'ORG_DENIED');
+  }
+}
+
+// Guard a derived/explicit money value against the numeric(12,2) column ceiling
+// so an extreme cost+markup product fails as a 400, not a DB-rejection 500.
+function assertPriceInRange(unitPrice: string): void {
+  if (Number(unitPrice) > MAX_NUMERIC_12_2) {
+    throw new CatalogServiceError('Derived unit price exceeds the maximum supported value', 400, 'PRICE_OUT_OF_RANGE');
+  }
+}
+
 export async function createCatalogItem(input: CreateCatalogItemInput, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
   const unitPrice = deriveUnitPrice({
@@ -53,6 +83,7 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
     costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
     markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null
   });
+  assertPriceInRange(unitPrice);
   try {
     const rows = await db.insert(catalogItems).values({
       partnerId,
@@ -95,11 +126,19 @@ export async function updateCatalogItem(id: string, input: UpdateCatalogItemInpu
   const existing = await getOwnedItemOr404(id, partnerId);
 
   // Recompute derived price if markup/cost changed and no explicit price supplied.
+  // unit_price is authoritative — a manually entered unit_price always wins, and a
+  // markup/cost-only PATCH must never silently wipe the stored sell price to 0.00.
+  // We therefore only (re)derive when an explicit price is supplied, or when BOTH a
+  // cost basis and markup are present to actually drive the derivation; if a
+  // price-driver changed but there is no cost basis to derive from, we preserve the
+  // existing unit_price rather than collapsing it to deriveUnitPrice()'s '0.00' floor.
   const nextCost = input.costBasis !== undefined ? input.costBasis : (existing.costBasis != null ? Number(existing.costBasis) : null);
   const nextMarkup = input.markupPercent !== undefined ? input.markupPercent : (existing.markupPercent != null ? Number(existing.markupPercent) : null);
+  const shouldDeriveUnitPrice = input.unitPrice !== undefined || (nextCost != null && nextMarkup != null);
   const unitPrice = input.unitPrice !== undefined
     ? input.unitPrice.toFixed(2)
     : deriveUnitPrice({ explicitPrice: undefined, costBasis: nextCost != null ? nextCost.toFixed(2) : null, markupPercent: nextMarkup != null ? nextMarkup.toFixed(2) : null });
+  if (shouldDeriveUnitPrice) assertPriceInRange(unitPrice);
 
   const patch: Record<string, unknown> = { updatedAt: new Date() };
   if (input.itemType !== undefined) patch.itemType = input.itemType;
@@ -107,7 +146,7 @@ export async function updateCatalogItem(id: string, input: UpdateCatalogItemInpu
   if (input.sku !== undefined) patch.sku = input.sku;
   if (input.description !== undefined) patch.description = input.description;
   if (input.billingType !== undefined) patch.billingType = input.billingType;
-  if (input.unitPrice !== undefined || input.costBasis !== undefined || input.markupPercent !== undefined) patch.unitPrice = unitPrice;
+  if (shouldDeriveUnitPrice) patch.unitPrice = unitPrice;
   if (input.costBasis !== undefined) patch.costBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
   if (input.markupPercent !== undefined) patch.markupPercent = input.markupPercent != null ? input.markupPercent.toFixed(2) : null;
   if (input.unitOfMeasure !== undefined) patch.unitOfMeasure = input.unitOfMeasure;
@@ -164,8 +203,10 @@ export async function getCatalogItem(id: string, actor: CatalogActor) {
 
 export async function setOrgPriceOverride(itemId: string, orgId: string, input: OrgPriceOverrideInput, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
+  requireOrgAccess(actor, orgId);
   await getOwnedItemOr404(itemId, partnerId); // ensures the item is this partner's
   const unitPrice = input.unitPrice.toFixed(2);
+  assertPriceInRange(unitPrice);
   const rows = await db.insert(catalogItemOrgPricing)
     .values({ catalogItemId: itemId, orgId, unitPrice })
     .onConflictDoUpdate({
@@ -177,6 +218,7 @@ export async function setOrgPriceOverride(itemId: string, orgId: string, input: 
 
 export async function removeOrgPriceOverride(itemId: string, orgId: string, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
+  requireOrgAccess(actor, orgId);
   await getOwnedItemOr404(itemId, partnerId);
   await db.delete(catalogItemOrgPricing)
     .where(and(eq(catalogItemOrgPricing.catalogItemId, itemId), eq(catalogItemOrgPricing.orgId, orgId)));
@@ -224,6 +266,7 @@ export async function setBundleComponents(bundleId: string, components: BundleCo
 
 export async function resolvePrice(catalogItemId: string, orgId: string | null, actor: CatalogActor): Promise<ResolvedPrice> {
   const partnerId = requirePartner(actor);
+  if (orgId) requireOrgAccess(actor, orgId);
   const item = await getOwnedItemOr404(catalogItemId, partnerId);
   let override: { unitPrice: string } | null = null;
   if (orgId) {
@@ -239,6 +282,7 @@ export async function resolvePrice(catalogItemId: string, orgId: string | null, 
 
 export async function computeBundleEconomics(bundleId: string, orgId: string | null, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
+  if (orgId) requireOrgAccess(actor, orgId);
   const bundle = await getOwnedItemOr404(bundleId, partnerId);
   if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
   const headline = orgId ? (await resolvePrice(bundleId, orgId, actor)).unitPrice : bundle.unitPrice;
