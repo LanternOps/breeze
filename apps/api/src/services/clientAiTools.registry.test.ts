@@ -95,16 +95,82 @@ describe('host-keyed registry map', () => {
     expect(CLIENT_TOOL_REGISTRY).toBe(EXCEL_CLIENT_TOOL_REGISTRY);
   });
 
-  it('word/powerpoint/outlook registries are empty (unsupported until built)', () => {
-    expect(Object.keys(CLIENT_TOOL_REGISTRIES.word)).toHaveLength(0);
+  it('powerpoint/outlook registries are empty (unsupported until built)', () => {
+    expect(Object.keys(CLIENT_TOOL_REGISTRIES.powerpoint)).toHaveLength(0);
+    expect(Object.keys(CLIENT_TOOL_REGISTRIES.outlook)).toHaveLength(0);
     expect(isClientHostSupported('excel')).toBe(true);
-    expect(isClientHostSupported('word')).toBe(false);
+    expect(isClientHostSupported('powerpoint')).toBe(false);
+    expect(isClientHostSupported('outlook')).toBe(false);
   });
 
   it('MCP server name + prefix are host-keyed', () => {
     expect(clientMcpServerName('excel')).toBe('excel');
     expect(clientMcpToolPrefix('excel')).toBe('mcp__excel__');
     expect(clientMcpServerName('word')).toBe('word');
+  });
+});
+
+const WORD_PINNED_NAMES = [
+  'find_replace',
+  'format_text',
+  'get_document_overview',
+  'insert_text',
+  'read_selection',
+];
+
+const WORD_PINNED_MUTATING = ['find_replace', 'format_text', 'insert_text'];
+
+describe('word', () => {
+  it('contains exactly the 5 baseline Word tools', () => {
+    expect(Object.keys(CLIENT_TOOL_REGISTRIES.word).sort()).toEqual(WORD_PINNED_NAMES);
+    expect(clientToolNames('word').slice().sort()).toEqual(WORD_PINNED_NAMES);
+  });
+
+  it('flags exactly the 3 write tools as mutating', () => {
+    const mutating = Object.entries(CLIENT_TOOL_REGISTRIES.word)
+      .filter(([, def]) => def.mutating)
+      .map(([name]) => name)
+      .sort();
+    expect(mutating).toEqual(WORD_PINNED_MUTATING);
+  });
+
+  it('is supported once the registry is populated', () => {
+    expect(isClientHostSupported('word')).toBe(true);
+  });
+
+  it('every tool has a non-empty description and an inputSchema object', () => {
+    for (const def of Object.values(CLIENT_TOOL_REGISTRIES.word)) {
+      expect(def.description.length).toBeGreaterThan(20);
+      expect(typeof def.inputSchema).toBe('object');
+    }
+  });
+
+  it('uses the mcp__word__ namespace for every tool', () => {
+    expect(clientMcpServerName('word')).toBe('word');
+    expect(clientMcpToolPrefix('word')).toBe('mcp__word__');
+    const names = clientMcpToolNames('word');
+    expect(names).toHaveLength(5);
+    for (const name of names) {
+      expect(name.startsWith('mcp__word__')).toBe(true);
+      expect(BREEZE_MCP_TOOL_NAMES).not.toContain(name);
+    }
+  });
+
+  it('shares no tool name with the technician registries', () => {
+    for (const name of clientToolNames('word')) {
+      expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBeUndefined();
+      expect(aiTools.has(name)).toBe(false);
+    }
+  });
+
+  it('readwrite exposes all 5 tools; readonly strips the 3 mutating (length 2)', () => {
+    expect(clientMcpToolNamesForWriteMode('word', 'readwrite')).toHaveLength(5);
+    const readonly = clientMcpToolNamesForWriteMode('word', 'readonly');
+    expect(readonly).toHaveLength(2);
+    expect(readonly.sort()).toEqual([
+      'mcp__word__get_document_overview',
+      'mcp__word__read_selection',
+    ]);
   });
 });
 
