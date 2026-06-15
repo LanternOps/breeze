@@ -84,4 +84,25 @@ describe('runtime config', () => {
     await loadRuntimeConfig(fetchReturning({ apiBaseUrl: 'https://eu.2breeze.app//', entraClientId: 'x' }));
     expect(getApiBaseUrl()).toBe('https://eu.2breeze.app');
   });
+
+  // Guards the highest-impact silent regression this refactor exists to prevent:
+  // if a consumer ever captured the value at module-load instead of via the
+  // getter, production would silently use the localhost fallback. The getter
+  // must always reflect post-load state, never a frozen snapshot.
+  it('getters reflect post-load state, not a frozen snapshot', async () => {
+    const early = getApiBaseUrl();
+    expect(early).toBe('http://localhost:3001');
+    await loadRuntimeConfig(fetchReturning({ apiBaseUrl: 'https://us.2breeze.app', entraClientId: 'g' }));
+    expect(getApiBaseUrl()).toBe('https://us.2breeze.app');
+    expect(early).toBe('http://localhost:3001'); // the snapshot is stale; the getter is live
+  });
+
+  // "last successful load wins" — a failed reload must NOT clobber a good config
+  // back to localhost (the catch returns the current runtime, not FALLBACK).
+  it('a failed reload preserves the last successful config', async () => {
+    await loadRuntimeConfig(fetchReturning({ apiBaseUrl: 'https://us.2breeze.app', entraClientId: 'g' }));
+    await loadRuntimeConfig(fetchRejecting);
+    expect(getApiBaseUrl()).toBe('https://us.2breeze.app');
+    expect(getEntraClientId()).toBe('g');
+  });
 });

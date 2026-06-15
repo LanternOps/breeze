@@ -66,8 +66,14 @@ export async function loadRuntimeConfig(fetchImpl: typeof fetch = fetch): Promis
           ? body.apiBaseUrl
           : FALLBACK.apiBaseUrl
         ).replace(/\/+$/, ''),
+        // Symmetric with apiBaseUrl: an empty string falls back too, so the
+        // committed dev config.json (entraClientId "") lets VITE_CLIENT_AI_ENTRA_CLIENT_ID
+        // fill it in, and a deployment that forgets the client ID degrades to
+        // the fallback rather than locking in an unusable empty SSO client.
         entraClientId:
-          typeof body.entraClientId === 'string' ? body.entraClientId : FALLBACK.entraClientId,
+          typeof body.entraClientId === 'string' && body.entraClientId
+            ? body.entraClientId
+            : FALLBACK.entraClientId,
       };
       return runtime;
     }
