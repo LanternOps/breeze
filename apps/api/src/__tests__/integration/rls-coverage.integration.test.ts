@@ -126,6 +126,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Functional cross-partner forge proof: emailInboundRls.integration.test.ts.
   ['ticket_email_inbound', 'partner_id'],
   ['partner_inbound_domains', 'partner_id'],
+  // Stripe payments (2026-06-15): one connected Stripe account per partner
+  // (RLS shape 3, flat breeze_has_partner_access(partner_id)). The sibling
+  // invoice_stripe_payments table carries a direct org_id column and is
+  // auto-discovered as an ordinary shape-1 org-tenant table — not listed here.
+  // Functional cross-partner forge proof: stripe-payments-rls.integration.test.ts.
+  ['stripe_connect_accounts', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

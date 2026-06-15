@@ -166,6 +166,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'invoice_documents',
   'invoice_lines',
   'invoice_payments',
+  'invoice_stripe_payments',
   'invoices',
   'local_vaults',
   'log_correlation_rules',
