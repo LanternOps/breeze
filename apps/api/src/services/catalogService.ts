@@ -47,7 +47,8 @@ export class CatalogServiceError extends Error {
 }
 
 export interface CatalogActor {
-  userId: string;
+  /** The user who initiated the action, or null for system/background actors. */
+  userId: string | null;
   partnerId: string | null;
   /**
    * auth.accessibleOrgIds — the org-axis allowlist (mirrors TimeEntryActor).

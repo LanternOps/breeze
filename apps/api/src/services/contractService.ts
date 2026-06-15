@@ -3,8 +3,12 @@ import { db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations } from '../db/schema';
 import { ContractServiceError, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
-import { periodIndexFor, nextBillingDate } from './contractMath';
+import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
+import { createManualInvoice, addContractLine, issueInvoice, deleteDraftInvoice } from './invoiceService';
+import { sendInvoiceEmail } from './invoicePdf';
+import { countContractDevices, countContractSeats } from './contractQuantities';
+import type { InvoiceActor } from './invoiceTypes';
 
 export type ContractActorT = ContractActor;
 
@@ -181,4 +185,122 @@ export async function cancelContract(contractId: string, actor: ContractActor) {
     .where(eq(contracts.id, contractId)).returning();
   await emitContractEvent({ type: 'contract.cancelled', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
   return row!;
+}
+
+interface GenerateResult {
+  generated: boolean;
+  invoiceId?: string;
+  skipped?: 'already_billed' | 'expired' | 'not_due';
+}
+
+/**
+ * Generate the invoice for whatever period is currently due on this contract.
+ *
+ * Idempotency is the whole point: the (contract_id, period_start) UNIQUE
+ * constraint on contract_billing_periods makes double-billing physically
+ * impossible. The order is deliberate — create draft → add lines → CLAIM the
+ * ledger row (ON CONFLICT DO NOTHING). A run that loses the claim race deletes
+ * its own still-draft invoice and skips; the winner advances the pointer.
+ *
+ * INTENTIONAL system-scope: this performs cross-row writes via the bare `db`
+ * handle (no per-request org context) and therefore MUST be called inside a
+ * system db access context (as the daily contract worker and the manual /generate
+ * route will — both must wrap it in `runOutsideDbContext(() => withSystemDbAccessContext(...))`).
+ * It is NOT directly HTTP-wired. This mirrors the documented background-path
+ * pattern of invoiceService.runOverdueSweep.
+ *
+ * Catalog pricing is resolved INSIDE addContractLine (tenant-scoped), not here:
+ * when a line carries a catalogItemId, addContractLine calls resolvePrice itself
+ * and ignores the unitPrice/taxable we pass; on the non-catalog path it uses them.
+ * So this function only computes the per-line QUANTITY.
+ */
+export async function generateDueInvoice(contractId: string, asOf: Date = new Date()): Promise<GenerateResult> {
+  const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1);
+  if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+  // Cast the enum to a string for comparison — postgres.js returns the enum as a
+  // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
+  // while the runtime check stays a simple string compare (mirrors listContracts).
+  if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
+    return { generated: false, skipped: 'not_due' };
+  }
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, skipped: 'not_due' };
+
+  // Which period does this billing run cover?
+  // advance: the period whose START == nextBillingAt.
+  // arrears: the just-completed period (whose END == nextBillingAt) → one index back.
+  const idxAt = periodIndexFor(c.startDate, c.intervalMonths, c.nextBillingAt);
+  const idx = Math.max(0, c.billingTiming === 'advance' ? idxAt : idxAt - 1);
+  const period = computePeriod(c.startDate, c.intervalMonths, idx);
+
+  // Expiry at due-check: if this period starts on/after the end date, expire (do not bill).
+  if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
+    await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
+    await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
+    return { generated: false, skipped: 'expired' };
+  }
+
+  // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
+  // imported contracts; pass it through as-is — invoices.created_by is also nullable.
+  const actor: InvoiceActor = {
+    userId: c.createdBy,
+    partnerId: c.partnerId,
+    accessibleOrgIds: [c.orgId]
+  };
+  const lines = await db.select().from(contractLines)
+    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+
+  // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
+  //    (the engine has no terms param on create).
+  const noteParts = [c.notes, c.terms].filter(Boolean) as string[];
+  const inv = await createManualInvoice(
+    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined },
+    actor
+  );
+
+  // 2. Add each contract line. We compute ONLY the quantity. unitPrice/taxable are
+  //    passed as-is — addContractLine ignores them and resolves the catalog price
+  //    when catalogItemId is set, or uses them when it is null.
+  for (const l of lines) {
+    let quantity = '1';
+    if (l.lineType === 'manual') quantity = l.manualQuantity ?? '0';
+    else if (l.lineType === 'per_device') quantity = String(await countContractDevices(c.orgId, l.siteId));
+    else if (l.lineType === 'per_seat') quantity = String(await countContractSeats(c.orgId));
+    await addContractLine(inv.id, {
+      description: l.description, quantity, unitPrice: l.unitPrice, taxable: l.taxable,
+      catalogItemId: l.catalogItemId, sourceId: l.id
+    }, actor);
+  }
+
+  // 3. Claim the period (idempotency guard). On conflict this run lost a race →
+  //    bin the still-draft invoice and skip.
+  const claimed = await db.insert(contractBillingPeriods).values({
+    contractId, orgId: c.orgId, periodStart: period.periodStart, periodEnd: period.periodEnd, invoiceId: inv.id
+  }).onConflictDoNothing({
+    target: [contractBillingPeriods.contractId, contractBillingPeriods.periodStart]
+  }).returning({ id: contractBillingPeriods.id });
+
+  if (claimed.length === 0) {
+    await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
+    return { generated: false, skipped: 'already_billed' };
+  }
+
+  // 4. Auto-issue + send when the contract opts in.
+  if (c.autoIssue) {
+    await issueInvoice(inv.id, actor);
+    await sendInvoiceEmail(inv.id, actor);
+  }
+
+  // 5. Advance the pointer to the next period (or expire if the next period is past end_date).
+  const nextIdx = idx + 1;
+  const nextPeriod = computePeriod(c.startDate, c.intervalMonths, nextIdx);
+  if (isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
+    await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
+    await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
+  } else {
+    const nextAt = c.billingTiming === 'advance' ? nextPeriod.periodStart : nextPeriod.periodEnd;
+    await db.update(contracts).set({ nextBillingAt: nextAt, updatedAt: asOf }).where(eq(contracts.id, contractId));
+  }
+
+  await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
+  return { generated: true, invoiceId: inv.id };
 }

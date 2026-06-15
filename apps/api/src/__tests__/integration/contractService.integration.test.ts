@@ -15,11 +15,12 @@
  */
 import './setup';
 import { describe, it, expect } from 'vitest';
+import { eq, and } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations } from '../../db/schema';
+import { partners, organizations, sites, devices, users, contracts, contractBillingPeriods, contractLines, invoiceLines, invoices } from '../../db/schema';
 import {
   createContract, getContract, addContractLineToContract, updateContract, listContracts,
-  activateContract, pauseContract, resumeContract, cancelContract,
+  activateContract, pauseContract, resumeContract, cancelContract, generateDueInvoice,
   type ContractActorT
 } from '../../services/contractService';
 
@@ -194,5 +195,172 @@ describe('contractService lifecycle', () => {
     // Calling cancel again on an already-cancelled contract should not throw
     const again = await withSystemDbAccessContext(() => cancelContract(c.id, actor));
     expect(again.status).toBe('cancelled');
+  });
+});
+
+describe('contractService generation', () => {
+  // Generation creates a real invoice, which stamps invoices.created_by from the
+  // actor's userId (FK → users). So generation tests need a REAL user as createdBy
+  // (the contract carries it through), unlike the CRUD/lifecycle tests which never
+  // create an invoice and can leave createdBy null.
+  async function seedOrgWithUser(): Promise<{ actor: ContractActorT; orgId: string }> {
+    const { orgId } = await seedOrg();
+    const sfx = Math.random().toString(36).slice(2, 8);
+    let partnerId = '';
+    let userId = '';
+    await withSystemDbAccessContext(async () => {
+      const [org] = await db.select({ partnerId: organizations.partnerId })
+        .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      partnerId = org!.partnerId;
+      const [u] = await db.insert(users).values({
+        partnerId, orgId, email: `gen-${sfx}@x.io`, name: 'Gen User', status: 'active'
+      }).returning({ id: users.id });
+      userId = u!.id;
+    });
+    return { actor: { userId, partnerId, accessibleOrgIds: [orgId] }, orgId };
+  }
+
+  it('generates exactly one draft invoice for the due period (idempotent)', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'GenTest', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'Managed', unitPrice: '500.00', taxable: false
+    }, actor));
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T08:00:00Z')));
+
+    const res = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T08:00:00Z')));
+    expect(res.generated).toBe(true);
+    expect(res.invoiceId).toBeTruthy();
+
+    // Second serial run is a no-op: the pointer already advanced to 2026-08-01,
+    // so the next period is not yet due. (The ledger's already_billed path is the
+    // belt-and-suspenders guard for the CONCURRENT race — exercised below.)
+    const again = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T09:00:00Z')));
+    expect(again.generated).toBe(false);
+    expect(again.skipped).toBe('not_due');
+
+    // Exactly one billing-period row for the contract proves no double-billing.
+    const periods = await withSystemDbAccessContext(() =>
+      db.select().from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, c.id)));
+    expect(periods).toHaveLength(1);
+    expect(periods[0]!.periodStart).toBe('2026-07-01');
+    expect(periods[0]!.invoiceId).toBe(res.invoiceId);
+  });
+
+  it('skips with already_billed when the period was already claimed (race loser)', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'RaceTest', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'Managed', unitPrice: '500.00', taxable: false
+    }, actor));
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T08:00:00Z')));
+
+    // First run claims the July period and advances the pointer to 2026-08-01.
+    const first = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T08:00:00Z')));
+    expect(first.generated).toBe(true);
+
+    // Simulate a concurrent run that started against the SAME period: rewind the
+    // pointer to 2026-07-01 so generateDueInvoice re-targets the already-claimed
+    // July period. The ledger unique constraint must reject the re-claim, the
+    // loser deletes its own draft, and the pointer is NOT advanced again.
+    await withSystemDbAccessContext(() =>
+      db.update(contracts).set({ nextBillingAt: '2026-07-01' }).where(eq(contracts.id, c.id)));
+
+    const loser = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T08:05:00Z')));
+    expect(loser.generated).toBe(false);
+    expect(loser.skipped).toBe('already_billed');
+
+    // Still exactly one billing-period row, and the loser's draft was reaped.
+    const periods = await withSystemDbAccessContext(() =>
+      db.select().from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, c.id)));
+    expect(periods).toHaveLength(1);
+    const drafts = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceLines).where(eq(invoiceLines.sourceType, 'contract')));
+    // Only the winning invoice's contract line remains (loser's draft cascaded away).
+    expect(drafts.every((l) => l.invoiceId === first.invoiceId)).toBe(true);
+  });
+
+  it('generates successfully when the contract has createdBy = null (FK cliff fix)', async () => {
+    // System-seeded / imported contracts have createdBy NULL. Before the fix, the
+    // zero-uuid sentinel triggered a 23503 FK violation on invoices.created_by.
+    // After the fix, null propagates cleanly and invoices.created_by stays null.
+    const sfx = Math.random().toString(36).slice(2, 8);
+    let contractId = '';
+    let partnerId = '';
+    let orgId = '';
+    await withSystemDbAccessContext(async () => {
+      const [p] = await db.insert(partners).values({
+        name: `SysPart-${sfx}`, slug: `sp-${sfx}`, type: 'msp', plan: 'pro', status: 'active'
+      }).returning({ id: partners.id });
+      partnerId = p!.id;
+      const [o] = await db.insert(organizations).values({
+        partnerId, name: `SysOrg-${sfx}`, slug: `so-${sfx}`
+      }).returning({ id: organizations.id });
+      orgId = o!.id;
+      // Insert contract directly with createdBy: null — simulates a system-seeded /
+      // imported contract that has no originating user.
+      const [c] = await db.insert(contracts).values({
+        partnerId, orgId, name: 'Sys Contract', status: 'active',
+        billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01',
+        nextBillingAt: '2026-07-01', autoIssue: false, currencyCode: 'USD',
+        createdBy: null
+      }).returning({ id: contracts.id });
+      contractId = c!.id;
+      await db.insert(contractLines).values({
+        contractId, orgId, lineType: 'flat', description: 'Flat fee', unitPrice: '100.00',
+        taxable: false, sortOrder: 0
+      });
+    });
+
+    const res = await withSystemDbAccessContext(() =>
+      generateDueInvoice(contractId, new Date('2026-07-01T08:00:00Z'))
+    );
+
+    expect(res.generated).toBe(true);
+    expect(res.invoiceId).toBeTruthy();
+
+    // The invoice's created_by column must be null — NOT the zero-uuid sentinel.
+    const [inv] = await withSystemDbAccessContext(() =>
+      db.select({ createdBy: invoices.createdBy }).from(invoices)
+        .where(eq(invoices.id, res.invoiceId!)).limit(1)
+    );
+    expect(inv!.createdBy).toBeNull();
+  });
+
+  it('resolves a per_device line quantity to the live device count', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const sfx = Math.random().toString(36).slice(2, 8);
+    // Seed two non-decommissioned devices org-wide (no site filter on the line).
+    // devices.site_id is NOT NULL, so seed a site to hang them on.
+    await withSystemDbAccessContext(async () => {
+      const [s] = await db.insert(sites).values({ orgId, name: `GenSite-${sfx}` }).returning({ id: sites.id });
+      await db.insert(devices).values([
+        { orgId, siteId: s!.id, agentId: `g1-${sfx}`, hostname: 'g1', status: 'online',  osType: 'linux', osVersion: '22.04', architecture: 'x86_64', agentVersion: '1.0.0' },
+        { orgId, siteId: s!.id, agentId: `g2-${sfx}`, hostname: 'g2', status: 'offline', osType: 'linux', osVersion: '22.04', architecture: 'x86_64', agentVersion: '1.0.0' },
+      ]);
+    });
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'PerDevice', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'per_device', description: 'RMM per device', unitPrice: '15.00', taxable: true
+    }, actor));
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T08:00:00Z')));
+
+    const res = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T08:00:00Z')));
+    expect(res.generated).toBe(true);
+
+    const lines = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceLines).where(and(
+        eq(invoiceLines.invoiceId, res.invoiceId!), eq(invoiceLines.sourceType, 'contract')
+      )));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.quantity).toBe('2.00');        // two non-decommissioned devices (numeric(12,2))
+    expect(lines[0]!.unitPrice).toBe('15.00');
+    expect(lines[0]!.lineTotal).toBe('30.00');      // 2 * 15.00
   });
 });
