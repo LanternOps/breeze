@@ -4,6 +4,7 @@ import { db } from '../db';
 import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
 import { verifyPinAttempt } from './pin';
+import { loadPartnerPolicy } from './authenticatorPolicy';
 import type { AssertionProof, MobileHwKeyProof } from '@breeze/shared';
 import {
   resolveApprovalAssurance,
@@ -52,6 +53,13 @@ vi.mock('./pin', () => ({
   verifyPinAttempt: vi.fn(),
 }));
 
+// Phase 4: mock loadPartnerPolicy (it shares the db.select mock with the device
+// lookup, so we control it directly); keep isEnforcing REAL (it's pure).
+vi.mock('./authenticatorPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./authenticatorPolicy')>();
+  return { ...actual, loadPartnerPolicy: vi.fn().mockResolvedValue(null) };
+});
+
 const mockDb = db as unknown as {
   select: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
@@ -59,6 +67,7 @@ const mockDb = db as unknown as {
 const mockVerify = verifyApprovalAssertion as unknown as ReturnType<typeof vi.fn>;
 const mockConsumeNonce = consumeMobileAssertionNonce as unknown as ReturnType<typeof vi.fn>;
 const mockVerifyPin = verifyPinAttempt as unknown as ReturnType<typeof vi.fn>;
+const mockLoadPolicy = loadPartnerPolicy as unknown as ReturnType<typeof vi.fn>;
 
 const PROOF: AssertionProof = {
   type: 'webauthn_platform',
@@ -512,5 +521,59 @@ describe('resolveElevationAssurance', () => {
     expect(resolveElevationAssurance(4).requiredLevel).toBe(4);
     expect(resolveElevationAssurance(1).requiredLevel).toBe(1);
     expect(resolveElevationAssurance(null).requiredLevel).toBe(2); // null → medium
+  });
+});
+
+describe('assertApprovalAssurance — Phase 4 enforcement (partner policy, deny-safe)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadPolicy.mockResolvedValue(null);
+    setupDbMocks(null);
+  });
+
+  const ENFORCING = { requireEnrollment: true, enforceFrom: null, floorOverrides: {} as Record<string, number> };
+
+  it('raises the required level from a partner floor override', async () => {
+    mockLoadPolicy.mockResolvedValue({ requireEnrollment: false, enforceFrom: null, floorOverrides: { medium: 3 } });
+    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p' });
+    expect(d.requiredLevel).toBe(3); // default medium floor is 2, raised to 3
+  });
+
+  it('BLOCKS an under-assured approve when enforcing → StepUpRequiredError', async () => {
+    mockLoadPolicy.mockResolvedValue(ENFORCING); // medium requires L2; no proof = L1
+    await expect(
+      assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p', decision: 'approved' }),
+    ).rejects.toMatchObject({ name: 'StepUpRequiredError', requiredLevel: 2, achievedLevel: 1 });
+  });
+
+  it('NEVER blocks a DENY, even when enforcing and under-assured (the §12 fail-safe)', async () => {
+    mockLoadPolicy.mockResolvedValue(ENFORCING);
+    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: 'p', decision: 'denied' });
+    expect(d.decidedVia).toBe('session_tap');
+    expect(d.decidedAssuranceLevel).toBe(1);
+  });
+
+  it('passes a sufficiently-assured approve under enforcement', async () => {
+    mockLoadPolicy.mockResolvedValue(ENFORCING);
+    const device = { id: 'dev-1', userId: 'u', credentialId: 'cred-123', publicKey: 'pk', signCount: 0, kind: 'webauthn_platform' };
+    setupDbMocks(device);
+    mockVerify.mockResolvedValue({ verified: true, newSignCount: 1 });
+    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p', proof: PROOF, decision: 'approved' });
+    expect(d.decidedAssuranceLevel).toBe(2); // meets required L2
+    expect(d.requiredLevel).toBe(2);
+  });
+
+  it('GRACE: under-assured approve allowed (flagged) when enforceFrom is in the future', async () => {
+    mockLoadPolicy.mockResolvedValue({ requireEnrollment: true, enforceFrom: new Date('2099-01-01T00:00:00Z'), floorOverrides: {} });
+    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p', decision: 'approved' });
+    expect(d.decidedAssuranceLevel).toBe(1);
+    expect(d.graceDowngrade).toBe(true);
+  });
+
+  it('NO POLICY: under-assured approve never blocks (unchanged default)', async () => {
+    mockLoadPolicy.mockResolvedValue(null);
+    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: null, decision: 'approved' });
+    expect(d.decidedAssuranceLevel).toBe(1);
+    expect(d.graceDowngrade).toBe(true);
   });
 });

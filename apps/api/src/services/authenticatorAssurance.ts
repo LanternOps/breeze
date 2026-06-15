@@ -11,6 +11,7 @@ import { authenticatorDevices } from '../db/schema';
 import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
 import { verifyPinAttempt } from './pin';
+import { loadPartnerPolicy, isEnforcing } from './authenticatorPolicy';
 
 /** Thrown when an approver PIN is presented but cannot be verified. The decide
  * paths map this (like an assertion failure) to a 401 — a presented-but-bad PIN
@@ -19,6 +20,19 @@ export class PinVerificationError extends Error {
   constructor(public readonly locked: boolean) {
     super(locked ? 'approver PIN is locked' : 'approver PIN verification failed');
     this.name = 'PinVerificationError';
+  }
+}
+
+/** Thrown (Phase 4) when an ENFORCING partner policy requires a higher assurance
+ * level than the approve achieved. The decide paths map this to 403. Only ever
+ * thrown for an approve — a deny is never blocked (spec §12). */
+export class StepUpRequiredError extends Error {
+  constructor(
+    public readonly requiredLevel: AssuranceLevel,
+    public readonly achievedLevel: AssuranceLevel,
+  ) {
+    super(`step-up required: need level ${requiredLevel}, got ${achievedLevel}`);
+    this.name = 'StepUpRequiredError';
   }
 }
 
@@ -31,6 +45,8 @@ export interface AssuranceDecision {
   decidedVia: 'session_tap' | 'mobile_hw_key' | 'webauthn_platform';
   authenticatorDeviceId: string | null;
   pinVerified: boolean;
+  /** Phase 4: under-assured but allowed because enforcement is off / in grace. */
+  graceDowngrade?: boolean;
 }
 
 /**
@@ -89,33 +105,51 @@ export async function assertApprovalAssurance(input: {
   riskTier: RiskTier;
   proof?: ApprovalProof | null;
   pin?: string | null;
+  /** Phase 4: the caller's partner, used to load the enforcement policy. */
+  partnerId?: string | null;
+  /** Phase 4: enforcement applies to an approve only — a deny is never blocked. */
+  decision?: 'approved' | 'denied';
 }): Promise<AssuranceDecision> {
-  // No proof presented → today's behavior (session tap, L1). NEVER blocks here.
-  // A PIN cannot stand alone — without a verified factor there is nothing to
-  // step up, so we don't even consult it.
-  if (!input.proof) return resolveApprovalAssurance(input.riskTier);
+  // 1. Establish the achieved factor. No proof → session tap, L1 (a PIN cannot
+  //    stand alone — without a verified factor there is nothing to step up).
+  //    A presented-but-invalid proof/PIN throws inside these branches (never a
+  //    silent downgrade).
+  let decision: AssuranceDecision;
+  if (!input.proof) {
+    decision = resolveApprovalAssurance(input.riskTier);
+  } else {
+    const factor =
+      input.proof.type === 'mobile_hw_key'
+        ? await verifyMobileFactor(input.approvalId, input.userId, input.proof)
+        : await verifyWebauthnFactor(input.approvalId, input.userId, input.proof);
+    decision = {
+      requiredLevel: resolveApprovalAssurance(input.riskTier).requiredLevel,
+      decidedAssuranceLevel: 2,
+      decidedVia: factor.decidedVia,
+      authenticatorDeviceId: factor.authenticatorDeviceId,
+      pinVerified: false,
+    };
+    if (input.pin) {
+      const { verified, locked } = await verifyPinAttempt(input.userId, input.pin);
+      if (!verified) throw new PinVerificationError(locked);
+      decision.decidedAssuranceLevel = 3;
+      decision.pinVerified = true;
+    }
+  }
 
-  // Verify the L2 factor. Each branch loads its own device shape and bumps the
-  // anti-clone counter on success; either throws on any failure.
-  const factor =
-    input.proof.type === 'mobile_hw_key'
-      ? await verifyMobileFactor(input.approvalId, input.userId, input.proof)
-      : await verifyWebauthnFactor(input.approvalId, input.userId, input.proof);
+  // 2. Apply the partner policy floor (raise-only) to the REQUIRED level, then
+  //    enforce — but ONLY for an approve. A deny/report is always allowed
+  //    through (spec §12 fail-safe): a technician must never be unable to REFUSE.
+  const policy = await loadPartnerPolicy(input.partnerId ?? null);
+  decision.requiredLevel = requiredAssurance(input.riskTier, policy?.floorOverrides ?? null);
 
-  // A valid factor recorded → L2. If a PIN rides along, step up to L3.
-  const decision: AssuranceDecision = {
-    requiredLevel: resolveApprovalAssurance(input.riskTier).requiredLevel,
-    decidedAssuranceLevel: 2,
-    decidedVia: factor.decidedVia,
-    authenticatorDeviceId: factor.authenticatorDeviceId,
-    pinVerified: false,
-  };
-
-  if (input.pin) {
-    const { verified, locked } = await verifyPinAttempt(input.userId, input.pin);
-    if (!verified) throw new PinVerificationError(locked);
-    decision.decidedAssuranceLevel = 3;
-    decision.pinVerified = true;
+  if ((input.decision ?? 'approved') === 'approved' && decision.decidedAssuranceLevel < decision.requiredLevel) {
+    if (isEnforcing(policy, new Date())) {
+      throw new StepUpRequiredError(decision.requiredLevel, decision.decidedAssuranceLevel);
+    }
+    // Under-assured but enforcement is off / still in the grace window — allow,
+    // and flag so the decide path can audit the downgrade.
+    decision.graceDowngrade = true;
   }
 
   return decision;
