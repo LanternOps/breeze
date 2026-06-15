@@ -1,0 +1,17 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import InvoiceDetailView from '../../components/portal/InvoiceDetailView';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const { id } = Astro.params;
+const response = await portalApi.getInvoice(id!, buildServerApiConfig(Astro.request));
+
+if (response.statusCode === 401) {
+  return Astro.redirect('/login');
+}
+---
+
+<PortalLayout title="Invoice">
+  <InvoiceDetailView detail={response.data ?? null} error={response.error} client:load />
+</PortalLayout>
