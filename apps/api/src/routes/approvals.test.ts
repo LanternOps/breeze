@@ -73,6 +73,20 @@ vi.mock('../services/authenticatorAssurance', () => ({
     authenticatorDeviceId: null,
     pinVerified: false,
   })),
+  // Real error classes so the route's `instanceof` checks resolve (the route
+  // imports StepUpRequiredError for the Phase 4 403 mapping).
+  StepUpRequiredError: class StepUpRequiredError extends Error {
+    constructor(public requiredLevel: number, public achievedLevel: number) {
+      super('step-up required');
+      this.name = 'StepUpRequiredError';
+    }
+  },
+  PinVerificationError: class PinVerificationError extends Error {
+    constructor(public locked: boolean) {
+      super('pin');
+      this.name = 'PinVerificationError';
+    }
+  },
 }));
 
 vi.mock('../services/approverWebAuthn', () => ({
@@ -116,7 +130,7 @@ vi.mock('../middleware/auth', () => ({
 import { approvalRoutes } from './approvals';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 
@@ -674,6 +688,22 @@ describe('POST /approvals/:id/approve with assertion proof', () => {
     const body = await res.json();
     expect(body.error).toBe('assertion_failed');
     // A failed assertion is NOT a silent downgrade — the CAS update never runs.
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 step_up_required when an enforcing policy rejects the approve (Phase 4)', async () => {
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(new StepUpRequiredError(2, 1));
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('step_up_required');
+    expect(body.requiredLevel).toBe(2);
+    // Enforcement blocks BEFORE the decision is written.
     expect(set).not.toHaveBeenCalled();
   });
 

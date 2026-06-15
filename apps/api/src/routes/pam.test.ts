@@ -100,6 +100,14 @@ vi.mock('../services/authenticatorAssurance', () => ({
     authenticatorDeviceId: null,
     pinVerified: false,
   })),
+  // Real error class so the route's `instanceof StepUpRequiredError` (Phase 4
+  // 403 mapping) resolves instead of throwing on `instanceof undefined`.
+  StepUpRequiredError: class StepUpRequiredError extends Error {
+    constructor(public requiredLevel: number, public achievedLevel: number) {
+      super('step-up required');
+      this.name = 'StepUpRequiredError';
+    }
+  },
 }));
 
 vi.mock('../services/approverWebAuthn', () => ({

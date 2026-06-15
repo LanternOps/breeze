@@ -11,7 +11,7 @@ import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
-import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { authenticatorDevices } from '../db/schema/authenticatorDevices';
@@ -385,9 +385,11 @@ async function decideHandler(
     return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
   }
 
-  // Phase 2: verify an optional browser assertion proof. No proof → today's L1
-  // session tap (never blocks). A presented-but-invalid proof throws → 401; it is
-  // NOT silently downgraded to L1. Enforcement of "proof REQUIRED" is Phase 4.
+  // Phase 2/3: verify an optional assertion proof + PIN. No proof → L1 session
+  // tap. A presented-but-invalid proof/PIN throws → 401 (never silently L1).
+  // Phase 4: an ENFORCING partner policy may reject an under-assured APPROVE
+  // (StepUpRequiredError → 403). A deny is passed through with decision:'denied'
+  // so it is never blocked.
   let assurance;
   try {
     assurance = await assertApprovalAssurance({
@@ -396,8 +398,13 @@ async function decideHandler(
       riskTier: existing.riskTier as RiskTier,
       proof,
       pin,
+      partnerId: c.get('auth').partnerId ?? null,
+      decision: status,
     });
   } catch (err) {
+    if (err instanceof StepUpRequiredError) {
+      return c.json({ error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
+    }
     console.error('[approvals] assertion verification failed:', err);
     return c.json({ error: 'assertion_failed' }, 401);
   }

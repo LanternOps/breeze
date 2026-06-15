@@ -41,7 +41,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
-import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import {
   assertionProofSchema,
@@ -428,10 +428,11 @@ pamRoutes.post(
           return { kind: 'forbidden' as const };
         }
 
-        // Phase 2: verify an optional browser assertion proof and resolve the
-        // factor-recording fields. No proof → today's L1 session tap (never
-        // blocks). A presented-but-invalid proof throws → 401 (NOT a silent
-        // downgrade). Enforcement of "proof REQUIRED" is Phase 4.
+        // Phase 2/3: verify an optional assertion proof + PIN. No proof → L1
+        // session tap. A presented-but-invalid proof/PIN throws → 401 (NOT a
+        // silent downgrade). Phase 4: an ENFORCING partner policy may reject an
+        // under-assured APPROVE (StepUpRequiredError → 403); the deny path passes
+        // decision:'denied' so it is never blocked.
         let assurance;
         try {
           assurance = await assertApprovalAssurance({
@@ -440,8 +441,11 @@ pamRoutes.post(
             riskTier: elevationRiskTierToName(row.riskTier),
             proof: body.proof,
             pin: body.pin,
+            partnerId: auth.partnerId ?? null,
+            decision: body.decision === 'approve' ? 'approved' : 'denied',
           });
         } catch (err) {
+          if (err instanceof StepUpRequiredError) throw err; // → 403 at the outer catch
           console.error('[PAM] assertion verification failed:', err);
           throw new AssertionFailedError();
         }
@@ -515,6 +519,11 @@ pamRoutes.post(
         return { kind: 'ok' as const, row, newStatus: updated[0]!.status };
       });
     } catch (err) {
+      if (err instanceof StepUpRequiredError) {
+        // Phase 4: an enforcing policy requires a higher assurance than this
+        // approve achieved. Only ever thrown for an approve — a deny is exempt.
+        return c.json({ success: false, error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
+      }
       if (err instanceof AssertionFailedError) {
         // Presented-but-bad proof — fail closed (401), never downgrade to L1.
         return c.json({ success: false, error: 'assertion_failed' }, 401);
