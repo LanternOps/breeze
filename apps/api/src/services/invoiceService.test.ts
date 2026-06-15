@@ -164,3 +164,96 @@ describe('invoiceService guards', () => {
     expect(row.billingAddressCountry).toBe('GB');
   });
 });
+
+describe('addContractLine', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  // Helper: queue the 6 DB calls that insertLineAndRecompute + recomputeInvoiceTotals need.
+  function queueInsertAndRecompute(lineRow: unknown) {
+    queueResult([]);                    // sortOrder lookup (no existing lines)
+    queueResult([lineRow]);             // insert invoiceLines → returning new line
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00' }]); // recomputeInvoiceTotals re-fetch
+    queueResult([{ lineTotal: (lineRow as { lineTotal: string }).lineTotal, taxable: false, customerVisible: true }]); // select lines
+    queueResult([{ taxExempt: false, taxRate: null }]); // effectiveRateForOrg
+    queueResult([]);                    // update invoices
+  }
+
+  it('non-catalog path: sets sourceType=contract and returns the inserted line with normalized values', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    queueInsertAndRecompute({ id: 'l1', sourceType: 'contract', sourceId: null, catalogItemId: null,
+      description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
+      lineTotal: '500.00', taxable: false, customerVisible: true });
+
+    const line = await svc.addContractLine('i1', {
+      description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
+      taxable: false, catalogItemId: null, sourceId: null
+    }, actor);
+
+    expect(line.sourceType).toBe('contract');
+    expect(line.lineTotal).toBe('500.00');
+    expect(resolvePrice).not.toHaveBeenCalled();
+  });
+
+  it('catalog path: resolves price via resolvePrice and uses its unitPrice, taxable, costBasis (not caller-supplied)', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    // resolvePrice returns a known price that differs from what caller would supply
+    (resolvePrice as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      unitPrice: '99.00', taxable: true, costBasis: '45.00', taxCategory: null, source: 'item'
+    });
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    queueInsertAndRecompute({ id: 'l2', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
+      description: 'Managed endpoint', quantity: '3', unitPrice: '99.00',
+      lineTotal: '297.00', taxable: true, customerVisible: true });
+
+    const line = await svc.addContractLine('i1', {
+      description: 'Managed endpoint',
+      quantity: '3',
+      unitPrice: '999.00', // caller-supplied price — must be ignored on catalog path
+      taxable: false,      // caller-supplied taxable — must be overridden by resolvePrice
+      catalogItemId: 'cat-1',
+      sourceId: 'cl-1',
+    }, actor);
+
+    // resolvePrice must have been called with the correct org + actor
+    expect(resolvePrice).toHaveBeenCalledWith(
+      'cat-1', 'org1',
+      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }
+    );
+    // Line uses the resolved price, not the caller-supplied 999.00
+    expect(line.unitPrice).toBe('99.00');
+    expect(line.lineTotal).toBe('297.00');
+  });
+
+  it('non-catalog path: throws INVALID_AMOUNT (400) when unitPrice is negative', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    await expect(
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '-5.00', taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_AMOUNT', status: 400 });
+  });
+
+  it('non-catalog path: throws INVALID_AMOUNT (400) when quantity is negative', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    await expect(
+      svc.addContractLine('i1', { description: 'x', quantity: '-2', unitPrice: '10.00', taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_AMOUNT', status: 400 });
+  });
+
+  it('rejects a non-draft invoice with NOT_A_DRAFT (409)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
+  });
+
+  it('denies an actor without access to the invoice org (ORG_DENIED 403)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+});
