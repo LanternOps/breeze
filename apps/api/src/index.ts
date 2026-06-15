@@ -33,6 +33,7 @@ import { ticketsRoutes } from './routes/tickets';
 import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
+import { stripeConnectRoutes } from './routes/stripeConnect';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { timeEntriesRoutes } from './routes/timeEntries';
@@ -731,6 +732,7 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
 api.route('/invoices', invoiceRoutes);
+api.route('/partner/stripe-connect', stripeConnectRoutes);
 // Assembly routes nest under the existing /orgs and /tickets namespaces, so they
 // mount at the api root: /api/v1/orgs/:orgId/invoices/assemble and
 // /api/v1/tickets/:ticketId/invoice. invoiceAssemblyRoutes applies authMiddleware itself.
