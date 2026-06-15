@@ -672,8 +672,14 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
     });
 
     expect(res.status).toBe(200);
+    // Phase 3: the webauthn proof now carries the `type` discriminator (defaulted
+    // for back-compat by assertionProofSchema) when threaded to the assurance svc.
     expect(assertApprovalAssurance).toHaveBeenCalledWith(
-      expect.objectContaining({ approvalId: REQ_ID, userId: USER_ID, proof }),
+      expect.objectContaining({
+        approvalId: REQ_ID,
+        userId: USER_ID,
+        proof: { ...proof, type: 'webauthn_platform' },
+      }),
     );
     expect(updateSetCalls[0]).toMatchObject({
       status: 'approved',

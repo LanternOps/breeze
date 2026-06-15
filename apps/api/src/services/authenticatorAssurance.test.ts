@@ -40,6 +40,7 @@ const mockDb = db as unknown as {
 const mockVerify = verifyApprovalAssertion as unknown as ReturnType<typeof vi.fn>;
 
 const PROOF: AssertionProof = {
+  type: 'webauthn_platform',
   credentialId: 'cred-123',
   authenticatorData: 'auth-data',
   clientDataJSON: 'client-data',

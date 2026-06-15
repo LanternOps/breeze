@@ -84,6 +84,10 @@ vi.mock('../services/approverWebAuthn', () => ({
   })),
 }));
 
+vi.mock('../services/mobileHwKey', () => ({
+  issueMobileAssertionNonce: vi.fn(async () => 'mobile-nonce-xyz'),
+}));
+
 const TEST_USER = {
   id: '00000000-0000-0000-0000-000000000001',
   email: 't@example.com',
@@ -114,6 +118,7 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { assertApprovalAssurance } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 
 function buildApp() {
   const app = new Hono();
@@ -486,7 +491,8 @@ describe('POST /approvals/:id/assertion-challenge', () => {
   };
 
   it('returns assertion options for the caller active approver devices', async () => {
-    // 1) pending approval lookup; 2) active webauthn_platform device list.
+    // 1) pending approval lookup; 2) active webauthn_platform device list;
+    // 3) active mobile_hw_key device list (none here → no mobileNonce).
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -498,6 +504,11 @@ describe('POST /approvals/:id/assertion-challenge', () => {
           where: vi.fn().mockResolvedValue([
             { id: 'dev-1', credentialId: 'cred-1', transports: ['internal'] },
           ]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
         }),
       } as any);
 
@@ -514,6 +525,38 @@ describe('POST /approvals/:id/assertion-challenge', () => {
         devices: [{ credentialId: 'cred-1', transports: ['internal'] }],
       }),
     );
+    // No active mobile_hw_key device → no nonce issued, no mobileNonce field.
+    expect(issueMobileAssertionNonce).not.toHaveBeenCalled();
+    expect(body.mobileNonce).toBeUndefined();
+  });
+
+  it('issues a mobileNonce when the caller has an active mobile_hw_key device', async () => {
+    // 1) pending approval lookup; 2) webauthn device list (none);
+    // 3) mobile_hw_key device list (one active device).
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([pendingRow]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: 'mob-1' }]),
+        }),
+      } as any);
+
+    const res = await buildApp().request('/approvals/a1/assertion-challenge', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(issueMobileAssertionNonce).toHaveBeenCalledWith('a1', TEST_USER.id);
+    expect(body.mobileNonce).toBe('mobile-nonce-xyz');
   });
 
   it('returns 404 when the approval is not pending for this user', async () => {
@@ -523,6 +566,7 @@ describe('POST /approvals/:id/assertion-challenge', () => {
     });
     expect(res.status).toBe(404);
     expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+    expect(issueMobileAssertionNonce).not.toHaveBeenCalled();
   });
 });
 
@@ -573,8 +617,14 @@ describe('POST /approvals/:id/approve with assertion proof', () => {
       body: JSON.stringify({ proof }),
     });
     expect(res.status).toBe(200);
+    // Phase 3: the webauthn proof now carries the `type` discriminator (defaulted
+    // for back-compat by assertionProofSchema) when threaded to the assurance svc.
     expect(assertApprovalAssurance).toHaveBeenCalledWith(
-      expect.objectContaining({ approvalId: 'a1', userId: TEST_USER.id, proof }),
+      expect.objectContaining({
+        approvalId: 'a1',
+        userId: TEST_USER.id,
+        proof: { ...proof, type: 'webauthn_platform' },
+      }),
     );
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({

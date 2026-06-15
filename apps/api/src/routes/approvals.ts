@@ -13,6 +13,7 @@ import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/
 import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { authenticatorDevices } from '../db/schema/authenticatorDevices';
 import { assertionProofSchema, type RiskTier, type AssertionProof } from '@breeze/shared';
 
@@ -190,7 +191,29 @@ approvalRoutes.post('/:id/assertion-challenge', async (c) => {
       .map((d) => ({ credentialId: d.credentialId!, transports: d.transports })),
   });
 
-  return c.json({ options });
+  // Phase 3: if the caller has an active mobile_hw_key approver device, also
+  // issue a short-lived (120s) raw nonce bound to {approvalId,userId} that the
+  // mobile app signs in its Secure Enclave / Keystore. This is NOT WebAuthn —
+  // it rides alongside the webauthn options so a console-or-phone approver gets
+  // whichever factor their registered devices support (mobileNonce omitted when
+  // no mobile device is registered).
+  const [mobileDevice] = await db
+    .select({ id: authenticatorDevices.id })
+    .from(authenticatorDevices)
+    .where(
+      and(
+        eq(authenticatorDevices.userId, userId),
+        eq(authenticatorDevices.kind, 'mobile_hw_key'),
+        isNull(authenticatorDevices.disabledAt),
+      ),
+    );
+
+  let mobileNonce: string | undefined;
+  if (mobileDevice) {
+    mobileNonce = await issueMobileAssertionNonce(id, userId);
+  }
+
+  return c.json(mobileNonce ? { options, mobileNonce } : { options });
 });
 
 approvalRoutes.post('/:id/approve', async (c) => {
