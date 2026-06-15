@@ -24,6 +24,7 @@ import { eq, and, or, sql, inArray, type SQL } from 'drizzle-orm';
 import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
@@ -1296,6 +1297,7 @@ let discoveryWorkerInstance: Worker<DiscoveryJobData> | null = null;
 export async function initializeDiscoveryWorker(): Promise<void> {
   try {
     discoveryWorkerInstance = createDiscoveryWorker();
+    attachWorkerObservability(discoveryWorkerInstance, 'discoveryWorker');
 
     discoveryWorkerInstance.on('error', (error) => {
       console.error('[DiscoveryWorker] Worker error:', error);

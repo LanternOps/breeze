@@ -6,6 +6,7 @@ import { devices } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { computeAndPersistOrgSecurityPosture } from '../services/securityPosture';
+import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
@@ -240,6 +241,7 @@ async function scheduleSecurityPostureScan(): Promise<void> {
 
 export async function initializeSecurityPostureWorker(): Promise<void> {
   securityPostureWorker = createSecurityPostureWorker();
+  attachWorkerObservability(securityPostureWorker, 'securityPostureWorker');
   securityPostureWorker.on('error', (error) => {
     console.error('[SecurityPostureWorker] Worker error:', error);
   });

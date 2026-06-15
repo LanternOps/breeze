@@ -11,6 +11,7 @@ import {
   publishUserRiskScoreEvents
 } from '../services/userRiskScoring';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -253,6 +254,7 @@ async function scheduleUserRiskScan(): Promise<void> {
 
 export async function initializeUserRiskJobs(): Promise<void> {
   userRiskWorker = createUserRiskWorker();
+  attachWorkerObservability(userRiskWorker, 'userRiskWorker');
   userRiskWorker.on('error', (error) => {
     console.error('[UserRiskJobs] Worker error:', error);
   });

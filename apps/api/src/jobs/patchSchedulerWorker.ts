@@ -21,6 +21,7 @@ import {
 import { and, eq, gte, inArray } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 import { enqueuePatchJob } from './patchJobExecutor';
 import { buildPatchesSnapshot } from '../services/patchJobSnapshot';
@@ -528,6 +529,7 @@ export async function initializePatchSchedulerWorker(): Promise<void> {
   });
 
   schedulerWorker = createSchedulerWorker();
+  attachWorkerObservability(schedulerWorker, 'patchSchedulerWorker');
 
   schedulerWorker.on('error', (error) => {
     console.error('[PatchScheduler] Worker error:', error);

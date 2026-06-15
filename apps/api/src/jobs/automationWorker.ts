@@ -30,6 +30,7 @@ import {
 } from '../services/featureConfigResolver';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -880,6 +881,7 @@ function subscribeToAutomationEvents(): void {
 
 export async function initializeAutomationWorker(): Promise<void> {
   automationWorker = createAutomationWorker();
+  attachWorkerObservability(automationWorker, 'automationWorker');
 
   automationWorker.on('error', (error) => {
     console.error('[AutomationWorker] Worker error:', error);

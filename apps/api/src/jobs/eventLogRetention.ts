@@ -12,6 +12,7 @@ import { deviceEventLogs } from '../db/schema';
 import { and, eq, lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { getOrgEventLogRetentionDays } from '../routes/agents/helpers';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -88,6 +89,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export async function initializeEventLogRetention(): Promise<void> {
   try {
     retentionWorker = createEventLogRetentionWorker();
+    attachWorkerObservability(retentionWorker, 'eventLogRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[EventLogRetention] Worker error:', error);

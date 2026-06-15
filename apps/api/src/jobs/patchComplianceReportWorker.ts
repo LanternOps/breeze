@@ -7,6 +7,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import * as dbModule from '../db';
 import { devicePatches, devices, patchComplianceReports, patches, patchSourceEnum, patchSeverityEnum } from '../db/schema';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -338,6 +339,7 @@ export async function initializePatchComplianceReportWorker(): Promise<void> {
   }
 
   patchComplianceReportWorker = createPatchComplianceReportWorker();
+  attachWorkerObservability(patchComplianceReportWorker, 'patchComplianceReportWorker');
   patchComplianceReportWorker.on('error', (error) => {
     console.error('[PatchComplianceReportWorker] Worker error:', error);
   });

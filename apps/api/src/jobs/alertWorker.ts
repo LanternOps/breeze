@@ -17,6 +17,7 @@ import {
   checkAutoResolveFromConfigPolicy,
 } from '../services/alertService';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -445,6 +446,7 @@ export async function initializeAlertWorkers(): Promise<void> {
   try {
     // Create worker
     alertWorker = createAlertWorker();
+    attachWorkerObservability(alertWorker, 'alertWorker');
 
     // Set up error handler
     alertWorker.on('error', (error) => {

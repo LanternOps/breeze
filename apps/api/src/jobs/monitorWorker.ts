@@ -22,6 +22,7 @@ import {
   type QueueActorMeta,
   withQueueMeta,
 } from './queueSchemas';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -576,6 +577,7 @@ let monitorWorkerInstance: Worker<MonitorJobData> | null = null;
 export async function initializeMonitorWorker(): Promise<void> {
   try {
     monitorWorkerInstance = createMonitorWorker();
+    attachWorkerObservability(monitorWorkerInstance, 'monitorWorker');
 
     monitorWorkerInstance.on('error', (error) => {
       console.error('[MonitorWorker] Worker error:', error);
