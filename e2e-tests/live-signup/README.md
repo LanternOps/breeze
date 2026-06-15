@@ -7,16 +7,17 @@ simulate payment → assert pending→active → purge every account it created.
 ## Setup
 ```bash
 cp live-signup/.env.example live-signup/.env   # fill RESEND_API_KEY + SYNTHETIC_TEST_TOKEN
-cd e2e-tests && pnpm install && npx playwright install chromium
+cd e2e-tests && pnpm install --ignore-workspace && npx playwright install chromium
 ```
 `SYNTHETIC_TEST_TOKEN` must match the `SYNTHETIC_TEST_TOKEN` set on each region's API.
 
 ## Run
 ```bash
-PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter @breeze/e2e-tests monitor            # both regions
-pnpm --filter @breeze/e2e-tests monitor -- --region us               # one region
-pnpm --filter @breeze/e2e-tests monitor -- --skip-ui --skip-verify   # fast preflight+API+cleanup
-pnpm --filter @breeze/e2e-tests monitor -- --json                    # machine-readable
+cd e2e-tests
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm monitor                 # both regions
+pnpm monitor -- --region us                # one region
+pnpm monitor -- --skip-ui --skip-verify    # fast preflight+API+cleanup
+pnpm monitor -- --json                     # machine-readable
 ```
 Exit `0` = all phases passed for all regions; `1` = a failure (the integration seam for future cron/Slack). Exit `2` = required env vars missing.
 
