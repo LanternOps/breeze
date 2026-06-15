@@ -52,7 +52,7 @@ add-in falls back to the MSAL popup — functional, just not silent.
 The JS bundle is deployment-neutral. At boot it fetches `/config.json`
 (`{ "apiBaseUrl": "...", "entraClientId": "..." }`) from its own origin. For
 local dev the committed `public/config.json` (localhost defaults) is served by
-Vite; the `VITE_*` env vars are only a fallback when `/config.json` is absent.
+Vite; the `VITE_*` env vars are dev fallbacks that fill any field `/config.json` leaves absent or empty (the committed `public/config.json` ships an empty `entraClientId`, so `VITE_CLIENT_AI_ENTRA_CLIENT_ID` fills it for local SSO).
 
 To produce a deployment's config:
 
