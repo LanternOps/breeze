@@ -15,6 +15,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
+import { bodyLimitForPath } from './middleware/bodyLimit';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
 import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
@@ -293,19 +294,8 @@ app.use('*', async (c, next) => {
   if (c.req.path === '/oauth' || c.req.path.startsWith('/oauth/')) {
     return next();
   }
-  // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
-  if (c.req.path.startsWith('/api/v1/dev/push')) {
-    return bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Binary too large (max 150MB)' }, 413) })(c, next);
-  }
-  // File transfer chunk uploads can be up to 50MB; route-level bodyLimit handles the real cap.
-  if (c.req.path.match(/^\/api\/v1\/remote\/transfers\/[^/]+\/chunks$/)) {
-    return bodyLimit({ maxSize: 50 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Chunk too large (max 50MB)' }, 413) })(c, next);
-  }
-  // File browser uploads send base64-encoded content in JSON body (~33% overhead).
-  if (c.req.path.match(/^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/)) {
-    return bodyLimit({ maxSize: 50 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'File too large (max ~37MB)' }, 413) })(c, next);
-  }
-  return bodyLimit({ maxSize: 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Request body too large' }, 413) })(c, next);
+  const { maxSize, error } = bodyLimitForPath(c.req.path);
+  return bodyLimit({ maxSize, onError: (ctx) => ctx.json({ error }, 413) })(c, next);
 });
 app.use('*', globalRateLimit());
 app.use('*', prettyJSON());
