@@ -89,7 +89,7 @@ export default function InvoicesPage() {
   const loadOrgs = useCallback(async () => {
     const res = await fetchWithAuth('/orgs/organizations');
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) return;
+    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load organizations.'); return; }
     const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
     setOrgs(body.data ?? body.organizations ?? []);
   }, []);
@@ -140,7 +140,8 @@ export default function InvoicesPage() {
     setAssembleSites([]);
     if (!orgId) return;
     const res = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-    if (!res.ok) return;
+    if (res.status === 401) return UNAUTHORIZED();
+    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load sites.'); return; }
     const body = (await res.json()) as { data?: Site[]; sites?: Site[] };
     setAssembleSites(body.data ?? body.sites ?? []);
   }, []);

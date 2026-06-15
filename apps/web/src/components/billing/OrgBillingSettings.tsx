@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { pctFromFraction } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -46,7 +47,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
       const o = (await res.json()) as OrgBilling;
       setTaxId(o.taxId ?? '');
       setTaxExempt(Boolean(o.taxExempt));
-      setTaxPercent(o.taxRate != null ? String(Number(o.taxRate) * 100) : '');
+      setTaxPercent(pctFromFraction(o.taxRate));
       setLine1(o.billingAddressLine1 ?? '');
       setLine2(o.billingAddressLine2 ?? '');
       setCity(o.billingAddressCity ?? '');
@@ -118,7 +119,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
           <div>
             <label className="text-sm font-medium" htmlFor="ob-taxrate">Tax rate (%)</label>
             <input
-              id="ob-taxrate" type="number" min={0} max={100} step="0.001" value={taxPercent}
+              id="ob-taxrate" type="number" min={0} max={100} step="0.1" value={taxPercent}
               onChange={(e) => setTaxPercent(e.target.value)} placeholder="Partner default"
               disabled={taxExempt}
               data-testid="org-billing-taxrate"

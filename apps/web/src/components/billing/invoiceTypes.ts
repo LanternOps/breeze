@@ -100,6 +100,15 @@ export function formatMoney(value: string | number | null | undefined, currencyC
   }
 }
 
+/** Convert a stored tax-rate FRACTION (e.g. '0.07') to a percent string for an
+ *  input ('7'), rounding to 3 decimals to match the numeric(6,3)-on-fraction
+ *  scale. Avoids float noise like `String(0.07 * 100)` → '7.000000000000001'.
+ *  Returns '' for null/empty so the input shows its placeholder. */
+export function pctFromFraction(frac: string | number | null): string {
+  if (frac === null || frac === '') return '';
+  return String(Number((Number(frac) * 100).toFixed(3)));
+}
+
 /** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */
 export function formatDate(value: string | null | undefined): string {
   if (!value) return '—';

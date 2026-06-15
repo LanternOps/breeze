@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { pctFromFraction } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -34,7 +35,7 @@ export default function PartnerBillingSettings() {
       if (!res.ok) throw new Error('load failed');
       const p = (await res.json()) as PartnerBilling;
       setCurrencyCode(p.currencyCode ?? 'USD');
-      setTaxPercent(p.defaultTaxRate != null ? String(Number(p.defaultTaxRate) * 100) : '');
+      setTaxPercent(pctFromFraction(p.defaultTaxRate));
       setPrefix(p.invoiceNumberPrefix ?? 'INV');
       setTermsDays(String(p.invoiceTermsDays ?? 30));
       setFooter(p.invoiceFooter ?? '');
@@ -106,7 +107,7 @@ export default function PartnerBillingSettings() {
           <div>
             <label className="text-sm font-medium" htmlFor="pb-tax">Default tax rate (%)</label>
             <input
-              id="pb-tax" type="number" min={0} max={100} step="0.001" value={taxPercent}
+              id="pb-tax" type="number" min={0} max={100} step="0.1" value={taxPercent}
               onChange={(e) => setTaxPercent(e.target.value)} placeholder="None"
               data-testid="partner-billing-tax"
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"

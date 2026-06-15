@@ -28,6 +28,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
   const [accountingView, setAccountingView] = useState(false);
   const [payments, setPayments] = useState<InvoicePayment[]>([]);
+  const [paymentsError, setPaymentsError] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Payment form
@@ -44,7 +45,14 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
   const loadPayments = useCallback(async () => {
     const res = await fetchWithAuth(`/invoices/${invoice.id}/payments`);
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) return;
+    if (!res.ok) {
+      // An operator must NOT read "No payments recorded" when the fetch actually
+      // failed — surface a visible error (with inline retry) and a toast.
+      setPaymentsError(true);
+      handleActionError(new Error(res.statusText), 'Failed to load payments.');
+      return;
+    }
+    setPaymentsError(false);
     const body = (await res.json()) as { data: InvoicePayment[] };
     setPayments(body.data ?? []);
   }, [invoice.id]);
@@ -255,7 +263,12 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           {/* Payments */}
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-payments">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Payments</h3>
-            {payments.length === 0 ? (
+            {paymentsError ? (
+              <p className="text-sm text-destructive" data-testid="invoice-payments-error">
+                Could not load payments.{' '}
+                <button type="button" onClick={() => void loadPayments()} className="underline hover:text-foreground">Retry</button>
+              </p>
+            ) : payments.length === 0 ? (
               <p className="text-sm text-muted-foreground" data-testid="invoice-payments-empty">No payments recorded.</p>
             ) : (
               <ul className="divide-y text-sm">
