@@ -31,11 +31,17 @@ contractGenerateRoutes.post('/:id/generate', scopes, managePerm, zValidator('par
     // transaction (PDF render + SMTP must not hold a DB connection or roll back
     // the bill). A send failure leaves a correctly-claimed (issued-or-draft)
     // invoice; we still return success to the client and note the email status.
+    // issueInvoice begins with a read (getOwnedInvoiceOr404) that requires an
+    // ambient db context — without one it connects as breeze_app with no GUC and
+    // the RLS policy returns false, making the invoice invisible. Wrap in a fresh
+    // system context (outside the already-committed billing txn) so reads resolve.
     let emailSent: boolean | undefined;
     if (result.generated && result.autoIssue && result.invoiceId && result.actor) {
       try {
-        await issueInvoice(result.invoiceId, result.actor);
-        await sendInvoiceEmail(result.invoiceId, result.actor);
+        await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+          await issueInvoice(result.invoiceId!, result.actor!);
+          await sendInvoiceEmail(result.invoiceId!, result.actor!);
+        }));
         emailSent = true;
       } catch (err) {
         emailSent = false;

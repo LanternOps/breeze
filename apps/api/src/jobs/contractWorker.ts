@@ -75,12 +75,16 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
     // already committed (invoice drafted + period claimed + pointer advanced), so a
     // failure here must NOT abort the sweep or count as a billing failure — the
     // invoice is at worst left as a correctly-claimed draft, never re-billed.
-    // issueInvoice/sendInvoiceEmail self-manage their own DB context, so they run
-    // OUTSIDE any withSystemDbAccessContext wrapper.
+    // issueInvoice begins with a read (getOwnedInvoiceOr404) that requires an ambient
+    // db context — without one it connects as breeze_app with no GUC and the RLS
+    // policy returns false, making the invoice invisible. Wrap in a fresh system
+    // context (outside the already-committed billing txn) so reads resolve correctly.
     if (res.generated && res.autoIssue && res.invoiceId && res.actor) {
       try {
-        await issueInvoice(res.invoiceId, res.actor);
-        await sendInvoiceEmail(res.invoiceId, res.actor);
+        await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+          await issueInvoice(res.invoiceId!, res.actor!);
+          await sendInvoiceEmail(res.invoiceId!, res.actor!);
+        }));
       } catch (err) {
         console.error('[ContractWorker] post-commit issue/send failed', `contractId=${row.id}`, `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
         captureException(err instanceof Error ? err : new Error(String(err)));
