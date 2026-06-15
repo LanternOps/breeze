@@ -63,10 +63,11 @@ internalSyntheticRoutes.use('*', async (c, next) => {
   return next();
 });
 
-// partnerId is validated as a non-empty string, NOT a UUID: the canary latch
-// (isCanary → 422) is the real gate, and a malformed id simply finds no canary
-// row and gets rejected there. Requiring uuid() here would only add a 400 path
-// without strengthening the safety property.
+  // partnerId is validated as a non-empty string, NOT a uuid: the canary latch
+  // (isCanary) is the real gate. A malformed id is still safe — it never matches
+  // a canary, so no mutation occurs (a non-uuid value errors out in the lookup
+  // before any write). Requiring uuid() here would only add a 400 path without
+  // strengthening the safety property.
 const bodySchema = z.object({ partnerId: z.string().min(1) });
 
 /**

@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+
+vi.setConfig({ testTimeout: 30_000 });
 
 const partnerLookupMock = vi.fn();
 const setPaymentMock = vi.fn();
@@ -44,6 +46,14 @@ function req(path: string, headers: Record<string, string> = {}, body: unknown =
 const AUTH = { Authorization: 'Bearer s3cret-token' };
 
 describe('internal synthetic router gate', () => {
+  beforeAll(async () => {
+    // Warm the module graph once so the first real test isn't charged the
+    // cold-import cost (transitive db/schema/service imports are heavy).
+    vi.stubEnv('SYNTHETIC_TEST_TOKEN', 'warmup');
+    await import('./synthetic');
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
     partnerLookupMock.mockReset();
     setPaymentMock.mockReset().mockResolvedValue(undefined);
