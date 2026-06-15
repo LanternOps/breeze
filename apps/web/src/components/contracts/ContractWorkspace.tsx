@@ -42,7 +42,8 @@ export default function ContractWorkspace({ contractId }: Props) {
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 404) { setError('Contract not found.'); return; }
       if (!res.ok) throw new Error('Failed to load contract');
-      const body = (await res.json()) as { data: ContractDetailData };
+      const body = (await res.json().catch(() => null)) as { data: ContractDetailData } | null;
+      if (!body) throw new Error('Failed to load contract');
       setDetail(body.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load contract');

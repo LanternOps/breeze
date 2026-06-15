@@ -97,7 +97,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     const res = await fetchWithAuth('/orgs/organizations');
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load organizations.'); return; }
-    const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
+    const body = (await res.json().catch(() => null)) as { data?: Organization[]; organizations?: Organization[] } | null;
+    if (!body) return;
     setOrgs(body.data ?? body.organizations ?? []);
   }, []);
 
@@ -105,7 +106,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     const res = await fetchWithAuth('/catalog?isActive=true');
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) return; // catalog is optional context; don't block the editor
-    const body = (await res.json()) as { data?: CatalogItem[] };
+    const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
+    if (!body) return;
     setCatalogItems((body.data ?? []).filter((i) => !i.isBundle));
   }, []);
 
@@ -113,8 +115,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     if (!forOrg) { setSites([]); return; }
     const res = await fetchWithAuth(`/orgs/sites?organizationId=${forOrg}`);
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { setSites([]); return; }
-    const body = await res.json();
+    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load sites.'); setSites([]); return; }
+    const body = await res.json().catch(() => null);
     setSites(Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : []);
   }, []);
 

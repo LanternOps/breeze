@@ -86,7 +86,8 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
     const res = await fetchWithAuth('/orgs/organizations');
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load organizations.'); return; }
-    const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
+    const body = (await res.json().catch(() => null)) as { data?: Organization[]; organizations?: Organization[] } | null;
+    if (!body) return;
     setOrgs(body.data ?? body.organizations ?? []);
   }, []);
 
@@ -97,7 +98,8 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
       const res = await listContracts({ orgId: f.orgId || undefined, status: f.status || undefined });
       if (res.status === 401) return UNAUTHORIZED();
       if (!res.ok) throw new Error('Failed to load contracts');
-      const body = (await res.json()) as { data: ContractSummary[] };
+      const body = (await res.json().catch(() => null)) as { data: ContractSummary[] } | null;
+      if (!body) throw new Error('Failed to load contracts');
       setContracts(body.data ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load contracts');
