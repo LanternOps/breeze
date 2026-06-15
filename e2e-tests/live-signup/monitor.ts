@@ -47,7 +47,7 @@ async function runRegion(region: Region, opts: {
 
   const idA = makeIdentity(runId, 'api');
   phases.push(await timed('apiSmoke', async () => {
-    created.push(await registerViaApi(region, idA));
+    await registerViaApi(region, idA, (r) => created.push(r));
   }));
 
   let uiResult: SignupResult | null = null;
@@ -55,12 +55,13 @@ async function runRegion(region: Region, opts: {
     const idB = makeIdentity(runId, 'ui');
     uiRecipient = idB.email;
     phases.push(await timed('uiFlow', async () => {
-      uiResult = await registerViaUi(region, idB);
-      created.push(uiResult);
+      uiResult = await registerViaUi(region, idB, (r) => created.push(r));
     }));
 
     if (uiResult !== null && !opts.skipVerify) {
       const capturedUiResult: SignupResult = uiResult;
+      // verifyEmail MUST run before payment: partnerGuard only reconciles pending→active
+      // when BOTH email_verified_at and payment_method_attached_at are set.
       phases.push(await timed('verifyEmail', () => verifyEmail(region, uiRecipient!, opts.resendKey)));
       phases.push(await timed('payment', () => simulatePaymentAndAssertActivation({
         region,

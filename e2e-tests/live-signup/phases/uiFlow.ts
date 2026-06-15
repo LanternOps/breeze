@@ -3,7 +3,11 @@ import type { Region } from '../regions';
 import type { Identity } from '../identity';
 import type { SignupResult } from './apiSmoke';
 
-export async function registerViaUi(region: Region, id: Identity): Promise<SignupResult> {
+export async function registerViaUi(
+  region: Region,
+  id: Identity,
+  onCreated?: (r: SignupResult) => void,
+): Promise<SignupResult> {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -29,9 +33,12 @@ export async function registerViaUi(region: Region, id: Identity): Promise<Signu
       throw new Error('UI register-partner response missing partner.id/accessToken');
     }
 
+    const result: SignupResult = { partnerId: body.partner.id, accessToken: body.tokens.accessToken };
+    onCreated?.(result);   // record for cleanup BEFORE the dashboard assertion can throw
+
     await page.getByTestId('dashboard-root').waitFor({ state: 'visible', timeout: 20_000 });
 
-    return { partnerId: body.partner.id, accessToken: body.tokens.accessToken };
+    return result;
   } finally {
     await browser.close();
   }
