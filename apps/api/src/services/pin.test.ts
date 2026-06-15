@@ -147,6 +147,23 @@ describe('verifyPinAttempt', () => {
     expect(deltaMs).toBeLessThanOrEqual(15 * 60_000 + 5000);
   });
 
+  it('starts a FRESH window after an expired lock (wrong PIN → failed=1, not re-locked)', async () => {
+    // Previously locked out (failed=5) but the lock has since expired. A wrong
+    // PIN must reset the window to failed=1, NOT carry the stale 5 forward and
+    // re-lock immediately (which would give 1 try per 15 min forever).
+    const capture = setupDbMocks({
+      hash: 'hashed:1234',
+      failed: 5,
+      lockedUntil: new Date(Date.now() - 60_000), // expired a minute ago
+    });
+
+    const result = await verifyPinAttempt('user-1', '9999');
+
+    expect(result).toEqual({ verified: false, locked: false });
+    expect(capture.updateSet!.approverPinFailedCount).toBe(1);
+    expect(capture.updateSet!.approverPinLockedUntil).toBeNull();
+  });
+
   it('returns locked:true without checking the PIN when already locked', async () => {
     const capture = setupDbMocks({
       hash: 'hashed:1234',

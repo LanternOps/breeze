@@ -115,7 +115,9 @@ export async function gatherApprovalProof(
 export async function setApproverPin(currentPassword: string, newPin: string): Promise<void> {
   const res = await authedFetch('/api/v1/auth/pin', {
     method: 'PUT',
-    body: JSON.stringify({ currentPassword, newPin }),
+    // The server setPinSchema expects `pin` (not `newPin`); the param is named
+    // newPin locally for clarity but must serialize to `pin`.
+    body: JSON.stringify({ currentPassword, pin: newPin }),
   });
   if (!res.ok) throw new Error(`Could not set PIN (${res.status}).`);
 }

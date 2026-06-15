@@ -4,7 +4,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { authenticatorDevices, authenticatorPolicies } from '../db/schema';
-import { authMiddleware, requirePermission } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireMfa } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import {
   generateApproverRegistrationOptions,
@@ -18,7 +18,7 @@ import {
 import { loadPartnerPolicy, validateRaiseOnly } from '../services/authenticatorPolicy';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { requireCurrentPasswordStepUp, writeAuthAudit } from './auth/helpers';
-import { authenticatorPolicySchema, type AssuranceFloorOverrides } from '@breeze/shared';
+import { authenticatorPolicySchema } from '@breeze/shared';
 
 // Attestation payload is a large nested object validated structurally by
 // @simplewebauthn at the service layer; here we only require a string `id` so a
@@ -363,6 +363,7 @@ authenticatorRoutes.get(
 authenticatorRoutes.put(
   '/policy',
   authMiddleware,
+  requireMfa(), // this endpoint can weaken the partner's step-up enforcement — gate it like PAM mutations
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
   zValidator('json', authenticatorPolicySchema),
   async (c) => {
@@ -371,9 +372,9 @@ authenticatorRoutes.put(
       return c.json({ error: 'Approval-security policy is partner-scoped' }, 400);
     }
     const input = c.req.valid('json');
-    // zod constrains each level to an int 1-4, so the runtime shape is a valid
-    // AssuranceFloorOverrides — narrow it at this boundary.
-    const floorOverrides = input.floorOverrides as AssuranceFloorOverrides;
+    // floorOverrides already infers as AssuranceFloorOverrides (literal levels in
+    // the schema) — no cast needed.
+    const floorOverrides = input.floorOverrides;
 
     // Raise-only: a partner may only strengthen the Breeze floor, never weaken it.
     try {

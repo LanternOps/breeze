@@ -146,12 +146,13 @@ describe('gatherApprovalProof (non-blocking)', () => {
 });
 
 describe('setApproverPin', () => {
-  it('PUTs the new PIN with the password step-up', async () => {
+  it('PUTs the PIN with the password step-up using the server field name `pin`', async () => {
     fetchMock.mockResolvedValueOnce(json({ success: true }));
     await setApproverPin('pw', '1234');
     expect(fetchMock.mock.calls[0][0]).toContain('/api/v1/auth/pin');
     expect(fetchMock.mock.calls[0][1].method).toBe('PUT');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ currentPassword: 'pw', newPin: '1234' });
+    // Must serialize to `pin` (the server setPinSchema field), NOT `newPin`.
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ currentPassword: 'pw', pin: '1234' });
   });
 
   it('throws on a server rejection', async () => {

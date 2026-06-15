@@ -307,10 +307,10 @@ const respondSchema = z.object({
     .min(1)
     .max(MAX_APPROVAL_DURATION_MINUTES)
     .optional(),
-  // Phase 2/3: optional assertion proof — EITHER the back-compat WebAuthn proof
-  // (no `type` on the wire → defaulted) OR the mobile_hw_key proof. Absent →
-  // today's L1 session tap. Present-but-invalid → 401 (NOT a silent downgrade).
-  // Enforcement is Phase 4.
+  // Optional assertion proof — EITHER the back-compat WebAuthn proof (no `type`
+  // on the wire → defaulted) OR the mobile_hw_key proof. Absent → L1 session tap.
+  // Present-but-invalid → 401 (NOT a silent downgrade). When the partner policy
+  // enforces, an under-assured APPROVE is rejected (403); a deny is never blocked.
   proof: z.union([mobileHwKeyProofSchema, assertionProofSchema]).optional(),
   // Phase 3: optional approver PIN (4-6 digits) steps a verified factor up to L3.
   pin: approverPinSchema.optional(),

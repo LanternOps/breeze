@@ -40,21 +40,34 @@ export async function registerApproverDevice(label: string): Promise<void> {
   const optionsResponse = await fetchWithAuth('/authenticator/devices/webauthn/options', {
     method: 'POST',
   });
-  const optionsData = await optionsResponse.json();
+  const optionsData = await optionsResponse.json().catch(() => null);
+  // fetchWithAuth does NOT throw on a non-2xx — guard explicitly so a failed
+  // options/verify rejects and runAction surfaces an error toast instead of a
+  // false success (CLAUDE.md no-silent-mutations).
+  if (!optionsResponse.ok) {
+    throw new Error(optionsData?.error ?? 'Failed to start device registration.');
+  }
   const optionsJSON: PublicKeyCredentialCreationOptionsJSON =
     optionsData.options ?? optionsData.optionsJSON ?? optionsData;
 
   const response = await startRegistration({ optionsJSON });
 
-  await fetchWithAuth('/authenticator/devices/webauthn/verify', {
+  const verifyResponse = await fetchWithAuth('/authenticator/devices/webauthn/verify', {
     method: 'POST',
     body: JSON.stringify({ label, response }),
   });
+  if (!verifyResponse.ok) {
+    const verifyData = await verifyResponse.json().catch(() => null);
+    throw new Error(verifyData?.error ?? 'Device registration failed.');
+  }
 }
 
 /** List the caller's active approver devices. */
 export async function listApproverDevices(): Promise<ApproverDevice[]> {
   const response = await fetchWithAuth('/me/approver-devices');
+  // Throw on a server error so the caller shows its retry/error state rather
+  // than rendering an empty list (fetchWithAuth doesn't throw on non-2xx).
+  if (!response.ok) throw new Error('Failed to load approver devices.');
   // The route returns `{ devices: [...] }` (GET /me/approver-devices). Unwrap
   // it; tolerate a bare array for forward-compat.
   const data = await response.json();
@@ -83,7 +96,14 @@ export async function getApprovalAssertion(basePath: string, id: string): Promis
   const challengeResponse = await fetchWithAuth(`${basePath}/${id}/assertion-challenge`, {
     method: 'POST',
   });
-  const challengeData = await challengeResponse.json();
+  const challengeData = await challengeResponse.json().catch(() => null);
+  // A genuine server error (500/404/403) must surface as a REAL error — NOT be
+  // misclassified as the device-less case below (which would silently downgrade
+  // a real outage to an L1 approval). Only a 2xx with no allowCredentials is the
+  // benign "no registered device" fallback. (fetchWithAuth doesn't throw on non-2xx.)
+  if (!challengeResponse.ok) {
+    throw new Error(challengeData?.error ?? `Could not start verification (${challengeResponse.status}).`);
+  }
   const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
     challengeData.options ?? challengeData.optionsJSON ?? challengeData;
 

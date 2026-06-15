@@ -130,7 +130,7 @@ vi.mock('./softwarePolicies', () => ({
 
 import { db } from '../db';
 import { pamRoutes } from './pam';
-import { assertApprovalAssurance } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 
 const ORG_ID = '7b41c9a2-0000-4000-8000-000000000001';
@@ -471,6 +471,24 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     const set = updateSetCalls[0] as { status: string; denialReason: string };
     expect(set.status).toBe('denied');
     expect(set.denialReason).toBe('nope');
+  });
+
+  it('returns 403 step_up_required when an enforcing policy rejects the approve (Phase 4)', async () => {
+    const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(new StepUpRequiredError(3, 1));
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', durationMinutes: 30 }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('step_up_required');
+    expect(body.requiredLevel).toBe(3);
+    // Enforcement rejects BEFORE the elevation row is mutated.
+    expect(updateSetCalls.length).toBe(0);
   });
 
   it('409s when the CAS loses (request no longer pending)', async () => {

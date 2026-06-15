@@ -367,8 +367,8 @@ async function decideHandler(
   if (!id) return c.json({ error: 'Bad request' }, 400);
 
   // Pre-fetch so we can resolve the required assurance from the row's risk tier
-  // before deciding. Phase 1: resolve only RECORDS the factor; it never blocks.
-  // This is the seam Phase 2 reuses to block on missing proof.
+  // before deciding (see the assertApprovalAssurance call below for the full
+  // verify + enforcement behavior).
   const [existing] = await db
     .select()
     .from(approvalRequests)

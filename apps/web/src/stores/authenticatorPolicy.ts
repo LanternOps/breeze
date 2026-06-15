@@ -14,6 +14,9 @@ export interface AuthenticatorPolicy {
 
 export async function getAuthenticatorPolicy(): Promise<AuthenticatorPolicy> {
   const res = await fetchWithAuth('/authenticator/policy');
+  // Throw on a server error so the tab shows its load-error state rather than
+  // an empty/undefined policy (fetchWithAuth doesn't throw on non-2xx).
+  if (!res.ok) throw new Error('Failed to load approval-security policy.');
   const data = await res.json();
   return data.policy as AuthenticatorPolicy;
 }

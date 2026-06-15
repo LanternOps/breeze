@@ -407,7 +407,8 @@ describe('POST /approvals/:id/approve', () => {
 
   it('records session_tap factor columns on approve', async () => {
     const set = mockDecideFlow({
-      // riskTier 'high' would require L3, but Phase 1 records L1 session_tap.
+      // No proof + default (non-enforcing) policy → recorded as L1 session_tap
+      // even though 'high' would require L3.
       existing: { ...updatedRow, status: 'pending', riskTier: 'high' },
       updateReturns: [{ ...updatedRow, riskTier: 'high' }],
     });

@@ -39,9 +39,11 @@ pinRoutes.put('/pin', authMiddleware, zValidator('json', setPinSchema), async (c
   return c.json({ success: true });
 });
 
-// Verify only — no approval side-effect. The L3 step-up factor is consumed by
-// the approval-decision path (assertApprovalAssurance); this endpoint lets the
-// UI pre-check a PIN (and surface lockout) before submitting a decision.
+// No approval decision is made here, but this DOES count against the lockout
+// counter (a failed attempt increments it and can lock the PIN for 15 min). The
+// authoritative L3 check happens in the approval-decision path
+// (assertApprovalAssurance); this endpoint lets the UI pre-check a PIN — and
+// surface lockout — before submitting a decision.
 pinRoutes.post('/pin/verify', authMiddleware, zValidator('json', verifyPinSchema), async (c) => {
   const auth = c.get('auth');
   const { pin } = c.req.valid('json');

@@ -83,6 +83,40 @@ describe('authenticator store approver helpers', () => {
     expect(result).toEqual(devices);
   });
 
+  it('registerApproverDevice REJECTS on a non-2xx verify (no false success)', async () => {
+    webauthnMocks.startRegistration.mockResolvedValueOnce({ id: 'cred-1', response: {} });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ challenge: 'c' })) // options ok
+      .mockResolvedValueOnce(makeResponse({ error: 'challenge expired' }, false, 400)); // verify fails
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(registerApproverDevice('My laptop')).rejects.toThrow(/challenge expired|registration failed/i);
+  });
+
+  it('registerApproverDevice REJECTS on a non-2xx options response', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ error: 'nope' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(registerApproverDevice('x')).rejects.toThrow();
+    expect(webauthnMocks.startRegistration).not.toHaveBeenCalled();
+  });
+
+  it('listApproverDevices throws on a server error (no empty-list masking)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ error: 'boom' }, false, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(listApproverDevices()).rejects.toThrow(/load approver devices/i);
+  });
+
+  it('getApprovalAssertion throws a NON-NoApproverDeviceError on a server failure (no silent L1)', async () => {
+    // A 500 on the challenge must NOT be misread as the device-less case.
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ error: 'redis down' }, false, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getApprovalAssertion('/pam/elevation-requests', 'req-z')).rejects.toMatchObject({
+      name: expect.not.stringMatching(/NoApproverDeviceError/),
+    });
+    expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
+  });
+
   it('revokeApproverDevice POSTs to the revoke endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ success: true }));
     vi.stubGlobal('fetch', fetchMock);

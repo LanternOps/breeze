@@ -41,7 +41,7 @@ export interface AssuranceDecision {
   requiredLevel: AssuranceLevel;
   /** Level actually satisfied by the recorded decision. */
   decidedAssuranceLevel: AssuranceLevel;
-  /** Factor actually used. Phase 1 is always a session tap. */
+  /** Factor recorded: 'session_tap' when no proof was presented, else the verified L2 factor. */
   decidedVia: 'session_tap' | 'mobile_hw_key' | 'webauthn_platform';
   authenticatorDeviceId: string | null;
   pinVerified: boolean;
@@ -50,14 +50,31 @@ export interface AssuranceDecision {
 }
 
 /**
- * Phase 1 (foundation): resolve the would-be required assurance and return the
- * factor-recording fields for the decide path to persist. This NEVER blocks —
- * proof verification (Phase 2/3) and partner-policy enforcement (Phase 4) layer
- * on later. Today every decision is a logged-in session tap, so the recorded
- * level is 1 regardless of the required level.
+ * Guard the cross-field invariants of a decision before it is persisted to the
+ * audit columns: the four fields are independent at the type level, so a future
+ * edit to a construction site could write a self-contradictory forensic row.
+ * Throws (fail-closed) rather than recording an inconsistent assurance record.
+ */
+function assertDecisionConsistent(d: AssuranceDecision): void {
+  const isSession = d.decidedVia === 'session_tap';
+  const violations: string[] = [];
+  if (isSession !== (d.decidedAssuranceLevel === 1)) violations.push('session_tap must be exactly L1');
+  if (isSession !== (d.authenticatorDeviceId === null)) violations.push('session_tap must have no device id');
+  if (d.pinVerified && d.decidedAssuranceLevel < 3) violations.push('pinVerified requires L3');
+  if (!isSession && d.authenticatorDeviceId === null) violations.push('an L2+ factor must record a device id');
+  if (violations.length > 0) {
+    throw new Error(`inconsistent assurance decision: ${violations.join('; ')}`);
+  }
+}
+
+/**
+ * The no-proof result: a session tap recorded at L1 with the Breeze default
+ * required level. Used directly when a decision presents no proof, and as the
+ * base the full `assertApprovalAssurance` builds on.
  *
- * NOTE: partner-policy floor overrides are intentionally NOT consulted yet
- * (the table exists for Phase 4). `requiredAssurance` is called with defaults.
+ * NOTE: partner-policy floor overrides are applied later in
+ * `assertApprovalAssurance`, not here — this resolver intentionally returns the
+ * Breeze default floor only (`requiredAssurance` with no overrides).
  */
 export function resolveApprovalAssurance(riskTier: RiskTier): AssuranceDecision {
   return {
@@ -152,6 +169,7 @@ export async function assertApprovalAssurance(input: {
     decision.graceDowngrade = true;
   }
 
+  assertDecisionConsistent(decision);
   return decision;
 }
 
@@ -194,7 +212,9 @@ async function verifyWebauthnFactor(
       credentialId: device.credentialId!,
       publicKey: device.publicKey,
       counter: device.signCount,
-      transports: device.transports as never,
+      // AuthenticatorTransport and PasskeyTransport are the same 7-member union,
+      // so this assigns structurally (the previous `as never` over-suppressed).
+      transports: device.transports,
     },
   });
   if (!verified) throw new Error('assertion verification failed');

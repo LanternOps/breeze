@@ -145,6 +145,7 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (c: any, next: any) =>
     authState.denyPermission ? c.json({ error: 'Forbidden' }, 403) : next(),
   ),
+  requireMfa: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
 vi.mock('../services/permissions', () => ({

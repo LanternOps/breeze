@@ -63,7 +63,7 @@ export const approvalRequests = pgTable(
 
     /** Assurance level actually satisfied by the decision (1..4). */
     decidedAssuranceLevel: smallint('decided_assurance_level'),
-    /** Factor actually used to decide. Phase 1: always 'session_tap'. */
+    /** Factor actually used to decide: session_tap (L1), webauthn_platform or mobile_hw_key (L2+). */
     decidedVia: approvalFactorEnum('decided_via'),
     /** The authenticator device that signed the decision (null for session_tap). */
     authenticatorDeviceId: uuid('authenticator_device_id'),

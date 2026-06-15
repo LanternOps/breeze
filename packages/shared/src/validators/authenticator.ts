@@ -73,8 +73,15 @@ export type ApproverPin = z.infer<typeof approverPinSchema>;
  * grace-window cutoff (null = enforce immediately when `requireEnrollment`).
  */
 export const authenticatorPolicySchema = z.object({
+  // Literal levels (not z.number().min/max) so the inferred type is
+  // Partial<Record<RiskTier, 1|2|3|4>> = AssuranceFloorOverrides — the
+  // raise-only invariant's value type is compile-checked, not runtime-only,
+  // and downstream callers need no `as AssuranceFloorOverrides` cast.
   floorOverrides: z
-    .record(z.enum(['low', 'medium', 'high', 'critical']), z.number().int().min(1).max(4))
+    .record(
+      z.enum(['low', 'medium', 'high', 'critical']),
+      z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+    )
     .default({}),
   requireEnrollment: z.boolean(),
   enforceFrom: z.string().datetime().nullable(),

@@ -34,7 +34,11 @@ export const authenticatorDevices = pgTable(
     signCount: integer('sign_count').notNull().default(0),
     aaguid: varchar('aaguid', { length: 36 }),
     transports: jsonb('transports').$type<AuthenticatorTransport[]>(),
-    // True = non-syncable hardware key (eligible for L4 critical).
+    // True = non-syncable hardware key (eligible for L4 critical). For
+    // webauthn_platform this is derived from a verified attestation
+    // (singleDevice && !backedUp). For mobile_hw_key it is CLIENT-ASSERTED, not
+    // server-attested — future L4 gating that trusts this for mobile keys must
+    // verify a platform attestation first.
     isPlatformBound: boolean('is_platform_bound').notNull(),
     // FK to mobile_devices added in the migration (kept loose here to avoid a
     // schema import cycle); null for webauthn_platform.
