@@ -67,3 +67,45 @@ export async function markMapping(mappingId: string, status: 'failed' | 'refunde
     .set({ status, lastEventAt: new Date(), updatedAt: new Date() })
     .where(eq(invoiceStripePayments.id, mappingId));
 }
+
+interface RefundInput {
+  stripePaymentIntentId: string;
+  amountRefundedCents: number; // cumulative refunded on the charge
+  chargeAmountCents: number;   // original captured amount
+}
+
+/** Reflect a Stripe-side refund. No Breeze-initiated money movement. System context. */
+export async function reflectStripeRefund(input: RefundInput): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    const [mapping] = await db.select().from(invoiceStripePayments)
+      .where(eq(invoiceStripePayments.stripePaymentIntentId, input.stripePaymentIntentId)).limit(1);
+    if (!mapping || !mapping.invoicePaymentId) return; // nothing to reflect
+
+    const paymentId = mapping.invoicePaymentId;
+    const full = input.amountRefundedCents >= input.chargeAmountCents;
+    if (full) {
+      // Full refund → void the payment row (mirrors voidPayment mechanics).
+      await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
+      await db.update(invoiceStripePayments)
+        .set({ status: 'refunded', invoicePaymentId: null, lastEventAt: new Date(), updatedAt: new Date() })
+        .where(eq(invoiceStripePayments.id, mapping.id));
+    } else {
+      // Partial refund → reduce the positive payment amount (stays > 0; respects the amount>0 CHECK).
+      const remainingCents = input.chargeAmountCents - input.amountRefundedCents;
+      await db.update(invoicePayments)
+        .set({ amount: (remainingCents / 100).toFixed(2) })
+        .where(eq(invoicePayments.id, paymentId));
+      await db.update(invoiceStripePayments)
+        .set({ status: 'partially_refunded', lastEventAt: new Date(), updatedAt: new Date() })
+        .where(eq(invoiceStripePayments.id, mapping.id));
+    }
+    await recomputeInvoiceStatus(mapping.invoiceId);
+    await emitInvoiceEvent({ type: 'payment.voided', invoiceId: mapping.invoiceId, orgId: mapping.orgId,
+      partnerId: await invoicePartnerId(mapping.invoiceId), paymentId });
+  });
+}
+
+async function invoicePartnerId(invoiceId: string): Promise<string> {
+  const [inv] = await db.select({ partnerId: invoices.partnerId }).from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  return inv!.partnerId;
+}

@@ -29,7 +29,7 @@ const { recompute, emit } = vi.hoisted(() => ({ recompute: vi.fn(), emit: vi.fn(
 vi.mock('./invoiceService', () => ({ recomputeInvoiceStatus: recompute }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: emit }));
 
-import { recordStripePayment } from './stripeReconcile';
+import { recordStripePayment, reflectStripeRefund } from './stripeReconcile';
 
 beforeEach(() => { results.length = 0; recompute.mockReset(); emit.mockReset(); });
 
@@ -108,5 +108,42 @@ describe('recordStripePayment', () => {
     })).rejects.toThrow(/void/);
 
     expect(recompute).not.toHaveBeenCalled();
+  });
+});
+
+describe('reflectStripeRefund', () => {
+  it('full refund voids the linked payment and recomputes', async () => {
+    // db call order: select mapping → delete payment → update mapping →
+    // (recompute, mocked) → invoicePartnerId: select invoice → (emit, mocked)
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1' }]); // mapping
+    queueResult([]); // delete payment
+    queueResult([]); // update mapping → refunded
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+
+    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 10000, chargeAmountCents: 10000 });
+
+    expect(recompute).toHaveBeenCalledWith('inv1');
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided', invoiceId: 'inv1' }));
+  });
+
+  it('partial refund reduces the payment amount and recomputes', async () => {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1' }]); // mapping
+    queueResult([]); // update payment amount
+    queueResult([]); // update mapping → partially_refunded
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+
+    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000 });
+
+    expect(recompute).toHaveBeenCalledWith('inv1');
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided', invoiceId: 'inv1' }));
+  });
+
+  it('no-op when the mapping has no linked payment', async () => {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: null }]); // mapping (unlinked)
+
+    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 10000, chargeAmountCents: 10000 });
+
+    expect(recompute).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
   });
 });
