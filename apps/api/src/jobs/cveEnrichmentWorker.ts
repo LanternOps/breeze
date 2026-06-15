@@ -8,6 +8,7 @@ import {
   OsvServerError,
 } from '../services/osvClient';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 
@@ -178,6 +179,7 @@ export async function initializeCveEnrichmentWorker(): Promise<void> {
 
   try {
     enrichmentWorker = createCveEnrichmentWorker();
+    attachWorkerObservability(enrichmentWorker, 'cveEnrichmentWorker');
 
     enrichmentWorker.on('error', (error) => {
       console.error('[CveEnrichment] Worker error:', error);

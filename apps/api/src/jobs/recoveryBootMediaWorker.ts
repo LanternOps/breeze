@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 import { withSystemDbAccessContext } from '../db';
 import { isReusableState } from '../services/bullmqUtils';
 import { buildRecoveryBootMediaArtifact } from '../services/recoveryBootMediaService';
@@ -93,6 +94,7 @@ export async function enqueueRecoveryBootMediaBuild(artifactId: string): Promise
 
 export async function initializeRecoveryBootMediaWorker(): Promise<void> {
   recoveryBootMediaWorkerInstance = createRecoveryBootMediaWorker();
+  attachWorkerObservability(recoveryBootMediaWorkerInstance, 'recoveryBootMediaWorker');
 
   recoveryBootMediaWorkerInstance.on('error', (error) => {
     console.error('[RecoveryBootMediaWorker] Worker error:', error);

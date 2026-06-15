@@ -5,6 +5,7 @@ import * as dbModule from '../db';
 import { deviceCommands, devices, sensitiveDataPolicies, sensitiveDataScans } from '../db/schema';
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
 import { isCronDue } from '../services/automationRuntime';
+import { attachWorkerObservability } from './workerObservability';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 
@@ -517,6 +518,7 @@ async function schedulePolicyWorker(): Promise<void> {
 
 export async function initializeSensitiveDataWorkers(): Promise<void> {
   sensitiveDataWorker = createSensitiveDataWorker();
+  attachWorkerObservability(sensitiveDataWorker, 'sensitiveDataWorker');
   sensitiveDataWorker.on('error', (error) => {
     console.error('[SensitiveDataWorker] Worker error:', error);
   });

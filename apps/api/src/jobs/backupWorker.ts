@@ -40,6 +40,7 @@ import { getDueOccurrenceKey } from '../routes/backup/helpers';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 import { markBackupJobFailedIfInFlight } from '../services/backupResultPersistence';
 import { createScheduledBackupJobIfAbsent } from '../services/backupJobCreation';
+import { attachWorkerObservability } from './workerObservability';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
   backupQueueJobDataSchema,
@@ -641,6 +642,7 @@ let backupWorkerInstance: Worker<BackupQueueJobData> | null = null;
 export async function initializeBackupWorker(): Promise<void> {
   try {
     backupWorkerInstance = createBackupWorker();
+    attachWorkerObservability(backupWorkerInstance, 'backupWorker');
 
     backupWorkerInstance.on('error', (error) => {
       console.error('[BackupWorker] Worker error:', error);

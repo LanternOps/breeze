@@ -4,6 +4,7 @@ import * as dbModule from '../db';
 import { browserExtensions, browserPolicies, browserPolicyViolations, devices } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -142,6 +143,7 @@ export async function initializeBrowserSecurityJobs(): Promise<void> {
       concurrency: 1,
     }
   );
+  attachWorkerObservability(evalWorker, 'browserSecurityEvalWorker');
 
   evalWorker.on('error', (error) => {
     console.error('[BrowserSecurityJobs] Worker error:', error);

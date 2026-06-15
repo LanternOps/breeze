@@ -10,6 +10,7 @@ import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -94,6 +95,7 @@ export function createUserRiskRetentionWorker(): Worker<RetentionJobData> {
 
 export async function initializeUserRiskRetention(): Promise<void> {
   retentionWorker = createUserRiskRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'userRiskRetention');
   retentionWorker.on('error', (error) => {
     console.error('[UserRiskRetention] Worker error:', error);
   });

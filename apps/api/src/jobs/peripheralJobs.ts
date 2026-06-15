@@ -6,6 +6,7 @@ import { publishEvent } from '../services/eventBus';
 import { CommandTypes, queueCommand, queueCommandForExecution } from '../services/commandQueue';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -335,7 +336,9 @@ export async function schedulePeripheralPolicyDistribution(
 
 export async function initializePeripheralJobs(): Promise<void> {
   anomalyWorker = createPeripheralAnomalyWorker();
+  attachWorkerObservability(anomalyWorker, 'peripheralAnomalyWorker');
   policyDistributionWorker = createPeripheralPolicyDistributionWorker();
+  attachWorkerObservability(policyDistributionWorker, 'peripheralPolicyDistributionWorker');
 
   anomalyWorker.on('error', (error) => {
     console.error('[PeripheralJobs] Anomaly worker error:', error);
