@@ -4,7 +4,7 @@
  * in memory + sessionStorage; reExchange() is the single-flight 401 recovery
  * path the API client (Task 6) calls.
  */
-import { API_BASE_URL } from '../config';
+import { getApiBaseUrl } from '../config';
 import {
   defaultEntraTokenDeps,
   getEntraTokenInteractive,
@@ -120,7 +120,7 @@ const BLOCK_KINDS: Record<string, AuthBlockKind> = {
 };
 
 async function exchangeOnce(entraToken: string, fetchImpl: typeof fetch): Promise<ClientSession> {
-  const res = await fetchImpl(`${API_BASE_URL}/client-ai/auth/exchange`, {
+  const res = await fetchImpl(`${getApiBaseUrl()}/client-ai/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ accessToken: entraToken }),
