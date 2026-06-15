@@ -21,8 +21,12 @@ vi.mock('../../services/invoicePdf', () => ({
 }));
 
 // DB mock for the list query: select().from().where() resolves to either the
-// count row or the data rows depending on call order.
-const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
+// count row or the data rows depending on call order. insert().values() is a
+// thenable so the pay route's mapping INSERT awaits cleanly.
+const { dbResults, insertValuesMock } = vi.hoisted(() => ({
+  dbResults: [] as unknown[][],
+  insertValuesMock: vi.fn(),
+}));
 vi.mock('../../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -31,10 +35,33 @@ vi.mock('../../db', () => {
       const rows = dbResults.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
     };
+    (chain as { insert: unknown }).insert = vi.fn(() => ({
+      values: (v: unknown) => { insertValuesMock(v); return Promise.resolve(undefined); },
+    }));
     return chain;
   };
-  return { db: makeChain() };
+  // runOutsideDbContext/withSystemDbAccessContext are transparent pass-throughs in
+  // unit tests (no AsyncLocalStorage). The real RLS-scope behaviour of the
+  // system-context connection read is covered by the integration test.
+  return {
+    db: makeChain(),
+    runOutsideDbContext: <T>(fn: () => T): T => fn(),
+    withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  };
 });
+
+// Stripe client + connect service mocks for the pay route.
+const { sessionsCreateMock, getConnectionMock } = vi.hoisted(() => ({
+  sessionsCreateMock: vi.fn(),
+  getConnectionMock: vi.fn(),
+}));
+vi.mock('../../services/stripeClient', () => ({
+  getStripe: () => ({ checkout: { sessions: { create: sessionsCreateMock } } }),
+  getConnectedStripeOptions: (acct: string) => ({ stripeAccount: acct }),
+}));
+vi.mock('../../services/stripeConnectService', () => ({
+  getConnection: getConnectionMock,
+}));
 
 // Real InvoiceServiceError so `instanceof` branches in the route fire.
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -58,7 +85,7 @@ function app(orgId = ORG_ID) {
 }
 
 describe('portal invoices routes', () => {
-  beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; });
+  beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); });
 
   it('GET /invoices lists this org non-draft invoices', async () => {
     dbResults.push([{ count: 2 }]);             // count query
@@ -111,5 +138,45 @@ describe('portal invoices routes', () => {
     const res = await app().request(`/invoices/${INV_ID}/pdf`, { method: 'GET' });
     expect(res.status).toBe(200);
     expect(renderInvoicePdfMock).toHaveBeenCalledWith(INV_ID);
+  });
+
+  it('POST /invoices/:id/pay creates a checkout session on the connected account', async () => {
+    // invoice SELECT → a payable sent invoice with a 100.00 balance
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-1',
+    }]);
+    getConnectionMock.mockResolvedValue({ status: 'connected', stripeAccountId: 'acct_9' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/c/cs_1', payment_intent: 'pi_1' });
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ url: expect.stringContaining('checkout.stripe.com') });
+    expect(sessionsCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'payment',
+        // metadata key matches the design spec (section 6 step 3).
+        metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
+      }),
+      // Connected-account scope + an idempotency key keyed on (invoice, balance) so a
+      // double-click reuses the same Checkout session rather than minting a second one.
+      { stripeAccount: 'acct_9', idempotencyKey: `inv_${INV_ID}_10000` },
+    );
+    // the Stripe object → payment mapping row is recorded
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      invoiceId: INV_ID, stripeObjectId: 'cs_1', stripeAccountId: 'acct_9', status: 'pending',
+    }));
+  });
+
+  it('POST /invoices/:id/pay returns 409 when the partner has not connected Stripe', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-2',
+    }]);
+    getConnectionMock.mockResolvedValue(null);
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
 });

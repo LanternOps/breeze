@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
-import { db } from '../../db';
-import { invoices } from '../../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { invoices, invoiceStripePayments } from '../../db/schema';
 import { listSchema, ticketParamSchema } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -14,6 +14,11 @@ import { getCustomerInvoice, markViewed } from '../../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { getConnection } from '../../services/stripeConnectService';
+import { getStripe, getConnectedStripeOptions } from '../../services/stripeClient';
+
+// Invoice statuses that may be paid online. Drafts/paid/void are excluded.
+const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
 
 export const invoiceRoutes = new Hono();
 
@@ -124,4 +129,74 @@ invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), a
       'Content-Length': String(pdf.length),
     },
   });
+});
+
+// POST /portal/invoices/:id/pay — open a Stripe Checkout session on the partner's
+// connected account (direct charge). The invoice SELECT and the mapping INSERT run
+// under the customer's org context (RLS-safe as that org); the partner-axis
+// connected-account read escapes to a system sub-context (see below).
+invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), async (c) => {
+  const auth = c.get('portalAuth');
+  const { id } = c.req.valid('param');
+
+  const [inv] = await db.select().from(invoices)
+    .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
+    .limit(1);
+  if (!inv) return c.json({ error: 'Invoice not found' }, 404);
+  if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable' }, 409);
+
+  const balanceCents = Math.round(Number(inv.balance) * 100);
+  if (balanceCents <= 0) return c.json({ error: 'Nothing to pay' }, 409);
+
+  // stripe_connect_accounts is a partner-axis table. This handler runs under the
+  // portal user's ORGANIZATION scope (portal/auth.ts), where breeze_has_partner_access
+  // is false — a bare org-scope read would be silently RLS-filtered to 0 rows with no
+  // error (the #1375 class of bug), making the pay route always 409. Read the partner's
+  // connection in a system-scoped sub-context outside the request transaction.
+  const conn = await runOutsideDbContext(() => withSystemDbAccessContext(() => getConnection(inv.partnerId)));
+  if (!conn || conn.status !== 'connected') {
+    return c.json({ error: 'Online payment is not available' }, 409);
+  }
+
+  // Customer-facing portal base URL (mirrors invoicePdf.ts portal-link building).
+  const portalBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');
+
+  const session = await getStripe().checkout.sessions.create({
+    mode: 'payment',
+    line_items: [{
+      price_data: {
+        currency: inv.currencyCode.toLowerCase(),
+        unit_amount: balanceCents,
+        product_data: { name: `Invoice ${inv.invoiceNumber ?? inv.id}` },
+      },
+      quantity: 1,
+    }],
+    success_url: `${portalBase}/portal/invoices/${inv.id}?paid=1`,
+    cancel_url: `${portalBase}/portal/invoices/${inv.id}`,
+    metadata: {
+      invoice_id: inv.id,
+      org_id: inv.orgId,
+      partner_id: inv.partnerId,
+      invoice_balance_cents: String(balanceCents),
+    },
+  }, {
+    ...getConnectedStripeOptions(conn.stripeAccountId),
+    // Dedupe double-click / retry: identical (invoice, balance) reuses the same
+    // Checkout session instead of creating a second pending mapping row.
+    idempotencyKey: `inv_${inv.id}_${balanceCents}`,
+  });
+
+  await db.insert(invoiceStripePayments).values({
+    orgId: inv.orgId,
+    invoiceId: inv.id,
+    stripeAccountId: conn.stripeAccountId,
+    stripeObjectType: 'checkout_session',
+    stripeObjectId: session.id,
+    stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+    amount: (balanceCents / 100).toFixed(2),
+    currency: inv.currencyCode,
+    status: 'pending',
+  });
+
+  return c.json({ url: session.url });
 });
