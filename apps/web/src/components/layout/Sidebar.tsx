@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   Terminal,
   FileText,
+  Receipt,
   Building,
   Building2,
   Filter,
@@ -150,6 +151,7 @@ export const navSections: NavSection[] = [
     label: 'Operations',
     icon: Layers,
     items: [
+      { name: 'Invoices', href: '/billing/invoices', icon: Receipt },
       { name: 'Software Library', href: '/software', icon: Package },
       { name: 'Software Policies', href: '/software-inventory', icon: Package },
       { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
