@@ -1,7 +1,7 @@
 import { afterAll, describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, users, organizations, invoices, invoiceLines, invoiceDocuments } from '../../db/schema';
+import { partners, users, organizations, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 import { automations, automationRuns } from '../../db/schema/automations';
@@ -1840,6 +1840,120 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
     const message = cause?.cause?.message ?? cause?.message ?? '';
     expect(message).toMatch(/violates foreign key constraint|invoice_lines_invoice_org_fkey/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// contracts, contract_lines, contract_billing_periods — shape 1 (direct org_id)
+// ---------------------------------------------------------------------------
+// All three tables carry a direct org_id column and are auto-discovered by the
+// coverage scan above. This block forges cross-org INSERTs and SELECTs as
+// `breeze_app` (the unprivileged role) to prove the WITH CHECK / USING
+// predicates actually reject hostile writes/reads. Self-contained: fixtures
+// are seeded via withSystemDbAccessContext (no setup.ts TRUNCATE here).
+describe('contracts RLS forge (shape 1, org-axis)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let partnerId = '';
+  let orgAId = '';
+  let orgBId = '';
+  // Org-A contract seeded for line/period cross-org attempts.
+  let contractAId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS Contracts Partner ${runSuffix}`, slug: `rls-contracts-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active'
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for contracts forge');
+      partnerId = partner.id;
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { partnerId: partner.id, name: 'RLS Contracts Org A', slug: `rls-ctr-a-${runSuffix}` },
+        { partnerId: partner.id, name: 'RLS Contracts Org B', slug: `rls-ctr-b-${runSuffix}` }
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for contracts forge');
+      orgAId = orgA.id; orgBId = orgB.id;
+      // Seed an org-A contract so we can hang line/period cross-org attempts on it.
+      const [c] = await db.insert(contracts).values({
+        partnerId: partner.id, orgId: orgAId, name: 'forge-seed',
+        intervalMonths: 1, startDate: '2026-07-01'
+      }).returning({ id: contracts.id });
+      if (!c) throw new Error('failed to seed contract for contracts forge');
+      contractAId = c.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      if (contractAId) await db.delete(contracts).where(eq(contracts.id, contractAId));
+      if (orgAId) await db.delete(organizations).where(eq(organizations.id, orgAId));
+      if (orgBId) await db.delete(organizations).where(eq(organizations.id, orgBId));
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)('org B INSERT with org A org_id is rejected by WITH CHECK (contracts)', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(contracts).values({
+          partnerId, orgId: orgAId, name: 'forge-crossorg',
+          intervalMonths: 1, startDate: '2026-07-01'
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "contracts"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot SELECT org A's contract", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(orgContext(orgBId), async () =>
+      db.select({ id: contracts.id }).from(contracts).where(eq(contracts.id, contractAId))
+    );
+    expect(visible).toHaveLength(0);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)('org B INSERT with org A org_id is rejected by WITH CHECK (contract_lines)', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(contractLines).values({
+          contractId: contractAId, orgId: orgAId,
+          lineType: 'flat', description: 'forge-crossorg', unitPrice: '0'
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "contract_lines"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)('org B INSERT with org A org_id is rejected by WITH CHECK (contract_billing_periods)', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(contractBillingPeriods).values({
+          contractId: contractAId, orgId: orgAId,
+          periodStart: '2026-07-01', periodEnd: '2026-08-01'
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "contract_billing_periods"/);
   });
 });
 
