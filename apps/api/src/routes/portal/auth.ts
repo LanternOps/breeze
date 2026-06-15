@@ -185,6 +185,10 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       accessibleOrgIds: [user.orgId],
       accessiblePartnerIds: [],
       userId: null,
+      // Portal end-users don't browse the MSP script catalog; partnerId is
+      // not readily in scope here. null disables the partner-wide read
+      // branch (safe).
+      currentPartnerId: null,
     },
     () => next()
   );

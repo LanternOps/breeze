@@ -98,8 +98,20 @@ Download and install the Breeze agent on a device:
 
 ```bash
 # On the target device:
+# The enrollment token is REQUIRED — grab it from the Add Device dialog.
 curl -fsSL https://localhost/api/v1/agents/install.sh | \
   BREEZE_SERVER=https://localhost \
+  BREEZE_ENROLL_TOKEN=<your-enrollment-token> \
+  bash
+```
+
+If your server is configured with an org enrollment secret, pass it as an
+**optional** extra gate alongside the token (never instead of it):
+
+```bash
+curl -fsSL https://localhost/api/v1/agents/install.sh | \
+  BREEZE_SERVER=https://localhost \
+  BREEZE_ENROLL_TOKEN=<your-enrollment-token> \
   BREEZE_ENROLLMENT_SECRET=<your-enrollment-secret> \
   bash
 ```

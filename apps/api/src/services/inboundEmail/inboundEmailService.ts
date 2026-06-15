@@ -1,10 +1,12 @@
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, ne, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketEmailInbound, tickets, ticketComments, portalUsers, organizations, partners } from '../../db/schema';
 import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
+import { maybeSendAutoresponse } from './autoresponder';
 import { emitTicketEvent } from '../ticketEvents';
 import { captureException } from '../sentry';
+import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
@@ -128,6 +130,21 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
       return;
     }
 
+    // (1c) Self-loop DROP (spec §5). If the SENDER is on our own inbound domain
+    // (`tickets.<domain>`), this is almost certainly our own outbound mail — a reply
+    // we sent, or an autoresponse that bounced — looping back in. Ingesting it would
+    // spawn a bogus ticket (or autoresponse) and potentially feed a mail loop. Drop
+    // it EARLY, before any match/create/quarantine decision, logging `ignored` with a
+    // self-loop note for the audit trail. (The autoresponse-time `self-domain` rule in
+    // loopPrevention.ts is the separate, defense-in-depth backstop.) When no platform
+    // domain is configured (self-hosted without TICKETS_INBOUND_DOMAIN) the helper
+    // returns null and this guard is skipped — nothing to compare against.
+    const inboundDomain = inboundDomainOrNull();
+    if (inboundDomain && senderDomain(n.from) === inboundDomain.toLowerCase()) {
+      await logInbound(n, partnerId, 'ignored', null, `self-loop: sender is inbound domain ${inboundDomain}`);
+      return;
+    }
+
     // (2) Idempotency — provider retries / at-least-once delivery. Scoped to the partner.
     // This SELECT alone is NOT the exactly-once guarantee: under CONCURRENT delivery two
     // workers can both miss the dup here and race to insert. Exactly-once is enforced by the
@@ -233,7 +250,14 @@ function candidateThreadKeys(n: NormalizedInboundEmail): string[] {
 // ticket fall through to the dedicated closed lookup (-> ONE new linked ticket), while
 // subsequent replies match the LIVE continuation. Resolved tickets still match (reopen).
 async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string): Promise<MatchedTicket | null> {
-  // 1) thread headers -> email_thread_key (scoped to partner, live tickets only).
+  // 1) thread headers -> email_thread_key OR email_message_id (scoped to partner,
+  // live tickets only). Candidate keys (In-Reply-To ∪ References) are matched
+  // against EITHER column: email_thread_key carries the generated anchor (so a
+  // reply to the autoresponse / outbound reply threads), and email_message_id
+  // carries the customer's OWN original Message-Id (so an autoresponder-OFF
+  // partner's customer replying to their own original — In-Reply-To = their
+  // original Message-Id, NOT the anchor — still threads instead of forking a
+  // duplicate). The partner predicate stays mandatory (spec §6 layer 1).
   const candidateKeys = candidateThreadKeys(n);
   if (candidateKeys.length > 0) {
     const rows = await db
@@ -242,7 +266,10 @@ async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string)
       .where(and(
         eq(tickets.partnerId, partnerId),
         ne(tickets.status, 'closed'),
-        inArray(tickets.emailThreadKey, candidateKeys)
+        or(
+          inArray(tickets.emailThreadKey, candidateKeys),
+          inArray(tickets.emailMessageId, candidateKeys)
+        )
       ))
       .limit(1);
     if (rows[0]) return rows[0] as MatchedTicket;
@@ -315,6 +342,29 @@ async function findPortalUserInPartner(email: string, partnerId: string): Promis
   return rows[0] ?? null;
 }
 
+// Resolve TICKETS_INBOUND_DOMAIN defensively. The inbound worker runs `getConfig()`
+// against a validated config at runtime, but some execution contexts (e.g. the
+// integration harness, which seeds partner_inbound_domains and never calls
+// validateConfig()) reach the create path without an initialized config. A config
+// read must NEVER poison ingestion — degrade to null (threading off) instead of
+// throwing, mirroring `resolvePartner`'s slug-address branch being unreachable
+// there. Returns null when the domain is unset OR config isn't initialized.
+function inboundDomainOrNull(): string | null {
+  try {
+    return getConfig().TICKETS_INBOUND_DOMAIN ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Lower-cased domain part of an email address (everything after the last '@'),
+// or '' when the address is malformed. Used by the ingest-time self-loop drop.
+function senderDomain(addr: string): string {
+  const a = (addr || '').trim().toLowerCase();
+  const at = a.lastIndexOf('@');
+  return at >= 0 ? a.slice(at + 1) : '';
+}
+
 async function createFromEmail(
   n: NormalizedInboundEmail,
   partnerId: string,
@@ -345,10 +395,61 @@ async function createFromEmail(
     SYSTEM_ACTOR
   );
 
-  // Stamp the threading key so future replies match. Carry the old key for closed-continuations.
+  // Stamp the threading key so future replies match. Precedence:
+  //   1) carryThreadKey — preserves a closed-continuation's original thread, so a
+  //      reply to the linked ticket still resolves to the original thread key.
+  //   2) the deterministic generated anchor — <ticket-${id}@TICKETS_INBOUND_DOMAIN>
+  //      — WHEN a platform domain is configured. This is the SAME value PR3's
+  //      OUTBOUND mail stamps as Message-ID/In-Reply-To/References (the one-time
+  //      autoresponse's Message-ID and every comment reply's In-Reply-To), so the
+  //      autoresponse, the outbound reply headers, and the inbound matcher all
+  //      round-trip to ONE key. It MUST take precedence over the customer's own
+  //      Message-Id: otherwise a reply to the autoresponse (In-Reply-To = anchor)
+  //      would not match email_thread_key and would only thread via the weaker
+  //      [T-...] subject token (review finding — header threading must work).
+  //   3) n.messageId — the customer's own Message-Id, used ONLY when no platform
+  //      domain is configured (self-hosted without TICKETS_INBOUND_DOMAIN). Keeps
+  //      the no-domain integration env unchanged (still anchors on the inbound id).
+  //   4) null — no domain AND no Message-Id (threading off for this ticket).
+  // ALSO stamp the customer's OWN Message-Id (email_message_id, Phase 1 column).
+  // When a platform domain is configured, email_thread_key is the generated
+  // anchor — so an autoresponder-OFF partner's customer who replies to their OWN
+  // original (In-Reply-To = their original Message-Id, NOT the anchor) would not
+  // header-match email_thread_key and would fork a duplicate ticket. Persisting
+  // the customer's Message-Id here lets findTicketInPartner match the reply
+  // against EITHER key (review fix). Harmless when it duplicates email_thread_key
+  // (no-domain path) — both columns just carry the same value.
+  const domain = inboundDomainOrNull();
+  const generatedAnchor = domain ? `<ticket-${ticket.id}@${domain}>` : null;
   await db.update(tickets)
-    .set({ emailThreadKey: carryThreadKey ?? n.messageId ?? null })
+    .set({
+      emailThreadKey: carryThreadKey ?? (domain ? generatedAnchor : (n.messageId ?? null)),
+      emailMessageId: n.messageId ?? null,
+    })
     .where(eq(tickets.id, ticket.id));
+
+  // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
+  // The known-sender create call passes `submittedBy` and a null `priorNumber`; the
+  // closed-continuation call passes `priorNumber` (and no `submittedBy`). Gating on
+  // `submittedBy && !priorNumber` therefore fires the autoresponder exactly once on
+  // the fresh known-sender path and NEVER on the quarantine path (which never calls
+  // createFromEmail) or the closed-continuation path (spec §5).
+  if (submittedBy && !priorNumber) {
+    // Read the PERSISTED subject (token-stripped by createTicket) + internalNumber.
+    // Never use raw n.subject — it may still carry the [T-...] token.
+    const persisted = await db
+      .select({ internalNumber: tickets.internalNumber, subject: tickets.subject })
+      .from(tickets)
+      .where(eq(tickets.id, ticket.id))
+      .limit(1);
+    await maybeSendAutoresponse(n, partnerId, {
+      id: ticket.id,
+      orgId,
+      partnerId,
+      internalNumber: persisted[0]?.internalNumber ?? null,
+      subject: persisted[0]?.subject ?? '',
+    });
+  }
   return ticket;
 }
 
@@ -372,8 +473,9 @@ async function appendInboundComment(ticketId: string, n: NormalizedInboundEmail,
   const comment = inserted[0];
   if (!comment) throw new Error('failed to insert inbound comment');
 
-  // inbound:true -> the notify worker's live guard (ticketNotifyWorker.ts:205-207 reads
-  // `!event.payload.inbound`) skips echoing the email back to the sender, preventing a loop.
+  // inbound:true -> the notify worker's ticket.commented branch skips the requester
+  // echo when event.payload.inbound is set (its guard is `isPublic && !inbound`), so the
+  // email is never bounced back to the same sender — preventing a mail loop.
   await emitTicketEvent({
     type: 'ticket.commented',
     ticketId,

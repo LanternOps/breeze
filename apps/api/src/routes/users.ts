@@ -471,6 +471,24 @@ const updateMeSchema = z
   })
   .strict();
 
+function isPreferenceRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validatePreferenceEnum(
+  prefs: Record<string, unknown>,
+  key: string,
+  validValues: readonly string[],
+  label: string
+): string | null {
+  if (!(key in prefs)) return null;
+  const value = prefs[key];
+  if (typeof value !== 'string' || !validValues.includes(value)) {
+    return `Invalid ${key} value. Must be ${label}.`;
+  }
+  return null;
+}
+
 userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   const auth = c.get('auth');
   const body = c.req.valid('json');
@@ -478,7 +496,11 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   // Load the caller's own row once: needed to detect a real email change and to
   // choose the right step-up factor (local password vs MFA).
   const [self] = await db
-    .select({ email: users.email, passwordHash: users.passwordHash })
+    .select({
+      email: users.email,
+      passwordHash: users.passwordHash,
+      preferences: users.preferences
+    })
     .from(users)
     .where(eq(users.id, auth.user.id))
     .limit(1);
@@ -510,14 +532,32 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
         return c.json({ error: 'preferences payload too large (64KB max)' }, 400);
       }
       const prefs = body.preferences as Record<string, unknown>;
-      const validThemes = ['light', 'dark', 'system'];
-      if (
-        typeof prefs.theme === 'string'
-        && !validThemes.includes(prefs.theme)
-      ) {
-        return c.json({ error: 'Invalid theme value. Must be light, dark, or system.' }, 400);
+      const validationError =
+        validatePreferenceEnum(
+          prefs,
+          'theme',
+          ['light', 'dark', 'system'],
+          'light, dark, or system'
+        )
+        ?? validatePreferenceEnum(
+          prefs,
+          'density',
+          ['comfortable', 'compact', 'dense'],
+          'comfortable, compact, or dense'
+        )
+        ?? validatePreferenceEnum(prefs, 'font', ['breeze', 'system'], 'breeze or system');
+      if (validationError) {
+        return c.json({ error: validationError }, 400);
       }
-      updates.preferences = prefs;
+      const mergedPreferences = {
+        ...(isPreferenceRecord(self.preferences) ? self.preferences : {}),
+        ...prefs
+      };
+      const mergedSerialized = JSON.stringify(mergedPreferences);
+      if (mergedSerialized.length > 64 * 1024) {
+        return c.json({ error: 'preferences payload too large (64KB max)' }, 400);
+      }
+      updates.preferences = mergedPreferences;
     } else if (body.preferences === null) {
       updates.preferences = undefined;
     }

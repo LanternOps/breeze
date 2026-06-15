@@ -302,6 +302,9 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           accessibleOrgIds: [payload.org_id],
           accessiblePartnerIds: [payload.partner_id],
           userId: payload.sub,
+          // Own partner — enables read-only visibility of the partner's
+          // partner-wide catalog rows for org-scope users.
+          currentPartnerId: payload.partner_id,
         }
       : {
           scope: 'partner',
@@ -312,6 +315,8 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           accessibleOrgIds: partnerAccessibleOrgIds ?? [],
           accessiblePartnerIds: [payload.partner_id],
           userId: payload.sub,
+          // Own partner — read-visibility of partner-wide catalog rows.
+          currentPartnerId: payload.partner_id,
         },
     async () => {
       await next();

@@ -1,0 +1,16 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import PartnerBillingSettings from '../../components/billing/PartnerBillingSettings';
+---
+
+<DashboardLayout title="Billing Settings">
+  <div class="space-y-6">
+    <div>
+      <h1 class="text-xl font-semibold">Billing settings</h1>
+      <p class="mt-1 text-sm text-muted-foreground">
+        Invoice currency, tax, numbering, terms, and footer for your customers.
+      </p>
+    </div>
+    <PartnerBillingSettings client:load />
+  </div>
+</DashboardLayout>

@@ -64,7 +64,7 @@ vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
 vi.mock('./helpers', () => ({
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
-  resolvePatchApprovalOrgId: vi.fn(() => ({ orgId: ORG_ID })),
+  resolvePatchApprovalOrgIdForRing: vi.fn(async () => ({ orgId: ORG_ID })),
   upsertPatchApproval: vi.fn(async () => undefined),
 }));
 

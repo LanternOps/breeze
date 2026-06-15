@@ -20,6 +20,15 @@ function normalizeResolved(value: string[] | ResolvedInstallPatchIds): ResolvedI
   return { patchIds: value.patchIds, skippedPendingApproval: value.skippedPendingApproval };
 }
 
+export type PendingBulkAction = {
+  /** Human-readable action label for the confirm message, e.g. "Scan for patches". */
+  action: string;
+  deviceCount: number;
+  orgNames: string[];
+  /** Internal: the actual async thunk to invoke on confirm. */
+  runFn: () => Promise<void>;
+};
+
 export function useBulkActions(
   selectedIds: Set<string>,
   clearSelection: () => void,
@@ -29,6 +38,7 @@ export function useBulkActions(
   const [bulkAction, setBulkAction] = useState<string | null>(null);
   const [bulkError, setBulkError] = useState<string>();
   const [bulkSuccess, setBulkSuccess] = useState<string>();
+  const [pendingConfirm, setPendingConfirm] = useState<PendingBulkAction | null>(null);
   const { resolveInstallPatchIds } = options;
 
   const handleBulkScan = useCallback(async () => {
@@ -147,6 +157,53 @@ export function useBulkActions(
     }
   }, [selectedIds, clearSelection, onRefresh, resolveInstallPatchIds]);
 
+  /**
+   * Request a bulk scan with confirmation context.
+   * The caller renders a ConfirmDialog driven by `pendingConfirm`,
+   * then calls `confirmPendingAction` to actually fire the scan.
+   */
+  const requestBulkScan = useCallback(
+    (orgNames: string[], filterIds?: string[]) => {
+      const ids = filterIds ?? Array.from(selectedIds);
+      if (ids.length === 0) return;
+      setPendingConfirm({
+        action: 'Scan for patches',
+        deviceCount: ids.length,
+        orgNames,
+        runFn: () => handleBulkScan(),
+      });
+    },
+    [selectedIds, handleBulkScan]
+  );
+
+  /**
+   * Request a bulk install with confirmation context.
+   */
+  const requestBulkInstall = useCallback(
+    (orgNames: string[], filterIds?: string[]) => {
+      const ids = filterIds ?? Array.from(selectedIds);
+      if (ids.length === 0) return;
+      setPendingConfirm({
+        action: `Install patches`,
+        deviceCount: ids.length,
+        orgNames,
+        runFn: () => handleBulkInstall(filterIds),
+      });
+    },
+    [selectedIds, handleBulkInstall]
+  );
+
+  const confirmPendingAction = useCallback(async () => {
+    if (!pendingConfirm) return;
+    const { runFn } = pendingConfirm;
+    setPendingConfirm(null);
+    await runFn();
+  }, [pendingConfirm]);
+
+  const cancelPendingAction = useCallback(() => {
+    setPendingConfirm(null);
+  }, []);
+
   return {
     bulkAction,
     bulkError,
@@ -155,5 +212,10 @@ export function useBulkActions(
     setBulkSuccess,
     handleBulkScan,
     handleBulkInstall,
+    pendingConfirm,
+    requestBulkScan,
+    requestBulkInstall,
+    confirmPendingAction,
+    cancelPendingAction,
   };
 }

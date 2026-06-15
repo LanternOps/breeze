@@ -27,6 +27,8 @@ services:
     volumes:
       - binaries:/target
     restart: "no"
+    networks:
+      - breeze
 
   caddy:
     image: ${CADDY_IMAGE_REF:?Set CADDY_IMAGE_REF to a digest-pinned Caddy image ref}

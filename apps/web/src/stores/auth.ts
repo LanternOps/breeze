@@ -9,9 +9,17 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
+import {
+  applyAppearancePreferences,
+  type Density,
+  type FontPreference,
+  type ThemePreference,
+} from '@/lib/appearance';
 
 export interface UserPreferences {
-  theme?: 'light' | 'dark' | 'system';
+  theme?: ThemePreference;
+  density?: Density;
+  font?: FontPreference;
 }
 
 export interface User {
@@ -780,21 +788,6 @@ export async function apiLogout(): Promise<void> {
   }
 }
 
-function applyThemePreference(theme: string | undefined): void {
-  if (!theme || typeof document === 'undefined') return;
-
-  const resolved = theme === 'system'
-    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-    : theme;
-
-  if (resolved === 'dark') {
-    document.documentElement.classList.add('dark');
-  } else {
-    document.documentElement.classList.remove('dark');
-  }
-  localStorage.setItem('theme', theme);
-}
-
 export async function fetchAndApplyPreferences(): Promise<void> {
   try {
     const response = await fetchWithAuth('/users/me');
@@ -810,7 +803,7 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     }
     if (data.preferences) {
       useAuthStore.getState().updateUser({ preferences: data.preferences });
-      applyThemePreference(data.preferences.theme);
+      applyAppearancePreferences(data.preferences);
     }
   } catch {
     // Non-critical — localStorage still has the cached theme

@@ -16,9 +16,10 @@
 
 import { db } from '../db';
 import { devices, remoteSessions } from '../db/schema';
-import { eq, and, desc, SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -290,6 +291,28 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       const conditions: SQL[] = [];
       const orgCond = auth.orgCondition(devices.orgId);
       if (orgCond) conditions.push(orgCond);
+
+      // Per-user ownership: a non-system caller may only see their OWN sessions
+      // (mirrors the REST GET /remote/sessions gate). System scope is unrestricted.
+      if (auth.scope !== 'system') {
+        conditions.push(eq(remoteSessions.userId, auth.user.id));
+      }
+
+      // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+      // caller may only list sessions for devices in their allowed sites. Narrow
+      // to that device set; short-circuit to empty when there are none in scope.
+      // A site-restricted caller is org-scoped, so resolve against auth.orgId;
+      // fail closed to empty if it is somehow absent.
+      if (auth.allowedSiteIds) {
+        if (!auth.orgId) {
+          return JSON.stringify({ sessions: [], total: 0, note: SITE_SCOPE_EMPTY_NOTE });
+        }
+        const allowed = await resolveSiteAllowedDeviceIds(auth.orgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({ sessions: [], total: 0, note: SITE_SCOPE_EMPTY_NOTE });
+        }
+        conditions.push(inArray(remoteSessions.deviceId, allowed));
+      }
 
       if (input.status) {
         conditions.push(eq(remoteSessions.status, input.status as typeof remoteSessions.status.enumValues[number]));

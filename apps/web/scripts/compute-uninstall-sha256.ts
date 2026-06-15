@@ -4,7 +4,7 @@ import { join } from 'path';
 
 const dir = join(import.meta.dirname, '..', 'public', 'scripts');
 const files = readdirSync(dir)
-  .filter((f) => f.startsWith('uninstall-') && f.endsWith('.sh'))
+  .filter((f) => f === 'uninstall.sh' || (f.startsWith('uninstall-') && f.endsWith('.sh')))
   .sort();
 const lines = files.map((f) => {
   const hash = createHash('sha256').update(readFileSync(join(dir, f))).digest('hex');

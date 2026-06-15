@@ -4,6 +4,7 @@ import ScriptForm, { type ScriptFormValues, type ScriptSubmitValues } from './Sc
 import { mappingToRows } from './ScriptFormSchema';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { ScopeBadge } from '../shared/ScopeBadge';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -12,13 +13,21 @@ type ScriptEditPageProps = {
   scriptId?: string;
 };
 
+type ScriptScope = {
+  orgId: string | null;
+  partnerId: string | null;
+  isSystem: boolean;
+};
+
 export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   const [script, setScript] = useState<ScriptFormValues | null>(null);
+  const [scriptScope, setScriptScope] = useState<ScriptScope | null>(null);
   const [loading, setLoading] = useState(!!scriptId);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
 
   const isNew = !scriptId;
+  const { organizations } = useOrgStore();
 
   const fetchScript = useCallback(async () => {
     if (!scriptId) return;
@@ -48,6 +57,11 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         runAs: scriptData.runAs || 'system',
         exitCodeSeverityMapping: mappingToRows(scriptData.exitCodeSeverityMapping),
       });
+      setScriptScope({
+        orgId: scriptData.orgId ?? null,
+        partnerId: scriptData.partnerId ?? null,
+        isSystem: scriptData.isSystem ?? false,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -67,8 +81,19 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       const url = isNew ? '/scripts' : `/scripts/${scriptId}`;
       const method = isNew ? 'POST' : 'PUT';
 
-      const currentOrgId = useOrgStore.getState().currentOrgId;
-      const payload = isNew && currentOrgId ? { ...values, orgId: currentOrgId } : values;
+      let payload: typeof values & { availability?: 'org' | 'partner'; orgId?: string | null };
+      if (isNew) {
+        if (values.availability === 'org') {
+          // Org-specific script: use the selected orgId from the form or fall back to the current org
+          const orgId = values.orgId || useOrgStore.getState().currentOrgId || undefined;
+          payload = { ...values, availability: 'org', orgId };
+        } else {
+          // Partner-wide (default) or single-org user: let the backend resolve
+          payload = { ...values, availability: 'partner' };
+        }
+      } else {
+        payload = values;
+      }
 
       const response = await fetchWithAuth(url, {
         method,
@@ -149,6 +174,14 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           <h1 className="text-xl font-semibold tracking-tight">
             {isNew ? 'New Script' : (script?.name || 'Edit Script')}
           </h1>
+          {!isNew && scriptScope && (
+            <ScopeBadge
+              orgId={scriptScope.orgId}
+              partnerId={scriptScope.partnerId}
+              isSystem={scriptScope.isSystem}
+              orgName={organizations.find(o => o.id === scriptScope.orgId)?.name}
+            />
+          )}
         </div>
         {!isNew && (
           <a
@@ -173,6 +206,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         defaultValues={script || undefined}
         submitLabel={isNew ? 'Create Script' : 'Save Changes'}
         loading={submitting}
+        isNew={isNew}
       />
     </div>
   );

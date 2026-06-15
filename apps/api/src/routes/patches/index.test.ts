@@ -12,6 +12,7 @@ const DEVICE_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const DEVICE_C = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const DEVICE_D = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const PATCH_ID = '44444444-4444-4444-4444-444444444444';
+const RING_ID = '55555555-5555-4555-8555-555555555555';
 
 const mockAuthState = vi.hoisted(() => ({
   scope: 'organization' as 'organization' | 'partner' | 'system',
@@ -79,8 +80,13 @@ vi.mock('../../db/schema', () => ({
   patchApprovals: {
     orgId: 'patchApprovals.orgId',
     patchId: 'patchApprovals.patchId',
+    ringId: 'patchApprovals.ringId',
     status: 'patchApprovals.status',
     createdAt: 'patchApprovals.createdAt'
+  },
+  patchPolicies: {
+    id: 'patchPolicies.id',
+    orgId: 'patchPolicies.orgId'
   },
   patchJobs: {
     orgId: 'patchJobs.orgId',
@@ -1003,6 +1009,39 @@ describe('patch routes', () => {
     const lastCall = executeMock.mock.calls[executeMock.mock.calls.length - 1]!;
     const sqlPayload = lastCall[0] as unknown as { values: unknown[] };
     expect(sqlPayload.values).toContain(ACCESSIBLE_ORG_ID);
+  });
+
+  it('uses the selected ring org for partner bulk approve instead of the ambient orgId query', async () => {
+    mockAuthState.scope = 'partner';
+    mockAuthState.orgId = null;
+    mockAuthState.partnerId = 'partner-123';
+    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ orgId: ACCESSIBLE_ORG_ID }])
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/patches/bulk-approve?orgId=${BLOCKED_ORG_ID}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ringId: RING_ID,
+        patchIds: [PATCH_ID],
+        note: 'Approve for selected ring'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const executeMock = vi.mocked(db.execute);
+    const lastCall = executeMock.mock.calls[executeMock.mock.calls.length - 1]!;
+    const sqlPayload = lastCall[0] as unknown as { values: unknown[] };
+    expect(sqlPayload.values).toContain(ACCESSIBLE_ORG_ID);
+    expect(sqlPayload.values).not.toContain(BLOCKED_ORG_ID);
+    expect(sqlPayload.values).toContain(RING_ID);
   });
 
   it('rejects partner bulk approve with 403 when query-param orgId is not accessible', async () => {

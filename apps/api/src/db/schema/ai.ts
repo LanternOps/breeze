@@ -2,6 +2,7 @@ import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, intege
 import { organizations } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
+import { portalUsers } from './portal';
 
 // ============================================
 // Enums
@@ -45,6 +46,17 @@ export const aiSessions = pgTable('ai_sessions', {
   flaggedBy: uuid('flagged_by').references(() => users.id),
   flagReason: text('flag_reason'),
   delegantM365ConnectionId: uuid('delegant_m365_connection_id'),
+  // AI for Office client principal (FK → portal_users). CHECKs in SQL:
+  // ai_sessions_single_principal_check (never both user_id and client_user_id),
+  // ai_sessions_client_principal_check (any client session — type matching the
+  // `${host}_client` convention, e.g. 'excel_client'/'word_client' — ⇒ set).
+  // Partial index ai_sessions_client_user_id_idx created via SQL migration.
+  clientUserId: uuid('client_user_id').references(() => portalUsers.id),
+  // AI for Office: the name of the Excel workbook the session happened in,
+  // captured at create time so the per-user history list can tag/filter by
+  // file. Nullable (older rows, non-Office sessions). Added in
+  // 2026-06-13-c-ai-sessions-workbook-name.sql.
+  workbookName: varchar('workbook_name', { length: 500 }),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),

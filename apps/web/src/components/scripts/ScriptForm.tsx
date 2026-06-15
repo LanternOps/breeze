@@ -24,6 +24,7 @@ import { configureMonacoLoader } from '@/lib/monacoLoader';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
 import type { ScriptFormBridge } from '@/stores/scriptAiStore';
 import type { OSType } from './ScriptList';
+import { useOrgStore } from '@/stores/orgStore';
 import {
   scriptSchema, languageOptions, categoryOptions,
   runAsOptions, parameterTypeOptions, severityOptions,
@@ -39,6 +40,7 @@ type ScriptFormProps = {
   defaultValues?: Partial<ScriptFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  isNew?: boolean;
 };
 
 export default function ScriptForm({
@@ -46,7 +48,8 @@ export default function ScriptForm({
   onCancel,
   defaultValues,
   submitLabel = 'Save script',
-  loading
+  loading,
+  isNew = false,
 }: ScriptFormProps) {
   const [editorMounted, setEditorMounted] = useState(false);
   const editorInstanceRef = useRef<Parameters<NonNullable<EditorProps['onMount']>>[0] | null>(null);
@@ -139,6 +142,7 @@ export default function ScriptForm({
       timeoutSeconds: 300,
       runAs: 'system',
       exitCodeSeverityMapping: [],
+      availability: 'partner',
       ...defaultValues
     }
   });
@@ -231,6 +235,15 @@ export default function ScriptForm({
   const watchLanguage = watch('language');
   const watchOsTypes = watch('osTypes');
   const watchParameters = watch('parameters');
+  const watchAvailability = watch('availability');
+
+  // Partner-scope detection: a partner-scope user has partners loaded in the store.
+  // The "Available to" picker shows only for partner-scope users creating a NEW script
+  // with >1 accessible org (single-org partner users don't need to pick; org-scope users
+  // always write to their own org — the backend forces it).
+  const { partners, organizations } = useOrgStore();
+  const isPartnerScope = partners.length > 0;
+  const showAvailabilityPicker = isNew && isPartnerScope && organizations.length > 1;
 
   const monacoLanguage = useMemo(() => {
     return languageOptions.find(l => l.value === watchLanguage)?.monacoLang || 'plaintext';
@@ -280,6 +293,47 @@ export default function ScriptForm({
       })}
       className="space-y-8 rounded-lg border bg-card p-6 shadow-sm"
     >
+      {/* Availability picker — shown only for partner-scope users creating a new script with >1 org */}
+      {showAvailabilityPicker && (
+        <fieldset className="space-y-2 rounded-md border p-4">
+          <legend className="px-1 text-sm font-medium">Available to</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="partner"
+              {...register('availability')}
+              defaultChecked
+            />
+            All my organizations
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="org"
+              {...register('availability')}
+            />
+            A specific organization
+          </label>
+          {watchAvailability === 'org' && (
+            <div className="mt-2 space-y-1 pl-6">
+              <label htmlFor="script-org" className="text-xs font-medium text-muted-foreground">
+                Organization
+              </label>
+              <select
+                id="script-org"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                {...register('orgId')}
+              >
+                <option value="">Select an organization</option>
+                {organizations.map(org => (
+                  <option key={org.id} value={org.id}>{org.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </fieldset>
+      )}
+
       {/* Basic Information */}
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">

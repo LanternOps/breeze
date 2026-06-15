@@ -576,6 +576,74 @@ describe('user routes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it.each([
+      ['theme', 'sepia', /Invalid theme value/i],
+      ['density', 'tiny', /Invalid density value/i],
+      ['font', 'comic-sans', /Invalid font value/i],
+    ])('rejects invalid %s appearance preference', async (key, value, message) => {
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { [key]: value } })
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(message);
+    });
+
+    it('merges partial preference updates instead of clobbering existing keys', async () => {
+      const existingPreferences = {
+        theme: 'dark',
+        density: 'compact',
+        customKey: 'preserve-me'
+      };
+      const mergedPreferences = {
+        ...existingPreferences,
+        font: 'system'
+      };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              email: 'test@example.com',
+              passwordHash: 'hash',
+              preferences: existingPreferences
+            }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'user-123',
+            email: 'test@example.com',
+            name: 'Test User',
+            avatarUrl: null,
+            status: 'active',
+            mfaEnabled: false,
+            preferences: mergedPreferences
+          }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({
+        set: setMock
+      } as any);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { font: 'system' } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        preferences: mergedPreferences
+      }));
+      const body = await res.json();
+      expect(body.preferences).toEqual(mergedPreferences);
+    });
   });
 
   describe('PATCH /users/me audit coverage (SOC2)', () => {

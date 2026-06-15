@@ -1444,7 +1444,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         orgId: agentDb.orgId,
         accessibleOrgIds: [agentDb.orgId],
         // Agents are org-scoped; they have no access to partner-level tables.
-        accessiblePartnerIds: []
+        accessiblePartnerIds: [],
+        // Agents don't browse the catalog as org users; null disables the
+        // partner-wide read branch (safe).
+        currentPartnerId: null
       },
       fn
     );

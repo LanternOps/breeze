@@ -7,6 +7,12 @@ import {
   renderLayout,
 } from './emailLayout';
 
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+}
+
 export interface SendEmailParams {
   to: string | string[];
   subject: string;
@@ -14,6 +20,20 @@ export interface SendEmailParams {
   text?: string;
   from?: string;
   replyTo?: string | string[];
+  // Custom RFC headers for threading + loop-prevention (Phase 4):
+  // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
+  // provider maps it natively (Resend/SMTP `headers`, Mailgun `h:` fields).
+  headers?: Record<string, string>;
+  attachments?: EmailAttachment[];
+}
+
+export interface InvoiceEmailParams {
+  invoiceNumber: string;
+  partnerName: string;
+  total: string;
+  dueDate: string;
+  portalUrl: string;
+  supportEmail?: string;
 }
 
 export interface PasswordResetEmailParams {
@@ -145,7 +165,7 @@ export class EmailService {
   }
 
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, subject, html, text, from, replyTo } = params;
+    const { to, subject, html, text, from, replyTo, headers, attachments } = params;
     const sender = from ?? this.defaultFrom;
 
     if (this.provider === 'resend') {
@@ -159,7 +179,13 @@ export class EmailService {
         subject,
         html,
         text,
-        replyTo
+        replyTo,
+        headers,
+        attachments: attachments?.map((a) => ({
+          filename: a.filename,
+          content: a.content,
+          contentType: a.contentType
+        }))
       });
       if (error) {
         throw new Error(`Resend error: ${error.message}`);
@@ -178,7 +204,9 @@ export class EmailService {
         subject,
         html,
         text,
-        replyTo
+        replyTo,
+        headers,
+        attachments
       });
       return;
     }
@@ -187,13 +215,30 @@ export class EmailService {
       throw new Error('SMTP transport is not initialized');
     }
 
+    // Lift Message-ID / In-Reply-To / References (case-insensitive) out of the
+    // generic `headers` map into nodemailer's dedicated options. Passing a
+    // `Message-ID` header AND letting nodemailer auto-generate its own would emit
+    // TWO Message-Id headers; using the `messageId` option makes our anchor the
+    // single canonical Message-Id so SMTP threading round-trips. The remaining
+    // headers (e.g. Auto-Submitted) stay in the generic map.
+    const { messageId, inReplyTo, references, rest } = liftThreadingHeaders(headers);
+
     await this.smtpTransport.sendMail({
       from: sender,
       to,
       subject,
       html,
       text,
-      replyTo
+      replyTo,
+      messageId,
+      inReplyTo,
+      references,
+      headers: rest,
+      attachments: attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        contentType: a.contentType
+      }))
     });
   }
 
@@ -453,6 +498,48 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '');
 }
 
+/**
+ * Split the threading headers (Message-ID / In-Reply-To / References) — matched
+ * case-insensitively — out of the generic `headers` map so they can be passed via
+ * nodemailer's dedicated `messageId` / `inReplyTo` / `references` options. This
+ * prevents a duplicate Message-Id (nodemailer auto-generates one when the option
+ * is absent, so passing it ALSO in `headers` would emit two). The `rest` map
+ * carries everything else (e.g. Auto-Submitted) unchanged.
+ */
+function liftThreadingHeaders(headers: Record<string, string> | undefined): {
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
+  rest: Record<string, string> | undefined;
+} {
+  if (!headers) return { rest: undefined };
+  let messageId: string | undefined;
+  let inReplyTo: string | undefined;
+  let references: string | undefined;
+  const rest: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    switch (name.toLowerCase()) {
+      case 'message-id':
+        messageId = value;
+        break;
+      case 'in-reply-to':
+        inReplyTo = value;
+        break;
+      case 'references':
+        references = value;
+        break;
+      default:
+        rest[name] = value;
+    }
+  }
+  return {
+    messageId,
+    inReplyTo,
+    references,
+    rest: Object.keys(rest).length > 0 ? rest : undefined,
+  };
+}
+
 function buildMailgunEndpoint(config: MailgunProviderConfig): string {
   return `${config.baseUrl}/v3/${encodeURIComponent(config.domain)}/messages`;
 }
@@ -461,36 +548,64 @@ async function sendViaMailgun(
   config: MailgunProviderConfig,
   params: SendEmailParams & { from: string }
 ): Promise<void> {
-  const body = new URLSearchParams();
-  body.set('from', params.from);
-  body.set('subject', params.subject);
-
-  const recipients = Array.isArray(params.to) ? params.to : [params.to];
-  for (const recipient of recipients) {
-    body.append('to', recipient);
-  }
-
-  if (params.text) {
-    body.set('text', params.text);
-  }
-  body.set('html', params.html);
-
-  if (params.replyTo) {
-    const replyTos = Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo];
-    for (const replyTo of replyTos) {
-      body.append('h:Reply-To', replyTo);
-    }
-  }
-
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
-  const response = await fetch(buildMailgunEndpoint(config), {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${authToken}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: body.toString()
-  });
+  const recipients = Array.isArray(params.to) ? params.to : [params.to];
+  const replyTos = params.replyTo
+    ? (Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo])
+    : [];
+
+  // Attachments require multipart/form-data; otherwise keep the simpler
+  // urlencoded body (matches the long-standing contract + the email.test.ts
+  // assertions). fetch sets the multipart Content-Type/boundary automatically.
+  let response: Response;
+  if (params.attachments && params.attachments.length > 0) {
+    const body = new FormData();
+    body.set('from', params.from);
+    body.set('subject', params.subject);
+    for (const recipient of recipients) body.append('to', recipient);
+    if (params.text) body.set('text', params.text);
+    body.set('html', params.html);
+    for (const replyTo of replyTos) body.append('h:Reply-To', replyTo);
+    if (params.headers) {
+      for (const [name, value] of Object.entries(params.headers)) {
+        if (name.toLowerCase() === 'reply-to') continue;
+        body.set(`h:${name}`, value);
+      }
+    }
+    for (const attachment of params.attachments) {
+      const blob = new Blob([new Uint8Array(attachment.content)], {
+        type: attachment.contentType ?? 'application/octet-stream'
+      });
+      body.append('attachment', blob, attachment.filename);
+    }
+    response = await fetch(buildMailgunEndpoint(config), {
+      method: 'POST',
+      headers: { Authorization: `Basic ${authToken}` },
+      body
+    });
+  } else {
+    const body = new URLSearchParams();
+    body.set('from', params.from);
+    body.set('subject', params.subject);
+    for (const recipient of recipients) body.append('to', recipient);
+    if (params.text) body.set('text', params.text);
+    body.set('html', params.html);
+    for (const replyTo of replyTos) body.append('h:Reply-To', replyTo);
+    if (params.headers) {
+      for (const [name, value] of Object.entries(params.headers)) {
+        if (name.toLowerCase() === 'reply-to') continue;
+        body.set(`h:${name}`, value);
+      }
+    }
+    response = await fetch(buildMailgunEndpoint(config), {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${authToken}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
+  }
 
   if (!response.ok) {
     const message = await response.text().catch(() => '');
@@ -605,6 +720,42 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
     `Accept invitation: ${params.inviteUrl}`,
     "This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.",
     support ? `Questions? Contact ${support}.` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
+}
+
+export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate {
+  const number = params.invoiceNumber.trim();
+  const subject = `Invoice ${number} from ${params.partnerName}`;
+  const preheader = `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`;
+  const dueLine = params.dueDate
+    ? `<p style="${BODY_PARA}">Amount due: <strong>${escapeHtml(params.total)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
+    : `<p style="${BODY_PARA}">Amount due: <strong>${escapeHtml(params.total)}</strong>.</p>`;
+  const body = `
+      <p style="${BODY_PARA}">Hi there,</p>
+      <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you invoice <strong>${escapeHtml(number)}</strong>. A PDF copy is attached to this email.</p>
+      ${dueLine}
+      ${renderButton('View invoice', params.portalUrl)}
+      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time from your customer portal.</p>
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: `Invoice ${number}`,
+    body,
+    footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
+  });
+
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    'Hi there,',
+    `${params.partnerName} has sent you invoice ${number}. A PDF copy is attached.`,
+    params.dueDate ? `Amount due: ${params.total} by ${params.dueDate}.` : `Amount due: ${params.total}.`,
+    `View invoice: ${params.portalUrl}`,
+    support ? `Questions about this invoice? Contact ${support}.` : null,
   ]
     .filter(Boolean)
     .join('\n');

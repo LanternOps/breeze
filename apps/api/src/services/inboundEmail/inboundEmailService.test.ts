@@ -129,8 +129,9 @@ vi.mock('../../db/schema', () => ({
   ticketEmailInbound: { __t: 'ticket_email_inbound', id: 'id', partnerId: 'partnerId', providerMessageId: 'providerMessageId' },
   tickets: {
     __t: 'tickets',
-    id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status',
-    emailThreadKey: 'emailThreadKey', internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt'
+    id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status', subject: 'subject',
+    emailThreadKey: 'emailThreadKey', emailMessageId: 'emailMessageId',
+    internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt'
   },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
@@ -140,6 +141,9 @@ vi.mock('../../db/schema', () => ({
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+
+// createFromEmail's stable-anchor fallback reads TICKETS_INBOUND_DOMAIN via getConfig().
+vi.mock('../../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
 
 const { resolveMock } = vi.hoisted(() => ({ resolveMock: vi.fn() }));
 vi.mock('./resolvePartner', () => ({ resolvePartnerByRecipient: resolveMock }));
@@ -155,6 +159,13 @@ vi.mock('../ticketService', () => ({
 
 const { emitMock } = vi.hoisted(() => ({ emitMock: vi.fn() }));
 vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
+
+// PR3: createFromEmail's known-sender path now calls maybeSendAutoresponse. Stub it
+// so these dispatch-service tests don't reach into Redis/emit — the gate has its own
+// unit suite (autoresponder.test.ts). The `created`-path assertions here only care
+// that a ticket was created + the inbound row logged.
+const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
+vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
 
 import { processInboundEmail } from './inboundEmailService';
 import type { NormalizedInboundEmail } from './types';
@@ -191,6 +202,7 @@ beforeEach(() => {
   createTicketMock.mockReset();
   changeStatusMock.mockReset();
   emitMock.mockReset();
+  maybeSendAutoresponseMock.mockReset();
   captureExceptionMock.mockReset();
   createTicketMock.mockResolvedValue({ id: 't-new', internalNumber: 'T-2026-0009' });
 });
@@ -285,6 +297,41 @@ describe('processInboundEmail', () => {
     expect(log[0]!.ticketId).toBe('t-mid');
   });
 
+  it('threads a customer self-reply via email_message_id when email_thread_key is the anchor (autoresponder-off)', async () => {
+    // FIX 2: for an autoresponder-OFF partner, a ticket created with a platform
+    // domain has email_thread_key = <ticket-...@domain> (the anchor) but
+    // email_message_id = the customer's OWN original Message-Id. If the customer
+    // replies to their own original (In-Reply-To = <cust-orig>, NOT the anchor),
+    // the live-match query matches via email_message_id (the OR branch) and threads
+    // onto the SAME ticket instead of forking a duplicate. The query carries both
+    // keys and matches EITHER column, still partner-scoped.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no dup
+    state.selectRows['tickets'] = [{
+      id: 't-self', partnerId: 'p-1', orgId: 'o-1', status: 'open',
+      emailThreadKey: '<ticket-t-self@tickets.example.com>', // the anchor (NOT the cust id)
+      emailMessageId: '<cust-orig@customer.com>',            // the customer's own Message-Id
+      internalNumber: 'T-2026-0003'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+
+    // The reply's In-Reply-To is the customer's ORIGINAL Message-Id — NOT the anchor.
+    await processInboundEmail(email({ inReplyTo: '<cust-orig@customer.com>' }));
+
+    // Appended a public comment on the matched ticket (header threading via email_message_id).
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.isPublic).toBe(true);
+
+    // Did NOT fork a new ticket.
+    expect(createTicketMock).not.toHaveBeenCalled();
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('matched');
+    expect(log[0]!.ticketId).toBe('t-self');
+  });
+
   it('GUARD: refuses to touch a matched ticket from another partner (-> failed, no write)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
@@ -332,6 +379,84 @@ describe('processInboundEmail', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('created');
     expect(log[0]!.ticketId).toBe('t-created');
+
+    // The known-sender fresh-create path fires the autoresponder gate exactly once,
+    // with the resolved partner + the persisted ticket fields.
+    expect(maybeSendAutoresponseMock).toHaveBeenCalledTimes(1);
+    const [normalized, gatedPartner, gatedTicket] = maybeSendAutoresponseMock.mock.calls[0]!;
+    expect((normalized as { from: string }).from).toBe('jane@customer.com');
+    expect(gatedPartner).toBe('p-1');
+    expect((gatedTicket as { id: string; partnerId: string }).id).toBe('t-created');
+    expect((gatedTicket as { partnerId: string }).partnerId).toBe('p-1');
+  });
+
+  it('does NOT fire the autoresponder on the closed-continuation path (no submittedBy)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-closed', partnerId: 'p-1', orgId: 'o-1', status: 'closed',
+      emailThreadKey: '<thread-key-old>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-linked', internalNumber: 'T-2026-0011' });
+
+    await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer down', inReplyTo: '<thread-key-old>' }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    // A reply to a CLOSED ticket spawns a linked ticket but is NOT a fresh acknowledgement.
+    expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
+  });
+
+  it('stamps a stable generated anchor on email_thread_key when the inbound email has no Message-Id', async () => {
+    // PR1 stamped `n.messageId ?? null`, leaving the no-Message-Id case un-anchored so
+    // the customer's NEXT reply could never thread (-> quarantine). The fallback now
+    // stamps a deterministic <ticket-${id}@TICKETS_INBOUND_DOMAIN> anchor so future
+    // inbound replies + outbound References both resolve to the same key.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = []; // no thread/token match
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-anchor', internalNumber: 'T-2026-0012' });
+
+    await processInboundEmail(email({ subject: 'no message id', messageId: undefined }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    // The post-create tickets UPDATE stamps the generated anchor (not null).
+    const stamp = state.updates.find(
+      (u) => u.table === 'tickets' && Object.prototype.hasOwnProperty.call(u.set, 'emailThreadKey')
+    );
+    expect(stamp).toBeDefined();
+    expect(stamp!.set.emailThreadKey).toBe('<ticket-t-anchor@tickets.example.com>');
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('created');
+  });
+
+  it('stamps the deterministic anchor (NOT the inbound Message-Id) when a platform domain is configured', async () => {
+    // Review fix: when TICKETS_INBOUND_DOMAIN is set, the generated anchor takes
+    // PRECEDENCE over the customer's own Message-Id. The anchor is the value the
+    // one-time autoresponse stamps as its Message-ID and every comment reply uses
+    // for In-Reply-To/References, so the autoresponse ↔ email_thread_key ↔ outbound
+    // headers all unify on ONE key — a reply to the autoresponse threads via header,
+    // not just the [T-...] subject token. (The no-domain env keeps n.messageId; that
+    // path is covered by integration CASE 4/5.)
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-mid2', internalNumber: 'T-2026-0013' });
+
+    await processInboundEmail(email({ subject: 'has message id', messageId: '<real-msg@customer.com>' }));
+
+    const stamp = state.updates.find(
+      (u) => u.table === 'tickets' && Object.prototype.hasOwnProperty.call(u.set, 'emailThreadKey')
+    );
+    expect(stamp).toBeDefined();
+    // Anchor wins over the inbound Message-Id when a domain is configured.
+    expect(stamp!.set.emailThreadKey).toBe('<ticket-t-mid2@tickets.example.com>');
   });
 
   it('quarantines an unmatched unknown sender (no ticket)', async () => {
@@ -434,6 +559,46 @@ describe('processInboundEmail', () => {
 
     // captureException was called.
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  // INGEST-TIME SELF-LOOP DROP (spec §5): mail whose sender is on our OWN inbound
+  // domain (e.g. our own outbound reply or an autoresponse bounce looping back) must
+  // be dropped EARLY — logged `ignored` with a self-loop note — before any
+  // match/create/quarantine decision. This is the ingest-time guard; the autoresponse-
+  // time `self-domain` rule in loopPrevention.ts is the separate backstop.
+  it('drops self-loop mail (sender on our own inbound domain) as ignored, before any create/match', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    // Sender's domain equals the inbound domain (tickets.example.com from the config mock).
+    await processInboundEmail(email({ from: 'acme@TICKETS.example.com', subject: 'looped back' }));
+
+    // No ticket, no comment, no quarantine — the dedup SELECT/match never run.
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(log[0]!.partnerId).toBe('p-1');
+    expect(log[0]!.ticketId).toBeNull();
+    expect(String(log[0]!.error)).toContain('self-loop');
+  });
+
+  it('does NOT drop normal mail when the sender domain differs from the inbound domain', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-normal', internalNumber: 'T-2026-0014' });
+
+    // jane@customer.com — different domain, must flow to the created path.
+    await processInboundEmail(email({ subject: 'real new issue' }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('created');
   });
 
   // TEST 4 — partner-active gate: a suspended/inactive partner causes a `skipped` log

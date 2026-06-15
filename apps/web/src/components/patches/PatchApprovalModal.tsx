@@ -3,6 +3,8 @@ import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Patch } from './PatchList';
 import { Dialog } from '../shared/Dialog';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -12,6 +14,10 @@ type PatchApprovalModalProps = {
   open: boolean;
   patch?: Patch | null;
   ringId?: string | null;
+  /** Name of the organization this patch approval applies to, for the confirm message. */
+  orgName?: string | null;
+  /** Number of devices in the target ring/scope, for the confirm message. */
+  ringDeviceCount?: number | null;
   onClose: () => void;
   onSubmit?: (patchId: string, action: PatchApprovalAction, notes: string) => void | Promise<void>;
   loading?: boolean;
@@ -49,6 +55,8 @@ export default function PatchApprovalModal({
   open,
   patch,
   ringId,
+  orgName,
+  ringDeviceCount,
   onClose,
   onSubmit,
   loading
@@ -58,6 +66,7 @@ export default function PatchApprovalModal({
   const [deferUntil, setDeferUntil] = useState(getDefaultDeferUntil());
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string>();
+  const [approveConfirmOpen, setApproveConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -79,6 +88,16 @@ export default function PatchApprovalModal({
   if (!patch) return null;
 
   const handleSubmit = async () => {
+    if (isSubmitting) return;
+    // Gate approve behind a scope-naming confirm dialog.
+    if (action === 'approve') {
+      setApproveConfirmOpen(true);
+      return;
+    }
+    await doSubmit();
+  };
+
+  const doSubmit = async () => {
     if (isSubmitting) return;
     setSubmitting(true);
     setSubmitError(undefined);
@@ -118,6 +137,7 @@ export default function PatchApprovalModal({
   };
 
   return (
+    <>
     <Dialog open={open} onClose={onClose} title="Review Patch" className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -215,5 +235,24 @@ export default function PatchApprovalModal({
           </button>
         </div>
     </Dialog>
+
+    <ConfirmDialog
+      open={approveConfirmOpen}
+      onClose={() => setApproveConfirmOpen(false)}
+      onConfirm={() => {
+        setApproveConfirmOpen(false);
+        void doSubmit();
+      }}
+      title="Confirm patch approval"
+      variant="warning"
+      confirmLabel="Approve"
+      confirmTestId="confirm-fleet-action"
+      message={scopeConfirmMessage({
+        action: 'Approve patch',
+        deviceCount: ringDeviceCount ?? 1,
+        orgNames: orgName ? [orgName] : ['the selected organization'],
+      })}
+    />
+    </>
   );
 }

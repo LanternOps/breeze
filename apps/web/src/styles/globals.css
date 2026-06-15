@@ -26,6 +26,8 @@ select {
 
 @layer base {
   :root {
+    --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
     /* Warm off-white surfaces — not pure white */
     --background: 220 20% 98%;
     --foreground: 224 28% 14%;
@@ -63,6 +65,10 @@ select {
     --input: 220 16% 90%;
     --ring: 225 62% 48%;
     --radius: 0.5rem;
+  }
+
+  :root[data-font='system'] {
+    --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
   .dark {
@@ -8964,4 +8970,3 @@ select {
   padding-top: 0.25rem !important;
   padding-bottom: 0.25rem !important;
 }
-

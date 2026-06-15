@@ -5,8 +5,9 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
+import ThemingSettings from './ThemingSettings';
 import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
-import type { PasskeyRegistrationOptions } from '../../stores/auth';
+import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 
@@ -22,6 +23,7 @@ type User = {
   email: string;
   avatarUrl?: string;
   mfaEnabled?: boolean;
+  preferences?: UserPreferences;
 };
 
 type PasskeySummary = {
@@ -916,6 +918,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       {/* Approval security (Breeze Authenticator) */}
       <ApproverDevicesSection />
+      <ThemingSettings
+        preferences={user?.preferences}
+        onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
+      />
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-sm">

@@ -820,6 +820,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                 token: onboardingToken || '<TOKEN>',
                 enrollmentSecret: enrollmentSecret || undefined,
               });
+              const commandPlatform = selectedOS === 'windows' ? 'windows' : 'linux';
+              const command = commands[commandPlatform];
+              const commandOptions = [
+                { platform: 'windows', label: 'Windows' },
+                { platform: 'linux', label: 'Linux/macOS' },
+              ] as const;
 
               return (
                 <div>
@@ -827,29 +833,29 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     Step 2 — Run the install command
                   </p>
                   <div className="flex gap-1 mb-3">
-                    {(['windows', 'macos', 'linux'] as const).map((os) => (
+                    {commandOptions.map(({ platform, label }) => (
                       <button
-                        key={os}
+                        key={platform}
                         type="button"
-                        onClick={() => setSelectedOS(os)}
+                        onClick={() => setSelectedOS(platform)}
                         className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                          selectedOS === os
+                          commandPlatform === platform
                             ? 'bg-primary text-primary-foreground'
                             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                         }`}
                       >
-                        {os === 'windows' ? 'Windows' : os === 'macos' ? 'macOS' : 'Linux'}
+                        {label}
                       </button>
                     ))}
                   </div>
                   <div className="rounded-lg border bg-muted/30 p-4">
                     <div className="flex items-start justify-between gap-2">
                       <code className="text-xs font-mono text-muted-foreground break-all">
-                        {commands[selectedOS]}
+                        {command}
                       </code>
                       <button
                         type="button"
-                        onClick={() => handleCopyCommand(commands[selectedOS])}
+                        onClick={() => handleCopyCommand(command)}
                         className="flex-shrink-0 p-1 hover:bg-muted rounded"
                       >
                         <Copy className="h-4 w-4" />
@@ -857,7 +863,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     </div>
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {selectedOS === 'windows' ? 'Run as Administrator in PowerShell' : 'Run in Terminal'}
+                    {commandPlatform === 'windows' ? 'Run as Administrator in PowerShell' : 'Run in Terminal'}
                   </p>
                 </div>
               );
@@ -886,33 +892,20 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
             <p>
               Need to uninstall?{' '}
               <a
-                href="/scripts/uninstall-darwin.sh"
-                download
+                href="/api/v1/agents/uninstall.sh"
+                download="uninstall.sh"
                 className="underline hover:text-foreground"
               >
-                macOS
-              </a>
-              {' · '}
-              <a
-                href="/scripts/uninstall-linux.sh"
-                download
-                className="underline hover:text-foreground"
-              >
-                Linux
+                Linux/macOS
               </a>
             </p>
-            {sha256s['uninstall-darwin.sh'] && (
+            {sha256s['uninstall.sh'] && (
               <p className="mt-1 font-mono text-[10px] leading-tight">
-                macOS SHA256: {sha256s['uninstall-darwin.sh']}
+                SHA256: {sha256s['uninstall.sh']}
                 <br />
-                Verify: <code>shasum -a 256 uninstall-darwin.sh</code>
-              </p>
-            )}
-            {sha256s['uninstall-linux.sh'] && (
-              <p className="mt-1 font-mono text-[10px] leading-tight">
-                Linux SHA256: {sha256s['uninstall-linux.sh']}
+                macOS: <code>shasum -a 256 uninstall.sh</code>
                 <br />
-                Verify: <code>sha256sum uninstall-linux.sh</code>
+                Linux: <code>sha256sum uninstall.sh</code>
               </p>
             )}
           </div>

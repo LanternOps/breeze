@@ -13,7 +13,7 @@ import {
   approvalActionSchema,
   deferSchema
 } from './schemas';
-import { getPagination, resolvePatchApprovalOrgId, upsertPatchApproval } from './helpers';
+import { getPagination, resolvePatchApprovalOrgIdForRing, upsertPatchApproval } from './helpers';
 
 export const approvalsRoutes = new Hono();
 
@@ -77,9 +77,10 @@ approvalsRoutes.post(
     // The frontend always sends ?orgId=<currentOrgId> in the query for
     // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
     // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = resolvePatchApprovalOrgId(
+    const orgResolution = await resolvePatchApprovalOrgIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined
+      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.ringId ?? null
     );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);
@@ -138,9 +139,10 @@ approvalsRoutes.post(
     // The frontend always sends ?orgId=<currentOrgId> in the query for
     // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
     // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = resolvePatchApprovalOrgId(
+    const orgResolution = await resolvePatchApprovalOrgIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined
+      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.ringId ?? null
     );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);
@@ -199,9 +201,10 @@ approvalsRoutes.post(
     // The frontend always sends ?orgId=<currentOrgId> in the query for
     // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
     // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = resolvePatchApprovalOrgId(
+    const orgResolution = await resolvePatchApprovalOrgIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined
+      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.ringId ?? null
     );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);
@@ -257,9 +260,10 @@ approvalsRoutes.post(
     // The frontend always sends ?orgId=<currentOrgId> in the query for
     // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
     // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = resolvePatchApprovalOrgId(
+    const orgResolution = await resolvePatchApprovalOrgIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined
+      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.ringId ?? null
     );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);

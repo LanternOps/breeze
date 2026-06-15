@@ -229,7 +229,7 @@ describe('updateRings routes', () => {
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
     });
 
-    it('should handle partner with no accessible orgs needing orgId', async () => {
+    it('should list rings across accessible orgs for a multi-org partner', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
@@ -242,12 +242,25 @@ describe('updateRings routes', () => {
         return next();
       });
 
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              makeRing({ id: RING_ID, orgId: ORG_ID, name: 'Pilot' }),
+              makeRing({ id: RING_ID_2, orgId: ORG_ID_2, name: 'Broad' })
+            ])
+          })
+        })
+      } as any);
+
       const res = await app.request('/update-rings', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
     });
   });
 

@@ -1,7 +1,7 @@
 import { afterAll, describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, users, organizations } from '../../db/schema';
+import { partners, users, organizations, invoices, invoiceLines, invoiceDocuments } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 import { automations, automationRuns } from '../../db/schema/automations';
@@ -101,11 +101,24 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['email_verification_tokens', 'partner_id'],
   ['ticket_categories', 'partner_id'],
   ['partner_ticket_sequences', 'partner_id'],
+  ['partner_invoice_sequences', 'partner_id'],
   ['ticket_statuses', 'partner_id'],
   ['ticket_priority_settings', 'partner_id'],
   ['time_entries', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
+  ['scripts', 'partner_id'],
+  ['script_categories', 'partner_id'],
+  ['script_tags', 'partner_id'],
+  ['alert_templates', 'partner_id'],
+  // Product catalog (2026-06-14): partner-axis (RLS shape 3), flat
+  // breeze_has_partner_access(partner_id) policies. catalog_bundle_components
+  // denormalizes partner_id (rather than join through the bundle item) to
+  // avoid the #1016 nested-EXISTS bound-param bug. catalog_item_org_pricing
+  // is NOT here — it carries a direct org_id column and is auto-discovered
+  // as an ordinary shape-1 org-tenant table.
+  ['catalog_items', 'partner_id'],
+  ['catalog_bundle_components', 'partner_id'],
   // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
   // ticket_email_inbound (only system scope may write null-partner rows);
   // NOT NULL on partner_inbound_domains. Policy:
@@ -130,6 +143,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
   'custom_field_definitions',
+  // client_ai_prompt_templates: a template is org-scoped (org_id set) OR
+  // partner-wide (partner_id set, org_id NULL). Created dual-axis from day one
+  // in 2026-06-12-b-client-ai-foundation. The org_id column means the generic
+  // org-tenant auto-discovery already picks it up (its policy string contains
+  // breeze_has_org_access), so this entry is the only guard that asserts the
+  // partner-axis (breeze_has_partner_access) branch — the dual-axis blindspot.
+  // A functional breeze_app insert test lives in client-ai-templates-rls.integration.test.ts.
+  'client_ai_prompt_templates',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
@@ -1565,4 +1586,337 @@ describe('script_execution_batches RLS — denormalized org_id', () => {
       expect(message).toMatch(/new row violates row-level security policy for table "script_execution_batches"/);
     },
   );
+});
+
+// ===========================================================================
+// scripts RLS — partner-wide cross-partner forge enforcement (dual-axis)
+//
+// The pg_catalog assertion for the PARTNER_TENANT_TABLES list proves that
+// a policy referencing breeze_has_partner_access exists per DML command.
+// It does NOT prove Postgres actually rejects a cross-partner write — a
+// missing second axis (the custom_field_definitions blind spot) would pass
+// the catalog check but silently let partner B act on partner A's partner-
+// wide scripts. This block forges cross-partner reads/writes as `breeze_app`
+// under real partner contexts and asserts the dual-axis policy is enforced
+// in practice. Self-contained (no setup.ts / no TRUNCATE): fixtures seeded
+// via withSystemDbAccessContext and torn down by id in an afterAll.
+// ===========================================================================
+describe('scripts RLS — partner-wide cross-partner forge enforcement (dual-axis)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let partnerAId: string;
+  let partnerBId: string;
+  // An organization owned by partner A. Used to prove that an ORGANIZATION-
+  // scope user (accessiblePartnerIds === []) can still READ partner A's
+  // partner-wide scripts via the read-only own-partner branch
+  // (breeze_current_partner_id), without gaining write access.
+  let orgInPartnerAId: string;
+  let scriptAId: string | null = null;
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const seeded = await db.insert(partners).values([
+        { name: `RLS Scripts A ${runSuffix}`, slug: `rls-scripts-a-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+        { name: `RLS Scripts B ${runSuffix}`, slug: `rls-scripts-b-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+      ]).returning({ id: partners.id });
+      partnerAId = seeded[0]!.id;
+      partnerBId = seeded[1]!.id;
+
+      const [org] = await db.insert(organizations).values({
+        partnerId: partnerAId,
+        name: `RLS Scripts Org ${runSuffix}`,
+        slug: `rls-scripts-org-${runSuffix}`,
+      }).returning({ id: organizations.id });
+      orgInPartnerAId = org!.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      if (scriptAId) await db.delete(scripts).where(eq(scripts.id, scriptAId!));
+      if (orgInPartnerAId) await db.delete(organizations).where(eq(organizations.id, orgInPartnerAId));
+      if (partnerAId) await db.delete(partners).where(eq(partners.id, partnerAId));
+      if (partnerBId) await db.delete(partners).where(eq(partners.id, partnerBId));
+    });
+  });
+
+  function partnerContext(partnerId: string) {
+    return { scope: 'partner' as const, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partnerId], userId: null };
+  }
+
+  // ORGANIZATION-scope context: accessiblePartnerIds is [] (no partner-axis
+  // WRITE/admin), but currentPartnerId = the caller's OWN partner so the
+  // read-only own-partner branch of the SELECT policy applies.
+  function orgContext(orgId: string, ownPartnerId: string | null) {
+    return {
+      scope: 'organization' as const,
+      orgId,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: [],
+      currentPartnerId: ownPartnerId,
+      userId: null,
+    };
+  }
+
+  it('partner A can INSERT and SELECT a partner-wide (org_id NULL) script', async () => {
+    await ensureFixtures();
+    const inserted = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.insert(scripts).values({
+        orgId: null, partnerId: partnerAId, name: `forge-${runSuffix}`,
+        osTypes: ['windows'], language: 'powershell', content: 'echo hi',
+      }).returning({ id: scripts.id })
+    );
+    expect(inserted).toHaveLength(1);
+    scriptAId = inserted[0]!.id;
+
+    const visibleToA = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visibleToA.map((r) => r.id)).toEqual([scriptAId]);
+  });
+
+  it('partner B cannot SELECT partner A\'s partner-wide script', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    const visibleToB = await withDbAccessContext(partnerContext(partnerBId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visibleToB).toEqual([]);
+  });
+
+  it('partner B INSERT forging partner A\'s partner_id is rejected by WITH CHECK', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(partnerContext(partnerBId), async () =>
+        db.insert(scripts).values({
+          orgId: null, partnerId: partnerAId, name: `forge-x-${runSuffix}`,
+          osTypes: ['windows'], language: 'powershell', content: 'echo x',
+        })
+      );
+    } catch (err) { caught = err; }
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "scripts"/);
+  });
+
+  // --- read-only own-partner branch: an ORGANIZATION-scope user (no partner-
+  // axis write access) can SEE + EXECUTE its MSP's partner-wide scripts but
+  // cannot edit them, and a different partner's org user still cannot see them.
+  it('org user in partner A CAN SELECT partner A\'s partner-wide script (read branch)', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    const visible = await withDbAccessContext(orgContext(orgInPartnerAId, partnerAId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visible.map((r) => r.id)).toEqual([scriptAId]);
+  });
+
+  it('org user in partner A UPDATE on the partner-wide script affects 0 rows (write policy unchanged)', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    // USING on the UPDATE policy does NOT include the read branch, so the row
+    // is invisible to the write path and the UPDATE matches nothing.
+    const updated = await withDbAccessContext(orgContext(orgInPartnerAId, partnerAId), async () =>
+      db.update(scripts).set({ name: `edited-by-org-${runSuffix}` }).where(eq(scripts.id, scriptAId!)).returning({ id: scripts.id })
+    );
+    expect(updated).toEqual([]);
+
+    // And the row is untouched.
+    const after = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.select({ name: scripts.name }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(after[0]?.name).toBe(`forge-${runSuffix}`);
+  });
+
+  it('org user in partner A forging a partner-wide INSERT is rejected by WITH CHECK (write policy unchanged)', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgInPartnerAId, partnerAId), async () =>
+        db.insert(scripts).values({
+          orgId: null, partnerId: partnerAId, name: `org-forge-${runSuffix}`,
+          osTypes: ['windows'], language: 'powershell', content: 'echo org',
+        })
+      );
+    } catch (err) { caught = err; }
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "scripts"/);
+  });
+
+  it('org user whose own partner is B CANNOT SELECT partner A\'s partner-wide script (cross-partner isolation)', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    // Same org row, but currentPartnerId points at partner B — the read branch
+    // (org_id IS NULL AND partner_id = current_partner_id) does not match.
+    const visible = await withDbAccessContext(orgContext(orgInPartnerAId, partnerBId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visible).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invoices — shape 1 (direct/denormalized org_id) forge test
+// ---------------------------------------------------------------------------
+// invoices, invoice_lines, invoice_payments all carry a direct org_id column
+// and are auto-discovered by the coverage scan above. This block forges a
+// cross-org INSERT and SELECT as `breeze_app` (the unprivileged role) to prove
+// the WITH CHECK / USING predicates actually contain a hostile write/read.
+describe('invoices RLS forge (shape 1, org-axis)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let partnerId = '';
+  let orgAId = '';
+  let orgBId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS Invoices Partner ${runSuffix}`, slug: `rls-invoices-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active'
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for invoices forge');
+      partnerId = partner.id;
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { partnerId: partner.id, name: 'RLS Invoices Org A', slug: `rls-inv-a-${runSuffix}` },
+        { partnerId: partner.id, name: 'RLS Invoices Org B', slug: `rls-inv-b-${runSuffix}` }
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for invoices forge');
+      orgAId = orgA.id; orgBId = orgB.id;
+    });
+  }
+
+  it.runIf(!!process.env.DATABASE_URL)('org B INSERT with org A org_id is rejected by WITH CHECK', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "invoices"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot SELECT org A's invoice", async () => {
+    await ensureFixtures();
+    let createdId = '';
+    await withSystemDbAccessContext(async () => {
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      createdId = inv!.id;
+    });
+    const visible = await withDbAccessContext(orgContext(orgBId), async () =>
+      db.select({ id: invoices.id }).from(invoices).where(eq(invoices.id, createdId))
+    );
+    expect(visible).toHaveLength(0);
+  });
+
+  // Defense-in-depth: the composite FK invoice_lines(invoice_id, org_id) →
+  // invoices(id, org_id) must reject a line whose denormalized org_id disagrees
+  // with its parent invoice's org_id. Run in SYSTEM context so RLS is bypassed
+  // and the FK is unambiguously what rejects the write.
+  it.runIf(!!process.env.DATABASE_URL)('invoice line with mismatched org_id is rejected by the composite FK', async () => {
+    await ensureFixtures();
+    // Create the parent invoice (orgA) in its own system-context transaction so
+    // it is committed before we attempt the forged line.
+    let invoiceId = '';
+    await withSystemDbAccessContext(async () => {
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      invoiceId = inv!.id;
+    });
+    // The FK violation aborts the surrounding transaction, so postgres.js may
+    // surface the error at commit time — catch around the whole context call.
+    let caught: unknown;
+    try {
+      await withSystemDbAccessContext(async () =>
+        // invoice belongs to orgA, but we forge a line claiming orgB.
+        db.insert(invoiceLines).values({
+          invoiceId, orgId: orgBId, sourceType: 'manual',
+          description: 'forged mismatched-org line', quantity: '1', unitPrice: '0'
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/violates foreign key constraint|invoice_lines_invoice_org_fkey/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invoice_documents — shape 1 (direct/denormalized org_id) forge test (Phase 5)
+// ---------------------------------------------------------------------------
+// invoice_documents carries a direct org_id column (denormalized RLS axis) and
+// is auto-discovered by the coverage scan above. This block forges a cross-org
+// INSERT and SELECT as `breeze_app` to prove the policies contain a hostile
+// write/read, mirroring the invoices forge.
+describe('invoice_documents RLS forge (shape 1, org-axis)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let partnerId = '';
+  let orgAId = '';
+  let orgBId = '';
+  let invoiceAId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS InvDocs Partner ${runSuffix}`, slug: `rls-invdocs-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active'
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for invoice_documents forge');
+      partnerId = partner.id;
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { partnerId: partner.id, name: 'RLS InvDocs Org A', slug: `rls-invdocs-a-${runSuffix}` },
+        { partnerId: partner.id, name: 'RLS InvDocs Org B', slug: `rls-invdocs-b-${runSuffix}` }
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for invoice_documents forge');
+      orgAId = orgA.id; orgBId = orgB.id;
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      invoiceAId = inv!.id;
+    });
+  }
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot INSERT a document for org A's invoice", async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(invoiceDocuments).values({
+          invoiceId: invoiceAId, orgId: orgAId, pdf: Buffer.from('%PDF-forged'), sha256: 'a'.repeat(64)
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "invoice_documents"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot SELECT org A's invoice document", async () => {
+    await ensureFixtures();
+    let createdId = '';
+    await withSystemDbAccessContext(async () => {
+      const [doc] = await db.insert(invoiceDocuments).values({
+        invoiceId: invoiceAId, orgId: orgAId, pdf: Buffer.from('%PDF-stored'), sha256: 'b'.repeat(64)
+      }).returning({ id: invoiceDocuments.id });
+      createdId = doc!.id;
+    });
+    const visible = await withDbAccessContext(orgContext(orgBId), async () =>
+      db.select({ id: invoiceDocuments.id }).from(invoiceDocuments).where(eq(invoiceDocuments.id, createdId))
+    );
+    expect(visible).toHaveLength(0);
+  });
 });

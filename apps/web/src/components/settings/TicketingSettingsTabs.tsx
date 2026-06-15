@@ -1,14 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import TicketCategoriesPage from './TicketCategoriesPage';
 import BillablesExportCard from './BillablesExportCard';
 import TicketStatusesTab from './TicketStatusesTab';
 import TicketPrioritiesTab from './TicketPrioritiesTab';
+import InboundEmailCard from './InboundEmailCard';
+import { getJwtClaims } from '../../lib/authScope';
 
-const VALID_TABS = ['statuses', 'priorities', 'categories', 'export'] as const;
+const VALID_TABS = ['statuses', 'priorities', 'categories', 'export', 'inbound'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
-const TABS: Array<{ id: Tab; label: string }> = [
+// Inbound email settings + queue are a partner-scoped surface (the queue routes
+// are additionally admin-gated server-side). We have no synchronous fine-grained
+// capability on the client, so gate the tab on partner scope — any partner user
+// can use the settings; the card's own 403 handler is the defense-in-depth
+// backstop that hides the queue for non-admins reached directly via hash.
+const BASE_TABS: Array<{ id: Tab; label: string }> = [
   { id: 'statuses', label: 'Statuses' },
   { id: 'priorities', label: 'Priorities' },
   { id: 'categories', label: 'Categories' },
@@ -48,6 +55,15 @@ function hashFor(tab: Tab): string {
  */
 export default function TicketingSettingsTabs({ syncHash = true }: { syncHash?: boolean }) {
   const [activeTab, setActiveTab] = useState<Tab>('statuses');
+
+  // Render the Inbound Email tab only for partner-scoped users (matches how the
+  // Sidebar gates other partner-only settings surfaces). Decoded client-side as
+  // a UX hint only — the server re-checks every request.
+  const canManageInbound = useMemo(() => getJwtClaims().scope === 'partner', []);
+  const TABS = useMemo(
+    () => (canManageInbound ? [...BASE_TABS, { id: 'inbound' as Tab, label: 'Inbound Email' }] : BASE_TABS),
+    [canManageInbound]
+  );
 
   const switchTab = (tab: Tab) => {
     if (syncHash) history.replaceState(null, '', hashFor(tab));
@@ -100,6 +116,12 @@ export default function TicketingSettingsTabs({ syncHash = true }: { syncHash?: 
       {activeTab === 'categories' && <TicketCategoriesPage />}
 
       {activeTab === 'export' && <BillablesExportCard />}
+
+      {activeTab === 'inbound' && canManageInbound && (
+        <div data-testid="ticketing-tab-panel-inbound">
+          <InboundEmailCard />
+        </div>
+      )}
     </div>
   );
 }

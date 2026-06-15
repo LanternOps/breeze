@@ -23,7 +23,9 @@ const RESOURCE_LABELS: Record<string, string> = {
   remote: 'Remote Access',
   audit: 'Audit Logs',
   reports: 'Reports',
-  billing: 'Billing'
+  billing: 'Billing',
+  catalog: 'Product Catalog',
+  invoices: 'Invoices'
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -35,7 +37,8 @@ const ACTION_LABELS: Record<string, string> = {
   invite: 'Invite',
   access: 'Access',
   export: 'Export',
-  manage: 'Manage'
+  manage: 'Manage',
+  send: 'Send'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

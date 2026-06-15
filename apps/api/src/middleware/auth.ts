@@ -443,7 +443,12 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
       orgId: payload.orgId,
       accessibleOrgIds,
       accessiblePartnerIds,
-      userId: user.id
+      userId: user.id,
+      // Own partner — enables read-only visibility of the partner's
+      // partner-wide catalog rows for org-scope (and partner-scope) users.
+      // NOT an access grant; partner-axis write access stays governed by
+      // accessiblePartnerIds.
+      currentPartnerId: payload.partnerId ?? null
     },
     async () => {
       c.set('auth', {

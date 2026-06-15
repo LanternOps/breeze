@@ -423,6 +423,18 @@ const partnerSettingsSchema = z.object({
       enabled: z.boolean(),
     })).max(50).optional(),
   }).optional(),
+  // Top-level sibling (NOT under `security`) so the security-only deep-merge in
+  // PATCH /partners/me never touches it. Because `ticketing` is shallow-REPLACED
+  // on write, the card must send the COMPLETE ticketing.inbound object each time
+  // (incl. the `address` self-hosted override read back via getTicketConfig).
+  ticketing: z.object({
+    inbound: z.object({
+      enabled: z.boolean().optional(),
+      address: z.string().email().optional().or(z.literal('')),
+      defaultTriageOrgId: z.string().uuid().nullable().optional(),
+      autoresponderEnabled: z.boolean().optional(),
+    }).optional(),
+  }).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -483,7 +495,7 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  // Merge settings (top-level shallow merge, except `security` below)
+  // Merge settings (top-level shallow merge, except `security` and `ticketing` below)
   const currentSettings = (current.settings as Record<string, unknown>) || {};
   const newSettings: Record<string, unknown> = body.settings
     ? { ...currentSettings, ...body.settings }
@@ -499,6 +511,35 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
       ...((currentSettings.security as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.security,
     };
+  }
+
+  // Deep-merge the `ticketing` sub-object one level for the same reason: today it
+  // holds only `inbound` (the email-to-ticket settings card sends the COMPLETE
+  // `inbound` object, so replacing that key wholesale is intended), but a future
+  // sibling (e.g. `ticketing.outbound`) must NOT be silently wiped by a PATCH that
+  // only carries `ticketing.inbound`. Sub-keys present in the body still override.
+  if (body.settings?.ticketing) {
+    newSettings.ticketing = {
+      ...((currentSettings.ticketing as Record<string, unknown> | undefined) ?? {}),
+      ...body.settings.ticketing,
+    };
+  }
+
+  // Tenant-isolation guard: defaultTriageOrgId is stored verbatim, but the
+  // future auto-triage path will route mail INTO that org. A cross-partner id
+  // here would route a partner's inbound mail to an org outside their tenant.
+  // Validate it references an org in THIS partner (the read runs under the
+  // request RLS context, so the partner_id equality is the security boundary).
+  const triageOrgId = body.settings?.ticketing?.inbound?.defaultTriageOrgId;
+  if (typeof triageOrgId === 'string') {
+    const [orgOk] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, triageOrgId), eq(organizations.partnerId, auth.partnerId as string)))
+      .limit(1);
+    if (!orgOk) {
+      return c.json({ error: 'defaultTriageOrgId must reference an organization in your partner' }, 400);
+    }
   }
 
   // Enable-gate: turning the allowlist on (empty -> non-empty) requires that

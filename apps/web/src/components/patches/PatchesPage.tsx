@@ -12,9 +12,13 @@ import RingSelector, { type UpdateRing } from './RingSelector';
 import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useOrgStore } from '../../stores/orgStore';
+import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
@@ -40,6 +44,9 @@ function setTabInUrl(tab: TabKey) {
 const DEVICE_SCAN_PAGE_LIMIT = 100;
 
 export default function PatchesPage() {
+  const { organizations, currentOrgId } = useOrgStore();
+  const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
+
   const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
@@ -62,6 +69,7 @@ export default function PatchesPage() {
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
   const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
   const [scanLoading, setScanLoading] = useState(false);
+  const [pendingScan, setPendingScan] = useState<{ deviceIds: string[]; orgNames: string[] } | null>(null);
 
   const tabs = useMemo(
     () => [
@@ -226,10 +234,17 @@ export default function PatchesPage() {
     if (failed.length > 0) throw new Error(`Failed to decline ${failed.length} patches`);
   };
 
+  // Gather device IDs across all pages, then surface a scope-naming confirmation
+  // before POSTing /patches/scan. The pagination pass is read-only GETs so it
+  // is safe to run before the user confirms.
   const handleScan = async () => {
     setScanLoading(true);
     try {
       const ids = new Set<string>();
+      // Collect the distinct orgIds reported by the device payloads so the
+      // confirmation message names the action's TRUE targets, not the shell
+      // selection (currentOrgId is stale on the global /patches route).
+      const seenOrgIds = new Set<string>();
       let page = 1;
       let totalPages = 1;
 
@@ -248,6 +263,8 @@ export default function PatchesPage() {
           const id = rawId ? String(rawId) : '';
           if (id) {
             ids.add(id);
+            const rawOrgId = rawDevice?.orgId ?? rawDevice?.org_id;
+            if (rawOrgId) seenOrgIds.add(String(rawOrgId));
           }
         }
 
@@ -259,6 +276,37 @@ export default function PatchesPage() {
       const deviceIds = [...ids];
       if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
+      // Derive org names from the actual device payloads so the confirmation
+      // always names the true scope. Map known orgIds to store names; if an
+      // orgId has no match (e.g. store not yet loaded) we still count it so
+      // scopeConfirmMessage falls through to "across N organizations (...)".
+      const orgNamesFromDevices: string[] = [];
+      for (const oid of seenOrgIds) {
+        const org = organizations.find(o => o.id === oid);
+        orgNamesFromDevices.push(org ? org.name : oid);
+      }
+      // If the device API didn't expose orgId fields at all (older API), fall
+      // back to listing all accessible orgs — still better than a stale single org.
+      const orgNames = orgNamesFromDevices.length > 0
+        ? orgNamesFromDevices
+        : organizations.map(o => o.name);
+
+      setPendingScan({ deviceIds, orgNames });
+    } catch (err) {
+      // Pre-scan errors only (device-list fetch failure, no devices).
+      showToast({
+        message: err instanceof Error ? err.message : 'Patch scan failed',
+        type: 'error',
+      });
+    } finally {
+      setScanLoading(false);
+    }
+  };
+
+  const executeScan = async (deviceIds: string[]) => {
+    setPendingScan(null);
+    setScanLoading(true);
+    try {
       // /patches/scan is an AGGREGATE / partial-success endpoint: a body
       // `success:false` can still mean "most devices were queued", and skipped
       // (missing / inaccessible) devices do NOT flip `success` at all. runAction's
@@ -324,9 +372,8 @@ export default function PatchesPage() {
       }
       await fetchPatches();
     } catch (err) {
-      // Pre-scan errors only (device-list fetch failure, no devices). The scan
-      // call above surfaces its own outcome and never throws; a 401 from the
-      // device-paging GET already redirected and returned before reaching here.
+      // The scan call above surfaces its own outcome and never throws; a 401
+      // from the scan POST already redirected and returned before reaching here.
       showToast({
         message: err instanceof Error ? err.message : 'Patch scan failed',
         type: 'error',
@@ -390,6 +437,7 @@ export default function PatchesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Patch Management</h1>
+          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/patches'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">Manage update rings, approvals, compliance, and patch deployments.</p>
         </div>
         <div className="flex items-center gap-3">
@@ -516,16 +564,39 @@ export default function PatchesPage() {
       {/* Compliance tab — merged device view with summary */}
       {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
 
-      {/* Approval modal — passes ringId */}
+      {/* Approval modal — passes ringId and org context for confirmation */}
       <PatchApprovalModal
         open={modalOpen}
         patch={selectedPatch}
         ringId={selectedRingId}
+        orgName={currentOrg?.name ?? null}
+        ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
         onClose={() => {
           setModalOpen(false);
           setSelectedPatch(null);
         }}
         onSubmit={handleApprovalSubmit}
+      />
+
+      {/* Scan confirmation — names the scope before POSTing /patches/scan */}
+      <ConfirmDialog
+        open={pendingScan !== null}
+        onClose={() => setPendingScan(null)}
+        onConfirm={() => { if (pendingScan) void executeScan(pendingScan.deviceIds); }}
+        title="Confirm patch scan"
+        message={
+          pendingScan
+            ? scopeConfirmMessage({
+                action: 'Scan for patches',
+                deviceCount: pendingScan.deviceIds.length,
+                orgNames: pendingScan.orgNames,
+              })
+            : ''
+        }
+        confirmLabel="Scan"
+        variant="warning"
+        isLoading={scanLoading}
+        confirmTestId="confirm-fleet-action"
       />
 
       {/* Create / Edit Ring modal */}

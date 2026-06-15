@@ -28,9 +28,11 @@
 import { Worker, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { tickets, userNotifications, users } from '../db/schema';
+import { partners, tickets, userNotifications, users } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
+import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
+import { buildAutoresponseEmail } from '../services/inboundEmail/autoresponseTemplate';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -52,6 +54,8 @@ interface EmailPayload {
   subject: string;
   html: string;
   bestEffort?: boolean; // if true, swallow send errors
+  replyTo?: string;
+  headers?: Record<string, string>;
 }
 
 async function getTicket(ticketId: string) {
@@ -113,11 +117,20 @@ async function collectAssigneeNotification(
 
 /**
  * Returns collected email payloads (does not send).
+ *
+ * Threading is OPT-IN per call (Phase 4 §5): pass a `commentId` to thread the
+ * email (technician public-comment reply). When `commentId` is absent (e.g. the
+ * `ticket.status_changed` 'Resolved' email) the function behaves exactly as
+ * before — no Reply-To, no headers, no anchor stamp. This keeps the Resolved
+ * email from emitting a bare-anchor Message-ID that would collide with the
+ * autoresponse's Message-ID and confuse the requester's mail client + PR1's
+ * thread-key resolver.
  */
 async function collectRequesterEmail(
   event: TicketEvent,
   bodyHtml: string,
-  subjectPrefix: string
+  subjectPrefix: string,
+  commentId?: string
 ): Promise<EmailPayload[]> {
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
   const ticket = await getTicket(event.ticketId);
@@ -129,11 +142,91 @@ async function collectRequesterEmail(
 
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
+  // Un-threaded path (e.g. ticket.status_changed 'Resolved'): unchanged from before.
+  if (!commentId) {
+    return [{
+      to: ticket.submitterEmail,
+      subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
+      html: bodyHtml
+    }];
+  }
+
+  // Threaded path (Phase 4 §5): partner inbound address as Reply-To + deterministic
+  // Message-ID/In-Reply-To/References so the requester's client threads the reply.
+  let replyTo: string | undefined;
+  if (ticket.partnerId) {
+    const partnerRows = await db
+      .select({ slug: partners.slug, settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, ticket.partnerId))
+      .limit(1);
+    const slug = partnerRows[0]?.slug;
+    const override = (partnerRows[0]?.settings as
+      | { ticketing?: { inbound?: { address?: string } } }
+      | undefined)?.ticketing?.inbound?.address;
+    if (slug) replyTo = partnerInboundAddress(slug, override) ?? undefined;
+  }
+
+  const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
+  const headers = Object.keys(built).length > 0 ? built : undefined;
+
+  // Stamp the thread anchor onto the ticket the FIRST time so inbound replies match
+  // PR1's email_thread_key resolver (round-trips with the In-Reply-To/References above).
+  const anchor = ticketThreadAnchor(ticket.id);
+  if (anchor && !ticket.emailThreadKey) {
+    await db.update(tickets).set({ emailThreadKey: anchor }).where(eq(tickets.id, ticket.id));
+  }
+
   return [{
     to: ticket.submitterEmail,
     subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-    html: bodyHtml
+    html: bodyHtml,
+    replyTo,
+    headers
   }];
+}
+
+/**
+ * One-time autoresponse acknowledgement (spec §5). The autoresponder gate
+ * (inboundEmail/autoresponder.ts) already applied loop-prevention + the per-sender
+ * cap before emitting; here we just compose + send. The body is the hardcoded v1
+ * template (PR4 swaps it). Loop hygiene: stamp Auto-Submitted: auto-replied and set
+ * the ticket thread anchor as Message-ID so the requester's reply threads. Reply-To
+ * is the partner inbound address (self-hosted override honored).
+ */
+async function collectAutoresponse(
+  event: Extract<TicketEvent, { type: 'ticket.autoresponse' }>
+): Promise<EmailPayload[]> {
+  const ticket = await getTicket(event.ticketId);
+  if (!ticket) {
+    throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
+  }
+
+  const tpl = buildAutoresponseEmail({
+    internalNumber: event.payload.internalNumber,
+    subject: event.payload.subject
+  });
+
+  let replyTo: string | undefined;
+  if (ticket.partnerId) {
+    const partnerRows = await db
+      .select({ slug: partners.slug, settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, ticket.partnerId))
+      .limit(1);
+    const slug = partnerRows[0]?.slug;
+    const override = (partnerRows[0]?.settings as
+      | { ticketing?: { inbound?: { address?: string } } }
+      | undefined)?.ticketing?.inbound?.address;
+    if (slug) replyTo = partnerInboundAddress(slug, override) ?? undefined;
+  }
+
+  // Anchor as Message-ID so the requester's reply threads; Auto-Submitted for loop hygiene.
+  const headers: Record<string, string> = { 'Auto-Submitted': 'auto-replied' };
+  const anchor = ticketThreadAnchor(ticket.id);
+  if (anchor) headers['Message-ID'] = anchor;
+
+  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true }];
 }
 
 async function collectSlaBreachNotification(
@@ -202,13 +295,20 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         return;
       }
       case 'ticket.commented': {
+        // Payload-trust contract: the worker TRUSTS event.payload.isPublic — the
+        // EMITTER is the sole authority on visibility. inboundEmailService always
+        // emits isPublic:true for an inbound customer comment; an internal note never
+        // emits a public ticket.commented event. The composer is TEMPLATE-ONLY: it
+        // never loads ticket_comments, so the comment's content is structurally
+        // unreachable from any outbound body/subject (see ticketNotifyWorker.leak.test.ts).
         // Skip requester email for inbound comments — the comment originated FROM the
         // requester's email, so echoing it back would create a mail loop.
         if (event.payload.isPublic && !event.payload.inbound) {
           emailPayloads = await collectRequesterEmail(
             event,
             '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',
-            'New reply'
+            'New reply',
+            event.payload.commentId
           );
         }
         return;
@@ -216,6 +316,10 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
       case 'ticket.updated': {
         // Plain field edits (subject, priority, …) notify no one in Phase 1 —
         // explicit no-op case so the exhaustiveness default stays meaningful.
+        return;
+      }
+      case 'ticket.autoresponse': {
+        emailPayloads = await collectAutoresponse(event);
         return;
       }
       case 'ticket.status_changed': {
@@ -241,15 +345,22 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
   if (!email || emailPayloads.length === 0) return;
 
   for (const payload of emailPayloads) {
+    const sendArgs = {
+      to: payload.to,
+      subject: payload.subject,
+      html: payload.html,
+      replyTo: payload.replyTo,
+      headers: payload.headers
+    };
     if (payload.bestEffort) {
       try {
-        await email.sendEmail({ to: payload.to, subject: payload.subject, html: payload.html });
+        await email.sendEmail(sendArgs);
       } catch (err) {
         console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
       }
     } else {
       // Non-best-effort: let throw bubble up so BullMQ can retry.
-      await email.sendEmail({ to: payload.to, subject: payload.subject, html: payload.html });
+      await email.sendEmail(sendArgs);
     }
   }
 }

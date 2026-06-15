@@ -21,11 +21,17 @@ export type TicketEvent = TicketEventEnvelope & (
   | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus; resolutionNote: string | null } }
   | { type: 'ticket.assigned'; payload: { assigneeId: string | null } }
   // `inbound` marks a comment that originated from an inbound customer email. The
-  // notify worker's live guard (ticketNotifyWorker.ts:205-207 reads `!event.payload.inbound`)
-  // skips echoing the email back to the same sender, preventing a mail loop.
+  // notify worker's ticket.commented branch skips the requester echo when
+  // event.payload.inbound is set (guard: `isPublic && !inbound`), so the email is
+  // never bounced back to the same sender — preventing a mail loop.
   | { type: 'ticket.commented'; payload: { commentId: string; isPublic: boolean; inbound?: boolean } }
   | { type: 'ticket.updated'; payload: { changed: string[] } }
   | { type: 'ticket.sla_breached'; payload: { target: 'response' | 'resolution'; internalNumber: string | null; subject: string; assigneeId: string | null } }
+  // One-time autoresponse acknowledgement for an email-created ticket (spec §5).
+  // Emitted by inboundEmail/autoresponder.ts (after loop-prevention + the per-sender
+  // Redis cap) and handled by ticketNotifyWorker — the single outbound code path.
+  // Payload-only: ticketId/orgId/partnerId come from TicketEventEnvelope.
+  | { type: 'ticket.autoresponse'; payload: { to: string; internalNumber: string | null; subject: string } }
 );
 
 export type TicketEventType = TicketEvent['type'];

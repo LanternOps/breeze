@@ -15,6 +15,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
+import { bodyLimitForPath } from './middleware/bodyLimit';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
 import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
@@ -29,7 +30,11 @@ import { automationRoutes, automationWebhookRoutes } from './routes/automations'
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
+import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
+import { invoiceRoutes } from './routes/invoices';
+import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
+import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
@@ -72,6 +77,7 @@ import { discoveryRoutes } from './routes/discovery';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
+import { clientAiRoutes } from './routes/clientAi';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
@@ -133,6 +139,7 @@ import { API_VERSION } from './version';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
+import { initializeInvoiceWorkers, shutdownInvoiceWorkers } from './jobs/invoiceWorker';
 import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offlineDetector';
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
@@ -286,19 +293,8 @@ app.use('*', async (c, next) => {
   if (c.req.path === '/oauth' || c.req.path.startsWith('/oauth/')) {
     return next();
   }
-  // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
-  if (c.req.path.startsWith('/api/v1/dev/push')) {
-    return bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Binary too large (max 150MB)' }, 413) })(c, next);
-  }
-  // File transfer chunk uploads can be up to 50MB; route-level bodyLimit handles the real cap.
-  if (c.req.path.match(/^\/api\/v1\/remote\/transfers\/[^/]+\/chunks$/)) {
-    return bodyLimit({ maxSize: 50 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Chunk too large (max 50MB)' }, 413) })(c, next);
-  }
-  // File browser uploads send base64-encoded content in JSON body (~33% overhead).
-  if (c.req.path.match(/^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/)) {
-    return bodyLimit({ maxSize: 50 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'File too large (max ~37MB)' }, 413) })(c, next);
-  }
-  return bodyLimit({ maxSize: 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Request body too large' }, 413) })(c, next);
+  const { maxSize, error } = bodyLimitForPath(c.req.path);
+  return bodyLimit({ maxSize, onError: (ctx) => ctx.json({ error }, 413) })(c, next);
 });
 app.use('*', globalRateLimit());
 app.use('*', prettyJSON());
@@ -734,6 +730,16 @@ api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
+api.route('/catalog', catalogRoutes);
+api.route('/invoices', invoiceRoutes);
+// Assembly routes nest under the existing /orgs and /tickets namespaces, so they
+// mount at the api root: /api/v1/orgs/:orgId/invoices/assemble and
+// /api/v1/tickets/:ticketId/invoice. invoiceAssemblyRoutes applies authMiddleware itself.
+api.route('/', invoiceAssemblyRoutes);
+// Billing settings nest under /partner and /orgs at the api root:
+// /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
+// invoiceSettingsRoutes applies authMiddleware itself.
+api.route('/', invoiceSettingsRoutes);
 api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
@@ -790,6 +796,7 @@ api.route('/discovery', discoveryRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
+api.route('/client-ai', clientAiRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
@@ -1085,6 +1092,7 @@ async function initializeWorkers(): Promise<void> {
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
+    ['invoiceWorker', initializeInvoiceWorkers],
   ];
 
   await Promise.allSettled(
@@ -1243,6 +1251,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,
+    shutdownInvoiceWorkers,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

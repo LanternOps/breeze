@@ -1,9 +1,11 @@
 // Owns ticketing configuration: custom statuses, priority SLA settings, and org-level overrides — per 2026-06-12 spec.
 
-import { eq, and, asc, inArray } from 'drizzle-orm';
-import { ticketStatuses, ticketPrioritySettings, orgTicketSettings } from '../db/schema';
+import { eq, and, asc, desc, inArray, count } from 'drizzle-orm';
+import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound, organizations } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
+import { getConfig } from '../config/validate';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
@@ -273,7 +275,11 @@ export type TicketConfigServiceErrorCode =
   | 'STATUS_NAME_TAKEN'
   | 'STATUS_NOT_FOUND'
   | 'SYSTEM_STATUS_IMMUTABLE'
-  | 'SYSTEM_STATUS_REQUIRED';
+  | 'SYSTEM_STATUS_REQUIRED'
+  | 'INBOUND_ROW_NOT_FOUND'
+  | 'INBOUND_ROW_ALREADY_RESOLVED'
+  | 'INBOUND_ROW_NO_SENDER'
+  | 'ORG_NOT_ACCESSIBLE';
 
 export class TicketConfigServiceError extends Error {
   constructor(message: string, public status: 400 | 404 | 409 = 400, public code?: TicketConfigServiceErrorCode) {
@@ -324,8 +330,10 @@ async function readPriorities(partnerId: string): Promise<Record<TicketPriorityV
 }
 
 /**
- * Full partner ticketing configuration: every custom + system status (ordered)
- * and the merged per-priority SLA settings (nulls where unset).
+ * Full partner ticketing configuration: every custom + system status (ordered),
+ * the merged per-priority SLA settings (nulls where unset), and the inbound-email
+ * block (resolved address + override, enabled/autoresponder flags, defaultTriageOrgId,
+ * slug, and whether TICKETS_INBOUND_DOMAIN is configured).
  */
 export async function getTicketConfig(partnerId: string) {
   const statuses = await db
@@ -343,7 +351,33 @@ export async function getTicketConfig(partnerId: string) {
     .orderBy(asc(ticketStatuses.sortOrder), asc(ticketStatuses.name));
 
   const priorities = await readPriorities(partnerId);
-  return { statuses, priorities };
+
+  const [partner] = await db
+    .select({ slug: partners.slug, settings: partners.settings })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+
+  const slug = partner?.slug ?? '';
+  const settings = (partner?.settings as Record<string, unknown> | null) ?? {};
+  const inboundCfg = (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
+    { enabled?: boolean; address?: string; defaultTriageOrgId?: string | null; autoresponderEnabled?: boolean } | undefined) ?? {};
+  const domain = getConfig().TICKETS_INBOUND_DOMAIN ?? '';
+  const domainConfigured = domain.length > 0;
+  const derived = domainConfigured && slug ? `${slug}@${domain}` : '';
+  const addressOverride = (inboundCfg.address && inboundCfg.address.length > 0) ? inboundCfg.address : null;
+
+  const inbound = {
+    enabled: inboundCfg.enabled ?? false,
+    address: addressOverride ?? derived,
+    addressOverride,
+    defaultTriageOrgId: inboundCfg.defaultTriageOrgId ?? null,
+    autoresponderEnabled: inboundCfg.autoresponderEnabled ?? true,
+    slug,
+    domainConfigured,
+  };
+
+  return { statuses, priorities, inbound };
 }
 
 export async function createTicketStatus(partnerId: string, input: CreateTicketStatusInput) {
@@ -521,4 +555,231 @@ export async function upsertOrgTicketSettings(orgId: string, input: OrgTicketSet
     })
     .returning();
   return toOrgTicketSettingsResponse(orgId, row);
+}
+
+// ============================================================================
+// Inbound-email review queue (Phase 4). Admin-only surface — the routes carry
+// writePerm + adminMiddleware. Reads/writes run in the REQUEST DB context, so
+// the partner-axis RLS policy on ticket_email_inbound is the real backstop; the
+// explicit partnerId filter is defense-in-depth.
+// ============================================================================
+
+const REVIEW_STATUSES = ['quarantined', 'failed'] as const;
+
+/**
+ * Extract a display name from a raw From header (`"Jane Doe" <jane@x.com>`
+ * → `Jane Doe`). Replicates the Mailgun provider's `extractName` so a converted
+ * ticket carries the submitter's name. Returns '' for a bare address.
+ */
+function extractFromName(fromHeader: string): string {
+  const m = fromHeader.match(/^\s*"?([^"<]+?)"?\s*</);
+  return m ? (m[1] ?? '').trim() : '';
+}
+
+export interface EmailInboundQueueRow {
+  id: string;
+  fromAddress: string | null;
+  toAddress: string | null;
+  subject: string | null;
+  parseStatus: string;
+  error: string | null;
+  ticketId: string | null;
+  createdAt: Date;
+}
+
+export async function listEmailInboundQueue(
+  partnerId: string,
+  opts: { page: number; limit: number },
+): Promise<{ data: EmailInboundQueueRow[]; pagination: { page: number; limit: number; total: number } }> {
+  const page = Math.max(1, Math.floor(opts.page) || 1);
+  const limit = Math.min(100, Math.max(1, Math.floor(opts.limit) || 50));
+  const offset = (page - 1) * limit;
+
+  const where = and(
+    eq(ticketEmailInbound.partnerId, partnerId),
+    inArray(ticketEmailInbound.parseStatus, REVIEW_STATUSES as unknown as string[]),
+  );
+
+  const data = await db
+    .select({
+      id: ticketEmailInbound.id,
+      fromAddress: ticketEmailInbound.fromAddress,
+      toAddress: ticketEmailInbound.toAddress,
+      subject: ticketEmailInbound.subject,
+      parseStatus: ticketEmailInbound.parseStatus,
+      error: ticketEmailInbound.error,
+      ticketId: ticketEmailInbound.ticketId,
+      createdAt: ticketEmailInbound.createdAt,
+    })
+    .from(ticketEmailInbound)
+    .where(where)
+    .orderBy(desc(ticketEmailInbound.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  const countRows = await db
+    .select({ total: count() })
+    .from(ticketEmailInbound)
+    .where(where);
+  const total = countRows[0]?.total ?? 0;
+
+  return { data, pagination: { page, limit, total: Number(total) } };
+}
+
+// The columns returned by convert/dismiss — same projection as the queue list so
+// the card can drop the resolved row into its local state without a refetch.
+// Built lazily (function, not a module-level const) so importing this module
+// never dereferences `ticketEmailInbound` at load time — a top-level reference
+// crashes any test that partially-mocks `../db/schema` and transitively imports
+// this service (e.g. via orgs.ts), the same module-load landmine as #1283's
+// networkBaseline ASSET_TYPE_SET.
+function returnQueueCols() {
+  return {
+    id: ticketEmailInbound.id,
+    fromAddress: ticketEmailInbound.fromAddress,
+    toAddress: ticketEmailInbound.toAddress,
+    subject: ticketEmailInbound.subject,
+    parseStatus: ticketEmailInbound.parseStatus,
+    error: ticketEmailInbound.error,
+    ticketId: ticketEmailInbound.ticketId,
+    createdAt: ticketEmailInbound.createdAt,
+  };
+}
+
+/**
+ * Load a review-queue row scoped to (id, partnerId) and assert it is still in a
+ * resolvable state. Shared by convert + dismiss so both share the same NOT_FOUND
+ * / ALREADY_RESOLVED guards. The (id, partnerId) filter is the tenant boundary
+ * (defense-in-depth atop the partner-axis RLS policy): a row belonging to
+ * another partner reads as NOT_FOUND, never leaking its existence.
+ */
+async function readQueueRow(partnerId: string, id: string) {
+  const [row] = await db
+    .select({
+      id: ticketEmailInbound.id,
+      partnerId: ticketEmailInbound.partnerId,
+      parseStatus: ticketEmailInbound.parseStatus,
+      fromAddress: ticketEmailInbound.fromAddress,
+      toAddress: ticketEmailInbound.toAddress,
+      subject: ticketEmailInbound.subject,
+      raw: ticketEmailInbound.raw,
+    })
+    .from(ticketEmailInbound)
+    .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
+    .limit(1);
+  if (!row) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+  if (!(REVIEW_STATUSES as readonly string[]).includes(row.parseStatus)) {
+    // Idempotency: a second convert/dismiss on an already-handled row is a
+    // no-op-error, not a silent re-create. The card refetches and the row drops.
+    throw new TicketConfigServiceError('This inbound email has already been handled', 409, 'INBOUND_ROW_ALREADY_RESOLVED');
+  }
+  return row;
+}
+
+/**
+ * Convert a quarantined/failed inbound email into a source:'email' ticket in the
+ * chosen org, then link the row (ticket_id + parse_status='created'). Tenancy-
+ * critical — it creates a ticket in an operator-chosen org:
+ *   - the row must belong to the resolved partner (404 if not);
+ *   - the row must be unresolved (409 idempotency guard);
+ *   - the chosen org must belong to the resolved partner (ORG_NOT_ACCESSIBLE);
+ *   - the row must carry a usable sender address (INBOUND_ROW_NO_SENDER) — a
+ *     reply-less email-source ticket defeats the submitterEmail extension.
+ * `actor` is the REAL authenticated admin threaded from the route, giving correct
+ * audit attribution (no synthetic all-zero-UUID sentinel).
+ */
+export async function convertEmailInbound(partnerId: string, id: string, orgId: string, actor: TicketActor): Promise<EmailInboundQueueRow> {
+  // Read first only to validate the guards (org-in-partner, usable sender) and to
+  // distinguish NOT_FOUND from ALREADY_RESOLVED for the caller. The actual race-
+  // safe transition is the claim UPDATE below — no ticket is created until the
+  // row is atomically claimed out of the review state.
+  const row = await readQueueRow(partnerId, id);
+
+  // Guard (spec §6): the chosen org must belong to the resolved partner. Without
+  // this, an admin could convert an email into a ticket in an org outside their
+  // partner. RLS on organizations already scopes the request context, but the
+  // explicit partner_id equality is the security boundary, not the read.
+  const [orgOk] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, partnerId)))
+    .limit(1);
+  if (!orgOk) throw new TicketConfigServiceError('That organization is not in your partner', 400, 'ORG_NOT_ACCESSIBLE');
+
+  // A ticket with no sender email can never receive a reply — the whole point of
+  // source:'email' is the submitterEmail recipient (spec §6). Block instead of
+  // silently creating a reply-less ticket.
+  const submitterEmail = (row.fromAddress ?? '').trim();
+  if (!submitterEmail) {
+    throw new TicketConfigServiceError('This email has no usable sender address; it cannot be converted to a ticket', 400, 'INBOUND_ROW_NO_SENDER');
+  }
+
+  // The persisted `raw` JSONB is the UNTRANSFORMED Mailgun webhook form body, so
+  // it carries `stripped-text`/`body-plain` (not `text`) and `from` (the full
+  // From header, not `fromName`). Read those real keys — using `raw.text` /
+  // `raw.fromName` here silently lost the body and submitter name on every convert.
+  const raw = (row.raw as Record<string, unknown> | null) ?? {};
+  const description =
+    (typeof raw['stripped-text'] === 'string' && raw['stripped-text']) ||
+    (typeof raw['body-plain'] === 'string' && raw['body-plain']) ||
+    '';
+  const fromName = extractFromName(typeof raw.from === 'string' ? raw.from : '') || undefined;
+
+  // CLAIM-FIRST: atomically transition the row out of the review state BEFORE any
+  // ticket is created. If a concurrent dismiss/convert won the race, this affects
+  // 0 rows and we throw before createTicket runs — so a lost race never orphans a
+  // ticket. The WHERE keys on (id, partnerId, parse_status IN review) so it's also
+  // the real TOCTOU-safe transition (the read above is advisory only).
+  const [claimed] = await db
+    .update(ticketEmailInbound)
+    .set({ parseStatus: 'created' })
+    .where(and(
+      eq(ticketEmailInbound.id, id),
+      eq(ticketEmailInbound.partnerId, partnerId),
+      inArray(ticketEmailInbound.parseStatus, REVIEW_STATUSES as unknown as string[]),
+    ))
+    .returning(returnQueueCols());
+  if (!claimed) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+
+  // Only now create the ticket. If createTicket throws, the error propagates
+  // (non-service error → handleServiceError rethrows → the request transaction
+  // rolls back, undoing the claim above — the row is never left half-updated).
+  const ticket = await createTicket(
+    {
+      orgId,
+      subject: row.subject?.trim() || '(no subject)',
+      description,
+      source: 'email',
+      submitterEmail,
+      submitterName: fromName,
+    },
+    actor,
+  );
+
+  const [updated] = await db
+    .update(ticketEmailInbound)
+    .set({ ticketId: ticket.id })
+    .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
+    .returning(returnQueueCols());
+  // The row was claimed by THIS transaction a moment ago, so it must still exist;
+  // an empty result would mean the row vanished mid-transaction (shouldn't happen).
+  if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+  return updated;
+}
+
+/**
+ * Drop a quarantined/failed inbound email out of the review queue by marking it
+ * parse_status='ignored' (PR 1's terminal "do not process" value — no new enum
+ * value). The row stays in the table for audit; the queue lists only
+ * quarantined/failed, so an ignored row disappears. No ticket is created.
+ */
+export async function dismissEmailInbound(partnerId: string, id: string): Promise<EmailInboundQueueRow> {
+  await readQueueRow(partnerId, id);
+  const [updated] = await db
+    .update(ticketEmailInbound)
+    .set({ parseStatus: 'ignored' })
+    .where(and(eq(ticketEmailInbound.id, id), eq(ticketEmailInbound.partnerId, partnerId)))
+    .returning(returnQueueCols());
+  if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
+  return updated;
 }

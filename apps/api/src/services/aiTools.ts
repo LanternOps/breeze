@@ -56,6 +56,8 @@ import { registerRemoteTools } from './aiToolsRemote';
 import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 import { registerUITools } from './aiToolsUI';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { registerCatalogTools } from './aiToolsCatalog';
+import { registerBillingTools } from './aiToolsBilling';
 import { registerPamTools } from './aiToolsPam';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
@@ -229,6 +231,8 @@ registerComplianceTools(aiTools);
 registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
 registerTicketingTools(aiTools);
+registerCatalogTools(aiTools);
+registerBillingTools(aiTools);
 registerIncidentTools(aiTools);
 registerPerformanceTools(aiTools);
 registerUserRiskTools(aiTools);

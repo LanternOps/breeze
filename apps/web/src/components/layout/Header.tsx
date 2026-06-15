@@ -35,11 +35,21 @@ import { useFeaturesStore } from '../../stores/featuresStore';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '../../lib/navigation';
 import { useAvatarBlobUrl } from '../../lib/avatarBlobCache';
-import { readDensity, writeDensity, subscribeDensity, type Density } from '../../lib/density';
+import {
+  readDensity,
+  readThemePreference,
+  subscribeDensity,
+  subscribeTheme,
+  writeDensity,
+  writeThemePreference,
+  type Density,
+  type ThemePreference,
+} from '../../lib/appearance';
+import { saveUserPreferences } from '../../lib/userPreferences';
 
 export default function Header() {
   const [mounted, setMounted] = useState(false);
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
+  const [theme, setTheme] = useState<ThemePreference>('system');
   // Interface density: account-wide preference (breeze.density) shared with
   // any table that opts in. The control lives in this theme/display submenu;
   // changing it re-skins the whole app via <html data-density> (globals.css).
@@ -69,14 +79,13 @@ export default function Header() {
   // Mark as mounted after hydration to avoid SSR/client mismatch
   useEffect(() => {
     setMounted(true);
-    const raw = localStorage.getItem('theme');
-    const stored = (raw === 'light' || raw === 'dark' || raw === 'system') ? raw : null;
-    setTheme(stored || 'system');
+    setTheme(readThemePreference());
     // Hydrate density from storage and stay in sync if another component
     // (e.g. a table toolbar) ever flips it.
     setDensity(readDensity());
   }, []);
 
+  useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeDensity(setDensity), []);
 
   useEffect(() => {
@@ -169,26 +178,14 @@ export default function Header() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [showUserMenu]);
 
-  const applyTheme = (next: 'light' | 'dark' | 'system') => {
+  const applyTheme = (next: ThemePreference) => {
     setTheme(next);
     setShowThemeMenu(false);
-
-    const resolved = next === 'system'
-      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : next;
-
-    if (resolved === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-    localStorage.setItem('theme', next);
+    writeThemePreference(next);
 
     if (isAuthenticated) {
-      fetchWithAuth('/users/me', {
-        method: 'PATCH',
-        body: JSON.stringify({ preferences: { theme: next } })
-      }).catch((err) => console.warn('[theme] Failed to persist preference:', err));
+      saveUserPreferences({ theme: next }, 'Failed to save theme preference')
+        .catch((err) => console.warn('[theme] Failed to persist preference:', err));
     }
   };
 
@@ -197,6 +194,10 @@ export default function Header() {
   // (subscribeDensity above keeps this menu's checkmark in sync).
   const applyDensity = (next: Density) => {
     writeDensity(next);
+    if (isAuthenticated) {
+      saveUserPreferences({ density: next }, 'Failed to save density preference')
+        .catch((err) => console.warn('[density] Failed to persist preference:', err));
+    }
   };
 
   // Listen for OS theme changes when in system mode
@@ -204,11 +205,7 @@ export default function Header() {
     if (theme !== 'system') return;
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = (e: MediaQueryListEvent) => {
-      if (e.matches) {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-      }
+      document.documentElement.classList.toggle('dark', e.matches);
     };
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);

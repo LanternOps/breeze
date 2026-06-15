@@ -20,6 +20,9 @@ import { navigateTo } from '@/lib/navigation';
 import { formatRelativeTime, lastActivity, toNumber, type DevicePatchRow } from './patchHelpers';
 import { usePatchSelection } from './usePatchSelection';
 import { useBulkActions, type ResolvedInstallPatchIds } from './useBulkActions';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
+import { useOrgStore } from '../../stores/orgStore';
 
 type ComplianceSummary = {
   totalDevices: number;
@@ -34,6 +37,7 @@ type PatchComplianceViewProps = {
 };
 
 export default function PatchComplianceView({ ringId }: PatchComplianceViewProps) {
+  const { organizations } = useOrgStore();
   const [devices, setDevices] = useState<DevicePatchRow[]>([]);
   const [summary, setSummary] = useState<ComplianceSummary>({ totalDevices: 0, compliantDevices: 0, criticalPatches: 0, pendingPatches: 0, rebootPending: 0 });
   const [loading, setLoading] = useState(true);
@@ -41,7 +45,6 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
-  const [confirmInstall, setConfirmInstall] = useState(false);
   const reportPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -84,6 +87,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           const n = needingMap.get(id);
           const pendingPatches = toNumber(n?.missingCount ?? 0);
           const approvedMissing = toNumber(n?.approvedMissing ?? 0);
+          // Capture orgId from the /devices response so we can derive the true
+          // action scope when the user triggers a bulk scan/install confirmation.
+          const orgId = raw.orgId ? String(raw.orgId) : (raw.org_id ? String(raw.org_id) : undefined);
           merged.push({
             id,
             hostname: String(n?.name ?? n?.hostname ?? raw.hostname ?? 'Unknown'),
@@ -102,6 +108,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             lastInstalledAt: n?.lastInstalledAt ? String(n.lastInstalledAt) : undefined,
             lastScannedAt: n?.lastScannedAt ? String(n.lastScannedAt) : undefined,
             pendingReboot: Boolean(n?.pendingReboot),
+            orgId,
           });
         }
       }
@@ -191,7 +198,31 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
 
   const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);
   const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
-  const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(
+
+  // Derive org names from the selected devices' actual orgId fields (populated
+  // from the /devices API response), NOT from currentOrgId which reflects only
+  // the shell selection and is stale on the global /patches route.
+  const orgNamesForSelection = useMemo((): string[] => {
+    const seenOrgIds = new Set<string>();
+    for (const id of selectedIds) {
+      const d = devices.find(dev => dev.id === id);
+      if (d?.orgId) seenOrgIds.add(d.orgId);
+    }
+    if (seenOrgIds.size === 0) {
+      // Fall back: derive from all loaded devices if no orgId info on selected rows.
+      for (const d of devices) {
+        if (d.orgId) seenOrgIds.add(d.orgId);
+      }
+    }
+    const names: string[] = [];
+    for (const oid of seenOrgIds) {
+      const org = organizations.find(o => o.id === oid);
+      names.push(org ? org.name : oid);
+    }
+    return names.length > 0 ? names : ['the selected organization'];
+  }, [selectedIds, devices, organizations]);
+
+  const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, pendingConfirm, requestBulkScan, requestBulkInstall, confirmPendingAction, cancelPendingAction } = useBulkActions(
     selectedIds,
     clearSelection,
     fetchData,
@@ -420,43 +451,23 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           <div className="h-4 w-px bg-border" />
           <button
             type="button"
-            onClick={handleBulkScan}
+            onClick={() => requestBulkScan(orgNamesForSelection)}
             disabled={bulkAction !== null}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
             {bulkAction === 'scan' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             Scan
           </button>
-          {selectedWithPatches > 0 && !confirmInstall && (
+          {selectedWithPatches > 0 && (
             <button
               type="button"
-              onClick={() => setConfirmInstall(true)}
+              onClick={() => requestBulkInstall(orgNamesForSelection, selectedPatchDeviceIds)}
               disabled={bulkAction !== null}
               className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               <Play className="h-3.5 w-3.5" />
               Install ({selectedWithPatches})
             </button>
-          )}
-          {confirmInstall && (
-            <div className="flex items-center gap-2 rounded-md border border-orange-500/40 bg-orange-500/10 px-3 py-1">
-              <span className="text-xs text-orange-700">Install approved patches on {selectedWithPatches} devices?</span>
-              <button
-                type="button"
-                onClick={() => { setConfirmInstall(false); void handleBulkInstall(selectedPatchDeviceIds); }}
-                disabled={bulkAction !== null}
-                className="inline-flex h-6 items-center rounded bg-primary px-2 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {bulkAction === 'install' ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Confirm'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmInstall(false)}
-                className="text-xs text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </button>
-            </div>
           )}
           <button
             type="button"
@@ -633,6 +644,24 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           </tbody>
         </table>
       </div>
+
+      {pendingConfirm && (
+        <ConfirmDialog
+          open={true}
+          onClose={cancelPendingAction}
+          onConfirm={() => { void confirmPendingAction(); }}
+          title="Confirm fleet action"
+          variant="warning"
+          confirmLabel={pendingConfirm.action.startsWith('Scan') ? 'Scan' : 'Install'}
+          confirmTestId="confirm-fleet-action"
+          message={scopeConfirmMessage({
+            action: pendingConfirm.action,
+            deviceCount: pendingConfirm.deviceCount,
+            orgNames: pendingConfirm.orgNames,
+          })}
+          isLoading={bulkAction !== null}
+        />
+      )}
     </div>
   );
 }

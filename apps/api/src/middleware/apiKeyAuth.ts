@@ -220,7 +220,9 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
       // partner. We include the owning partner in the allowlist so the key can
       // read its own partner row (billing gate, MCP provisioning). If the org
       // somehow has no partner link, fall back to an empty allowlist.
-      accessiblePartnerIds: resolvedPartnerId ? [resolvedPartnerId] : []
+      accessiblePartnerIds: resolvedPartnerId ? [resolvedPartnerId] : [],
+      // Own partner — read-visibility of partner-wide catalog rows.
+      currentPartnerId: resolvedPartnerId ?? null
     },
     async () => {
       await next();

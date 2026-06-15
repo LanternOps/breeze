@@ -122,11 +122,10 @@ type Props = {
 
 export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks }: Props) {
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const orgScope = useOrgStore((s) => s.orgScope);
   // Monitoring assets are scoped to a single org; the API returns 400
   // ("orgId is required when partner has multiple organizations") for a
   // multi-org partner with no orgId. Prompt for one org instead of erroring.
-  const needsOrgSelection = orgScope === 'all' || !currentOrgId;
+  const needsOrgSelection = !currentOrgId;
   const [assets, setAssets] = useState<MonitoringAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -143,7 +142,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   const fetchAssets = useCallback(async () => {
     // Don't fire a per-org request with no org — it 400s. The render shows a
     // "pick an organization" prompt in this state.
-    if (orgScope === 'all' || !currentOrgId) {
+    if (!currentOrgId) {
       setAssets([]);
       setError(undefined);
       setLoading(false);
@@ -165,7 +164,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
     } finally {
       setLoading(false);
     }
-  }, [showAll, currentOrgId, orgScope]);
+  }, [showAll, currentOrgId]);
 
   useEffect(() => {
     fetchAssets();
