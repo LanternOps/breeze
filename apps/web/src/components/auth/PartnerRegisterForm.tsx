@@ -85,6 +85,7 @@ export default function PartnerRegisterForm({
           type="text"
           placeholder="Acme IT Services"
           className={inputClass}
+          data-testid="register-company-name"
           {...register('companyName')}
         />
         {errors.companyName && touchedFields.companyName && (
@@ -111,6 +112,7 @@ export default function PartnerRegisterForm({
             autoComplete="name"
             placeholder="Jane Doe"
             className={inputClass}
+            data-testid="register-name"
             {...register('name')}
           />
           {errors.name && touchedFields.name && (
@@ -128,6 +130,7 @@ export default function PartnerRegisterForm({
             autoComplete="email"
             placeholder="you@company.com"
             className={inputClass}
+            data-testid="register-email"
             {...register('email')}
           />
           {errors.email && touchedFields.email && (
@@ -143,6 +146,7 @@ export default function PartnerRegisterForm({
             id="password"
             autoComplete="new-password"
             placeholder="Create a password"
+            data-testid="register-password"
             aria-invalid={errors.password ? true : undefined}
             aria-describedby={errors.password ? passwordErrId : undefined}
             {...register('password', {
@@ -165,6 +169,7 @@ export default function PartnerRegisterForm({
             id="confirmPassword"
             autoComplete="new-password"
             placeholder="Re-enter your password"
+            data-testid="register-confirm-password"
             aria-invalid={errors.confirmPassword ? true : undefined}
             aria-describedby={errors.confirmPassword ? confirmErrId : undefined}
             {...register('confirmPassword')}
@@ -180,6 +185,7 @@ export default function PartnerRegisterForm({
           id="acceptTerms"
           type="checkbox"
           className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
+          data-testid="register-accept-terms"
           {...register('acceptTerms')}
         />
         <label htmlFor="acceptTerms" className="text-sm leading-snug text-muted-foreground">
@@ -217,6 +223,7 @@ export default function PartnerRegisterForm({
         type="submit"
         disabled={isLoading}
         aria-busy={isLoading}
+        data-testid="register-submit"
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {isLoading ? 'Creating account...' : 'Create company account'}
