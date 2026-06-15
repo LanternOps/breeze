@@ -600,11 +600,19 @@ export async function cascadeDeletePartner(
   // don't silently match zero rows under breeze_app RLS (partner-axis tables
   // are RLS-protected and bare breeze_app cannot write them).
   for (const table of sweep) {
-    await dbModule.withSystemDbAccessContext(() =>
-      dbModule.db.execute(
-        sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE partner_id = ${partnerId}`,
-      ),
-    );
+    try {
+      await dbModule.withSystemDbAccessContext(() =>
+        dbModule.db.execute(
+          sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE partner_id = ${partnerId}`,
+        ),
+      );
+    } catch (err) {
+      throw new Error(
+        `[tenantCascade] DELETE from "${table}" failed for partner=${partnerId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   // Final partners DELETE also needs system context.

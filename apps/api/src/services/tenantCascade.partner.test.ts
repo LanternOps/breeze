@@ -30,5 +30,21 @@ describe('cascadeDeletePartner', () => {
     expect(cascadeDeleteOrgMock).toHaveBeenCalledWith('org-1', 'synthetic-test-cleanup');
     const lastCall = execMock.mock.calls.at(-1)![0];
     expect(JSON.stringify(lastCall)).toContain('partners');
+
+    // topo sort received the discovered partner tables
+    expect(mod.topologicalCascadeOrder).toHaveBeenCalledWith(['scripts', 'users']);
+
+    // exactly one partners delete, and it is the LAST execute() call
+    const calls = execMock.mock.calls.map((c) => JSON.stringify(c[0]));
+    expect(calls.filter((c) => c.includes('partners')).length).toBe(1);
+
+    // audit event emitted with the right action and details shape
+    const { createAuditLog } = await import('./auditService');
+    expect(createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'test.synthetic_partner.purged',
+        details: expect.objectContaining({ orgsDeleted: 1 }),
+      }),
+    );
   });
 });
