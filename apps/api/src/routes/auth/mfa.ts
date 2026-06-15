@@ -237,13 +237,19 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     await bindRefreshJtiToFamily(tokens.refreshJti, mfaFamilyId);
 
     // Update last login
-    await db
-      .update(users)
-      .set({
-        lastLoginAt: new Date(),
-        ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {})
-      })
-      .where(eq(users.id, user.id));
+    // System DB context required: the MFA-verify step is still unauthenticated,
+    // so without it this `users` RLS UPDATE silently matches 0 rows under
+    // breeze_app — freezing last_login_at AND silently dropping the mfaSecret
+    // migration write (#1375).
+    await withSystemDbAccessContext(() =>
+      db
+        .update(users)
+        .set({
+          lastLoginAt: new Date(),
+          ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {})
+        })
+        .where(eq(users.id, user.id))
+    );
 
     auditLogin(c, { orgId: mfaOrgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
 
