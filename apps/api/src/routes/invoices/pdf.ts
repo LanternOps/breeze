@@ -22,8 +22,11 @@ invoicePdfRoutes.get('/:id/pdf', scopes, exportPerm, zValidator('param', idParam
     const { invoice } = await getInvoice(id, invoiceActorFrom(c));
     let pdf = await getInvoicePdf(id);
     if (!pdf) {
-      await renderInvoicePdf(id);
-      pdf = await getInvoicePdf(id);
+      // Drafts are preview-only: renderInvoicePdf does NOT persist them, so fall
+      // back to the bytes off the render result rather than re-reading the (empty)
+      // store. Issued invoices persist, so the read-back path still works too.
+      const rendered = await renderInvoicePdf(id);
+      pdf = (await getInvoicePdf(id)) ?? rendered.pdf;
     }
     if (!pdf) return c.json({ error: 'Failed to generate invoice PDF' }, 500);
 

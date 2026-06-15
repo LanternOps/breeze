@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import {
   type InvoiceDetail,
   type InvoiceLine,
@@ -42,7 +43,8 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
 
   const loadCatalog = useCallback(async () => {
     const res = await fetchWithAuth('/catalog?isActive=true');
-    if (!res.ok) return;
+    if (res.status === 401) return UNAUTHORIZED();
+    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load catalog.'); return; }
     const body = (await res.json()) as { data: CatalogItem[] };
     const all = body.data ?? [];
     setCatalogItems(all.filter((i) => !i.isBundle));
@@ -181,17 +183,27 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       if (alsoSend) {
-        await runAction({
+        // /send is honest about whether an email actually went out. The invoice
+        // is issued either way; only claim "sent" when an email was dispatched,
+        // otherwise warn so the operator knows nothing was emailed. We suppress
+        // runAction's own success toast and post-process the result ourselves.
+        const result = await runAction<{ data: { emailed: boolean } }>({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
           errorFallback: 'Invoice issued, but sending failed.',
-          successMessage: 'Invoice issued and sent',
           onUnauthorized: UNAUTHORIZED,
         });
+        if (result?.data?.emailed) {
+          showToast({ type: 'success', message: 'Invoice issued and sent' });
+        } else {
+          showToast({ type: 'warning', message: 'Invoice issued — but no email was sent (no billing contact / email not configured)' });
+        }
       }
-      refresh();
     } catch (err) {
       handleActionError(err, 'Could not issue invoice.');
     } finally {
+      // Always refresh: if issue succeeded but send threw, we still need to leave
+      // the draft editor so a second click doesn't re-issue and hit 409 NOT_A_DRAFT.
+      refresh();
       setBusy(false);
     }
   }, [busy, invoice.id, refresh]);

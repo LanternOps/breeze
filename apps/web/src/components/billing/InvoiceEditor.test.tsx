@@ -84,4 +84,38 @@ describe('InvoiceEditor', () => {
     render(<InvoiceEditor detail={draft([unapproved])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-unapproved-warning')).toBeInTheDocument());
   });
+
+  it('Issue & Send shows a success toast when the email was dispatched (emailed:true)', async () => {
+    const onChanged = vi.fn();
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') return json({ data: { id: 'inv-1', status: 'sent' } });
+      if (input === '/invoices/inv-1/send' && opts?.method === 'POST') return json({ data: { invoice: { id: 'inv-1', status: 'sent' }, emailed: true } });
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('invoice-issue-send'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Invoice issued and sent' }));
+  });
+
+  it('Issue & Send shows a WARNING toast (not error) when nothing was emailed (emailed:false)', async () => {
+    const onChanged = vi.fn();
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') return json({ data: { id: 'inv-1', status: 'sent' } });
+      if (input === '/invoices/inv-1/send' && opts?.method === 'POST') return json({ data: { invoice: { id: 'inv-1', status: 'sent' }, emailed: false, reason: 'no_billing_contact' } });
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('invoice-issue-send'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    // never a success "sent" claim when nothing went out
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Invoice issued and sent' }));
+  });
 });

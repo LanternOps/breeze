@@ -22,6 +22,7 @@ import { invoices, invoiceLines, invoiceDocuments, organizations, partners, port
 import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -310,12 +311,25 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
  * invoices.pdf_document_ref / pdf_sha256 at it. Generate-once: if a document
  * already exists for this invoice we re-render and overwrite (cheap; keeps the
  * stored artifact consistent if branding changed before send).
+ *
+ * Drafts are a special case: a draft can be previewed (the PDF route calls this
+ * with no draft gate), but the persisted invoice_documents row + the
+ * pdf_document_ref/pdf_sha256 stamps must only ever reflect the FROZEN issued
+ * artifact. So for a draft we render and return the bytes for the preview but do
+ * NOT persist or stamp anything — `documentId` is null to signal that.
  */
-export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId: string; sha256: string }> {
+export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId: string | null; sha256: string; pdf: Buffer }> {
   const loaded = await loadInvoiceForRender(invoiceId);
   if (!loaded) throw new Error(`Invoice ${invoiceId} not found for PDF render`);
   const pdf = await renderInvoicePdfBuffer(loaded.invoice, loaded.lines, loaded.branding);
   const sha256 = createHash('sha256').update(pdf).digest('hex');
+
+  // Preview-only for a draft: render bytes but never persist a stale artifact or
+  // stamp the invoice (those belong to the immutable issued PDF). The caller gets
+  // the bytes back so the preview download still works.
+  if (loaded.invoice.status === 'draft') {
+    return { documentId: null, sha256, pdf };
+  }
 
   const [doc] = await db
     .insert(invoiceDocuments)
@@ -327,7 +341,7 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
     .returning({ id: invoiceDocuments.id });
 
   await db.update(invoices).set({ pdfDocumentRef: doc!.id, pdfSha256: sha256, updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
-  return { documentId: doc!.id, sha256 };
+  return { documentId: doc!.id, sha256, pdf };
 }
 
 /** Return the stored PDF bytea for an invoice, or null if none has been rendered. */
@@ -340,22 +354,41 @@ export async function getInvoicePdf(invoiceId: string): Promise<Buffer | null> {
 // Email delivery
 // ---------------------------------------------------------------------------
 
+/** Result of a send attempt: the (issued) invoice plus an honest signal of
+ *  whether an email was actually dispatched. `emailed:false` means the invoice
+ *  IS issued (sent_at stamped, invoice.sent emitted) but no email left the box,
+ *  with `reason` distinguishing "email not configured" from "no billing contact". */
+export interface SendInvoiceResult {
+  invoice: InvoiceRow;
+  emailed: boolean;
+  reason?: 'no_email_service' | 'no_billing_contact';
+}
+
 /**
  * Issue the invoice if it is still a draft, ensure a PDF artifact exists
  * (rendered synchronously — the email path must NOT depend on the async worker),
  * email it to the org billing contact with the PDF attached, and stamp sent_at.
- * Degrades gracefully if email is not configured (getEmailService() === null).
+ * Returns { emailed } so callers can tell the user the truth when the email
+ * could not be dispatched (no email service / no billing contact) — issuance
+ * still succeeds in that case (the invoice IS issued; we just couldn't email it).
  */
-export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor) {
+export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): Promise<SendInvoiceResult> {
   const { issueInvoice } = await import('./invoiceService');
 
   // 1. Issue if still draft (issueInvoice asserts draft + sets sent_at on its own).
   let [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
-  if (!invoice) throw new Error(`Invoice ${invoiceId} not found`);
+  if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+
+  // Org-access backstop (defense-in-depth over RLS, matching getInvoice/recordPayment).
+  // 404 not 403 — don't leak existence across tenants.
+  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(invoice.orgId)) {
+    throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  }
+
   if (invoice.status === 'draft') {
     await issueInvoice(invoiceId, actor);
     [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
-    if (!invoice) throw new Error(`Invoice ${invoiceId} vanished after issue`);
+    if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   }
 
   // 2. Ensure the PDF exists (render synchronously if absent).
@@ -371,7 +404,10 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor) {
   const recipient = resolveBillingEmail(org?.billingContact);
 
   // 4. Send (graceful no-op if email is not configured or no recipient is known).
+  //    Track whether an email actually went out so the caller can report honestly.
   const emailService = getEmailService();
+  let emailed = false;
+  let reason: SendInvoiceResult['reason'];
   if (emailService && recipient) {
     const portalLink = `${(process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '')}/portal/invoices/${invoiceId}`;
     const template = buildInvoiceTemplate({
@@ -388,9 +424,12 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor) {
       text: template.text,
       attachments: pdf ? [{ filename: `${invoice.invoiceNumber ?? 'invoice'}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,
     });
+    emailed = true;
   } else if (!emailService) {
+    reason = 'no_email_service';
     console.warn(`[invoicePdf] Email not configured — invoice ${invoiceId} issued but not emailed`);
   } else {
+    reason = 'no_billing_contact';
     console.warn(`[invoicePdf] No billing email for org ${invoice.orgId} — invoice ${invoiceId} issued but not emailed`);
   }
 
@@ -399,13 +438,13 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor) {
   await db.update(invoices).set({ sentAt: new Date(), updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
 
   // 6. Emit the invoice.sent lifecycle event (spec §16). The send action has
-  //    completed (email attempted + sent_at stamped) whether or not an email
+  //    completed (issuance done + sent_at stamped) whether or not an email
   //    service was configured — emit after the DB write so a failed send never
   //    claims "sent". Fire-and-forget (a Redis outage must not fail the send).
   await emitInvoiceEvent({ type: 'invoice.sent', invoiceId, orgId: invoice.orgId, partnerId: invoice.partnerId, actorUserId: actor.userId });
 
   const [updated] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
-  return updated!;
+  return { invoice: updated!, emailed, reason };
 }
 
 /** Pull an email address out of the organizations.billing_contact JSONB blob. */

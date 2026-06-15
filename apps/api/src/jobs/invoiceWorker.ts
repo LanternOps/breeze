@@ -52,8 +52,11 @@ export function getInvoiceQueue(): Queue<InvoiceJobData> {
 // Job handlers (exported for direct unit testing)
 // ---------------------------------------------------------------------------
 
-/** Render + store the PDF for an invoice, inside system DB scope. */
-export async function processRenderPdf(data: RenderPdfJobData): Promise<{ invoiceId: string; documentId: string }> {
+/** Render + store the PDF for an invoice, inside system DB scope. The worker only
+ *  ever runs for just-issued (non-draft) invoices, so documentId is non-null in
+ *  practice; the type allows null because renderInvoicePdf skips persistence for
+ *  drafts (preview-only). */
+export async function processRenderPdf(data: RenderPdfJobData): Promise<{ invoiceId: string; documentId: string | null }> {
   return runWithSystemDbAccess(async () => {
     const { documentId } = await renderInvoicePdf(data.invoiceId);
     return { invoiceId: data.invoiceId, documentId };

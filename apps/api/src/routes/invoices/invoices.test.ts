@@ -190,6 +190,33 @@ describe('invoice lifecycle routes', () => {
     expect(svc.issueInvoice).toHaveBeenCalledWith(INV_ID, expect.anything());
   });
 
+  it('POST /:id/send returns the honest { invoice, emailed } shape when emailed', async () => {
+    (pdfSvc.sendInvoiceEmail as any).mockResolvedValue({ invoice: { id: INV_ID, status: 'sent' }, emailed: true });
+    const res = await app().request(`/${INV_ID}/send`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.emailed).toBe(true);
+    expect(body.data.invoice.id).toBe(INV_ID);
+    expect(pdfSvc.sendInvoiceEmail).toHaveBeenCalledWith(INV_ID, expect.anything());
+  });
+
+  it('POST /:id/send surfaces emailed:false + reason when nothing was emailed', async () => {
+    (pdfSvc.sendInvoiceEmail as any).mockResolvedValue({ invoice: { id: INV_ID, status: 'sent' }, emailed: false, reason: 'no_email_service' });
+    const res = await app().request(`/${INV_ID}/send`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.emailed).toBe(false);
+    expect(body.data.reason).toBe('no_email_service');
+  });
+
+  it('POST /:id/send maps a cross-tenant INVOICE_NOT_FOUND to 404', async () => {
+    (pdfSvc.sendInvoiceEmail as any).mockRejectedValue(new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'));
+    const res = await app().request(`/${INV_ID}/send`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe('INVOICE_NOT_FOUND');
+  });
+
   it('POST /:id/void validates the reason body (empty reason → 400, no service call)', async () => {
     const res = await app().request(`/${INV_ID}/void`, {
       method: 'POST',

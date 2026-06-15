@@ -22,7 +22,7 @@ function requirePartner(actor: InvoiceActor): string {
   return actor.partnerId;
 }
 
-function requireOrgAccess(actor: InvoiceActor, orgId: string): void {
+export function requireOrgAccess(actor: InvoiceActor, orgId: string): void {
   if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(orgId)) {
     throw new InvoiceServiceError('Organization access denied', 403, 'ORG_DENIED');
   }
