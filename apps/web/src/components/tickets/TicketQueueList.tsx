@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { cn } from '@/lib/utils';
 import SlaChip from './SlaChip';
 import { statusConfig, priorityConfig, type TicketSummary } from './ticketConfig';
@@ -24,10 +25,13 @@ function timeAgo(iso: string): string {
   return `${Math.floor(mins / (60 * 24))}d ago`;
 }
 
-export default function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect }: Props) {
+function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect }: Props) {
   const anyBulkSelected = (bulkSelectedIds?.size ?? 0) > 0;
 
-  if (loading) {
+  // Skeleton only on a cold load (no rows yet). A background reconcile after a
+  // mutation keeps `loading` true briefly — blanking the populated list with the
+  // skeleton on every action is the visible "flash" that made the queue feel slow.
+  if (loading && tickets.length === 0) {
     return (
       <div className="divide-y" data-testid="tickets-queue-loading">
         {Array.from({ length: 8 }).map((_, i) => (
@@ -126,3 +130,8 @@ export default function TicketQueueList({ tickets, selectedId, onSelect, loading
     </ul>
   );
 }
+
+// Memoized: the parent (TicketsPage) re-renders on unrelated state (search box,
+// bulk menu, reconcile timers); without this the whole list (up to 100 rows)
+// re-renders on every keystroke and every background refresh.
+export default memo(TicketQueueList);

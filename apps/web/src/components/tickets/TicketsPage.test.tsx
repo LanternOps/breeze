@@ -526,6 +526,29 @@ describe('TicketsPage', () => {
     expect(lastUrl).not.toContain('categoryId=');
   });
 
+  describe('search debounce', () => {
+    it('coalesces rapid keystrokes — the intermediate value never hits the network', async () => {
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      const before = ticketFetchUrls().length;
+
+      // Two changes within one tick (far inside the debounce window).
+      fireEvent.change(screen.getByTestId('tickets-search-input'), { target: { value: 'p' } });
+      fireEvent.change(screen.getByTestId('tickets-search-input'), { target: { value: 'pr' } });
+
+      // The final value fetches once the debounce settles…
+      await waitFor(() => {
+        expect(ticketFetchUrls().some((u) => u.includes('search=pr'))).toBe(true);
+      });
+      // …and the intermediate "p" was coalesced away (would fire per-keystroke without debounce).
+      expect(ticketFetchUrls().filter((u) => /[?&]search=p(&|$)/.test(u))).toHaveLength(0);
+      // Exactly one extra list fetch resulted from the burst (not two).
+      expect(ticketFetchUrls().length - before).toBe(1);
+    });
+  });
+
   describe('org-scope hygiene', () => {
     it('org-scoped session: does not fetch /orgs/organizations and hides the org filter select', async () => {
       mockGetJwtClaims.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });

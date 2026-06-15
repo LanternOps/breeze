@@ -17,7 +17,11 @@ import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 
 interface Props {
   ticketId: string;
-  onChanged?: () => void;       // queue refresh hook
+  onChanged?: () => void;       // queue refresh hook (debounced background reconcile)
+  // Optimistic row patch: lets the host update the matching queue row in place
+  // the instant a mutation lands, so the list reflects the change without waiting
+  // for (or paying for) a full list refetch. `onChanged` still reconciles after.
+  onTicketPatched?: (id: string, patch: Partial<TicketDetail>) => void;
   expanded?: boolean;            // full-page mode
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
   refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
@@ -31,7 +35,7 @@ interface Props {
 const STATUS_OPTIONS: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'];
 const PRIORITY_OPTIONS: TicketPriority[] = ['urgent', 'high', 'normal', 'low'];
 
-export default function TicketWorkbench({ ticketId, onChanged, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp }: Props) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -54,13 +58,20 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   const assigneesProvided = assigneesProp !== undefined;
   const assignees = assigneesProvided ? assigneesProp : fetchedAssignees;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(undefined);
-    setErrorKind(undefined);
+  // `background: true` reconciles after a mutation without the loading flag — no
+  // skeleton, no aria-busy, and a failed reconcile is swallowed so it can't wipe
+  // out an already-applied optimistic update or surface a spurious error pane.
+  const load = useCallback(async (opts?: { background?: boolean }) => {
+    const background = opts?.background ?? false;
+    if (!background) {
+      setLoading(true);
+      setError(undefined);
+      setErrorKind(undefined);
+    }
     try {
       const res = await fetchWithAuth(`/tickets/${ticketId}`);
       if (res.status === 404 || res.status === 403) {
+        if (background) return; // keep the current view; a reconcile 404 isn't a load failure
         setTicket(null);
         setError('Ticket not found. It may have been deleted, or you may not have access to it.');
         setErrorKind('not-found');
@@ -70,10 +81,11 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       const body = await res.json();
       setTicket(body.data);
     } catch (e) {
+      if (background) return; // swallow — the mutation already succeeded
       setError(e instanceof Error ? e.message : 'Ticket failed to load.');
       setErrorKind('load');
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [ticketId]);
 
@@ -145,9 +157,22 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     return () => { unsubTimer(); unsubBilling(); };
   }, [load]);
 
+  // Shared post-mutation path: paint the change locally for instant feedback,
+  // tell the host to patch its queue row, then reconcile in the background. The
+  // controlled selects bind to `ticket.*`, so without the optimistic patch they
+  // snap back to the old value until the reconcile GET lands — the visible lag.
+  const afterMutation = useCallback((optimistic?: Partial<TicketDetail>) => {
+    if (optimistic) {
+      setTicket((t) => (t ? { ...t, ...optimistic } : t));
+      onTicketPatched?.(ticketId, optimistic);
+    }
+    void load({ background: true });
+    onChanged?.();
+  }, [ticketId, load, onChanged, onTicketPatched]);
+
   // Returns true on success, false on a swallowed ActionError — callers with
   // form state (resolve/pending) must only close/clear when the POST landed.
-  const mutate = useCallback(async (path: string, body: unknown, success: string): Promise<boolean> => {
+  const mutate = useCallback(async (path: string, body: unknown, success: string, optimistic?: Partial<TicketDetail>): Promise<boolean> => {
     try {
       await runAction({
         request: () => fetchWithAuth(`/tickets/${ticketId}${path}`, { method: 'POST', body: JSON.stringify(body) }),
@@ -155,14 +180,13 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
         successMessage: success,
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
-      await load();
-      onChanged?.();
+      afterMutation(optimistic);
       return true;
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
       return false; // already toasted by runAction
     }
-  }, [ticketId, load, onChanged]);
+  }, [ticketId, afterMutation]);
 
   // Assemble a draft invoice from this ticket's billable work, then jump to it.
   const createInvoice = useCallback(async () => {
@@ -189,7 +213,8 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     setPendingStatusId(null);
     if (status === 'resolved') { setResolveOpen(true); return; }
     if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); return; }
-    await mutate('/status', { status }, 'Status updated');
+    // Core path clears any custom-status decoration the row may have carried.
+    await mutate('/status', { status }, 'Status updated', { status, statusName: null, statusColor: null });
   }, [mutate]);
 
   // Config path: option values are custom-status row ids; the chosen row's
@@ -205,13 +230,14 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       return;
     }
     setPendingStatusId(null);
-    await mutate('/status', { statusId }, 'Status updated');
+    await mutate('/status', { statusId }, 'Status updated', { status: row.coreStatus, statusName: row.name, statusColor: row.color ?? null });
   }, [config, mutate]);
 
   const submitResolve = useCallback(async () => {
     if (!resolutionNote.trim()) return;
     const target = pendingStatusId ? { statusId: pendingStatusId } : { status: 'resolved' as const };
-    const ok = await mutate('/status', { ...target, resolutionNote: resolutionNote.trim() }, 'Ticket resolved');
+    const note = resolutionNote.trim();
+    const ok = await mutate('/status', { ...target, resolutionNote: note }, 'Ticket resolved', { status: 'resolved', resolutionNote: note });
     if (!ok) return; // keep the form open and the typed note intact on failure
     setResolveOpen(false);
     setResolutionNote('');
@@ -222,7 +248,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     if (!pendingOpen) return;
     const reason = pendingReason.trim();
     const target = pendingStatusId ? { statusId: pendingStatusId } : { status: pendingOpen };
-    const ok = await mutate('/status', { ...target, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated');
+    const ok = await mutate('/status', { ...target, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated', { status: pendingOpen, pendingReason: reason || null });
     if (!ok) return; // keep the form open and the typed reason intact on failure
     setPendingOpen(null);
     setPendingReason('');
@@ -235,9 +261,10 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       errorFallback: 'Reply failed. Retry.',
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     });
-    await load();
-    onChanged?.();
-  }, [ticketId, load, onChanged]);
+    // The new comment can only come from the server; reconcile in the background
+    // so the composer releases the instant the POST lands (the feed fills in next).
+    afterMutation();
+  }, [ticketId, afterMutation]);
 
   // Skeleton only on the first load of a ticket. Refreshes (send, status
   // change, refreshToken bump) keep the tree mounted so composer state —
@@ -335,11 +362,12 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
           <select
             value={ticket.priority}
             onChange={(e) => {
+              const priority = e.target.value as TicketPriority;
               void runAction({
-                request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ priority: e.target.value }) }),
+                request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ priority }) }),
                 errorFallback: 'Priority update failed. Retry.',
                 onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-              }).then(() => { void load(); onChanged?.(); }).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+              }).then(() => afterMutation({ priority })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
             }}
             className={cn('rounded-md border px-2 py-1 text-xs font-medium', priorityConfig[ticket.priority].color)}
             data-testid="ticket-workbench-priority"
@@ -353,7 +381,11 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
               onChange={(e) => {
                 const next = e.target.value || null;
                 if (next === (ticket.assignedTo ?? null)) return; // no-op guard: never write a bogus feed entry
-                void mutate('/assign', { assigneeId: next }, next ? 'Assigned' : 'Unassigned');
+                const picked = next ? assignees?.find((u) => u.id === next) : null;
+                void mutate('/assign', { assigneeId: next }, next ? 'Assigned' : 'Unassigned', {
+                  assignedTo: next,
+                  assigneeName: picked ? (picked.name || picked.email) : null
+                });
               }}
               className="max-w-[180px] rounded-md border px-2 py-1 text-xs"
               data-testid="ticket-workbench-assignee"
@@ -370,7 +402,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
           ) : ticket.assignedTo ? (
             <button
               type="button"
-              onClick={() => void mutate('/assign', { assigneeId: null }, 'Unassigned')}
+              onClick={() => void mutate('/assign', { assigneeId: null }, 'Unassigned', { assignedTo: null, assigneeName: null })}
               className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
               data-testid="ticket-workbench-unassign"
             >
