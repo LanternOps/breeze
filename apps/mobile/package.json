@@ -32,6 +32,7 @@
     "posthog-react-native": "4.45.16",
     "react": "19.2.7",
     "react-native": "0.86.0",
+    "react-native-biometrics": "^3.0.1",
     "react-native-gesture-handler": "~2.31.2",
     "react-native-markdown-display": "^7.0.2",
     "react-native-paper": "^5.15.3",
