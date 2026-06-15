@@ -1,0 +1,12 @@
+node_modules
+dist
+manifest.xml
+# Generated icons are produced by scripts/make-icons.mjs, but the committed
+# Breeze brand source + rasterized icons below are tracked (real, not placeholders).
+public/assets/*
+!public/assets/brand.svg
+!public/assets/icon-16.png
+!public/assets/icon-32.png
+!public/assets/icon-64.png
+!public/assets/icon-80.png
+.env

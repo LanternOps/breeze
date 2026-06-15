@@ -139,6 +139,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
   'custom_field_definitions',
+  // client_ai_prompt_templates: a template is org-scoped (org_id set) OR
+  // partner-wide (partner_id set, org_id NULL). Created dual-axis from day one
+  // in 2026-06-12-b-client-ai-foundation. The org_id column means the generic
+  // org-tenant auto-discovery already picks it up (its policy string contains
+  // breeze_has_org_access), so this entry is the only guard that asserts the
+  // partner-axis (breeze_has_partner_access) branch — the dual-axis blindspot.
+  // A functional breeze_app insert test lives in client-ai-templates-rls.integration.test.ts.
+  'client_ai_prompt_templates',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

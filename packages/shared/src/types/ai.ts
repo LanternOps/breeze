@@ -116,7 +116,19 @@ export type AiStreamEvent =
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
   | { type: 'error'; message: string }
-  | { type: 'done' };
+  // ── AI for Office (client sessions) — published by the client tool bridge/handlers ──
+  | { type: 'tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown>; mutating: boolean }
+  | {
+      type: 'tool_completed';
+      toolUseId: string;
+      toolName: string;
+      status: 'success' | 'error' | 'rejected' | 'timeout';
+      redactions?: Array<{ rule: string; count: number; location: string }>;
+      blockReason?: string;
+    }
+  // `usage` is set by the streaming manager's result case so client surfaces
+  // can render turn cost (turn_complete). Technician UI ignores it.
+  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; costCents: number } };
 
 // ============================================
 // API Request/Response Types

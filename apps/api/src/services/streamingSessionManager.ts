@@ -262,6 +262,16 @@ export interface ActiveSession {
   currentPlanStepIndex: number;
   /** Resolver for the plan approval promise (in-memory, no DB polling) */
   planApprovalResolver: ((approved: boolean) => void) | null;
+  // ── AI for Office (client sessions) — set by routes/clientAi/sessions.ts ──
+  /** Client org policy writeMode, refreshed on every client message; the
+   *  client tool handler rejects mutating tools when 'readonly'. */
+  clientWriteMode?: 'readonly' | 'readwrite';
+  /** client_ai_org_policies.dlp_config (jsonb, unknown — the DLP engine parses
+   *  it itself), refreshed on every client message. */
+  clientDlpConfig?: unknown;
+  /** Extra per-turn usage recorder invoked in the result case alongside
+   *  recordUsageFromSdkResult (client sessions: per-user client_ai_usage buckets). */
+  recordExtraUsage?: (usage: { inputTokens: number; outputTokens: number; costCents: number }) => Promise<void>;
 }
 
 // ============================================
@@ -316,6 +326,7 @@ export class StreamingSessionManager {
       onPostToolUse: ReturnType<typeof createSessionPostToolUse>,
       getSession: () => ActiveSession,
     ) => { server: McpSdkServerConfigWithInstance; name: string },
+    options?: { injectApprovalModeInstructions?: boolean },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
       ip: requestContext ? getTrustedClientIpOrUndefined(requestContext) : undefined,
@@ -410,7 +421,7 @@ export class StreamingSessionManager {
 
     // Inject approval mode instructions into system prompt
     let effectiveSystemPrompt = systemPrompt;
-    if (approvalMode !== 'per_step') {
+    if (options?.injectApprovalModeInstructions !== false && approvalMode !== 'per_step') {
       const modeInstructions: Record<string, string> = {
         auto_approve: '\n\n## Approval Mode\nTier 2 tools execute without individual approval and are audit logged. Tier 3 destructive or remote-control tools still require explicit approval.',
         action_plan: '\n\n## Approval Mode\nWhen executing multiple Tier 2+ operations, call `propose_action_plan` first with all planned steps. Wait for approval. Execute steps in order. Do NOT deviate from the approved plan.',
@@ -769,9 +780,33 @@ export class StreamingSessionManager {
               }
             }
 
+            // Per-user usage hook (AI for Office): runs alongside the org-level
+            // recordUsageFromSdkResult above, never instead of it.
+            const turnCostCents = Math.round(usageData.total_cost_usd * 100 * 100) / 100;
+            if (session.recordExtraUsage) {
+              try {
+                await session.recordExtraUsage({
+                  inputTokens: usageData.usage.input_tokens,
+                  outputTokens: usageData.usage.output_tokens,
+                  costCents: turnCostCents,
+                });
+              } catch (err) {
+                captureException(err);
+                console.error('[StreamingSessionManager] recordExtraUsage failed:', err);
+              }
+            }
+
             // Signal this turn is done, but DON'T close the event bus —
-            // session stays alive for follow-up messages
-            session.eventBus.publish({ type: 'done' });
+            // session stays alive for follow-up messages. Carries usage so
+            // client surfaces can render turn cost (turn_complete).
+            session.eventBus.publish({
+              type: 'done',
+              usage: {
+                inputTokens: usageData.usage.input_tokens,
+                outputTokens: usageData.usage.output_tokens,
+                costCents: turnCostCents,
+              },
+            });
             session.state = 'idle';
             break;
           }

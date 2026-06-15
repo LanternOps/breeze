@@ -55,6 +55,10 @@ const TARGET_GLOBS = [
   'src/components/time/TimesheetPage.tsx',
   'src/components/tickets/TicketTimeBilling.tsx',
   'src/components/tickets/TicketPartsCard.tsx',
+  'src/components/clientAi/OrgsTab.tsx',
+  'src/components/clientAi/PolicyEditor.tsx',
+  'src/components/clientAi/SessionsTab.tsx',
+  'src/components/clientAi/TemplatesTab.tsx',
   'src/components/settings/CatalogItemsTab.tsx',
   'src/components/billing/InvoicesPage.tsx',
   'src/components/billing/InvoiceEditor.tsx',
@@ -252,7 +256,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(33);
+    expect(absoluteFiles.length).toBe(37);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
