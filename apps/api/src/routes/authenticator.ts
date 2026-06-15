@@ -3,8 +3,9 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { authenticatorDevices } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authenticatorDevices, authenticatorPolicies } from '../db/schema';
+import { authMiddleware, requirePermission } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 import {
   generateApproverRegistrationOptions,
   verifyApproverRegistration,
@@ -14,8 +15,10 @@ import {
   issueMobileRegistrationNonce,
   verifyMobileSignature,
 } from '../services/mobileHwKey';
+import { loadPartnerPolicy, validateRaiseOnly } from '../services/authenticatorPolicy';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { requireCurrentPasswordStepUp, writeAuthAudit } from './auth/helpers';
+import { authenticatorPolicySchema, type AssuranceFloorOverrides } from '@breeze/shared';
 
 // Attestation payload is a large nested object validated structurally by
 // @simplewebauthn at the service layer; here we only require a string `id` so a
@@ -329,4 +332,86 @@ approverDevicesRoutes.patch(
 
     return c.json({ success: true, device: toPublicDevice(updated ?? device) });
   }
+);
+
+// ============================================================
+// Partner approval-security policy (Phase 4) — read/write the per-MSP
+// enforcement floor. Partner-axis; gated by USERS_WRITE (managing the
+// technicians' approval-security posture). Raise-only is re-validated here.
+// ============================================================
+
+const DEFAULT_POLICY = { floorOverrides: {}, requireEnrollment: false, enforceFrom: null as string | null };
+
+authenticatorRoutes.get(
+  '/policy',
+  authMiddleware,
+  requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const policy = await loadPartnerPolicy(auth.partnerId ?? null);
+    if (!policy) return c.json({ policy: DEFAULT_POLICY });
+    return c.json({
+      policy: {
+        floorOverrides: policy.floorOverrides ?? {},
+        requireEnrollment: policy.requireEnrollment,
+        enforceFrom: policy.enforceFrom ? policy.enforceFrom.toISOString() : null,
+      },
+    });
+  },
+);
+
+authenticatorRoutes.put(
+  '/policy',
+  authMiddleware,
+  requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  zValidator('json', authenticatorPolicySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!auth.partnerId) {
+      return c.json({ error: 'Approval-security policy is partner-scoped' }, 400);
+    }
+    const input = c.req.valid('json');
+    // zod constrains each level to an int 1-4, so the runtime shape is a valid
+    // AssuranceFloorOverrides — narrow it at this boundary.
+    const floorOverrides = input.floorOverrides as AssuranceFloorOverrides;
+
+    // Raise-only: a partner may only strengthen the Breeze floor, never weaken it.
+    try {
+      validateRaiseOnly(floorOverrides);
+    } catch (err) {
+      return c.json({ error: 'invalid_policy', detail: err instanceof Error ? err.message : 'raise-only violation' }, 400);
+    }
+
+    const values = {
+      partnerId: auth.partnerId,
+      floorOverrides,
+      requireEnrollment: input.requireEnrollment,
+      enforceFrom: input.enforceFrom ? new Date(input.enforceFrom) : null,
+      updatedByUserId: auth.user.id,
+      updatedAt: new Date(),
+    };
+    await db
+      .insert(authenticatorPolicies)
+      .values(values)
+      .onConflictDoUpdate({
+        target: authenticatorPolicies.partnerId,
+        set: {
+          floorOverrides: values.floorOverrides,
+          requireEnrollment: values.requireEnrollment,
+          enforceFrom: values.enforceFrom,
+          updatedByUserId: values.updatedByUserId,
+          updatedAt: values.updatedAt,
+        },
+      });
+
+    writeAuthAudit(c, {
+      action: 'auth.authenticator.policy.update',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { partnerId: auth.partnerId, requireEnrollment: input.requireEnrollment, floorOverrides: input.floorOverrides },
+    });
+
+    return c.json({ success: true });
+  },
 );

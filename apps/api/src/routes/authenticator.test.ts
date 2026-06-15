@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { authenticatorRoutes, approverDevicesRoutes } from './authenticator';
+import { loadPartnerPolicy } from '../services/authenticatorPolicy';
+
+const mockLoadPolicy = loadPartnerPolicy as unknown as ReturnType<typeof vi.fn>;
 
 const {
   dbState,
@@ -54,6 +57,7 @@ const {
     },
     authState: {
       requireAuthorizationHeader: true,
+      denyPermission: false,
     },
   };
 });
@@ -82,6 +86,7 @@ vi.mock('../db', () => ({
         dbState.insertValues.push(values);
         return {
           returning: vi.fn(() => Promise.resolve(dbState.insertReturning)),
+          onConflictDoUpdate: vi.fn(() => Promise.resolve(undefined)),
         };
       }),
     })),
@@ -118,6 +123,9 @@ vi.mock('../db/schema', () => ({
     disabledAt: 'authenticatorDevices.disabledAt',
     disabledReason: 'authenticatorDevices.disabledReason',
   },
+  authenticatorPolicies: {
+    partnerId: 'authenticatorPolicies.partnerId',
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -133,7 +141,23 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
+  // Permission gate — allow by default; toggle authState.denyPermission to 403.
+  requirePermission: vi.fn(() => (c: any, next: any) =>
+    authState.denyPermission ? c.json({ error: 'Forbidden' }, 403) : next(),
+  ),
 }));
+
+vi.mock('../services/permissions', () => ({
+  PERMISSIONS: {
+    USERS_READ: { resource: 'users', action: 'read' },
+    USERS_WRITE: { resource: 'users', action: 'write' },
+  },
+}));
+
+vi.mock('../services/authenticatorPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/authenticatorPolicy')>();
+  return { ...actual, loadPartnerPolicy: vi.fn().mockResolvedValue(null) }; // validateRaiseOnly stays real
+});
 
 const deviceRow = {
   id: 'device-1',
@@ -164,6 +188,7 @@ describe('approver device routes', () => {
     dbState.insertReturning = [deviceRow];
     dbState.updateReturningQueue = [];
     authState.requireAuthorizationHeader = true;
+    authState.denyPermission = false;
     helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
     helperMocks.writeAuthAudit.mockReturnValue(undefined);
     approverMocks.generateApproverRegistrationOptions.mockResolvedValue({
@@ -450,5 +475,80 @@ describe('approver device routes', () => {
     expect(res.status).toBe(200);
     const inserted = dbState.insertValues[0];
     expect(inserted).toMatchObject({ kind: 'mobile_hw_key', mobileDeviceId: null });
+  });
+});
+
+describe('approval-security policy routes (Phase 4)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectQueue = [];
+    dbState.insertValues = [];
+    authState.requireAuthorizationHeader = false;
+    authState.denyPermission = false;
+    mockLoadPolicy.mockResolvedValue(null);
+    helperMocks.writeAuthAudit.mockReturnValue(undefined);
+    app = new Hono();
+    app.route('/authenticator', authenticatorRoutes);
+  });
+
+  it('GET /policy returns the Breeze defaults when no policy is set', async () => {
+    const res = await app.request('/authenticator/policy');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      policy: { floorOverrides: {}, requireEnrollment: false, enforceFrom: null },
+    });
+  });
+
+  it('GET /policy returns the stored policy', async () => {
+    mockLoadPolicy.mockResolvedValue({
+      floorOverrides: { high: 4 },
+      requireEnrollment: true,
+      enforceFrom: new Date('2026-07-01T00:00:00.000Z'),
+    });
+    const res = await app.request('/authenticator/policy');
+    expect(await res.json()).toEqual({
+      policy: { floorOverrides: { high: 4 }, requireEnrollment: true, enforceFrom: '2026-07-01T00:00:00.000Z' },
+    });
+  });
+
+  it('PUT /policy upserts a raise-only policy and audits it', async () => {
+    const res = await app.request('/authenticator/policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ floorOverrides: { medium: 3 }, requireEnrollment: true, enforceFrom: null }),
+    });
+    expect(res.status).toBe(200);
+    expect(dbState.insertValues[0]).toMatchObject({
+      partnerId: 'partner-123',
+      requireEnrollment: true,
+      floorOverrides: { medium: 3 },
+    });
+    expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.authenticator.policy.update' }),
+    );
+  });
+
+  it('PUT /policy rejects a weakening (raise-only violation) with 400', async () => {
+    const res = await app.request('/authenticator/policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ floorOverrides: { critical: 2 }, requireEnrollment: true, enforceFrom: null }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_policy');
+    expect(dbState.insertValues).toHaveLength(0);
+  });
+
+  it('PUT /policy is gated by the write permission (403 when denied)', async () => {
+    authState.denyPermission = true;
+    const res = await app.request('/authenticator/policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ floorOverrides: {}, requireEnrollment: true, enforceFrom: null }),
+    });
+    expect(res.status).toBe(403);
   });
 });

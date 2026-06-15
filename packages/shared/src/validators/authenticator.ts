@@ -64,3 +64,20 @@ export type ApprovalProof = z.infer<typeof approvalProofSchema>;
 export const approverPinSchema = z.string().regex(/^\d{4,6}$/);
 
 export type ApproverPin = z.infer<typeof approverPinSchema>;
+
+/**
+ * Partner (MSP) approval-security policy (Phase 4). `floorOverrides` may only
+ * RAISE a tier's required assurance level above the Breeze default — the
+ * raise-only invariant is re-validated server-side (`validateRaiseOnly`); this
+ * schema only constrains the wire shape (each level 1-4). `enforceFrom` is the
+ * grace-window cutoff (null = enforce immediately when `requireEnrollment`).
+ */
+export const authenticatorPolicySchema = z.object({
+  floorOverrides: z
+    .record(z.enum(['low', 'medium', 'high', 'critical']), z.number().int().min(1).max(4))
+    .default({}),
+  requireEnrollment: z.boolean(),
+  enforceFrom: z.string().datetime().nullable(),
+});
+
+export type AuthenticatorPolicyInput = z.infer<typeof authenticatorPolicySchema>;

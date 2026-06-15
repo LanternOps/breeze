@@ -3,6 +3,7 @@ import {
   assertionProofSchema,
   mobileHwKeyProofSchema,
   approvalProofSchema,
+  authenticatorPolicySchema,
 } from './authenticator';
 
 describe('assertionProofSchema', () => {
@@ -81,5 +82,25 @@ describe('approvalProofSchema (discriminated union)', () => {
   });
   it('rejects an unknown discriminant', () => {
     expect(approvalProofSchema.safeParse({ type: 'totp', code: '123456' }).success).toBe(false);
+  });
+});
+
+describe('authenticatorPolicySchema (Phase 4)', () => {
+  it('accepts a well-formed policy and defaults floorOverrides to {}', () => {
+    const r = authenticatorPolicySchema.safeParse({ requireEnrollment: true, enforceFrom: null });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.floorOverrides).toEqual({});
+  });
+  it('accepts per-tier levels 1-4 and an ISO enforceFrom', () => {
+    const r = authenticatorPolicySchema.safeParse({
+      floorOverrides: { low: 1, medium: 2, high: 3, critical: 4 },
+      requireEnrollment: false,
+      enforceFrom: '2026-07-01T00:00:00.000Z',
+    });
+    expect(r.success).toBe(true);
+  });
+  it('rejects an out-of-range level and an unknown tier (wire-shape; raise-only is server-side)', () => {
+    expect(authenticatorPolicySchema.safeParse({ floorOverrides: { high: 5 }, requireEnrollment: true, enforceFrom: null }).success).toBe(false);
+    expect(authenticatorPolicySchema.safeParse({ floorOverrides: { urgent: 3 }, requireEnrollment: true, enforceFrom: null }).success).toBe(false);
   });
 });
