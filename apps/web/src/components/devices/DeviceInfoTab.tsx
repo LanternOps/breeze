@@ -37,6 +37,7 @@ type DeviceInfo = {
   osBuild?: string | null;
   architecture?: string | null;
   agentVersion?: string | null;
+  watchdogVersion?: string | null;
   status?: string | null;
   lastSeenAt?: string | null;
   enrolledAt?: string | null;
@@ -96,6 +97,11 @@ const osTypeLabels: Record<string, string> = {
 function formatOsType(raw: string | null | undefined): string {
   if (!raw) return '—';
   return osTypeLabels[raw.toLowerCase()] ?? raw;
+}
+
+function formatWatchdogVersion(raw: string | null | undefined): string {
+  const version = raw?.trim();
+  return version ? version : 'Not Installed';
 }
 
 function formatDesktopAccessMode(mode: DesktopAccessState['mode'] | undefined): string {
@@ -605,6 +611,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
 
       <Section title="Agent" icon={<Shield className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="Agent Version" value={info?.agentVersion ?? '—'} />
+        <InfoRow label="Watchdog Version" value={formatWatchdogVersion(info?.watchdogVersion)} />
         <div className="flex justify-between py-2">
           <dt className="text-sm text-muted-foreground">Status</dt>
           <dd>

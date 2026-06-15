@@ -386,6 +386,25 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
       JSON.stringify({ v: 1, columns: ['hostname', ...extra].map(id => ({ id, visible: true })) }),
     );
 
+  it('renders watchdog version as an opt-in column and shows N/A for missing reports', () => {
+    seedColumns('watchdogVersion');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000001', hostname: 'host-watchdog', watchdogVersion: '0.70.1' },
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000002', hostname: 'host-no-watchdog', watchdogVersion: null },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    expect(screen.getByText('0.70.1')).toBeInTheDocument();
+    expect(screen.getByText('N/A')).toBeInTheDocument();
+
+    clickHeader('Sort by watchdog version');
+    expect(rowOrder(container)).toEqual(['host-watchdog', 'host-no-watchdog']);
+
+    clickHeader('Sort by watchdog version');
+    expect(rowOrder(container)).toEqual(['host-watchdog', 'host-no-watchdog']);
+  });
+
   it('sorts tags by the joined displayed list with untagged rows last in both directions', () => {
     seedColumns('tags');
     const devices: Device[] = [

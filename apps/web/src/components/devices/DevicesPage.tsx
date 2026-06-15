@@ -250,6 +250,7 @@ export default function DevicesPage() {
           siteId: (d.siteId ?? '') as string,
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
+          watchdogVersion: (d.watchdogVersion ?? null) as string | null,
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
           deviceRoleSource: d.deviceRoleSource as string | undefined,
@@ -291,6 +292,7 @@ export default function DevicesPage() {
         siteId: (d.siteId ?? '') as string,
         siteName: '',
         agentVersion: '',
+        watchdogVersion: null,
         tags: (d.tags ?? []) as string[],
         manufacturer: (d.manufacturer ?? null) as string | null,
         model: (d.model ?? null) as string | null,
@@ -400,6 +402,14 @@ export default function DevicesPage() {
         setDevices(prev => prev.map(d =>
           d.id === deviceId
             ? { ...d, agentVersion: (payload.agentVersion as string) ?? d.agentVersion }
+            : d
+        ));
+      }
+      if (fields?.includes('watchdogVersion')) {
+        const watchdogVersion = typeof payload.watchdogVersion === 'string' ? payload.watchdogVersion : null;
+        setDevices(prev => prev.map(d =>
+          d.id === deviceId
+            ? { ...d, watchdogVersion }
             : d
         ));
       }

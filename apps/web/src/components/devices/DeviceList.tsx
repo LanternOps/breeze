@@ -67,6 +67,7 @@ export type Device = {
   siteId: string;
   siteName: string;
   agentVersion: string;
+  watchdogVersion?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -255,6 +256,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   diskTotal: d => (typeof d.hardware?.diskTotalGb === 'number' ? d.hardware.diskTotalGb : null),
   lastSeen: d => new Date(d.lastSeen).getTime() || null,
   agentVersion: d => d.agentVersion || null,
+  watchdogVersion: d => d.watchdogVersion?.trim() || null,
   tags: d => (d.tags && d.tags.length > 0 ? d.tags.join(', ') : null),
   lastUser: d => d.lastUser || null,
   uptime: d => (d.status === 'online' && d.uptimeSeconds != null ? d.uptimeSeconds : null),
@@ -596,6 +598,10 @@ export default function DeviceList({
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
   };
+  const fmtWatchdogVersion = (raw: string | null | undefined) => {
+    const version = raw?.trim();
+    return version ? version : 'N/A';
+  };
 
   // columnDefs is the single source of truth for each toggleable column's
   // header and per-row cell. The thead and tbody iterate `renderedColumns`
@@ -849,6 +855,14 @@ export default function DeviceList({
       cell: (device) => (
         <td key="agentVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {device.agentVersion || dash}
+        </td>
+      ),
+    },
+    watchdogVersion: {
+      header: () => sortHeader('watchdogVersion', 'Watchdog Version', 'Sort by watchdog version'),
+      cell: (device) => (
+        <td key="watchdogVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {agentCell(device, fmtWatchdogVersion(device.watchdogVersion))}
         </td>
       ),
     },

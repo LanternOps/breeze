@@ -251,6 +251,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           osVersion: { type: 'string' },
           architecture: { type: 'string' },
           agentVersion: { type: 'string' },
+          watchdogVersion: { type: 'string', nullable: true },
           status: { type: 'string', enum: ['online', 'offline', 'maintenance', 'decommissioned'] },
           lastSeenAt: { type: 'string', format: 'date-time', nullable: true },
           enrolledAt: { type: 'string', format: 'date-time' },
