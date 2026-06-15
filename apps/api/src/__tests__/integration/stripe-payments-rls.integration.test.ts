@@ -50,6 +50,7 @@ import {
   db,
   withDbAccessContext,
   withSystemDbAccessContext,
+  runOutsideDbContext,
   type DbAccessContext,
 } from '../../db';
 import {
@@ -57,6 +58,7 @@ import {
   invoiceStripePayments,
   invoices,
 } from '../../db/schema';
+import { getConnection } from '../../services/stripeConnectService';
 import { createPartner, createOrganization } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -147,6 +149,30 @@ describe('stripe_connect_accounts RLS (breeze_app)', () => {
         .where(eq(stripeConnectAccounts.id, acctA.id))
     );
     expect(rows).toHaveLength(1);
+  });
+
+  // The portal pay route (routes/portal/invoices.ts) runs under the portal user's
+  // ORGANIZATION scope but must read the *partner's* connected account. A bare
+  // org-scope getConnection() is silently RLS-filtered to null with no error
+  // (the #1375 class) — which would make the pay route always 409 even for a
+  // fully connected partner. These two cases pin the bug + its fix.
+  runDb('getConnection under ORG scope is silently filtered to null (the pay-route trap)', async () => {
+    const { partnerA, orgA } = await seed();
+    // Sanity: a connected account genuinely exists for partner A (seeded above).
+    const conn = await withDbAccessContext(orgCtx(orgA.id), () => getConnection(partnerA.id));
+    expect(conn).toBeNull();
+  });
+
+  runDb('getConnection in a system sub-context (the pay-route fix) reads the connected account', async () => {
+    const { partnerA, orgA } = await seed();
+    // Mirror the pay route exactly: from inside the portal org transaction, escape
+    // to a system sub-context to read the partner-axis row.
+    const conn = await withDbAccessContext(orgCtx(orgA.id), () =>
+      runOutsideDbContext(() => withSystemDbAccessContext(() => getConnection(partnerA.id)))
+    );
+    expect(conn).not.toBeNull();
+    expect(conn?.partnerId).toBe(partnerA.id);
+    expect(conn?.status).toBe('connected');
   });
 });
 
