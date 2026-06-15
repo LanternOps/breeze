@@ -9,6 +9,8 @@ import { db, withSystemDbAccessContext } from '../db';
 import { partners, organizations, invoices, invoiceLines, invoiceDocuments } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { renderInvoicePdf, getInvoicePdf } from './invoicePdf';
+import { getCustomerInvoice, markViewed } from './invoiceService';
+import { InvoiceServiceError } from './invoiceTypes';
 
 const RUN = !!process.env.DATABASE_URL;
 
@@ -89,5 +91,43 @@ describe.runIf(RUN)('renderInvoicePdf / getInvoicePdf round-trip', () => {
     const f = await seedIssuedInvoice();
     const stored = await withSystemDbAccessContext(() => getInvoicePdf(f.invoiceId));
     expect(stored).toBeNull();
+  });
+});
+
+describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
+  it('returns the invoice for its own org and hides non-visible lines', async () => {
+    const f = await seedIssuedInvoice();
+    const { invoice, lines } = await withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, f.orgId));
+    expect(invoice.id).toBe(f.invoiceId);
+    // The seed has 3 lines, one of which is customerVisible:false (hidden bundle child).
+    expect(lines.every((l) => l.customerVisible)).toBe(true);
+    expect(lines).toHaveLength(2);
+  });
+
+  it('throws 404 (not 403) when the requesting org does not own the invoice', async () => {
+    const f = await seedIssuedInvoice();
+    const otherOrg = '00000000-0000-0000-0000-0000000000aa';
+    await expect(
+      withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, otherOrg))
+    ).rejects.toMatchObject({ status: 404 } satisfies Partial<InvoiceServiceError>);
+  });
+
+  it('markViewed stamps firstViewedAt/viewedAt for the owning org', async () => {
+    const f = await seedIssuedInvoice();
+    await withSystemDbAccessContext(() => markViewed(f.invoiceId, f.orgId));
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({ firstViewedAt: invoices.firstViewedAt, viewedAt: invoices.viewedAt })
+        .from(invoices).where(eq(invoices.id, f.invoiceId)).limit(1)
+    );
+    expect(row!.firstViewedAt).not.toBeNull();
+    expect(row!.viewedAt).not.toBeNull();
+  });
+
+  it('markViewed rejects a cross-org request with 404', async () => {
+    const f = await seedIssuedInvoice();
+    const otherOrg = '00000000-0000-0000-0000-0000000000bb';
+    await expect(
+      withSystemDbAccessContext(() => markViewed(f.invoiceId, otherOrg))
+    ).rejects.toMatchObject({ status: 404 } satisfies Partial<InvoiceServiceError>);
   });
 });

@@ -487,9 +487,13 @@ export async function markViewed(invoiceId: string, orgId?: string): Promise<voi
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const now = new Date();
   // SQL CASE keeps first_viewed_at write-once so concurrent calls can't both set it.
+  // Bind `now` as an ISO string cast to `timestamp` — a raw JS Date in the
+  // fragment is inferred as timestamptz (OID 1184), which mismatches this
+  // column's `timestamp` (OID 1114) and makes the CASE bind fail at the driver.
+  const nowParam = sql`${now.toISOString()}::timestamp`;
   await db.update(invoices).set({
     viewedAt: now,
-    firstViewedAt: sql`CASE WHEN ${invoices.firstViewedAt} IS NULL THEN ${now} ELSE ${invoices.firstViewedAt} END`
+    firstViewedAt: sql`CASE WHEN ${invoices.firstViewedAt} IS NULL THEN ${nowParam} ELSE ${invoices.firstViewedAt} END`
   }).where(eq(invoices.id, invoiceId));
   if (inv.firstViewedAt === null) await emitInvoiceEvent({ type: 'invoice.viewed', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId });
 }
