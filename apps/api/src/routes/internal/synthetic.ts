@@ -73,26 +73,16 @@ const bodySchema = z.object({ partnerId: z.string().min(1) });
  * The canary latch. Returns true only when the partner's admin (partner_users)
  * email matches the synthetic-canary pattern. Anything else — a real partner,
  * a non-existent id, or a partner with no admin user — is NOT a canary.
+ * Uses a type-safe Drizzle .innerJoin() chain so the SQL builder validates the
+ * security-critical query at build time.
  */
 async function isCanary(partnerId: string): Promise<boolean> {
-  // The partner→admin join is expressed as a correlated subquery in the
-  // projection (rather than .innerJoin()) so the whole read stays a single
-  // select().from().where().limit() chain. Any admin user on the partner whose
-  // email matches the canary pattern makes the partner a canary.
   const rows = await withSystemDbAccessContext(() =>
     db
-      .select({
-        id: partners.id,
-        adminEmail: sql<string | null>`(
-          SELECT ${users.email}
-          FROM ${users}
-          JOIN ${partnerUsers} ON ${partnerUsers.userId} = ${users.id}
-          WHERE ${partnerUsers.partnerId} = ${partners.id}
-            AND ${users.email} ILIKE 'signup-canary+%@2breeze.app'
-          LIMIT 1
-        )`,
-      })
+      .select({ id: partners.id, adminEmail: users.email })
       .from(partners)
+      .innerJoin(partnerUsers, eq(partnerUsers.partnerId, partners.id))
+      .innerJoin(users, eq(users.id, partnerUsers.userId))
       .where(eq(partners.id, partnerId))
       .limit(1),
   );
@@ -102,7 +92,7 @@ async function isCanary(partnerId: string): Promise<boolean> {
 
 internalSyntheticRoutes.post('/simulate-payment', async (c) => {
   const parsed = bodySchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: 'partnerId (uuid) required' }, 400);
+  if (!parsed.success) return c.json({ error: 'partnerId required' }, 400);
   const { partnerId } = parsed.data;
 
   if (!(await isCanary(partnerId))) return c.json({ error: 'Not a synthetic canary partner' }, 422);
@@ -143,7 +133,7 @@ internalSyntheticRoutes.post('/simulate-payment', async (c) => {
 
 internalSyntheticRoutes.post('/purge-partner', async (c) => {
   const parsed = bodySchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: 'partnerId (uuid) required' }, 400);
+  if (!parsed.success) return c.json({ error: 'partnerId required' }, 400);
   const { partnerId } = parsed.data;
 
   if (!(await isCanary(partnerId))) return c.json({ error: 'Not a synthetic canary partner' }, 422);

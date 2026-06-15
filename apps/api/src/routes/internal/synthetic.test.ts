@@ -6,7 +6,15 @@ const cascadeDeletePartnerMock = vi.fn();
 
 vi.mock('../../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: () => partnerLookupMock() }) }) }),
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            where: () => ({ limit: () => partnerLookupMock() }),
+          }),
+        }),
+      }),
+    }),
     update: () => ({ set: () => ({ where: () => setPaymentMock() }) }),
   },
   withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
