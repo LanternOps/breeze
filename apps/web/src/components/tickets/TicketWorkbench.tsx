@@ -387,7 +387,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                   assigneeName: picked ? (picked.name || picked.email) : null
                 });
               }}
-              className="max-w-[180px] rounded-md border px-2 py-1 text-xs"
+              className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
               data-testid="ticket-workbench-assignee"
               aria-label="Assignee"
             >
