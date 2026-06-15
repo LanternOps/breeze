@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // Office hosts refuse to load task panes over plain http (except localhost in
-// some hosts, but Excel on the web always requires https). office-addin-dev-certs
+// some hosts, but Office on the web always requires https). office-addin-dev-certs
 // installs a locally-trusted CA + localhost cert (~/.office-addin-dev-certs) and
 // getHttpsServerOptions() returns { ca, key, cert } for Vite. Set
 // ADDIN_NO_HTTPS=1 to opt out (plain-browser debugging only).
