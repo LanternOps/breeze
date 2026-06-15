@@ -7,6 +7,11 @@ import { describe, it, expect, vi } from 'vitest';
 // socket and hang issue/payment/void on the unauthenticated test Redis.
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 
+// issueInvoice enqueues an async PDF render. Same rationale as the events mock:
+// stub it so the issue path doesn't open a BullMQ socket to the test Redis (which
+// can hang under NOAUTH). The render itself is covered by invoicePdf.integration.test.ts.
+vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
+
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../db';
 import { partners, organizations, users, timeEntries, invoices, invoiceLines } from '../db/schema';
 import { eq } from 'drizzle-orm';

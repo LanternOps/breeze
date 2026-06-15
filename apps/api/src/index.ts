@@ -135,6 +135,7 @@ import { API_VERSION } from './version';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
+import { initializeInvoiceWorkers, shutdownInvoiceWorkers } from './jobs/invoiceWorker';
 import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offlineDetector';
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
@@ -1091,6 +1092,7 @@ async function initializeWorkers(): Promise<void> {
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
+    ['invoiceWorker', initializeInvoiceWorkers],
   ];
 
   await Promise.allSettled(
@@ -1249,6 +1251,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,
+    shutdownInvoiceWorkers,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

@@ -11,6 +11,7 @@ import { resolvePrice, computeBundleEconomics } from './catalogService';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
@@ -346,7 +347,16 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   }));
 
   await emitInvoiceEvent({ type: 'invoice.issued', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
-  // PDF render enqueued in Phase 5 (renderInvoicePdf job) — hook added there.
+  // Async PDF render (worker stores invoice_documents). enqueueInvoicePdfRender is
+  // itself Redis-outage-safe (try/catch + Sentry), but wrap defensively too so no
+  // unexpected throw — e.g. a transient import/connection error — can fail an
+  // otherwise-committed issuance. The email/send path renders synchronously and
+  // does NOT depend on this job, so a missed enqueue only delays the cached PDF.
+  try {
+    await enqueueInvoicePdfRender(invoiceId);
+  } catch (err) {
+    console.error('[invoiceService] enqueueInvoicePdfRender failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+  }
   return getOwnedInvoiceOr404(invoiceId);
 }
 
