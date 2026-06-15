@@ -1,7 +1,10 @@
 import { useState } from 'react';
-import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
-import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl } from '@/lib/api';
+import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
+import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
+
+// Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
+const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially_paid', 'overdue']);
 
 interface InvoiceDetailViewProps {
   detail: InvoiceDetail | null;
@@ -51,6 +54,8 @@ function shortDate(value: string | null): string {
 export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
 
   if (error || !detail) {
     return (
@@ -70,6 +75,20 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
 
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
+  const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0;
+
+  const payInvoice = async () => {
+    if (paying) return;
+    setPaying(true);
+    setPayError(null);
+    const result = await portalApi.payInvoice(invoice.id);
+    if (result.data?.url) {
+      window.location.href = result.data.url;
+      return; // keep the button disabled while the browser navigates to Checkout
+    }
+    setPayError(result.error || 'Could not start the payment. Please try again.');
+    setPaying(false);
+  };
 
   const downloadPdf = async () => {
     if (downloading) return;
@@ -119,17 +138,39 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
             <span>Due {shortDate(invoice.dueDate)}</span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void downloadPdf()}
-          disabled={downloading}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          <Download className="h-4 w-4" />
-          {downloading ? 'Preparing…' : 'Download PDF'}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {canPay && (
+            <button
+              type="button"
+              onClick={() => void payInvoice()}
+              disabled={paying}
+              data-testid="invoice-pay-button"
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              <CreditCard className="h-4 w-4" />
+              {paying ? 'Redirecting…' : 'Pay now'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void downloadPdf()}
+            disabled={downloading}
+            className={cn(
+              'inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50',
+              canPay
+                ? 'border text-foreground hover:bg-muted'
+                : 'bg-primary text-primary-foreground'
+            )}
+          >
+            <Download className="h-4 w-4" />
+            {downloading ? 'Preparing…' : 'Download PDF'}
+          </button>
+        </div>
       </div>
 
+      {payError && (
+        <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive" data-testid="invoice-pay-error">{payError}</div>
+      )}
       {downloadError && (
         <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{downloadError}</div>
       )}

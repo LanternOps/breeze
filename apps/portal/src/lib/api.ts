@@ -470,6 +470,13 @@ export const portalApi = {
     return apiGet<InvoiceDetail>(`/portal/invoices/${id}`, config);
   },
 
+  payInvoice: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ url: string }>> => {
+    return apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, undefined, config);
+  },
+
   getProfile: async (config: ApiRequestConfig = {}): Promise<ApiResponse<Profile>> => {
     const response = await apiGet<{ user: Profile }>('/portal/profile', config);
     if (!response.data) {
