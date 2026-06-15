@@ -34,6 +34,7 @@ import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { stripeConnectRoutes } from './routes/stripeConnect';
+import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { timeEntriesRoutes } from './routes/timeEntries';
@@ -773,6 +774,10 @@ api.route('/webhooks', webhookRoutes);
 // Inbound email webhook — no session auth, HMAC-gated. partnerGuard passes
 // through for requests with no Authorization header (calls next() immediately).
 api.route('/webhooks/tickets', emailWebhookRoutes);
+// Stripe Connect webhook — no session auth, signature-verified. partnerGuard
+// passes through (no Authorization header); the route reads the raw body itself
+// via c.req.text(), so no body-consuming middleware sits in front of it.
+api.route('/webhooks', stripeWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
