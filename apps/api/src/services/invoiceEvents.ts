@@ -18,7 +18,7 @@ export type InvoiceEvent =
       actorUserId?: string;
     }
   | {
-      type: 'payment.recorded' | 'payment.voided';
+      type: 'payment.recorded' | 'payment.voided' | 'payment.failed';
       invoiceId: string;
       orgId: string;
       partnerId: string;
