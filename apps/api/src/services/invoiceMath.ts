@@ -1,12 +1,13 @@
 import type { InvoiceStatus } from './invoiceTypes';
 
-// Local cents helpers (same contract as catalogPricing.ts; kept local to avoid
-// cross-service coupling). Round-half-up at the cent boundary.
-function toCents(v: string | number | null | undefined): number {
+// Cents helpers (same contract as catalogPricing.ts). Exported so the money
+// seams in invoiceService.ts route through the same integer-cents discipline
+// rather than re-introducing float arithmetic. Round-half-up at the cent boundary.
+export function toCents(v: string | number | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
   return Math.round(Number(v) * 100);
 }
-function fromCents(cents: number): string {
+export function fromCents(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 // Round-half-up of a fractional cent amount.

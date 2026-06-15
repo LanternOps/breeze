@@ -2,6 +2,11 @@ import { Queue } from 'bullmq';
 import { getBullMQConnection } from './redis';
 import { captureException } from './sentry';
 
+// `invoice-events` is an intentionally-unconsumed RESERVED bus (same pattern as
+// `catalog-events` / `time-entry-events`): emitInvoiceEvent publishes lifecycle
+// events but nothing reads them yet. Future webhook / notification delivery wires
+// a Worker against this queue. Until then, jobs simply expire per the
+// removeOnComplete/removeOnFail retention below — there is no delivery today.
 export const INVOICE_EVENTS_QUEUE = 'invoice-events';
 
 export type InvoiceEvent =

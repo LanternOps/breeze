@@ -4,7 +4,7 @@ import {
   invoices, invoiceLines, invoicePayments, organizations, partners,
   catalogBundleComponents, catalogItems, timeEntries, ticketParts, tickets
 } from '../db/schema';
-import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus } from './invoiceMath';
+import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
 import { resolvePrice, computeBundleEconomics } from './catalogService';
 // formatInvoiceNumber is shared with the standalone allocator; issueInvoice
 // inlines the counter upsert itself (rather than calling allocateInvoiceCounter)
@@ -69,7 +69,7 @@ export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?
   }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
   const taxRate = taxRateOverride !== undefined ? taxRateOverride : await effectiveRateForOrg(inv.orgId, inv.partnerId);
   const totals = computeInvoiceTotals(lines, taxRate);
-  const balance = (Number(totals.total) - Number(inv.amountPaid)).toFixed(2);
+  const balance = fromCents(toCents(totals.total) - toCents(inv.amountPaid));
   await db.update(invoices).set({
     subtotal: totals.subtotal, taxRate, taxTotal: totals.taxTotal, total: totals.total, balance, updatedAt: new Date()
   }).where(eq(invoices.id, invoiceId));
@@ -430,8 +430,8 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
 export async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
   const inv = await getOwnedInvoiceOr404(invoiceId);
   const paidRows = await db.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
-  const amountPaid = paidRows.reduce((s, r) => s + Number(r.amount), 0).toFixed(2);
-  const balance = (Number(inv.total) - Number(amountPaid)).toFixed(2);
+  const amountPaid = fromCents(paidRows.reduce((s, r) => s + toCents(r.amount), 0));
+  const balance = fromCents(toCents(inv.total) - toCents(amountPaid));
   const issued = inv.invoiceNumber !== null;
   const status = deriveInvoiceStatus({ voided: inv.voidedAt !== null, issued, total: inv.total, amountPaid, dueDate: inv.dueDate, asOf: new Date() });
   const patch: Record<string, unknown> = { amountPaid, balance, status, updatedAt: new Date() };
