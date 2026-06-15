@@ -14,13 +14,34 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
       <PartnerSettingsCard client:load />
 
       <a
-        href="/settings/ticketing"
+        href="/settings/partner#ticketing"
         class="rounded-lg border bg-card p-6 shadow-sm transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
           <h2 class="text-lg font-semibold">Ticketing</h2>
           <p class="text-sm text-muted-foreground">
             Configure ticket statuses, priority SLAs, categories, and export defaults.
+          </p>
+        </div>
+      </a>
+
+      <!--
+        Catalog routes enforce requireScope('partner','system') server-side. Mirror
+        that here so org-scope users don't see a card that leads to a "partner
+        accounts only" page. Hidden by default and revealed only once the org store
+        confirms a partner context (partner/system users always resolve one; org
+        users never do) — same hide-then-reveal approach as PartnerSettingsCard.
+        The catalog page itself re-gates on the JWT scope as the authority.
+      -->
+      <a
+        href="/settings/catalog"
+        class="hidden rounded-lg border bg-card p-6 shadow-sm transition hover:border-primary hover:shadow-md"
+        data-catalog-settings-card
+      >
+        <div class="space-y-2">
+          <h2 class="text-lg font-semibold">Product Catalog</h2>
+          <p class="text-sm text-muted-foreground">
+            Manage hardware, software, and service items, pricing, and bundles.
           </p>
         </div>
       </a>
@@ -63,3 +84,62 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
     </div>
   </div>
 </DashboardLayout>
+
+<script>
+  // Reveal the Product Catalog card only for partner/system-scope users. The
+  // catalog API enforces requireScope('partner','system'); this keeps org-scope
+  // users from entering a page that only shows "partner accounts only". We key
+  // off the persisted org store's currentPartnerId — partner/system users always
+  // resolve a partner context, org users never do. Hidden-by-default + reveal
+  // means we never wrongly show the card; a freshly-logged-in partner whose
+  // context hasn't hydrated yet is handled by re-checking on storage changes and
+  // a short bounded poll. The catalog page re-gates on the JWT scope regardless.
+  (() => {
+    const card = document.querySelector<HTMLElement>('[data-catalog-settings-card]');
+    if (!card) return;
+
+    const hasPartnerContext = (): boolean => {
+      try {
+        const raw = localStorage.getItem('breeze-org');
+        if (!raw) return false;
+        const parsed = JSON.parse(raw) as { state?: { currentPartnerId?: unknown } };
+        return typeof parsed?.state?.currentPartnerId === 'string' && parsed.state.currentPartnerId.length > 0;
+      } catch {
+        return false;
+      }
+    };
+
+    let settled = false;
+    const reveal = (): void => {
+      card.classList.remove('hidden');
+      settled = true;
+    };
+
+    if (hasPartnerContext()) {
+      reveal();
+      return;
+    }
+
+    // Context may not be hydrated yet on first paint. Re-check on storage writes
+    // and via a short bounded poll, then stop (org users stay hidden).
+    const onStorage = (e: StorageEvent): void => {
+      if (e.key === 'breeze-org' && hasPartnerContext()) reveal();
+    };
+    window.addEventListener('storage', onStorage);
+
+    let ticks = 0;
+    const timer = window.setInterval(() => {
+      if (settled || hasPartnerContext()) {
+        if (!settled) reveal();
+        window.clearInterval(timer);
+        window.removeEventListener('storage', onStorage);
+        return;
+      }
+      if (++ticks >= 20) {
+        // ~2s elapsed with no partner context → treat as org scope; stay hidden.
+        window.clearInterval(timer);
+        window.removeEventListener('storage', onStorage);
+      }
+    }, 100);
+  })();
+</script>

@@ -177,9 +177,11 @@ interface BaseCreateTicketInput {
 }
 
 // portal source carries the requester; the worker emails submitterEmail on public replies/resolution.
+// email source also carries the sender address so outbound replies/autoresponses (PR3) have a recipient.
 export type CreateTicketInput =
   | (BaseCreateTicketInput & { source: 'portal'; submittedBy: string; submitterEmail: string; submitterName?: string })
-  | (BaseCreateTicketInput & { source: Exclude<TicketSource, 'portal'> });
+  | (BaseCreateTicketInput & { source: 'email'; submitterEmail: string; submitterName?: string; submittedBy?: string })
+  | (BaseCreateTicketInput & { source: Exclude<TicketSource, 'portal' | 'email'> });
 
 // NOTE: emitTicketEvent and createAuditLogAsync below are called while the
 // surrounding request transaction is still open. If the transaction later rolls
@@ -257,14 +259,15 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     status: initialCoreStatus,
     statusId: statusId ?? null,
     source: input.source,
-    submittedBy: isPortal ? input.submittedBy : null,
-    // Non-portal tickets show the acting user as the requester NAME only (fixes
+    submittedBy: isPortal ? input.submittedBy : (input.source === 'email' ? (input.submittedBy ?? null) : null),
+    // Non-portal/non-email tickets show the acting user as the requester NAME only (fixes
     // "Unknown" requester in the UI). submitterEmail deliberately stays null for
-    // non-portal sources: the notify worker emails submitterEmail on every public
+    // those sources: the notify worker emails submitterEmail on every public
     // comment/resolution with portal-oriented copy and no self-actor suppression,
     // so staff-created tickets must keep "no external requester" semantics.
-    submitterEmail: isPortal ? input.submitterEmail : null,
-    submitterName: isPortal ? (input.submitterName ?? null) : (actor.name ?? null),
+    // Email-sourced tickets carry submitterEmail so outbound replies/autoresponses (PR3) have a recipient.
+    submitterEmail: isPortal ? input.submitterEmail : (input.source === 'email' ? input.submitterEmail : null),
+    submitterName: (isPortal || input.source === 'email') ? (input.submitterName ?? null) : (actor.name ?? null),
     category: null,
     responseSlaMinutes: slaTargets.responseMinutes,
     resolutionSlaMinutes: slaTargets.resolutionMinutes

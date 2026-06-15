@@ -14,6 +14,10 @@ export interface SendEmailParams {
   text?: string;
   from?: string;
   replyTo?: string | string[];
+  // Custom RFC headers for threading + loop-prevention (Phase 4):
+  // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
+  // provider maps it natively (Resend/SMTP `headers`, Mailgun `h:` fields).
+  headers?: Record<string, string>;
 }
 
 export interface PasswordResetEmailParams {
@@ -145,7 +149,7 @@ export class EmailService {
   }
 
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, subject, html, text, from, replyTo } = params;
+    const { to, subject, html, text, from, replyTo, headers } = params;
     const sender = from ?? this.defaultFrom;
 
     if (this.provider === 'resend') {
@@ -159,7 +163,8 @@ export class EmailService {
         subject,
         html,
         text,
-        replyTo
+        replyTo,
+        headers,
       });
       if (error) {
         throw new Error(`Resend error: ${error.message}`);
@@ -178,7 +183,8 @@ export class EmailService {
         subject,
         html,
         text,
-        replyTo
+        replyTo,
+        headers,
       });
       return;
     }
@@ -187,13 +193,25 @@ export class EmailService {
       throw new Error('SMTP transport is not initialized');
     }
 
+    // Lift Message-ID / In-Reply-To / References (case-insensitive) out of the
+    // generic `headers` map into nodemailer's dedicated options. Passing a
+    // `Message-ID` header AND letting nodemailer auto-generate its own would emit
+    // TWO Message-Id headers; using the `messageId` option makes our anchor the
+    // single canonical Message-Id so SMTP threading round-trips. The remaining
+    // headers (e.g. Auto-Submitted) stay in the generic map.
+    const { messageId, inReplyTo, references, rest } = liftThreadingHeaders(headers);
+
     await this.smtpTransport.sendMail({
       from: sender,
       to,
       subject,
       html,
       text,
-      replyTo
+      replyTo,
+      messageId,
+      inReplyTo,
+      references,
+      headers: rest,
     });
   }
 
@@ -453,6 +471,48 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '');
 }
 
+/**
+ * Split the threading headers (Message-ID / In-Reply-To / References) — matched
+ * case-insensitively — out of the generic `headers` map so they can be passed via
+ * nodemailer's dedicated `messageId` / `inReplyTo` / `references` options. This
+ * prevents a duplicate Message-Id (nodemailer auto-generates one when the option
+ * is absent, so passing it ALSO in `headers` would emit two). The `rest` map
+ * carries everything else (e.g. Auto-Submitted) unchanged.
+ */
+function liftThreadingHeaders(headers: Record<string, string> | undefined): {
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
+  rest: Record<string, string> | undefined;
+} {
+  if (!headers) return { rest: undefined };
+  let messageId: string | undefined;
+  let inReplyTo: string | undefined;
+  let references: string | undefined;
+  const rest: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    switch (name.toLowerCase()) {
+      case 'message-id':
+        messageId = value;
+        break;
+      case 'in-reply-to':
+        inReplyTo = value;
+        break;
+      case 'references':
+        references = value;
+        break;
+      default:
+        rest[name] = value;
+    }
+  }
+  return {
+    messageId,
+    inReplyTo,
+    references,
+    rest: Object.keys(rest).length > 0 ? rest : undefined,
+  };
+}
+
 function buildMailgunEndpoint(config: MailgunProviderConfig): string {
   return `${config.baseUrl}/v3/${encodeURIComponent(config.domain)}/messages`;
 }
@@ -479,6 +539,15 @@ async function sendViaMailgun(
     const replyTos = Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo];
     for (const replyTo of replyTos) {
       body.append('h:Reply-To', replyTo);
+    }
+  }
+
+  if (params.headers) {
+    for (const [name, value] of Object.entries(params.headers)) {
+      // Reply-To is already mapped above via the replyTo param — skip to avoid
+      // double-encoding if a caller also passes it in headers.
+      if (name.toLowerCase() === 'reply-to') continue;
+      body.set(`h:${name}`, value);
     }
   }
 

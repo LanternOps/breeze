@@ -158,6 +158,9 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.nodes).toEqual([]);
       expect(body.edges).toEqual([]);
+      // Subnet definitions are surfaced so the client can group by the correct
+      // mask instead of fabricating edges (issue #1325).
+      expect(body.subnets).toEqual([]);
     });
   });
 

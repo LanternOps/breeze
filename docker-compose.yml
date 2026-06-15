@@ -27,6 +27,8 @@ services:
     volumes:
       - binaries:/target
     restart: "no"
+    networks:
+      - breeze
 
   caddy:
     image: ${CADDY_IMAGE_REF:?Set CADDY_IMAGE_REF to a digest-pinned Caddy image ref}
@@ -180,7 +182,6 @@ services:
       HOST: 0.0.0.0
       PORT: 4321
       PUBLIC_API_URL: ${PUBLIC_API_URL:-}
-      PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-false}
       PUBLIC_SENTRY_DSN_WEB: ${PUBLIC_SENTRY_DSN_WEB:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}

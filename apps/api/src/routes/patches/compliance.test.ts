@@ -30,6 +30,10 @@ vi.mock('../../db/schema', () => ({
     patchId: 'patchApprovals.patchId',
     status: 'patchApprovals.status',
   },
+  patchPolicies: {
+    id: 'patchPolicies.id',
+    orgId: 'patchPolicies.orgId',
+  },
   patchComplianceReports: {
     id: 'patchComplianceReports.id',
     orgId: 'patchComplianceReports.orgId',

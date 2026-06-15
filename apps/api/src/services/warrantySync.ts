@@ -5,7 +5,7 @@ import { getProviderForManufacturer, normalizeManufacturer } from './warrantyPro
 import type { WarrantyLookupResult } from './warrantyProviders';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 
-type WarrantyStatus = 'active' | 'expiring' | 'expired' | 'unknown';
+type WarrantyStatus = 'active' | 'expiring' | 'expired' | 'unknown' | 'subscription_active';
 
 function computeWarrantyStatus(endDate: string | null, warnDays = 90): WarrantyStatus {
   if (!endDate) return 'unknown';
@@ -171,6 +171,15 @@ export interface AgentWarrantyData {
   coverageEndDate: string | null;
   coverageStartDate: string | null;
   coverageType: string | null;
+  /**
+   * Coverage kind from the macOS NDO label verb: 'subscription' ("Renews ...")
+   * vs 'fixed' ("Expires ..."). For a subscription, coverageEndDate is the next
+   * renewal date, not a true expiry — status is recorded as 'subscription_active'
+   * and the expiry alert is suppressed downstream. An empty string ('') means
+   * the verb couldn't be classified (timestamp-only/labelless/localized/plist
+   * fallback, or an older agent); it's treated as 'fixed' for back-compat.
+   */
+  coverageKind?: 'subscription' | 'fixed' | '' | null;
 }
 
 /** Return the date string if it parses to a valid Date, otherwise null. */
@@ -193,7 +202,14 @@ export async function upsertAgentWarranty(
     coverageEndDate: sanitizeDateOrNull(data.coverageEndDate),
   };
 
-  const status = computeWarrantyStatus(data.coverageEndDate);
+  // An active AppleCare subscription reports its next renewal date as the
+  // coverage end date, so it perpetually rolls forward. Record it as a distinct
+  // status (so the UI / alert gate can treat it as "renewing, no fixed end")
+  // rather than a near-term expiry.
+  const isSubscription = data.coverageKind === 'subscription';
+  const status: WarrantyStatus = isSubscription
+    ? 'subscription_active'
+    : computeWarrantyStatus(data.coverageEndDate);
   const now = new Date();
   const nextSyncAt = new Date(now.getTime() + SYNC_CADENCE_MS);
 
@@ -218,6 +234,7 @@ export async function upsertAgentWarranty(
       status,
       warrantyStartDate: data.coverageStartDate,
       warrantyEndDate: data.coverageEndDate,
+      isSubscription,
       entitlements,
       dataSource: data.source,
       lastSyncAt: now,
@@ -233,6 +250,7 @@ export async function upsertAgentWarranty(
         status,
         warrantyStartDate: data.coverageStartDate,
         warrantyEndDate: data.coverageEndDate,
+        isSubscription,
         entitlements,
         dataSource: data.source,
         lastSyncAt: now,

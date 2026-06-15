@@ -12,6 +12,27 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: Object.assign(
+    () => ({
+      currentOrgId: null,
+      organizations: [
+        { id: 'org-1', name: 'Acme Corp' },
+        { id: 'org-2', name: 'Globex' },
+      ],
+    }),
+    {
+      getState: () => ({
+        currentOrgId: null,
+        organizations: [
+          { id: 'org-1', name: 'Acme Corp' },
+          { id: 'org-2', name: 'Globex' },
+        ],
+      }),
+    }
+  ),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -36,7 +57,7 @@ describe('PatchesPage', () => {
         return makeJsonResponse({ data: [] });
       }
 
-      if (url === '/patches') {
+      if (url === '/patches?limit=200') {
         return makeJsonResponse({
           data: [
             {
@@ -97,6 +118,57 @@ describe('PatchesPage', () => {
     expect(screen.getAllByRole('button', { name: 'Review' })).toHaveLength(1);
   });
 
+  it('does NOT fire the scan POST until the confirm button is clicked', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', hostname: 'Workstation-1' }],
+          pagination: { page: 1, limit: 100, total: 1 },
+        });
+      }
+
+      if (url === '/patches/scan') {
+        return makeJsonResponse({ queuedCommandIds: ['cmd-1'] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+
+    // Click "Run Scan" — this should NOT yet fire the POST
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // The confirmation dialog must appear with a message naming the organizations.
+    // scopeConfirmMessage formats multi-org as "across N organizations (Acme Corp, Globex)?"
+    const confirmMsg = await screen.findByText(/Scan for patches on \d+ device/i);
+    expect(confirmMsg).toBeTruthy();
+    expect(confirmMsg.textContent).toMatch(/Acme Corp|Globex|organizations/i);
+
+    // Scan POST must NOT have been called yet
+    expect(fetchMock).not.toHaveBeenCalledWith('/patches/scan', expect.anything());
+
+    // Now click the confirm button
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/scan',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ deviceIds: ['device-1'] }),
+        })
+      );
+    });
+  });
+
   it('queues scans for every device page instead of only the first 100 devices', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
@@ -105,7 +177,7 @@ describe('PatchesPage', () => {
         return makeJsonResponse({ data: [] });
       }
 
-      if (url === '/patches') {
+      if (url === '/patches?limit=200') {
         return makeJsonResponse({ data: [] });
       }
 
@@ -151,6 +223,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/patches/scan',
@@ -178,7 +254,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -198,6 +274,10 @@ describe('PatchesPage', () => {
 
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
@@ -220,7 +300,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({ error: 'internal server error' }, false, 500);
@@ -254,7 +334,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -291,7 +371,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -317,6 +397,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/patches/scan',
@@ -340,7 +424,7 @@ describe('PatchesPage', () => {
       const url = String(input);
 
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
 
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
@@ -361,6 +445,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'error' })
@@ -377,7 +465,7 @@ describe('PatchesPage', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
           data: [
@@ -406,6 +494,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -432,7 +524,7 @@ describe('PatchesPage', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
           data: Array.from({ length: 10 }, (_, i) => ({ id: `device-${i + 1}`, hostname: `W${i + 1}` })),
@@ -458,6 +550,10 @@ describe('PatchesPage', () => {
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
+
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -475,11 +571,57 @@ describe('PatchesPage', () => {
     );
   });
 
+  it('names the devices\' true orgs in the scan confirmation — not the stale shell selection (multi-org regression)', async () => {
+    // The user shell has currentOrgId=null (global view). Devices belong to two
+    // different orgs. The scan confirmation must name both orgs and must NOT name
+    // a single stale org from currentOrgId.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [
+            { id: 'device-1', hostname: 'W1', orgId: 'org-1' },
+            { id: 'device-2', hostname: 'W2', orgId: 'org-2' },
+          ],
+          pagination: { page: 1, limit: 100, total: 2 },
+        });
+      }
+
+      if (url === '/patches/scan') {
+        return makeJsonResponse({ queuedCommandIds: ['cmd-1', 'cmd-2'] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Confirmation must reflect the two actual target orgs
+    const confirmDialog = await screen.findByTestId('confirm-fleet-action');
+    const dialogText = confirmDialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
+    // Must mention multiple organizations (scopeConfirmMessage: "across N organizations (Acme Corp, Globex)")
+    expect(dialogText).toMatch(/across \d+ organizations/i);
+    expect(dialogText).toMatch(/Acme Corp/i);
+    expect(dialogText).toMatch(/Globex/i);
+    // Must NOT name a single org that was stale from the shell selection
+    // (currentOrgId is null in this mock, so neither should appear alone)
+    expect(dialogText).not.toMatch(/^.*in Acme Corp\?.*$/);
+
+    // Cancel — don't actually scan in this assertion-focused test
+    const cancelButton = screen.getAllByRole('button').find(b => b.textContent === 'Cancel');
+    if (cancelButton) fireEvent.click(cancelButton);
+  });
+
   it('reports total failure with skipped breakdown when zero devices queued', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
-      if (url === '/patches') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
       if (url === '/devices?limit=100&page=1') {
         return makeJsonResponse({
           data: Array.from({ length: 5 }, (_, i) => ({ id: `device-${i + 1}`, hostname: `W${i + 1}` })),
@@ -502,6 +644,10 @@ describe('PatchesPage', () => {
     render(<PatchesPage />);
     await screen.findByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    // Wait for confirm dialog and click confirm
+    await screen.findByTestId('confirm-fleet-action');
+    fireEvent.click(screen.getByTestId('confirm-fleet-action'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(

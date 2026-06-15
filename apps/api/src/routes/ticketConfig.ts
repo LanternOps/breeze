@@ -11,7 +11,8 @@ import {
 } from '@breeze/shared';
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
-  upsertPrioritySettings, TicketConfigServiceError
+  upsertPrioritySettings, TicketConfigServiceError,
+  listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
 } from '../services/ticketConfigService';
 
 export const ticketConfigRoutes = new Hono();
@@ -64,6 +65,57 @@ ticketConfigRoutes.get('/', scopes, readPerm, async (c) => {
 });
 
 // Literal paths BEFORE /:id (Hono matching is registration-ordered).
+
+const emailInboundQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+// GET /email-inbound — review queue (quarantined + failed). Admin-only surface,
+// so it carries writePerm + adminMiddleware like the mutations beside it. The
+// list query runs under the request partner context (RLS auto-scopes the rows)
+// and is additionally filtered by the resolved partnerId in the service.
+ticketConfigRoutes.get('/email-inbound', scopes, writePerm, adminMiddleware, zValidator('query', emailInboundQuerySchema), async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  const { page, limit } = c.req.valid('query');
+  const result = await listEmailInboundQueue(partnerId, { page, limit });
+  return c.json(result);
+});
+
+const convertEmailInboundSchema = z.object({ orgId: z.string().uuid() });
+
+// POST /email-inbound/:id/convert — create a source:'email' ticket in the chosen
+// org and link the inbound row. The actor is the REAL authenticated admin (built
+// from c.get('auth').user), so convert is correctly attributed in the audit/event
+// trail — no synthetic sentinel.
+ticketConfigRoutes.post('/email-inbound/:id/convert', scopes, writePerm, adminMiddleware, zValidator('param', idParam), zValidator('json', convertEmailInboundSchema), async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  const auth = c.get('auth') as AuthContext;
+  try {
+    const { id } = c.req.valid('param');
+    const { orgId } = c.req.valid('json');
+    const row = await convertEmailInbound(partnerId, id, orgId, { userId: auth.user.id, name: auth.user.name });
+    return c.json({ data: row });
+  } catch (err) {
+    return handleServiceError(c, err);
+  }
+});
+
+// PATCH /email-inbound/:id/dismiss — drop a quarantined/failed row out of the
+// review queue (parse_status='ignored'). No ticket created.
+ticketConfigRoutes.patch('/email-inbound/:id/dismiss', scopes, writePerm, adminMiddleware, zValidator('param', idParam), async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  try {
+    const { id } = c.req.valid('param');
+    const row = await dismissEmailInbound(partnerId, id);
+    return c.json({ data: row });
+  } catch (err) {
+    return handleServiceError(c, err);
+  }
+});
 
 ticketConfigRoutes.post('/statuses/reorder', scopes, writePerm, adminMiddleware, zValidator('json', reorderTicketStatusesSchema), async (c) => {
   const partnerId = requirePartnerId(c);

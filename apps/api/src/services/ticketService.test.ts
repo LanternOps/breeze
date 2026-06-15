@@ -318,6 +318,41 @@ describe('createTicket', () => {
     // partner beats hardcoded default (urgent is 60/240): response 90 wins
     expect(insertPayload).toMatchObject({ responseSlaMinutes: 90, resolutionSlaMinutes: 360 });
   });
+
+  it('persists submitterEmail/submitterName for source:email', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-email-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket(
+      { orgId: 'o-1', subject: 'printer', source: 'email', submitterEmail: 'jane@x.com', submitterName: 'Jane' },
+      actor
+    );
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({
+      source: 'email',
+      submitterEmail: 'jane@x.com',
+      submitterName: 'Jane',
+      submittedBy: null,
+    });
+  });
+
+  it('email source with no submitterName sets submitterName to null (not actor name)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-email-2', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket(
+      { orgId: 'o-1', subject: 'printer', source: 'email', submitterEmail: 'jane@x.com' },
+      { userId: 'u-sys', name: 'System' }
+    );
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({
+      submitterEmail: 'jane@x.com',
+      submitterName: null,
+      submittedBy: null,
+    });
+  });
 });
 
 describe('changeTicketStatus', () => {

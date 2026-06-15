@@ -23,7 +23,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   remote: 'Remote Access',
   audit: 'Audit Logs',
   reports: 'Reports',
-  billing: 'Billing'
+  billing: 'Billing',
+  catalog: 'Product Catalog'
 };
 
 const ACTION_LABELS: Record<string, string> = {

@@ -229,7 +229,7 @@ describe('updateRings routes', () => {
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
     });
 
-    it('should handle partner with no accessible orgs needing orgId', async () => {
+    it('should list rings across accessible orgs for a multi-org partner', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
@@ -242,12 +242,25 @@ describe('updateRings routes', () => {
         return next();
       });
 
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              makeRing({ id: RING_ID, orgId: ORG_ID, name: 'Pilot' }),
+              makeRing({ id: RING_ID_2, orgId: ORG_ID_2, name: 'Broad' })
+            ])
+          })
+        })
+      } as any);
+
       const res = await app.request('/update-rings', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
     });
   });
 
@@ -337,6 +350,53 @@ describe('updateRings routes', () => {
         body: JSON.stringify({
           name: 'Ring',
           deferralDays: 999
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    // #1317: ring now owns the typed auto-approve gate.
+    it('should accept a typed autoApprove gate', async () => {
+      const autoApprove = { enabled: true, severities: ['critical', 'important'], deferralDays: 7 };
+      const created = makeRing({ autoApprove });
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([created])
+        })
+      } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Ring', autoApprove })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.autoApprove).toEqual(autoApprove);
+    });
+
+    it('should reject autoApprove enabled with no severities (fail-closed)', async () => {
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Ring',
+          autoApprove: { enabled: true, severities: [], deferralDays: 0 }
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject autoApprove deferralDays out of range', async () => {
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Ring',
+          autoApprove: { enabled: true, severities: ['critical'], deferralDays: 9999 }
         })
       });
 

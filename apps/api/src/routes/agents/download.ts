@@ -305,6 +305,120 @@ downloadRoutes.get('/install.sh', async (c) => {
   });
 });
 
+downloadRoutes.get('/uninstall.sh', async () => {
+  return new Response(generateUninstallScript(), {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    },
+  });
+});
+
+function generateUninstallScript(): string {
+  return `#!/usr/bin/env bash
+set -euo pipefail
+
+AGENT_BINARY="/usr/local/bin/breeze-agent"
+WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
+
+fatal() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+warn() {
+  echo "Warning: $*" >&2
+}
+
+require_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    fatal "must run as root (sudo $0)"
+  fi
+}
+
+uninstall_macos() {
+  local agent_plist="/Library/LaunchDaemons/com.breeze.agent.plist"
+  local watchdog_plist="/Library/LaunchDaemons/com.breeze.watchdog.plist"
+  local user_plist="/Library/LaunchAgents/com.breeze.agent-user.plist"
+
+  echo "Uninstalling Breeze Agent for macOS..."
+
+  if command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout system/com.breeze.agent 2>/dev/null || launchctl unload "$agent_plist" 2>/dev/null || true
+    launchctl bootout system/com.breeze.watchdog 2>/dev/null || launchctl unload "$watchdog_plist" 2>/dev/null || true
+    launchctl unload "$user_plist" 2>/dev/null || true
+  else
+    warn "launchctl not found; skipping service stop"
+  fi
+
+  rm -f "$agent_plist"
+  rm -f "$watchdog_plist"
+  rm -f "$user_plist"
+  rm -f "$AGENT_BINARY"
+  rm -f "$WATCHDOG_BINARY"
+
+  echo "Breeze Agent uninstalled."
+  echo "Config at /Library/Application Support/Breeze/ was preserved."
+  echo "To remove config: sudo rm -rf '/Library/Application Support/Breeze'"
+}
+
+uninstall_linux() {
+  local agent_service="/etc/systemd/system/breeze-agent.service"
+  local watchdog_service="/etc/systemd/system/breeze-watchdog.service"
+  local user_service="/usr/lib/systemd/user/breeze-agent-user.service"
+  local xdg_autostart="/etc/xdg/autostart/breeze-agent-user.desktop"
+  local ipc_dir="/var/run/breeze"
+
+  echo "Uninstalling Breeze Agent for Linux..."
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet breeze-agent 2>/dev/null; then
+      systemctl stop breeze-agent
+      echo "Service stopped."
+    fi
+    if systemctl is-enabled --quiet breeze-agent 2>/dev/null; then
+      systemctl disable breeze-agent
+    fi
+    if systemctl is-active --quiet breeze-watchdog 2>/dev/null; then
+      systemctl stop breeze-watchdog
+      echo "Watchdog service stopped."
+    fi
+    if systemctl is-enabled --quiet breeze-watchdog 2>/dev/null; then
+      systemctl disable breeze-watchdog
+    fi
+  else
+    warn "systemctl not found; skipping service stop and disable"
+  fi
+
+  rm -f "$agent_service"
+  rm -f "$watchdog_service"
+  rm -f "$user_service"
+  rm -f "$xdg_autostart"
+  rm -f "$AGENT_BINARY"
+  rm -f "$WATCHDOG_BINARY"
+  rmdir "$ipc_dir" 2>/dev/null || true
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
+
+  echo "Breeze Agent uninstalled."
+  echo "Config at /etc/breeze/ was preserved."
+  echo "To remove config: sudo rm -rf /etc/breeze"
+}
+
+require_root
+
+uname_s="$(uname -s)"
+case "$uname_s" in
+  Darwin*) uninstall_macos ;;
+  Linux*) uninstall_linux ;;
+  *) fatal "unsupported operating system: $uname_s. Only Linux and macOS are supported by this uninstaller." ;;
+esac
+`;
+}
+
 function generateInstallScript(serverUrl: string): string {
   return `#!/usr/bin/env bash
 # ============================================
@@ -315,15 +429,19 @@ function generateInstallScript(serverUrl: string): string {
 #     --server ${serverUrl} \\
 #     --token YOUR_ENROLLMENT_TOKEN
 #
-# Or with an org enrollment secret:
+# The enrollment token is REQUIRED — it identifies the org/site to enroll into.
+# An org enrollment secret (--enrollment-secret) is an OPTIONAL extra gate that
+# the server can require IN ADDITION to the token; it is never a substitute for
+# it. Pass both when your server is configured with AGENT_ENROLLMENT_SECRET:
 #   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | sudo bash -s -- \\
 #     --server ${serverUrl} \\
+#     --token YOUR_ENROLLMENT_TOKEN \\
 #     --enrollment-secret YOUR_SECRET
 #
 # Or with environment variables — pass them through sudo, since a plain
 # \`export\` is stripped by sudo's env_reset:
 #   curl -fsSL ${serverUrl}/api/v1/agents/install.sh | \\
-#     sudo BREEZE_SERVER="${serverUrl}" BREEZE_ENROLLMENT_SECRET="YOUR_SECRET" bash
+#     sudo BREEZE_SERVER="${serverUrl}" BREEZE_ENROLL_TOKEN="YOUR_ENROLLMENT_TOKEN" bash
 # ============================================
 
 set -euo pipefail
@@ -370,8 +488,14 @@ if [[ -z "\$BREEZE_SERVER" ]]; then
   fatal "BREEZE_SERVER is required. Pass --server URL or export BREEZE_SERVER."
 fi
 
-if [[ -z "\$BREEZE_ENROLL_TOKEN" && -z "\$BREEZE_ENROLLMENT_SECRET" ]]; then
-  fatal "An enrollment credential is required. Pass --token TOKEN or --enrollment-secret SECRET (or pass BREEZE_ENROLL_TOKEN / BREEZE_ENROLLMENT_SECRET through sudo)."
+# The enrollment token is mandatory end-to-end: the agent's \`enroll\` command
+# takes it as a required positional arg, and the server resolves the org/site
+# from it. --enrollment-secret is only a supplementary gate, never a standalone
+# credential — accepting it alone here used to pass validation and then die at
+# the very last step with cobra's "accepts 1 arg(s), received 0". Fail at the
+# first step instead, with actionable guidance.
+if [[ -z "\$BREEZE_ENROLL_TOKEN" ]]; then
+  fatal "An enrollment token is required. Pass --token TOKEN (or BREEZE_ENROLL_TOKEN through sudo). Generate one from the Add Device dialog. --enrollment-secret is an optional extra gate, not a replacement for the token."
 fi
 
 # Strip trailing slash from server URL
@@ -543,9 +667,9 @@ if [[ "\$OS" == "darwin" ]]; then
   # Enroll agent
   info "Enrolling agent with Breeze server..."
   ENROLL_ARGS=(enroll)
-  if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
-    ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
-  fi
+  # The token is mandatory and already validated above as non-empty, so append
+  # it unconditionally — there is no token-less enroll path.
+  ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
   ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
   if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
     ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
@@ -558,7 +682,7 @@ if [[ "\$OS" == "darwin" ]]; then
   fi
 
   if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
-    fatal "Enrollment failed. Check the server URL and enrollment secret."
+    fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
   fi
   success "Agent enrolled successfully"
 
@@ -643,9 +767,9 @@ success "Config directory ready"
 # ----- Enroll agent -----
 info "Enrolling agent with Breeze server..."
 ENROLL_ARGS=(enroll)
-if [[ -n "\$BREEZE_ENROLL_TOKEN" ]]; then
-  ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
-fi
+# The token is mandatory and already validated above as non-empty, so append
+# it unconditionally — there is no token-less enroll path.
+ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
 ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
 if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
   ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
@@ -658,7 +782,7 @@ if [[ -n "\$BREEZE_DEVICE_ROLE" ]]; then
 fi
 
 if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
-  fatal "Enrollment failed. Check the server URL and enrollment secret."
+  fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
 fi
 success "Agent enrolled successfully"
 

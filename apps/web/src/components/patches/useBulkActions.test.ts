@@ -93,4 +93,94 @@ describe('useBulkActions', () => {
       expect(result.current.bulkError).toMatch(/Install failed on 1 of 1 devices/i);
     });
   });
+
+  describe('scope-naming confirm gate', () => {
+    it('requestBulkInstall sets pendingConfirm without firing a POST', () => {
+      const { result } = renderHook(() =>
+        useBulkActions(new Set([deviceId]), vi.fn(), vi.fn(), {
+          resolveInstallPatchIds: async () => ({ patchIds: ['p-1'] }),
+        })
+      );
+
+      act(() => {
+        result.current.requestBulkInstall(['Acme Corp'], [deviceId]);
+      });
+
+      // pendingConfirm is populated
+      expect(result.current.pendingConfirm).not.toBeNull();
+      expect(result.current.pendingConfirm?.action).toBe('Install patches');
+      expect(result.current.pendingConfirm?.deviceCount).toBe(1);
+      expect(result.current.pendingConfirm?.orgNames).toEqual(['Acme Corp']);
+
+      // No HTTP call yet — the POST must NOT fire until confirm
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('requestBulkScan sets pendingConfirm without firing a POST', () => {
+      const { result } = renderHook(() =>
+        useBulkActions(new Set([deviceId]), vi.fn(), vi.fn())
+      );
+
+      act(() => {
+        result.current.requestBulkScan(['Beta Org'], [deviceId]);
+      });
+
+      expect(result.current.pendingConfirm).not.toBeNull();
+      expect(result.current.pendingConfirm?.action).toBe('Scan for patches');
+      expect(result.current.pendingConfirm?.deviceCount).toBe(1);
+      expect(result.current.pendingConfirm?.orgNames).toEqual(['Beta Org']);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('cancelPendingAction clears pendingConfirm without firing a POST', () => {
+      const { result } = renderHook(() =>
+        useBulkActions(new Set([deviceId]), vi.fn(), vi.fn())
+      );
+
+      act(() => {
+        result.current.requestBulkScan(['Acme Corp'], [deviceId]);
+      });
+      expect(result.current.pendingConfirm).not.toBeNull();
+
+      act(() => {
+        result.current.cancelPendingAction();
+      });
+      expect(result.current.pendingConfirm).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('confirmPendingAction fires the install POST and confirm message contains org name + device count', async () => {
+      fetchMock.mockResolvedValue(makeJsonResponse({ success: true, commandId: 'cmd-1' }));
+
+      const { result } = renderHook(() =>
+        useBulkActions(new Set([deviceId]), vi.fn(), vi.fn(), {
+          resolveInstallPatchIds: async () => ({ patchIds: ['p-1'] }),
+        })
+      );
+
+      act(() => {
+        result.current.requestBulkInstall(['Acme Corp'], [deviceId]);
+      });
+
+      // Verify the confirm message contains org name and device count
+      const { pendingConfirm } = result.current;
+      expect(pendingConfirm?.orgNames).toContain('Acme Corp');
+      expect(pendingConfirm?.deviceCount).toBe(1);
+
+      // Confirm — this should now fire the POST
+      await act(async () => {
+        await result.current.confirmPendingAction();
+      });
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining(`/devices/${deviceId}/patches/install`),
+          expect.objectContaining({ method: 'POST' })
+        );
+      });
+
+      // pendingConfirm cleared after confirm
+      expect(result.current.pendingConfirm).toBeNull();
+    });
+  });
 });

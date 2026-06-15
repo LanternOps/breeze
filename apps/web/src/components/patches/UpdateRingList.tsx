@@ -18,6 +18,14 @@ export type CategoryRule = {
   deferralDaysOverride?: number | null;
 };
 
+// Ring-owned auto-approval gate (#1317): the WHAT-installs settings live on the
+// ring, not the config policy.
+export type RingAutoApprove = {
+  enabled: boolean;
+  severities: Array<'critical' | 'important' | 'moderate' | 'low'>;
+  deferralDays: number;
+};
+
 export type UpdateRingItem = {
   id: string;
   name: string;
@@ -27,6 +35,7 @@ export type UpdateRingItem = {
   deferralDays: number;
   deadlineDays?: number | null;
   gracePeriodHours: number;
+  autoApprove?: RingAutoApprove;
   categoryRules?: CategoryRule[];
   compliancePercent?: number;
   deviceCount?: number;

@@ -278,6 +278,14 @@ export default function DiscoveryPage() {
   const [topologyAsset, setTopologyAsset] = useState<AssetDetail | null>(null);
   const [topologyAssetLoading, setTopologyAssetLoading] = useState(false);
 
+  // Deep link from the unified Devices list (#1322): `?asset=<id>` opens that
+  // discovered asset in the detail modal, reusing the topology-node viewer.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const assetId = new URLSearchParams(window.location.search).get('asset');
+    if (assetId) setTopologyAssetId(assetId);
+  }, []);
+
   // Fetch asset detail when a topology node is clicked
   useEffect(() => {
     if (!topologyAssetId) {

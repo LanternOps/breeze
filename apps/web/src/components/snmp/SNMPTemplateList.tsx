@@ -69,10 +69,6 @@ export default function SNMPTemplateList({
   refreshToken = 0
 }: Props = {}) {
   const { currentOrgId } = useOrgStore();
-  // Respect the global org-scope toggle: when scope is 'all', drop the
-  // explicit ?orgId=... so the dashboard fetch is partner-wide, matching
-  // every other list page's behavior under the global toggle.
-  const orgScope = useOrgStore((s) => s.orgScope);
   const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -84,7 +80,7 @@ export default function SNMPTemplateList({
       setLoading(true);
       setError(undefined);
 
-      const dashboardUrl = orgScope === 'all' || !currentOrgId
+      const dashboardUrl = !currentOrgId
         ? '/snmp/dashboard'
         : `/snmp/dashboard?orgId=${encodeURIComponent(currentOrgId)}`;
 
@@ -125,7 +121,7 @@ export default function SNMPTemplateList({
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId, orgScope]);
+  }, [currentOrgId]);
 
   useEffect(() => {
     void fetchTemplates();

@@ -9,8 +9,8 @@ vi.mock('../../stores/auth', () => ({
 }));
 
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(() => ({ currentOrgId: null }), {
-    getState: () => ({ currentOrgId: null })
+  useOrgStore: Object.assign(() => ({ currentOrgId: null, organizations: [] }), {
+    getState: () => ({ currentOrgId: null, organizations: [] })
   })
 }));
 

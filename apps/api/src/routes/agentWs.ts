@@ -1444,7 +1444,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         orgId: agentDb.orgId,
         accessibleOrgIds: [agentDb.orgId],
         // Agents are org-scoped; they have no access to partner-level tables.
-        accessiblePartnerIds: []
+        accessiblePartnerIds: [],
+        // Agents don't browse the catalog as org users; null disables the
+        // partner-wide read branch (safe).
+        currentPartnerId: null
       },
       fn
     );
@@ -1473,7 +1476,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       if (agentDb) {
         try {
           const [deviceInfo] = await runWithAgentDbAccess(async () =>
-            db.select({ id: devices.id, hostname: devices.hostname, agentVersion: devices.agentVersion })
+            db.select({ id: devices.id, siteId: devices.siteId, hostname: devices.hostname, agentVersion: devices.agentVersion })
               .from(devices)
               .where(eq(devices.agentId, agentId))
               .limit(1)
@@ -1484,7 +1487,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               hostname: deviceInfo.hostname,
               agentVersion: deviceInfo.agentVersion,
               status: 'online',
-            }, 'agent-ws').catch(err => {
+            }, 'agent-ws', { siteId: deviceInfo.siteId }).catch(err => {
               console.error('[AgentWs] Failed to publish device.online:', err);
               captureException(err);
             });
@@ -1960,7 +1963,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
           await runWithAgentDbAccess(async () => {
             try {
               const [current] = await db
-                .select({ id: devices.id, status: devices.status, hostname: devices.hostname })
+                .select({ id: devices.id, siteId: devices.siteId, status: devices.status, hostname: devices.hostname })
                 .from(devices)
                 .where(eq(devices.agentId, agentId))
                 .limit(1);
@@ -1976,7 +1979,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: current.id,
                 hostname: current.hostname,
-              }, 'agent-ws').catch(err => {
+              }, 'agent-ws', { siteId: current.siteId }).catch(err => {
                 console.error('[AgentWs] Failed to publish device.offline:', err);
                 captureException(err);
               });

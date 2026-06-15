@@ -15,9 +15,10 @@ type WarrantyData = {
   deviceId: string;
   manufacturer: string;
   serialNumber: string;
-  status: 'active' | 'expiring' | 'expired' | 'unknown';
+  status: 'active' | 'expiring' | 'expired' | 'unknown' | 'subscription_active';
   warrantyStartDate: string | null;
   warrantyEndDate: string | null;
+  isSubscription?: boolean;
   entitlements: WarrantyEntitlement[];
   dataSource: string | null;
   lastSyncAt: string | null;
@@ -34,6 +35,9 @@ const statusConfig: Record<string, { label: string; color: string }> = {
   expiring: { label: 'Expiring', color: 'bg-warning/15 text-warning border-warning/30' },
   expired: { label: 'Expired', color: 'bg-destructive/15 text-destructive border-destructive/30' },
   unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-border' },
+  // Active AppleCare subscription: renewing coverage with no fixed end date — the
+  // stored end date is the next renewal, not an expiry (#1320).
+  subscription_active: { label: 'AppleCare subscription', color: 'bg-success/15 text-success border-success/30' },
 };
 
 function formatDate(dateStr: string | null): string {
@@ -70,6 +74,7 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
   const [warranty, setWarranty] = useState<WarrantyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(false);
 
   const fetchWarranty = async () => {
     try {
@@ -77,9 +82,12 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
       if (res.ok) {
         const data = await res.json();
         setWarranty(data.warranty);
+        setError(false);
+      } else {
+        setError(true);
       }
     } catch {
-      // silent
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -120,7 +128,23 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
             <ShieldCheck className="h-4 w-4" />
             Warranty
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">No warranty information</p>
+          {error ? (
+            // A fetch failure is distinct from a device that genuinely has no
+            // warranty record — surface it with a retry rather than the
+            // identical "No warranty information" empty state.
+            <p className="mt-2 text-sm text-muted-foreground">
+              Couldn&apos;t load warranty.{' '}
+              <button
+                type="button"
+                onClick={() => { setError(false); setLoading(true); fetchWarranty(); }}
+                className="font-medium text-primary hover:underline"
+              >
+                Retry
+              </button>
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground">No warranty information</p>
+          )}
         </div>
       );
     }
@@ -129,6 +153,9 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
 
   const cfg = statusConfig[warranty.status] ?? statusConfig.unknown;
   const primaryEntitlement = warranty.entitlements?.[0];
+  // For a renewing subscription the stored end date is the next renewal, not an expiry.
+  const isSubscription = warranty.isSubscription || warranty.status === 'subscription_active';
+  const endDateLabel = isSubscription ? 'Renews' : 'Expires';
 
   if (compact) {
     return (
@@ -149,7 +176,7 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
         </p>
         {warranty.warrantyEndDate && (
           <p className="text-xs text-muted-foreground">
-            Expires {formatDate(warranty.warrantyEndDate)}
+            {endDateLabel} {formatDate(warranty.warrantyEndDate)}
           </p>
         )}
       </div>
@@ -192,7 +219,7 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
           <p className="text-sm font-medium">{formatDate(warranty.warrantyStartDate)}</p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">End Date</p>
+          <p className="text-xs text-muted-foreground">{isSubscription ? 'Renews' : 'End Date'}</p>
           <p className="text-sm font-medium">{formatDate(warranty.warrantyEndDate)}</p>
         </div>
       </div>

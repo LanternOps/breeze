@@ -85,7 +85,11 @@ describe('PatchApprovalModal', () => {
       />
     );
 
+    // Click the main Approve submit button — this opens the scope-naming ConfirmDialog.
     fireEvent.click(screen.getAllByRole('button', { name: /Approve/i }).at(-1)!);
+
+    // The ConfirmDialog now shows; confirm via testid to fire the actual POST.
+    fireEvent.click(await screen.findByTestId('confirm-fleet-action'));
 
     expect(await screen.findByText('Ring access denied')).toBeTruthy();
   });

@@ -92,13 +92,12 @@ describe('HuntressIntegration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useOrgStore.setState({
-      currentOrgId: '00000000-0000-4000-8000-000000000001',
-      orgScope: 'current'
+      currentOrgId: '00000000-0000-4000-8000-000000000001'
     });
   });
 
   it('loads the partner connection and mapping table in all-orgs scope', async () => {
-    useOrgStore.setState({ orgScope: 'all' });
+    useOrgStore.setState({ currentOrgId: null });
     mockPartnerLoad({ integration: existingIntegration, mappings: [discoveredHuntressOrg] });
 
     render(<HuntressIntegration />);
@@ -132,7 +131,7 @@ describe('HuntressIntegration', () => {
 
   it('collects Huntress API Key and API Secret separately and submits them as one credential pair', async () => {
     const user = userEvent.setup();
-    useOrgStore.setState({ orgScope: 'all' });
+    useOrgStore.setState({ currentOrgId: null });
     mockPartnerLoad();
 
     render(<HuntressIntegration />);
@@ -161,7 +160,7 @@ describe('HuntressIntegration', () => {
 
   it('blocks a half-credential (key without secret): shows an error, disables Save, and never POSTs', async () => {
     const user = userEvent.setup();
-    useOrgStore.setState({ orgScope: 'all' });
+    useOrgStore.setState({ currentOrgId: null });
     mockPartnerLoad();
 
     render(<HuntressIntegration />);
@@ -183,7 +182,7 @@ describe('HuntressIntegration', () => {
 
   it('updates an existing integration without re-entering credentials and omits apiKey from the POST', async () => {
     const user = userEvent.setup();
-    useOrgStore.setState({ orgScope: 'all' });
+    useOrgStore.setState({ currentOrgId: null });
     mockPartnerLoad({ integration: existingIntegration });
 
     render(<HuntressIntegration />);
@@ -208,7 +207,7 @@ describe('HuntressIntegration', () => {
 
   it('surfaces a save failure to the user', async () => {
     const user = userEvent.setup();
-    useOrgStore.setState({ orgScope: 'all' });
+    useOrgStore.setState({ currentOrgId: null });
     fetchWithAuthMock.mockImplementation(async (url, init) => {
       if (url === '/huntress/integration' && init?.method === 'POST') {
         return makeResponse({ error: 'Invalid Huntress credentials' }, false, 400);
@@ -249,7 +248,7 @@ describe('HuntressIntegration', () => {
 
   it('maps a discovered Huntress organization to a Breeze organization', async () => {
     const user = userEvent.setup();
-    useOrgStore.setState({ orgScope: 'all' });
+    useOrgStore.setState({ currentOrgId: null });
     mockPartnerLoad({ integration: existingIntegration, mappings: [discoveredHuntressOrg] });
 
     render(<HuntressIntegration />);

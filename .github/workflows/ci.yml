@@ -46,6 +46,9 @@ jobs:
             exit 1
           fi
 
+      - name: Guard guided setup Compose rewrites
+        run: bash scripts/check-guided-setup-compose-rewrites.sh
+
       - name: Setup pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:

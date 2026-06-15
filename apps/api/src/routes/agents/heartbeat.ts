@@ -21,7 +21,9 @@ import {
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
+  getOrgAgentUpdatePolicy,
 } from './helpers';
+import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
@@ -102,6 +104,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     orgId: agent.orgId,
     accessibleOrgIds: [agent.orgId],
     accessiblePartnerIds: [],
+    // Agent path; no partner in scope and agents don't browse the catalog
+    // as org users. null disables the partner-wide read branch (safe).
+    currentPartnerId: null,
   };
 
   const scoped = await withDbAccessContext(
@@ -190,7 +195,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         silenceDurationSeconds: device.lastSeenAt
           ? Math.round((now.getTime() - device.lastSeenAt.getTime()) / 1000)
           : null,
-      }, 'heartbeat-watchdog-branch', { priority: 'high' }).catch((err) => {
+      }, 'heartbeat-watchdog-branch', { priority: 'high', siteId: device.siteId }).catch((err) => {
         console.error('[heartbeat] device.main_agent_silent publish failed:', err);
       });
     }
@@ -375,7 +380,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       deviceId: device.id,
       fields: ['agentVersion'],
       agentVersion: data.agentVersion,
-    }, 'heartbeat').catch(err => {
+    }, 'heartbeat', { siteId: device.siteId }).catch(err => {
       console.error('[Heartbeat] Failed to publish device.updated:', err);
       captureException(err);
     });
@@ -462,6 +467,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
   }
 
+  // Org > General > Agent update policy. Governs whether we may hand the agent
+  // (or its helper/watchdog) an auto-upgrade target right now. `manual` blocks
+  // all auto-upgrades; `auto`/`staged` honour the maintenance window when set.
+  // Bootstrap installs (a component not yet present) are intentionally NOT
+  // gated below — a device must be able to finish installing regardless.
+  // Fails open: if the lookup throws we behave as before (upgrades allowed).
+  let updateGateAllows = true;
+  try {
+    const updateSettings = await getOrgAgentUpdatePolicy(device.orgId);
+    const gate = shouldSendAgentUpgrade(updateSettings, new Date());
+    updateGateAllows = gate.allow;
+    if (!gate.allow) {
+      console.log(
+        `[agents] auto-upgrade withheld for ${agentId} by org update policy (${gate.reason})`,
+      );
+    }
+  } catch (err) {
+    console.error(`[agents] failed to resolve agent update policy for ${agentId}:`, err);
+  }
+
   let upgradeTo: string | null = null;
   const normalizedArch = normalizeAgentArchitecture(device.architecture);
   if (normalizedArch) {
@@ -486,7 +511,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         // on the agent side; the server also refrains from sending upgradeTo.
         if (data.agentVersion.startsWith('dev-')) {
           // no-op: leave upgradeTo null so agent stays on the dev build
-        } else {
+        } else if (updateGateAllows) {
           const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
           if (cmp > 0) {
             upgradeTo = latestVersion.version;
@@ -519,8 +544,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
 if (latestHelper) {
         // If agent reports no helper version, always upgrade (bootstraps first install
-        // or recovers from broken helper that never wrote its status file)
-        if (!data.helperVersion || compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
+        // or recovers from broken helper that never wrote its status file) — bootstrap
+        // is NOT subject to the org update policy. Version-to-version upgrades are.
+        if (!data.helperVersion) {
+          helperUpgradeTo = latestHelper.version;
+        } else if (updateGateAllows && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
           helperUpgradeTo = latestHelper.version;
         }
       }
@@ -547,14 +575,16 @@ if (latestHelper) {
         .limit(1);
 
       if (latestWatchdog && device.watchdogVersion) {
-        if (!device.watchdogVersion.startsWith('dev-')) {
+        // Version-to-version upgrade is subject to the org update policy.
+        if (updateGateAllows && !device.watchdogVersion.startsWith('dev-')) {
           const cmp = compareAgentVersions(latestWatchdog.version, device.watchdogVersion);
           if (cmp > 0) {
             watchdogUpgradeTo = latestWatchdog.version;
           }
         }
       } else if (latestWatchdog && !device.watchdogVersion) {
-        // Watchdog not yet installed — signal to agent to install it
+        // Watchdog not yet installed — signal to agent to install it. Bootstrap
+        // installs are NOT gated by the org update policy.
         watchdogUpgradeTo = latestWatchdog.version;
       }
     } catch (err) {
@@ -738,7 +768,8 @@ heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024,
             'monitoring.check_failed',
             device.orgId,
             { deviceId: device.id, name: result.name, watchType: result.watchType, status: result.status, consecutiveFailures: count },
-            'agent-monitoring'
+            'agent-monitoring',
+            { siteId: device.siteId }
           );
         } catch (err) {
           console.warn(`[monitoring] Redis failure counter error for ${device.id}/${result.name}:`, err);
@@ -755,7 +786,8 @@ heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024,
               'monitoring.check_recovered',
               device.orgId,
               { deviceId: device.id, name: result.name, watchType: result.watchType, previousFailures: Number(prevCount) },
-              'agent-monitoring'
+              'agent-monitoring',
+              { siteId: device.siteId }
             );
           }
         } catch (err) {

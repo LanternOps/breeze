@@ -12,13 +12,36 @@ import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 
-// Cost per million tokens (in cents)
+// Cost per million tokens, expressed in cents (USD * 100).
+// Source: official Anthropic pricing — https://platform.claude.com/docs/en/about-claude/models/overview
+// (input / output $/MTok): opus-4-8 $5/$25, sonnet-4-6 $3/$15, haiku-4-5 $1/$5, fable-5 $10/$50.
+// Verified 2026-06-13. Do NOT edit these without re-confirming against the official pricing page.
+// Both the dateless alias and the pinned dated snapshot are keyed where one exists, since callers
+// may pass either form (the SDK / DB sessions use the alias; legacy rows may carry the dated id).
 const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
-  'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 },
-  'claude-haiku-4-5-20251001': { inputPerMillion: 100, outputPerMillion: 500 }
+  // Current models
+  'claude-opus-4-8': { inputPerMillion: 500, outputPerMillion: 2500 },
+  'claude-sonnet-4-6': { inputPerMillion: 300, outputPerMillion: 1500 },
+  'claude-haiku-4-5': { inputPerMillion: 100, outputPerMillion: 500 },
+  'claude-haiku-4-5-20251001': { inputPerMillion: 100, outputPerMillion: 500 },
+  'claude-fable-5': { inputPerMillion: 1000, outputPerMillion: 5000 },
+  // Legacy / previously-default models still seen on older sessions
+  'claude-sonnet-4-5': { inputPerMillion: 300, outputPerMillion: 1500 },
+  'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 }
 };
 
-const DEFAULT_PRICING = { inputPerMillion: 300, outputPerMillion: 1500 };
+// Conservative last-resort pricing for an unrecognized model id. Mirrors the most
+// expensive current Opus-tier rate so we never silently undercount. Hitting this is logged.
+const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };
+
+// Prompt-caching price multipliers, applied to the model's base input rate.
+// Standard Anthropic convention: a cache READ is billed at 0.1x the input rate
+// (https://platform.claude.com/docs/en/build-with-claude/prompt-caching) and a
+// cache WRITE / creation (5-minute TTL) is billed at 1.25x the input rate. These
+// are reused across every model since Anthropic prices cache tokens as a fixed
+// fraction of the per-model input rate rather than as separate flat amounts.
+const CACHE_READ_INPUT_MULTIPLIER = 0.1;
+const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
 export async function checkBillingCredits(orgId: string): Promise<string | null> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
@@ -82,11 +105,54 @@ async function deductBillingCredits(orgId: string, costCents: number): Promise<v
   }
 }
 
-export function calculateCostCents(model: string, inputTokens: number, outputTokens: number): number {
-  const pricing = MODEL_PRICING[model] ?? DEFAULT_PRICING;
+/**
+ * Look up the model id recorded on a session, used to price tokens when the SDK
+ * does not report a cost. Returns null if the session can't be found.
+ */
+async function getSessionModel(sessionId: string): Promise<string | null> {
+  try {
+    const [row] = await db
+      .select({ model: aiSessions.model })
+      .from(aiSessions)
+      .where(eq(aiSessions.id, sessionId))
+      .limit(1);
+    return row?.model ?? null;
+  } catch (err) {
+    console.error(`[AI] Failed to look up model for session=${sessionId}:`, err);
+    return null;
+  }
+}
+
+export function calculateCostCents(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  // Cache tokens are reported separately from `input_tokens` by the SDK usage
+  // object and are billed at different rates (see the multiplier constants).
+  // Default to 0 so callers that don't care about caching are unaffected.
+  cacheReadInputTokens = 0,
+  cacheCreationInputTokens = 0
+): number {
+  let pricing = MODEL_PRICING[model];
+  if (!pricing) {
+    pricing = DEFAULT_PRICING;
+    // Surface unrecognized models so we can add them to MODEL_PRICING rather than
+    // silently billing at the conservative default rate.
+    console.warn(
+      `[AI] No pricing entry for model "${model}" — falling back to DEFAULT_PRICING ` +
+      `($${(DEFAULT_PRICING.inputPerMillion / 100).toFixed(2)}/$${(DEFAULT_PRICING.outputPerMillion / 100).toFixed(2)} per MTok). Add it to MODEL_PRICING.`
+    );
+  }
   const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
   const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion;
-  return Math.round((inputCost + outputCost) * 100) / 100;
+  // Cache reads (~0.1x input) and cache writes/creation (~1.25x input) are priced
+  // off the per-model input rate. Omitting them undercounts cost for any cached
+  // request — the bulk of input tokens on multi-turn sessions land in the cache.
+  const cacheReadCost =
+    (cacheReadInputTokens / 1_000_000) * pricing.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER;
+  const cacheWriteCost =
+    (cacheCreationInputTokens / 1_000_000) * pricing.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER;
+  return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;
 }
 
 /**
@@ -254,23 +320,78 @@ export async function recordUsage(
 
 /**
  * Record usage from the Claude Agent SDK result message.
- * The SDK provides total_cost_usd and per-model token breakdowns.
+ *
+ * Cost comes from the SDK's self-reported `total_cost_usd` when it is present and
+ * non-zero. The SDK computes that from its own bundled model→price table, so a
+ * model id newer than that table makes it report `total_cost_usd: 0`. To avoid
+ * silently recording $0.00 in that case (issue #1326), we fall back to pricing the
+ * reported `input_tokens`/`output_tokens` ourselves via MODEL_PRICING. The model id
+ * is taken from `result.model` when available, otherwise looked up from the session row.
  */
 export async function recordUsageFromSdkResult(
   sessionId: string,
   orgId: string,
   result: {
     total_cost_usd: number;
-    usage: { input_tokens: number; output_tokens: number };
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      // Cache tokens are reported separately from input_tokens by the SDK usage
+      // object and are billed at different rates. Optional so older/partial usage
+      // payloads (and tests) don't have to supply them.
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
     num_turns: number;
+    /** Model id the SDK ran with. Used to price tokens when total_cost_usd is 0. */
+    model?: string;
   }
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
     return;
   }
-  const costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
-  const { input_tokens: inputTokens, output_tokens: outputTokens } = result.usage;
+  const {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_read_input_tokens: cacheReadTokens = 0,
+    cache_creation_input_tokens: cacheCreationTokens = 0,
+  } = result.usage;
+
+  // Prefer the SDK's self-reported cost. Fall back to token-based pricing only when
+  // the SDK reports 0/missing cost but actually consumed tokens — this is the case
+  // that was silently producing $0.00 sessions (the SDK can't price a model id newer
+  // than its bundled table).
+  let costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
+  if (
+    costCents <= 0 &&
+    (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0)
+  ) {
+    const model = result.model ?? (await getSessionModel(sessionId));
+    if (model) {
+      // Include cache read/creation tokens — pricing only input+output here would
+      // systematically undercount cost for cached requests (issue #1326 follow-up).
+      costCents = calculateCostCents(
+        model,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens
+      );
+      console.warn(
+        `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
+        `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
+        `${cacheCreationTokens} cache-write tokens). Priced from MODEL_PRICING ` +
+        `for model "${model}" → ${costCents} cents.`
+      );
+    } else {
+      console.warn(
+        `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
+        `with ${inputTokens} in / ${outputTokens} out tokens but no model id available — ` +
+        `cannot price tokens, recording 0 cents.`
+      );
+    }
+  }
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;

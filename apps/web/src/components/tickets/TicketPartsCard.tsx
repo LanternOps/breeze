@@ -23,6 +23,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
   const [costBasis, setCostBasis] = useState('');
   const [billable, setBillable] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const res = await fetchWithAuth(`/tickets/${ticketId}/parts`)
@@ -44,6 +45,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
     setUnitPrice('');
     setCostBasis('');
     setBillable(true);
+    setConfirmingDeleteId(null);
   }, [ticketId]);
 
   const resetForm = () => {
@@ -129,6 +131,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
         errorFallback: 'Failed to delete part',
         successMessage: 'Part deleted',
       });
+      setConfirmingDeleteId(null);
       await refresh();
       broadcastBillingChanged();
     } catch (err) {
@@ -180,24 +183,50 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                     </span>
                   )}
                 </div>
-                <div className="mt-0.5 flex gap-1">
-                  <button
-                    type="button"
-                    onClick={() => openEdit(part)}
-                    className="rounded px-1 py-0.5 text-xs hover:bg-muted"
-                    data-testid={`ticket-part-edit-${part.id}`}
+                {confirmingDeleteId === part.id ? (
+                  <div
+                    className="mt-0.5 flex items-center gap-1"
+                    data-testid={`ticket-part-delete-confirm-${part.id}`}
                   >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void deletePart(part.id)}
-                    className="rounded px-1 py-0.5 text-xs text-destructive hover:bg-muted"
-                    data-testid={`ticket-part-delete-${part.id}`}
-                  >
-                    Delete
-                  </button>
-                </div>
+                    <span className="text-destructive">Delete?</span>
+                    <span className="text-muted-foreground">·</span>
+                    <button
+                      type="button"
+                      onClick={() => void deletePart(part.id)}
+                      className="rounded px-1 py-0.5 text-xs font-medium text-destructive hover:bg-muted"
+                      data-testid={`ticket-part-delete-confirm-yes-${part.id}`}
+                    >
+                      Confirm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDeleteId(null)}
+                      className="rounded px-1 py-0.5 text-xs hover:bg-muted"
+                      data-testid={`ticket-part-delete-confirm-cancel-${part.id}`}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-0.5 flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => openEdit(part)}
+                      className="rounded px-1 py-0.5 text-xs hover:bg-muted"
+                      data-testid={`ticket-part-edit-${part.id}`}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDeleteId(part.id)}
+                      className="rounded px-1 py-0.5 text-xs text-destructive hover:bg-muted"
+                      data-testid={`ticket-part-delete-${part.id}`}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </li>
             );
           })}

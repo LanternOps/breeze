@@ -347,7 +347,8 @@ describe('apiKeyAuth middleware', () => {
         scope: 'organization',
         orgId: 'org-2',
         accessibleOrgIds: ['org-2'],
-        accessiblePartnerIds: []
+        accessiblePartnerIds: [],
+        currentPartnerId: null
       },
       expect.any(Function)
     );
@@ -400,7 +401,8 @@ describe('apiKeyAuth middleware', () => {
         scope: 'organization',
         orgId: 'org-3',
         accessibleOrgIds: ['org-3'],
-        accessiblePartnerIds: ['partner-7']
+        accessiblePartnerIds: ['partner-7'],
+        currentPartnerId: 'partner-7'
       },
       expect.any(Function)
     );
@@ -450,7 +452,8 @@ describe('apiKeyAuth middleware', () => {
         scope: 'organization',
         orgId: 'org-4',
         accessibleOrgIds: ['org-4'],
-        accessiblePartnerIds: []
+        accessiblePartnerIds: [],
+        currentPartnerId: null
       },
       expect.any(Function)
     );

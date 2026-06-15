@@ -17,7 +17,7 @@ vi.mock('../../services/binarySource', () => ({
   },
 }));
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -210,10 +210,17 @@ describe('GET /install.sh — generated installer script', () => {
     ).toHaveLength(2);
   });
 
-  it('requires a token OR an enrollment secret, not unconditionally the secret', async () => {
+  it('requires the enrollment token, treating --enrollment-secret as a supplement', async () => {
     const script = await fetchScript();
-    expect(script).toContain('Pass --token TOKEN or --enrollment-secret SECRET');
-    // The old unconditional secret check must be gone.
+    // The token is mandatory end-to-end (agent `enroll` takes it as a required
+    // positional arg; the server resolves the org/site from it). The validation
+    // must gate on the token alone, NOT on "token OR secret" — a secret-only
+    // invocation used to pass here and then die at the last step with cobra's
+    // "accepts 1 arg(s), received 0".
+    expect(script).toContain('An enrollment token is required. Pass --token TOKEN');
+    // The old token-OR-secret acceptance must be gone.
+    expect(script).not.toContain('-z "$BREEZE_ENROLL_TOKEN" && -z "$BREEZE_ENROLLMENT_SECRET"');
+    expect(script).not.toContain('An enrollment credential is required');
     expect(script).not.toContain('BREEZE_ENROLLMENT_SECRET is required');
   });
 
@@ -243,6 +250,51 @@ describe('GET /install.sh — generated installer script', () => {
   it('documents --token usage in the script header', async () => {
     const script = await fetchScript();
     expect(script).toContain('--token YOUR_ENROLLMENT_TOKEN');
+  });
+});
+
+describe('GET /uninstall.sh — generated uninstaller script', () => {
+  async function fetchScript(): Promise<string> {
+    const res = await downloadRoutes.request('/uninstall.sh');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    expect(res.headers.get('content-disposition')).toBeNull();
+    return res.text();
+  }
+
+  it('is valid bash (bash -n syntax check)', async () => {
+    const script = await fetchScript();
+    const tmp = mkdtempSync(join(tmpdir(), 'breeze-uninstall-sh-'));
+    const file = join(tmp, 'uninstall.sh');
+    try {
+      writeFileSync(file, script);
+      execFileSync('bash', ['-n', file]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('detects macOS and Linux instead of relying on separate scripts', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('Darwin*) uninstall_macos');
+    expect(script).toContain('Linux*) uninstall_linux');
+    expect(script).toContain('launchctl bootout system/com.breeze.agent');
+    expect(script).toContain('systemctl stop breeze-agent');
+  });
+
+  it('matches the checked-in web and agent script copies', async () => {
+    const script = await fetchScript();
+    const webScript = readFileSync(
+      join(import.meta.dirname, '../../../../web/public/scripts/uninstall.sh'),
+      'utf8',
+    );
+    const agentScript = readFileSync(
+      join(import.meta.dirname, '../../../../../agent/scripts/install/uninstall.sh'),
+      'utf8',
+    );
+
+    expect(script).toBe(webScript);
+    expect(agentScript).toBe(webScript);
   });
 });
 
@@ -375,23 +427,46 @@ describe('install.sh functional pre-flight behavior', () => {
     }
   });
 
-  it('rejects a missing enrollment credential with guidance', async () => {
+  it('rejects a missing enrollment token with guidance', async () => {
     const { code, output } = await runScript(['--server', 'http://127.0.0.1:1']);
     expect(code).not.toBe(0);
-    expect(output).toContain('Pass --token TOKEN or --enrollment-secret SECRET');
+    expect(output).toContain('An enrollment token is required. Pass --token TOKEN');
   });
 
-  it('accepts --enrollment-secret alone (legacy flow) past credential validation', async () => {
+  it('rejects a secret-only invocation at validation (issue #1274), before installing anything', async () => {
+    // The bug: --enrollment-secret without --token passed the script's own
+    // credential check, installed the agent, and then died at the very last
+    // step with cobra's "accepts 1 arg(s), received 0" — because the agent's
+    // `enroll` requires the enrollment key as a positional arg and the server
+    // resolves the org/site from it. The fix makes the script fail fast at the
+    // first step (validation), never reaching the connectivity pre-flight or
+    // download.
     const { code, output } = await runScript([
       '--server',
       'http://127.0.0.1:1',
       '--enrollment-secret',
       'sec',
     ]);
-    // Dies at the connectivity pre-flight (nothing listening), proving the
-    // token-OR-secret check let the secret-only invocation through.
     expect(code).not.toBe(0);
-    expect(output).not.toContain('enrollment credential is required');
+    expect(output).toContain('An enrollment token is required. Pass --token TOKEN');
+    // Must die at validation, NOT proceed to connectivity/download.
+    expect(output).not.toContain('Checking connectivity');
+    expect(output).not.toContain('Cannot reach the Breeze server');
+  });
+
+  it('accepts --token plus --enrollment-secret together past credential validation', async () => {
+    const { code, output } = await runScript([
+      '--server',
+      'http://127.0.0.1:1',
+      '--token',
+      'tok',
+      '--enrollment-secret',
+      'sec',
+    ]);
+    // The supplementary secret is allowed alongside the required token; the run
+    // proceeds to the connectivity pre-flight and dies there (nothing listening).
+    expect(code).not.toBe(0);
+    expect(output).not.toContain('An enrollment token is required');
     expect(output).toContain('Cannot reach the Breeze server');
   });
 

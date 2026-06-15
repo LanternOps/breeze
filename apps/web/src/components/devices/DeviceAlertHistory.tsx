@@ -20,11 +20,15 @@ type DeviceAlertHistoryProps = {
   limit?: number;
 };
 
+// Severity badges use the same semantic-token vocabulary as the device status
+// badge (DeviceDetails statusColors) and the warranty card — one consistent
+// `bg-X/15 text-X border-X/30` pattern across the whole device surface, instead
+// of three divergent raw-palette systems (#device-overview-polish).
 const severityStyles: Record<string, string> = {
-  critical: 'bg-red-500/20 text-red-700 border-red-500/40',
-  error: 'bg-red-500/20 text-red-700 border-red-500/40',
-  warning: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  info: 'bg-blue-500/20 text-blue-700 border-blue-500/40'
+  critical: 'bg-destructive/15 text-destructive border-destructive/30',
+  error: 'bg-destructive/15 text-destructive border-destructive/30',
+  warning: 'bg-warning/15 text-warning border-warning/30',
+  info: 'bg-info/15 text-info border-info/30'
 };
 
 function formatDateTime(value?: string, timezone?: string) {
@@ -192,6 +196,15 @@ export default function DeviceAlertHistory({
           })
         )}
       </div>
+      {limit && alerts.length > limit && (
+        <a
+          href="#alerts"
+          className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+        >
+          View all {alerts.length} alerts
+          <span aria-hidden="true">→</span>
+        </a>
+      )}
     </div>
   );
 }

@@ -12,8 +12,9 @@ import { cn } from '@/lib/utils';
 import { useOrgStore, type Organization, type Site } from '@/stores/orgStore';
 import { waitForPendingRefresh } from '@/stores/auth';
 import { showToast } from '@/components/shared/Toast';
+import { isGlobalScopeRoute } from '../../lib/routeScope';
 
-// Switching org/site/scope reloads the page. Stash a confirmation message so the
+// Switching org/site reloads the page. Stash a confirmation message so the
 // destination page can surface "Switched to X" after the reload, landing the
 // peak-end of every context switch on a clear success rather than a blank flash.
 const SWITCH_TOAST_KEY = 'breeze.orgSwitch.toast';
@@ -49,6 +50,26 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
   return null;
 }
 
+function useCurrentPathname(): string {
+  // Initialize to '/' on BOTH the server and the first client render so the
+  // hydrated markup matches the SSR output (reading window.location.pathname
+  // in the initializer diverges on global routes → React hydration mismatch
+  // on every catalog page). The real pathname is read after mount, when the
+  // org selector flips global routes to "All Organizations".
+  const [pathname, setPathname] = useState('/');
+  useEffect(() => {
+    const update = () => setPathname(window.location.pathname);
+    update();
+    document.addEventListener('astro:after-swap', update);
+    window.addEventListener('popstate', update);
+    return () => {
+      document.removeEventListener('astro:after-swap', update);
+      window.removeEventListener('popstate', update);
+    };
+  }, []);
+  return pathname;
+}
+
 const statusColors: Record<string, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
   trial: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
@@ -75,7 +96,10 @@ function OrgMenuItem({
   onSelect,
   sites,
   currentSiteId,
-  onSelectSite
+  onSelectSite,
+  isExpanded,
+  onToggleSites,
+  selectedSiteRef
 }: {
   org: Organization;
   isSelected: boolean;
@@ -83,10 +107,18 @@ function OrgMenuItem({
   sites: Site[];
   currentSiteId: string | null;
   onSelectSite: (siteId: string | null) => void;
+  // Expansion state is owned by the parent OrgSwitcher so it can be seeded
+  // from the current selection when the dropdown opens (#1319). This item is
+  // purely presentational for expansion.
+  isExpanded: boolean;
+  onToggleSites: () => void;
+  // The parent passes a ref it attaches to whichever org's currently-selected
+  // site row is rendered, so it can scrollIntoView after the submenu mounts.
+  selectedSiteRef: (el: HTMLButtonElement | null) => void;
 }) {
-  const [showSites, setShowSites] = useState(false);
   const orgSites = sites.filter((site) => site.orgId === org.id);
   const hasSites = orgSites.length > 0;
+  const showSites = isExpanded && hasSites;
 
   return (
     <div className="relative">
@@ -94,7 +126,7 @@ function OrgMenuItem({
         onClick={() => {
           onSelect();
           if (hasSites) {
-            setShowSites(!showSites);
+            onToggleSites();
           }
         }}
         className={cn(
@@ -121,7 +153,7 @@ function OrgMenuItem({
       </button>
 
       {/* Sites submenu */}
-      {showSites && hasSites && (
+      {showSites && (
         <div className="ml-6 mt-1 border-l pl-2">
           <button
             onClick={() => onSelectSite(null)}
@@ -138,6 +170,7 @@ function OrgMenuItem({
           {orgSites.map((site) => (
             <button
               key={site.id}
+              ref={currentSiteId === site.id ? selectedSiteRef : undefined}
               onClick={() => onSelectSite(site.id)}
               className={cn(
                 'flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted',
@@ -164,106 +197,25 @@ function OrgMenuItem({
   );
 }
 
-/**
- * Pill toggle that flips the global org scope. Sits to the LEFT of the org
- * picker. When in `all`, the picker is dimmed (still selectable for future
- * narrowing) and every fetchWithAuth call goes out without orgId injection
- * — server returns data across every accessible org.
- *
- * Hidden when the user has access to only one org (toggle would be a no-op).
- */
-function OrgScopePill() {
-  const orgScope = useOrgStore((s) => s.orgScope);
-  const setOrgScope = useOrgStore((s) => s.setOrgScope);
-  const organizationsCount = useOrgStore((s) => s.organizations.length);
-  // Which scope the user is switching to, so we can show a spinner on that
-  // button and disable the pair while the reload is being prepared.
-  const [applying, setApplying] = useState<'current' | 'all' | null>(null);
-
-  // Flipping the scope changes the orgId-injection chokepoint in orgStore, but
-  // only pages with `orgScope` in their fetch deps refetch live. Rather than
-  // rely on every list page opting in (easy to miss one), reload after the flip
-  // so the new scope takes effect everywhere immediately — mirroring the
-  // org-switch path. Skip the reload when the active scope is re-clicked (#989).
-  const applyScope = async (next: 'current' | 'all') => {
-    if (next === orgScope || applying) return;
-    setApplying(next);
-    setOrgScope(next);
-    stashSwitchToast(
-      next === 'all' ? 'Showing all organizations' : 'Showing current organization'
-    );
-    await waitForPendingRefresh();
-    window.location.reload();
-  };
-
-  if (organizationsCount <= 1) return null;
-
-  return (
-    <div
-      role="group"
-      aria-label="Organization scope"
-      data-testid="org-scope-pill"
-      className="hidden shrink-0 overflow-hidden rounded-md border text-xs lg:inline-flex"
-    >
-      <button
-        type="button"
-        data-testid="org-scope-current"
-        onClick={() => void applyScope('current')}
-        aria-pressed={orgScope === 'current'}
-        disabled={applying !== null}
-        className={cn(
-          'flex items-center gap-1 px-2 py-1.5 transition-colors disabled:opacity-60',
-          orgScope === 'current'
-            ? 'bg-primary text-primary-foreground'
-            : 'hover:bg-muted'
-        )}
-        title="Show data for the currently selected organization only"
-      >
-        {applying === 'current' ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        ) : (
-          <Building2 className="h-3 w-3" />
-        )}
-        <span className="hidden sm:inline">Current</span>
-      </button>
-      <button
-        type="button"
-        data-testid="org-scope-all"
-        onClick={() => void applyScope('all')}
-        aria-pressed={orgScope === 'all'}
-        disabled={applying !== null}
-        className={cn(
-          'flex items-center gap-1 px-2 py-1.5 transition-colors disabled:opacity-60',
-          orgScope === 'all'
-            ? 'bg-primary text-primary-foreground'
-            : 'hover:bg-muted'
-        )}
-        title="Show data across every accessible organization"
-      >
-        {applying === 'all' ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        ) : (
-          <Globe className="h-3 w-3" />
-        )}
-        <span className="hidden sm:inline">All orgs</span>
-      </button>
-    </div>
-  );
-}
-
 export default function OrgSwitcher() {
   const [isOpen, setIsOpen] = useState(false);
   // True from the moment a switch is initiated until the page reloads — shows a
   // spinner on the trigger and disables it so the bar never silently freezes.
   const [switching, setSwitching] = useState(false);
+  // Which org rows have their sites submenu expanded. Owned here (not per-item)
+  // so it can be seeded from the current selection when the dropdown opens
+  // (#1319) — a user whose scope is a site lands on it pre-expanded.
+  const [expandedOrgIds, setExpandedOrgIds] = useState<Set<string>>(new Set());
   const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Set by OrgMenuItem on whichever org renders the currently-selected site row,
+  // so the open effect can scroll it into view once the submenu has mounted.
+  const selectedSiteRef = useRef<HTMLButtonElement | null>(null);
 
   const {
     currentOrgId,
     currentSiteId,
-    orgScope,
     organizations,
     sites,
     isLoading,
@@ -272,6 +224,9 @@ export default function OrgSwitcher() {
     fetchOrganizations,
     fetchSites
   } = useOrgStore();
+
+  const pathname = useCurrentPathname();
+  const isGlobalRoute = isGlobalScopeRoute(pathname);
 
   // Surface the "Switched to X" confirmation stashed before the last reload.
   useEffect(() => {
@@ -343,23 +298,51 @@ export default function OrgSwitcher() {
     return () => document.removeEventListener('keydown', handler);
   }, [isOpen]);
 
+  // Seed expansion + scroll-to-selection when the dropdown opens (#1319).
+  // When the active scope is a site, pre-expand its ancestor org (which is
+  // simply `currentOrgId` — sites are only fetched for the current org) so the
+  // user lands on their current context instead of a flat list of collapsed
+  // orgs. Re-seed on every open so re-opening reflects the live selection
+  // rather than stale manual toggles. With no org selected (partner-wide /
+  // page-aware All-orgs view) there is no single "current" site, so don't
+  // auto-expand anything.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (currentSiteId && currentOrgId) {
+      setExpandedOrgIds(new Set([currentOrgId]));
+    } else {
+      setExpandedOrgIds(new Set());
+    }
+  }, [isOpen, currentOrgId, currentSiteId]);
+
+  // After the submenu has mounted (next frame), scroll the selected site row
+  // into view so it's visible even on a long org list. jsdom stubs
+  // scrollIntoView as a no-op, so the guard keeps tests from throwing.
+  useEffect(() => {
+    if (!isOpen) return;
+    const raf = requestAnimationFrame(() => {
+      selectedSiteRef.current?.scrollIntoView?.({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isOpen, expandedOrgIds, currentSiteId]);
+
   // Get current selections
   const currentOrg = organizations.find((org) => org.id === currentOrgId);
   const currentSite = sites.find((site) => site.id === currentSiteId);
 
-  // Build display text. In All-orgs scope the picker shows the partner-wide
-  // label so the user can never be confused about which mode they're in.
-  const displayText = orgScope === 'all'
-    ? 'All organizations'
+  // Build display text. On a global route (catalog) always show "All Organizations"
+  // so the user can see they're in partner-wide scope. On a scoped route, show
+  // the selected org (and site), or "All Organizations" if nothing is selected.
+  const displayText = isGlobalRoute
+    ? 'All Organizations'
     : currentOrg
       ? currentSite
         ? `${currentOrg.name} / ${currentSite.name}`
         : currentOrg.name
-      : 'Select Organization';
+      : 'All Organizations';
 
   return (
     <div className="flex min-w-0 items-center gap-1 sm:gap-2">
-      <OrgScopePill />
       <div className="relative" ref={dropdownRef}>
         <button
           ref={triggerRef}
@@ -369,27 +352,27 @@ export default function OrgSwitcher() {
           aria-expanded={isOpen}
           className={cn(
             'flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-sm hover:bg-muted disabled:opacity-70 sm:gap-2 sm:px-3',
-            // Visually de-emphasize the picker when scope is All — the user
-            // can still drill into a specific org via the dropdown, but the
-            // picker is no longer the load-bearing scope control.
-            orgScope === 'all' && 'opacity-70'
+            isGlobalRoute && 'opacity-70'
           )}
           disabled={isLoading || switching}
-          title={orgScope === 'all'
-            ? 'Showing all organizations. Click to narrow to a specific org.'
+          title={isGlobalRoute
+            ? 'This page shows all organizations'
             : 'Select Organization (Cmd+O)'}
         >
           {isLoading || switching ? (
             <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-          ) : orgScope === 'all' ? (
+          ) : isGlobalRoute || !currentOrgId ? (
             <Globe className="h-4 w-4 shrink-0" />
           ) : (
             <Building2 className="h-4 w-4 shrink-0" />
           )}
-          <span className="hidden min-w-0 truncate md:inline-block md:max-w-[10rem] lg:max-w-[200px]">
+          <span
+            data-testid="org-switcher-label"
+            className="hidden min-w-0 truncate md:inline-block md:max-w-[10rem] lg:max-w-[200px]"
+          >
             {switching ? 'Switching…' : displayText}
           </span>
-          {orgScope === 'current' && currentOrg && (
+          {!isGlobalRoute && currentOrg && (
             <span className="hidden shrink-0 md:inline-flex">
               <StatusBadge status={currentOrg.status} />
             </span>
@@ -414,21 +397,52 @@ export default function OrgSwitcher() {
             </div>
           ) : (
             <div className="max-h-[calc(100vh-160px)] space-y-1 overflow-y-auto">
+              {/* "All Organizations" clears the selection to null */}
+              <button
+                type="button"
+                data-testid="org-option-all"
+                onClick={async () => {
+                  setSwitching(true);
+                  setOrganization('');
+                  setIsOpen(false);
+                  stashSwitchToast('Showing all organizations');
+                  await waitForPendingRefresh();
+                  const redirect = getOrgSwitchRedirect(window.location.pathname);
+                  if (redirect) window.location.href = redirect; else window.location.reload();
+                }}
+                className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted', !currentOrgId && 'bg-muted')}
+              >
+                <Globe className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">All Organizations</span>
+                {!currentOrgId && <Check className="h-4 w-4 text-primary" />}
+              </button>
+
               {organizations.map((org) => (
                 <OrgMenuItem
                   key={org.id}
                   org={org}
-                  isSelected={org.id === currentOrgId && orgScope === 'current'}
+                  isSelected={org.id === currentOrgId}
+                  isExpanded={expandedOrgIds.has(org.id)}
+                  onToggleSites={() =>
+                    setExpandedOrgIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(org.id)) {
+                        next.delete(org.id);
+                      } else {
+                        next.add(org.id);
+                      }
+                      return next;
+                    })
+                  }
+                  selectedSiteRef={(el) => {
+                    // Callback ref on the currently-selected site row. React
+                    // calls it with the element on mount and null on unmount;
+                    // tracking both keeps the parent from scrolling a detached
+                    // node after the org is collapsed.
+                    selectedSiteRef.current = el;
+                  }}
                   onSelect={async () => {
-                    // Picking a specific org from the dropdown implies the
-                    // user wants to narrow to that org, so auto-flip the
-                    // scope back to 'current' (if it was 'all'). This is a
-                    // recovery affordance — switching from All to a single
-                    // org would otherwise be a two-click operation.
-                    if (orgScope === 'all') {
-                      useOrgStore.getState().setOrgScope('current');
-                    }
-                    if (org.id !== currentOrgId || orgScope === 'all') {
+                    if (org.id !== currentOrgId) {
                       setSwitching(true);
                       setOrganization(org.id);
                       stashSwitchToast(`Switched to ${org.name}`);

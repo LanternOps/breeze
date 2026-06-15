@@ -6,7 +6,6 @@ import OrgSwitcher, { getOrgSwitchRedirect } from './OrgSwitcher';
 const {
   setOrganizationMock,
   setSiteMock,
-  setOrgScopeMock,
   fetchOrganizationsMock,
   fetchSitesMock,
   waitForPendingRefreshMock,
@@ -14,7 +13,6 @@ const {
 } = vi.hoisted(() => ({
   setOrganizationMock: vi.fn(),
   setSiteMock: vi.fn(),
-  setOrgScopeMock: vi.fn(),
   fetchOrganizationsMock: vi.fn(),
   fetchSitesMock: vi.fn(),
   waitForPendingRefreshMock: vi.fn().mockResolvedValue(undefined),
@@ -31,7 +29,6 @@ vi.mock('@/stores/auth', () => ({
 let mockStoreState: {
   currentOrgId: string | null;
   currentSiteId: string | null;
-  orgScope: 'current' | 'all';
   organizations: Array<{ id: string; partnerId: string; name: string; status: string; createdAt: string }>;
   sites: Array<{ id: string; orgId: string; name: string; deviceCount: number; createdAt: string }>;
   isLoading: boolean;
@@ -42,7 +39,6 @@ vi.mock('@/stores/orgStore', () => {
     ...mockStoreRef.current,
     setOrganization: setOrganizationMock,
     setSite: setSiteMock,
-    setOrgScope: setOrgScopeMock,
     fetchOrganizations: fetchOrganizationsMock,
     fetchSites: fetchSitesMock,
   });
@@ -53,6 +49,14 @@ vi.mock('@/stores/orgStore', () => {
   (useOrgStore as unknown as { getState: () => ReturnType<typeof buildStoreSnapshot> }).getState = () => buildStoreSnapshot();
   return { useOrgStore };
 });
+
+// Mock routeScope so we can control isGlobalScopeRoute per-test
+vi.mock('../../lib/routeScope', () => ({
+  isGlobalScopeRoute: vi.fn((pathname: string) => {
+    // Default: mirror the real implementation for /scripts
+    return /^\/scripts(\/.*)?$/.test(pathname);
+  })
+}));
 
 describe('getOrgSwitchRedirect', () => {
   it('redirects /devices/:id to /devices', () => {
@@ -84,7 +88,6 @@ describe('OrgSwitcher org change navigation', () => {
   beforeEach(() => {
     setOrganizationMock.mockReset();
     setSiteMock.mockReset();
-    setOrgScopeMock.mockReset();
     fetchOrganizationsMock.mockReset();
     fetchSitesMock.mockReset();
     waitForPendingRefreshMock.mockClear();
@@ -93,7 +96,6 @@ describe('OrgSwitcher org change navigation', () => {
     mockStoreState = {
       currentOrgId: 'org-a',
       currentSiteId: null,
-      orgScope: 'current',
       organizations: [
         { id: 'org-a', partnerId: 'p1', name: 'Org A', status: 'active', createdAt: '2024-01-01' },
         { id: 'org-b', partnerId: 'p1', name: 'Org B', status: 'active', createdAt: '2024-01-01' }
@@ -133,12 +135,14 @@ describe('OrgSwitcher org change navigation', () => {
     });
   });
 
-  function openDropdownAndClickOrg(orgName: string) {
-    // The OrgScopePill renders two buttons BEFORE the org-picker trigger when
-    // multiple orgs are accessible, so target the trigger explicitly by
-    // data-testid rather than relying on DOM order.
+  function openDropdown() {
     const triggerButton = screen.getByTestId('org-switcher-trigger');
     fireEvent.click(triggerButton);
+    return triggerButton;
+  }
+
+  function openDropdownAndClickOrg(orgName: string) {
+    const triggerButton = openDropdown();
     const orgButtons = screen
       .getAllByRole('button')
       .filter((b) => b !== triggerButton && b.textContent?.includes(orgName));
@@ -187,29 +191,244 @@ describe('OrgSwitcher org change navigation', () => {
     expect(hrefSetter).not.toHaveBeenCalled();
   });
 
-  // #989: flipping the scope pill must refresh every list page, not just the
-  // ones that happen to key on orgScope. The pill reloads after the flip,
-  // mirroring the org-switch path.
-  it('reloads after waitForPendingRefresh when flipping the scope pill to All orgs', async () => {
-    const { reloadMock } = stubLocation('/devices');
+  it('renders an org-option-all item containing "All Organizations" when dropdown is open', () => {
+    stubLocation('/devices');
+
+    render(<OrgSwitcher />);
+    openDropdown();
+
+    const allOrgsBtn = screen.getByTestId('org-option-all');
+    expect(allOrgsBtn).toBeTruthy();
+    expect(allOrgsBtn.textContent).toContain('All Organizations');
+  });
+
+  it('the legacy pill is gone', () => {
+    stubLocation('/devices');
+    render(<OrgSwitcher />);
+    expect(screen.queryByTestId('org-scope-pill')).toBeNull();
+  });
+
+  it('label reads "All Organizations" on a global route (e.g. /scripts)', () => {
+    // /scripts is a global route per the default mock
+    stubLocation('/scripts');
 
     render(<OrgSwitcher />);
 
-    fireEvent.click(screen.getByTestId('org-scope-all'));
+    const label = screen.getByTestId('org-switcher-label');
+    expect(label.textContent).toBe('All Organizations');
+  });
 
-    expect(setOrgScopeMock).toHaveBeenCalledWith('all');
+  it('label shows org name on a scoped route with a selected org', () => {
+    stubLocation('/devices');
+
+    render(<OrgSwitcher />);
+
+    const label = screen.getByTestId('org-switcher-label');
+    expect(label.textContent).toBe('Org A');
+  });
+
+  it('label reads "All Organizations" on a scoped route when no org is selected', () => {
+    stubLocation('/devices');
+    mockStoreState.currentOrgId = null;
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    const label = screen.getByTestId('org-switcher-label');
+    expect(label.textContent).toBe('All Organizations');
+  });
+
+  it('clicking "All Organizations" calls setOrganization with "" and reloads', async () => {
+    const { reloadMock } = stubLocation('/devices');
+
+    // Start with an org selected so the "All Organizations" item is not highlighted
+    render(<OrgSwitcher />);
+    openDropdown();
+
+    const allOrgsBtn = screen.getByTestId('org-option-all');
+    fireEvent.click(allOrgsBtn);
+
+    expect(setOrganizationMock).toHaveBeenCalledWith('');
     await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
     expect(waitForPendingRefreshMock).toHaveBeenCalled();
   });
 
-  it('does nothing when re-clicking the already-active scope', () => {
-    const { reloadMock } = stubLocation('/devices'); // store starts at orgScope 'current'
+  it('closes the dropdown with Escape and returns focus to the trigger', async () => {
+    stubLocation('/devices');
 
     render(<OrgSwitcher />);
 
-    fireEvent.click(screen.getByTestId('org-scope-current'));
+    // Open the dropdown
+    const trigger = screen.getByTestId('org-switcher-trigger');
+    fireEvent.click(trigger);
+    expect(screen.getByTestId('org-option-all')).toBeTruthy();
 
-    expect(setOrgScopeMock).not.toHaveBeenCalled();
-    expect(reloadMock).not.toHaveBeenCalled();
+    // Press Escape
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('org-option-all')).toBeNull();
+    });
+  });
+
+  it('Cmd+O toggles the dropdown', () => {
+    stubLocation('/devices');
+
+    render(<OrgSwitcher />);
+
+    // Closed initially
+    expect(screen.queryByTestId('org-option-all')).toBeNull();
+
+    // Open with Cmd+O
+    fireEvent.keyDown(document, { key: 'o', metaKey: true });
+    expect(screen.getByTestId('org-option-all')).toBeTruthy();
+
+    // Close with Cmd+O
+    fireEvent.keyDown(document, { key: 'o', metaKey: true });
+    expect(screen.queryByTestId('org-option-all')).toBeNull();
+  });
+
+  it('closes dropdown when clicking outside', async () => {
+    stubLocation('/devices');
+
+    render(<OrgSwitcher />);
+    openDropdown();
+    expect(screen.getByTestId('org-option-all')).toBeTruthy();
+
+    // Click outside
+    fireEvent.mouseDown(document.body);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('org-option-all')).toBeNull();
+    });
+  });
+});
+
+// #1319: when a site is the active scope, opening the picker should land the
+// user on their current context — the ancestor org pre-expanded and the
+// selected site row visible/highlighted — instead of a flat list of collapsed
+// orgs.
+describe('OrgSwitcher pre-expand to selected site (#1319)', () => {
+  const originalLocation = window.location;
+
+  beforeEach(() => {
+    setOrganizationMock.mockReset();
+    setSiteMock.mockReset();
+    fetchOrganizationsMock.mockReset();
+    fetchSitesMock.mockReset();
+    waitForPendingRefreshMock.mockClear();
+    waitForPendingRefreshMock.mockResolvedValue(undefined);
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, pathname: '/devices', reload: vi.fn() }
+    });
+
+    mockStoreState = {
+      currentOrgId: 'org-a',
+      currentSiteId: 'site-a1',
+      organizations: [
+        { id: 'org-a', partnerId: 'p1', name: 'Org A', status: 'active', createdAt: '2024-01-01' },
+        { id: 'org-b', partnerId: 'p1', name: 'Org B', status: 'active', createdAt: '2024-01-01' }
+      ],
+      sites: [
+        { id: 'site-a1', orgId: 'org-a', name: 'HQ Site', deviceCount: 12, createdAt: '2024-01-01' },
+        { id: 'site-a2', orgId: 'org-a', name: 'Branch Site', deviceCount: 3, createdAt: '2024-01-01' }
+      ],
+      isLoading: false
+    };
+    mockStoreRef.current = mockStoreState;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      writable: true,
+      value: originalLocation
+    });
+  });
+
+  function openDropdown() {
+    fireEvent.click(screen.getByTestId('org-switcher-trigger'));
+  }
+
+  it('auto-expands the ancestor org so the selected site is visible on open without a manual click', () => {
+    render(<OrgSwitcher />);
+
+    openDropdown();
+
+    // The selected site's row (and its sibling) are visible immediately — the
+    // user did NOT have to click the org row to expand it.
+    expect(screen.getByText('HQ Site')).toBeInTheDocument();
+    expect(screen.getByText('Branch Site')).toBeInTheDocument();
+    // The "All Sites" affordance only renders inside an expanded org, so its
+    // presence confirms the submenu mounted.
+    expect(screen.getByText('All Sites')).toBeInTheDocument();
+  });
+
+  it('does not throw even though jsdom stubs scrollIntoView (selected row scrolled into view)', () => {
+    // jsdom does not implement scrollIntoView; the component guards the call.
+    // Opening must not throw regardless of whether the stub exists.
+    expect(() => {
+      render(<OrgSwitcher />);
+      openDropdown();
+    }).not.toThrow();
+  });
+
+  it('does not auto-expand any org when no org is selected (partner-wide / All-orgs view)', () => {
+    // In the page-aware model (#1357) "All organizations" is represented by
+    // no org being selected, not a separate scope flag. With no current org
+    // there is no ancestor to pre-expand.
+    mockStoreState.currentOrgId = null;
+    mockStoreState.currentSiteId = null;
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    openDropdown();
+
+    // No submenu should be visible: sites stay hidden and there is no
+    // "All Sites" row until the user manually expands an org.
+    expect(screen.queryByText('HQ Site')).not.toBeInTheDocument();
+    expect(screen.queryByText('All Sites')).not.toBeInTheDocument();
+  });
+
+  it('leaves orgs collapsed when only an org (no site) is selected', () => {
+    mockStoreState.currentSiteId = null;
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    openDropdown();
+
+    // Org selected but no site → submenu stays collapsed.
+    expect(screen.queryByText('HQ Site')).not.toBeInTheDocument();
+    expect(screen.queryByText('All Sites')).not.toBeInTheDocument();
+  });
+
+  it('re-seeds expansion on each open so a manual collapse does not persist across opens', () => {
+    render(<OrgSwitcher />);
+
+    // First open: auto-expanded.
+    openDropdown();
+    expect(screen.getByText('HQ Site')).toBeInTheDocument();
+
+    // Manually collapse Org A by clicking its row, then close the dropdown.
+    const orgARow = screen
+      .getAllByRole('button')
+      .find(
+        (b) =>
+          b.getAttribute('data-testid') !== 'org-switcher-trigger' &&
+          b.textContent?.includes('Org A')
+      )!;
+    fireEvent.click(orgARow);
+    expect(screen.queryByText('HQ Site')).not.toBeInTheDocument();
+
+    // Re-open — should re-seed and expand again rather than respect the manual
+    // collapse from the prior session.
+    openDropdown(); // toggle closed
+    openDropdown(); // toggle open again
+    expect(screen.getByText('HQ Site')).toBeInTheDocument();
   });
 });

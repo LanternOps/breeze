@@ -12,6 +12,7 @@ import { rateLimiter } from '../services/rate-limit';
 import { logSessionAudit } from './remote/helpers';
 import { getTrustedClientIp } from '../services/clientIp';
 import { createAuditLogAsync } from '../services/auditService';
+import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -206,6 +207,52 @@ export function getActiveTerminalSession(sessionId: string): TerminalSession | u
 }
 
 /**
+ * Force-close a live terminal session held on THIS instance: kill the agent
+ * PTY (`terminal_stop`), clear the ping interval, drop the in-memory entry, and
+ * close the user socket. Returns `true` if a live session existed locally (and
+ * was closed), `false` if there was nothing to close here (e.g. the socket
+ * lives on another API instance, or already ended).
+ *
+ * The in-memory entry is deleted BEFORE `ws.close()`, so the socket's own
+ * onClose handler finds nothing and no-ops — no duplicate `terminal_stop` and
+ * no DB status re-write. A teardown caller that has already marked the row
+ * `disconnected` therefore does not race the onClose write.
+ *
+ * Used by mid-session revocation (the ping loop) and by
+ * `remoteSessionTeardown` so a suspended operator / quarantined device cannot
+ * keep a live shell relaying input.
+ */
+export function closeTerminalSession(sessionId: string): boolean {
+  const termSession = activeTerminalSessions.get(sessionId);
+  if (!termSession) return false;
+
+  if (termSession.pingInterval) {
+    clearInterval(termSession.pingInterval);
+  }
+  // Drop local state first so the ws.close() onClose handler finds nothing.
+  activeTerminalSessions.delete(sessionId);
+  unregisterTerminalOutputCallback(sessionId);
+
+  // Kill the agent PTY for this session.
+  try {
+    sendCommandToAgent(termSession.agentId, {
+      id: `term-stop-${sessionId}`,
+      type: 'terminal_stop',
+      payload: { sessionId },
+    });
+  } catch (err) {
+    console.error(`[TerminalWs] Failed to send terminal_stop for session ${sessionId}:`, err);
+  }
+
+  try {
+    termSession.userWs.close(4003, 'Session revoked');
+  } catch (err) {
+    console.error(`[TerminalWs] Failed to close terminal socket for session ${sessionId}:`, err);
+  }
+  return true;
+}
+
+/**
  * Create WebSocket handlers for terminal session
  */
 function createTerminalWsHandlers(
@@ -375,6 +422,34 @@ function createTerminalWsHandlers(
             ws.close(4008, 'Pong timeout');
             return;
           }
+          // Enforce mid-session revocation on the live socket, mirroring the
+          // desktop ping loop. Ticket consumption is the only connect-time auth
+          // boundary for a terminal WS, and the user→agent relay re-checks
+          // nothing once streaming — so a revoke (operator suspended, device
+          // quarantined, session ended elsewhere) would otherwise keep a live
+          // shell relaying input until pong timeout, or indefinitely while the
+          // client answers pings. This is the cross-instance backstop to the
+          // direct socket close done by `closeTerminalSession`. A revoked socket
+          // closes within at most one ping interval (PING_INTERVAL_MS). Fails CLOSED.
+          void isViewerSessionRevoked(sessionId)
+            .then((revoked) => {
+              if (revoked && activeTerminalSessions.has(sessionId)) {
+                console.warn(`[TerminalWs] Session ${sessionId} revoked mid-session, closing socket`);
+                clearInterval(pingInterval);
+                closeTerminalSession(sessionId);
+              }
+            })
+            .catch((revErr) => {
+              // A thrown rejection (not just Redis-down, which resolves `true`)
+              // must also fail CLOSED — tear the socket down rather than leave
+              // it relaying on an unhandled rejection.
+              console.error(
+                `[TerminalWs] Revocation check failed for session ${sessionId}, closing socket (fail-closed):`,
+                revErr
+              );
+              clearInterval(pingInterval);
+              closeTerminalSession(sessionId);
+            });
           try {
             ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
           } catch (err) {

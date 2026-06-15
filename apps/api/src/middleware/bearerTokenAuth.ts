@@ -106,9 +106,11 @@ export function _resetLegacyMcpWriteWarningsForTests() {
  * loses RLS GUCs (e.g. a worker, a misconfigured pool, a DELETE from a
  * privileged side-channel).
  *
- * This mirrors `computeAccessibleOrgIds` in middleware/auth.ts but is kept
- * inline here to avoid widening that file's export surface and to keep the
- * OAuth fast path cohesive. Returns `string[]` (never null) so the resulting
+ * This is the canonical shared partner→org resolver: it is consumed both by
+ * the OAuth/bearer path here and by routes/mcpServer.ts (which dropped its own
+ * duplicate copy in favor of this export). It mirrors `computeAccessibleOrgIds`
+ * in middleware/auth.ts but lives here rather than there to avoid widening that
+ * file's export surface. Returns `string[]` (never null) so the resulting
  * `accessibleOrgIds` always carries an explicit allowlist; an empty list
  * correctly produces "no rows match" rather than "all rows".
  *
@@ -117,7 +119,7 @@ export function _resetLegacyMcpWriteWarningsForTests() {
  * — same pattern as auth.ts. The returned list is then used to build the
  * non-system context the request actually runs under.
  */
-async function resolvePartnerAccessibleOrgIds(
+export async function resolvePartnerAccessibleOrgIds(
   partnerId: string,
   userId: string,
 ): Promise<string[]> {
@@ -300,6 +302,9 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           accessibleOrgIds: [payload.org_id],
           accessiblePartnerIds: [payload.partner_id],
           userId: payload.sub,
+          // Own partner — enables read-only visibility of the partner's
+          // partner-wide catalog rows for org-scope users.
+          currentPartnerId: payload.partner_id,
         }
       : {
           scope: 'partner',
@@ -310,6 +315,8 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           accessibleOrgIds: partnerAccessibleOrgIds ?? [],
           accessiblePartnerIds: [payload.partner_id],
           userId: payload.sub,
+          // Own partner — read-visibility of partner-wide catalog rows.
+          currentPartnerId: payload.partner_id,
         },
     async () => {
       await next();

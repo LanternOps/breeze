@@ -16,6 +16,11 @@ import { resolveRingDeviceCounts } from './updateRingsHelpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import { ringAutoApproveSchema } from '@breeze/shared/validators';
+
+// Typed default for a ring's autoApprove JSONB (#1317). A freshly created or
+// auto-provisioned ring auto-approves nothing until an operator opts in.
+const DEFAULT_RING_AUTO_APPROVE = { enabled: false, severities: [], deferralDays: 0 } as const;
 
 export const updateRingRoutes = new Hono();
 const requireUpdateRingRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -55,6 +60,27 @@ function resolveOrgId(
   return { error: 'orgId is required', status: 400 };
 }
 
+function resolveListOrgIds(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    accessibleOrgIds: string[] | null;
+    canAccessOrg: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string
+): { orgIds: string[] | null } | { error: string; status: 400 | 403 } {
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access denied to this organization', status: 403 };
+    }
+    return { orgIds: [requestedOrgId] };
+  }
+  if (auth.orgId) return { orgIds: [auth.orgId] };
+  if (auth.scope === 'partner') return { orgIds: auth.accessibleOrgIds ?? [] };
+  if (auth.scope === 'system') return { orgIds: null };
+  return { error: 'orgId is required', status: 400 };
+}
+
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 async function ensureDefaultRing(orgId: string, userId?: string): Promise<string> {
@@ -84,7 +110,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
       description: 'Default update ring — all patches require manual approval',
       enabled: true,
       targets: {},
-      autoApprove: {},
+      autoApprove: DEFAULT_RING_AUTO_APPROVE,
       schedule: {},
       rebootPolicy: {},
       categoryRules: [],
@@ -129,7 +155,9 @@ const createRingSchema = z.object({
   excludeCategories: z.array(z.string().max(100)).optional(),
   categoryRules: z.array(categoryRuleSchema).optional(),
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
-  autoApprove: z.record(z.unknown()).optional(),
+  // Ring-level auto-approval gate (#1317). Typed shape replaces the old
+  // free-form record so the ring owns approval rules with validated severities.
+  autoApprove: ringAutoApproveSchema.optional(),
   targets: z.record(z.unknown()).optional(),
 });
 
@@ -145,7 +173,8 @@ const updateRingSchema = z.object({
   excludeCategories: z.array(z.string().max(100)).optional(),
   categoryRules: z.array(categoryRuleSchema).optional(),
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
-  autoApprove: z.record(z.unknown()).optional(),
+  // Ring-level auto-approval gate (#1317). See createRingSchema.
+  autoApprove: ringAutoApproveSchema.optional(),
   targets: z.record(z.unknown()).optional(),
 });
 
@@ -174,16 +203,33 @@ updateRingRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
 
-    const orgResult = resolveOrgId(auth, query.orgId);
+    const orgResult = resolveListOrgIds(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
+    const { orgIds } = orgResult;
 
-    // Ensure default ring exists
-    await ensureDefaultRing(orgId, auth.user.id);
+    if (Array.isArray(orgIds) && orgIds.length === 0) {
+      return c.json({ data: [] });
+    }
+
+    // Preserve the legacy single-org default-ring behavior without implicitly
+    // creating a ring in every org when a partner views the global list.
+    if (Array.isArray(orgIds) && orgIds.length === 1) {
+      await ensureDefaultRing(orgIds[0]!, auth.user.id);
+    }
+
+    const conditions = [eq(patchPolicies.kind, 'ring'), eq(patchPolicies.enabled, true)];
+    if (Array.isArray(orgIds)) {
+      conditions.push(
+        orgIds.length === 1
+          ? eq(patchPolicies.orgId, orgIds[0]!)
+          : inArray(patchPolicies.orgId, orgIds)
+      );
+    }
 
     const rings = await db
       .select({
         id: patchPolicies.id,
+        orgId: patchPolicies.orgId,
         name: patchPolicies.name,
         description: patchPolicies.description,
         enabled: patchPolicies.enabled,
@@ -201,7 +247,7 @@ updateRingRoutes.get(
         updatedAt: patchPolicies.updatedAt,
       })
       .from(patchPolicies)
-      .where(and(eq(patchPolicies.orgId, orgId), eq(patchPolicies.kind, 'ring'), eq(patchPolicies.enabled, true)))
+      .where(and(...conditions))
       .orderBy(asc(patchPolicies.ringOrder), asc(patchPolicies.createdAt));
 
     const deviceCountMap = await resolveRingDeviceCounts(rings.map(r => r.id));
@@ -247,7 +293,7 @@ updateRingRoutes.post(
         categories: data.categories ?? [],
         excludeCategories: data.excludeCategories ?? [],
         sources: data.sources ?? null,
-        autoApprove: data.autoApprove ?? {},
+        autoApprove: data.autoApprove ?? DEFAULT_RING_AUTO_APPROVE,
         categoryRules: data.categoryRules ?? [],
         targets: data.targets ?? {},
         createdBy: auth.user.id,

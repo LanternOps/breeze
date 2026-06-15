@@ -1914,7 +1914,12 @@
       "Audit",
       "The Windows UAC Approval Flow",
       "How Just-in-Time Admin Works",
-      "Enabling and Disabling UAC Interception"
+      "Enabling and Disabling UAC Interception",
+      "Per-organization and per-device overrides",
+      "Operational notes",
+      "Exporting the audit trail for compliance",
+      "Running alongside other RMM or security agents",
+      "Platform support"
     ],
     "section": "features"
   },
@@ -3260,6 +3265,26 @@
     "section": "reference"
   },
   {
+    "path": "/reference/pam-api/",
+    "title": "PAM API",
+    "description": "REST reference for the Privileged Access Management endpoints -- elevation requests, approvals, revocation, rules, and the actuation surface.",
+    "headings": [
+      "Authentication and authorization",
+      "Elevation requests",
+      "List elevation requests",
+      "List active elevations",
+      "Respond (approve / deny)",
+      "Revoke",
+      "Rules",
+      "Create / update a rule",
+      "Preview a rule",
+      "Device actuation",
+      "Agent ingest",
+      "Configuration policy: enabling UAC capture"
+    ],
+    "section": "reference"
+  },
+  {
     "path": "/reference/partner-management/",
     "title": "Partner Management",
     "description": "Partner self-registration, multi-tenant partner hierarchy, feature flag controls, and partner administration.",
@@ -3577,6 +3602,26 @@
       "C1 — Confidentiality",
       "Vulnerability Disclosure",
       "Security Controls Summary"
+    ],
+    "section": "security"
+  },
+  {
+    "path": "/security/pam/",
+    "title": "Privileged Access Management Security Model",
+    "description": "Trust boundaries, elevation primitives, the dormant-admin pattern, separation of duties, and the audit guarantees behind Breeze just-in-time elevation -- for security teams evaluating PAM.",
+    "headings": [
+      "What PAM is for",
+      "Trust boundaries",
+      "Elevation primitives",
+      "The dormant-admin pattern",
+      "Secure-desktop credential injection (Flavor A)",
+      "Single-use actuation",
+      "Separation of duties",
+      "Decisioning chain and fail-safe behavior",
+      "Offline rule enforcement and staleness",
+      "Audit guarantees",
+      "What PAM does and does not protect against",
+      "Platform-evolution and liability notes"
     ],
     "section": "security"
   },

@@ -122,6 +122,11 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'tickets', action: 'read', description: 'View tickets, comments, and categories' },
   { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
 
+  // Catalog (billing/invoicing program)
+  { resource: 'catalog', action: 'read', description: 'View product catalog items and pricing' },
+  { resource: 'catalog', action: 'write', description: 'Create and update catalog items, pricing, and bundles' },
+  { resource: 'catalog', action: 'delete', description: 'Archive/delete catalog items' },
+
   // Users
   { resource: 'users', action: 'read', description: 'View users' },
   { resource: 'users', action: 'write', description: 'Edit users' },
@@ -176,6 +181,7 @@ const SYSTEM_ROLES = [
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
       'tickets:read',
+      'catalog:read', 'catalog:write',
       'reports:read', 'reports:write',
       'sites:read',
       'organizations:read'
@@ -190,6 +196,7 @@ const SYSTEM_ROLES = [
       'scripts:read',
       'alerts:read',
       'tickets:read',
+      'catalog:read',
       'reports:read',
       'sites:read',
       'organizations:read'

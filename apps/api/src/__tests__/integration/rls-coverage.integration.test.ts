@@ -106,6 +106,25 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['time_entries', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
+  ['scripts', 'partner_id'],
+  ['script_categories', 'partner_id'],
+  ['script_tags', 'partner_id'],
+  ['alert_templates', 'partner_id'],
+  // Product catalog (2026-06-14): partner-axis (RLS shape 3), flat
+  // breeze_has_partner_access(partner_id) policies. catalog_bundle_components
+  // denormalizes partner_id (rather than join through the bundle item) to
+  // avoid the #1016 nested-EXISTS bound-param bug. catalog_item_org_pricing
+  // is NOT here — it carries a direct org_id column and is auto-discovered
+  // as an ordinary shape-1 org-tenant table.
+  ['catalog_items', 'partner_id'],
+  ['catalog_bundle_components', 'partner_id'],
+  // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
+  // ticket_email_inbound (only system scope may write null-partner rows);
+  // NOT NULL on partner_inbound_domains. Policy:
+  //   breeze_current_scope()='system' OR breeze_has_partner_access(partner_id)
+  // Functional cross-partner forge proof: emailInboundRls.integration.test.ts.
+  ['ticket_email_inbound', 'partner_id'],
+  ['partner_inbound_domains', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -1558,4 +1577,173 @@ describe('script_execution_batches RLS — denormalized org_id', () => {
       expect(message).toMatch(/new row violates row-level security policy for table "script_execution_batches"/);
     },
   );
+});
+
+// ===========================================================================
+// scripts RLS — partner-wide cross-partner forge enforcement (dual-axis)
+//
+// The pg_catalog assertion for the PARTNER_TENANT_TABLES list proves that
+// a policy referencing breeze_has_partner_access exists per DML command.
+// It does NOT prove Postgres actually rejects a cross-partner write — a
+// missing second axis (the custom_field_definitions blind spot) would pass
+// the catalog check but silently let partner B act on partner A's partner-
+// wide scripts. This block forges cross-partner reads/writes as `breeze_app`
+// under real partner contexts and asserts the dual-axis policy is enforced
+// in practice. Self-contained (no setup.ts / no TRUNCATE): fixtures seeded
+// via withSystemDbAccessContext and torn down by id in an afterAll.
+// ===========================================================================
+describe('scripts RLS — partner-wide cross-partner forge enforcement (dual-axis)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let partnerAId: string;
+  let partnerBId: string;
+  // An organization owned by partner A. Used to prove that an ORGANIZATION-
+  // scope user (accessiblePartnerIds === []) can still READ partner A's
+  // partner-wide scripts via the read-only own-partner branch
+  // (breeze_current_partner_id), without gaining write access.
+  let orgInPartnerAId: string;
+  let scriptAId: string | null = null;
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const seeded = await db.insert(partners).values([
+        { name: `RLS Scripts A ${runSuffix}`, slug: `rls-scripts-a-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+        { name: `RLS Scripts B ${runSuffix}`, slug: `rls-scripts-b-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+      ]).returning({ id: partners.id });
+      partnerAId = seeded[0]!.id;
+      partnerBId = seeded[1]!.id;
+
+      const [org] = await db.insert(organizations).values({
+        partnerId: partnerAId,
+        name: `RLS Scripts Org ${runSuffix}`,
+        slug: `rls-scripts-org-${runSuffix}`,
+      }).returning({ id: organizations.id });
+      orgInPartnerAId = org!.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      if (scriptAId) await db.delete(scripts).where(eq(scripts.id, scriptAId!));
+      if (orgInPartnerAId) await db.delete(organizations).where(eq(organizations.id, orgInPartnerAId));
+      if (partnerAId) await db.delete(partners).where(eq(partners.id, partnerAId));
+      if (partnerBId) await db.delete(partners).where(eq(partners.id, partnerBId));
+    });
+  });
+
+  function partnerContext(partnerId: string) {
+    return { scope: 'partner' as const, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partnerId], userId: null };
+  }
+
+  // ORGANIZATION-scope context: accessiblePartnerIds is [] (no partner-axis
+  // WRITE/admin), but currentPartnerId = the caller's OWN partner so the
+  // read-only own-partner branch of the SELECT policy applies.
+  function orgContext(orgId: string, ownPartnerId: string | null) {
+    return {
+      scope: 'organization' as const,
+      orgId,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: [],
+      currentPartnerId: ownPartnerId,
+      userId: null,
+    };
+  }
+
+  it('partner A can INSERT and SELECT a partner-wide (org_id NULL) script', async () => {
+    await ensureFixtures();
+    const inserted = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.insert(scripts).values({
+        orgId: null, partnerId: partnerAId, name: `forge-${runSuffix}`,
+        osTypes: ['windows'], language: 'powershell', content: 'echo hi',
+      }).returning({ id: scripts.id })
+    );
+    expect(inserted).toHaveLength(1);
+    scriptAId = inserted[0]!.id;
+
+    const visibleToA = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visibleToA.map((r) => r.id)).toEqual([scriptAId]);
+  });
+
+  it('partner B cannot SELECT partner A\'s partner-wide script', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    const visibleToB = await withDbAccessContext(partnerContext(partnerBId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visibleToB).toEqual([]);
+  });
+
+  it('partner B INSERT forging partner A\'s partner_id is rejected by WITH CHECK', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(partnerContext(partnerBId), async () =>
+        db.insert(scripts).values({
+          orgId: null, partnerId: partnerAId, name: `forge-x-${runSuffix}`,
+          osTypes: ['windows'], language: 'powershell', content: 'echo x',
+        })
+      );
+    } catch (err) { caught = err; }
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "scripts"/);
+  });
+
+  // --- read-only own-partner branch: an ORGANIZATION-scope user (no partner-
+  // axis write access) can SEE + EXECUTE its MSP's partner-wide scripts but
+  // cannot edit them, and a different partner's org user still cannot see them.
+  it('org user in partner A CAN SELECT partner A\'s partner-wide script (read branch)', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    const visible = await withDbAccessContext(orgContext(orgInPartnerAId, partnerAId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visible.map((r) => r.id)).toEqual([scriptAId]);
+  });
+
+  it('org user in partner A UPDATE on the partner-wide script affects 0 rows (write policy unchanged)', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    // USING on the UPDATE policy does NOT include the read branch, so the row
+    // is invisible to the write path and the UPDATE matches nothing.
+    const updated = await withDbAccessContext(orgContext(orgInPartnerAId, partnerAId), async () =>
+      db.update(scripts).set({ name: `edited-by-org-${runSuffix}` }).where(eq(scripts.id, scriptAId!)).returning({ id: scripts.id })
+    );
+    expect(updated).toEqual([]);
+
+    // And the row is untouched.
+    const after = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.select({ name: scripts.name }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(after[0]?.name).toBe(`forge-${runSuffix}`);
+  });
+
+  it('org user in partner A forging a partner-wide INSERT is rejected by WITH CHECK (write policy unchanged)', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgInPartnerAId, partnerAId), async () =>
+        db.insert(scripts).values({
+          orgId: null, partnerId: partnerAId, name: `org-forge-${runSuffix}`,
+          osTypes: ['windows'], language: 'powershell', content: 'echo org',
+        })
+      );
+    } catch (err) { caught = err; }
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "scripts"/);
+  });
+
+  it('org user whose own partner is B CANNOT SELECT partner A\'s partner-wide script (cross-partner isolation)', async () => {
+    await ensureFixtures();
+    if (!scriptAId) throw new Error('seed test must run first');
+    // Same org row, but currentPartnerId points at partner B — the read branch
+    // (org_id IS NULL AND partner_id = current_partner_id) does not match.
+    const visible = await withDbAccessContext(orgContext(orgInPartnerAId, partnerBId), async () =>
+      db.select({ id: scripts.id }).from(scripts).where(eq(scripts.id, scriptAId!))
+    );
+    expect(visible).toEqual([]);
+  });
 });

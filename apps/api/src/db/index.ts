@@ -64,6 +64,17 @@ export interface DbAccessContext {
    * human callers (API keys, agents, system jobs).
    */
   userId?: string | null;
+  /**
+   * The caller's OWN partner id, used solely for read-visibility of
+   * partner-wide catalog rows (org_id NULL, partner_id = this) via the
+   * read-only branch of those tables' SELECT policy. This is NOT an access
+   * grant — it does not widen partner-axis WRITE/admin access (that is
+   * governed by `accessiblePartnerIds`). Set it for every caller scope
+   * (including organization scope) to the caller's own partner. Omit (or
+   * set to null) when no partner is in scope; the read branch simply won't
+   * apply.
+   */
+  currentPartnerId?: string | null;
 }
 
 export const SYSTEM_DB_ACCESS_CONTEXT: DbAccessContext = {
@@ -72,6 +83,9 @@ export const SYSTEM_DB_ACCESS_CONTEXT: DbAccessContext = {
   accessibleOrgIds: null,
   accessiblePartnerIds: null,
   userId: null,
+  // System scope already reads all rows via the scope short-circuit in the
+  // policy helpers, so the own-partner read branch is irrelevant here.
+  currentPartnerId: null,
 };
 
 function serializeAccessibleIds(scope: DbAccessScope, accessibleIds: string[] | null | undefined): string {
@@ -114,6 +128,7 @@ export async function withDbAccessContext<T>(
     await tx.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
     await tx.execute(sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`);
     await tx.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
+    await tx.execute(sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`);
 
     return dbContextStorage.run(tx as unknown as typeof baseDb, fn);
   });

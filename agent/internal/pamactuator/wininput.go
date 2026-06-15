@@ -34,6 +34,7 @@ const (
 const (
 	vkTab    = 0x09
 	vkReturn = 0x0D
+	vkEscape = 0x1B
 )
 
 // keybdInput mirrors the Win32 KEYBDINPUT struct. Layout matches the
@@ -96,8 +97,9 @@ func typeRune(r rune) error {
 	return nil
 }
 
-// pressVK sends a vk-down then vk-up pair. Used for Tab/Enter only; user
-// content goes through typeRune so layout-independent Unicode is used.
+// pressVK sends a vk-down then vk-up pair. Used for control keys
+// (Tab/Enter/Escape); user content goes through typeRune so
+// layout-independent Unicode is used.
 func pressVK(vk uint16) error {
 	down := winInput{inputType: inputKeyboard}
 	down.ki.wVk = vk

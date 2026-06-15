@@ -6,6 +6,8 @@ import { scriptRoutes } from './scripts';
 const SCRIPT_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SCRIPT_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ORG_ID_2 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const PARTNER_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 // Mock all services
@@ -670,5 +672,356 @@ describe('scripts routes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  // ── Task 7: List union (org ∪ partner-wide ∪ system) ─────────────────────
+  describe('Task 7: list union — partner-wide + org + system rows', () => {
+    function makePartnerAuth(overrides?: {
+      accessibleOrgIds?: string[];
+      noPartnerId?: boolean;
+    }) {
+      const partnerId = overrides?.noPartnerId ? null : PARTNER_ID;
+      const accessibleOrgIds = overrides?.accessibleOrgIds ?? [ORG_ID, ORG_ID_2];
+      return {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'partner' as const,
+        partnerId,
+        orgId: null,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: null, partnerId, scope: 'partner', type: 'access', mfa: true,
+        },
+        accessibleOrgIds,
+        canAccessOrg: (id: string) => accessibleOrgIds.includes(id),
+      };
+    }
+
+    function makeOrgAuth() {
+      return {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization' as const,
+        partnerId: PARTNER_ID,
+        orgId: ORG_ID,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: ORG_ID, partnerId: PARTNER_ID, scope: 'organization', type: 'access', mfa: true,
+        },
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (id: string) => id === ORG_ID,
+      };
+    }
+
+    it('partner user list returns scripts including partner-wide rows (org_id NULL, partner_id set)', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makePartnerAuth());
+        return next();
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 3 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([
+                    { id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID, isSystem: false },
+                    { id: SCRIPT_ID_2, name: 'Partner-wide Script', orgId: null, partnerId: PARTNER_ID, isSystem: false },
+                    { id: '11111111-1111-4111-8111-111111111111', name: 'System Script', orgId: null, partnerId: null, isSystem: true },
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/scripts?includeSystem=true', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(3);
+      const names = body.data.map((s: any) => s.name);
+      expect(names).toContain('Partner-wide Script');
+      expect(names).toContain('System Script');
+    });
+
+    it('org user list includes own org + partner-wide rows + system', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makeOrgAuth());
+        return next();
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 2 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([
+                    { id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID, isSystem: false },
+                    { id: SCRIPT_ID_2, name: 'Partner-wide Script', orgId: null, partnerId: PARTNER_ID, isSystem: false },
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/scripts?includeSystem=true', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      expect(body.data.some((s: any) => s.orgId === null && s.partnerId === PARTNER_ID)).toBe(true);
+    });
+
+    it('partner user list returns empty page when no accessible orgs and no partnerId', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makePartnerAuth({ accessibleOrgIds: [], noPartnerId: true }));
+        return next();
+      });
+
+      const res = await app.request('/scripts', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
+    });
+  });
+
+  // ── Task 8: Partner-wide create + edit/delete guard ───────────────────────
+  describe('Task 8: partner-wide create + org-user read-only guard', () => {
+    function makePartnerAuth() {
+      return {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'partner' as const,
+        partnerId: PARTNER_ID,
+        orgId: null,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: null, partnerId: PARTNER_ID, scope: 'partner', type: 'access', mfa: true,
+        },
+        accessibleOrgIds: [ORG_ID, ORG_ID_2],
+        canAccessOrg: (id: string) => [ORG_ID, ORG_ID_2].includes(id),
+      };
+    }
+
+    function makeOrgAuth() {
+      return {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization' as const,
+        partnerId: PARTNER_ID,
+        orgId: ORG_ID,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: ORG_ID, partnerId: PARTNER_ID, scope: 'organization', type: 'access', mfa: true,
+        },
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (id: string) => id === ORG_ID,
+      };
+    }
+
+    it('partner user with availability=partner creates a script with org_id=null and partner_id set', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makePartnerAuth());
+        return next();
+      });
+
+      let insertedValues: any;
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockImplementation((vals: any) => {
+          insertedValues = vals;
+          return {
+            returning: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'Partner Script',
+              orgId: null,
+              partnerId: PARTNER_ID,
+              isSystem: false
+            }])
+          };
+        })
+      } as any);
+
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Partner Script',
+          osTypes: ['windows'],
+          language: 'powershell',
+          content: 'echo hi',
+          availability: 'partner'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertedValues?.orgId).toBeNull();
+      expect(insertedValues?.partnerId).toBe(PARTNER_ID);
+    });
+
+    it('partner user with availability=org + orgId creates an org-specific script', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makePartnerAuth());
+        return next();
+      });
+
+      let insertedValues: any;
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockImplementation((vals: any) => {
+          insertedValues = vals;
+          return {
+            returning: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'Org Script',
+              orgId: ORG_ID,
+              partnerId: PARTNER_ID,
+              isSystem: false
+            }])
+          };
+        })
+      } as any);
+
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Org Script',
+          osTypes: ['windows'],
+          language: 'powershell',
+          content: 'echo hi',
+          orgId: ORG_ID,
+          availability: 'org'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertedValues?.orgId).toBe(ORG_ID);
+      expect(insertedValues?.partnerId).toBe(PARTNER_ID);
+    });
+
+    it('org user editing a partner-wide script (org_id=null, partner_id set) → 403', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makeOrgAuth());
+        return next();
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'Partner-wide Script',
+              orgId: null,
+              partnerId: PARTNER_ID,
+              isSystem: false,
+              content: 'echo hi',
+              version: 1
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'Hacked' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/shared across your organization/i);
+    });
+
+    it('org user deleting a partner-wide script (org_id=null, partner_id set) → 403', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makeOrgAuth());
+        return next();
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: SCRIPT_ID_1,
+                name: 'Partner-wide Script',
+                orgId: null,
+                partnerId: PARTNER_ID,
+                isSystem: false
+              }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/shared across your organization/i);
+    });
+
+    it('org user editing a system script → 403', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makeOrgAuth());
+        return next();
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'System Script',
+              orgId: null,
+              partnerId: null,
+              isSystem: true,
+              content: 'echo hi',
+              version: 1
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'Hacked' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/system scripts are read-only/i);
+    });
   });
 });

@@ -25,6 +25,7 @@ import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate 
 import { isCooldownActive, setCooldown, isConfigPolicyRuleCooling, markConfigPolicyRuleCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { resolveAlertRulesForDevice, resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 import { publishEvent } from './eventBus';
+import { resolveDeviceSiteId } from './deviceSiteResolver';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -149,7 +150,8 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
   // Phase 6b: Auto-correlate with other recent alerts on the same device
   await autoCorrelateAlert(newAlert.id, deviceId, orgId);
 
-  // Publish event
+  // Publish event — attach the device's site so site-restricted users see it
+  const siteId = await resolveDeviceSiteId(deviceId);
   await publishEvent(
     'alert.triggered',
     orgId,
@@ -161,7 +163,8 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       title,
       message
     },
-    'alert-service'
+    'alert-service',
+    { siteId }
   );
 
   console.log(`[AlertService] Created alert ${newAlert.id} for rule=${ruleId} device=${deviceId}`);
@@ -321,7 +324,8 @@ export async function resolveAlert(
     }
   }
 
-  // Publish event
+  // Publish event — attach the device's site so site-restricted users see it
+  const siteId = await resolveDeviceSiteId(alert.deviceId);
   await publishEvent(
     'alert.resolved',
     alert.orgId,
@@ -331,7 +335,8 @@ export async function resolveAlert(
       deviceId: alert.deviceId,
       resolutionNote
     },
-    'alert-service'
+    'alert-service',
+    { siteId }
   );
 
   console.log(`[AlertService] Resolved alert ${alertId}`);
@@ -673,7 +678,7 @@ export async function evaluateDeviceAlertsFromPolicy(deviceId: string): Promise<
           // Phase 6b: Auto-correlate with other recent alerts on the same device
           await autoCorrelateAlert(newAlert.id, deviceId, device.orgId);
 
-          // 11. Publish event
+          // 11. Publish event — carry siteId so site-restricted users get it
           await publishEvent(
             'alert.triggered',
             device.orgId,
@@ -687,7 +692,8 @@ export async function evaluateDeviceAlertsFromPolicy(deviceId: string): Promise<
               message,
               source: 'config_policy',
             },
-            'alert-service'
+            'alert-service',
+            { siteId: device.siteId }
           );
 
           console.log(`[AlertService] Created config policy alert ${newAlert.id} for cpar=${rule.id} device=${deviceId}`);
