@@ -27,6 +27,7 @@ import {
   type Density,
 } from '@/lib/density';
 import { OSIcon } from './osIcons';
+import { formatDeviceOsVersion } from './osDisplay';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -226,7 +227,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   organization: d => d.orgName || null,
   site: d => d.siteName || null,
   os: d => osLabels[d.os],
-  osVersion: d => d.osVersion || null,
+  osVersion: d => formatDeviceOsVersion(d.os, d.osVersion) || null,
   osBuild: d => d.osBuild || null,
   architecture: d => d.architecture || null,
   role: d => getDeviceRoleLabel(d.deviceRole ?? 'unknown'),
@@ -667,7 +668,7 @@ export default function DeviceList({
       header: () => sortHeader('osVersion', 'OS Version', 'Sort by OS version'),
       cell: (device) => (
         <td key="osVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-          {device.osVersion || dash}
+          {formatDeviceOsVersion(device.os, device.osVersion) || dash}
         </td>
       ),
     },
