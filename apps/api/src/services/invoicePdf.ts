@@ -21,6 +21,7 @@ import { db } from '../db';
 import { invoices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding } from '../db/schema';
 import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
+import { emitInvoiceEvent } from './invoiceEvents';
 import type { InvoiceActor } from './invoiceTypes';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -396,6 +397,13 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor) {
   // 5. Stamp sent_at (issueInvoice already sets it; this keeps it current for a
   //    re-send of an already-issued invoice).
   await db.update(invoices).set({ sentAt: new Date(), updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
+
+  // 6. Emit the invoice.sent lifecycle event (spec §16). The send action has
+  //    completed (email attempted + sent_at stamped) whether or not an email
+  //    service was configured — emit after the DB write so a failed send never
+  //    claims "sent". Fire-and-forget (a Redis outage must not fail the send).
+  await emitInvoiceEvent({ type: 'invoice.sent', invoiceId, orgId: invoice.orgId, partnerId: invoice.partnerId, actorUserId: actor.userId });
+
   const [updated] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   return updated!;
 }

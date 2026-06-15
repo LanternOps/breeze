@@ -5,6 +5,7 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getInvoice } from '../../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
+import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { invoiceActorFrom, handleServiceError } from './invoices';
 
 export const invoicePdfRoutes = new Hono();
@@ -26,7 +27,9 @@ invoicePdfRoutes.get('/:id/pdf', scopes, exportPerm, zValidator('param', idParam
     }
     if (!pdf) return c.json({ error: 'Failed to generate invoice PDF' }, 500);
 
-    const filename = `${invoice.invoiceNumber ?? invoice.id}.pdf`;
+    // invoice_number is partner-controlled (invoice_number_prefix); sanitize it
+    // before embedding in the Content-Disposition header to block CRLF injection.
+    const filename = safeContentDispositionFilename(`${invoice.invoiceNumber || `invoice-${invoice.id}`}.pdf`);
     return new Response(new Uint8Array(pdf), {
       status: 200,
       headers: {
