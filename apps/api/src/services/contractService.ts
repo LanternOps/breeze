@@ -36,7 +36,7 @@ function assertEditable(c: { status: string }): void {
 
 export async function createContract(input: {
   orgId: string; name: string; billingTiming: 'advance' | 'arrears'; intervalMonths: number;
-  startDate: string; endDate?: string; autoIssue?: boolean; currencyCode?: string; notes?: string; terms?: string;
+  startDate: string; endDate?: string | null; autoIssue?: boolean; currencyCode?: string; notes?: string | null; terms?: string | null;
 }, actor: ContractActor) {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
