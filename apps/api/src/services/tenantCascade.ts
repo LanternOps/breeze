@@ -570,13 +570,21 @@ export async function cascadeDeletePartner(
   partnerId: string,
   performedBy: string,
 ): Promise<{ orgsDeleted: number; tablesSwept: number }> {
-  const orgRows = (await dbModule.db.execute(
-    sql`SELECT id FROM organizations WHERE partner_id = ${partnerId}`,
+  // Lookup child orgs under system context — organizations has partner-axis RLS;
+  // bare breeze_app would silently return 0 rows.
+  const orgRows = (await dbModule.withSystemDbAccessContext(() =>
+    dbModule.db.execute(
+      sql`SELECT id FROM organizations WHERE partner_id = ${partnerId}`,
+    ),
   )) as unknown as Array<{ id: string }>;
+
+  // cascadeDeleteOrg manages its own per-statement withSystemDbAccessContext calls;
+  // do NOT wrap these calls in an outer context (would nest transactions).
   for (const row of orgRows) {
     await self.cascadeDeleteOrg(row.id, performedBy);
   }
 
+  // information_schema is not RLS-protected — bare db.execute is fine here.
   const partnerTableRows = (await dbModule.db.execute(sql`
     SELECT table_name FROM information_schema.columns
     WHERE table_schema = 'public'
@@ -588,13 +596,21 @@ export async function cascadeDeletePartner(
   const orderedSet = new Set(order);
   const sweep = [...order, ...partnerTables.filter((t) => !orderedSet.has(t))];
 
+  // Wrap each partner-axis DELETE individually under system context so they
+  // don't silently match zero rows under breeze_app RLS (partner-axis tables
+  // are RLS-protected and bare breeze_app cannot write them).
   for (const table of sweep) {
-    await dbModule.db.execute(
-      sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE partner_id = ${partnerId}`,
+    await dbModule.withSystemDbAccessContext(() =>
+      dbModule.db.execute(
+        sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE partner_id = ${partnerId}`,
+      ),
     );
   }
 
-  await dbModule.db.execute(sql`DELETE FROM partners WHERE id = ${partnerId}`);
+  // Final partners DELETE also needs system context.
+  await dbModule.withSystemDbAccessContext(() =>
+    dbModule.db.execute(sql`DELETE FROM partners WHERE id = ${partnerId}`),
+  );
 
   await createAuditLog({
     orgId: null,
