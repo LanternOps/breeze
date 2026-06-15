@@ -18,6 +18,7 @@ export * from './remoteAccessInlineSettings';
 export * from './safeRelativePath';
 export * from './catalog';
 export * from './invoices';
+export * from './contracts';
 
 // ============================================
 // Device Roles
