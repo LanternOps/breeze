@@ -22,7 +22,7 @@ Decisions locked during brainstorm:
 
 ## 2. Components
 
-1. **Excel add-in** — new app `apps/office-addin/` (Office.js + React task pane). Distribution: M365 **centralized deployment** pushed by the MSP via the client tenant's M365 admin center (the MSP already manages these tenants). Sideload manifest for dev. AppSource listing is post-v1.
+1. **Excel add-in** — new app `apps/excel-addin/` (Office.js + React task pane), built on the shared host-neutral `packages/office-addin-core`. Distribution: M365 **centralized deployment** pushed by the MSP via the client tenant's M365 admin center (the MSP already manages these tenants). Sideload manifest for dev. AppSource listing is post-v1.
 2. **Client AI API** — new route namespace `apps/api/src/routes/clientAi/` mounted at `/client-ai/*`. Separate from technician `/ai` routes and portal routes, with its own auth middleware.
 3. **MSP admin surface** — new "AI for Office" section in the existing Breeze web dashboard (no separate app).
 

@@ -82,3 +82,4 @@ export * from './tickets';
 export * from './ticketConfig';
 export * from './catalog';
 export * from './timeTracking';
+export * from './clientAi';

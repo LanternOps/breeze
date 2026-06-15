@@ -37,6 +37,14 @@ export const portalUsers = pgTable('portal_users', {
   email: varchar('email', { length: 255 }).notNull(),
   name: varchar('name', { length: 255 }),
   passwordHash: text('password_hash'),
+  // Entra ID (AI for Office) identity. Partial unique index
+  // portal_users_entra_identity_uniq on (entra_tenant_id, entra_oid)
+  // WHERE entra_oid IS NOT NULL is created via SQL migration
+  // (2026-06-12-b-client-ai-foundation.sql), mirroring the ai_sessions
+  // partial-index convention.
+  entraOid: text('entra_oid'),
+  entraTenantId: text('entra_tenant_id'),
+  authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' (SQL CHECK)
   linkedUserId: uuid('linked_user_id').references(() => users.id),
   receiveNotifications: boolean('receive_notifications').notNull().default(true),
   lastLoginAt: timestamp('last_login_at'),

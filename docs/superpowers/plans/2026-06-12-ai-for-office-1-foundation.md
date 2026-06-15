@@ -3311,7 +3311,7 @@ git commit -m "feat(client-ai): mount /client-ai route namespace" -m "Co-Authore
 - `/client-ai/sessions/*`, SDK wiring, SSE tool protocol, budget pre-flight (`checkBudget`/`checkBillingCredits` integration) — Plan 2. (`requireClientAiEnabledMiddleware` + `clientAiPolicy` from this plan are its entry points.)
 - DLP service (`clientAiDlp.ts`) — Plan 3; `client_ai_org_policies.dlp_config` is already in place.
 - Dashboard UI (onboarding wizard, policy editor, audit viewer, usage report, template CRUD routes + UI) — Plan 4. The template **table** ships here (all schema in one PR train per spec §12); the template **routes** ship with the manager in Plan 4.
-- Excel add-in (`apps/office-addin/`) — Plan 5.
+- Excel add-in (`apps/excel-addin/`) — Plan 5.
 - Writes to `client_ai_usage` and `ai_sessions.type='excel_client'` rows — Plan 2 (schema + constraints land here so Plan 2 is purely additive code).
 
 ## Open questions embedded above (for the implementer/reviewer)

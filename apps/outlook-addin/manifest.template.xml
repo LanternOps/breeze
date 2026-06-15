@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Outlook is the mail-model outlier: this is a net-new MailApp document, NOT a
+     TaskPaneApp like the Excel/Word/PowerPoint manifests. The root xsi:type, the
+     mailapp VersionOverrides namespaces, the Mailbox host, the legacy
+     FormSettings/Rule (required for validation, ignored once VersionOverrides is
+     present), and the MessageRead/MessageCompose extension points are all
+     mail-specific. SupportsPinning=true is the manifest half of item-changed
+     rebinding (the core re-reads mailbox.item when the pinned pane survives an
+     item switch). The WebApplicationInfo/Entra block is byte-identical to the
+     other hosts so SSO behaves the same everywhere. generate-manifest.mjs token
+     substitution is reused unchanged. -->
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
+           xsi:type="MailApp">
+  <Id>{{ADDIN_ID}}</Id>
+  <!-- Mail manifests require a 4-part version >= 1.0.0.0 (the validator rejects
+       the 3-part 0.1.0 the TaskPane manifests use). This is the add-in manifest
+       version, independent of the Breeze product version. -->
+  <Version>1.0.0.0</Version>
+  <ProviderName>Breeze</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Breeze AI"/>
+  <Description DefaultValue="AI assistant for Outlook, governed by your IT provider."/>
+  <IconUrl DefaultValue="{{BASE_URL}}/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="{{BASE_URL}}/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="{{SUPPORT_URL}}"/>
+  <AppDomains>
+    <AppDomain>{{API_BASE_URL}}</AppDomain>
+    <AppDomain>https://login.microsoftonline.com</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Mailbox"/>
+  </Hosts>
+  <Requirements>
+    <Sets>
+      <Set Name="Mailbox" MinVersion="1.1"/>
+    </Sets>
+  </Requirements>
+  <!-- FormSettings is required for validation but ignored once VersionOverrides
+       is present. -->
+  <FormSettings>
+    <Form xsi:type="ItemRead">
+      <DesktopSettings>
+        <SourceLocation DefaultValue="{{BASE_URL}}/taskpane.html"/>
+        <RequestedHeight>250</RequestedHeight>
+      </DesktopSettings>
+    </Form>
+    <Form xsi:type="ItemEdit">
+      <DesktopSettings>
+        <SourceLocation DefaultValue="{{BASE_URL}}/taskpane.html"/>
+      </DesktopSettings>
+    </Form>
+  </FormSettings>
+  <Permissions>ReadWriteItem</Permissions>
+  <!-- Rule is required for validation but ignored once VersionOverrides is
+       present. Activate on a message in both read and edit (compose) modes. -->
+  <Rule xsi:type="RuleCollection" Mode="Or">
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Edit"/>
+  </Rule>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1" xsi:type="VersionOverridesV1_1">
+      <Requirements>
+        <bt:Sets DefaultMinVersion="1.5">
+          <bt:Set Name="Mailbox"/>
+        </bt:Sets>
+      </Requirements>
+      <Hosts>
+        <Host xsi:type="MailHost">
+          <DesktopFormFactor>
+            <!-- Message Read surface. -->
+            <ExtensionPoint xsi:type="MessageReadCommandSurface">
+              <OfficeTab id="TabDefault">
+                <Group id="Breeze.MsgReadGroup">
+                  <Label resid="Breeze.GroupLabel"/>
+                  <Control xsi:type="Button" id="Breeze.MsgReadOpenPaneButton">
+                    <Label resid="Breeze.TaskpaneButton.Label"/>
+                    <Supertip>
+                      <Title resid="Breeze.TaskpaneButton.Label"/>
+                      <Description resid="Breeze.TaskpaneButton.Tooltip"/>
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="Breeze.Icon16"/>
+                      <bt:Image size="32" resid="Breeze.Icon32"/>
+                      <bt:Image size="80" resid="Breeze.Icon80"/>
+                    </Icon>
+                    <Action xsi:type="ShowTaskpane">
+                      <SourceLocation resid="Breeze.Taskpane.Url"/>
+                      <SupportsPinning>true</SupportsPinning>
+                    </Action>
+                  </Control>
+                </Group>
+              </OfficeTab>
+            </ExtensionPoint>
+            <!-- Message Compose surface. -->
+            <ExtensionPoint xsi:type="MessageComposeCommandSurface">
+              <OfficeTab id="TabDefault">
+                <Group id="Breeze.MsgComposeGroup">
+                  <Label resid="Breeze.GroupLabel"/>
+                  <Control xsi:type="Button" id="Breeze.MsgComposeOpenPaneButton">
+                    <Label resid="Breeze.TaskpaneButton.Label"/>
+                    <Supertip>
+                      <Title resid="Breeze.TaskpaneButton.Label"/>
+                      <Description resid="Breeze.TaskpaneButton.Tooltip"/>
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="Breeze.Icon16"/>
+                      <bt:Image size="32" resid="Breeze.Icon32"/>
+                      <bt:Image size="80" resid="Breeze.Icon80"/>
+                    </Icon>
+                    <Action xsi:type="ShowTaskpane">
+                      <SourceLocation resid="Breeze.Taskpane.Url"/>
+                      <SupportsPinning>true</SupportsPinning>
+                    </Action>
+                  </Control>
+                </Group>
+              </OfficeTab>
+            </ExtensionPoint>
+          </DesktopFormFactor>
+        </Host>
+      </Hosts>
+      <Resources>
+        <bt:Images>
+          <bt:Image id="Breeze.Icon16" DefaultValue="{{BASE_URL}}/assets/icon-16.png"/>
+          <bt:Image id="Breeze.Icon32" DefaultValue="{{BASE_URL}}/assets/icon-32.png"/>
+          <bt:Image id="Breeze.Icon80" DefaultValue="{{BASE_URL}}/assets/icon-80.png"/>
+        </bt:Images>
+        <bt:Urls>
+          <bt:Url id="Breeze.Taskpane.Url" DefaultValue="{{BASE_URL}}/taskpane.html"/>
+        </bt:Urls>
+        <bt:ShortStrings>
+          <bt:String id="Breeze.GroupLabel" DefaultValue="Breeze AI"/>
+          <bt:String id="Breeze.TaskpaneButton.Label" DefaultValue="Breeze AI"/>
+        </bt:ShortStrings>
+        <bt:LongStrings>
+          <bt:String id="Breeze.TaskpaneButton.Tooltip" DefaultValue="Open the Breeze AI assistant for this email."/>
+        </bt:LongStrings>
+      </Resources>
+      <WebApplicationInfo>
+        <Id>{{CLIENT_AI_ENTRA_CLIENT_ID}}</Id>
+        <Resource>api://{{BASE_HOST}}/{{CLIENT_AI_ENTRA_CLIENT_ID}}</Resource>
+        <Scopes>
+          <Scope>openid</Scope>
+          <Scope>profile</Scope>
+          <Scope>access_as_user</Scope>
+        </Scopes>
+      </WebApplicationInfo>
+    </VersionOverrides>
+  </VersionOverrides>
+</OfficeApp>
