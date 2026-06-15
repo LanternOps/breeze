@@ -5,8 +5,7 @@ import { ContractServiceError, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
-import { createManualInvoice, addContractLine, issueInvoice, deleteDraftInvoice } from './invoiceService';
-import { sendInvoiceEmail } from './invoicePdf';
+import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { countContractDevices, countContractSeats } from './contractQuantities';
 import type { InvoiceActor } from './invoiceTypes';
 
@@ -86,14 +85,23 @@ export async function listContracts(query: {
 export async function updateContract(contractId: string, patch: UpdateContractInput, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
   assertEditable(c);
+  // Schedule fields (billingTiming, intervalMonths, startDate) drive next_billing_at.
+  // Editing them on a non-draft contract would leave next_billing_at stale → mis-bills.
+  // Reject the request outright so the caller learns rather than silently dropping them.
+  if (c.status !== 'draft') {
+    if (patch.billingTiming !== undefined || patch.intervalMonths !== undefined || patch.startDate !== undefined) {
+      throw new ContractServiceError('Cannot change schedule fields on a non-draft contract', 409, 'INVALID_STATE');
+    }
+  }
   // Explicit whitelist — never write status, orgId, partnerId, createdBy, id,
   // nextBillingAt, or currencyCode from caller input. Status transitions belong
   // to dedicated lifecycle functions.
   const safeSet: Record<string, unknown> = { updatedAt: new Date() };
   if (patch.name !== undefined)           safeSet.name           = patch.name;
-  if (patch.billingTiming !== undefined)  safeSet.billingTiming  = patch.billingTiming;
-  if (patch.intervalMonths !== undefined) safeSet.intervalMonths = patch.intervalMonths;
-  if (patch.startDate !== undefined)      safeSet.startDate      = patch.startDate;
+  // Schedule fields are draft-only (guarded above).
+  if (c.status === 'draft' && patch.billingTiming !== undefined)  safeSet.billingTiming  = patch.billingTiming;
+  if (c.status === 'draft' && patch.intervalMonths !== undefined) safeSet.intervalMonths = patch.intervalMonths;
+  if (c.status === 'draft' && patch.startDate !== undefined)      safeSet.startDate      = patch.startDate;
   if ('endDate' in patch)                 safeSet.endDate        = patch.endDate ?? null;
   if (patch.autoIssue !== undefined)      safeSet.autoIssue      = patch.autoIssue;
   if ('notes' in patch)                   safeSet.notes          = patch.notes ?? null;
@@ -136,7 +144,7 @@ export async function activateContract(contractId: string, actor: ContractActor,
   if (c.status !== 'draft' && c.status !== 'paused') {
     throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
   }
-  // db.$count is not available in drizzle-orm 0.45.x — use select fallback.
+  // Count lines via a lightweight id-only select (simple + explicit).
   const lineRows = await db.select({ id: contractLines.id }).from(contractLines)
     .where(eq(contractLines.contractId, contractId));
   if (lineRows.length === 0) {
@@ -191,6 +199,10 @@ interface GenerateResult {
   generated: boolean;
   invoiceId?: string;
   skipped?: 'already_billed' | 'expired' | 'not_due';
+  /** True only when the contract opts into auto-issue AND an invoice was generated. */
+  autoIssue: boolean;
+  /** The InvoiceActor the caller needs to finish issue+send post-commit. Present only when generated. */
+  actor?: InvoiceActor;
 }
 
 /**
@@ -202,12 +214,19 @@ interface GenerateResult {
  * ledger row (ON CONFLICT DO NOTHING). A run that loses the claim race deletes
  * its own still-draft invoice and skips; the winner advances the pointer.
  *
- * INTENTIONAL system-scope: this performs cross-row writes via the bare `db`
- * handle (no per-request org context) and therefore MUST be called inside a
- * system db access context (as the daily contract worker and the manual /generate
- * route will — both must wrap it in `runOutsideDbContext(() => withSystemDbAccessContext(...))`).
- * It is NOT directly HTTP-wired. This mirrors the documented background-path
- * pattern of invoiceService.runOverdueSweep.
+ * Transaction boundary: this function does ONLY fast DB writes and is meant to
+ * run as a single all-or-nothing transaction supplied by the caller. It does
+ * NOT self-wrap — callers MUST supply the system db access context (the daily
+ * contract worker and the manual /generate route both wrap each call in
+ * `runOutsideDbContext(() => withSystemDbAccessContext(...))`). Because the whole
+ * body is one transaction, a mid-generation crash rolls the draft + claim back
+ * together — there is no stray draft to clean up. It is NOT directly HTTP-wired.
+ *
+ * Auto-issue + email are deliberately NOT done here: they involve PDF render and
+ * SMTP network I/O and must not run inside the billing transaction (a transient
+ * SMTP failure must never roll back the bill / re-bill loop). This function
+ * instead returns `{ autoIssue, actor }` so the caller can run
+ * issueInvoice + sendInvoiceEmail AFTER the transaction commits, best-effort.
  *
  * Catalog pricing is resolved INSIDE addContractLine (tenant-scoped), not here:
  * when a line carries a catalogItemId, addContractLine calls resolvePrice itself
@@ -221,9 +240,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
   if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
-    return { generated: false, skipped: 'not_due' };
+    return { generated: false, autoIssue: false, skipped: 'not_due' };
   }
-  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, skipped: 'not_due' };
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due' };
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -236,7 +255,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
-    return { generated: false, skipped: 'expired' };
+    return { generated: false, autoIssue: false, skipped: 'expired' };
   }
 
   // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
@@ -248,6 +267,12 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   };
   const lines = await db.select().from(contractLines)
     .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+
+  // Never bill an empty (zero-line) contract: don't create/claim/issue a $0 invoice.
+  // (removeContractLine stays permissive; this generation-side guard is the backstop.)
+  if (lines.length === 0) {
+    return { generated: false, autoIssue: false, skipped: 'not_due' };
+  }
 
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
   //    (the engine has no terms param on create).
@@ -261,10 +286,27 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    passed as-is — addContractLine ignores them and resolves the catalog price
   //    when catalogItemId is set, or uses them when it is null.
   for (const l of lines) {
-    let quantity = '1';
-    if (l.lineType === 'manual') quantity = l.manualQuantity ?? '0';
-    else if (l.lineType === 'per_device') quantity = String(await countContractDevices(c.orgId, l.siteId));
-    else if (l.lineType === 'per_seat') quantity = String(await countContractSeats(c.orgId));
+    let quantity: string;
+    switch (l.lineType) {
+      case 'flat':
+        quantity = '1';
+        break;
+      case 'manual':
+        quantity = l.manualQuantity ?? '0';
+        break;
+      case 'per_device':
+        quantity = String(await countContractDevices(c.orgId, l.siteId));
+        break;
+      case 'per_seat':
+        quantity = String(await countContractSeats(c.orgId));
+        break;
+      default: {
+        // Exhaustiveness: adding a 5th line type becomes a compile error here
+        // (instead of silently billing qty 1).
+        const _exhaustive: never = l.lineType;
+        throw new ContractServiceError(`Unknown contract line type: ${String(l.lineType)}`, 500, 'INVALID_STATE');
+      }
+    }
     await addContractLine(inv.id, {
       description: l.description, quantity, unitPrice: l.unitPrice, taxable: l.taxable,
       catalogItemId: l.catalogItemId, sourceId: l.id
@@ -281,16 +323,10 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
-    return { generated: false, skipped: 'already_billed' };
+    return { generated: false, autoIssue: false, skipped: 'already_billed' };
   }
 
-  // 4. Auto-issue + send when the contract opts in.
-  if (c.autoIssue) {
-    await issueInvoice(inv.id, actor);
-    await sendInvoiceEmail(inv.id, actor);
-  }
-
-  // 5. Advance the pointer to the next period (or expire if the next period is past end_date).
+  // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
   const nextIdx = idx + 1;
   const nextPeriod = computePeriod(c.startDate, c.intervalMonths, nextIdx);
   if (isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
@@ -302,5 +338,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   }
 
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
-  return { generated: true, invoiceId: inv.id };
+  // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
+  // run post-commit, outside the billing transaction. See the doc-comment above.
+  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor };
 }

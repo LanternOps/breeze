@@ -144,6 +144,10 @@ BEGIN
   END IF;
 END $$;
 
+-- Seed contract permissions (read/write/manage) onto the built-in PARTNER roles that
+-- already hold tickets:write, so the same staff who manage tickets can manage contracts
+-- out of the box. Idempotent: the NOT EXISTS guard skips any (role, permission) pair
+-- that's already granted, so re-applying this migration is a no-op.
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT rp.role_id, p2.id
 FROM role_permissions rp

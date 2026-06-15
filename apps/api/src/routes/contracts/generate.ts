@@ -4,6 +4,9 @@ import { z } from 'zod';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getContract, generateDueInvoice } from '../../services/contractService';
+import { issueInvoice } from '../../services/invoiceService';
+import { sendInvoiceEmail } from '../../services/invoicePdf';
+import { captureException } from '../../services/sentry';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { contractActorFrom, handleContractError } from './contracts';
 
@@ -18,10 +21,28 @@ contractGenerateRoutes.post('/:id/generate', scopes, managePerm, zValidator('par
     // Authorize: verify the caller can see this contract (404/403 gate).
     await getContract(id, contractActorFrom(c));
     // Execute generation under system scope (generateDueInvoice runs its own
-    // DB writes that must bypass per-request RLS context).
+    // DB writes that must bypass per-request RLS context). This is one
+    // all-or-nothing transaction containing only fast DB writes.
     const result = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() => generateDueInvoice(id))
     );
-    return c.json({ data: result });
+
+    // Post-commit, best-effort auto-issue + email — done OUTSIDE the billing
+    // transaction (PDF render + SMTP must not hold a DB connection or roll back
+    // the bill). A send failure leaves a correctly-claimed (issued-or-draft)
+    // invoice; we still return success to the client and note the email status.
+    let emailSent: boolean | undefined;
+    if (result.generated && result.autoIssue && result.invoiceId && result.actor) {
+      try {
+        await issueInvoice(result.invoiceId, result.actor);
+        await sendInvoiceEmail(result.invoiceId, result.actor);
+        emailSent = true;
+      } catch (err) {
+        emailSent = false;
+        console.error('[contracts/generate] post-commit issue/send failed', `invoiceId=${result.invoiceId}`, err instanceof Error ? err.message : err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    return c.json({ data: emailSent === undefined ? result : { ...result, emailSent } });
   } catch (err) { return handleContractError(c, err); }
 });

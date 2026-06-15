@@ -6,7 +6,9 @@
  * billed vs. failed. One contract failure never aborts the rest.
  *
  * Mirrors invoiceWorker.ts (queue, repeatable cron, init/shutdown, error
- * handling, runOutsideDbContext + withSystemDbAccessContext idiom).
+ * handling). Note: unlike invoiceWorker (which calls a self-wrapping service),
+ * this worker supplies the system db access context itself per call —
+ * generateDueInvoice does NOT self-wrap.
  */
 
 import { Queue, Worker } from 'bullmq';
@@ -16,6 +18,8 @@ import { captureException } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contracts } from '../db/schema';
 import { generateDueInvoice } from '../services/contractService';
+import { issueInvoice } from '../services/invoiceService';
+import { sendInvoiceEmail } from '../services/invoicePdf';
 
 const CONTRACT_QUEUE = 'contract-jobs';
 const BILLING_SWEEP_CRON = '0 5 * * *'; // daily 05:00, before the invoice overdue sweep (06:00)
@@ -54,8 +58,9 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
   let failed = 0;
 
   for (const row of due) {
+    let res;
     try {
-      const res = await runOutsideDbContext(() =>
+      res = await runOutsideDbContext(() =>
         withSystemDbAccessContext(() => generateDueInvoice(row.id, asOf))
       );
       if (res.generated) billed++;
@@ -63,6 +68,23 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
       failed++;
       console.error('[ContractWorker] generation failed', `contractId=${row.id}`, err instanceof Error ? err.message : err);
       captureException(err instanceof Error ? err : new Error(String(err)));
+      continue;
+    }
+
+    // Post-commit, best-effort auto-issue + email. The billing transaction has
+    // already committed (invoice drafted + period claimed + pointer advanced), so a
+    // failure here must NOT abort the sweep or count as a billing failure — the
+    // invoice is at worst left as a correctly-claimed draft, never re-billed.
+    // issueInvoice/sendInvoiceEmail self-manage their own DB context, so they run
+    // OUTSIDE any withSystemDbAccessContext wrapper.
+    if (res.generated && res.autoIssue && res.invoiceId && res.actor) {
+      try {
+        await issueInvoice(res.invoiceId, res.actor);
+        await sendInvoiceEmail(res.invoiceId, res.actor);
+      } catch (err) {
+        console.error('[ContractWorker] post-commit issue/send failed', `contractId=${row.id}`, `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
     }
   }
 
