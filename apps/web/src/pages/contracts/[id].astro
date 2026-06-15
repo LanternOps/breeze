@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import ContractWorkspace from '../../components/contracts/ContractWorkspace';
+
+// `id` is a contract UUID, or the literal `new` for the create form
+// (ContractWorkspace switches on it, mirroring pages/billing/invoices/[id].astro).
+const { id } = Astro.params;
+const title = id === 'new' ? 'New contract' : 'Contract';
+---
+
+<DashboardLayout title={title}>
+  <ContractWorkspace contractId={id} client:load />
+</DashboardLayout>

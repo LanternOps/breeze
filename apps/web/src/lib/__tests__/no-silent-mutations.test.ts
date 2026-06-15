@@ -65,6 +65,8 @@ const TARGET_GLOBS = [
   'src/components/billing/InvoiceDetail.tsx',
   'src/components/billing/PartnerBillingSettings.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
+  'src/components/contracts/ContractEditor.tsx',
+  'src/components/contracts/ContractDetail.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -256,7 +258,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(37);
+    expect(absoluteFiles.length).toBe(39);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
