@@ -186,7 +186,12 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
 
   await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
 
-  await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+  // System DB context required: no request auth context is established on this
+  // pre-auth path, so a bare UPDATE silently matches 0 rows under breeze_app RLS
+  // and last_login_at never moves (#1375).
+  await withSystemDbAccessContext(() =>
+    db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
+  );
 
   createAuditLogAsync({
     orgId: context.orgId ?? undefined,

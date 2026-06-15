@@ -138,7 +138,7 @@ vi.mock('../../services/sentry', () => ({
 }));
 
 import { loginRoutes } from './login';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { createTokenPair } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
@@ -320,5 +320,58 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     // recordFailedLogin call; login.ts must not add its own (#719 regression).
     expect(recordFailedLogin).toHaveBeenCalledTimes(1);
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
+// #1375 regression: the last_login_at write MUST run inside a system DB access
+// context. /login is unauthenticated, so on the bare `db` connection the
+// `users` RLS UPDATE silently matches 0 rows under breeze_app and last_login_at
+// never moves — the bug that froze the column platform-wide. This guards the
+// write against regressing back to a context-less `db.update`.
+describe('POST /login — last_login_at write runs under system DB context (#1375)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+  });
+
+  it('performs the users update only while inside withSystemDbAccessContext', async () => {
+    let insideSystemContext = false;
+    let updateRanInsideContext: boolean | null = null;
+
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => {
+      insideSystemContext = true;
+      try {
+        return await fn();
+      } finally {
+        insideSystemContext = false;
+      }
+    });
+
+    vi.mocked(db.update).mockImplementation((() => {
+      // Capture context state at the moment the write is issued. A bare
+      // `db.update(...)` (the bug) would record `false` here.
+      updateRanInsideContext = insideSystemContext;
+      return updateChain() as any;
+    }) as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(db.update).toHaveBeenCalled();
+    expect(updateRanInsideContext).toBe(true);
   });
 });
