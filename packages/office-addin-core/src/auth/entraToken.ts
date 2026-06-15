@@ -10,7 +10,7 @@
  * D4: swapping the fallback to NAA (createNestablePublicClientApplication)
  * later only touches this file.
  */
-import { ENTRA_CLIENT_ID } from '../config';
+import { getEntraClientId } from '../config';
 
 export type EntraTokenDeps = {
   getSsoToken: () => Promise<string>;
@@ -19,7 +19,7 @@ export type EntraTokenDeps = {
 
 /** Scope on the add-in's own app registration (matches the manifest's WebApplicationInfo Resource). */
 export function msalScopes(): string[] {
-  return [`api://${window.location.host}/${ENTRA_CLIENT_ID}/access_as_user`];
+  return [`api://${window.location.host}/${getEntraClientId()}/access_as_user`];
 }
 
 async function officeSsoToken(): Promise<string> {
@@ -42,7 +42,7 @@ function getMsalInstance() {
       const { PublicClientApplication } = await import('@azure/msal-browser');
       const pca = new PublicClientApplication({
         auth: {
-          clientId: ENTRA_CLIENT_ID,
+          clientId: getEntraClientId(),
           authority: 'https://login.microsoftonline.com/organizations',
           redirectUri: `${window.location.origin}/taskpane.html`,
         },

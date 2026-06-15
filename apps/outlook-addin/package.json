@@ -11,6 +11,7 @@
     "test": "vitest",
     "certs": "office-addin-dev-certs install",
     "manifest": "node scripts/generate-manifest.mjs",
+    "config": "node scripts/generate-config.mjs",
     "validate-manifest": "office-addin-manifest validate manifest.xml"
   },
   "dependencies": {

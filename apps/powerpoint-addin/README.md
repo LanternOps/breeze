@@ -1,7 +1,7 @@
-# Breeze AI for Office — Excel add-in
+# Breeze AI for Office — PowerPoint add-in
 
 Task-pane add-in delivering the governed Breeze AI assistant to MSP client
-end-users inside Excel. Spec: `docs/superpowers/specs/2026-06-12-breeze-ai-for-office-design.md`.
+end-users inside PowerPoint. Spec: `docs/superpowers/specs/2026-06-12-breeze-ai-for-office-design.md`.
 
 ## Prerequisites
 
@@ -15,13 +15,13 @@ end-users inside Excel. Spec: `docs/superpowers/specs/2026-06-12-breeze-ai-for-o
 - `.env` (copy `.env.example`): `VITE_API_BASE_URL`, `VITE_CLIENT_AI_ENTRA_CLIENT_ID`
   (must equal the API's `CLIENT_AI_ENTRA_CLIENT_ID`), `ADDIN_BASE_URL`.
 - The API's `CORS_ALLOWED_ORIGINS` must include this app's origin
-  (`https://localhost:3000` for dev).
+  (`https://localhost:3003` for dev).
 
 ## Scripts
 
 | Script | What it does |
 | --- | --- |
-| `pnpm dev` | Generates icons + `manifest.xml`, serves the pane at `https://localhost:3000` |
+| `pnpm dev` | Generates icons + `manifest.xml`, serves the pane at `https://localhost:3003` |
 | `pnpm build` | Type-check + production build into `dist/` + manifest |
 | `pnpm test` | Vitest (jsdom + the Office.js mock in `src/__tests__/officeMock.ts`) |
 | `pnpm manifest` | Re-render `manifest.xml` from `manifest.template.xml` + env |
@@ -29,11 +29,11 @@ end-users inside Excel. Spec: `docs/superpowers/specs/2026-06-12-breeze-ai-for-o
 
 ## Sideloading the generated `manifest.xml`
 
-- **Excel on the web:** Insert ▸ Add-ins ▸ More Add-ins ▸ MY ADD-INS ▸ Upload My Add-in.
-- **Excel desktop (macOS):** copy `manifest.xml` to
-  `~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/` and restart Excel
-  (the add-in appears under Insert ▸ My Add-ins ▸ Developer Add-ins).
-- **Excel desktop (Windows):** add a shared-folder catalog pointing at the
+- **PowerPoint on the web:** Insert ▸ Add-ins ▸ More Add-ins ▸ MY ADD-INS ▸ Upload My Add-in.
+- **PowerPoint desktop (macOS):** copy `manifest.xml` to
+  `~/Library/Containers/com.microsoft.Powerpoint/Data/Documents/wef/` and restart
+  PowerPoint (the add-in appears under Insert ▸ My Add-ins ▸ Developer Add-ins).
+- **PowerPoint desktop (Windows):** add a shared-folder catalog pointing at the
   directory containing `manifest.xml` (File ▸ Options ▸ Trust Center ▸ Trusted
   Add-in Catalogs), then Insert ▸ My Add-ins ▸ SHARED FOLDER.
 - Production distribution is M365 **centralized deployment** by the MSP (spec §2).

@@ -3,7 +3,7 @@
  * a 401 triggers ONE single-flight re-exchange (auth/session.ts) + retry.
  * Contracts: Contract reconciliation section of this plan (Plan 2 / Plan 4 pins).
  */
-import { API_BASE_URL } from '../config';
+import { getApiBaseUrl } from '../config';
 import { AuthBlockedError, clearSession, getSessionToken, reExchange } from '../auth/session';
 import { parseSseStream } from './sse';
 import {
@@ -43,7 +43,7 @@ export async function apiFetch(
     headers.set('Authorization', `Bearer ${token}`);
     if (init.body !== undefined && !headers.has('Content-Type'))
       headers.set('Content-Type', 'application/json');
-    return fetchImpl(`${API_BASE_URL}${path}`, { ...init, headers });
+    return fetchImpl(`${getApiBaseUrl()}${path}`, { ...init, headers });
   };
   let res = await doFetch();
   if (res.status === 401) {
