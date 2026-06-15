@@ -121,6 +121,11 @@ export const templateBodySchema = z
     description: z.string().max(2000).nullable().optional(),
     promptBody: z.string().min(1).max(20000),
     category: z.string().max(100).nullable().optional(),
+    /**
+     * Host targeting. null/absent or every host ⇒ shown in ALL hosts (the
+     * server canonicalizes via normalizeTemplateHosts). A subset ⇒ only those.
+     */
+    hosts: z.array(z.enum(CLIENT_HOSTS)).nullable().optional(),
     /** null/absent ⇒ partner-wide row (org_id NULL, partner_id set). */
     orgId: z.string().uuid().nullable().optional(),
   })
@@ -134,6 +139,11 @@ export const templateUpdateSchema = templateBodySchema
 export const templateListQuerySchema = z.object({
   orgId: z.string().uuid().optional(),
   scope: z.enum(['partner', 'org']).optional(),
+});
+
+/** Client-facing GET /templates query — the add-in's host narrows the list. */
+export const clientTemplateListQuerySchema = z.object({
+  host: z.enum(CLIENT_HOSTS).optional(),
 });
 
 // ============================================

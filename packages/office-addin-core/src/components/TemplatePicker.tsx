@@ -1,14 +1,20 @@
 import { useEffect, useState } from 'react';
 import { getTemplates } from '../api/client';
-import type { ClientAiTemplate } from '../api/types';
+import type { ClientAiTemplate, ClientHost } from '../api/types';
 
 /** Empty-state template picker (spec §10): click inserts the body into the composer. */
-export function TemplatePicker({ onPick }: { onPick: (body: string) => void }) {
+export function TemplatePicker({
+  host,
+  onPick,
+}: {
+  host: ClientHost;
+  onPick: (body: string) => void;
+}) {
   const [templates, setTemplates] = useState<ClientAiTemplate[]>([]);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let disposed = false;
-    getTemplates()
+    getTemplates(host)
       .then((items) => {
         if (!disposed) {
           setTemplates(items);
@@ -21,7 +27,7 @@ export function TemplatePicker({ onPick }: { onPick: (body: string) => void }) {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [host]);
   if (!loaded || templates.length === 0) return null;
   return (
     <div className="p-3">

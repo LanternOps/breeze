@@ -39,6 +39,13 @@ import type {
 type ToolRequest = Extract<ClientAiStreamEvent, { type: 'tool_request' }>;
 
 /**
+ * Max time the first send() waits for the SSE stream to confirm open before
+ * sending anyway. The server's eager ping normally arrives in well under this;
+ * the cap only guards against a missing/slow open signal hanging the message.
+ */
+const STREAM_OPEN_TIMEOUT_MS = 2000;
+
+/**
  * Host-neutral tool runner: invokes one executor from the host's tool layer and
  * never throws — executor failures collapse to { status: 'error' } so the model
  * can react. Mirrors the Excel dispatcher's executeTool, but bound to whatever
@@ -165,6 +172,10 @@ export class ChatController {
   private listeners = new Set<() => void>();
   private sessionId: string | null = null;
   private stream: StreamHandle | null = null;
+  // Resolves when the current stream is confirmed open (server subscriber
+  // registered). The first send() awaits this so the opening turn never streams
+  // before anyone is listening. Re-armed by every openStream().
+  private streamReady: Promise<void> = Promise.resolve();
   private nextId = 1;
   private api: ChatApi;
   private host: HostAdapter;
@@ -272,18 +283,36 @@ export class ChatController {
     // the Auto/Ask toggle. Auto is impossible unless the org opted in.
     this.update({ writeApproval: created.writeApproval });
     this.openStream(this.sessionId);
+    // Gate the first message on the subscription being live (see streamReady).
+    await this.streamReady;
     return this.sessionId;
   }
 
   private openStream(sessionId: string): void {
+    // Re-arm the readiness gate for this connection. onOpen fires when the
+    // server's eager ping arrives; a timeout and a permanent-error both release
+    // the gate so a missing signal can never hang the first send — it just falls
+    // back to the prior (send-immediately) behavior.
+    let release = () => {};
+    this.streamReady = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const timer = setTimeout(release, STREAM_OPEN_TIMEOUT_MS);
+    const markReady = () => {
+      clearTimeout(timer);
+      release();
+    };
     this.stream = this.api.streamEvents(sessionId, {
+      onOpen: markReady,
       onEvent: (event) => this.handleEvent(event),
       onReconnect: () => this.resync(),
-      onPermanentError: () =>
+      onPermanentError: () => {
+        markReady(); // unblock any pending first send so it can surface the error
         this.update({
           busy: false,
           banner: { kind: 'error', text: 'Connection to Breeze lost. Reload the task pane.' },
-        }),
+        });
+      },
     });
   }
 

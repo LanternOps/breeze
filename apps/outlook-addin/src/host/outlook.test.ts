@@ -37,12 +37,21 @@ describe('outlookHostAdapter', () => {
     expect(outlookHostAdapter.mutatingTools.has('draft_reply')).toBe(true);
   });
 
-  it('supplies the mail-flavored composer vocabulary', () => {
-    expect(outlookHostAdapter.contextOptions).toEqual([
-      { value: 'selection', label: 'This email' },
-      { value: 'none', label: 'No email data' },
-    ]);
-    expect(outlookHostAdapter.composerPlaceholder).toBe('Ask about this email…');
+  it('hides the context picker (mail has one context) and uses mail vocabulary', () => {
+    expect(outlookHostAdapter.hideContextPicker).toBe(true);
+    // No dropdown ⇒ no options to render.
+    expect(outlookHostAdapter.contextOptions).toBeUndefined();
+    expect(outlookHostAdapter.composerPlaceholder).toBe('Ask anything about this email…');
+  });
+
+  it('formatContextChip shows the subject verbatim and mail vocabulary', () => {
+    const fmt = outlookHostAdapter.formatContextChip;
+    expect(fmt).toBeTypeOf('function');
+    if (!fmt) return;
+    // A subject containing `!` must NOT be parsed as an Excel address.
+    expect(fmt('selection', 'Re: Urgent! Read this')).toBe('Re: Urgent! Read this');
+    expect(fmt('selection', undefined)).toBe('This email');
+    expect(fmt('none', undefined)).toBe('(none)');
   });
 
   it('buildPreview returns a text card carrying the body for draft_reply', async () => {

@@ -107,8 +107,29 @@ describe('TemplatesTab', () => {
       description: null,
       promptBody: 'Body',
       category: null,
+      hosts: [], // no apps checked ⇒ all apps (server canonicalizes to null)
       orgId: null,
     });
+  });
+
+  it('creates a template targeting selected apps (hosts in POST payload)', async () => {
+    mockApi();
+    render(<TemplatesTab />);
+    await waitFor(() => expect(screen.getByTestId('ai-office-template-create')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('ai-office-template-create'));
+    fireEvent.change(screen.getByTestId('ai-office-template-name'), { target: { value: 'Deck polish' } });
+    fireEvent.change(screen.getByTestId('ai-office-template-body'), { target: { value: 'Body' } });
+    fireEvent.click(screen.getByTestId('ai-office-template-host-powerpoint'));
+    fireEvent.click(screen.getByTestId('ai-office-template-host-word'));
+    fireEvent.click(screen.getByTestId('ai-office-template-save'));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true)
+    );
+    const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    const body = JSON.parse(String(postCall![1]!.body));
+    expect(body.hosts).toEqual(['powerpoint', 'word']);
   });
 
   it('creates an org-scoped template when an org is chosen', async () => {

@@ -93,6 +93,9 @@ export const clientAiPromptTemplates = pgTable('client_ai_prompt_templates', {
   description: text('description'),
   promptBody: text('prompt_body').notNull(),
   category: varchar('category', { length: 100 }),
+  // Host targeting: NULL ⇒ all hosts (default); a subset ⇒ only those hosts.
+  // Filtered by the client list endpoint, validated against the host enum.
+  hosts: text('hosts').array(),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

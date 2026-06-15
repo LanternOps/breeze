@@ -5,6 +5,7 @@ import {
   clientSessionType,
   clientHostFromType,
   isClientHost,
+  normalizeTemplateHosts,
 } from './clientAiHosts';
 
 describe('clientAiHosts', () => {
@@ -33,5 +34,19 @@ describe('clientAiHosts', () => {
   it('isClientHost narrows unknown strings', () => {
     expect(isClientHost('excel')).toBe(true);
     expect(isClientHost('keynote')).toBe(false);
+  });
+
+  describe('normalizeTemplateHosts', () => {
+    it('collapses null/empty/all-hosts to null (= all apps)', () => {
+      expect(normalizeTemplateHosts(null)).toBeNull();
+      expect(normalizeTemplateHosts(undefined)).toBeNull();
+      expect(normalizeTemplateHosts([])).toBeNull();
+      expect(normalizeTemplateHosts(['excel', 'word', 'powerpoint', 'outlook'])).toBeNull();
+    });
+
+    it('keeps a genuine subset and dedupes', () => {
+      expect(normalizeTemplateHosts(['powerpoint', 'word'])).toEqual(['powerpoint', 'word']);
+      expect(normalizeTemplateHosts(['excel', 'excel'])).toEqual(['excel']);
+    });
   });
 });

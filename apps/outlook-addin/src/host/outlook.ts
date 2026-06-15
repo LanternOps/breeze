@@ -29,12 +29,17 @@ export const outlookHostAdapter: HostAdapter = {
   buildPreview: buildOutlookPreview,
   captureSelectionAddress: captureOutlookSelectionLabel,
   subscribeSelectionChanged: subscribeOutlookItemChanged,
-  // Mail-flavored composer vocabulary (the workbook defaults are wrong for mail).
-  contextOptions: [
-    { value: 'selection', label: 'This email' },
-    { value: 'none', label: 'No email data' },
-  ],
-  composerPlaceholder: 'Ask about this email…',
-  // Mail-flavored chips (the spreadsheet grid heuristic is wrong for mail).
+  composerPlaceholder: 'Ask anything about this email…',
+  // Mail has exactly one meaningful context (the open message), so the
+  // context-source dropdown is just noise — hide it. The pane stays on the
+  // default 'selection' kind, so every turn carries the email. No `contextOptions`
+  // is needed (the picker that would render them is gone).
+  hideContextPicker: true,
+  // Outlook's selection label is the message SUBJECT, not an Excel range — show
+  // it verbatim (the address parser would mangle a subject containing `!`) and
+  // use mail vocabulary for the no-data chip.
+  formatContextChip: (kind, selectionLabel) =>
+    kind === 'none' ? '(none)' : selectionLabel ? selectionLabel : 'This email',
+  // Mail-flavored quick actions (the spreadsheet grid heuristic is wrong for mail).
   quickActions: outlookQuickActions,
 };

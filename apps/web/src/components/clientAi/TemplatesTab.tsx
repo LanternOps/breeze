@@ -14,6 +14,18 @@ import { navigateTo } from '@/lib/navigation';
  * move a template by delete + recreate).
  */
 
+/** The four Office hosts a template can target. Empty/all ⇒ shown everywhere. */
+const TEMPLATE_HOSTS = [
+  { value: 'excel', label: 'Excel' },
+  { value: 'word', label: 'Word' },
+  { value: 'powerpoint', label: 'PowerPoint' },
+  { value: 'outlook', label: 'Outlook' },
+] as const;
+type TemplateHost = (typeof TEMPLATE_HOSTS)[number]['value'];
+const HOST_LABEL: Record<string, string> = Object.fromEntries(
+  TEMPLATE_HOSTS.map((h) => [h.value, h.label]),
+);
+
 /** Row shape of GET /client-ai/admin/templates (Plan-4 Task 5). */
 interface TemplateRow {
   id: string;
@@ -24,8 +36,29 @@ interface TemplateRow {
   description: string | null;
   promptBody: string;
   category: string | null;
+  /** Host targeting: null ⇒ all apps; a subset ⇒ only those. */
+  hosts: string[] | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Compact app-target indicator for the list — "All apps" when unscoped. */
+function HostBadges({ hosts }: { hosts: string[] | null }) {
+  if (!hosts || hosts.length === 0) {
+    return <span className="text-xs text-muted-foreground">All apps</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1" data-testid="ai-office-template-hosts">
+      {hosts.map((h) => (
+        <span
+          key={h}
+          className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400"
+        >
+          {HOST_LABEL[h] ?? h}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 type EditorState = { mode: 'closed' } | { mode: 'create' } | { mode: 'edit'; template: TemplateRow };
@@ -167,6 +200,7 @@ export default function TemplatesTab() {
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-2">Name</th>
                 <th className="px-4 py-2">Scope</th>
+                <th className="px-4 py-2">Apps</th>
                 <th className="px-4 py-2">Category</th>
                 <th className="px-4 py-2">Updated</th>
                 <th className="px-4 py-2 text-right">Actions</th>
@@ -187,6 +221,9 @@ export default function TemplatesTab() {
                   </td>
                   <td className="px-4 py-2.5">
                     <ScopeBadge row={row} />
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <HostBadges hosts={row.hosts} />
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground">{row.category ?? '—'}</td>
                   <td className="px-4 py-2.5 text-xs text-muted-foreground">
@@ -216,7 +253,7 @@ export default function TemplatesTab() {
               ))}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
                     No templates yet — create the first one
                   </td>
                 </tr>
@@ -277,7 +314,14 @@ function TemplateEditorDialog({
   // 'partner' or an orgId. Immutable in edit mode (templateUpdateSchema has no
   // orgId — Plan-4 Task 5).
   const [scope, setScope] = useState<string>(editing ? (editing.orgId ?? 'partner') : 'partner');
+  // Host targeting — empty array ⇒ "all apps" (server canonicalizes to null).
+  const [hosts, setHosts] = useState<TemplateHost[]>(
+    (editing?.hosts as TemplateHost[] | null | undefined) ?? [],
+  );
   const [saving, setSaving] = useState(false);
+
+  const toggleHost = (host: TemplateHost) =>
+    setHosts((prev) => (prev.includes(host) ? prev.filter((h) => h !== host) : [...prev, host]));
 
   const valid = name.trim().length > 0 && body.trim().length > 0;
 
@@ -296,6 +340,7 @@ function TemplateEditorDialog({
                 description: description.trim() ? description.trim() : null,
                 promptBody: body,
                 category: category.trim() ? category.trim() : null,
+                hosts,
               }),
             }),
           errorFallback: 'Failed to update template',
@@ -314,6 +359,7 @@ function TemplateEditorDialog({
                 description: description.trim() ? description.trim() : null,
                 promptBody: body,
                 category: category.trim() ? category.trim() : null,
+                hosts,
                 orgId: scope === 'partner' ? null : scope,
               }),
             }),
@@ -407,6 +453,25 @@ function TemplateEditorDialog({
             </span>
           )}
         </label>
+        <div className="block text-sm">
+          <span className="text-muted-foreground">Apps</span>
+          <div className="mt-1 flex flex-wrap gap-3 rounded-md border bg-background px-3 py-2">
+            {TEMPLATE_HOSTS.map((h) => (
+              <label key={h.value} className="inline-flex items-center gap-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={hosts.includes(h.value)}
+                  onChange={() => toggleHost(h.value)}
+                  data-testid={`ai-office-template-host-${h.value}`}
+                />
+                {h.label}
+              </label>
+            ))}
+          </div>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Leave all unchecked to show this template in every app.
+          </span>
+        </div>
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <button

@@ -84,6 +84,27 @@ export type HostAdapter = {
    */
   composerPlaceholder?: string;
   /**
+   * OPTIONAL: hide the composer's context-source dropdown entirely. Some hosts
+   * have exactly one meaningful context (Outlook: the open message) so the
+   * picker is noise — set this and the pane always uses the default context kind
+   * ('selection'), with no opt-out control. The live context chip is still
+   * shown. Unset hosts (Excel/Word/PowerPoint) render the normal picker.
+   */
+  hideContextPicker?: boolean;
+  /**
+   * OPTIONAL host-specific formatter for the composer's context chip (the little
+   * pill that echoes what data the next message will share). When present, the
+   * Composer calls this INSTEAD of its Excel-flavored default — which strips the
+   * sheet qualifier from a range and surfaces the sheet name (`Sheet: Budget` /
+   * `Selection B2`). That default is wrong for hosts whose selection label is not
+   * an Excel address: Word's label is a free-text snippet and Outlook's is the
+   * message subject, so running the address parser on them mis-renders any value
+   * containing `!`. Called with the live context kind and the host's current
+   * selection label (or `undefined` when nothing is selected); must be PURE and
+   * never throw. Excel leaves this unset and inherits the address-aware default.
+   */
+  formatContextChip?: (kind: WorkbookContextKind, selectionLabel: string | undefined) => string;
+  /**
    * OPTIONAL host-specific empty-state quick-action chips. When present, the
    * pane uses this to compute the suggestion chips from the captured context
    * INSTEAD of the Excel grid-shape heuristic (`summarizeSelection` →

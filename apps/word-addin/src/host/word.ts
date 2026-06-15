@@ -25,6 +25,26 @@ export const wordHostAdapter: HostAdapter = {
   buildPreview: buildWordPreview,
   captureSelectionAddress: captureWordSelectionLabel,
   subscribeSelectionChanged: subscribeWordSelectionChanged,
-  // Document-flavored chips (the spreadsheet grid heuristic is wrong for Word).
+  // Document-flavored composer vocabulary — the workbook defaults
+  // ("Selection / Whole sheet / No workbook data", "Ask about this workbook…")
+  // are wrong for Word. The neutral 'sheet' kind means "the whole document" here
+  // (Word has no sheets), so it's labeled accordingly.
+  contextOptions: [
+    { value: 'selection', label: 'Selection' },
+    { value: 'sheet', label: 'Whole document' },
+    { value: 'none', label: '(none)' },
+  ],
+  composerPlaceholder: 'Ask anything about this document…',
+  // Word's selection label is a free-text snippet, not an Excel range — show it
+  // verbatim and never run the address parser on it.
+  formatContextChip: (kind, selectionLabel) =>
+    kind === 'none'
+      ? '(none)'
+      : kind === 'sheet'
+        ? 'Whole document'
+        : selectionLabel
+          ? `Selection: ${selectionLabel}`
+          : 'Selection',
+  // Document-flavored quick actions (the spreadsheet grid heuristic is wrong for Word).
   quickActions: wordQuickActions,
 };

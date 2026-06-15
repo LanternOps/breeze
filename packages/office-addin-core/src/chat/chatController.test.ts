@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChatController, type ChatApi } from './chatController';
-import { ApiError } from '../api/client';
+import { ApiError, type StreamCallbacks } from '../api/client';
 import type { HostAdapter } from '../host/types';
 import type { WorkbookContext } from '../api/types';
 
@@ -13,7 +13,12 @@ function stubApi(overrides: Partial<ChatApi> = {}): ChatApi {
     })),
     sendMessage: vi.fn(async () => undefined),
     postToolResult: vi.fn(async () => undefined),
-    streamEvents: vi.fn(() => ({ stop: vi.fn() })),
+    // Mirror the real stream: signal "open" so the first send()'s streamReady
+    // gate resolves immediately (a real stream gets the server's eager ping).
+    streamEvents: vi.fn((_sessionId: string, callbacks: StreamCallbacks) => {
+      callbacks.onOpen?.();
+      return { stop: vi.fn() };
+    }),
     getSession: vi.fn(async () => ({
       session: {
         id: 'sess-1',
@@ -150,6 +155,31 @@ describe('ChatController — send', () => {
       text: 'What does column B total to?',
     });
     expect(controller.getState().busy).toBe(true);
+  });
+
+  it('defers the first message until the stream signals open (first-turn race)', async () => {
+    // The stream only signals "open" once we release this gate — simulating the
+    // SSE still connecting while the first send() is in flight.
+    let releaseOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    const api = stubApi({
+      streamEvents: vi.fn((_sessionId: string, callbacks: StreamCallbacks) => {
+        void openGate.then(() => callbacks.onOpen?.());
+        return { stop: vi.fn() };
+      }),
+    });
+    const controller = new ChatController({ api, host: fakeHost(), captureContext: async () => undefined });
+    const sent = controller.send('hello');
+    // Flush the createSession/capture microtasks — control now parks on streamReady.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(api.createSession).toHaveBeenCalledTimes(1);
+    expect(api.streamEvents).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).not.toHaveBeenCalled(); // gated until the stream opens
+    releaseOpen();
+    await sent;
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces budget rejections as a banner and clears busy', async () => {

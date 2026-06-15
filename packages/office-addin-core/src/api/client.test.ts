@@ -166,9 +166,16 @@ describe('apiFetch wrappers', () => {
   it('getTemplates accepts both the pinned bare array and a {data:[...]} envelope', async () => {
     const template = { id: 't1', name: 'T', description: null, category: null, body: 'B' };
     const bare = vi.fn(async () => jsonResponse(200, [template]));
-    await expect(getTemplates(bare as unknown as typeof fetch)).resolves.toEqual([template]);
+    await expect(getTemplates(undefined, bare as unknown as typeof fetch)).resolves.toEqual([template]);
     const wrapped = vi.fn(async () => jsonResponse(200, { data: [template] }));
-    await expect(getTemplates(wrapped as unknown as typeof fetch)).resolves.toEqual([template]);
+    await expect(getTemplates(undefined, wrapped as unknown as typeof fetch)).resolves.toEqual([template]);
+  });
+
+  it('getTemplates forwards the host as a ?host= query param', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, []));
+    await getTemplates('powerpoint', fetchImpl as unknown as typeof fetch);
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toContain('/client-ai/templates?host=powerpoint');
   });
 });
 

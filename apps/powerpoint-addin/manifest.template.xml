@@ -5,7 +5,10 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
            xsi:type="TaskPaneApp">
   <Id>{{ADDIN_ID}}</Id>
-  <Version>0.1.0</Version>
+  <!-- 4-part version >= 1.0.0.0 — the manifest validator rejects the 3-part
+       0.1.0 as "version too low". This is the add-in manifest version,
+       independent of the Breeze product version. -->
+  <Version>1.0.0.0</Version>
   <ProviderName>Breeze</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Breeze AI"/>

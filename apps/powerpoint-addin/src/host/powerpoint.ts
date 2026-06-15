@@ -25,6 +25,28 @@ export const powerpointHostAdapter: HostAdapter = {
   buildPreview: buildPptPreview,
   captureSelectionAddress: capturePptSelectionLabel,
   subscribeSelectionChanged: subscribePptSelectionChanged,
-  // Deck-flavored chips (the spreadsheet grid heuristic is wrong for PowerPoint).
+  // Deck-flavored composer vocabulary — the workbook defaults
+  // ("Selection / Whole sheet / No workbook data", "Ask about this workbook…")
+  // are wrong for PowerPoint. The neutral 'sheet' kind means "the whole deck"
+  // here (PowerPoint has no sheets).
+  contextOptions: [
+    { value: 'selection', label: 'Selection' },
+    { value: 'sheet', label: 'Whole deck' },
+    { value: 'none', label: '(none)' },
+  ],
+  composerPlaceholder: 'Ask anything about this deck…',
+  // CRITICAL: PowerPoint's selection label is shape text or a "Slide N" locator,
+  // NOT an Excel range — without this the core falls back to the Excel chip,
+  // which runs `parseAddress` on the label and THROWS on "Slide 2" ("Unsupported
+  // address"), crashing the pane to blank. Show the label verbatim instead.
+  formatContextChip: (kind, selectionLabel) =>
+    kind === 'none'
+      ? '(none)'
+      : kind === 'sheet'
+        ? 'Whole deck'
+        : selectionLabel
+          ? `Selection: ${selectionLabel}`
+          : 'Selection',
+  // Deck-flavored quick actions (the spreadsheet grid heuristic is wrong for PowerPoint).
   quickActions: powerpointQuickActions,
 };

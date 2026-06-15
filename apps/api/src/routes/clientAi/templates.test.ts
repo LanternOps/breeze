@@ -107,6 +107,29 @@ describe('GET /client-ai/templates', () => {
     expect(body[0]).not.toHaveProperty('promptBody');
   });
 
+  it('appends the host built-in starter templates after the custom rows', async () => {
+    const res = await buildApp().request('/client-ai/templates?host=excel', {
+      headers: { Authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{ id: string }>;
+    // Custom (DB) rows come first…
+    expect(body[0]?.id).toBe('t-org');
+    expect(body[1]?.id).toBe('t-partner');
+    // …then the Excel defaults, and nothing from another host.
+    const defaultIds = body.filter((t) => t.id.startsWith('default-')).map((t) => t.id);
+    expect(defaultIds.length).toBeGreaterThan(0);
+    expect(defaultIds.every((id) => id.startsWith('default-excel-'))).toBe(true);
+  });
+
+  it('omits built-in defaults when no host is supplied (back-compat)', async () => {
+    const res = await buildApp().request('/client-ai/templates', {
+      headers: { Authorization: 'Bearer tok' },
+    });
+    const body = (await res.json()) as Array<{ id: string }>;
+    expect(body.some((t) => t.id.startsWith('default-'))).toBe(false);
+  });
+
   it('re-scopes the template read with the org partner axis (decision 4)', async () => {
     await buildApp().request('/client-ai/templates', {
       headers: { Authorization: 'Bearer tok' },

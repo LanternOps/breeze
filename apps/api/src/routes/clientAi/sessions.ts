@@ -696,6 +696,16 @@ clientAiSessionRoutes.get('/:id/events', async (c) => {
   return streamSSE(c, async (stream) => {
     const events = activeSession.eventBus.subscribe(subscriptionId);
 
+    // Immediate "subscriber registered" beacon. setInterval's first tick is one
+    // full interval (25s) away, which is far too late for the client to know the
+    // subscription is live — so the add-in would post its first message before
+    // this subscriber exists and the turn's opening deltas would stream into the
+    // void (the first-turn race). One eager ping closes that window: the client
+    // waits for it (StreamCallbacks.onOpen) before sending the first message.
+    await stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
+      /* client already gone — the abort handler tears down */
+    });
+
     const ping = setInterval(() => {
       stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
         /* client gone — the abort handler tears down */

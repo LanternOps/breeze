@@ -37,6 +37,26 @@ describe('wordHostAdapter', () => {
     expect(wordHostAdapter.mutatingTools.has('insert_text')).toBe(true);
   });
 
+  it('supplies document-flavored composer vocabulary (not the workbook defaults)', () => {
+    expect(wordHostAdapter.contextOptions).toEqual([
+      { value: 'selection', label: 'Selection' },
+      { value: 'sheet', label: 'Whole document' },
+      { value: 'none', label: '(none)' },
+    ]);
+    expect(wordHostAdapter.composerPlaceholder).toBe('Ask anything about this document…');
+  });
+
+  it('formatContextChip shows the text snippet verbatim and document vocabulary', () => {
+    const fmt = wordHostAdapter.formatContextChip;
+    expect(fmt).toBeTypeOf('function');
+    if (!fmt) return;
+    // A snippet containing `!` must NOT be parsed as an Excel address.
+    expect(fmt('selection', 'Hello! World')).toBe('Selection: Hello! World');
+    expect(fmt('selection', undefined)).toBe('Selection');
+    expect(fmt('sheet', undefined)).toBe('Whole document');
+    expect(fmt('none', undefined)).toBe('(none)');
+  });
+
   it('buildPreview returns a summary card for each mutating tool', async () => {
     for (const tool of wordHostAdapter.mutatingTools) {
       const preview = await wordHostAdapter.buildPreview(tool, {

@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { clientAiPromptTemplates } from '../../db/schema/clientAi';
 import { organizations } from '../../db/schema/orgs';
 import { requirePermission } from '../../middleware/auth';
+import { normalizeTemplateHosts } from '../../services/clientAiHosts';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolveScopedOrgId } from '../c2c/helpers';
@@ -51,6 +52,7 @@ const templateSelection = {
   description: clientAiPromptTemplates.description,
   promptBody: clientAiPromptTemplates.promptBody,
   category: clientAiPromptTemplates.category,
+  hosts: clientAiPromptTemplates.hosts,
   createdAt: clientAiPromptTemplates.createdAt,
   updatedAt: clientAiPromptTemplates.updatedAt,
 };
@@ -105,6 +107,7 @@ clientAiAdminTemplateRoutes.post(
         description: body.description ?? null,
         promptBody: body.promptBody,
         category: body.category ?? null,
+        hosts: normalizeTemplateHosts(body.hosts),
         createdBy: auth.user?.id ?? null,
       };
     } else {
@@ -120,6 +123,7 @@ clientAiAdminTemplateRoutes.post(
         description: body.description ?? null,
         promptBody: body.promptBody,
         category: body.category ?? null,
+        hosts: normalizeTemplateHosts(body.hosts),
         createdBy: auth.user?.id ?? null,
       };
     }
@@ -163,6 +167,7 @@ clientAiAdminTemplateRoutes.put(
     if (body.description !== undefined) set.description = body.description ?? null;
     if (body.promptBody !== undefined) set.promptBody = body.promptBody;
     if (body.category !== undefined) set.category = body.category ?? null;
+    if (body.hosts !== undefined) set.hosts = normalizeTemplateHosts(body.hosts);
 
     const [row] = await db
       .update(clientAiPromptTemplates)

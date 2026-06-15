@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
-import { asc, eq, or } from 'drizzle-orm';
+import { and, asc, eq, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { clientAiPromptTemplates } from '../../db/schema/clientAi';
 import { organizations } from '../../db/schema/orgs';
+import { isClientHost } from '../../services/clientAiHosts';
+import { defaultTemplatesForHost } from '../../services/clientAiDefaultTemplates';
 import {
   clientAiAuthMiddleware,
   requireClientAiEnabledMiddleware,
@@ -46,9 +48,21 @@ clientAiTemplateRoutes.get(
     const partnerId = org?.partnerId ?? null;
 
     const orgCondition = eq(clientAiPromptTemplates.orgId, auth.orgId);
-    const where = partnerId
+    const tenantWhere = partnerId
       ? or(orgCondition, eq(clientAiPromptTemplates.partnerId, partnerId))
       : orgCondition;
+
+    // App targeting: a template with hosts = NULL shows everywhere; otherwise
+    // only when this pane's host is in the list. Unknown/absent host param ⇒ no
+    // host filter (back-compat with a pane that doesn't send one).
+    const hostParam = c.req.query('host');
+    const host = hostParam && isClientHost(hostParam) ? hostParam : null;
+    const where = host
+      ? and(
+          tenantWhere,
+          sql`(${clientAiPromptTemplates.hosts} IS NULL OR ${host} = ANY(${clientAiPromptTemplates.hosts}))`,
+        )
+      : tenantWhere;
 
     const rows = await runOutsideDbContext(() =>
       withDbAccessContext(
@@ -74,14 +88,19 @@ clientAiTemplateRoutes.get(
       )
     );
 
-    return c.json(
-      rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        description: r.description,
-        category: r.category,
-        body: r.promptBody,
-      }))
-    );
+    const custom = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      category: r.category,
+      body: r.promptBody,
+    }));
+
+    // Built-in starter templates for this host always come along (after the
+    // org/partner ones). Only when we know the host — a pane that doesn't send
+    // one gets just the custom rows (back-compat).
+    const defaults = host ? defaultTemplatesForHost(host) : [];
+
+    return c.json([...custom, ...defaults]);
   }
 );

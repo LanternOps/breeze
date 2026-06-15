@@ -149,6 +149,27 @@ describe('POST /client-ai/admin/templates', () => {
     expect((await res.json()).template).toMatchObject({ orgId: ORG_ID, partnerId: null });
   });
 
+  it('stores a host subset and canonicalizes "all hosts" to null', async () => {
+    const subset = await buildApp().request('/client-ai/admin/templates', {
+      method: 'POST',
+      headers: AUTHED,
+      body: JSON.stringify({ name: 'Deck', promptBody: 'B', orgId: null, hosts: ['powerpoint', 'word'] }),
+    });
+    expect((await subset.json()).template.hosts).toEqual(['powerpoint', 'word']);
+
+    const all = await buildApp().request('/client-ai/admin/templates', {
+      method: 'POST',
+      headers: AUTHED,
+      body: JSON.stringify({
+        name: 'Everywhere',
+        promptBody: 'B',
+        orgId: null,
+        hosts: ['excel', 'word', 'powerpoint', 'outlook'],
+      }),
+    });
+    expect((await all.json()).template.hosts).toBeNull(); // all four ⇒ all apps
+  });
+
   it('404s an org-scoped create for an inaccessible org', async () => {
     const res = await buildApp().request('/client-ai/admin/templates', {
       method: 'POST',

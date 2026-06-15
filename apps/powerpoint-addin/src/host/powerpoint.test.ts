@@ -37,6 +37,27 @@ describe('powerpointHostAdapter', () => {
     expect(powerpointHostAdapter.mutatingTools.has('add_slide')).toBe(true);
   });
 
+  it('supplies deck-flavored composer vocabulary (not the workbook defaults)', () => {
+    expect(powerpointHostAdapter.contextOptions).toEqual([
+      { value: 'selection', label: 'Selection' },
+      { value: 'sheet', label: 'Whole deck' },
+      { value: 'none', label: '(none)' },
+    ]);
+    expect(powerpointHostAdapter.composerPlaceholder).toBe('Ask anything about this deck…');
+  });
+
+  it('formatContextChip shows the label verbatim — never parsed as an Excel range', () => {
+    const fmt = powerpointHostAdapter.formatContextChip;
+    expect(fmt).toBeTypeOf('function');
+    if (!fmt) return;
+    // The exact input that crashed the pane to blank: a "Slide N" locator must
+    // be shown, never fed to parseAddress.
+    expect(fmt('selection', 'Slide 2')).toBe('Selection: Slide 2');
+    expect(fmt('selection', undefined)).toBe('Selection');
+    expect(fmt('sheet', undefined)).toBe('Whole deck');
+    expect(fmt('none', undefined)).toBe('(none)');
+  });
+
   it('buildPreview returns a summary card for each mutating tool', async () => {
     for (const tool of powerpointHostAdapter.mutatingTools) {
       const preview = await powerpointHostAdapter.buildPreview(tool, {

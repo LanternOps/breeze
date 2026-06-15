@@ -163,9 +163,19 @@ export async function flagSession(
   );
 }
 
-/** GET /client-ai/templates → bare array (Plan 4 pin); {data:[...]} tolerated defensively. */
-export async function getTemplates(fetchImpl?: FetchLike): Promise<ClientAiTemplate[]> {
-  const body = await expectOk(await apiFetch('/client-ai/templates', {}, fetchImpl));
+/**
+ * GET /client-ai/templates → bare array (Plan 4 pin); {data:[...]} tolerated
+ * defensively. `host` narrows the list to templates targeting this pane's host
+ * (server-side filter); omit it to get every template for the org.
+ */
+export async function getTemplates(
+  host?: ClientHost,
+  fetchImpl?: FetchLike,
+): Promise<ClientAiTemplate[]> {
+  const path = host
+    ? `/client-ai/templates?host=${encodeURIComponent(host)}`
+    : '/client-ai/templates';
+  const body = await expectOk(await apiFetch(path, {}, fetchImpl));
   if (Array.isArray(body)) return body as ClientAiTemplate[];
   if (body && typeof body === 'object' && Array.isArray((body as { data?: unknown }).data))
     return (body as { data: ClientAiTemplate[] }).data;
@@ -204,6 +214,14 @@ export type StreamHandle = { stop: () => void };
 
 export type StreamCallbacks = {
   onEvent: (event: ClientAiStreamEvent) => void;
+  /**
+   * Fires ONCE when the stream is confirmed open — i.e. the first server frame
+   * has arrived, which means the server has registered this subscriber on the
+   * session event bus. The server writes an immediate `ping` on subscribe for
+   * exactly this purpose. Lets the caller defer the first message until the
+   * subscription exists, so the first turn never streams before anyone listens.
+   */
+  onOpen?: () => void;
   /** Fires after a successful REconnect — re-GET history and reconcile (the gap may have streamed events). */
   onReconnect?: () => void | Promise<void>;
   /** Auth permanently lost (re-exchange failed / blocked) — stop and surface. */
@@ -227,6 +245,7 @@ export function streamEvents(
   const controller = new AbortController();
   let attempt = 0;
   let connectedBefore = false;
+  let openSignalled = false;
 
   const loop = async (): Promise<void> => {
     for (;;) {
@@ -241,6 +260,11 @@ export function streamEvents(
         if (connectedBefore) await callbacks.onReconnect?.();
         connectedBefore = true;
         for await (const frame of parseSseStream(res.body)) {
+          // First frame on the first connection = subscriber is registered.
+          if (!openSignalled) {
+            openSignalled = true;
+            callbacks.onOpen?.();
+          }
           attempt = 0; // healthy traffic resets the backoff
           const event = decodeStreamFrame(frame);
           if (event) callbacks.onEvent(event);

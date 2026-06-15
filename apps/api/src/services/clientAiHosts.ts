@@ -25,3 +25,18 @@ export function clientHostFromType(type: string): ClientHost | null {
   const host = type.slice(0, -'_client'.length);
   return isClientHost(host) ? host : null;
 }
+
+/**
+ * Canonicalize a prompt template's host-target list for storage. NULL means
+ * "all hosts" — so an empty selection, or one that covers every host, both
+ * collapse to NULL. A genuine subset is deduped and returned as-is. This keeps
+ * "all hosts" a single canonical value (NULL) and prevents an empty `[]` from
+ * silently hiding a template in every host.
+ */
+export function normalizeTemplateHosts(
+  hosts: readonly ClientHost[] | null | undefined,
+): ClientHost[] | null {
+  if (!hosts || hosts.length === 0) return null;
+  const unique = [...new Set(hosts)];
+  return unique.length >= CLIENT_HOSTS.length ? null : unique;
+}

@@ -20,6 +20,7 @@ import {
 import { BlockedScreen } from './BlockedScreen';
 import { SignInScreen } from './SignInScreen';
 import { ChatPane } from './ChatPane';
+import { ErrorBoundary } from './ErrorBoundary';
 import type { ClientHost } from '../api/types';
 import type { HostAdapter } from '../host/types';
 
@@ -73,23 +74,30 @@ export function App({ host, clientHost }: { host: HostAdapter; clientHost: Clien
       });
   }, []);
 
-  switch (phase.name) {
-    case 'loading':
-      return (
-        <div className="flex h-screen items-center justify-center text-sm text-gray-400">
-          Connecting to Breeze…
-        </div>
-      );
-    case 'signin':
-      return <SignInScreen failed={phase.failed} onSignIn={interactiveSignIn} />;
-    case 'blocked':
-      return (
-        <BlockedScreen
-          kind={phase.kind}
-          onRetry={phase.kind === 'retryable' ? interactiveSignIn : undefined}
-        />
-      );
-    case 'ready':
-      return <ChatPane session={phase.session} host={host} clientHost={clientHost} />;
+  // ErrorBoundary wraps every phase so an uncaught render error (a host adapter
+  // throwing, a malformed payload) surfaces a readable message instead of
+  // silently blanking the Office task pane.
+  return <ErrorBoundary>{renderPhase()}</ErrorBoundary>;
+
+  function renderPhase() {
+    switch (phase.name) {
+      case 'loading':
+        return (
+          <div className="flex h-screen items-center justify-center text-sm text-gray-400">
+            Connecting to Breeze…
+          </div>
+        );
+      case 'signin':
+        return <SignInScreen failed={phase.failed} onSignIn={interactiveSignIn} />;
+      case 'blocked':
+        return (
+          <BlockedScreen
+            kind={phase.kind}
+            onRetry={phase.kind === 'retryable' ? interactiveSignIn : undefined}
+          />
+        );
+      case 'ready':
+        return <ChatPane session={phase.session} host={host} clientHost={clientHost} />;
+    }
   }
 }

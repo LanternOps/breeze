@@ -114,7 +114,7 @@ export function ChatPane({
             onSelect={(prompt) => void controller.send(prompt)}
             {...(host.quickActions ? { compute: host.quickActions } : {})}
           />
-          <TemplatePicker onPick={(body) => controller.insertTemplate(body)} />
+          <TemplatePicker host={clientHost} onPick={(body) => controller.insertTemplate(body)} />
         </>
       )}
       <ChatThread
@@ -135,6 +135,8 @@ export function ChatPane({
         onSend={() => void controller.send()}
         {...(host.contextOptions ? { contextOptions: host.contextOptions } : {})}
         {...(host.composerPlaceholder ? { composerPlaceholder: host.composerPlaceholder } : {})}
+        {...(host.formatContextChip ? { formatContextChip: host.formatContextChip } : {})}
+        {...(host.hideContextPicker ? { hideContextPicker: true } : {})}
       />
       <BrandingFooter branding={session.branding} />
 
