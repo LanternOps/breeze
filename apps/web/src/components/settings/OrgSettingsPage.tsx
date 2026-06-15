@@ -20,6 +20,7 @@ import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
+import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
@@ -56,6 +57,12 @@ const tabs = [
     id: 'security',
     label: 'Security',
     description: 'Access policies and MFA',
+    icon: Shield
+  },
+  {
+    id: 'approval-security',
+    label: 'Approval Security',
+    description: 'Step-up verification for approvals',
     icon: Shield
   },
   {
@@ -425,6 +432,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             locked={locked}
           />
         );
+      case 'approval-security':
+        return <OrgApprovalSecurityTab />;
       case 'event-logs':
         return (
           <OrgEventLogSettings

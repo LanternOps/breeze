@@ -123,8 +123,10 @@ describe('authenticator store approver helpers', () => {
     // Step 2: startAuthentication called with { optionsJSON }
     expect(webauthnMocks.startAuthentication).toHaveBeenCalledWith({ optionsJSON: options });
 
-    // Step 3: proof body shape (base64url strings from the assertion)
+    // Step 3: proof body shape (base64url strings from the assertion) — carries
+    // the webauthn_platform discriminant for the server's approvalProofSchema.
     expect(proof).toEqual({
+      type: 'webauthn_platform',
       credentialId: 'cred-1',
       authenticatorData: 'auth-data',
       clientDataJSON: 'client-data',

@@ -102,6 +102,7 @@ export async function getApprovalAssertion(basePath: string, id: string): Promis
   const response = await startAuthentication({ optionsJSON });
 
   return {
+    type: 'webauthn_platform',
     credentialId: response.id,
     authenticatorData: response.response.authenticatorData,
     clientDataJSON: response.response.clientDataJSON,
