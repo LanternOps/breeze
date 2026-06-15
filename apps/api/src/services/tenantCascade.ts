@@ -39,6 +39,11 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { createAuditLog } from './auditService';
+// Self-import so cascadeDeletePartner calls cascadeDeleteOrg /
+// topologicalCascadeOrder through the module namespace. This keeps those
+// internal calls interceptable by `vi.spyOn(mod, ...)` (an ESM live-binding
+// reference, which bare in-module calls bypass).
+import * as self from './tenantCascade';
 
 /**
  * Authoritative list of `org_id`-scoped public tables that participate
@@ -305,8 +310,10 @@ interface FkEdge {
  * loud error so the deploy fails rather than silently producing a
  * partial cascade.
  */
-export async function topologicalCascadeOrder(): Promise<string[]> {
-  const tableSet = new Set(ORG_CASCADE_DELETE_ORDER);
+export async function topologicalCascadeOrder(
+  tables: Iterable<string> = ORG_CASCADE_DELETE_ORDER,
+): Promise<string[]> {
+  const tableSet = new Set(tables);
   const edges = (await dbModule.db.execute(sql`
     SELECT
       tc.relname AS child_table,
@@ -544,6 +551,63 @@ function quoteIdent(table: string): string {
     throw new Error(`[tenantCascade] refusing to quote unsafe identifier: ${table}`);
   }
   return `"${table}"`;
+}
+
+/**
+ * Hard-deletes a partner and ALL its data. Built for synthetic test-canary
+ * cleanup (see routes/internal/synthetic.ts). The caller MUST have already
+ * verified the partner is a disposable canary — this helper does not re-check.
+ *
+ * Strategy (mirrors cascadeDeleteOrg):
+ *   1. For each child org -> cascadeDeleteOrg (also removes the organizations row).
+ *   2. FK-safe sweep of every public table with a `partner_id` column, deleting
+ *      this partner's rows children-first. One DELETE per call so a single FK
+ *      failure cannot poison a shared transaction.
+ *   3. Delete the partners row last.
+ * Idempotent: re-running on an already-purged partner matches zero rows.
+ */
+export async function cascadeDeletePartner(
+  partnerId: string,
+  performedBy: string,
+): Promise<{ orgsDeleted: number; tablesSwept: number }> {
+  const orgRows = (await dbModule.db.execute(
+    sql`SELECT id FROM organizations WHERE partner_id = ${partnerId}`,
+  )) as unknown as Array<{ id: string }>;
+  for (const row of orgRows) {
+    await self.cascadeDeleteOrg(row.id, performedBy);
+  }
+
+  const partnerTableRows = (await dbModule.db.execute(sql`
+    SELECT table_name FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND column_name = 'partner_id'
+      AND table_name <> 'organizations'
+  `)) as unknown as Array<{ table_name: string }>;
+  const partnerTables = partnerTableRows.map((r) => r.table_name);
+  const order = await self.topologicalCascadeOrder(partnerTables);
+  const orderedSet = new Set(order);
+  const sweep = [...order, ...partnerTables.filter((t) => !orderedSet.has(t))];
+
+  for (const table of sweep) {
+    await dbModule.db.execute(
+      sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE partner_id = ${partnerId}`,
+    );
+  }
+
+  await dbModule.db.execute(sql`DELETE FROM partners WHERE id = ${partnerId}`);
+
+  await createAuditLog({
+    orgId: null,
+    actorType: 'system',
+    actorId: performedBy,
+    action: 'test.synthetic_partner.purged',
+    resourceType: 'partner',
+    resourceId: partnerId,
+    details: { partnerId, orgsDeleted: orgRows.length, tablesSwept: sweep.length },
+    result: 'success',
+  });
+
+  return { orgsDeleted: orgRows.length, tablesSwept: sweep.length };
 }
 
 /**
