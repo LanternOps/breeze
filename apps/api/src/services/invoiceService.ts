@@ -228,6 +228,69 @@ export async function listInvoices(query: { orgId?: string; status?: string; lim
 }
 
 // ---------------------------------------------------------------------------
+// Billing settings (Task 6.3): partner-level invoice config + per-org tax/address.
+// Only provided fields are written; `null` explicitly clears a nullable column.
+// ---------------------------------------------------------------------------
+
+export async function updatePartnerBillingSettings(
+  patch: {
+    currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
+    invoiceTermsDays: number; invoiceFooter?: string | null;
+  },
+  actor: InvoiceActor
+) {
+  const partnerId = requirePartner(actor);
+  const set: Record<string, unknown> = {
+    currencyCode: patch.currencyCode,
+    invoiceNumberPrefix: patch.invoiceNumberPrefix,
+    invoiceTermsDays: patch.invoiceTermsDays,
+  };
+  // Numeric columns take fixed-string values; null clears the optional rate/footer.
+  if (patch.defaultTaxRate !== undefined) {
+    set.defaultTaxRate = patch.defaultTaxRate === null ? null : Number(patch.defaultTaxRate).toFixed(3);
+  }
+  if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
+  const [row] = await db.update(partners).set(set).where(eq(partners.id, partnerId)).returning({
+    currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
+    invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
+    invoiceFooter: partners.invoiceFooter,
+  });
+  if (!row) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
+  return row;
+}
+
+export async function updateOrgBillingSettings(
+  orgId: string,
+  patch: {
+    taxId?: string | null; taxExempt?: boolean; taxRate?: number | null;
+    billingAddressLine1?: string | null; billingAddressLine2?: string | null;
+    billingAddressCity?: string | null; billingAddressRegion?: string | null;
+    billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
+  },
+  actor: InvoiceActor
+) {
+  requireOrgAccess(actor, orgId);
+  const set: Record<string, unknown> = {};
+  if (patch.taxId !== undefined) set.taxId = patch.taxId;
+  if (patch.taxExempt !== undefined) set.taxExempt = patch.taxExempt;
+  if (patch.taxRate !== undefined) set.taxRate = patch.taxRate === null ? null : Number(patch.taxRate).toFixed(3);
+  if (patch.billingAddressLine1 !== undefined) set.billingAddressLine1 = patch.billingAddressLine1;
+  if (patch.billingAddressLine2 !== undefined) set.billingAddressLine2 = patch.billingAddressLine2;
+  if (patch.billingAddressCity !== undefined) set.billingAddressCity = patch.billingAddressCity;
+  if (patch.billingAddressRegion !== undefined) set.billingAddressRegion = patch.billingAddressRegion;
+  if (patch.billingAddressPostalCode !== undefined) set.billingAddressPostalCode = patch.billingAddressPostalCode;
+  if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
+  const [row] = await db.update(organizations).set(set).where(eq(organizations.id, orgId)).returning({
+    id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
+    billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
+    billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
+    billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
+  });
+  if (!row) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
+  return row;
+}
+
+// ---------------------------------------------------------------------------
 // Assembly: materialize draft lines from unbilled source rows (Task 3.5)
 // ---------------------------------------------------------------------------
 

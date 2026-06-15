@@ -44,6 +44,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   // the gated resolve/pending POST sends {statusId}; null means the core path.
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
   const [railOpen] = useState(true);
+  const [creatingInvoice, setCreatingInvoice] = useState(false);
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
@@ -162,6 +163,26 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       return false; // already toasted by runAction
     }
   }, [ticketId, load, onChanged]);
+
+  // Assemble a draft invoice from this ticket's billable work, then jump to it.
+  const createInvoice = useCallback(async () => {
+    if (creatingInvoice) return;
+    setCreatingInvoice(true);
+    try {
+      const result = await runAction<{ data: { invoice: { id: string } } }>({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/invoice`, { method: 'POST' }),
+        errorFallback: 'Could not create an invoice from this ticket.',
+        successMessage: 'Draft invoice created',
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      const newId = result?.data?.invoice?.id;
+      if (newId) void navigateTo(`/billing/invoices/${newId}`);
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+    } finally {
+      setCreatingInvoice(false);
+    }
+  }, [ticketId, creatingInvoice]);
 
   // Fallback path: option values are the six core enums; POST {status}.
   const onStatusChange = useCallback(async (status: TicketStatus) => {
@@ -358,6 +379,15 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
           ) : (
             <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground" data-testid="ticket-workbench-unassigned">Unassigned</span>
           )}
+          <button
+            type="button"
+            onClick={() => void createInvoice()}
+            disabled={creatingInvoice}
+            className="ml-auto rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            data-testid="ticket-workbench-create-invoice"
+          >
+            {creatingInvoice ? 'Creating…' : 'Create invoice'}
+          </button>
         </div>
         {resolveOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-resolve-form">

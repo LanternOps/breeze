@@ -33,6 +33,7 @@ import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
+import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
@@ -743,6 +744,10 @@ api.route('/invoices', invoiceRoutes);
 // mount at the api root: /api/v1/orgs/:orgId/invoices/assemble and
 // /api/v1/tickets/:ticketId/invoice. invoiceAssemblyRoutes applies authMiddleware itself.
 api.route('/', invoiceAssemblyRoutes);
+// Billing settings nest under /partner and /orgs at the api root:
+// /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
+// invoiceSettingsRoutes applies authMiddleware itself.
+api.route('/', invoiceSettingsRoutes);
 api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);

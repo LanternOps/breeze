@@ -127,4 +127,40 @@ describe('invoiceService guards', () => {
       svc.markViewed('i1', 'other-org')
     ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
   });
+
+  it('updatePartnerBillingSettings requires a resolvable partner (PARTNER_UNRESOLVABLE 400)', async () => {
+    const actor = { userId: 'u1', partnerId: null, accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.updatePartnerBillingSettings(
+        { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 },
+        actor
+      )
+    ).rejects.toMatchObject({ code: 'PARTNER_UNRESOLVABLE', status: 400 });
+  });
+
+  it('updatePartnerBillingSettings writes the partner row and returns it', async () => {
+    queueResult([{ currencyCode: 'EUR', defaultTaxRate: '0.200', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14, invoiceFooter: 'Thanks' }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'EUR', defaultTaxRate: 0.2, invoiceNumberPrefix: 'EU', invoiceTermsDays: 14, invoiceFooter: 'Thanks' },
+      actor
+    );
+    expect(row.currencyCode).toBe('EUR');
+    expect(row.invoiceNumberPrefix).toBe('EU');
+  });
+
+  it('updateOrgBillingSettings denies an actor without access to the org (ORG_DENIED 403)', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(
+      svc.updateOrgBillingSettings('org1', { taxExempt: true }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+
+  it('updateOrgBillingSettings writes the org row and returns it', async () => {
+    queueResult([{ id: 'org1', taxId: 'GB123', taxExempt: true, taxRate: null, billingAddressCountry: 'GB' }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const row = await svc.updateOrgBillingSettings('org1', { taxId: 'GB123', taxExempt: true, billingAddressCountry: 'GB' }, actor);
+    expect(row.taxExempt).toBe(true);
+    expect(row.billingAddressCountry).toBe('GB');
+  });
 });
