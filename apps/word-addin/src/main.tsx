@@ -19,7 +19,14 @@ function render(): void {
 // bootAddin loads runtime config (/config.json) BEFORE the first render — App's
 // mount effect kicks off a silent sign-in that needs the API origin + Entra
 // client ID. (Ordering is enforced + tested in office-addin-core/src/boot.ts.)
-const boot = (): void => void bootAddin(render);
+const boot = (): void => {
+  // boot() is the one path with no ErrorBoundary above it — surface a
+  // render-time throw instead of leaving a silent blank pane on a dropped
+  // promise rejection. (loadRuntimeConfig itself never throws.)
+  void bootAddin(render).catch((err: unknown) => {
+    console.error('[breeze] add-in failed to start', err);
+  });
+};
 
 // Inside Word, wait for the host handshake; in a plain browser tab (dev
 // convenience, ADDIN_NO_HTTPS debugging) Office is undefined — boot anyway.

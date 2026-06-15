@@ -34,15 +34,23 @@ const apiBaseUrl = (
   argValue('--api-base-url') ??
   env.VITE_API_BASE_URL ??
   'http://localhost:3001'
-).replace(/\/$/, '');
+).replace(/\/+$/, '');
 const clientId =
   argValue('--client-id') ??
   env.VITE_CLIENT_AI_ENTRA_CLIENT_ID ??
   env.CLIENT_AI_ENTRA_CLIENT_ID ??
   '';
 
+const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(apiBaseUrl);
+if (!clientId && !isLocalhost) {
+  console.error(
+    `[generate-config] ERROR: entraClientId is empty for a non-localhost apiBaseUrl (${apiBaseUrl}). ` +
+      'SSO cannot work — pass --client-id <guid> (or set VITE_CLIENT_AI_ENTRA_CLIENT_ID).',
+  );
+  process.exit(1);
+}
 if (!clientId) {
-  console.warn('[generate-config] WARNING: entraClientId is empty — SSO will not work until set.');
+  console.warn('[generate-config] WARNING: entraClientId is empty (localhost dev) — SSO will not work until set.');
 }
 
 const outPath = path.join(root, argValue('--out') ?? 'public/config.json');
