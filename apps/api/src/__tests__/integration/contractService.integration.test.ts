@@ -18,7 +18,9 @@ import { describe, it, expect } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations } from '../../db/schema';
 import {
-  createContract, getContract, addContractLineToContract, updateContract, listContracts, type ContractActorT
+  createContract, getContract, addContractLineToContract, updateContract, listContracts,
+  activateContract, pauseContract, resumeContract, cancelContract,
+  type ContractActorT
 } from '../../services/contractService';
 
 async function seedOrg(): Promise<{ actor: ContractActorT; orgId: string }> {
@@ -140,5 +142,57 @@ describe('contractService CRUD', () => {
     // Actor A must NOT see Actor B's contract.
     expect(ids).not.toContain(b.orgId);
     expect(rows.every((r) => r.orgId === a.orgId)).toBe(true);
+  });
+});
+
+describe('contractService lifecycle', () => {
+  it('activate requires a line and sets next_billing_at', async () => {
+    const { actor, orgId } = await seedOrg();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'x', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    // Must reject before any line exists
+    await expect(
+      withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01')))
+    ).rejects.toThrow(/line/i);
+    // Add a line
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'm', unitPrice: '500.00', taxable: false
+    }, actor));
+    const active = await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01')));
+    expect(active.status).toBe('active');
+    // advance billing, period 0 start = 2026-07-01
+    expect(active.nextBillingAt).toBe('2026-07-01');
+  });
+
+  it('pause clears the pointer; resume recomputes forward without back-billing', async () => {
+    const { actor, orgId } = await seedOrg();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'x', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-01-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'm', unitPrice: '1.00', taxable: false
+    }, actor));
+    // Activate as of Jan 1 → nextBillingAt = 2026-01-01
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-01-01')));
+    const paused = await withSystemDbAccessContext(() => pauseContract(c.id, actor));
+    expect(paused.status).toBe('paused');
+    expect(paused.nextBillingAt).toBeNull();
+    // Resume as of 2026-06-10 → current period start = 2026-06-01 (advance), no back-billing Jan–May
+    const resumed = await withSystemDbAccessContext(() => resumeContract(c.id, actor, '2026-06-10'));
+    expect(resumed.status).toBe('active');
+    expect(resumed.nextBillingAt).toBe('2026-06-01');
+  });
+
+  it('cancel is terminal and idempotent', async () => {
+    const { actor, orgId } = await seedOrg();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'x', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    const cancelled = await withSystemDbAccessContext(() => cancelContract(c.id, actor));
+    expect(cancelled.status).toBe('cancelled');
+    // Calling cancel again on an already-cancelled contract should not throw
+    const again = await withSystemDbAccessContext(() => cancelContract(c.id, actor));
+    expect(again.status).toBe('cancelled');
   });
 });

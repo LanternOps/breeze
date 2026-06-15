@@ -3,6 +3,8 @@ import { db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations } from '../db/schema';
 import { ContractServiceError, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
+import { periodIndexFor, nextBillingDate } from './contractMath';
+import { emitContractEvent } from './contractEvents';
 
 export type ContractActorT = ContractActor;
 
@@ -119,4 +121,64 @@ export async function removeContractLine(contractId: string, lineId: string, act
   const c = await getOwnedContractOr404(contractId, actor);
   assertEditable(c);
   await db.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+}
+
+function todayISO(asOf: Date = new Date()): string {
+  return asOf.toISOString().slice(0, 10);
+}
+
+export async function activateContract(contractId: string, actor: ContractActor, asOf: Date = new Date()) {
+  const c = await getOwnedContractOr404(contractId, actor);
+  if (c.status !== 'draft' && c.status !== 'paused') {
+    throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
+  }
+  // db.$count is not available in drizzle-orm 0.45.x — use select fallback.
+  const lineRows = await db.select({ id: contractLines.id }).from(contractLines)
+    .where(eq(contractLines.contractId, contractId));
+  if (lineRows.length === 0) {
+    throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
+  }
+  const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
+  const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
+  const [row] = await db.update(contracts)
+    .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
+    .where(eq(contracts.id, contractId)).returning();
+  await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  return row!;
+}
+
+export async function pauseContract(contractId: string, actor: ContractActor) {
+  const c = await getOwnedContractOr404(contractId, actor);
+  if (c.status !== 'active') {
+    throw new ContractServiceError('Only active contracts can be paused', 409, 'INVALID_STATE');
+  }
+  const [row] = await db.update(contracts)
+    .set({ status: 'paused', nextBillingAt: null, updatedAt: new Date() })
+    .where(eq(contracts.id, contractId)).returning();
+  await emitContractEvent({ type: 'contract.paused', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  return row!;
+}
+
+export async function resumeContract(contractId: string, actor: ContractActor, asOfISO: string = todayISO()) {
+  const c = await getOwnedContractOr404(contractId, actor);
+  if (c.status !== 'paused') {
+    throw new ContractServiceError('Only paused contracts can be resumed', 409, 'INVALID_STATE');
+  }
+  const idx = periodIndexFor(c.startDate, c.intervalMonths, asOfISO);
+  const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
+  const [row] = await db.update(contracts)
+    .set({ status: 'active', nextBillingAt: nextAt, updatedAt: new Date() })
+    .where(eq(contracts.id, contractId)).returning();
+  await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  return row!;
+}
+
+export async function cancelContract(contractId: string, actor: ContractActor) {
+  const c = await getOwnedContractOr404(contractId, actor);
+  if (c.status === 'cancelled') return c;
+  const [row] = await db.update(contracts)
+    .set({ status: 'cancelled', nextBillingAt: null, updatedAt: new Date() })
+    .where(eq(contracts.id, contractId)).returning();
+  await emitContractEvent({ type: 'contract.cancelled', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  return row!;
 }
