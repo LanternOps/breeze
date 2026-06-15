@@ -71,24 +71,23 @@ internalSyntheticRoutes.use('*', async (c, next) => {
 const bodySchema = z.object({ partnerId: z.string().min(1) });
 
 /**
- * The canary latch. Returns true only when the partner's admin (partner_users)
- * email matches the synthetic-canary pattern. Anything else — a real partner,
- * a non-existent id, or a partner with no admin user — is NOT a canary.
- * Uses a type-safe Drizzle .innerJoin() chain so the SQL builder validates the
- * security-critical query at build time.
+ * The canary latch. Returns true only when the partner has at least one member
+ * AND EVERY member's email matches the synthetic-canary pattern. Requiring all
+ * members to match (rather than any single arbitrary row) makes the check
+ * deterministic and self-contained: a real partner that somehow had a canary
+ * member attached would still NOT match, because its real members fail the regex.
+ * A non-existent partner (no rows) is not a canary.
  */
 async function isCanary(partnerId: string): Promise<boolean> {
   const rows = await withSystemDbAccessContext(() =>
     db
-      .select({ id: partners.id, adminEmail: users.email })
+      .select({ email: users.email })
       .from(partners)
       .innerJoin(partnerUsers, eq(partnerUsers.partnerId, partners.id))
       .innerJoin(users, eq(users.id, partnerUsers.userId))
-      .where(eq(partners.id, partnerId))
-      .limit(1),
+      .where(eq(partners.id, partnerId)),
   );
-  const row = rows?.[0];
-  return !!row && CANARY_EMAIL_RE.test((row.adminEmail as string | null) ?? '');
+  return rows.length > 0 && rows.every((r) => CANARY_EMAIL_RE.test((r.email as string | null) ?? ''));
 }
 
 internalSyntheticRoutes.post('/simulate-payment', async (c) => {

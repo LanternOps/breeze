@@ -12,7 +12,7 @@ vi.mock('../../db', () => ({
       from: () => ({
         innerJoin: () => ({
           innerJoin: () => ({
-            where: () => ({ limit: () => partnerLookupMock() }),
+            where: () => partnerLookupMock(),
           }),
         }),
       }),
@@ -26,8 +26,9 @@ vi.mock('../../services/tenantCascade', () => ({
 }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '10.0.0.9' }));
 
-const CANARY = [{ id: 'p1', adminEmail: 'signup-canary+abc@2breeze.app' }];
-const REAL = [{ id: 'p1', adminEmail: 'owner@acme.com' }];
+const CANARY = [{ email: 'signup-canary+abc@2breeze.app' }];
+const REAL = [{ email: 'owner@acme.com' }];
+const MIXED = [{ email: 'signup-canary+x@2breeze.app' }, { email: 'real@acme.com' }];
 
 async function load() {
   vi.resetModules();
@@ -86,6 +87,16 @@ describe('internal synthetic router gate', () => {
     it(`${path}: 422 when target is NOT a canary account (the latch)`, async () => {
       vi.stubEnv('SYNTHETIC_TEST_TOKEN', 's3cret-token');
       partnerLookupMock.mockResolvedValue(REAL);
+      const app = await load();
+      const res = await app.request(req(path, AUTH));
+      expect(res.status).toBe(422);
+    });
+  }
+
+  for (const path of ['/simulate-payment', '/purge-partner']) {
+    it(`${path}: 422 when partner has mixed canary+real members (hardening)`, async () => {
+      vi.stubEnv('SYNTHETIC_TEST_TOKEN', 's3cret-token');
+      partnerLookupMock.mockResolvedValue(MIXED);
       const app = await load();
       const res = await app.request(req(path, AUTH));
       expect(res.status).toBe(422);
