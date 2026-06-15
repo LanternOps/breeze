@@ -61,12 +61,21 @@ function formatDate(value: string | null | undefined): string {
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
-export default function ContractsList() {
+interface Props {
+  /** When set (e.g. embedded in the org Contracts tab), the list is locked to
+   *  this org: the org filter is hidden and the "New contract" CTA pre-selects
+   *  it. Avoids fighting the host page's own hash-based tab routing. */
+  lockedOrgId?: string;
+}
+
+export default function ContractsList({ lockedOrgId }: Props = {}) {
   const [contracts, setContracts] = useState<ContractSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [filters, setFilters] = useState<Filters>(() => readFilters());
+  const [filters, setFilters] = useState<Filters>(() =>
+    lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : readFilters(),
+  );
 
   const orgName = useCallback(
     (id: string) => orgs.find((o) => o.id === id)?.name ?? id.slice(0, 8),
@@ -100,20 +109,24 @@ export default function ContractsList() {
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadContracts(filters); }, [loadContracts, filters]);
 
-  // React to back/forward hash changes.
+  // React to back/forward hash changes — only when standalone. When locked to an
+  // org (embedded in a hash-routed tab), the host owns the hash; ignore it.
   useEffect(() => {
+    if (lockedOrgId) return;
     const onHash = () => setFilters(readFilters());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
-  }, []);
+  }, [lockedOrgId]);
 
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
       const next = { ...prev, ...patch };
-      writeFilters(next);
+      if (!lockedOrgId) writeFilters(next);
       return next;
     });
-  }, []);
+  }, [lockedOrgId]);
+
+  const newContractHref = lockedOrgId ? `/contracts/new#orgId=${lockedOrgId}` : '/contracts/new';
 
   const rows = useMemo(() => contracts, [contracts]);
 
@@ -121,13 +134,17 @@ export default function ContractsList() {
     <div className="space-y-6" data-testid="contracts-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Contracts</h1>
+          {lockedOrgId ? (
+            <h2 className="text-lg font-semibold">Contracts</h2>
+          ) : (
+            <h1 className="text-xl font-semibold">Contracts</h1>
+          )}
           <p className="mt-1 text-sm text-muted-foreground">
             Recurring agreements that auto-generate draft invoices on a cadence.
           </p>
         </div>
         <a
-          href="/contracts/new"
+          href={newContractHref}
           data-testid="new-contract-btn"
           className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
@@ -137,20 +154,22 @@ export default function ContractsList() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3" data-testid="contracts-filters">
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Organization
-          <select
-            value={filters.orgId}
-            onChange={(e) => applyFilter({ orgId: e.target.value })}
-            data-testid="contracts-filter-org"
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="">All organizations</option>
-            {orgs.map((o) => (
-              <option key={o.id} value={o.id}>{o.name}</option>
-            ))}
-          </select>
-        </label>
+        {!lockedOrgId && (
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Organization
+            <select
+              value={filters.orgId}
+              onChange={(e) => applyFilter({ orgId: e.target.value })}
+              data-testid="contracts-filter-org"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">All organizations</option>
+              {orgs.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Status
           <select

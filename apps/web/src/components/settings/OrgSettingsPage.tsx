@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Copy,
   Check,
+  FileSignature,
   Globe,
   Monitor,
   Paintbrush,
@@ -14,6 +15,7 @@ import {
   Shield,
   Ticket
 } from 'lucide-react';
+import ContractsList from '../contracts/ContractsList';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
@@ -75,6 +77,12 @@ const tabs = [
     label: 'Ticketing',
     description: 'SLA overrides and billing defaults',
     icon: Ticket
+  },
+  {
+    id: 'contracts',
+    label: 'Contracts',
+    description: 'Recurring billing agreements',
+    icon: FileSignature
   }
 ] as const;
 
@@ -446,6 +454,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             onDirty={handleDirty}
             onSave={() => handleSave()}
           />
+        ) : null;
+      case 'contracts':
+        return effectiveOrgId ? (
+          <div data-testid="org-tab-contracts">
+            <ContractsList lockedOrgId={effectiveOrgId} />
+          </div>
         ) : null;
       case 'general':
       default:
