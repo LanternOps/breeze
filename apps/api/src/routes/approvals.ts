@@ -15,7 +15,18 @@ import { assertApprovalAssurance } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { authenticatorDevices } from '../db/schema/authenticatorDevices';
-import { assertionProofSchema, type RiskTier, type AssertionProof } from '@breeze/shared';
+import {
+  assertionProofSchema,
+  mobileHwKeyProofSchema,
+  approverPinSchema,
+  type RiskTier,
+  type ApprovalProof,
+} from '@breeze/shared';
+
+// Phase 3: accept EITHER the back-compat WebAuthn proof (no `type` on the wire →
+// defaulted by assertionProofSchema) OR the mobile_hw_key proof. z.union tries
+// the strict mobile literal first, then falls back to the webauthn shape.
+const approveProofSchema = z.union([mobileHwKeyProofSchema, assertionProofSchema]);
 
 export const approvalRoutes = new Hono();
 
@@ -217,16 +228,23 @@ approvalRoutes.post('/:id/assertion-challenge', async (c) => {
 });
 
 approvalRoutes.post('/:id/approve', async (c) => {
-  // Optional WebAuthn assertion proof (Phase 2). A malformed proof is a 400 at
-  // validation; an absent proof keeps today's L1 session-tap behavior.
-  let proof: AssertionProof | undefined;
+  // Optional assertion proof (Phase 2 webauthn / Phase 3 mobile_hw_key) plus an
+  // optional approver PIN (Phase 3 L3 step-up). A malformed proof or PIN is a 400
+  // at validation; an absent proof keeps today's L1 session-tap behavior.
+  let proof: ApprovalProof | undefined;
+  let pin: string | undefined;
   const raw = await c.req.json().catch(() => null);
   if (raw && raw.proof !== undefined) {
-    const parsed = assertionProofSchema.safeParse(raw.proof);
+    const parsed = approveProofSchema.safeParse(raw.proof);
     if (!parsed.success) return c.json({ error: 'Invalid proof' }, 400);
     proof = parsed.data;
   }
-  return decideHandler(c, 'approved', undefined, proof);
+  if (raw && raw.pin !== undefined) {
+    const parsedPin = approverPinSchema.safeParse(raw.pin);
+    if (!parsedPin.success) return c.json({ error: 'Invalid PIN' }, 400);
+    pin = parsedPin.data;
+  }
+  return decideHandler(c, 'approved', undefined, proof, pin);
 });
 
 approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
@@ -341,7 +359,8 @@ async function decideHandler(
   c: import('hono').Context,
   status: 'approved' | 'denied',
   reason?: string,
-  proof?: AssertionProof
+  proof?: ApprovalProof,
+  pin?: string
 ) {
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
@@ -376,6 +395,7 @@ async function decideHandler(
       userId,
       riskTier: existing.riskTier as RiskTier,
       proof,
+      pin,
     });
   } catch (err) {
     console.error('[approvals] assertion verification failed:', err);

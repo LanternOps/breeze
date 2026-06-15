@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import crypto from 'node:crypto';
 import { db } from '../db';
 import { verifyApprovalAssertion } from './approverWebAuthn';
-import type { AssertionProof } from '@breeze/shared';
+import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
+import { verifyPinAttempt } from './pin';
+import type { AssertionProof, MobileHwKeyProof } from '@breeze/shared';
 import {
   resolveApprovalAssurance,
   resolveElevationAssurance,
@@ -33,11 +36,29 @@ vi.mock('./approverWebAuthn', () => ({
   verifyApprovalAssertion: vi.fn(),
 }));
 
+// Phase 3: the mobile_hw_key branch consumes the single-use assertion nonce and
+// verifies an RSA-SHA256 signature over it. verifyMobileSignature is the REAL
+// implementation here (proven below with node-generated RSA keys, mirroring
+// react-native-biometrics); only the redis-backed nonce consume is mocked.
+vi.mock('./mobileHwKey', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./mobileHwKey')>();
+  return {
+    ...actual,
+    consumeMobileAssertionNonce: vi.fn(),
+  };
+});
+
+vi.mock('./pin', () => ({
+  verifyPinAttempt: vi.fn(),
+}));
+
 const mockDb = db as unknown as {
   select: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 };
 const mockVerify = verifyApprovalAssertion as unknown as ReturnType<typeof vi.fn>;
+const mockConsumeNonce = consumeMobileAssertionNonce as unknown as ReturnType<typeof vi.fn>;
+const mockVerifyPin = verifyPinAttempt as unknown as ReturnType<typeof vi.fn>;
 
 const PROOF: AssertionProof = {
   type: 'webauthn_platform',
@@ -47,6 +68,28 @@ const PROOF: AssertionProof = {
   signature: 'sig',
   userHandle: null,
 };
+
+// REAL RSA test vectors — exactly what react-native-biometrics produces on a
+// physical device: an RSA-2048 keypair, SPKI DER public key (base64) stored as
+// the device publicKey, and an RSA-SHA256 (base64) signature over the nonce.
+// No device needed; this proves the cryptographic signature contract.
+function makeDeviceKeypair() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const spkiB64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  return { spkiB64, privateKey };
+}
+function signNonce(privateKey: crypto.KeyObject, nonce: string) {
+  return crypto.sign('RSA-SHA256', Buffer.from(nonce, 'utf8'), privateKey).toString('base64');
+}
+function mobileProof(over: Partial<MobileHwKeyProof> = {}): MobileHwKeyProof {
+  return {
+    type: 'mobile_hw_key',
+    credentialId: 'mobile-dev-1', // carries the approver device id
+    nonce: 'server-nonce-xyz',
+    signature: 'placeholder',
+    ...over,
+  };
+}
 
 /** Wire up the chainable db mocks; `capture.updateSet` holds the values passed
  * to `db.update(...).set({...})` so we can assert the signCount bump. */
@@ -148,6 +191,300 @@ describe('assertApprovalAssurance (Phase 2: verify a presented proof, non-blocki
       }),
     ).rejects.toThrow();
     expect(mockDb.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('valid mobile proof → mobile_hw_key / level 2, device id, signCount bumped (REAL RSA sig)', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    const capture = setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null, // mobile devices never set credentialId
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+
+    const d = await assertApprovalAssurance({
+      approvalId: 'appr-1',
+      userId: 'user-1',
+      riskTier: 'medium',
+      proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+    });
+
+    expect(mockConsumeNonce).toHaveBeenCalledWith('appr-1', 'user-1');
+    expect(d.decidedVia).toBe('mobile_hw_key');
+    expect(d.decidedAssuranceLevel).toBe(2);
+    expect(d.authenticatorDeviceId).toBe('mobile-dev-1');
+    expect(d.pinVerified).toBe(false);
+    // anti-clone counter advances even though the mobile signer carries no counter
+    expect(capture.updateSet?.signCount).toBe(8);
+    expect(capture.updateSet?.lastUsedAt).toBeInstanceOf(Date);
+    // the webauthn verifier is never touched on the mobile path
+    expect(mockVerify).not.toHaveBeenCalled();
+  });
+
+  it('mobile proof signed over a DIFFERENT nonce → throws (wrong-nonce rejected)', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const issuedNonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(issuedNonce);
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'high',
+        // signature is over a stale/forged nonce, proof.nonce still equals issued
+        proof: mobileProof({ nonce: issuedNonce, signature: signNonce(privateKey, 'other-nonce') }),
+      }),
+    ).rejects.toThrow();
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('mobile proof signed by a DIFFERENT key → throws (wrong-key rejected)', async () => {
+    const enrolled = makeDeviceKeypair();
+    const attacker = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: enrolled.spkiB64, // stored = the enrolled device's key
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'high',
+        proof: mobileProof({ nonce, signature: signNonce(attacker.privateKey, nonce) }),
+      }),
+    ).rejects.toThrow();
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('mobile proof.nonce mismatching the consumed server nonce → throws (replay/tamper)', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const clientNonce = 'client-claims-this';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    // server issued a different nonce than the proof claims
+    mockConsumeNonce.mockResolvedValue('the-real-server-nonce');
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'high',
+        proof: mobileProof({ nonce: clientNonce, signature: signNonce(privateKey, clientNonce) }),
+      }),
+    ).rejects.toThrow();
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('mobile proof with no live server nonce (expired/never issued) → throws', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(null); // getdel returned nothing
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'high',
+        proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+      }),
+    ).rejects.toThrow();
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('mobile proof but device not found (wrong id / disabled) → throws', async () => {
+    setupDbMocks(null);
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'high',
+        proof: mobileProof(),
+      }),
+    ).rejects.toThrow();
+    expect(mockConsumeNonce).not.toHaveBeenCalled();
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('malformed mobile signature → verifyMobileSignature false → throws (never silently L2)', async () => {
+    const { spkiB64 } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'high',
+        proof: mobileProof({ nonce, signature: '@@not base64@@' }),
+      }),
+    ).rejects.toThrow();
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('valid mobile proof + valid PIN → level 3, pinVerified=true', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    const capture = setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+    mockVerifyPin.mockResolvedValue({ verified: true, locked: false });
+
+    const d = await assertApprovalAssurance({
+      approvalId: 'appr-1',
+      userId: 'user-1',
+      riskTier: 'critical',
+      proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+      pin: '1234',
+    });
+
+    expect(mockVerifyPin).toHaveBeenCalledWith('user-1', '1234');
+    expect(d.decidedVia).toBe('mobile_hw_key');
+    expect(d.decidedAssuranceLevel).toBe(3);
+    expect(d.pinVerified).toBe(true);
+    expect(d.authenticatorDeviceId).toBe('mobile-dev-1');
+    expect(capture.updateSet?.signCount).toBe(8); // factor still consumed/bumped
+  });
+
+  it('valid webauthn proof + valid PIN → level 3, pinVerified=true', async () => {
+    setupDbMocks({
+      id: 'dev-1',
+      credentialId: 'cred-123',
+      kind: 'webauthn_platform',
+      publicKey: 'pub',
+      signCount: 2,
+      transports: ['internal'],
+    });
+    mockVerify.mockResolvedValue({ verified: true, newSignCount: 5 });
+    mockVerifyPin.mockResolvedValue({ verified: true, locked: false });
+
+    const d = await assertApprovalAssurance({
+      approvalId: 'appr-1',
+      userId: 'user-1',
+      riskTier: 'critical',
+      proof: PROOF,
+      pin: '654321',
+    });
+
+    expect(d.decidedVia).toBe('webauthn_platform');
+    expect(d.decidedAssuranceLevel).toBe(3);
+    expect(d.pinVerified).toBe(true);
+  });
+
+  it('valid factor + WRONG PIN → throws (never silently records L2 when L3 attempted)', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+    mockVerifyPin.mockResolvedValue({ verified: false, locked: false });
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'critical',
+        proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+        pin: '0000',
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('valid factor + LOCKED PIN → throws a distinct lock error', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 7,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+    mockVerifyPin.mockResolvedValue({ verified: false, locked: true });
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'critical',
+        proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+        pin: '0000',
+      }),
+    ).rejects.toThrow(/lock/i);
+  });
+
+  it('no proof but a PIN is presented → PIN cannot stand alone, stays L1 (no factor to step up)', async () => {
+    setupDbMocks(null);
+    const d = await assertApprovalAssurance({
+      approvalId: 'appr-1',
+      userId: 'user-1',
+      riskTier: 'high',
+      pin: '1234',
+    });
+    expect(d.decidedVia).toBe('session_tap');
+    expect(d.decidedAssuranceLevel).toBe(1);
+    expect(d.pinVerified).toBe(false);
+    expect(mockVerifyPin).not.toHaveBeenCalled();
   });
 });
 

@@ -676,6 +676,88 @@ describe('POST /approvals/:id/approve with assertion proof', () => {
     // A failed assertion is NOT a silent downgrade — the CAS update never runs.
     expect(set).not.toHaveBeenCalled();
   });
+
+  // Phase 3: the approve body now also accepts the mobile_hw_key proof variant
+  // and an optional approver PIN, both threaded through to assertApprovalAssurance.
+  const mobileProof = {
+    type: 'mobile_hw_key',
+    credentialId: 'mobile-dev-1',
+    nonce: 'server-nonce-xyz',
+    signature: 'cmVhbC1zaWc=',
+  };
+
+  it('threads a mobile_hw_key proof through to the assurance service (L2)', async () => {
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'mobile-dev-1',
+      pinVerified: false,
+    });
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof }),
+    });
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: 'a1', userId: TEST_USER.id, proof: mobileProof }),
+    );
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decidedVia: 'mobile_hw_key',
+        decidedAssuranceLevel: 2,
+        authenticatorDeviceId: 'mobile-dev-1',
+      }),
+    );
+  });
+
+  it('threads an optional PIN alongside a proof (L3, pinVerified)', async () => {
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'mobile-dev-1',
+      pinVerified: true,
+    });
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof, pin: '1234' }),
+    });
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ proof: mobileProof, pin: '1234' }),
+    );
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({ decidedAssuranceLevel: 3, pinVerified: true }),
+    );
+  });
+
+  it('rejects a malformed PIN at validation (400, before any decision)', async () => {
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof, pin: 'abcd' }),
+    });
+    expect(res.status).toBe(400);
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /approvals/:id/deny', () => {

@@ -43,7 +43,12 @@ import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGov
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import { assertApprovalAssurance } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
-import { assertionProofSchema, elevationRiskTierToName } from '@breeze/shared';
+import {
+  assertionProofSchema,
+  mobileHwKeyProofSchema,
+  approverPinSchema,
+  elevationRiskTierToName,
+} from '@breeze/shared';
 import { resolveOrgIdForWrite } from './softwarePolicies';
 
 /**
@@ -302,9 +307,13 @@ const respondSchema = z.object({
     .min(1)
     .max(MAX_APPROVAL_DURATION_MINUTES)
     .optional(),
-  // Phase 2: optional WebAuthn assertion proof. Absent → today's L1 session tap.
-  // Present-but-invalid → 401 (NOT a silent downgrade). Enforcement is Phase 4.
-  proof: assertionProofSchema.optional(),
+  // Phase 2/3: optional assertion proof — EITHER the back-compat WebAuthn proof
+  // (no `type` on the wire → defaulted) OR the mobile_hw_key proof. Absent →
+  // today's L1 session tap. Present-but-invalid → 401 (NOT a silent downgrade).
+  // Enforcement is Phase 4.
+  proof: z.union([mobileHwKeyProofSchema, assertionProofSchema]).optional(),
+  // Phase 3: optional approver PIN (4-6 digits) steps a verified factor up to L3.
+  pin: approverPinSchema.optional(),
 });
 
 // Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
@@ -430,6 +439,7 @@ pamRoutes.post(
             userId: auth.user.id,
             riskTier: elevationRiskTierToName(row.riskTier),
             proof: body.proof,
+            pin: body.pin,
           });
         } catch (err) {
           console.error('[PAM] assertion verification failed:', err);
