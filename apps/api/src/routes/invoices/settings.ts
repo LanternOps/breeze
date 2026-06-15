@@ -9,20 +9,21 @@ import { invoiceActorFrom, handleServiceError } from './invoices';
 
 // Mounted at the api root (not under the /invoices hub) so the paths read
 // /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
-// It applies authMiddleware itself, mirroring invoiceAssemblyRoutes.
+// Auth is applied PER-ROUTE (not via `use('*')`): mounted at '/', a wildcard
+// middleware would leak onto sibling/public routes registered later and 401 them
+// (the #1383 regression). authMiddleware leads each route's middleware chain.
 export const invoiceSettingsRoutes = new Hono();
-invoiceSettingsRoutes.use('*', authMiddleware);
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
 
-invoiceSettingsRoutes.patch('/partner/billing-settings', scopes, writePerm,
+invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes, writePerm,
   zValidator('json', partnerBillingSettingsSchema),
   async (c) => {
     try { return c.json({ data: await updatePartnerBillingSettings(c.req.valid('json'), invoiceActorFrom(c)) }); }
     catch (err) { return handleServiceError(c, err); }
   });
 
-invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', scopes, writePerm,
+invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', authMiddleware, scopes, writePerm,
   zValidator('param', z.object({ orgId: z.string().uuid() })),
   zValidator('json', orgBillingSettingsSchema),
   async (c) => {
