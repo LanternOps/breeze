@@ -13,6 +13,7 @@ export type {
 } from './api/types';
 export * from './tools/helpers';
 export * from './config';
+export * from './boot';
 export * from './api/client';
 export * from './api/sse';
 export * from './auth/entraToken';
