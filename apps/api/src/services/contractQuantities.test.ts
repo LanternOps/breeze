@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { db, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, users, organizationUsers, roles } from '../db/schema';
+// Note: sites table has no slug column — only orgId, name, address, timezone, contact, settings
 import { countContractDevices, countContractSeats } from './contractQuantities';
 
 describe('contract quantity resolvers', () => {
@@ -15,7 +16,7 @@ describe('contract quantity resolvers', () => {
       const [o] = await db.insert(organizations).values({ partnerId: p!.id, name: 'QOrg', slug: `qo-${sfx}` }).returning({ id: organizations.id });
       orgId = o!.id;
       const [sA, sB] = await db.insert(sites).values([
-        { orgId, name: 'A', slug: `a-${sfx}` }, { orgId, name: 'B', slug: `b-${sfx}` }
+        { orgId, name: `A-${sfx}` }, { orgId, name: `B-${sfx}` }
       ]).returning({ id: sites.id });
       siteAId = sA!.id;
       // devices requires agentId (unique), osType, osVersion, architecture, agentVersion
