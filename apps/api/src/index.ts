@@ -31,6 +31,9 @@ import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
 import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
+import { invoiceRoutes } from './routes/invoices';
+import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
+import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
@@ -134,6 +137,7 @@ import { API_VERSION } from './version';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
+import { initializeInvoiceWorkers, shutdownInvoiceWorkers } from './jobs/invoiceWorker';
 import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offlineDetector';
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
@@ -736,6 +740,15 @@ api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
+api.route('/invoices', invoiceRoutes);
+// Assembly routes nest under the existing /orgs and /tickets namespaces, so they
+// mount at the api root: /api/v1/orgs/:orgId/invoices/assemble and
+// /api/v1/tickets/:ticketId/invoice. invoiceAssemblyRoutes applies authMiddleware itself.
+api.route('/', invoiceAssemblyRoutes);
+// Billing settings nest under /partner and /orgs at the api root:
+// /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
+// invoiceSettingsRoutes applies authMiddleware itself.
+api.route('/', invoiceSettingsRoutes);
 api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
@@ -1086,6 +1099,7 @@ async function initializeWorkers(): Promise<void> {
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
+    ['invoiceWorker', initializeInvoiceWorkers],
   ];
 
   await Promise.allSettled(
@@ -1244,6 +1258,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,
+    shutdownInvoiceWorkers,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

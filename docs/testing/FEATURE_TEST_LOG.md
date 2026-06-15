@@ -2094,3 +2094,39 @@ Direct INSERT: patches row source=third_party external_id='qa-e2e:Google.Chrome:
 ### CVE enrichment — dormant-as-shipped (code follow-up, 2026-05-15) → issue #731
 - ❌ **CVE enrichment is doubly inert.** (1) `cveEnrichmentWorker`/`runCveEnrichmentBatch` has zero references outside its own file — not in `index.ts`, not a registered BullMQ worker, absent from the ~20-job recurring bootstrap. (2) The batch gates on `isNotNull(osvEcosystem)` (`cveEnrichmentWorker.ts:48`) but `osv_ecosystem` is NULL in all 20 seeded catalog rows, not accepted by the catalog create/update zod schema (`thirdPartyCatalog/schemas.ts`), and has no writer anywhere → zero rows would match even if scheduled.
 - Net: `patches.cveIds` never populates; CVE chips never render. Migration `2026-05-13-d` + OSV client shipped but unreachable. Filed #731 (Medium-High — silent dead feature, part of #690).
+
+---
+
+## Invoice Engine (billing sub-project 2) — 2026-06-15
+
+**Branch:** `feat/invoice-engine`
+**Commit:** `35d51e81`
+**Tested by:** Claude (local Docker dev stack, Playwright MCP)
+**Result:** PASS
+
+Loaded the branch into the local dev Docker stack (rebuilt `api` from the worktree so the new `pdfkit` dep installed; reused the existing dev DB volume) and drove the MSP UI end-to-end at `http://localhost:4321`.
+
+### What was tested (UI + API)
+- [x] **Invoices list** — renders; org/status/date filters; empty → populated; row shows `INV-2026-0001 · Default Organization · 6/15 → 7/15 · $2,208.65 · Balance $1,208.65 · Partially paid`. "Invoices" correctly under Operations nav.
+- [x] **Assemble (org-run)** — dialog (org + optional site + 30-day default range); pulled seeded billable work into a draft.
+- [x] **Draft editor** — time + part lines; minutes→hours (120m → 2.00h × $150 = $300); **unapproved-time warning banner** ("1 line reference unapproved time"); labor `taxable=false`, part `taxable=true`; live totals (Subtotal $565).
+- [x] **Catalog line** — picker lists active items (archived correctly excluded); added "QA Test Laptop" → $1,500 via `resolvePrice`; subtotal → $2,065.
+- [x] **Org billing settings** — Tax ID + tax rate 8.5% + full address; saved → DB `tax_rate=0.085` (✓ %→fraction).
+- [x] **Issue & Send** — `INV-2026-0001`; tax snapshot **8.5% = $143.65** (on part $190 + catalog $1,500 taxable; labor excluded); total **$2,208.65**; due = issue+30d; **bill-to snapshot** captured org address/tax-id at issue.
+- [x] **`/send` honest outcome (review fix)** — live API returned `emailed=false, reason=no_billing_contact, status=sent` (HTTP 200, no false success, no 500). UI shows warning toast.
+- [x] **Issued detail** — read-only lines; summary; PDF/Void buttons; payments panel.
+- [x] **Record partial payment** — $1,000 → `partially_paid`, balance $1,208.65, payment listed.
+- [x] **PDF download** — `GET /:id/pdf` → valid `%PDF-1.3` (1 page, 2,281 B), `content-type: application/pdf`, `content-disposition: attachment; filename="INV-2026-0001.pdf"` (sanitized filename, review fix).
+- [x] **Partner billing settings** — currency/prefix/terms/footer + default tax 5% → DB `default_tax_rate=0.050`.
+- [x] **Accounting-view toggle** — reveals Cost/Margin columns (SSD cost $60/margin $70; Laptop cost $1,000/margin $500; labor "—").
+
+### Not exercised here (covered by unit/integration tests)
+- **Customer portal UI** — the portal front-end app (`apps/portal`) is NOT served in this dev compose (only api/web/postgres/redis/caddy). Portal **API** verified live (`GET /api/v1/portal/invoices` → 401, auth-gated); portal components are unit-tested.
+- Void+reissue, bundle line expansion, overdue sweep, per-ticket "Create invoice" button — covered by the 100+ API tests.
+
+### Issues found
+- **None (no product bugs).** Two non-issues confirmed as *correct* behavior: archived catalog items are excluded from the line picker; the draft tax **preview** doesn't retroactively update when the org rate changes mid-draft (authoritative tax is snapshotted at issue — verified $143.65 applied correctly). Two test-harness hiccups were mine, not the product (a wrong `data-testid` guess for the Add button; a login rate-limit from repeated API logins).
+
+### Notes
+- **Dev DB test data seeded:** 2 billable time entries (1 unapproved) + 1 ticket part on "Default Organization"; re-activated 2 archived catalog items; set org + partner billing settings; created `INV-2026-0001` (number burned). All on the dev DB (5432).
+- **Stack state:** the dev stack is currently running the **`feat/invoice-engine`** code (swapped from `main`). To restore: `docker compose down` from the worktree, `docker compose up -d` from `/Users/toddhebebrand/breeze`, and remove the worktree `.env` symlink.

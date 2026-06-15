@@ -54,8 +54,9 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(ops).not.toContain('/backup');
     expect(ops).not.toContain('/c2c');
     expect(ops).not.toContain('/dr');
-    // Operations retains its non-backup items.
+    // Operations retains its non-backup items (Invoices added by the billing engine).
     expect(ops).toEqual([
+      '/billing/invoices',
       '/software',
       '/software-inventory',
       '/configuration-policies',

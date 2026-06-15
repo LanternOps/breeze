@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import InvoiceWorkspace from '../../../components/billing/InvoiceWorkspace';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Invoice">
+  <InvoiceWorkspace invoiceId={id} client:load />
+</DashboardLayout>
