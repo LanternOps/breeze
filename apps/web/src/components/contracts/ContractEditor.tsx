@@ -124,7 +124,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
   useEffect(() => { void loadSites(orgId); }, [orgId, loadSites]);
 
-  const intervalIsValid = intervalMonths >= 1 && intervalMonths <= 120;
+  const intervalIsValid = intervalMonths >= 1 && intervalMonths <= 60;
   const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalIsValid;
 
   // ---- live "Estimated this period" ----------------------------------------
@@ -213,10 +213,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         request: () => addContractLine(contract.id, {
           lineType,
           description: lineDesc.trim(),
-          unitPrice: Number(linePrice),
-          manualQuantity: lineType === 'manual' ? Number(lineQty) : null,
-          siteId: lineType === 'per_device' && lineSiteId ? lineSiteId : null,
-          catalogItemId: lineCatalogId || null,
+          // unitPrice/manualQuantity are money strings (see contractLineInputSchema);
+          // omit absent optionals (undefined) rather than sending null, which the
+          // string-typed schema rejects.
+          unitPrice: linePrice,
+          manualQuantity: lineType === 'manual' ? lineQty : undefined,
+          siteId: lineType === 'per_device' && lineSiteId ? lineSiteId : undefined,
+          catalogItemId: lineCatalogId || undefined,
           taxable: lineTaxable,
         }),
         errorFallback: 'Could not add the line.',
@@ -336,7 +339,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                   Interval (months)
                   <input
-                    type="number" min="1" max="120" value={intervalMonths}
+                    type="number" min="1" max="60" value={intervalMonths}
                     onChange={(e) => setIntervalMonths(Number(e.target.value))}
                     data-testid="contract-form-interval-custom"
                     className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"

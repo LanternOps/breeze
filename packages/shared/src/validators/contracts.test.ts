@@ -22,6 +22,15 @@ describe('createContractSchema', () => {
     });
     expect(r.success).toBe(false);
   });
+  // Regression: the web create form sends `endDate || null` and `notes.trim() || null`
+  // for the common open-ended/no-notes case. The schema must accept null, not only undefined.
+  it('accepts null endDate/notes (the open-ended UI payload)', () => {
+    const r = createContractSchema.safeParse({
+      orgId: '11111111-1111-1111-1111-111111111111', name: 'Acme MSP', billingTiming: 'advance',
+      intervalMonths: 1, startDate: '2026-07-01', endDate: null, autoIssue: false, notes: null
+    });
+    expect(r.success).toBe(true);
+  });
 });
 
 describe('contractLineInputSchema', () => {

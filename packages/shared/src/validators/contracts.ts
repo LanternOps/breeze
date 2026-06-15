@@ -26,13 +26,15 @@ export const createContractSchema = z.object({
   billingTiming: z.enum(['advance', 'arrears']),
   intervalMonths: z.number().int().min(1).max(60),
   startDate: isoDate,
-  endDate: isoDate.optional(),
+  // endDate/notes accept null (not just undefined): the web create form sends
+  // `endDate || null` and `notes.trim() || null`, matching updateContractSchema.
+  endDate: isoDate.nullable().optional(),
   autoIssue: z.boolean().optional(),
   currencyCode: z.string().length(3).optional(),
-  notes: z.string().max(5000).optional(),
-  terms: z.string().max(5000).optional()
+  notes: z.string().max(5000).nullable().optional(),
+  terms: z.string().max(5000).nullable().optional()
 }).refine(
-  (c) => c.endDate === undefined || c.endDate > c.startDate,
+  (c) => c.endDate == null || c.endDate > c.startDate,
   { message: 'endDate must be after startDate', path: ['endDate'] }
 );
 
