@@ -34,6 +34,7 @@ import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
+import { contractRoutes } from './routes/contracts';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
@@ -741,6 +742,7 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
 api.route('/invoices', invoiceRoutes);
+api.route('/contracts', contractRoutes);
 // Assembly routes nest under the existing /orgs and /tickets namespaces, so they
 // mount at the api root: /api/v1/orgs/:orgId/invoices/assemble and
 // /api/v1/tickets/:ticketId/invoice. invoiceAssemblyRoutes applies authMiddleware itself.
