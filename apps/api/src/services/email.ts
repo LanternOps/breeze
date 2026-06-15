@@ -548,54 +548,64 @@ async function sendViaMailgun(
   config: MailgunProviderConfig,
   params: SendEmailParams & { from: string }
 ): Promise<void> {
-  // Attachments require multipart/form-data; without them a urlencoded body is
-  // smaller, but FormData works for both so we use it uniformly.
-  const body = new FormData();
-  body.set('from', params.from);
-  body.set('subject', params.subject);
-
-  const recipients = Array.isArray(params.to) ? params.to : [params.to];
-  for (const recipient of recipients) {
-    body.append('to', recipient);
-  }
-
-  if (params.text) {
-    body.set('text', params.text);
-  }
-  body.set('html', params.html);
-
-  if (params.replyTo) {
-    const replyTos = Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo];
-    for (const replyTo of replyTos) {
-      body.append('h:Reply-To', replyTo);
-    }
-  }
-
-  if (params.headers) {
-    for (const [name, value] of Object.entries(params.headers)) {
-      // Reply-To is already mapped above via the replyTo param — skip to avoid
-      // double-encoding if a caller also passes it in headers.
-      if (name.toLowerCase() === 'reply-to') continue;
-      body.set(`h:${name}`, value);
-    }
-  }
-
-  for (const attachment of params.attachments ?? []) {
-    const blob = new Blob([new Uint8Array(attachment.content)], {
-      type: attachment.contentType ?? 'application/octet-stream'
-    });
-    body.append('attachment', blob, attachment.filename);
-  }
-
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
-  const response = await fetch(buildMailgunEndpoint(config), {
-    method: 'POST',
-    headers: {
-      // Let fetch set the multipart Content-Type boundary automatically.
-      Authorization: `Basic ${authToken}`
-    },
-    body
-  });
+  const recipients = Array.isArray(params.to) ? params.to : [params.to];
+  const replyTos = params.replyTo
+    ? (Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo])
+    : [];
+
+  // Attachments require multipart/form-data; otherwise keep the simpler
+  // urlencoded body (matches the long-standing contract + the email.test.ts
+  // assertions). fetch sets the multipart Content-Type/boundary automatically.
+  let response: Response;
+  if (params.attachments && params.attachments.length > 0) {
+    const body = new FormData();
+    body.set('from', params.from);
+    body.set('subject', params.subject);
+    for (const recipient of recipients) body.append('to', recipient);
+    if (params.text) body.set('text', params.text);
+    body.set('html', params.html);
+    for (const replyTo of replyTos) body.append('h:Reply-To', replyTo);
+    if (params.headers) {
+      for (const [name, value] of Object.entries(params.headers)) {
+        if (name.toLowerCase() === 'reply-to') continue;
+        body.set(`h:${name}`, value);
+      }
+    }
+    for (const attachment of params.attachments) {
+      const blob = new Blob([new Uint8Array(attachment.content)], {
+        type: attachment.contentType ?? 'application/octet-stream'
+      });
+      body.append('attachment', blob, attachment.filename);
+    }
+    response = await fetch(buildMailgunEndpoint(config), {
+      method: 'POST',
+      headers: { Authorization: `Basic ${authToken}` },
+      body
+    });
+  } else {
+    const body = new URLSearchParams();
+    body.set('from', params.from);
+    body.set('subject', params.subject);
+    for (const recipient of recipients) body.append('to', recipient);
+    if (params.text) body.set('text', params.text);
+    body.set('html', params.html);
+    for (const replyTo of replyTos) body.append('h:Reply-To', replyTo);
+    if (params.headers) {
+      for (const [name, value] of Object.entries(params.headers)) {
+        if (name.toLowerCase() === 'reply-to') continue;
+        body.set(`h:${name}`, value);
+      }
+    }
+    response = await fetch(buildMailgunEndpoint(config), {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${authToken}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
+  }
 
   if (!response.ok) {
     const message = await response.text().catch(() => '');
