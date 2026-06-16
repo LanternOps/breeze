@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   Terminal,
   FileText,
+  FileSignature,
   Receipt,
   Tags,
   FileSpreadsheet,
@@ -163,6 +164,7 @@ export const navSections: NavSection[] = [
     icon: Layers,
     items: [
       { name: 'Invoices', href: '/billing/invoices', icon: Receipt },
+      { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true },
       { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true },
       { name: 'Software Library', href: '/software', icon: Package },
       { name: 'Software Policies', href: '/software-inventory', icon: Package },

@@ -1,359 +1,550 @@
-import { useCallback, useEffect, useState } from 'react';
-import { fetchWithAuth } from '../../stores/auth';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
-
-// Catalog items are partner-scoped. numeric(12,2) columns (unitPrice, costBasis)
-// serialize to JSON as strings, so the price fields are typed as string here.
-interface CatalogItem {
-  id: string;
-  itemType: 'hardware' | 'software' | 'service';
-  name: string;
-  sku: string | null;
-  unitPrice: string;
-  costBasis: string | null;
-  isBundle: boolean;
-  isActive: boolean;
-}
-
-interface EditForm {
-  itemType: 'hardware' | 'software' | 'service';
-  name: string;
-  sku: string;
-  unitPrice: string;
-  costBasis: string;
-  isBundle: boolean;
-}
-
-const EMPTY_FORM: EditForm = {
-  itemType: 'service',
-  name: '',
-  sku: '',
-  unitPrice: '',
-  costBasis: '',
-  isBundle: false
-};
+import { formatMoney } from '../../lib/timeFormat';
+import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
+import {
+  listCatalog, getCatalogItem, getBundleEconomics, archiveCatalogItem, updateCatalogItem,
+  computeMargin, formatMargin, marginTone,
+  CATALOG_TYPE_LABELS, CATALOG_TYPE_CHIP, CATALOG_TYPE_ORDER, CATALOG_PAGE_LIMIT,
+  type CatalogItem, type CatalogItemType, type CatalogItemDetail,
+  type BundleComponentRow, type BundleEconomics,
+} from '../../lib/api/catalog';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
+
+type View = 'active' | 'archived';
+type TypeFilter = 'all' | CatalogItemType;
+type SortKey = 'name' | 'unitPrice' | 'margin';
+interface Sort { key: SortKey; dir: 'asc' | 'desc' }
+
+interface ExpandState {
+  loading: boolean;
+  components: BundleComponentRow[];
+  economics: BundleEconomics | null;
+}
 
 export default function CatalogItemsTab() {
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editId, setEditId] = useState<string | null>(null);
-  const [form, setForm] = useState<EditForm>(EMPTY_FORM);
-  // In-flight guards prevent double-submit duplicate POSTs.
-  const [saving, setSaving] = useState(false);
+  const [view, setView] = useState<View>('active');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<Sort>({ key: 'name', dir: 'asc' });
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [editItem, setEditItem] = useState<CatalogItem | null>(null);
   const [archivingId, setArchivingId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, ExpandState>>({});
 
   // Catalog routes enforce requireScope('partner','system') server-side. Mirror
-  // that client-side so org-scope users see a clear message instead of a
-  // misleading "failed to load" 403. getJwtClaims returns null scope on a
-  // missing/undecodable token; treat only confirmed 'organization' scope as
-  // denied so we never hard-block on a decode failure (server still re-checks).
+  // that here so org-scope users get a clear message instead of a misleading
+  // load error; only a confirmed 'organization' scope is blocked (a missing or
+  // undecodable token falls through and the server re-checks).
   const isOrgScoped = getJwtClaims().scope === 'organization';
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (v: View) => {
     setLoading(true);
     setError(false);
     try {
-      const res = await fetchWithAuth('/catalog?isActive=true');
-      if (res.ok) {
-        const body = (await res.json()) as { data: CatalogItem[] };
-        setItems(body.data ?? []);
-      } else {
-        setError(true);
-      }
+      const res = await listCatalog({ isActive: v === 'active', limit: CATALOG_PAGE_LIMIT });
+      if (res.status === 401) return UNAUTHORIZED();
+      if (!res.ok) { setError(true); return; }
+      const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
+      setItems(body?.data ?? []);
+      setExpanded({});
     } catch {
       setError(true);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(view); }, [load, view]);
 
-  const openCreate = () => {
-    setEditId(null);
-    setForm(EMPTY_FORM);
-    setEditorOpen(true);
-  };
-
-  const openEdit = (it: CatalogItem) => {
-    setEditId(it.id);
-    setForm({
-      itemType: it.itemType,
-      name: it.name,
-      sku: it.sku ?? '',
-      unitPrice: it.unitPrice,
-      costBasis: it.costBasis ?? '',
-      isBundle: it.isBundle
-    });
-    setEditorOpen(true);
-  };
-
-  const save = useCallback(async () => {
-    if (saving) return; // guard re-entry while a save is in flight
-    if (!form.name.trim()) return;
-    const unitPrice = Number(form.unitPrice);
-    // Blank or non-finite unit price: surface feedback instead of a silent
-    // no-op. (Save is also disabled in this state — this is the belt-and-braces
-    // path for keyboard/Enter submits.)
-    if (!form.unitPrice.trim() || !Number.isFinite(unitPrice)) {
-      showToast({ message: 'Enter a valid unit price.', type: 'error' });
-      return;
-    }
-    const body: Record<string, unknown> = {
-      itemType: form.itemType,
-      name: form.name.trim(),
-      sku: form.sku.trim() || null,
-      unitPrice,
-      costBasis: form.costBasis.trim() ? Number(form.costBasis) : null,
-      isBundle: form.isBundle
-    };
-    setSaving(true);
-    try {
-      await runAction({
-        request: () =>
-          editId
-            ? fetchWithAuth(`/catalog/${editId}`, { method: 'PATCH', body: JSON.stringify(body) })
-            : fetchWithAuth('/catalog', { method: 'POST', body: JSON.stringify(body) }),
-        errorFallback: editId ? 'Update failed. Retry.' : 'Item creation failed. Retry.',
-        successMessage: editId ? 'Item updated' : `Item "${form.name.trim()}" created`,
-        onUnauthorized: UNAUTHORIZED
-      });
-      setEditorOpen(false);
-      void load();
-    } catch (err) {
-      handleActionError(err, editId ? 'Update failed. Retry.' : 'Item creation failed. Retry.');
-    } finally {
-      setSaving(false);
-    }
-  }, [form, editId, load, saving]);
+  const openCreate = () => { setEditItem(null); setDrawerOpen(true); };
+  const openEdit = (it: CatalogItem) => { setEditItem(it); setDrawerOpen(true); };
 
   const archive = useCallback(async (id: string) => {
-    if (archivingId) return; // guard re-entry while an archive is in flight
+    if (archivingId) return;
     setArchivingId(id);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/catalog/${id}/archive`, { method: 'POST' }),
+        request: () => archiveCatalogItem(id),
         errorFallback: 'Archive failed. Retry.',
         successMessage: 'Item archived',
-        onUnauthorized: UNAUTHORIZED
+        onUnauthorized: UNAUTHORIZED,
       });
-      void load();
+      void load(view);
     } catch (err) {
       handleActionError(err, 'Archive failed. Retry.');
     } finally {
       setArchivingId(null);
     }
-  }, [load, archivingId]);
+  }, [load, view, archivingId]);
 
+  const restore = useCallback(async (id: string) => {
+    if (archivingId) return;
+    setArchivingId(id);
+    try {
+      await runAction({
+        request: () => updateCatalogItem(id, { isActive: true }),
+        errorFallback: 'Restore failed. Retry.',
+        successMessage: 'Item restored',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      void load(view);
+    } catch (err) {
+      handleActionError(err, 'Restore failed. Retry.');
+    } finally {
+      setArchivingId(null);
+    }
+  }, [load, view, archivingId]);
+
+  const toggleExpand = useCallback((it: CatalogItem) => {
+    setExpanded((prev) => {
+      if (prev[it.id]) {
+        const next = { ...prev };
+        delete next[it.id];
+        return next;
+      }
+      // Lazily fetch this bundle's components + rolled-up economics.
+      void Promise.all([getCatalogItem(it.id), getBundleEconomics(it.id)])
+        .then(async ([detailRes, econRes]) => {
+          if (detailRes.status === 401 || econRes.status === 401) return UNAUTHORIZED();
+          const detail = detailRes.ok
+            ? ((await detailRes.json().catch(() => null)) as { data?: CatalogItemDetail } | null)?.data ?? null
+            : null;
+          const econ = econRes.ok
+            ? ((await econRes.json().catch(() => null)) as { data?: BundleEconomics } | null)?.data ?? null
+            : null;
+          setExpanded((p) => (p[it.id]
+            ? { ...p, [it.id]: { loading: false, components: detail?.components ?? [], economics: econ } }
+            : p));
+        })
+        .catch(() => setExpanded((p) => (p[it.id] ? { ...p, [it.id]: { loading: false, components: [], economics: null } } : p)));
+      return { ...prev, [it.id]: { loading: true, components: [], economics: null } };
+    });
+  }, []);
+
+  const itemName = useCallback(
+    (id: string) => items.find((i) => i.id === id)?.name ?? 'Unknown item',
+    [items],
+  );
+
+  const toggleSort = (key: SortKey) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+
+  // ---- derived rows: filter (type + search) then sort ---------------------
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let out = items.filter((it) => {
+      if (typeFilter !== 'all' && it.itemType !== typeFilter) return false;
+      if (q && !it.name.toLowerCase().includes(q) && !(it.sku ?? '').toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    out = [...out].sort((a, b) => {
+      if (sort.key === 'name') return a.name.localeCompare(b.name) * dir;
+      if (sort.key === 'unitPrice') return (Number(a.unitPrice) - Number(b.unitPrice)) * dir;
+      // margin: nulls always sort to the bottom regardless of direction
+      const ma = computeMargin(a.unitPrice, a.costBasis);
+      const mb = computeMargin(b.unitPrice, b.costBasis);
+      if (ma == null && mb == null) return 0;
+      if (ma == null) return 1;
+      if (mb == null) return -1;
+      return (ma - mb) * dir;
+    });
+    return out;
+  }, [items, typeFilter, search, sort]);
+
+  const capHit = items.length >= CATALOG_PAGE_LIMIT;
+
+  // ---- gated / empty-of-everything states ---------------------------------
   if (isOrgScoped) {
     return (
-      <p className="text-center text-sm text-muted-foreground" data-testid="catalog-items-org-scope">
+      <p className="rounded-lg border bg-card px-4 py-12 text-center text-sm text-muted-foreground" data-testid="catalog-items-org-scope">
         The product catalog is available to partner accounts only.
       </p>
     );
   }
 
-  if (loading) {
-    return (
-      <p className="text-center text-sm text-muted-foreground" data-testid="catalog-items-loading">
-        Loading.
-      </p>
-    );
-  }
-
-  if (error) {
-    return (
-      <p className="text-center text-sm text-muted-foreground" data-testid="catalog-items-error">
-        Catalog failed to load.{' '}
-        <button
-          type="button"
-          onClick={() => void load()}
-          className="underline hover:text-foreground"
-          data-testid="catalog-items-retry"
-        >
-          Retry
-        </button>
-      </p>
-    );
-  }
+  const SortHeader = ({ label, sortKey, align = 'left' }: { label: string; sortKey: SortKey; align?: 'left' | 'right' }) => (
+    <th className={`px-3 py-3 font-medium ${align === 'right' ? 'text-right' : ''}`}>
+      <button
+        type="button"
+        onClick={() => toggleSort(sortKey)}
+        className={`inline-flex items-center gap-1 hover:text-foreground ${align === 'right' ? 'flex-row-reverse' : ''}`}
+        data-testid={`catalog-sort-${sortKey}`}
+      >
+        {label}
+        <span className="text-[10px] leading-none">{sort.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      </button>
+    </th>
+  );
 
   return (
     <div className="space-y-4" data-testid="catalog-items-tab">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Items</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Hardware, software, and service items available for quotes, contracts, and invoices.
-          </p>
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2" data-testid="catalog-toolbar">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name or SKU"
+          aria-label="Search catalog"
+          className="h-9 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          data-testid="catalog-search"
+        />
+
+        {/* Type filter — segmented */}
+        <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Filter by type">
+          {(['all', ...CATALOG_TYPE_ORDER] as TypeFilter[]).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTypeFilter(t)}
+              aria-pressed={typeFilter === t}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                typeFilter === t ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+              data-testid={`catalog-filter-type-${t}`}
+            >
+              {t === 'all' ? 'All' : CATALOG_TYPE_LABELS[t]}
+            </button>
+          ))}
         </div>
+
+        {/* Active / archived */}
+        <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Active or archived">
+          {(['active', 'archived'] as View[]).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              aria-pressed={view === v}
+              className={`rounded px-2.5 py-1 text-xs font-medium capitalize transition ${
+                view === v ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+              data-testid={`catalog-view-${v}`}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+
         <button
           type="button"
           onClick={openCreate}
-          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white"
+          className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           data-testid="catalog-add-item"
         >
           Add item
         </button>
       </div>
 
-      {items.length === 0 ? (
-        <p className="text-center text-sm text-muted-foreground" data-testid="catalog-items-empty">
-          No catalog items yet.
-        </p>
-      ) : (
-        <table className="min-w-full divide-y text-sm" data-testid="catalog-items-table">
-          <thead>
-            <tr className="text-left text-muted-foreground">
-              <th className="px-4 py-2 font-medium">Name</th>
-              <th className="px-4 py-2 font-medium">Type</th>
-              <th className="px-4 py-2 font-medium">SKU</th>
-              <th className="px-4 py-2 font-medium">Price</th>
-              <th className="px-4 py-2 font-medium">Bundle</th>
-              <th className="px-4 py-2" />
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {items.map((it) => (
-              <tr key={it.id} data-testid={`catalog-item-row-${it.id}`}>
-                <td className="px-4 py-2">{it.name}</td>
-                <td className="px-4 py-2">{it.itemType}</td>
-                <td className="px-4 py-2">{it.sku ?? '—'}</td>
-                <td className="px-4 py-2">{it.unitPrice}</td>
-                <td className="px-4 py-2">{it.isBundle ? 'Yes' : '—'}</td>
-                <td className="px-4 py-2 text-right space-x-2">
-                  <button
-                    type="button"
-                    onClick={() => openEdit(it)}
-                    className="text-sm text-muted-foreground hover:text-foreground"
-                    data-testid={`catalog-edit-${it.id}`}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void archive(it.id)}
-                    disabled={archivingId !== null}
-                    className="text-sm text-destructive hover:underline disabled:opacity-50"
-                    data-testid={`catalog-archive-${it.id}`}
-                  >
-                    {archivingId === it.id ? 'Archiving…' : 'Archive'}
-                  </button>
-                </td>
-              </tr>
+      {/* Table card */}
+      <div className="rounded-lg border bg-card shadow-sm">
+        {loading ? (
+          <div className="divide-y" data-testid="catalog-items-loading">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4 px-4 py-3.5">
+                <div className="h-4 w-1/3 animate-pulse rounded bg-muted" />
+                <div className="h-4 w-16 animate-pulse rounded bg-muted" />
+                <div className="ml-auto h-4 w-20 animate-pulse rounded bg-muted" />
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+        ) : error ? (
+          <div className="px-4 py-12 text-center text-sm text-destructive" data-testid="catalog-items-error">
+            Catalog failed to load.
+            <div>
+              <button
+                type="button"
+                onClick={() => void load(view)}
+                className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                data-testid="catalog-items-retry"
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        ) : items.length === 0 ? (
+          <div className="px-4 py-14 text-center" data-testid="catalog-items-empty">
+            {view === 'archived' ? (
+              <p className="text-sm text-muted-foreground">No archived items.</p>
+            ) : (
+              <>
+                <h3 className="text-sm font-semibold">Build your catalog</h3>
+                <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                  Add the hardware, software, and service items you sell. Catalog items power quotes, contracts, and invoices.
+                </p>
+                <button
+                  type="button"
+                  onClick={openCreate}
+                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  data-testid="catalog-empty-add"
+                >
+                  Add your first item
+                </button>
+              </>
+            )}
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="catalog-items-no-match">
+            No items match these filters.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" data-testid="catalog-items-table">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <SortHeader label="Name" sortKey="name" />
+                  <th className="px-3 py-3 font-medium">Type</th>
+                  <th className="px-3 py-3 font-medium">SKU</th>
+                  <SortHeader label="Unit price" sortKey="unitPrice" align="right" />
+                  <th className="px-3 py-3 text-right font-medium">Cost</th>
+                  <SortHeader label="Margin" sortKey="margin" align="right" />
+                  <th className="px-3 py-3" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((it) => {
+                  const margin = computeMargin(it.unitPrice, it.costBasis);
+                  const exp = expanded[it.id];
+                  const isOpen = !!exp;
+                  return (
+                    <FragmentRow key={it.id}>
+                      <tr className="border-t transition hover:bg-muted/40" data-testid={`catalog-item-row-${it.id}`}>
+                        <td className="px-3 py-3 font-medium">
+                          <span className="flex items-center gap-1.5">
+                            {it.isBundle ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleExpand(it)}
+                                aria-expanded={isOpen}
+                                aria-label={isOpen ? 'Collapse bundle' : 'Expand bundle'}
+                                className="-ml-1 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                data-testid={`catalog-bundle-toggle-${it.id}`}
+                              >
+                                <svg className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                  <path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              </button>
+                            ) : (
+                              <span className="inline-block w-[18px]" />
+                            )}
+                            {it.name}
+                            {it.isBundle && (
+                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Bundle
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${CATALOG_TYPE_CHIP[it.itemType]}`}>
+                            {CATALOG_TYPE_LABELS[it.itemType]}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 font-mono text-xs text-muted-foreground">{it.sku ?? '—'}</td>
+                        <td className="px-3 py-3 text-right tabular-nums">{formatMoney(it.unitPrice)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{it.costBasis ? formatMoney(it.costBasis) : '—'}</td>
+                        <td className={`px-3 py-3 text-right tabular-nums ${marginTone(margin)}`} data-testid={`catalog-margin-${it.id}`}>
+                          {formatMargin(margin)}
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          <RowActions
+                            item={it}
+                            view={view}
+                            busy={archivingId === it.id}
+                            disabled={archivingId !== null}
+                            onEdit={() => openEdit(it)}
+                            onArchive={() => void archive(it.id)}
+                            onRestore={() => void restore(it.id)}
+                          />
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="border-t bg-muted/20" data-testid={`catalog-bundle-detail-${it.id}`}>
+                          <td colSpan={7} className="px-3 py-3">
+                            {exp.loading ? (
+                              <p className="pl-6 text-xs text-muted-foreground">Loading components.</p>
+                            ) : exp.components.length === 0 ? (
+                              <p className="pl-6 text-xs text-muted-foreground">This bundle has no components yet.</p>
+                            ) : (
+                              <div className="pl-6">
+                                <ul className="space-y-1">
+                                  {exp.components.map((c) => (
+                                    <li key={c.id} className="flex items-center gap-2 text-xs">
+                                      <span className="tabular-nums text-muted-foreground">{Number(c.quantity)}×</span>
+                                      <span>{itemName(c.componentItemId)}</span>
+                                      {c.showOnInvoice && (
+                                        <span className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                          on invoice
+                                        </span>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                                {exp.economics && (
+                                  <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs text-muted-foreground">
+                                    <span>Component cost <span className="tabular-nums text-foreground">{formatMoney(exp.economics.totalCost)}</span></span>
+                                    <span>Bundle margin <span className={`tabular-nums ${marginTone(exp.economics.marginPct)}`}>{formatMoney(exp.economics.margin)} ({formatMargin(exp.economics.marginPct)})</span></span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </FragmentRow>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {capHit && (
+        <p className="text-xs text-muted-foreground" data-testid="catalog-cap-note">
+          Showing the first {CATALOG_PAGE_LIMIT} items. Use search to narrow the list.
+        </p>
       )}
 
-      {editorOpen && (
-        <div className="rounded-md border bg-muted/30 p-4" data-testid="catalog-item-editor">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium" htmlFor="catalog-form-type-select">Type</label>
-              <select
-                id="catalog-form-type-select"
-                value={form.itemType}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, itemType: e.target.value as EditForm['itemType'] }))
-                }
-                className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-                data-testid="catalog-form-type"
-              >
-                <option value="hardware">Hardware</option>
-                <option value="software">Software</option>
-                <option value="service">Service</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs font-medium" htmlFor="catalog-form-name-input">Name</label>
-              <input
-                id="catalog-form-name-input"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-                placeholder="Item name"
-                data-testid="catalog-form-name"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium" htmlFor="catalog-form-sku-input">SKU</label>
-              <input
-                id="catalog-form-sku-input"
-                value={form.sku}
-                onChange={(e) => setForm((f) => ({ ...f, sku: e.target.value }))}
-                className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-                placeholder="SKU (optional)"
-                data-testid="catalog-form-sku"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium" htmlFor="catalog-form-price-input">Unit price</label>
-              <input
-                id="catalog-form-price-input"
-                value={form.unitPrice}
-                onChange={(e) => setForm((f) => ({ ...f, unitPrice: e.target.value }))}
-                inputMode="decimal"
-                className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-                placeholder="0.00"
-                data-testid="catalog-form-price"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium" htmlFor="catalog-form-cost-input">Cost basis</label>
-              <input
-                id="catalog-form-cost-input"
-                value={form.costBasis}
-                onChange={(e) => setForm((f) => ({ ...f, costBasis: e.target.value }))}
-                inputMode="decimal"
-                className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-                placeholder="Cost basis (optional)"
-                data-testid="catalog-form-cost"
-              />
-            </div>
-            <div className="flex items-end">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.isBundle}
-                  onChange={(e) => setForm((f) => ({ ...f, isBundle: e.target.checked }))}
-                  data-testid="catalog-form-bundle"
-                />
-                This item is a bundle
-              </label>
-            </div>
-          </div>
-          <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={
-                saving ||
-                !form.name.trim() ||
-                !form.unitPrice.trim() ||
-                !Number.isFinite(Number(form.unitPrice))
-              }
-              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-              data-testid="catalog-form-save"
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditorOpen(false)}
-              className="rounded-md border px-3 py-1.5 text-sm font-medium"
-              data-testid="catalog-form-cancel"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
+      <CatalogItemEditorDrawer
+        open={drawerOpen}
+        item={editItem}
+        allItems={items}
+        onClose={() => setDrawerOpen(false)}
+        onSaved={() => void load(view)}
+      />
     </div>
+  );
+}
+
+// Tiny helper so a row + its expanded detail row share one key without a wrapper
+// element (which would be invalid inside <tbody>).
+function FragmentRow({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+// Per-row overflow ("⋯") menu. The table scrolls horizontally (overflow-x-auto),
+// which would clip an absolutely-positioned dropdown, so the menu is portalled to
+// <body> and positioned with fixed coordinates from the trigger's rect.
+function RowActions({
+  item, view, busy, disabled, onEdit, onArchive, onRestore,
+}: {
+  item: CatalogItem;
+  view: View;
+  busy: boolean;
+  disabled: boolean;
+  onEdit: () => void;
+  onArchive: () => void;
+  onRestore: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const place = useCallback(() => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setCoords({ top: r.bottom + 4, right: window.innerWidth - r.right });
+  }, []);
+
+  const openMenu = () => { place(); setOpen(true); };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node) || btnRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const close = () => setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    // Any scroll/resize invalidates the fixed coords — just close.
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  const itemCls = 'flex w-full items-center px-3 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50';
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        disabled={disabled && !busy}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Row actions"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+        data-testid={`catalog-actions-${item.id}`}
+      >
+        {busy ? (
+          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+        ) : (
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.6" />
+            <circle cx="12" cy="12" r="1.6" />
+            <circle cx="19" cy="12" r="1.6" />
+          </svg>
+        )}
+      </button>
+
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-50 w-36 overflow-hidden rounded-md border bg-card py-1 shadow-lg"
+          style={{ top: coords.top, right: coords.right }}
+          data-testid={`catalog-actions-menu-${item.id}`}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { setOpen(false); onEdit(); }}
+            className={itemCls}
+            data-testid={`catalog-edit-${item.id}`}
+          >
+            Edit
+          </button>
+          {view === 'active' ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setOpen(false); onArchive(); }}
+              className={`${itemCls} text-destructive`}
+              data-testid={`catalog-archive-${item.id}`}
+            >
+              Archive
+            </button>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setOpen(false); onRestore(); }}
+              className={`${itemCls} text-primary`}
+              data-testid={`catalog-restore-${item.id}`}
+            >
+              Restore
+            </button>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
