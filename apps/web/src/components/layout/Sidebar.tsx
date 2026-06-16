@@ -47,6 +47,7 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
+import { ENABLE_AI_FOR_OFFICE } from '../../lib/featureFlags';
 import BrandHeader from './BrandHeader';
 
 interface SidebarProps {
@@ -91,6 +92,9 @@ type NavItem = {
   // partner-branding fetch below; undecodable tokens fall through to visible
   // and the server re-checks everything.
   partnerScopeOnly?: boolean;
+  // Hidden when explicitly false — used to gate a nav item behind a build-time
+  // feature flag (e.g. ENABLE_AI_FOR_OFFICE). Undefined means always shown.
+  featureEnabled?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -126,7 +130,7 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
       { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
-      { name: 'AI for Office', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true },
+      { name: 'AI for Office', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, featureEnabled: ENABLE_AI_FOR_OFFICE },
     ],
   },
   {
@@ -443,6 +447,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   // --- Render a single nav item -------------------------------------------
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
+    if (item.featureEnabled === false) return null;
     if (item.platformAdminOnly && !isPlatformAdmin) return null;
     if (item.partnerScopeOnly) {
       const { scope } = getJwtClaims();

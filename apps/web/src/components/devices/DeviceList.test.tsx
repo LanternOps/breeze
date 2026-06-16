@@ -333,15 +333,17 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(hostCol).toEqual(['host-nine', 'host-ten']);
   });
 
-  it('renders all 24 catalog columns with a sort hint and pointer cursor when every column is visible', () => {
-    // Default visibility shows only 9 columns, which would let the other 15
-    // silently regress to plain <th> elements. Opt every catalog column in.
+  it('renders every catalog column with a sort hint and pointer cursor when every column is visible', () => {
+    // Default visibility shows only a handful of columns, which would let the
+    // others silently regress to plain <th> elements. Opt every catalog column
+    // in — including the network-only Class/Type columns, which only render
+    // when the network arm is enabled (networkDevicesEnabled).
     window.localStorage.setItem(
       'breeze.devices.columns',
       JSON.stringify({ v: 1, columns: COLUMN_IDS.map(id => ({ id, visible: true })) }),
     );
 
-    const { container } = render(<DeviceList devices={[baseDevice]} />);
+    const { container } = render(<DeviceList devices={[baseDevice]} networkDevicesEnabled />);
 
     const headers = Array.from(container.querySelectorAll('thead th'));
     // First (checkbox) and last (Actions) are structural; everything between
