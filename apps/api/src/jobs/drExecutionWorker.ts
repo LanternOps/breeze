@@ -3,6 +3,7 @@ import { getBullMQConnection } from '../services/redis';
 import { withSystemDbAccessContext } from '../db';
 import { reconcileDrExecution } from '../services/drExecutionService';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
   drExecutionQueueJobDataSchema,
@@ -100,6 +101,7 @@ export async function enqueueDrExecutionReconcile(executionId: string, delayMs =
 
 export async function initializeDrExecutionWorker(): Promise<void> {
   drExecutionWorkerInstance = createDrExecutionWorker();
+  attachWorkerObservability(drExecutionWorkerInstance, 'drExecutionWorker');
 
   drExecutionWorkerInstance.on('error', (error) => {
     console.error('[DrExecutionWorker] Worker error:', error);

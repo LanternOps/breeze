@@ -146,6 +146,68 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
   return parent;
 }
 
+/**
+ * Add a line sourced from a recurring contract (sub-project 3). This is an
+ * internal engine helper — callers MUST supply org-scoped, engine-resolved
+ * inputs (quantity computed by the contract engine, sourceId scoped to the
+ * originating contract_line). Do NOT wire this directly to an HTTP endpoint.
+ *
+ * When catalogItemId is supplied the price, taxable flag, and costBasis are
+ * authoritative from resolvePrice (tenant-scoped; throws if inaccessible).
+ * On the non-catalog path the caller-supplied unitPrice and taxable are used,
+ * with numeric normalization and a non-negative guard applied.
+ * sourceId carries the originating contract_line id (already org-scoped by
+ * the contract engine — no additional scoping is applied here).
+ */
+export async function addContractLine(
+  invoiceId: string,
+  input: {
+    description: string;
+    quantity: string;        // fixed-2-decimal string
+    unitPrice: string;       // fixed-2-decimal string (used on non-catalog path)
+    taxable: boolean;        // used on non-catalog path
+    catalogItemId?: string | null;
+    sourceId?: string | null; // contract_line id
+  },
+  actor: InvoiceActor
+) {
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+
+  // Quantity is always engine-supplied (e.g. device count) — normalize but do not override.
+  const quantity = String(input.quantity);
+
+  let unitPrice: string;
+  let taxable: boolean;
+  let costBasis: string | null = null;
+
+  if (input.catalogItemId) {
+    // Catalog path: resolve price through the tenant-scoped catalog service.
+    // resolvePrice throws if the item is not accessible to the actor's org/partner,
+    // closing the cross-tenant catalog reference hole (Finding 1).
+    const resolved = await resolvePrice(
+      input.catalogItemId, inv.orgId,
+      { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds }
+    );
+    unitPrice = resolved.unitPrice;
+    taxable = resolved.taxable;
+    costBasis = resolved.costBasis;
+  } else {
+    // Non-catalog path: normalize like addManualLine/updateLine (Finding 2).
+    unitPrice = Number(input.unitPrice).toFixed(2);
+    taxable = input.taxable;
+    if (Number(quantity) < 0 || Number(unitPrice) < 0) {
+      throw new InvoiceServiceError('Negative amounts not allowed', 400, 'INVALID_AMOUNT');
+    }
+  }
+
+  return insertLineAndRecompute(invoiceId, inv.orgId, {
+    sourceType: 'contract', sourceId: input.sourceId ?? null, catalogItemId: input.catalogItemId ?? null,
+    parentLineId: null, ticketId: null, description: input.description, quantity,
+    unitPrice, costBasis, taxable, customerVisible: true,
+    lineTotal: computeLineTotal(quantity, unitPrice), isUnapprovedTime: false
+  });
+}
+
 export async function updateLine(invoiceId: string, lineId: string, patch: { description?: string; quantity?: number; unitPrice?: number; taxable?: boolean; customerVisible?: boolean }, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
   const [existing] = await db.select().from(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId))).limit(1);

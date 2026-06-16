@@ -80,10 +80,27 @@ export async function fetchApproval(id: string): Promise<ApprovalRequest> {
   return json.approval;
 }
 
-export async function approveRequest(id: string): Promise<ApprovalRequest> {
-  const res = await authedFetch(`${PREFIX}/${id}/approve`, { method: 'POST' });
+/**
+ * Optional Breeze Authenticator step-up payload attached to an approve. A
+ * hardware-signed `proof` upgrades the recorded decision to L2 (mobile_hw_key);
+ * a verified `pin` upgrades it to L3. Both are optional — a device-less tech
+ * approves with neither, recorded as L1 (Phase 3 is opt-in; enforcement is
+ * Phase 4). The server treats a *presented-but-invalid* proof/pin as an error,
+ * never a silent downgrade.
+ */
+export interface ApproveStepUp {
+  proof?: unknown;
+  pin?: string;
+}
+
+export async function approveRequest(id: string, stepUp?: ApproveStepUp): Promise<ApprovalRequest> {
+  const body = stepUp && (stepUp.proof || stepUp.pin)
+    ? JSON.stringify({ proof: stepUp.proof, pin: stepUp.pin })
+    : undefined;
+  const res = await authedFetch(`${PREFIX}/${id}/approve`, { method: 'POST', body });
   if (res.status === 409) throw new Error('ALREADY_DECIDED');
   if (res.status === 410) throw new Error('EXPIRED');
+  if (res.status === 401) throw new Error('STEP_UP_FAILED');
   if (!res.ok) throw new Error(`Approve failed: ${res.status}`);
   const json = await res.json();
   return json.approval;

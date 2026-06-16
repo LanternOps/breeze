@@ -10,6 +10,7 @@ import * as dbModule from '../db';
 import { snmpMetrics } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -65,6 +66,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export async function initializeSnmpRetention(): Promise<void> {
   try {
     retentionWorker = createSnmpRetentionWorker();
+    attachWorkerObservability(retentionWorker, 'snmpRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[SnmpRetention] Worker error:', error);

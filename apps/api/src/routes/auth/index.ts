@@ -10,6 +10,7 @@ import { accountDeletionRoutes } from './accountDeletion';
 import { testApprovalRoutes } from './testApproval';
 import { cfAccessRedirectLoginRoutes } from './cfAccessRedirectLogin';
 import { passkeyRoutes } from './passkeys';
+import { pinRoutes } from './pin';
 
 export const authRoutes = new Hono();
 
@@ -20,6 +21,7 @@ authRoutes.route('/', registerRoutes);
 authRoutes.route('/', loginRoutes);
 authRoutes.route('/', mfaRoutes);
 authRoutes.route('/', passkeyRoutes);
+authRoutes.route('/', pinRoutes);
 authRoutes.route('/', phoneRoutes);
 authRoutes.route('/', passwordRoutes);
 authRoutes.route('/', inviteRoutes);

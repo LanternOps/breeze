@@ -10,6 +10,7 @@ import * as dbModule from '../db';
 import { agentLogs } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -77,6 +78,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export async function initializeAgentLogRetention(): Promise<void> {
   try {
     retentionWorker = createAgentLogRetentionWorker();
+    attachWorkerObservability(retentionWorker, 'agentLogRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[AgentLogRetention] Worker error:', error);

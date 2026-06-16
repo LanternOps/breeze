@@ -1,5 +1,5 @@
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { deployments, deploymentDevices, devices, deviceCommands, scripts, users, organizationUsers, patches } from '../db/schema';
 import { eq, and, asc, inArray, isNull, sql } from 'drizzle-orm';
 import {
@@ -428,7 +428,13 @@ async function releaseDeploymentDeviceClaim(deploymentId: string, deviceId: stri
 export function createDeploymentWorker(): Worker {
   return new Worker<ProcessDeploymentJob>(
     DEPLOYMENT_QUEUE,
-    async (job: Job<ProcessDeploymentJob>) => {
+    // Whole processor runs under a system DB context: BullMQ workers get no
+    // request auth middleware, so without it every read/write against the
+    // RLS-forced deployments/deployment_devices tables matches 0 rows under
+    // breeze_app — silently stalling the deploy pipeline (#1375 class). The
+    // body is DB ops + fast Redis enqueues only (executeDeploymentPayload is
+    // fire-and-forget), so holding one short txn per job is pool-safe.
+    async (job: Job<ProcessDeploymentJob>) => withSystemDbAccessContext(async () => {
       const { deploymentId } = job.data;
 
       // Get deployment
@@ -558,7 +564,7 @@ export function createDeploymentWorker(): Worker {
         skipped: currentBatchDevices.length - eligibleDeviceIds.length,
         batch: currentBatch
       };
-    },
+    }),
     {
       connection: getBullMQConnection(),
       concurrency: 5,
@@ -576,7 +582,11 @@ export function createDeploymentWorker(): Worker {
 export function createDeploymentDeviceWorker(): Worker {
   return new Worker<ProcessDeploymentDeviceJob>(
     DEPLOYMENT_DEVICE_QUEUE,
-    async (job: Job<ProcessDeploymentDeviceJob>) => {
+    // System DB context for the whole processor — same rationale as the
+    // deployment worker above (#1375 class). Device-status transitions,
+    // claim/release, retry counting and the failure-threshold auto-pause all
+    // write RLS-forced tables and would silently no-op without it.
+    async (job: Job<ProcessDeploymentDeviceJob>) => withSystemDbAccessContext(async () => {
       const { deploymentId, deviceId, batchNumber } = assertDeploymentDeviceJobData(job.data);
 
       // Get deployment
@@ -732,7 +742,7 @@ export function createDeploymentDeviceWorker(): Worker {
 
         throw error;
       }
-    },
+    }),
     {
       connection: getBullMQConnection(),
       concurrency: 10,

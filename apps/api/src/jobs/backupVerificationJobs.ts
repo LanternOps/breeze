@@ -1,6 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 import {
   ensurePostBackupIntegrityChecks,
   recalculateReadinessScores,
@@ -132,6 +133,7 @@ export async function initializeBackupVerificationJobs(): Promise<void> {
   }
 
   backupVerificationWorker = createBackupVerificationWorker();
+  attachWorkerObservability(backupVerificationWorker, 'backupVerificationWorker');
   backupVerificationWorker.on('error', (error) => {
     console.error('[BackupVerificationJobs] Worker error:', error);
   });

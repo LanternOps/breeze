@@ -11,6 +11,7 @@ import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
+import { attachWorkerObservability } from './workerObservability';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { decryptSnmpSecret } from '../services/snmpSecrets';
 
@@ -415,6 +416,7 @@ let snmpWorkerInstance: Worker<SnmpJobData> | null = null;
 export async function initializeSnmpWorker(): Promise<void> {
   try {
     snmpWorkerInstance = createSnmpWorker();
+    attachWorkerObservability(snmpWorkerInstance, 'snmpWorker');
 
     snmpWorkerInstance.on('error', (error) => {
       console.error('[SnmpWorker] Worker error:', error);

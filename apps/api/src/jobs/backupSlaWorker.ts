@@ -17,6 +17,7 @@ import {
 } from '../db/schema';
 import { eq, and, sql, isNull, desc, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 import { getEventBus } from '../services/eventBus';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 
@@ -389,6 +390,7 @@ let slaWorkerInstance: Worker<SlaJobData> | null = null;
 export async function initializeBackupSlaWorker(): Promise<void> {
   try {
     slaWorkerInstance = createSlaWorker();
+    attachWorkerObservability(slaWorkerInstance, 'backupSlaWorker');
 
     slaWorkerInstance.on('error', (error) => {
       console.error('[SlaWorker] Worker error:', error);

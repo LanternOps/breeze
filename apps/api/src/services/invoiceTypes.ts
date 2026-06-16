@@ -6,7 +6,8 @@ export type PaymentMethod =
   | 'cash' | 'check' | 'bank_transfer' | 'card' | 'other';
 
 export interface InvoiceActor {
-  userId: string;
+  /** The user who initiated the action, or null for system/background actors (e.g. contract worker). */
+  userId: string | null;
   partnerId: string | null;
   accessibleOrgIds: string[] | null;
 }
@@ -21,6 +22,7 @@ export type InvoiceServiceErrorCode =
   | 'SOURCE_ALREADY_BILLED'
   | 'OVERPAYMENT'
   | 'INVALID_STATE'
+  | 'INVALID_AMOUNT'
   | 'LINE_NOT_FOUND'
   | 'PAYMENT_NOT_FOUND'
   | 'NUMBER_ALLOCATION_FAILED';

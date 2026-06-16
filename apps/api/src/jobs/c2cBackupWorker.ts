@@ -17,6 +17,7 @@ import {
 } from '../db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 import {
   closeC2cQueue,
   enqueueC2cSync,
@@ -331,6 +332,7 @@ let c2cWorkerInstance: Worker<C2cJobData> | null = null;
 export async function initializeC2cBackupWorker(): Promise<void> {
   try {
     c2cWorkerInstance = createC2cWorker();
+    attachWorkerObservability(c2cWorkerInstance, 'c2cBackupWorker');
 
     c2cWorkerInstance.on('error', (error) => {
       console.error('[C2CBackupWorker] Worker error:', error);

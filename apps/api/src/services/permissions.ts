@@ -275,6 +275,11 @@ export const PERMISSIONS = {
   INVOICES_SEND: { resource: 'invoices', action: 'send' },
   INVOICES_EXPORT: { resource: 'invoices', action: 'export' },
 
+  // Contracts (recurring-contracts — sub-project 3)
+  CONTRACTS_READ: { resource: 'contracts', action: 'read' },
+  CONTRACTS_WRITE: { resource: 'contracts', action: 'write' },
+  CONTRACTS_MANAGE: { resource: 'contracts', action: 'manage' },
+
   // Time entries (ticketing Phase 3)
   TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
   TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },

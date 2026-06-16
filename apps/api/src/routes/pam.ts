@@ -26,6 +26,7 @@ import { z } from 'zod';
 
 import { db } from '../db';
 import {
+  authenticatorDevices,
   devices,
   elevationAudit,
   elevationRequests,
@@ -40,6 +41,14 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
+import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
+import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import {
+  assertionProofSchema,
+  mobileHwKeyProofSchema,
+  approverPinSchema,
+  elevationRiskTierToName,
+} from '@breeze/shared';
 import { resolveOrgIdForWrite } from './softwarePolicies';
 
 /**
@@ -52,6 +61,18 @@ import { resolveOrgIdForWrite } from './softwarePolicies';
 class StaleExecutionError extends Error {
   constructor() {
     super('Linked tool execution is no longer pending');
+  }
+}
+
+/**
+ * Thrown inside the respond transaction when a presented WebAuthn assertion
+ * proof fails verification (device not registered/disabled, or the assertion
+ * doesn't verify). A presented-but-bad proof is an error → 401, NOT a silent
+ * downgrade to an L1 session-tap approval.
+ */
+class AssertionFailedError extends Error {
+  constructor() {
+    super('assertion verification failed');
   }
 }
 
@@ -286,7 +307,76 @@ const respondSchema = z.object({
     .min(1)
     .max(MAX_APPROVAL_DURATION_MINUTES)
     .optional(),
+  // Optional assertion proof — EITHER the back-compat WebAuthn proof (no `type`
+  // on the wire → defaulted) OR the mobile_hw_key proof. Absent → L1 session tap.
+  // Present-but-invalid → 401 (NOT a silent downgrade). When the partner policy
+  // enforces, an under-assured APPROVE is rejected (403); a deny is never blocked.
+  proof: z.union([mobileHwKeyProofSchema, assertionProofSchema]).optional(),
+  // Phase 3: optional approver PIN (4-6 digits) steps a verified factor up to L3.
+  pin: approverPinSchema.optional(),
 });
+
+// Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
+// {elevationId,userId} so the technician can satisfy a Windows-Hello / Touch-ID
+// step-up before approving. allowCredentials is the caller's active platform
+// approver devices; with none registered the options carry no allowCredentials
+// and the console falls back to an L1 (session-tap) approval — P2 is opt-in.
+pamRoutes.post(
+  '/elevation-requests/:id/assertion-challenge',
+  requirePamExecute,
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const id = c.req.param('id');
+    if (!id || !z.string().uuid().safeParse(id).success) {
+      return c.json({ error: 'Invalid elevation request id' }, 400);
+    }
+
+    const [row] = await db
+      .select({
+        id: elevationRequests.id,
+        orgId: elevationRequests.orgId,
+        siteId: elevationRequests.siteId,
+        status: elevationRequests.status,
+      })
+      .from(elevationRequests)
+      .where(and(eq(elevationRequests.id, id), eq(elevationRequests.status, 'pending')))
+      .limit(1);
+
+    // RLS already scopes the read to the caller's org; canAccessOrg / site
+    // checks are defense-in-depth (same posture as respond). A row outside the
+    // caller's reach is reported as not-found so we don't leak its existence.
+    if (!row || !auth.canAccessOrg(row.orgId)) {
+      return c.json({ error: 'Elevation request not found' }, 404);
+    }
+    if (perms && row.siteId && !canAccessSite(perms, row.siteId)) {
+      return c.json({ error: 'Site access denied' }, 403);
+    }
+
+    // Caller's active platform approver devices (RLS scopes to the user; the
+    // userId predicate is defense-in-depth — see reference memory: admin-list IDOR).
+    const approverDevices = await db
+      .select()
+      .from(authenticatorDevices)
+      .where(
+        and(
+          eq(authenticatorDevices.userId, auth.user.id),
+          eq(authenticatorDevices.kind, 'webauthn_platform'),
+          isNull(authenticatorDevices.disabledAt),
+        ),
+      );
+
+    const options = await generateApprovalAssertionOptions({
+      approvalId: id,
+      userId: auth.user.id,
+      devices: approverDevices
+        .filter((d) => d.credentialId)
+        .map((d) => ({ credentialId: d.credentialId!, transports: d.transports })),
+    });
+
+    return c.json({ options });
+  },
+);
 
 pamRoutes.post(
   '/elevation-requests/:id/respond',
@@ -326,6 +416,7 @@ pamRoutes.post(
             flowType: elevationRequests.flowType,
             status: elevationRequests.status,
             executionId: elevationRequests.executionId,
+            riskTier: elevationRequests.riskTier,
           })
           .from(elevationRequests)
           .where(eq(elevationRequests.id, id))
@@ -335,6 +426,28 @@ pamRoutes.post(
         if (!auth.canAccessOrg(row.orgId)) return { kind: 'not_found' as const };
         if (perms && row.siteId && !canAccessSite(perms, row.siteId)) {
           return { kind: 'forbidden' as const };
+        }
+
+        // Phase 2/3: verify an optional assertion proof + PIN. No proof → L1
+        // session tap. A presented-but-invalid proof/PIN throws → 401 (NOT a
+        // silent downgrade). Phase 4: an ENFORCING partner policy may reject an
+        // under-assured APPROVE (StepUpRequiredError → 403); the deny path passes
+        // decision:'denied' so it is never blocked.
+        let assurance;
+        try {
+          assurance = await assertApprovalAssurance({
+            approvalId: id,
+            userId: auth.user.id,
+            riskTier: elevationRiskTierToName(row.riskTier),
+            proof: body.proof,
+            pin: body.pin,
+            partnerId: auth.partnerId ?? null,
+            decision: body.decision === 'approve' ? 'approved' : 'denied',
+          });
+        } catch (err) {
+          if (err instanceof StepUpRequiredError) throw err; // → 403 at the outer catch
+          console.error('[PAM] assertion verification failed:', err);
+          throw new AssertionFailedError();
         }
 
         // CAS: only a pending row can be decided. The WHERE clause re-checks
@@ -349,12 +462,20 @@ pamRoutes.post(
                   approvedAt: now,
                   expiresAt: new Date(now.getTime() + durationMinutes * 60_000),
                   updatedAt: now,
+                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                  decidedVia: assurance.decidedVia,
+                  authenticatorDeviceId: assurance.authenticatorDeviceId,
+                  pinVerified: assurance.pinVerified,
                 }
               : {
                   status: 'denied',
                   deniedByUserId: auth.user.id,
                   denialReason: body.reason ?? null,
                   updatedAt: now,
+                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                  decidedVia: assurance.decidedVia,
+                  authenticatorDeviceId: assurance.authenticatorDeviceId,
+                  pinVerified: assurance.pinVerified,
                 },
           )
           .where(and(eq(elevationRequests.id, id), eq(elevationRequests.status, 'pending')))
@@ -373,6 +494,8 @@ pamRoutes.post(
           details: {
             reason: body.reason,
             ...(approve ? { duration_minutes: durationMinutes } : {}),
+            assurance_level: assurance.decidedAssuranceLevel,
+            factor: assurance.decidedVia,
           },
           occurredAt: now,
         });
@@ -396,6 +519,15 @@ pamRoutes.post(
         return { kind: 'ok' as const, row, newStatus: updated[0]!.status };
       });
     } catch (err) {
+      if (err instanceof StepUpRequiredError) {
+        // Phase 4: an enforcing policy requires a higher assurance than this
+        // approve achieved. Only ever thrown for an approve — a deny is exempt.
+        return c.json({ success: false, error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
+      }
+      if (err instanceof AssertionFailedError) {
+        // Presented-but-bad proof — fail closed (401), never downgrade to L1.
+        return c.json({ success: false, error: 'assertion_failed' }, 401);
+      }
       if (err instanceof StaleExecutionError) {
         return c.json(
           {

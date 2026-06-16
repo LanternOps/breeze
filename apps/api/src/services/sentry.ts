@@ -61,6 +61,22 @@ export function captureException(err: unknown, c?: Context): void {
   });
 }
 
+export function captureMessage(
+  message: string,
+  level: 'info' | 'warning' | 'error' = 'warning',
+  extra?: Record<string, unknown>
+): void {
+  if (!initialized) {
+    return;
+  }
+
+  Sentry.withScope((scope) => {
+    scope.setLevel(level);
+    scope.setExtras(extra ?? {});
+    Sentry.captureMessage(message);
+  });
+}
+
 export async function flushSentry(timeoutMs = 2000): Promise<void> {
   if (!initialized) {
     return;

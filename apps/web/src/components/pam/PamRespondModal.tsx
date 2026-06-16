@@ -1,9 +1,23 @@
 import { useId, useState } from 'react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { getApprovalAssertion } from '../../stores/authenticator';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { type ElevationRequest, FLOW_LABELS, requestTarget } from './types';
+
+/**
+ * True when the assertion ceremony failed because the technician has no
+ * registered approver device (the challenge carried no allowCredentials), which
+ * is a graceful fallback to an L1 approval rather than an error. A genuine
+ * user-cancelled/timed-out ceremony surfaces a WebAuthn `NotAllowedError` and
+ * must NOT be treated as this case — it aborts the submit instead.
+ */
+function isNoApproverDeviceError(err: unknown): boolean {
+  if (err instanceof DOMException) return false; // browser WebAuthn failure (e.g. cancel)
+  const name = (err as { name?: string } | null)?.name;
+  return name === 'NoApproverDeviceError';
+}
 
 export default function PamRespondModal({
   request,
@@ -35,6 +49,29 @@ export default function PamRespondModal({
     if (decision === 'approve') {
       const mins = Number.parseInt(duration, 10);
       if (Number.isFinite(mins) && mins >= 1) body.durationMinutes = mins;
+
+      // Breeze Authenticator Phase 2 — opt-in Windows Hello / Touch ID step-up.
+      // Run the approval-scoped assertion ceremony before submitting. A returned
+      // proof upgrades the recorded approval to L2 (webauthn_platform); a
+      // cancelled/failed ceremony aborts the submit (we never silently downgrade
+      // a presented-but-failed assertion). Technicians with no registered
+      // approver device fall back to an L1 (session-tap) approval — P2 is opt-in,
+      // not required (enforcement is Phase 4), so a missing-device case must not
+      // block the approve.
+      try {
+        const proof = await getApprovalAssertion('/pam/elevation-requests', request.id);
+        body.proof = proof;
+      } catch (err) {
+        // No registered approver device → the challenge carries no
+        // allowCredentials and the ceremony can't run; submit without proof
+        // (records L1). Any other ceremony failure (user cancelled, timeout) is
+        // a real error: surface it and abort rather than downgrade.
+        if (!isNoApproverDeviceError(err)) {
+          setError(err instanceof Error ? err.message : 'Windows Hello verification failed');
+          setSubmitting(false);
+          return;
+        }
+      }
     }
 
     try {

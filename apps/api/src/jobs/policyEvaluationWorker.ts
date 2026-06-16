@@ -9,6 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { automationPolicies } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 import { evaluatePolicy, scanAndEvaluateConfigPolicyCompliance } from '../services/policyEvaluationService';
 
 const { db } = dbModule;
@@ -191,6 +192,7 @@ export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> 
 
 export async function initializePolicyEvaluationWorker(): Promise<void> {
   policyEvaluationWorker = createPolicyEvaluationWorker();
+  attachWorkerObservability(policyEvaluationWorker, 'policyEvaluationWorker');
 
   policyEvaluationWorker.on('error', (error) => {
     console.error('[PolicyEvaluationWorker] Worker error:', error);

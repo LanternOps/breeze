@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, gt, desc, inArray } from 'drizzle-orm';
+import { and, eq, gt, desc, inArray, isNull } from 'drizzle-orm';
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
@@ -11,6 +11,22 @@ import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
+import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
+import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import { issueMobileAssertionNonce } from '../services/mobileHwKey';
+import { authenticatorDevices } from '../db/schema/authenticatorDevices';
+import {
+  assertionProofSchema,
+  mobileHwKeyProofSchema,
+  approverPinSchema,
+  type RiskTier,
+  type ApprovalProof,
+} from '@breeze/shared';
+
+// Phase 3: accept EITHER the back-compat WebAuthn proof (no `type` on the wire →
+// defaulted by assertionProofSchema) OR the mobile_hw_key proof. z.union tries
+// the strict mobile literal first, then falls back to the webauthn shape.
+const approveProofSchema = z.union([mobileHwKeyProofSchema, assertionProofSchema]);
 
 export const approvalRoutes = new Hono();
 
@@ -143,8 +159,92 @@ approvalRoutes.get('/:id', async (c) => {
   return c.json({ approval: serialize(row, customerTenant) });
 });
 
+// Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
+// {approvalId,userId} so the technician can satisfy a Windows-Hello / Touch-ID
+// step-up before approving. allowCredentials is the caller's active platform
+// approver devices; with none registered the options carry no allowCredentials
+// and the console falls back to an L1 (session-tap) approval — P2 is opt-in.
+approvalRoutes.post('/:id/assertion-challenge', async (c) => {
+  const userId = c.get('auth').user.id;
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'Bad request' }, 400);
+
+  const [existing] = await db
+    .select()
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.id, id),
+        eq(approvalRequests.userId, userId),
+        eq(approvalRequests.status, 'pending'),
+      ),
+    );
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  // Caller's active platform approver devices (RLS scopes to the user; the
+  // userId predicate is defense-in-depth — see reference memory: admin-list IDOR).
+  const devices = await db
+    .select()
+    .from(authenticatorDevices)
+    .where(
+      and(
+        eq(authenticatorDevices.userId, userId),
+        eq(authenticatorDevices.kind, 'webauthn_platform'),
+        isNull(authenticatorDevices.disabledAt),
+      ),
+    );
+
+  const options = await generateApprovalAssertionOptions({
+    approvalId: id,
+    userId,
+    devices: devices
+      .filter((d) => d.credentialId)
+      .map((d) => ({ credentialId: d.credentialId!, transports: d.transports })),
+  });
+
+  // Phase 3: if the caller has an active mobile_hw_key approver device, also
+  // issue a short-lived (120s) raw nonce bound to {approvalId,userId} that the
+  // mobile app signs in its Secure Enclave / Keystore. This is NOT WebAuthn —
+  // it rides alongside the webauthn options so a console-or-phone approver gets
+  // whichever factor their registered devices support (mobileNonce omitted when
+  // no mobile device is registered).
+  const [mobileDevice] = await db
+    .select({ id: authenticatorDevices.id })
+    .from(authenticatorDevices)
+    .where(
+      and(
+        eq(authenticatorDevices.userId, userId),
+        eq(authenticatorDevices.kind, 'mobile_hw_key'),
+        isNull(authenticatorDevices.disabledAt),
+      ),
+    );
+
+  let mobileNonce: string | undefined;
+  if (mobileDevice) {
+    mobileNonce = await issueMobileAssertionNonce(id, userId);
+  }
+
+  return c.json(mobileNonce ? { options, mobileNonce } : { options });
+});
+
 approvalRoutes.post('/:id/approve', async (c) => {
-  return decideHandler(c, 'approved');
+  // Optional assertion proof (Phase 2 webauthn / Phase 3 mobile_hw_key) plus an
+  // optional approver PIN (Phase 3 L3 step-up). A malformed proof or PIN is a 400
+  // at validation; an absent proof keeps today's L1 session-tap behavior.
+  let proof: ApprovalProof | undefined;
+  let pin: string | undefined;
+  const raw = await c.req.json().catch(() => null);
+  if (raw && raw.proof !== undefined) {
+    const parsed = approveProofSchema.safeParse(raw.proof);
+    if (!parsed.success) return c.json({ error: 'Invalid proof' }, 400);
+    proof = parsed.data;
+  }
+  if (raw && raw.pin !== undefined) {
+    const parsedPin = approverPinSchema.safeParse(raw.pin);
+    if (!parsedPin.success) return c.json({ error: 'Invalid PIN' }, 400);
+    pin = parsedPin.data;
+  }
+  return decideHandler(c, 'approved', undefined, proof, pin);
 });
 
 approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
@@ -258,15 +358,68 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
 async function decideHandler(
   c: import('hono').Context,
   status: 'approved' | 'denied',
-  reason?: string
+  reason?: string,
+  proof?: ApprovalProof,
+  pin?: string
 ) {
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
 
+  // Pre-fetch so we can resolve the required assurance from the row's risk tier
+  // before deciding (see the assertApprovalAssurance call below for the full
+  // verify + enforcement behavior).
+  const [existing] = await db
+    .select()
+    .from(approvalRequests)
+    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+  if (existing.status !== 'pending') {
+    return c.json(
+      { error: `Already ${existing.status}`, finalStatus: existing.status },
+      409
+    );
+  }
+  if (existing.expiresAt <= new Date()) {
+    return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
+  }
+
+  // Phase 2/3: verify an optional assertion proof + PIN. No proof → L1 session
+  // tap. A presented-but-invalid proof/PIN throws → 401 (never silently L1).
+  // Phase 4: an ENFORCING partner policy may reject an under-assured APPROVE
+  // (StepUpRequiredError → 403). A deny is passed through with decision:'denied'
+  // so it is never blocked.
+  let assurance;
+  try {
+    assurance = await assertApprovalAssurance({
+      approvalId: id,
+      userId,
+      riskTier: existing.riskTier as RiskTier,
+      proof,
+      pin,
+      partnerId: c.get('auth').partnerId ?? null,
+      decision: status,
+    });
+  } catch (err) {
+    if (err instanceof StepUpRequiredError) {
+      return c.json({ error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
+    }
+    console.error('[approvals] assertion verification failed:', err);
+    return c.json({ error: 'assertion_failed' }, 401);
+  }
+
   const result = await db
     .update(approvalRequests)
-    .set({ status, decidedAt: new Date(), decisionReason: reason ?? null })
+    .set({
+      status,
+      decidedAt: new Date(),
+      decisionReason: reason ?? null,
+      decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+      decidedVia: assurance.decidedVia,
+      authenticatorDeviceId: assurance.authenticatorDeviceId,
+      pinVerified: assurance.pinVerified,
+    })
     .where(
       and(
         eq(approvalRequests.id, id),
@@ -278,18 +431,8 @@ async function decideHandler(
     .returning();
 
   if (result.length === 0) {
-    const [existing] = await db
-      .select()
-      .from(approvalRequests)
-      .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
-    if (!existing) return c.json({ error: 'Not found' }, 404);
-    if (existing.status !== 'pending') {
-      return c.json(
-        { error: `Already ${existing.status}`, finalStatus: existing.status },
-        409
-      );
-    }
-    return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
+    // Lost a concurrent decide/expiry race between the pre-fetch and the CAS.
+    return c.json({ error: 'Already decided', finalStatus: 'expired' }, 409);
   }
 
   const [updated] = result;

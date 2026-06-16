@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
+import { captureMessage } from '../services/sentry';
 
 // Prefer DATABASE_URL_APP (the unprivileged breeze_app role) so RLS policies
 // are actually enforced. Fall back to DATABASE_URL for backward compatibility
@@ -163,8 +164,33 @@ export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T =>
   return dbContextStorage.exit(fn);
 };
 
+// Write methods that, when invoked on the bare pool (no active RLS access
+// context), silently match 0 rows under the forced-RLS `breeze_app` role
+// instead of erroring (#1375). We instrument these to surface the
+// missing-context bug to logs + Sentry.
+const CONTEXTLESS_WRITE_GUARD_METHODS = new Set<PropertyKey>(['insert', 'update', 'delete']);
+
 const proxiedDb = new Proxy(baseDb, {
   get(_target, prop) {
+    // Contextless-write guard (#1375 / #1379). A DB write issued from a path
+    // with no `withDbAccessContext`/`withSystemDbAccessContext` wrapper runs
+    // on the bare pool as `breeze_app` with no RLS GUCs set, so forced RLS
+    // matches 0 rows and the write silently no-ops — no error, no rows.
+    //
+    // This is warn-only (no throw) on purpose: it's a conservative,
+    // prod-safe rollout. There ARE intentional contextless writers we must
+    // not break — the agent-WS `device_commands` path is system-scoped, and
+    // the separate audit-admin pool (auditAdminPool.ts) bypasses this proxy
+    // entirely — so a hard throw would cause false-positive crashes. The
+    // throw-in-CI escalation is deferred to a follow-up PR in #1379.
+    if (CONTEXTLESS_WRITE_GUARD_METHODS.has(prop) && !hasDbAccessContext()) {
+      const message =
+        `DB write .${String(prop)}() ran with no RLS access context — `
+        + `wrap in withDbAccessContext/withSystemDbAccessContext (#1375)`;
+      console.warn(message);
+      captureMessage(message, 'warning', { stack: new Error().stack });
+    }
+
     const activeDb = getCurrentDb() as unknown as Record<PropertyKey, unknown>;
     const value = activeDb[prop];
     if (typeof value === 'function') {

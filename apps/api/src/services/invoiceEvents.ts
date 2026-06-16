@@ -15,7 +15,8 @@ export type InvoiceEvent =
       invoiceId: string;
       orgId: string;
       partnerId: string;
-      actorUserId?: string;
+      /** Null for system/background actors (e.g. contract worker). */
+      actorUserId?: string | null;
     }
   | {
       type: 'payment.recorded' | 'payment.voided';
@@ -23,7 +24,8 @@ export type InvoiceEvent =
       orgId: string;
       partnerId: string;
       paymentId: string;
-      actorUserId?: string;
+      /** Null for system/background actors (e.g. contract worker). */
+      actorUserId?: string | null;
     }
   | {
       // payment.failed can fire BEFORE any invoice_payments row exists (a Stripe
@@ -34,7 +36,7 @@ export type InvoiceEvent =
       orgId: string;
       partnerId: string;
       paymentId?: string;
-      actorUserId?: string;
+      actorUserId?: string | null;
     };
 
 let queue: Queue | null = null;

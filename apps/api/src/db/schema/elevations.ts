@@ -1,4 +1,5 @@
 import {
+  boolean,
   foreignKey,
   index,
   inet,
@@ -15,7 +16,7 @@ import {
 import { organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
-import { approvalRequests } from './approvals';
+import { approvalRequests, approvalFactorEnum } from './approvals';
 import { softwarePolicies } from './softwarePolicies';
 import { aiToolExecutions } from './ai';
 
@@ -138,6 +139,11 @@ export const elevationRequests = pgTable(
     toolName: varchar('tool_name', { length: 100 }),
     actionDigest: varchar('action_digest', { length: 64 }),
     riskTier: smallint('risk_tier'),
+
+    decidedAssuranceLevel: smallint('decided_assurance_level'),
+    decidedVia: approvalFactorEnum('decided_via'),
+    authenticatorDeviceId: uuid('authenticator_device_id'),
+    pinVerified: boolean('pin_verified').notNull().default(false),
 
     // Session info, set by the agent once the grant is exercised.
     sessionStartedAt: timestamp('session_started_at', { withTimezone: true }),

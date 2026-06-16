@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Copy,
   Check,
+  FileSignature,
   Globe,
   Monitor,
   Paintbrush,
@@ -14,12 +15,14 @@ import {
   Shield,
   Ticket
 } from 'lucide-react';
+import ContractsList from '../contracts/ContractsList';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
+import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
@@ -59,6 +62,12 @@ const tabs = [
     icon: Shield
   },
   {
+    id: 'approval-security',
+    label: 'Approval Security',
+    description: 'Step-up verification for approvals',
+    icon: Shield
+  },
+  {
     id: 'event-logs',
     label: 'Event Logs',
     description: 'Forwarding and retention',
@@ -75,6 +84,12 @@ const tabs = [
     label: 'Ticketing',
     description: 'SLA overrides and billing defaults',
     icon: Ticket
+  },
+  {
+    id: 'contracts',
+    label: 'Contracts',
+    description: 'Recurring billing agreements',
+    icon: FileSignature
   }
 ] as const;
 
@@ -425,6 +440,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             locked={locked}
           />
         );
+      case 'approval-security':
+        return <OrgApprovalSecurityTab />;
       case 'event-logs':
         return (
           <OrgEventLogSettings
@@ -446,6 +463,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             onDirty={handleDirty}
             onSave={() => handleSave()}
           />
+        ) : null;
+      case 'contracts':
+        return effectiveOrgId ? (
+          <div data-testid="org-tab-contracts">
+            <ContractsList lockedOrgId={effectiveOrgId} />
+          </div>
         ) : null;
       case 'general':
       default:

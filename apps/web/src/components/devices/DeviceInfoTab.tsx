@@ -12,6 +12,7 @@ import {
   getDeviceRoleSourceLabel,
   getDeviceRoleSourceColor,
 } from '@/lib/deviceRoles';
+import { formatDeviceDetailOsVersion } from './osDisplay';
 
 type DeviceInfoTabProps = {
   deviceId: string;
@@ -95,12 +96,6 @@ const osTypeLabels: Record<string, string> = {
 function formatOsType(raw: string | null | undefined): string {
   if (!raw) return '—';
   return osTypeLabels[raw.toLowerCase()] ?? raw;
-}
-
-function formatOsVersionForDisplay(raw: string | null | undefined): string {
-  if (!raw) return '—';
-  // Strip kernel name prefix (e.g. "darwin 26.3.1" → "26.3.1")
-  return raw.replace(/^(darwin|linux)\s+/i, '');
 }
 
 function formatDesktopAccessMode(mode: DesktopAccessState['mode'] | undefined): string {
@@ -590,7 +585,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
 
       <Section title="Operating System" icon={<Info className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="OS Type" value={formatOsType(info?.osType)} />
-        <InfoRow label="OS Version" value={formatOsVersionForDisplay(info?.osVersion)} />
+        <InfoRow label="OS Version" value={formatDeviceDetailOsVersion(info?.osType, info?.osVersion) || '—'} />
         <InfoRow label="OS Build" value={info?.osBuild ?? '—'} />
         <InfoRow label="Architecture" value={info?.architecture ?? '—'} />
       </Section>

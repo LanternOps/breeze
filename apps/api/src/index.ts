@@ -37,6 +37,7 @@ import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
+import { contractRoutes } from './routes/contracts';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
@@ -71,6 +72,7 @@ import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
 import { approvalRoutes } from './routes/approvals';
+import { authenticatorRoutes, approverDevicesRoutes } from './routes/authenticator';
 import { lifecycleRoutes, lifecycleAdminRoutes } from './routes/lifecycle';
 import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked';
 import { analyticsRoutes } from './routes/analytics';
@@ -141,6 +143,7 @@ import { API_VERSION } from './version';
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
 import { initializeInvoiceWorkers, shutdownInvoiceWorkers } from './jobs/invoiceWorker';
+import { initializeContractWorkers, shutdownContractWorkers } from './jobs/contractWorker';
 import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offlineDetector';
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
@@ -734,6 +737,7 @@ api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
 api.route('/invoices', invoiceRoutes);
 api.route('/partner/stripe-connect', stripeConnectRoutes);
+api.route('/contracts', contractRoutes);
 // Assembly routes nest under the existing /orgs and /tickets namespaces, so they
 // mount at the api root: /api/v1/orgs/:orgId/invoices/assemble and
 // /api/v1/tickets/:ticketId/invoice. invoiceAssemblyRoutes applies authMiddleware itself.
@@ -793,6 +797,8 @@ api.route('/update-rings', updateRingRoutes);
 api.use('/mobile/*', mobileDeviceBlockedMiddleware);
 api.route('/mobile', mobileRoutes);
 api.route('/mobile/approvals', approvalRoutes);
+api.route('/authenticator', authenticatorRoutes);
+api.route('/me/approver-devices', approverDevicesRoutes);
 api.route('/', lifecycleRoutes);
 api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
@@ -1097,6 +1103,7 @@ async function initializeWorkers(): Promise<void> {
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
     ['invoiceWorker', initializeInvoiceWorkers],
+    ['contractWorker', initializeContractWorkers],
   ];
 
   await Promise.allSettled(
@@ -1256,6 +1263,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,
     shutdownInvoiceWorkers,
+    shutdownContractWorkers,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, varchar, timestamp, jsonb, pgEnum, index, foreignKey, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, varchar, timestamp, jsonb, pgEnum, index, foreignKey, boolean, smallint } from 'drizzle-orm/pg-core';
 import { users } from './users';
 import { oauthClients, oauthSessions } from './oauth';
 import { aiToolExecutions } from './ai';
@@ -8,6 +8,12 @@ export const approvalRiskTierEnum = pgEnum('approval_risk_tier', [
   'medium',
   'high',
   'critical',
+]);
+
+export const approvalFactorEnum = pgEnum('approval_factor', [
+  'session_tap',
+  'mobile_hw_key',
+  'webauthn_platform',
 ]);
 
 export const approvalStatusEnum = pgEnum('approval_status', [
@@ -54,6 +60,15 @@ export const approvalRequests = pgTable(
      * Defaults to FALSE; populated via deriveIsRecursive() at insert time.
      */
     isRecursive: boolean('is_recursive').notNull().default(false),
+
+    /** Assurance level actually satisfied by the decision (1..4). */
+    decidedAssuranceLevel: smallint('decided_assurance_level'),
+    /** Factor actually used to decide: session_tap (L1), webauthn_platform or mobile_hw_key (L2+). */
+    decidedVia: approvalFactorEnum('decided_via'),
+    /** The authenticator device that signed the decision (null for session_tap). */
+    authenticatorDeviceId: uuid('authenticator_device_id'),
+    /** Whether the approver PIN was verified for this decision. */
+    pinVerified: boolean('pin_verified').notNull().default(false),
 
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
