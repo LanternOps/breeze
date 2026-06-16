@@ -53,6 +53,11 @@ export const PERMISSION_GRANTS = {
   CONTRACTS_WRITE: { resource: 'contracts', action: 'write' },
   CONTRACTS_MANAGE: { resource: 'contracts', action: 'manage' },
 
+  // Quotes / Proposals (billing program — sub-project 4)
+  QUOTES_READ: { resource: 'quotes', action: 'read' },
+  QUOTES_WRITE: { resource: 'quotes', action: 'write' },
+  QUOTES_SEND: { resource: 'quotes', action: 'send' },
+
   // Time entries (ticketing Phase 3)
   TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
   TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },
