@@ -536,7 +536,6 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
       decidedVia: 'session_tap',
       decidedAssuranceLevel: 1,
       authenticatorDeviceId: null,
-      pinVerified: false,
     });
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 1, factor: 'session_tap' },
@@ -561,7 +560,6 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
       decidedVia: 'session_tap',
       decidedAssuranceLevel: 1,
       authenticatorDeviceId: null,
-      pinVerified: false,
     });
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 1, factor: 'session_tap' },
@@ -712,7 +710,6 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
       decidedVia: 'webauthn_platform',
       decidedAssuranceLevel: 2,
       authenticatorDeviceId: 'dev-1',
-      pinVerified: false,
     });
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 2, factor: 'webauthn_platform' },
@@ -765,8 +762,8 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
     expect(busMocks.publishEvent).not.toHaveBeenCalled();
   });
 
-  // Phase 3: the respond body now also accepts the mobile_hw_key proof variant
-  // and an optional approver PIN, both threaded to assertApprovalAssurance.
+  // Phase 3: the respond body accepts the mobile_hw_key proof variant, threaded
+  // to assertApprovalAssurance.
   const mobileProof = {
     type: 'mobile_hw_key',
     credentialId: 'mobile-dev-1',
@@ -804,51 +801,8 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
     });
   });
 
-  it('threads an optional PIN alongside a proof (L3, pinVerified)', async () => {
-    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
-      requiredLevel: 3,
-      decidedAssuranceLevel: 3,
-      decidedVia: 'mobile_hw_key',
-      authenticatorDeviceId: 'mobile-dev-1',
-      pinVerified: true,
-    });
-    const { updateSetCalls } = rigTransaction({
-      row: { ...activeRow, riskTier: 3 },
-      casWins: true,
-    });
-
-    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'approve', proof: mobileProof, pin: '1234' }),
-    });
-
-    expect(res.status).toBe(200);
-    expect(assertApprovalAssurance).toHaveBeenCalledWith(
-      expect.objectContaining({ proof: mobileProof, pin: '1234' }),
-    );
-    expect(updateSetCalls[0]).toMatchObject({
-      decidedAssuranceLevel: 3,
-      pinVerified: true,
-    });
-  });
-
-  it('rejects a malformed PIN at validation (400, before any decision)', async () => {
-    const { updateSetCalls } = rigTransaction({
-      row: { ...activeRow, riskTier: 3 },
-      casWins: true,
-    });
-
-    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'approve', proof: mobileProof, pin: 'abcd' }),
-    });
-
-    expect(res.status).toBe(400);
-    expect(assertApprovalAssurance).not.toHaveBeenCalled();
-    expect(updateSetCalls.length).toBe(0);
-  });
+  // PIN step-up cases removed: the static approver PIN was dropped in favor of
+  // the L3-recency / L4-reauth ladder (authenticator registration redesign).
 });
 
 describe('POST /pam/elevation-requests/:id/revoke', () => {

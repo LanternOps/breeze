@@ -18,7 +18,6 @@ import { authenticatorDevices } from '../db/schema/authenticatorDevices';
 import {
   assertionProofSchema,
   mobileHwKeyProofSchema,
-  approverPinSchema,
   type RiskTier,
   type ApprovalProof,
 } from '@breeze/shared';
@@ -228,23 +227,17 @@ approvalRoutes.post('/:id/assertion-challenge', async (c) => {
 });
 
 approvalRoutes.post('/:id/approve', async (c) => {
-  // Optional assertion proof (Phase 2 webauthn / Phase 3 mobile_hw_key) plus an
-  // optional approver PIN (Phase 3 L3 step-up). A malformed proof or PIN is a 400
-  // at validation; an absent proof keeps today's L1 session-tap behavior.
+  // Optional assertion proof (Phase 2 webauthn / Phase 3 mobile_hw_key). A
+  // malformed proof is a 400 at validation; an absent proof keeps today's L1
+  // session-tap behavior.
   let proof: ApprovalProof | undefined;
-  let pin: string | undefined;
   const raw = await c.req.json().catch(() => null);
   if (raw && raw.proof !== undefined) {
     const parsed = approveProofSchema.safeParse(raw.proof);
     if (!parsed.success) return c.json({ error: 'Invalid proof' }, 400);
     proof = parsed.data;
   }
-  if (raw && raw.pin !== undefined) {
-    const parsedPin = approverPinSchema.safeParse(raw.pin);
-    if (!parsedPin.success) return c.json({ error: 'Invalid PIN' }, 400);
-    pin = parsedPin.data;
-  }
-  return decideHandler(c, 'approved', undefined, proof, pin);
+  return decideHandler(c, 'approved', undefined, proof);
 });
 
 approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
@@ -359,8 +352,7 @@ async function decideHandler(
   c: import('hono').Context,
   status: 'approved' | 'denied',
   reason?: string,
-  proof?: ApprovalProof,
-  pin?: string
+  proof?: ApprovalProof
 ) {
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
@@ -397,7 +389,6 @@ async function decideHandler(
       userId,
       riskTier: existing.riskTier as RiskTier,
       proof,
-      pin,
       partnerId: c.get('auth').partnerId ?? null,
       decision: status,
     });
@@ -418,7 +409,6 @@ async function decideHandler(
       decidedAssuranceLevel: assurance.decidedAssuranceLevel,
       decidedVia: assurance.decidedVia,
       authenticatorDeviceId: assurance.authenticatorDeviceId,
-      pinVerified: assurance.pinVerified,
     })
     .where(
       and(

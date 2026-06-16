@@ -46,7 +46,6 @@ import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import {
   assertionProofSchema,
   mobileHwKeyProofSchema,
-  approverPinSchema,
   elevationRiskTierToName,
 } from '@breeze/shared';
 import { resolveOrgIdForWrite } from './softwarePolicies';
@@ -312,8 +311,6 @@ const respondSchema = z.object({
   // Present-but-invalid → 401 (NOT a silent downgrade). When the partner policy
   // enforces, an under-assured APPROVE is rejected (403); a deny is never blocked.
   proof: z.union([mobileHwKeyProofSchema, assertionProofSchema]).optional(),
-  // Phase 3: optional approver PIN (4-6 digits) steps a verified factor up to L3.
-  pin: approverPinSchema.optional(),
 });
 
 // Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
@@ -440,7 +437,6 @@ pamRoutes.post(
             userId: auth.user.id,
             riskTier: elevationRiskTierToName(row.riskTier),
             proof: body.proof,
-            pin: body.pin,
             partnerId: auth.partnerId ?? null,
             decision: body.decision === 'approve' ? 'approved' : 'denied',
           });
@@ -465,7 +461,6 @@ pamRoutes.post(
                   decidedAssuranceLevel: assurance.decidedAssuranceLevel,
                   decidedVia: assurance.decidedVia,
                   authenticatorDeviceId: assurance.authenticatorDeviceId,
-                  pinVerified: assurance.pinVerified,
                 }
               : {
                   status: 'denied',
@@ -475,7 +470,6 @@ pamRoutes.post(
                   decidedAssuranceLevel: assurance.decidedAssuranceLevel,
                   decidedVia: assurance.decidedVia,
                   authenticatorDeviceId: assurance.authenticatorDeviceId,
-                  pinVerified: assurance.pinVerified,
                 },
           )
           .where(and(eq(elevationRequests.id, id), eq(elevationRequests.status, 'pending')))

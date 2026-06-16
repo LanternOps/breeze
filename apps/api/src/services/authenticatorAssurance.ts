@@ -10,7 +10,6 @@ import { db } from '../db';
 import { authenticatorDevices } from '../db/schema';
 import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
-import { verifyPinAttempt } from './pin';
 import { loadPartnerPolicy, isEnforcing } from './authenticatorPolicy';
 
 /** Thrown when an approver PIN is presented but cannot be verified. The decide
@@ -121,7 +120,6 @@ export async function assertApprovalAssurance(input: {
   userId: string;
   riskTier: RiskTier;
   proof?: ApprovalProof | null;
-  pin?: string | null;
   /** Phase 4: the caller's partner, used to load the enforcement policy. */
   partnerId?: string | null;
   /** Phase 4: enforcement applies to an approve only — a deny is never blocked. */
@@ -146,12 +144,6 @@ export async function assertApprovalAssurance(input: {
       authenticatorDeviceId: factor.authenticatorDeviceId,
       pinVerified: false,
     };
-    if (input.pin) {
-      const { verified, locked } = await verifyPinAttempt(input.userId, input.pin);
-      if (!verified) throw new PinVerificationError(locked);
-      decision.decidedAssuranceLevel = 3;
-      decision.pinVerified = true;
-    }
   }
 
   // 2. Apply the partner policy floor (raise-only) to the REQUIRED level, then
