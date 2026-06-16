@@ -189,7 +189,7 @@ importers:
         specifier: ^5.12.1
         version: 5.12.1
       zod:
-        specifier: ^3.24.1
+        specifier: ^3.25.0
         version: 3.25.76
     devDependencies:
       '@types/archiver':
@@ -545,7 +545,7 @@ importers:
         specifier: ^3.6.0
         version: 3.6.0
       zod:
-        specifier: ^3.24.1
+        specifier: ^3.25.0
         version: 3.25.76
       zustand:
         specifier: ^5.0.14
@@ -782,7 +782,7 @@ importers:
         specifier: ^3.6.0
         version: 3.6.0
       zod:
-        specifier: ^3.24.1
+        specifier: ^3.25.0
         version: 3.25.76
       zustand:
         specifier: ^5.0.14
@@ -944,7 +944,7 @@ importers:
         specifier: ^1.0.62
         version: 1.0.62
       zod:
-        specifier: ^3.24.1
+        specifier: ^3.25.0
         version: 3.25.76
     devDependencies:
       typescript:
@@ -12519,9 +12519,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.85.3': {}
 
