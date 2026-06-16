@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { softwareRoutes, computeSoftwareDeploymentAggregateStatus } from './software';
+import { db } from '../db';
 
 vi.mock('../services', () => ({}));
 
@@ -48,7 +49,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   softwareCatalog: { id: 'id', orgId: 'org_id', name: 'name', vendor: 'vendor', description: 'description', category: 'category' },
   softwareVersions: { id: 'id', catalogId: 'catalog_id', isLatest: 'is_latest' },
-  softwareDeployments: { id: 'id', orgId: 'org_id' },
+  softwareDeployments: { id: 'id', orgId: 'org_id', softwareVersionId: 'software_version_id' },
   deploymentResults: { deploymentId: 'deployment_id', status: 'status' },
   softwareInventory: { deviceId: 'device_id', name: 'name' },
   devices: { id: 'id', orgId: 'org_id', agentId: 'agent_id' },
@@ -121,6 +122,54 @@ describe('software routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body).toHaveProperty('data');
+    });
+  });
+
+  describe('DELETE /software/catalog/:id', () => {
+    const catalogId = '11111111-1111-1111-1111-111111111111';
+    const existing = [{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }];
+
+    // Thenable that resolves to `rows` regardless of chain shape
+    // (select().from().where() and select().from().innerJoin().where()).
+    const selectResult = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    it('returns 409 when a deployment still references the version (issue #1407)', async () => {
+      // 1st select: existing catalog item lookup. 2nd select: deployment ref count.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult(existing))
+        .mockReturnValueOnce(selectResult([{ count: 2 }]));
+
+      const res = await app.request(`/software/catalog/${catalogId}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/2 deployments still reference/);
+      // Must not have attempted any destructive delete.
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('deletes when no deployment references the version', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult(existing))
+        .mockReturnValueOnce(selectResult([{ count: 0 }]));
+
+      const res = await app.request(`/software/catalog/${catalogId}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(db.delete).toHaveBeenCalled();
     });
   });
 
