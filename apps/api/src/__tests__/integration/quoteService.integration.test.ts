@@ -32,6 +32,8 @@ import { createOrganization, createPartner } from './db-utils';
 import {
   createQuote,
   getQuote,
+  addBlock,
+  deleteBlock,
   addManualLine,
   addCatalogLine,
   updateLine,
@@ -39,6 +41,7 @@ import {
   updateQuote,
   deleteDraftQuote,
 } from '../../services/quoteService';
+import { createCatalogItem, getCatalogItem, type CatalogActor } from '../../services/catalogService';
 import { type QuoteActor } from '../../services/quoteTypes';
 import { computeQuoteTotals } from '../../services/quoteMath';
 import { toCents } from '../../services/invoiceMath';
@@ -307,5 +310,193 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(fetched.quote.subtotal).toBe(expected.subtotal);
     expect(fetched.quote.oneTimeTotal).toBe(expected.oneTimeTotal);
     expect(fetched.quote.monthlyRecurringTotal).toBe(expected.monthlyRecurringTotal);
+  });
+
+  // ---------------------------------------------------------------------------
+  // deleteBlock behavioral coverage. deleteBlock deletes the block's lines
+  // first, then the block, then recomputes header totals — none of which was
+  // exercised. This proves the block AND its lines disappear and the header
+  // totals re-derive to zero from the (now empty) line set.
+  // ---------------------------------------------------------------------------
+  runDb('deleteBlock removes the block + its lines and recomputes totals to zero', async () => {
+    const fx = await seedFixture();
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const block = await withDbAccessContext(fx.ctxA, () =>
+      addBlock(quote.id, { blockType: 'line_items', content: { label: 'Pricing' } }, fx.actorA)
+    );
+
+    // Two lines inside the block: a one-time line (drives subtotal/oneTimeTotal)
+    // and a monthly recurring line (drives monthlyRecurringTotal). Both must be
+    // > 0 before delete so "→ zero" after delete is a meaningful assertion.
+    const oneTime = await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, {
+        sourceType: 'manual', description: 'Setup fee', quantity: 2, unitPrice: 75,
+        taxable: false, customerVisible: true, recurrence: 'one_time', blockId: block.id,
+      }, fx.actorA)
+    );
+    const monthly = await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, {
+        sourceType: 'manual', description: 'Monthly support', quantity: 4, unitPrice: 25,
+        taxable: false, customerVisible: true, recurrence: 'monthly', blockId: block.id,
+      }, fx.actorA)
+    );
+
+    // Pre-delete sanity: totals are non-zero (proves the after-delete zero is real).
+    const before = await withDbAccessContext(fx.ctxA, () => getQuote(quote.id, fx.actorA));
+    expect(before.blocks.map((b) => b.id)).toContain(block.id);
+    expect(before.lines).toHaveLength(2);
+    expect(before.quote.oneTimeTotal).toBe('150.00'); // 2 * 75
+    expect(before.quote.monthlyRecurringTotal).toBe('100.00'); // 4 * 25
+
+    await withDbAccessContext(fx.ctxA, () => deleteBlock(quote.id, block.id, fx.actorA));
+
+    const after = await withDbAccessContext(fx.ctxA, () => getQuote(quote.id, fx.actorA));
+    // Block gone.
+    expect(after.blocks.map((b) => b.id)).not.toContain(block.id);
+    expect(after.blocks).toHaveLength(0);
+    // Lines gone (deleteBlock removes the block's lines explicitly, not orphaned
+    // via block_id SET NULL): neither line id survives, and the set is empty.
+    const afterLineIds = after.lines.map((l) => l.id);
+    expect(afterLineIds).not.toContain(oneTime.id);
+    expect(afterLineIds).not.toContain(monthly.id);
+    expect(after.lines).toHaveLength(0);
+    // Header totals re-derived from the empty line set → all zero.
+    expect(after.quote.subtotal).toBe('0.00');
+    expect(after.quote.oneTimeTotal).toBe('0.00');
+    expect(after.quote.monthlyRecurringTotal).toBe('0.00');
+    expect(after.quote.annualRecurringTotal).toBe('0.00');
+  });
+
+  runDb('deleteBlock on a non-draft quote throws NOT_A_DRAFT (409)', async () => {
+    const fx = await seedFixture();
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const block = await withDbAccessContext(fx.ctxA, () =>
+      addBlock(quote.id, { blockType: 'heading', content: { text: 'Scope', level: 2 } }, fx.actorA)
+    );
+    // Flip to 'sent' under system scope (same approach as the updateQuote-non-draft
+    // test) so the draft-only guard in loadDraft is exercised.
+    await withSystemDbAccessContext(() =>
+      db.update(quotes).set({ status: 'sent' }).where(eq(quotes.id, quote.id))
+    );
+
+    await expect(
+      withDbAccessContext(fx.ctxA, () => deleteBlock(quote.id, block.id, fx.actorA))
+    ).rejects.toMatchObject({ status: 409, code: 'NOT_A_DRAFT' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Catalog subscription-field persistence + quote snapshot. Fix batch A wired
+  // catalogService to persist billingFrequency/commitmentTermMonths; this locks
+  // both the persistence (re-fetch via the real catalogService) AND that
+  // addCatalogLine snapshots the recurrence/term onto the quote line and the
+  // header annual bucket. Uses the real catalogService under a partner ctx.
+  // ---------------------------------------------------------------------------
+  runDb('catalogService persists billingFrequency/commitmentTermMonths and addCatalogLine snapshots them (annual)', async () => {
+    const fx = await seedFixture();
+    // A partner-A catalog actor (catalog is partner-axis; org access unrestricted
+    // here, the same shape as the catalogService integration fixture).
+    const catalogActorA: CatalogActor = {
+      userId: null,
+      partnerId: fx.partnerA.id,
+      accessibleOrgIds: null,
+    };
+
+    const created = await withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(
+        {
+          itemType: 'service',
+          name: 'Annual managed suite',
+          billingType: 'recurring',
+          billingFrequency: 'annual',
+          commitmentTermMonths: 12,
+          unitPrice: 1200,
+          unitOfMeasure: 'each',
+          taxable: true,
+          isBundle: false,
+          attributes: {},
+        },
+        catalogActorA
+      )
+    );
+    // The create return already reflects the persisted subscription fields.
+    expect(created.billingFrequency).toBe('annual');
+    expect(created.commitmentTermMonths).toBe(12);
+
+    // Re-fetch via the real catalogService — proves the fields round-tripped to
+    // the DB (NOT null), independent of the create return value.
+    const refetched = await withDbAccessContext(fx.ctxA, () =>
+      getCatalogItem(created.id, catalogActorA)
+    );
+    expect(refetched.item.billingFrequency).toBe('annual');
+    expect(refetched.item.commitmentTermMonths).toBe(12);
+
+    // Snapshot onto a draft quote line. addCatalogLine derives recurrence from
+    // the item's annual billing frequency and snapshots termMonths/frequency.
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const line = await withDbAccessContext(fx.ctxA, () =>
+      addCatalogLine(quote.id, created.id, 1, undefined, fx.actorA)
+    );
+    expect(line.recurrence).toBe('annual');
+    expect(line.termMonths).toBe(12);
+    expect(line.billingFrequency).toBe('annual');
+    expect(line.unitPrice).toBe('1200.00');
+
+    const fetched = await withDbAccessContext(fx.ctxA, () => getQuote(quote.id, fx.actorA));
+    // The annual line lands in the annual recurring bucket, not monthly/one-time.
+    expect(fetched.quote.annualRecurringTotal).toBe('1200.00');
+    expect(fetched.quote.monthlyRecurringTotal).toBe('0.00');
+    expect(fetched.quote.oneTimeTotal).toBe('0.00');
+  });
+
+  runDb('catalogService persists monthly billingFrequency and addCatalogLine snapshots recurrence=monthly', async () => {
+    const fx = await seedFixture();
+    const catalogActorA: CatalogActor = {
+      userId: null,
+      partnerId: fx.partnerA.id,
+      accessibleOrgIds: null,
+    };
+
+    const created = await withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(
+        {
+          itemType: 'service',
+          name: 'Monthly seat',
+          billingType: 'recurring',
+          billingFrequency: 'monthly',
+          commitmentTermMonths: 6,
+          unitPrice: 30,
+          unitOfMeasure: 'each',
+          taxable: true,
+          isBundle: false,
+          attributes: {},
+        },
+        catalogActorA
+      )
+    );
+    const refetched = await withDbAccessContext(fx.ctxA, () =>
+      getCatalogItem(created.id, catalogActorA)
+    );
+    expect(refetched.item.billingFrequency).toBe('monthly');
+    expect(refetched.item.commitmentTermMonths).toBe(6);
+
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const line = await withDbAccessContext(fx.ctxA, () =>
+      addCatalogLine(quote.id, created.id, 2, undefined, fx.actorA)
+    );
+    expect(line.recurrence).toBe('monthly');
+    expect(line.billingFrequency).toBe('monthly');
+    expect(line.termMonths).toBe(6);
+
+    const fetched = await withDbAccessContext(fx.ctxA, () => getQuote(quote.id, fx.actorA));
+    expect(fetched.quote.monthlyRecurringTotal).toBe('60.00'); // 2 * 30
+    expect(fetched.quote.annualRecurringTotal).toBe('0.00');
   });
 });

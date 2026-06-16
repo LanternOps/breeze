@@ -45,7 +45,7 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { quotes, quoteLines } from '../../db/schema/quotes';
+import { quotes, quoteLines, quoteImages, quoteAcceptances } from '../../db/schema/quotes';
 import { createOrganization, createPartner } from './db-utils';
 import { createQuote } from '../../services/quoteService';
 import { type QuoteActor } from '../../services/quoteTypes';
@@ -232,5 +232,115 @@ describe('quotes RLS isolation (breeze_app)', () => {
         createQuote({ orgId: fx.orgB.id, currencyCode: 'USD' }, fx.actorA)
       )
     ).rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
+  });
+
+  // (6) quote_images forge denial. quote_images is the byte source for the
+  // rendered/served PDF (and the route comment claims cross-tenant reads are
+  // blocked by RLS) — so a leak here would hand one tenant another tenant's
+  // quote PDF bytes. It carries a denormalized org_id with an org-axis WITH
+  // CHECK policy; a forged insert for orgB is rejected (42501) even when it
+  // references orgB's real quote (FK resolves, so the failure is the RLS gate,
+  // not a 23503). Mirrors the quote_lines child-table forge case.
+  runDb('blocks a forged cross-tenant quote_images INSERT for another org (42501)', async () => {
+    const fx = await seedFixture();
+    await expect(
+      withDbAccessContext(fx.orgAContext, () =>
+        db.insert(quoteImages).values({
+          quoteId: fx.quoteB.id, // orgB's real quote (FK resolves)
+          orgId: fx.orgB.id, // foreign org — RLS WITH CHECK must reject
+          imageData: Buffer.from('x'),
+          mime: 'image/png',
+          byteSize: 1,
+          sha256: 'a'.repeat(64),
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (7) quote_images SELECT hidden. An orgB image row (seeded under system
+  // scope) is invisible to an orgA caller. The system-scope probe first
+  // confirms the row exists, so the 0-row read under orgA is meaningfully "RLS
+  // hid the PDF bytes", not "the row was never written".
+  runDb('hides another org quote_images from SELECT (system probe confirms it exists)', async () => {
+    const fx = await seedFixture();
+
+    // Seed an orgB image under system scope (RLS-bypassing seed).
+    const seededId = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .insert(quoteImages)
+        .values({
+          quoteId: fx.quoteB.id,
+          orgId: fx.orgB.id,
+          imageData: Buffer.from('x'),
+          mime: 'image/png',
+          byteSize: 1,
+          sha256: 'b'.repeat(64),
+        })
+        .returning({ id: quoteImages.id });
+      return row!.id;
+    });
+
+    // Probe: under system scope the row really exists.
+    const existsUnderSystem = await withSystemDbAccessContext(() =>
+      db.select({ id: quoteImages.id }).from(quoteImages).where(eq(quoteImages.id, seededId))
+    );
+    expect(existsUnderSystem).toHaveLength(1);
+
+    // Under orgA breeze_app context the same id returns 0 rows — RLS hides it.
+    const visibleToA = await withDbAccessContext(fx.orgAContext, () =>
+      db.select({ id: quoteImages.id }).from(quoteImages).where(eq(quoteImages.id, seededId))
+    );
+    expect(visibleToA).toHaveLength(0);
+  });
+
+  // (8) quote_acceptances forge denial. This table records a signer's acceptance
+  // of a quote (name/email/IP/UA + the signed quote_sha256) — a cross-tenant
+  // write would let one tenant forge an acceptance against another tenant's
+  // quote, or read a foreign customer's PII. Org-axis WITH CHECK; a forged
+  // insert for orgB referencing orgB's real quote is rejected with 42501 (RLS
+  // gate, not a 23503 FK error).
+  runDb('blocks a forged cross-tenant quote_acceptances INSERT for another org (42501)', async () => {
+    const fx = await seedFixture();
+    await expect(
+      withDbAccessContext(fx.orgAContext, () =>
+        db.insert(quoteAcceptances).values({
+          quoteId: fx.quoteB.id, // orgB's real quote (FK resolves)
+          orgId: fx.orgB.id, // foreign org — RLS WITH CHECK must reject
+          signerName: 'Mallory Forger',
+          quoteSha256: 'c'.repeat(64),
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (9) quote_acceptances SELECT hidden. An orgB acceptance row (with its
+  // signer PII) is invisible to an orgA caller; the system probe confirms it
+  // exists so the 0-row read is a real RLS hide, not a vacuous miss.
+  runDb('hides another org quote_acceptances from SELECT (system probe confirms it exists)', async () => {
+    const fx = await seedFixture();
+
+    const seededId = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .insert(quoteAcceptances)
+        .values({
+          quoteId: fx.quoteB.id,
+          orgId: fx.orgB.id,
+          signerName: 'Bob (orgB customer)',
+          signerEmail: 'bob@orgb.example.com',
+          quoteSha256: 'd'.repeat(64),
+        })
+        .returning({ id: quoteAcceptances.id });
+      return row!.id;
+    });
+
+    const existsUnderSystem = await withSystemDbAccessContext(() =>
+      db.select({ id: quoteAcceptances.id }).from(quoteAcceptances).where(eq(quoteAcceptances.id, seededId))
+    );
+    expect(existsUnderSystem).toHaveLength(1);
+
+    const visibleToA = await withDbAccessContext(fx.orgAContext, () =>
+      db.select({ id: quoteAcceptances.id }).from(quoteAcceptances).where(eq(quoteAcceptances.id, seededId))
+    );
+    expect(visibleToA).toHaveLength(0);
   });
 });
