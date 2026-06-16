@@ -791,6 +791,50 @@ describe('createSessionPostToolUse', () => {
     expect(JSON.stringify(insertedPayloads)).not.toContain('raw-secret');
   });
 
+  it('re-attaches the raw apply payload to the SSE tool_result for apply_script_code (editor insert), but keeps it out of the persisted row', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+    const code = 'Write-Host "hello from breeze"';
+
+    // makeApplyHandler hands postToolUse the raw args as `input` and a
+    // code-less compacted string as `output` (see scriptBuilderTools.ts).
+    await callback('apply_script_code', { code, language: 'powershell' }, JSON.stringify({
+      applied: true,
+      toolName: 'apply_script_code',
+      language: 'powershell',
+      codeOmitted: true,
+      codeChars: code.length,
+    }), false, 5);
+
+    // The editor reads `output.code` from this event to insert the script.
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tool_result',
+      output: expect.objectContaining({ code, language: 'powershell' }),
+    }));
+
+    // The persisted chat-history row must stay compacted (no script body) so
+    // the LLM context / transcript isn't bloated — the #568 security goal.
+    const insertedPayloads = vi.mocked(db.insert).mock.results
+      .map((result) => (result.value as any)?.values?.mock?.calls?.[0]?.[0])
+      .filter(Boolean);
+    expect(JSON.stringify(insertedPayloads)).not.toContain('hello from breeze');
+  });
+
+  it('re-attaches the raw apply payload to the SSE tool_result for apply_script_metadata', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('apply_script_metadata', { name: 'Disk Cleanup', category: 'Maintenance' }, JSON.stringify({
+      applied: true,
+      toolName: 'apply_script_metadata',
+    }), false, 5);
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tool_result',
+      output: expect.objectContaining({ name: 'Disk Cleanup', category: 'Maintenance' }),
+    }));
+  });
+
   it('persists delegantToolCallId on the inserted execution row (tier < 2)', async () => {
     const session = makeActiveSession();
     const values = mockInsertValues();
