@@ -11,7 +11,6 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 const flagState = vi.hoisted(() => ({
   ENABLE_NETWORK_DEVICES_IN_LIST: true,
   ENABLE_ENDPOINT_AV_FEATURES: false,
-  ENABLE_AI_FOR_OFFICE: false,
 }));
 vi.mock('@/lib/featureFlags', () => flagState);
 
