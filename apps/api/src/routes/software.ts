@@ -560,6 +560,26 @@ softwareRoutes.delete(
       .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
 
+    // A version that is still referenced by a deployment cannot be deleted —
+    // software_deployments.software_version_id is an ON DELETE RESTRICT FK, so
+    // deleting the versions below would throw an unhandled 500 (#1407).
+    // Pre-check and return a clean 409 so deployment history is preserved and
+    // the caller gets an actionable message instead of a server error.
+    const [deploymentRef] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(softwareDeployments)
+      .innerJoin(softwareVersions, eq(softwareDeployments.softwareVersionId, softwareVersions.id))
+      .where(eq(softwareVersions.catalogId, id));
+    const blockingCount = deploymentRef?.count ?? 0;
+    if (blockingCount > 0) {
+      return c.json(
+        {
+          error: `Cannot delete: ${blockingCount} deployment${blockingCount === 1 ? '' : 's'} still reference a version of this software. Remove those deployments first.`,
+        },
+        409
+      );
+    }
+
     // Delete versions first (FK constraint)
     await db.delete(softwareVersions).where(eq(softwareVersions.catalogId, id));
     await db.delete(softwareCatalog).where(eq(softwareCatalog.id, id));
