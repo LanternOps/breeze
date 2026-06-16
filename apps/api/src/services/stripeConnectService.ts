@@ -76,6 +76,21 @@ export async function getConnection(partnerId: string) {
   return row ?? null;
 }
 
+/**
+ * Resolve a connection by its Stripe account id. Used by the UNAUTHENTICATED
+ * webhook to (a) route a Connect event to its partner and (b) enforce the
+ * livemode guard. stripe_connect_accounts is a partner-axis table, so this must
+ * run in system context — a bare org/partner-scope read would be silently
+ * RLS-filtered to null with no error (the #1375 class).
+ */
+export async function getConnectionByAccount(stripeAccountId: string) {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(stripeConnectAccounts)
+      .where(eq(stripeConnectAccounts.stripeAccountId, stripeAccountId)).limit(1);
+    return row ?? null;
+  });
+}
+
 export async function disconnect(partnerId: string): Promise<void> {
   const cfg = getConfig();
   const [row] = await db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, partnerId)).limit(1);

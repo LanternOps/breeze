@@ -15,12 +15,18 @@ vi.mock('./redis', () => ({
   getRedis: () => ({ set: redisSet, get: vi.fn(), del: vi.fn() })
 }));
 vi.mock('./secretCrypto', () => ({ encryptSecret: (v: string | null) => (v ? `enc:${v}` : null) }));
+const selectRows = vi.hoisted(() => ({ value: [] as unknown[] }));
 vi.mock('../db', () => ({
-  db: { insert: vi.fn(() => ({ values: () => ({ onConflictDoUpdate: () => Promise.resolve() }) })) },
+  db: {
+    insert: vi.fn(() => ({ values: () => ({ onConflictDoUpdate: () => Promise.resolve() }) })),
+    select: vi.fn(() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve(selectRows.value) }) }),
+    })),
+  },
   withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn()
 }));
 
-import { buildOAuthUrl, completeOAuth } from './stripeConnectService';
+import { buildOAuthUrl, completeOAuth, getConnectionByAccount } from './stripeConnectService';
 
 beforeEach(() => { oauthToken.mockReset(); oauthDeauthorize.mockReset(); redisSet.mockReset(); });
 
@@ -40,5 +46,21 @@ describe('completeOAuth', () => {
     const result = await completeOAuth({ code: 'ac_1', partnerId: 'p1', userId: 'u1' });
     expect(oauthToken).toHaveBeenCalledWith({ grant_type: 'authorization_code', code: 'ac_1' });
     expect(result.stripeAccountId).toBe('acct_99');
+  });
+});
+
+describe('getConnectionByAccount', () => {
+  beforeEach(() => { selectRows.value = []; });
+
+  it('returns the row for a known account (read in system context)', async () => {
+    selectRows.value = [{ partnerId: 'p1', stripeAccountId: 'acct_5', livemode: true, status: 'connected' }];
+    const row = await getConnectionByAccount('acct_5');
+    expect(row).toMatchObject({ partnerId: 'p1', livemode: true });
+  });
+
+  it('returns null for an unknown account', async () => {
+    selectRows.value = [];
+    const row = await getConnectionByAccount('acct_missing');
+    expect(row).toBeNull();
   });
 });

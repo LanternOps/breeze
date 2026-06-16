@@ -7,8 +7,9 @@ import { db, withSystemDbAccessContext } from '../db';
 import { invoices } from '../db/schema/invoices';
 import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { recordStripePayment, reflectStripeRefund } from './stripeReconcile';
-import { markDisconnectedByAccount } from './stripeConnectService';
+import { markDisconnectedByAccount, getConnectionByAccount } from './stripeConnectService';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { fromMinorUnits } from './stripeMoney';
 
 export function verifyStripeEvent(rawBody: string, signatureHeader: string): Stripe.Event {
   const secret = getConfig().STRIPE_WEBHOOK_SECRET;
@@ -23,23 +24,42 @@ export function verifyStripeEvent(rawBody: string, signatureHeader: string): Str
  * stripe_object_id mapping + invoice_payment_id guard); this dispatcher only routes.
  */
 export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
+  // livemode guard (spec §11) + account binding. For money-moving events, resolve
+  // the connection via event.account and refuse to process unless it exists AND
+  // its stored livemode matches event.livemode — a test-mode event must never
+  // touch a live connection (or vice-versa). account.application.deauthorized is
+  // exempt: a revoked account legitimately may no longer match.
+  const MONEY_MOVING = new Set([
+    'checkout.session.completed',
+    'charge.refunded',
+    'payment_intent.payment_failed',
+  ]);
+  if (MONEY_MOVING.has(event.type)) {
+    const connection = event.account ? await getConnectionByAccount(event.account) : null;
+    if (!connection || connection.livemode !== Boolean(event.livemode)) {
+      console.warn('[stripeWebhook] ignoring event — unknown account or livemode mismatch', {
+        type: event.type, account: event.account, eventLivemode: event.livemode,
+        connectionLivemode: connection?.livemode ?? null,
+      });
+      return; // 202, no processing
+    }
+  }
+
   switch (event.type) {
-    case 'checkout.session.completed':
-    case 'payment_intent.succeeded': {
-      const obj = event.data.object as Stripe.Checkout.Session | Stripe.PaymentIntent;
-      const isSession = event.type === 'checkout.session.completed';
-      const stripeObjectId = obj.id;
-      const paymentIntentId = isSession
-        ? String((obj as Stripe.Checkout.Session).payment_intent ?? '')
-        : (obj as Stripe.PaymentIntent).id;
-      const amountCents = isSession
-        ? Number((obj as Stripe.Checkout.Session).amount_total ?? 0)
-        : Number((obj as Stripe.PaymentIntent).amount_received ?? 0);
-      const currency = String((obj as { currency?: string }).currency ?? 'usd').toUpperCase();
+    case 'checkout.session.completed': {
+      // ONLY the Checkout session records a capture: it is keyed on the session id
+      // (the mapping's stripe_object_id) and carries payment_intent + amount_total.
+      // payment_intent.succeeded is intentionally NOT handled — handling both would
+      // double-fire on every payment and trigger a redelivery/retry storm.
+      const session = event.data.object as Stripe.Checkout.Session;
+      const stripeObjectId = session.id;
+      const paymentIntentId = String(session.payment_intent ?? '');
+      const amountCents = Number(session.amount_total ?? 0);
+      const currency = String(session.currency ?? 'usd').toUpperCase();
       if (!paymentIntentId || amountCents <= 0) return;
       await recordStripePayment({
         stripeObjectId, stripePaymentIntentId: paymentIntentId, stripeAccountId: event.account ?? '',
-        amount: (amountCents / 100).toFixed(2), currency
+        amount: fromMinorUnits(amountCents, currency), currency
       });
       return;
     }
@@ -52,11 +72,13 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
         await db.update(invoiceStripePayments)
           .set({ status: 'failed', lastEventAt: new Date(), updatedAt: new Date() })
           .where(eq(invoiceStripePayments.id, m.id));
+        // Look up the invoice's partnerId so the surfaced event carries the real
+        // partner (not an empty string).
         const [inv] = await db.select({ partnerId: invoices.partnerId }).from(invoices)
           .where(eq(invoices.id, m.invoiceId)).limit(1);
         await emitInvoiceEvent({
           type: 'payment.failed', invoiceId: m.invoiceId, orgId: m.orgId,
-          partnerId: inv?.partnerId ?? '', paymentId: m.invoicePaymentId ?? ''
+          partnerId: inv?.partnerId ?? '', paymentId: m.invoicePaymentId ?? undefined
         });
       });
       return;
@@ -67,7 +89,8 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
       await reflectStripeRefund({
         stripePaymentIntentId: String(ch.payment_intent),
         amountRefundedCents: Number(ch.amount_refunded ?? 0),
-        chargeAmountCents: Number(ch.amount ?? 0)
+        chargeAmountCents: Number(ch.amount ?? 0),
+        currency: String(ch.currency ?? 'usd')
       });
       return;
     }
@@ -76,6 +99,6 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
       return;
     }
     default:
-      return; // ignore everything else
+      return; // ignore everything else (incl. payment_intent.succeeded)
   }
 }

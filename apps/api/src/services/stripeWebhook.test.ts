@@ -7,16 +7,18 @@ vi.mock('../config/validate', () => ({ getConfig: () => ({ STRIPE_WEBHOOK_SECRET
 
 // Dispatch-handler collaborators (Task 12). Declared via vi.hoisted so the mock
 // factories (which vitest hoists above the imports) can reference them.
-const { recordStripePayment, reflectStripeRefund, markDisconnectedByAccount, emit, dbResults } = vi.hoisted(() => ({
+const { recordStripePayment, reflectStripeRefund, markDisconnectedByAccount, getConnectionByAccount, emit, dbResults } = vi.hoisted(() => ({
   recordStripePayment: vi.fn().mockResolvedValue({ invoiceId: 'inv_1' }),
   reflectStripeRefund: vi.fn().mockResolvedValue(undefined),
   markDisconnectedByAccount: vi.fn().mockResolvedValue(undefined),
+  // Default: a livemode-matching connected account exists for any account id.
+  getConnectionByAccount: vi.fn().mockResolvedValue({ partnerId: 'p_1', livemode: true, status: 'connected' }),
   emit: vi.fn().mockResolvedValue(undefined),
   dbResults: [] as unknown[][]
 }));
 
 vi.mock('./stripeReconcile', () => ({ recordStripePayment, reflectStripeRefund }));
-vi.mock('./stripeConnectService', () => ({ markDisconnectedByAccount }));
+vi.mock('./stripeConnectService', () => ({ markDisconnectedByAccount, getConnectionByAccount }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: emit }));
 
 // Controllable Drizzle chain (mirrors invoiceService.test.ts): every builder
@@ -59,14 +61,37 @@ describe('handleStripeEvent', () => {
     recordStripePayment.mockClear();
     reflectStripeRefund.mockClear();
     markDisconnectedByAccount.mockClear();
+    getConnectionByAccount.mockClear();
+    getConnectionByAccount.mockResolvedValue({ partnerId: 'p_1', livemode: true, status: 'connected' });
     emit.mockClear();
     dbResults.length = 0;
   });
 
   it('checkout.session.completed → records payment', async () => {
-    await handleStripeEvent({ type: 'checkout.session.completed', account: 'acct_1',
+    await handleStripeEvent({ type: 'checkout.session.completed', account: 'acct_1', livemode: true,
       data: { object: { id: 'cs_1', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' } } } as any);
     expect(recordStripePayment).toHaveBeenCalledWith(expect.objectContaining({ stripeObjectId: 'cs_1', stripePaymentIntentId: 'pi_1' }));
+  });
+
+  it('payment_intent.succeeded is IGNORED (no retry storm — only the session records a capture)', async () => {
+    await handleStripeEvent({ type: 'payment_intent.succeeded', account: 'acct_1', livemode: true,
+      data: { object: { id: 'pi_1', amount_received: 10000, currency: 'usd' } } } as any);
+    expect(recordStripePayment).not.toHaveBeenCalled();
+  });
+
+  it('IGNORES a money-moving event whose stored connection livemode disagrees', async () => {
+    // event.livemode=true but the stored connection is in test mode → ignore (202).
+    getConnectionByAccount.mockResolvedValue({ partnerId: 'p_1', livemode: false, status: 'connected' });
+    await handleStripeEvent({ type: 'checkout.session.completed', account: 'acct_1', livemode: true,
+      data: { object: { id: 'cs_1', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' } } } as any);
+    expect(recordStripePayment).not.toHaveBeenCalled();
+  });
+
+  it('IGNORES a money-moving event for an unknown account', async () => {
+    getConnectionByAccount.mockResolvedValue(null);
+    await handleStripeEvent({ type: 'checkout.session.completed', account: 'acct_unknown', livemode: true,
+      data: { object: { id: 'cs_1', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' } } } as any);
+    expect(recordStripePayment).not.toHaveBeenCalled();
   });
 
   it('payment_intent.payment_failed → emits payment.failed, no record', async () => {
@@ -74,25 +99,27 @@ describe('handleStripeEvent', () => {
     dbResults.push([{ id: 'map_1', invoiceId: 'inv_1', orgId: 'org_1', invoicePaymentId: null }]); // select mapping
     dbResults.push([]); // update set where (result ignored)
     dbResults.push([{ partnerId: 'p_1' }]); // partnerId lookup
-    await handleStripeEvent({ type: 'payment_intent.payment_failed', account: 'acct_1',
+    await handleStripeEvent({ type: 'payment_intent.payment_failed', account: 'acct_1', livemode: true,
       data: { object: { id: 'pi_2' } } } as any);
     expect(recordStripePayment).not.toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.failed' }));
   });
 
-  it('charge.refunded → reflects refund', async () => {
-    await handleStripeEvent({ type: 'charge.refunded', account: 'acct_1',
-      data: { object: { payment_intent: 'pi_1', amount: 10000, amount_refunded: 4000 } } } as any);
-    expect(reflectStripeRefund).toHaveBeenCalledWith({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000 });
+  it('charge.refunded → reflects refund (currency-aware)', async () => {
+    await handleStripeEvent({ type: 'charge.refunded', account: 'acct_1', livemode: true,
+      data: { object: { payment_intent: 'pi_1', amount: 10000, amount_refunded: 4000, currency: 'usd' } } } as any);
+    expect(reflectStripeRefund).toHaveBeenCalledWith({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'usd' });
   });
 
-  it('account.application.deauthorized → marks disconnected', async () => {
-    await handleStripeEvent({ type: 'account.application.deauthorized', account: 'acct_1', data: { object: {} } } as any);
+  it('account.application.deauthorized → marks disconnected (exempt from livemode guard)', async () => {
+    // Deauthorize legitimately may not match the stored livemode — it must still process.
+    getConnectionByAccount.mockResolvedValue(null);
+    await handleStripeEvent({ type: 'account.application.deauthorized', account: 'acct_1', livemode: true, data: { object: {} } } as any);
     expect(markDisconnectedByAccount).toHaveBeenCalledWith('acct_1');
   });
 
   it('ignores unrelated events', async () => {
-    await handleStripeEvent({ type: 'customer.created', account: 'acct_1', data: { object: {} } } as any);
+    await handleStripeEvent({ type: 'customer.created', account: 'acct_1', livemode: true, data: { object: {} } } as any);
     expect(recordStripePayment).not.toHaveBeenCalled();
   });
 });

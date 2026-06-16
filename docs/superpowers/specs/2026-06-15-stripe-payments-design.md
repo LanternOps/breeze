@@ -162,7 +162,7 @@ Mailgun inbound webhook), IP rate-limited, returns `202` on accept.
 
 | Event | Action |
 |---|---|
-| `checkout.session.completed` / `payment_intent.succeeded` | Record the captured payment (see §8); set mapping `status='succeeded'`. |
+| `checkout.session.completed` | Record the captured payment (see §8); set mapping `status='succeeded'`. **Only** the session records a capture — it is keyed on the session id and carries `payment_intent` + `amount_total`. `payment_intent.succeeded` is deliberately **ignored** (handling both double-fires every payment and triggers a redelivery/retry storm). |
 | `payment_intent.payment_failed` | Mapping `status='failed'`; emit `payment.failed`. No invoice change. |
 | `charge.refunded` | Reflect refund (see §8.1). |
 | `account.application.deauthorized` | Mark the partner's connection `disconnected`. |

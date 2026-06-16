@@ -3,8 +3,7 @@ import { Hono } from 'hono';
 import { getTrustedClientIp } from '../../services/clientIp'; // match the helper used by emailWebhook
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
-import { verifyStripeEvent } from '../../services/stripeWebhook';
-import { handleStripeEvent } from '../../services/stripeWebhook';
+import { verifyStripeEvent, handleStripeEvent } from '../../services/stripeWebhook';
 
 export const stripeWebhookRoutes = new Hono();
 
