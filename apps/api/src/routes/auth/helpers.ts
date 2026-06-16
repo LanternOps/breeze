@@ -145,7 +145,9 @@ export async function requireFreshMfaStepUp(
     .limit(1);
 
   // Only TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
-  if (!user?.mfaEnabled || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey' || !user.mfaSecret) {
+  // Allowlist on the method (not a denylist) so any non-TOTP/unset method is
+  // rejected even if a stale secret lingers — defense-in-depth for the auth path.
+  if (!user?.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
