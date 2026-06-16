@@ -96,6 +96,15 @@
     reverse_proxy api:3001
   }
 
+  # --- MSP Invoice Engine pages live in the web app at /billing/invoices*
+  #     and MUST be matched before the /billing/* sidecar route below,
+  #     otherwise the hosted billing sidecar shadows the MSP Invoices UI. ---
+  @webBillingInvoices path /billing/invoices /billing/invoices/*
+  handle @webBillingInvoices {
+    encode zstd gzip
+    reverse_proxy web:4321
+  }
+
   # --- Billing UI (proxied to billing sidecar) ---
   @billing path /billing /billing/*
   handle @billing {

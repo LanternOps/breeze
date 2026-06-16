@@ -107,6 +107,9 @@ export default function TicketsPage() {
   const [selectedNumber, setSelectedNumber] = useState<string | null>(() => parseHash().selection);
   const [sort, setSort] = useState<TicketSort>(() => parseHash().sort);
   const [search, setSearch] = useState('');
+  // Debounced twin of `search` — only this drives the list fetch, so typing
+  // doesn't fire a 100-row query per keystroke (the input itself stays instant).
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [orgFilter, setOrgFilter] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
@@ -177,7 +180,7 @@ export default function TicketsPage() {
     setError(undefined);
     try {
       const params = new URLSearchParams(tabQuery(tab));
-      if (search) params.set('search', search);
+      if (debouncedSearch) params.set('search', debouncedSearch);
       if (orgFilter) params.set('orgId', orgFilter);
       if (priorityFilter) params.set('priority', priorityFilter);
       if (categoryFilter) params.set('categoryId', categoryFilter);
@@ -201,7 +204,7 @@ export default function TicketsPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [tab, search, orgFilter, priorityFilter, categoryFilter, assigneeFilter, sort]);
+  }, [tab, debouncedSearch, orgFilter, priorityFilter, categoryFilter, assigneeFilter, sort]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -216,6 +219,31 @@ export default function TicketsPage() {
   }, []);
 
   useEffect(() => { void fetchTickets(); void fetchStats(); }, [fetchTickets, fetchStats]);
+
+  // Trailing debounce: commit the typed search to the fetch-driving value 300ms
+  // after the last keystroke. An empty box applies immediately (clearing search
+  // should feel instant). Cleared on every change so only the final value lands.
+  useEffect(() => {
+    if (search === '') { setDebouncedSearch(''); return; }
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
+  // Patch a single queue row in place after a workbench mutation — instant list
+  // feedback without a full /tickets refetch (the heavy 100-row query that, on
+  // the connection-capped US droplet, also contended for DB connections).
+  const patchTicketRow = useCallback((id: string, patch: Partial<TicketSummary>) => {
+    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+
+  // Debounced background reconcile after a mutation: coalesces bursts (rapid
+  // status/assignee changes) into one list+stats refresh instead of one per click.
+  const reconcileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReconcile = useCallback(() => {
+    if (reconcileTimer.current) clearTimeout(reconcileTimer.current);
+    reconcileTimer.current = setTimeout(() => { void fetchTickets(); void fetchStats(); }, 300);
+  }, [fetchTickets, fetchStats]);
+  useEffect(() => () => { if (reconcileTimer.current) clearTimeout(reconcileTimer.current); }, []);
 
   // Fetch ticket config once (module-cached). Failure leaves config null, so
   // chips and the bulk-status menu keep using the static core labels.
@@ -287,7 +315,8 @@ export default function TicketsPage() {
 
   const assignMe = useCallback(async () => {
     if (!selected) return;
-    const userId = useAuthStore.getState().user?.id;
+    const me = useAuthStore.getState().user;
+    const userId = me?.id;
     if (!userId) {
       showToast({ type: 'error', message: 'Assign failed. Retry.' });
       return;
@@ -299,13 +328,13 @@ export default function TicketsPage() {
         successMessage: 'Assigned to you',
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
-      void fetchTickets();
-      void fetchStats();
+      patchTicketRow(selected.id, { assignedTo: userId, assigneeName: me?.name ?? me?.email ?? null });
+      scheduleReconcile();
     } catch (err) {
       // ActionError is already toasted by runAction; surface anything else too.
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Assign failed. Retry.' });
     }
-  }, [selected, fetchTickets, fetchStats]);
+  }, [selected, patchTicketRow, scheduleReconcile]);
 
   const toggleBulkSelect = useCallback((id: string) => {
     setBulkSelectedIds((prev) => {
@@ -616,7 +645,7 @@ export default function TicketsPage() {
           </div>
           <div className="hidden min-w-0 flex-1 min-[1100px]:block">
             {selected ? (
-              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} onChanged={() => { void fetchTickets(); void fetchStats(); }} />
+              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} onTicketPatched={patchTicketRow} onChanged={scheduleReconcile} />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
                 <p>Select a ticket. Use j/k to move, Enter to expand.</p>

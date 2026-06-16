@@ -30,7 +30,11 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../../db/schema/approvals', () => ({
+// Keep the real enums (approvalFactorEnum et al.) — schema/elevations.ts calls
+// approvalFactorEnum() at module load, so a bare factory that omits them breaks the
+// whole schema import. Override only approvalRequests with the query stub.
+vi.mock('../../db/schema/approvals', async (importActual) => ({
+  ...(await importActual<typeof import('../../db/schema/approvals')>()),
   approvalRequests: {
     id: 'ar.id',
     userId: 'ar.userId',

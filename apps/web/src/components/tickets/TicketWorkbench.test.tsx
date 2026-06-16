@@ -646,6 +646,85 @@ describe('TicketWorkbench host-supplied assignees prop', () => {
   });
 });
 
+describe('TicketWorkbench optimistic updates & background reconcile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchConfigMock.mockResolvedValue(null);
+  });
+
+  /**
+   * First detail GET resolves immediately; mutations succeed; the post-mutation
+   * reconcile GET stays pending until released. Lets us assert the optimistic
+   * value renders BEFORE the reconcile lands, and that no skeleton/aria-busy
+   * appears during a background reconcile.
+   */
+  function mockWithHeldReconcile(initial: TicketDetail) {
+    let releaseReload: (() => void) | null = null;
+    let ticketGets = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/users') return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === `/tickets/${initial.id}`) {
+        ticketGets += 1;
+        if (ticketGets === 1) return makeJsonResponse({ data: initial });
+        // Reconcile returns the UNCHANGED ticket — if the UI were reconcile-driven
+        // (not optimistic) the select would revert once this resolves.
+        return new Promise<Response>((resolve) => {
+          releaseReload = () => resolve(makeJsonResponse({ data: initial }));
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    return { release: () => releaseReload?.() };
+  }
+
+  it('reflects a status change immediately and reconciles in the background (no skeleton, not aria-busy)', async () => {
+    mockWithHeldReconcile(makeTicket({ status: 'open' }));
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
+
+    // Optimistic: the controlled select shows the new value before the reconcile GET resolves.
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-status')).toHaveValue('closed');
+    });
+    // Background reconcile must not blank the pane with the skeleton or mark it busy.
+    expect(screen.queryByTestId('ticket-workbench-loading')).toBeNull();
+    expect(screen.getByTestId('ticket-workbench')).not.toHaveAttribute('aria-busy');
+  });
+
+  it('reflects a priority change immediately (optimistic, before reconcile)', async () => {
+    const { release } = mockWithHeldReconcile(makeTicket({ priority: 'normal' }));
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-priority'), { target: { value: 'high' } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-priority')).toHaveValue('high');
+    });
+    expect(screen.getByTestId('ticket-workbench')).not.toHaveAttribute('aria-busy');
+    release(); // the held reconcile (unchanged ticket) must NOT revert the optimistic value
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-priority')).toHaveValue('high');
+    });
+  });
+
+  it('notifies the host of the optimistic row patch via onTicketPatched', async () => {
+    mockWithHeldReconcile(makeTicket({ status: 'open' }));
+    const onTicketPatched = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onTicketPatched={onTicketPatched} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
+
+    await waitFor(() => {
+      expect(onTicketPatched).toHaveBeenCalledWith('tk-1', expect.objectContaining({ status: 'closed' }));
+    });
+  });
+});
+
 // ─── Custom statuses (config path) ───────────────────────────────────────────
 
 const makeConfig = (overrides: Partial<TicketConfig> = {}): TicketConfig => ({

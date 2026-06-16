@@ -755,6 +755,13 @@ fi
 info "Installing to \$INSTALL_DIR/\$BINARY_NAME..."
 mv "\$TMPFILE" "\$INSTALL_DIR/\$BINARY_NAME"
 chmod 755 "\$INSTALL_DIR/\$BINARY_NAME"
+# On SELinux-enforcing hosts (Fedora family) the binary inherits the mktemp
+# file's user_tmp_t label through the mv, so systemd/init is denied execute
+# (203/EXEC) after a reboot. Restore the default context for the install path.
+# Guarded by command existence so it is a no-op on non-SELinux systems.
+if command -v restorecon &>/dev/null; then
+  restorecon -v "\$INSTALL_DIR/\$BINARY_NAME" 2>/dev/null || true
+fi
 trap - EXIT
 success "Installed \$INSTALL_DIR/\$BINARY_NAME"
 

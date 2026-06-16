@@ -27,6 +27,7 @@ import {
   type Density,
 } from '@/lib/density';
 import { OSIcon } from './osIcons';
+import { formatDeviceOsVersion } from './osDisplay';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -106,6 +107,10 @@ export type Device = {
   };
 };
 
+// Columns that only make sense for the network arm (#1322); hidden unless
+// networkDevicesEnabled. Module-level so it isn't reallocated each render.
+const NETWORK_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>(['class', 'type']);
+
 type DeviceListProps = {
   devices: Device[];
   orgs?: { id: string; name: string }[];
@@ -128,6 +133,11 @@ type DeviceListProps = {
   // grid views filter against the same complete, uncapped id set.
   serverFilterIds?: Set<string> | null;
   serverFilterLoading?: boolean;
+  // Unified-list network arm (#1322). Off by default behind a build-time flag
+  // (PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST); when false the Class/Type columns
+  // and the All/Agent/Network facet are hidden entirely so the list is the
+  // agent-only view. DevicesPage passes ENABLE_NETWORK_DEVICES_IN_LIST.
+  networkDevicesEnabled?: boolean;
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -226,7 +236,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   organization: d => d.orgName || null,
   site: d => d.siteName || null,
   os: d => osLabels[d.os],
-  osVersion: d => d.osVersion || null,
+  osVersion: d => formatDeviceOsVersion(d.os, d.osVersion) || null,
   osBuild: d => d.osBuild || null,
   architecture: d => d.architecture || null,
   role: d => getDeviceRoleLabel(d.deviceRole ?? 'unknown'),
@@ -265,7 +275,8 @@ export default function DeviceList({
   onBulkAction,
   pageSize = 10,
   serverFilterIds = null,
-  serverFilterLoading = false
+  serverFilterLoading = false,
+  networkDevicesEnabled = false
 }: DeviceListProps) {
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -448,11 +459,12 @@ export default function DeviceList({
     }
   };
 
-  // Show the class facet only once a network device is present in the list,
-  // so agent-only fleets aren't cluttered with an inert control.
+  // Show the class facet only when the network arm is enabled AND a network
+  // device is actually present, so agent-only fleets aren't cluttered with an
+  // inert control. With the feature flag off this is always false.
   const hasNetworkDevices = useMemo(
-    () => devices.some(d => (d.deviceClass ?? 'agent') === 'network'),
-    [devices],
+    () => networkDevicesEnabled && devices.some(d => (d.deviceClass ?? 'agent') === 'network'),
+    [networkDevicesEnabled, devices],
   );
 
   const sortedDevices = useMemo(() => {
@@ -524,9 +536,13 @@ export default function DeviceList({
   const allSelected = paginatedDevices.length > 0 && paginatedDevices.every(d => selectedIds.has(d.id));
   const someSelected = paginatedDevices.some(d => selectedIds.has(d.id));
 
+  // The Class/Type columns belong to the network arm (#1322); hide them
+  // entirely when the feature flag is off so the list is the agent-only view.
+  const isColumnAvailable = (id: ColumnId) => networkDevicesEnabled || !NETWORK_ONLY_COLUMNS.has(id);
+
   // Effective render sequence: user-chosen order, filtered to visible.
   // Checkbox and Actions are rendered separately as the first/last cells.
-  const renderedColumns = columnOrder.filter(id => visibleColumns.has(id));
+  const renderedColumns = columnOrder.filter(id => visibleColumns.has(id) && isColumnAvailable(id));
 
   // sortHeader factors out the repeated header pattern for sortable
   // columns to keep the column-defs table below readable. The column id
@@ -667,7 +683,7 @@ export default function DeviceList({
       header: () => sortHeader('osVersion', 'OS Version', 'Sort by OS version'),
       cell: (device) => (
         <td key="osVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-          {device.osVersion || dash}
+          {formatDeviceOsVersion(device.os, device.osVersion) || dash}
         </td>
       ),
     },
@@ -1013,7 +1029,7 @@ export default function DeviceList({
                   <p className="px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Visible (in order)
                   </p>
-                  {columnOrder.filter(id => visibleColumns.has(id)).map((id, idx, arr) => (
+                  {columnOrder.filter(id => visibleColumns.has(id) && isColumnAvailable(id)).map((id, idx, arr) => (
                     <div
                       key={id}
                       className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
@@ -1052,7 +1068,7 @@ export default function DeviceList({
                   <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Hidden
                   </p>
-                  {columnOrder.filter(id => !visibleColumns.has(id)).map(id => (
+                  {columnOrder.filter(id => !visibleColumns.has(id) && isColumnAvailable(id)).map(id => (
                     <label
                       key={id}
                       className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -1311,7 +1327,7 @@ export default function DeviceList({
             {paginatedDevices.length === 0 ? (
               <tr>
                 <td
-                  colSpan={visibleColumns.size + 2 /* checkbox + Actions */}
+                  colSpan={renderedColumns.length + 2 /* checkbox + Actions; renderedColumns already drops flag-gated columns */}
                   className="px-3 py-6 text-center text-sm text-muted-foreground"
                 >
                   No devices found. Try adjusting your search or filters.

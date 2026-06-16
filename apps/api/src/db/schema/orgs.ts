@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned']);
@@ -33,6 +33,16 @@ export const partners = pgTable('partners', {
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   stripeCustomerId: text('stripe_customer_id'),
+  currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
+  defaultTaxRate: numeric('default_tax_rate', { precision: 6, scale: 3 }),
+  invoiceNumberPrefix: varchar('invoice_number_prefix', { length: 12 }).notNull().default('INV'),
+  invoiceTermsDays: integer('invoice_terms_days').notNull().default(30),
+  invoiceFooter: text('invoice_footer'),
+  // AI for Office is a per-partner entitlement the platform operator grants
+  // (off by default). The session-minting exchange and the /client-ai/admin
+  // surface gate on this; it is NOT in settings JSONB because that is
+  // partner-writable and the partner must not be able to self-enable.
+  aiForOfficeEnabled: boolean('ai_for_office_enabled').notNull().default(false),
 });
 
 export const organizations = pgTable('organizations', {
@@ -48,6 +58,15 @@ export const organizations = pgTable('organizations', {
   contractStart: timestamp('contract_start'),
   contractEnd: timestamp('contract_end'),
   billingContact: jsonb('billing_contact'),
+  taxId: varchar('tax_id', { length: 100 }),
+  taxExempt: boolean('tax_exempt').notNull().default(false),
+  taxRate: numeric('tax_rate', { precision: 6, scale: 3 }),
+  billingAddressLine1: varchar('billing_address_line1', { length: 255 }),
+  billingAddressLine2: varchar('billing_address_line2', { length: 255 }),
+  billingAddressCity: varchar('billing_address_city', { length: 120 }),
+  billingAddressRegion: varchar('billing_address_region', { length: 120 }),
+  billingAddressPostalCode: varchar('billing_address_postal_code', { length: 40 }),
+  billingAddressCountry: char('billing_address_country', { length: 2 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at')

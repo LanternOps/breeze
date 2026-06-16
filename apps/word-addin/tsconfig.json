@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "useDefineForClassFields": true,
+    "types": ["office-js", "vite/client", "vitest/globals"],
+    "baseUrl": ".",
+    "paths": {
+      "@breeze/office-addin-core": ["../../packages/office-addin-core/src"]
+    }
+  },
+  "include": ["src"]
+}

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
+import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
 import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
 import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
@@ -915,6 +916,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         )}
       </div>
 
+      {/* Approval security (Breeze Authenticator) */}
+      <ApproverDevicesSection />
       <ThemingSettings
         preferences={user?.preferences}
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}

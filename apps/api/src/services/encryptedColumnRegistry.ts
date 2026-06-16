@@ -56,6 +56,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'snmp_devices', column: 'priv_password', kind: 'text', description: 'SNMP v3 privacy password' },
   { table: 'automations', column: 'trigger', kind: 'json', description: 'automation webhook trigger secret' },
   { table: 'psa_connections', column: 'credentials', kind: 'json', description: 'PSA connection credentials' },
+  { table: 'stripe_connect_accounts', column: 'credentials', kind: 'json', description: 'Stripe Connect OAuth token (deauthorize use)' },
   { table: 'huntress_integrations', column: 'api_key_encrypted', kind: 'text', description: 'Huntress API key' },
   { table: 'huntress_integrations', column: 'webhook_secret_encrypted', kind: 'text', description: 'Huntress webhook secret' },
   { table: 's1_integrations', column: 'api_token_encrypted', kind: 'text', description: 'SentinelOne API token' },

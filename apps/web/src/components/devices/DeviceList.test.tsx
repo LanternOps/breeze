@@ -31,6 +31,42 @@ const baseDevice: Device = {
   tags: [],
 };
 
+describe('DeviceList — OS version display', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  it('shows macOS instead of the Darwin kernel name in the OS Version column', () => {
+    const device: Device = {
+      ...baseDevice,
+      os: 'macos',
+      osVersion: 'darwin 26.5.1',
+    };
+
+    render(<DeviceList devices={[device]} />);
+    fireEvent.click(screen.getByRole('button', { name: /columns/i }));
+    fireEvent.click(screen.getByLabelText('OS Version'));
+
+    expect(screen.getByText('macOS 26.5.1')).toBeInTheDocument();
+    expect(screen.queryByText('darwin 26.5.1')).toBeNull();
+  });
+
+  it('capitalizes Linux distro names in the OS Version column', () => {
+    const device: Device = {
+      ...baseDevice,
+      os: 'linux',
+      osVersion: 'raspbian 13.5',
+    };
+
+    render(<DeviceList devices={[device]} />);
+    fireEvent.click(screen.getByRole('button', { name: /columns/i }));
+    fireEvent.click(screen.getByLabelText('OS Version'));
+
+    expect(screen.getByText('Raspbian 13.5')).toBeInTheDocument();
+    expect(screen.queryByText('raspbian 13.5')).toBeNull();
+  });
+});
+
 describe('DeviceList — agent-silent (watchdog OK) badge (#800 web-UI gap)', () => {
   it('renders the amber badge when mainAgentSilentSince is set AND watchdog is reporting', () => {
     const device: Device = {
@@ -297,15 +333,17 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(hostCol).toEqual(['host-nine', 'host-ten']);
   });
 
-  it('renders all 24 catalog columns with a sort hint and pointer cursor when every column is visible', () => {
-    // Default visibility shows only 9 columns, which would let the other 15
-    // silently regress to plain <th> elements. Opt every catalog column in.
+  it('renders every catalog column with a sort hint and pointer cursor when every column is visible', () => {
+    // Default visibility shows only a handful of columns, which would let the
+    // others silently regress to plain <th> elements. Opt every catalog column
+    // in — including the network-only Class/Type columns, which only render
+    // when the network arm is enabled (networkDevicesEnabled).
     window.localStorage.setItem(
       'breeze.devices.columns',
       JSON.stringify({ v: 1, columns: COLUMN_IDS.map(id => ({ id, visible: true })) }),
     );
 
-    const { container } = render(<DeviceList devices={[baseDevice]} />);
+    const { container } = render(<DeviceList devices={[baseDevice]} networkDevicesEnabled />);
 
     const headers = Array.from(container.querySelectorAll('thead th'));
     // First (checkbox) and last (Actions) are structural; everything between

@@ -5,6 +5,15 @@ import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 
+// Feature flags are evaluated at module load, so expose a mutable holder we can
+// flip per-test. Default the network arm ON here since most #1322 cases below
+// exercise the network behaviour; the dedicated flag-off case sets it false.
+const flagState = vi.hoisted(() => ({
+  ENABLE_NETWORK_DEVICES_IN_LIST: true,
+  ENABLE_ENDPOINT_AV_FEATURES: false,
+}));
+vi.mock('@/lib/featureFlags', () => flagState);
+
 // ---------------------------------------------------------------------------
 // Mocks — keep DevicesPage's own logic (including the real useAdvancedFilterIds
 // hook) live; stub network, side-effectful children, and the filter-URL state.
@@ -135,6 +144,8 @@ function jsonResponse(payload: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Reset the network arm to ON; the flag-off case opts out explicitly.
+  flagState.ENABLE_NETWORK_DEVICES_IN_LIST = true;
 
   vi.mocked(fetchAllDevices).mockResolvedValue({
     data: [rawDevice(DEV_1, 'host-alpha'), rawDevice(DEV_2, 'host-beta'), rawDevice(DEV_3, 'host-gamma')],
@@ -203,6 +214,24 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
     expect(screen.getByTestId(`device-card-${DEV_2}`)).toBeTruthy();
     expect(screen.getByTestId(`device-card-${DEV_3}`)).toBeTruthy();
     expect(vi.mocked(fetchWithAuth).mock.calls.some(([url]) => String(url).startsWith('/filters/preview'))).toBe(false);
+  });
+});
+
+// The network arm is behind ENABLE_NETWORK_DEVICES_IN_LIST and OFF by default.
+describe('DevicesPage — network arm disabled by default (#1322 flag)', () => {
+  it('does not fetch network devices when the flag is off', async () => {
+    flagState.ENABLE_NETWORK_DEVICES_IN_LIST = false;
+
+    render(<DevicesPage />);
+
+    // Wait for the initial load to settle (agent list renders).
+    await screen.findByTestId('device-list');
+    await waitFor(() => {
+      expect(vi.mocked(fetchAllDevices)).toHaveBeenCalled();
+    });
+
+    // The network endpoint must never be hit when the feature is disabled.
+    expect(vi.mocked(fetchAllNetworkDevices)).not.toHaveBeenCalled();
   });
 });
 

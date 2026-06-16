@@ -12,26 +12,18 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(
-    () => ({
-      currentOrgId: null,
-      organizations: [
-        { id: 'org-1', name: 'Acme Corp' },
-        { id: 'org-2', name: 'Globex' },
-      ],
-    }),
-    {
-      getState: () => ({
-        currentOrgId: null,
-        organizations: [
-          { id: 'org-1', name: 'Acme Corp' },
-          { id: 'org-2', name: 'Globex' },
-        ],
-      }),
-    }
-  ),
-}));
+// Mutable org-shell state so individual tests can model an org-scoped user
+// (currentOrgId set) vs. a partner on the global /patches view (currentOrgId null).
+const orgState = vi.hoisted(() => ({ currentOrgId: null as string | null }));
+
+vi.mock('../../stores/orgStore', () => {
+  const organizations = [
+    { id: 'org-1', name: 'Acme Corp' },
+    { id: 'org-2', name: 'Globex' },
+  ];
+  const read = () => ({ currentOrgId: orgState.currentOrgId, organizations });
+  return { useOrgStore: Object.assign(read, { getState: read }) };
+});
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -46,10 +38,14 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('PatchesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    orgState.currentOrgId = null;
     window.history.replaceState({}, '', '/?tab=patches');
   });
 
   it('keeps failed bulk approvals pending when the API only approves some patches', async () => {
+    // Org-scoped session: the API derives the target org from auth.orgId, so the
+    // bulk-approve request fires without an explicit org/ring selection.
+    orgState.currentOrgId = 'org-1';
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
 
@@ -116,6 +112,42 @@ describe('PatchesPage', () => {
     await screen.findByText('Failed to approve 1 patch');
     expect(screen.getAllByRole('button', { name: 'Deploy' })).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: 'Review' })).toHaveLength(1);
+  });
+
+  it('blocks bulk approve and prompts for an update ring when there is no org context', async () => {
+    // Partner on the global /patches view: no current org and no ring selected.
+    // Approval is ring-scoped, so the request would 400 ('orgId is required for
+    // partner/system scope') — guard it client-side with a clear prompt instead.
+    orgState.currentOrgId = null;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'Critical Security Update',
+              severity: 'critical',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'pending',
+            },
+          ],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('Critical Security Update');
+    fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
+
+    await screen.findByText(/select an update ring/i);
+    expect(fetchMock).not.toHaveBeenCalledWith('/patches/bulk-approve', expect.anything());
   });
 
   it('does NOT fire the scan POST until the confirm button is clicked', async () => {

@@ -47,7 +47,8 @@ export class CatalogServiceError extends Error {
 }
 
 export interface CatalogActor {
-  userId: string;
+  /** The user who initiated the action, or null for system/background actors. */
+  userId: string | null;
   partnerId: string | null;
   /**
    * auth.accessibleOrgIds — the org-axis allowlist (mirrors TimeEntryActor).
@@ -183,6 +184,12 @@ export async function updateCatalogItem(id: string, input: UpdateCatalogItemInpu
   try {
     const rows = await db.update(catalogItems).set(patch)
       .where(and(eq(catalogItems.id, id), eq(catalogItems.partnerId, partnerId))).returning();
+    // Flipping a bundle back to a plain item (true -> false) must drop its
+    // component rows — otherwise they linger orphaned and would resurface if the
+    // item is later re-flagged as a bundle.
+    if (input.isBundle === false && existing.isBundle) {
+      await db.delete(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, id));
+    }
     await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: id, partnerId, actorUserId: actor.userId });
     return rows[0]!;
   } catch (err) {

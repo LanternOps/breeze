@@ -27,6 +27,13 @@ type sessionState struct {
 	watcher     *watcher
 	lastApplied time.Time
 
+	// Set when the on-disk config changed for a running helper that hasn't been
+	// restarted yet (#1382). The helper only reads --config at spawn, so a
+	// running session must be restarted to pick up new tray settings. We defer
+	// the restart while a chat is active, so this flag persists across
+	// heartbeats until the session goes idle and the restart actually happens.
+	pendingConfigRestart bool
+
 	// Set to true when the watcher gives up after repeated failures.
 	// Prevents Apply() from re-spawning and re-creating the watcher.
 	// Cleared on helper update or when the helper binary changes.

@@ -32,6 +32,21 @@ interface OrgState {
   currentPartnerId: string | null;
   currentOrgId: string | null;
   currentSiteId: string | null;
+  /**
+   * True when the user has *explicitly* chosen the All-orgs scope via the
+   * scope pill (currentOrgId is null on purpose), as opposed to the transient
+   * null of a fresh session before the first org is auto-selected. This flag is
+   * the difference: it suppresses the auto-select-first-org fallback in
+   * `fetchOrganizations` so the All-orgs choice survives the post-switch reload
+   * instead of silently snapping back to the first org.
+   */
+  allOrgs: boolean;
+  /**
+   * The last *concrete* org the user had selected. Lets the "Current" pill
+   * button return to where they were when leaving All-orgs scope, instead of
+   * arbitrarily jumping to the first org in the list.
+   */
+  lastOrgId: string | null;
   partners: Partner[];
   organizations: Organization[];
   sites: Site[];
@@ -41,7 +56,7 @@ interface OrgState {
   // Actions
   setPartner: (partnerId: string) => void;
   /** Pass a non-empty orgId to select that org; pass '' or null to clear the
-   * selection (currentOrgId → null, currentSiteId → null). */
+   * selection (currentOrgId → null, currentSiteId → null, allOrgs → true). */
   setOrganization: (orgId: string | null) => void;
   setSite: (siteId: string | null) => void;
   fetchPartners: () => Promise<void>;
@@ -56,6 +71,8 @@ export const useOrgStore = create<OrgState>()(
       currentPartnerId: null,
       currentOrgId: null,
       currentSiteId: null,
+      allOrgs: false,
+      lastOrgId: null,
       partners: [],
       organizations: [],
       sites: [],
@@ -67,6 +84,9 @@ export const useOrgStore = create<OrgState>()(
           currentPartnerId: partnerId,
           currentOrgId: null,
           currentSiteId: null,
+          // Switching partner resets to the default scope so the new partner's
+          // first org gets auto-selected rather than landing in All-orgs.
+          allOrgs: false,
           organizations: [],
           sites: []
         });
@@ -75,12 +95,15 @@ export const useOrgStore = create<OrgState>()(
       },
 
       setOrganization: (orgId) => {
-        // Falsy ('' or null) clears the selection entirely.
+        // Falsy ('' or null) clears the selection entirely → explicit All-orgs.
         const resolved = orgId || null;
         set({
           currentOrgId: resolved,
           currentSiteId: null,
-          sites: []
+          sites: [],
+          allOrgs: !resolved,
+          // Remember the concrete org so the "Current" pill can return to it.
+          ...(resolved ? { lastOrgId: resolved } : {})
         });
         // Fetch sites only when an org is actually selected.
         if (resolved) get().fetchSites();
@@ -149,13 +172,19 @@ export const useOrgStore = create<OrgState>()(
             isLoading: false
           });
 
-          // Auto-select first organization if none selected or cached org no longer exists
-          const { currentOrgId } = get();
+          // Auto-select first organization if none selected or cached org no
+          // longer exists — UNLESS the user explicitly chose All-orgs scope, in
+          // which case currentOrgId is null on purpose and must stay that way
+          // (otherwise the post-switch reload snaps back to the first org).
+          const { currentOrgId, allOrgs } = get();
           const cachedOrgExists = currentOrgId && organizations.some((o: Organization) => o.id === currentOrgId);
-          if ((!currentOrgId || !cachedOrgExists) && organizations.length > 0) {
+          if (!allOrgs && (!currentOrgId || !cachedOrgExists) && organizations.length > 0) {
             get().setOrganization(organizations[0].id);
           } else if (currentOrgId && !cachedOrgExists) {
-            set({ currentOrgId: null, currentSiteId: null, sites: [] });
+            // Cached org vanished with nothing to auto-select. Clear allOrgs too
+            // so we don't persist a contradictory null (currentOrgId null while
+            // allOrgs false would read as an explicit All-orgs choice elsewhere).
+            set({ currentOrgId: null, currentSiteId: null, sites: [], allOrgs: false });
           }
         } catch (error) {
           set({
@@ -203,6 +232,11 @@ export const useOrgStore = create<OrgState>()(
           currentPartnerId: null,
           currentOrgId: null,
           currentSiteId: null,
+          // Reset the persisted scope fields too, or a logout→login as a
+          // different user inherits the prior user's All-orgs choice / stale
+          // lastOrgId (both are persisted).
+          allOrgs: false,
+          lastOrgId: null,
           partners: [],
           organizations: [],
           sites: [],
@@ -215,7 +249,9 @@ export const useOrgStore = create<OrgState>()(
       partialize: (state) => ({
         currentPartnerId: state.currentPartnerId,
         currentOrgId: state.currentOrgId,
-        currentSiteId: state.currentSiteId
+        currentSiteId: state.currentSiteId,
+        allOrgs: state.allOrgs,
+        lastOrgId: state.lastOrgId
       })
     }
   )

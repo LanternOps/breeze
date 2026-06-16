@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { softwareRoutes, computeSoftwareDeploymentAggregateStatus } from './software';
+import { db } from '../db';
+import { uploadBinary, isS3Configured } from '../services/s3Storage';
+import { createHash } from 'node:crypto';
 
 vi.mock('../services', () => ({}));
 
@@ -121,6 +124,51 @@ describe('software routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body).toHaveProperty('data');
+    });
+  });
+
+  describe('POST /software/catalog/:id/versions/upload', () => {
+    const catalogId = '11111111-1111-1111-1111-111111111111';
+
+    // Thenable that resolves to `rows` regardless of Drizzle chain shape.
+    const selectResult = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    it('streams the file to disk and hashes it incrementally (issue #1408)', async () => {
+      const content = 'hello-breeze-package-payload';
+      const expectedChecksum = createHash('sha256').update(content).digest('hex');
+
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      // catalog lookup
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+      // insertLatestSoftwareVersion wraps everything in a transaction
+      vi.mocked(db.transaction).mockResolvedValueOnce({
+        id: 'ver-1', catalogId, version: '1.0.0', isLatest: true,
+      } as any);
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append('file', new File([content], 'pkg.msi', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(201);
+      // The streamed path must produce the correct checksum and hand the temp
+      // file (not an in-memory buffer) to S3.
+      expect(uploadBinary).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(uploadBinary).mock.calls[0]!;
+      expect(call[2]).toBe(expectedChecksum); // checksum from the streamed hash
+      expect(typeof call[0]).toBe('string');  // temp file path, not an in-memory buffer
     });
   });
 

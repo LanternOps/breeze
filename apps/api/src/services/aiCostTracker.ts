@@ -43,7 +43,7 @@ const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };
 const CACHE_READ_INPUT_MULTIPLIER = 0.1;
 const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
-async function checkBillingCredits(orgId: string): Promise<string | null> {
+export async function checkBillingCredits(orgId: string): Promise<string | null> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
   if (!billingUrl || !billingKey) return null;

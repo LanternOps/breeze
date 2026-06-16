@@ -7,6 +7,10 @@ import {
   ShieldAlert,
   Terminal,
   FileText,
+  FileSignature,
+  Receipt,
+  Tags,
+  FileSpreadsheet,
   Building,
   Building2,
   Filter,
@@ -84,6 +88,14 @@ type NavItem = {
   // Hidden unless the current user is a platform admin. Keeps cross-tenant
   // platform-operator nav (and its badge fetch) out of ordinary users' UI.
   platformAdminOnly?: boolean;
+  // Hidden when the JWT decodes to a non-partner scope (AI for Office is an
+  // MSP-admin surface). Client-side UX nicety only — same rationale as the
+  // partner-branding fetch below; undecodable tokens fall through to visible
+  // and the server re-checks everything.
+  partnerScopeOnly?: boolean;
+  // Shown only when the current partner has AI for Office enabled (runtime flag
+  // from /orgs/partners/me). Undefined means not gated on the partner flag.
+  requiresAiForOffice?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +131,7 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
       { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
+      { name: 'AI for Office', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
@@ -150,6 +163,9 @@ export const navSections: NavSection[] = [
     label: 'Operations',
     icon: Layers,
     items: [
+      { name: 'Invoices', href: '/billing/invoices', icon: Receipt },
+      { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true },
+      { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true },
       { name: 'Software Library', href: '/software', icon: Package },
       { name: 'Software Policies', href: '/software-inventory', icon: Package },
       { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
@@ -290,6 +306,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
+  const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
 
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
@@ -331,12 +348,13 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{ name?: string; settings?: { branding?: { logoUrl?: string } } }>;
+        return r.json() as Promise<{ name?: string; aiForOfficeEnabled?: boolean; settings?: { branding?: { logoUrl?: string } } }>;
       })
       .then((data) => {
         if (cancelled || !data) return;
         setBrandName(data.name ?? null);
         setBrandLogoUrl(data.settings?.branding?.logoUrl ?? null);
+        setAiForOfficeEnabled(data.aiForOfficeEnabled === true);
       })
       .catch((err) => {
         console.warn('[Sidebar] Failed to fetch partner branding:', err);
@@ -434,7 +452,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   // --- Render a single nav item -------------------------------------------
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
+    if (item.requiresAiForOffice && !aiForOfficeEnabled) return null;
     if (item.platformAdminOnly && !isPlatformAdmin) return null;
+    if (item.partnerScopeOnly) {
+      const { scope } = getJwtClaims();
+      if (scope !== null && scope !== 'partner') return null;
+    }
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;
     const narrow = forMobileOverlay ? false : isNarrow;

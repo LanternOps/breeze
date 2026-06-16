@@ -586,4 +586,22 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect(econ.margin).toBe('25.00');
     expect(econ.marginPct).toBe(25);
   });
+
+  runDb('updateCatalogItem: flipping a bundle to a plain item clears its components (no orphans)', async () => {
+    const fx = await seedFixture();
+    const { bundle, comp1 } = await seedBundleAndComponents(fx);
+    await withDbAccessContext(fx.ctxA, () =>
+      setBundleComponents(bundle.id, [{ componentItemId: comp1.id, quantity: 1, showOnInvoice: false }], fx.actorA));
+
+    const before = await withSystemDbAccessContext(() =>
+      db.select().from(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundle.id)));
+    expect(before).toHaveLength(1);
+
+    // true -> false must drop the component rows so they can't resurface later.
+    await withDbAccessContext(fx.ctxA, () => updateCatalogItem(bundle.id, { isBundle: false }, fx.actorA));
+
+    const after = await withSystemDbAccessContext(() =>
+      db.select().from(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundle.id)));
+    expect(after).toHaveLength(0);
+  });
 });

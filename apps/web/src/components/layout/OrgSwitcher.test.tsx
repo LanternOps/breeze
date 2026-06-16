@@ -29,6 +29,8 @@ vi.mock('@/stores/auth', () => ({
 let mockStoreState: {
   currentOrgId: string | null;
   currentSiteId: string | null;
+  lastOrgId?: string | null;
+  allOrgs?: boolean;
   organizations: Array<{ id: string; partnerId: string; name: string; status: string; createdAt: string }>;
   sites: Array<{ id: string; orgId: string; name: string; deviceCount: number; createdAt: string }>;
   isLoading: boolean;
@@ -191,21 +193,43 @@ describe('OrgSwitcher org change navigation', () => {
     expect(hrefSetter).not.toHaveBeenCalled();
   });
 
-  it('renders an org-option-all item containing "All Organizations" when dropdown is open', () => {
+  it('renders the Current / All-orgs scope pill on a scoped route with multiple orgs', () => {
+    stubLocation('/devices');
+
+    render(<OrgSwitcher />);
+
+    expect(screen.getByTestId('org-scope-pill')).toBeTruthy();
+    // org-a selected → "Current" is pressed, "All orgs" is not.
+    expect(screen.getByTestId('org-scope-current').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('org-scope-all').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('hides the scope pill with a single org (toggle would be a no-op)', () => {
+    stubLocation('/devices');
+    mockStoreState.organizations = [mockStoreState.organizations[0]];
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    expect(screen.queryByTestId('org-scope-pill')).toBeNull();
+  });
+
+  it('hides the scope pill on a global/catalog route (partner-wide regardless of selection)', () => {
+    // /scripts is a global route per the default mock
+    stubLocation('/scripts');
+
+    render(<OrgSwitcher />);
+
+    expect(screen.queryByTestId('org-scope-pill')).toBeNull();
+  });
+
+  it('no longer renders the dropdown "All Organizations" option (reverted in favor of the pill)', () => {
     stubLocation('/devices');
 
     render(<OrgSwitcher />);
     openDropdown();
 
-    const allOrgsBtn = screen.getByTestId('org-option-all');
-    expect(allOrgsBtn).toBeTruthy();
-    expect(allOrgsBtn.textContent).toContain('All Organizations');
-  });
-
-  it('the legacy pill is gone', () => {
-    stubLocation('/devices');
-    render(<OrgSwitcher />);
-    expect(screen.queryByTestId('org-scope-pill')).toBeNull();
+    expect(screen.queryByTestId('org-option-all')).toBeNull();
   });
 
   it('label reads "All Organizations" on a global route (e.g. /scripts)', () => {
@@ -238,19 +262,72 @@ describe('OrgSwitcher org change navigation', () => {
     expect(label.textContent).toBe('All Organizations');
   });
 
-  it('clicking "All Organizations" calls setOrganization with "" and reloads', async () => {
+  it('clicking the "All orgs" pill calls setOrganization with "" and reloads', async () => {
     const { reloadMock } = stubLocation('/devices');
 
-    // Start with an org selected so the "All Organizations" item is not highlighted
+    // org-a is selected, so "All orgs" is a real scope change.
     render(<OrgSwitcher />);
-    openDropdown();
 
-    const allOrgsBtn = screen.getByTestId('org-option-all');
-    fireEvent.click(allOrgsBtn);
+    fireEvent.click(screen.getByTestId('org-scope-all'));
 
     expect(setOrganizationMock).toHaveBeenCalledWith('');
     await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
     expect(waitForPendingRefreshMock).toHaveBeenCalled();
+  });
+
+  it('clicking the "Current" pill from All-orgs returns to the last selected org', async () => {
+    const { reloadMock } = stubLocation('/devices');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.lastOrgId = 'org-b';
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    fireEvent.click(screen.getByTestId('org-scope-current'));
+
+    expect(setOrganizationMock).toHaveBeenCalledWith('org-b');
+    await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
+    expect(waitForPendingRefreshMock).toHaveBeenCalled();
+  });
+
+  it('clicking "Current" with no lastOrgId falls back to the first org', async () => {
+    const { reloadMock } = stubLocation('/devices');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.lastOrgId = null;
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    fireEvent.click(screen.getByTestId('org-scope-current'));
+
+    expect(setOrganizationMock).toHaveBeenCalledWith('org-a');
+    await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('clicking "Current" with a stale lastOrgId (no longer in the list) falls back to the first org', async () => {
+    const { reloadMock } = stubLocation('/devices');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.lastOrgId = 'org-deleted';
+    mockStoreRef.current = mockStoreState;
+
+    render(<OrgSwitcher />);
+
+    fireEvent.click(screen.getByTestId('org-scope-current'));
+
+    expect(setOrganizationMock).toHaveBeenCalledWith('org-a');
+    await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('clicking the already-active scope on the pill is a no-op (no reload)', () => {
+    const { reloadMock } = stubLocation('/devices');
+
+    // org-a selected → "Current" is already active.
+    render(<OrgSwitcher />);
+
+    fireEvent.click(screen.getByTestId('org-scope-current'));
+
+    expect(setOrganizationMock).not.toHaveBeenCalled();
+    expect(reloadMock).not.toHaveBeenCalled();
   });
 
   it('closes the dropdown with Escape and returns focus to the trigger', async () => {
@@ -261,13 +338,13 @@ describe('OrgSwitcher org change navigation', () => {
     // Open the dropdown
     const trigger = screen.getByTestId('org-switcher-trigger');
     fireEvent.click(trigger);
-    expect(screen.getByTestId('org-option-all')).toBeTruthy();
+    expect(screen.getByTestId('org-switcher-panel')).toBeTruthy();
 
     // Press Escape
     fireEvent.keyDown(document, { key: 'Escape' });
 
     await waitFor(() => {
-      expect(screen.queryByTestId('org-option-all')).toBeNull();
+      expect(screen.queryByTestId('org-switcher-panel')).toBeNull();
     });
   });
 
@@ -277,15 +354,15 @@ describe('OrgSwitcher org change navigation', () => {
     render(<OrgSwitcher />);
 
     // Closed initially
-    expect(screen.queryByTestId('org-option-all')).toBeNull();
+    expect(screen.queryByTestId('org-switcher-panel')).toBeNull();
 
     // Open with Cmd+O
     fireEvent.keyDown(document, { key: 'o', metaKey: true });
-    expect(screen.getByTestId('org-option-all')).toBeTruthy();
+    expect(screen.getByTestId('org-switcher-panel')).toBeTruthy();
 
     // Close with Cmd+O
     fireEvent.keyDown(document, { key: 'o', metaKey: true });
-    expect(screen.queryByTestId('org-option-all')).toBeNull();
+    expect(screen.queryByTestId('org-switcher-panel')).toBeNull();
   });
 
   it('closes dropdown when clicking outside', async () => {
@@ -293,13 +370,13 @@ describe('OrgSwitcher org change navigation', () => {
 
     render(<OrgSwitcher />);
     openDropdown();
-    expect(screen.getByTestId('org-option-all')).toBeTruthy();
+    expect(screen.getByTestId('org-switcher-panel')).toBeTruthy();
 
     // Click outside
     fireEvent.mouseDown(document.body);
 
     await waitFor(() => {
-      expect(screen.queryByTestId('org-option-all')).toBeNull();
+      expect(screen.queryByTestId('org-switcher-panel')).toBeNull();
     });
   });
 });

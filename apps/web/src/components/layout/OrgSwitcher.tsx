@@ -197,6 +197,109 @@ function OrgMenuItem({
   );
 }
 
+/**
+ * Pill toggle that flips the global org scope, sitting to the LEFT of the org
+ * picker. It drives the same `currentOrgId === null` model the rest of the app
+ * reads: "All orgs" clears the selection (partner-wide), "Current" returns to
+ * the last concrete org. The picker dropdown remains for choosing *which* org.
+ *
+ * Hidden when the user has access to a single org (toggle would be a no-op) and
+ * on global/catalog routes (those are partner-wide regardless of selection, so
+ * a toggle there would be misleading — see routeScope).
+ */
+function OrgScopePill({ isGlobalRoute }: { isGlobalRoute: boolean }) {
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const lastOrgId = useOrgStore((s) => s.lastOrgId);
+  const organizations = useOrgStore((s) => s.organizations);
+  const setOrganization = useOrgStore((s) => s.setOrganization);
+  // Which scope is being applied, so the button shows a spinner and the pair is
+  // disabled while the reload that propagates the new scope is prepared.
+  const [applying, setApplying] = useState<'current' | 'all' | null>(null);
+
+  if (organizations.length <= 1 || isGlobalRoute) return null;
+
+  const isAll = currentOrgId === null;
+
+  // Flipping scope changes the orgId-injection chokepoint in orgStore, but only
+  // pages with the selection in their fetch deps refetch live. Rather than rely
+  // on every list page opting in, reload after the flip so the new scope takes
+  // effect everywhere immediately — mirroring the org-switch path. Re-clicking
+  // the active scope is a no-op (no needless reload).
+  const apply = async (next: 'current' | 'all') => {
+    if (applying) return;
+    if ((next === 'all') === isAll) return;
+    setApplying(next);
+    if (next === 'all') {
+      setOrganization('');
+      stashSwitchToast('Showing all organizations');
+    } else {
+      const target =
+        lastOrgId && organizations.some((o) => o.id === lastOrgId)
+          ? lastOrgId
+          : organizations[0]?.id;
+      if (!target) {
+        setApplying(null);
+        return;
+      }
+      setOrganization(target);
+      const name = organizations.find((o) => o.id === target)?.name ?? 'organization';
+      stashSwitchToast(`Showing ${name}`);
+    }
+    await waitForPendingRefresh();
+    const redirect = getOrgSwitchRedirect(window.location.pathname);
+    if (redirect) window.location.href = redirect;
+    else window.location.reload();
+  };
+
+  return (
+    <div
+      role="group"
+      aria-label="Organization scope"
+      data-testid="org-scope-pill"
+      className="inline-flex shrink-0 overflow-hidden rounded-md border text-xs"
+    >
+      <button
+        type="button"
+        data-testid="org-scope-current"
+        onClick={() => void apply('current')}
+        aria-pressed={!isAll}
+        disabled={applying !== null}
+        className={cn(
+          'flex items-center gap-1 px-2 py-1.5 transition-colors disabled:opacity-60',
+          !isAll ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+        )}
+        title="Show data for the selected organization only"
+      >
+        {applying === 'current' ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <Building2 className="h-3 w-3" />
+        )}
+        <span className="hidden sm:inline">Current</span>
+      </button>
+      <button
+        type="button"
+        data-testid="org-scope-all"
+        onClick={() => void apply('all')}
+        aria-pressed={isAll}
+        disabled={applying !== null}
+        className={cn(
+          'flex items-center gap-1 px-2 py-1.5 transition-colors disabled:opacity-60',
+          isAll ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+        )}
+        title="Show data across every accessible organization"
+      >
+        {applying === 'all' ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <Globe className="h-3 w-3" />
+        )}
+        <span className="hidden sm:inline">All orgs</span>
+      </button>
+    </div>
+  );
+}
+
 export default function OrgSwitcher() {
   const [isOpen, setIsOpen] = useState(false);
   // True from the moment a switch is initiated until the page reloads — shows a
@@ -343,6 +446,7 @@ export default function OrgSwitcher() {
 
   return (
     <div className="flex min-w-0 items-center gap-1 sm:gap-2">
+      <OrgScopePill isGlobalRoute={isGlobalRoute} />
       <div className="relative" ref={dropdownRef}>
         <button
           ref={triggerRef}
@@ -386,7 +490,7 @@ export default function OrgSwitcher() {
         </button>
 
       {isOpen && (
-        <div ref={panelRef} className="absolute left-0 top-full z-50 mt-1 w-80 rounded-md border bg-popover p-2 shadow-lg">
+        <div ref={panelRef} data-testid="org-switcher-panel" className="absolute left-0 top-full z-50 mt-1 w-80 rounded-md border bg-popover p-2 shadow-lg">
           <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
             Organizations
           </div>
@@ -397,26 +501,8 @@ export default function OrgSwitcher() {
             </div>
           ) : (
             <div className="max-h-[calc(100vh-160px)] space-y-1 overflow-y-auto">
-              {/* "All Organizations" clears the selection to null */}
-              <button
-                type="button"
-                data-testid="org-option-all"
-                onClick={async () => {
-                  setSwitching(true);
-                  setOrganization('');
-                  setIsOpen(false);
-                  stashSwitchToast('Showing all organizations');
-                  await waitForPendingRefresh();
-                  const redirect = getOrgSwitchRedirect(window.location.pathname);
-                  if (redirect) window.location.href = redirect; else window.location.reload();
-                }}
-                className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted', !currentOrgId && 'bg-muted')}
-              >
-                <Globe className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium">All Organizations</span>
-                {!currentOrgId && <Check className="h-4 w-4 text-primary" />}
-              </button>
-
+              {/* All-orgs scope lives in the OrgScopePill toggle to the left of
+                  the picker; the dropdown is for choosing which specific org. */}
               {organizations.map((org) => (
                 <OrgMenuItem
                   key={org.id}

@@ -32,7 +32,7 @@ const baseProps = {
   parentLink: null,
 } as any;
 
-describe('PatchTab patch sources', () => {
+describe('PatchTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockResolvedValue({
@@ -43,30 +43,54 @@ describe('PatchTab patch sources', () => {
     saveMock.mockResolvedValue({ id: 'link-1', featureType: 'patch', inlineSettings: {} });
   });
 
-  it('renders OS checked and third-party unchecked by default', async () => {
+  // Approval rules and patch sources now live exclusively on Update Rings.
+  it('does not render the Patch Sources section', async () => {
     render(<PatchTab {...baseProps} />);
-    expect(await screen.findByLabelText(/os updates/i)).toBeChecked();
-    expect(screen.getByLabelText(/third-party applications/i)).not.toBeChecked();
+    await screen.findByText('Approval Ring');
+    expect(screen.queryByText('Patch Sources')).toBeNull();
+    expect(screen.queryByLabelText(/os updates/i)).toBeNull();
+    expect(screen.queryByLabelText(/third-party applications/i)).toBeNull();
   });
 
-  it('saves selected sources in inlineSettings', async () => {
+  it('does not render the Automatic Approval section', async () => {
     render(<PatchTab {...baseProps} />);
-    fireEvent.click(await screen.findByLabelText(/third-party applications/i));
+    await screen.findByText('Approval Ring');
+    expect(screen.queryByText('Automatic Approval')).toBeNull();
+    expect(screen.queryByTestId('auto-approve-toggle')).toBeNull();
+    expect(screen.queryByTestId('auto-approve-severity-critical')).toBeNull();
+    expect(screen.queryByTestId('auto-approve-deferral')).toBeNull();
+  });
+
+  it('keeps the Approval Ring link, Installation Schedule, and Application Rules', async () => {
+    render(<PatchTab {...baseProps} />);
+    expect(await screen.findByText('Approval Ring')).toBeInTheDocument();
+    expect(screen.getByText('No ring (manual approvals only)')).toBeInTheDocument();
+    expect(screen.getByText('Installation Schedule')).toBeInTheDocument();
+    expect(screen.getByText('Reboot Policy')).toBeInTheDocument();
+    expect(screen.getByText('Application Rules')).toBeInTheDocument();
+  });
+
+  it('links the policy to the selected ring on save', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        data: [{ id: 'ring-1', name: 'Pilot', ringOrder: 1, deferralDays: 0, gracePeriodHours: 4 }],
+      }),
+    } as unknown as Response);
+
+    render(<PatchTab {...baseProps} />);
+    fireEvent.change(await screen.findByTestId('approval-ring-select'), { target: { value: 'ring-1' } });
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
 
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     const [, payload] = saveMock.mock.calls[0];
-    expect(payload.inlineSettings.sources).toEqual(['os', 'third_party']);
+    expect(payload.featurePolicyId).toBe('ring-1');
   });
 
-  it('keeps at least one source selected', async () => {
-    render(<PatchTab {...baseProps} />);
-    const osBox = await screen.findByLabelText(/os updates/i);
-    fireEvent.click(osBox); // attempt to uncheck the only source
-    expect(screen.getByLabelText(/os updates/i)).toBeChecked();
-  });
-
-  it('hydrates sources from an existing link', async () => {
+  // The auto-approve/sources fields are no longer editable, but existing stored
+  // values must survive a save untouched (back-compat with the deprecated fallback).
+  it('preserves stored auto-approve and sources fields in the save payload', async () => {
     render(
       <PatchTab
         {...baseProps}
@@ -74,55 +98,7 @@ describe('PatchTab patch sources', () => {
           id: 'link-1',
           featureType: 'patch',
           featurePolicyId: null,
-          inlineSettings: { sources: ['third_party'], autoApprove: false, autoApproveSeverities: [] },
-        }}
-      />
-    );
-    expect(await screen.findByLabelText(/third-party applications/i)).toBeChecked();
-    expect(screen.getByLabelText(/os updates/i)).not.toBeChecked();
-  });
-
-  it('hydrates legacy alias source values', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        existingLink={{
-          id: 'link-1',
-          featureType: 'patch',
-          featurePolicyId: null,
-          inlineSettings: { sources: ['microsoft', 'custom'] },
-        }}
-      />
-    );
-    expect(await screen.findByLabelText(/os updates/i)).toBeChecked();
-    expect(screen.getByLabelText(/third-party applications/i)).toBeChecked();
-  });
-
-  it('hydrates sources from an inherited parent link', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        parentLink={{
-          id: 'parent-link-1',
-          featureType: 'patch',
-          featurePolicyId: null,
-          inlineSettings: { sources: ['third_party'] },
-        }}
-      />
-    );
-    expect(await screen.findByLabelText(/third-party applications/i)).toBeChecked();
-    expect(screen.getByLabelText(/os updates/i)).not.toBeChecked();
-  });
-
-  it('preserves unrelated stored settings across a save', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        existingLink={{
-          id: 'link-1',
-          featureType: 'patch',
-          featurePolicyId: null,
-          inlineSettings: { sources: ['os'], autoApprove: true, autoApproveSeverities: ['critical'] },
+          inlineSettings: { sources: ['third_party'], autoApprove: true, autoApproveSeverities: ['critical'] },
         }}
       />
     );
@@ -131,81 +107,7 @@ describe('PatchTab patch sources', () => {
     const [, payload] = saveMock.mock.calls[0];
     expect(payload.inlineSettings.autoApprove).toBe(true);
     expect(payload.inlineSettings.autoApproveSeverities).toEqual(['critical']);
-  });
-
-  it('includes wired auto-approve fields and apps in the save payload', async () => {
-    render(<PatchTab {...baseProps} />);
-
-    fireEvent.click(await screen.findByTestId('auto-approve-toggle'));
-    fireEvent.click(screen.getByTestId('auto-approve-severity-critical'));
-    fireEvent.change(screen.getByTestId('auto-approve-deferral'), { target: { value: '3' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-
-    await waitFor(() => expect(saveMock).toHaveBeenCalled());
-    const [, payload] = saveMock.mock.calls[0];
-    expect(payload.inlineSettings).toMatchObject({
-      autoApprove: true,
-      autoApproveSeverities: ['critical'],
-      autoApproveDeferralDays: 3,
-      apps: [],
-    });
-  });
-
-  it('disables the auto-approve section and shows the ring-precedence notice when a ring is linked', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        existingLink={{
-          id: 'link-1',
-          featureType: 'patch',
-          featurePolicyId: 'ring-1',
-          inlineSettings: { sources: ['os'], autoApprove: true, autoApproveSeverities: ['critical'] },
-        }}
-      />
-    );
-
-    expect(await screen.findByTestId('auto-approve-ring-notice')).toHaveTextContent(/governed by the linked update ring/i);
-    expect(screen.getByTestId('auto-approve-toggle')).toBeDisabled();
-  });
-
-  it('hydrates auto-approve fields and apps from existing inline settings', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        existingLink={{
-          id: 'link-1',
-          featureType: 'patch',
-          featurePolicyId: null,
-          inlineSettings: {
-            sources: ['third_party'],
-            autoApprove: true,
-            autoApproveSeverities: ['important'],
-            autoApproveDeferralDays: 7,
-            apps: [{ source: 'third_party', packageId: 'A.B', action: 'block' }],
-          },
-        }}
-      />
-    );
-
-    expect(await screen.findByTestId('auto-approve-toggle')).toBeChecked();
-    expect(screen.getByTestId('auto-approve-severity-important')).toBeChecked();
-    expect(screen.getByTestId('auto-approve-deferral')).toHaveValue(7);
-    expect(screen.getAllByText('A.B').length).toBeGreaterThan(0);
-  });
-
-  it('blocks save when auto-approve is on with no severities and no ring, then proceeds once fixed', async () => {
-    render(<PatchTab {...baseProps} />);
-
-    fireEvent.click(await screen.findByTestId('auto-approve-toggle'));
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-
-    expect(saveMock).not.toHaveBeenCalled();
-    // Inline hint plus the error banner surfaced through the shell's error path.
-    expect(screen.getAllByText('Select at least one severity for auto-approval.').length).toBe(2);
-
-    fireEvent.click(screen.getByTestId('auto-approve-severity-critical'));
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(payload.inlineSettings.sources).toEqual(['third_party']);
   });
 
   it('blocks save when a pinned app rule has no version, then proceeds once fixed', async () => {
@@ -235,59 +137,5 @@ describe('PatchTab patch sources', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
-  });
-
-  it('blocks override when inherited settings fail validation', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        parentLink={{
-          id: 'parent-link-1',
-          featureType: 'patch',
-          featurePolicyId: null,
-          inlineSettings: { sources: ['os'], autoApprove: true, autoApproveSeverities: [] },
-        }}
-      />
-    );
-
-    fireEvent.click(await screen.findByRole('button', { name: /override/i }));
-
-    expect(saveMock).not.toHaveBeenCalled();
-    expect(screen.getAllByText('Select at least one severity for auto-approval.').length).toBeGreaterThan(0);
-  });
-
-  it('shows the dormant auto-approve note when a ring is linked and stored autoApprove is true', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        existingLink={{
-          id: 'link-1',
-          featureType: 'patch',
-          featurePolicyId: 'ring-1',
-          inlineSettings: { sources: ['os'], autoApprove: true, autoApproveSeverities: ['critical'] },
-        }}
-      />
-    );
-
-    expect(await screen.findByTestId('auto-approve-dormant-note')).toHaveTextContent(
-      /inactive while a ring is linked/i
-    );
-  });
-
-  it('does not show the dormant note when a ring is linked but autoApprove is off', async () => {
-    render(
-      <PatchTab
-        {...baseProps}
-        existingLink={{
-          id: 'link-1',
-          featureType: 'patch',
-          featurePolicyId: 'ring-1',
-          inlineSettings: { sources: ['os'], autoApprove: false, autoApproveSeverities: [] },
-        }}
-      />
-    );
-
-    expect(await screen.findByTestId('auto-approve-ring-notice')).toBeInTheDocument();
-    expect(screen.queryByTestId('auto-approve-dormant-note')).toBeNull();
   });
 });

@@ -279,6 +279,40 @@ export interface Asset {
   lastSeenAt: string | null;
 }
 
+export type InvoiceStatus = 'draft' | 'sent' | 'partially_paid' | 'overdue' | 'paid' | 'void';
+
+export interface InvoiceSummary {
+  id: string;
+  invoiceNumber: string | null;
+  status: InvoiceStatus;
+  currencyCode: string;
+  issueDate: string | null;
+  dueDate: string | null;
+  total: string;
+  amountPaid: string;
+  balance: string;
+}
+
+export interface InvoiceLine {
+  id: string;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  lineTotal: string;
+  taxable: boolean;
+}
+
+export interface InvoiceDetail {
+  invoice: InvoiceSummary & {
+    subtotal: string;
+    taxTotal: string;
+    taxRate: string | null;
+    billToName: string | null;
+    notes: string | null;
+  };
+  lines: InvoiceLine[];
+}
+
 export interface Profile {
   id: string;
   orgId: string;
@@ -415,6 +449,32 @@ export const portalApi = {
       config
     );
     return mapPaginatedData(response);
+  },
+
+  getInvoices: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<PaginatedResult<InvoiceSummary>> => {
+    const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 });
+    const response = await apiGet<{ data: InvoiceSummary[]; pagination: Pagination }>(
+      `/portal/invoices${query}`,
+      config
+    );
+    return mapPaginatedData(response);
+  },
+
+  getInvoice: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<InvoiceDetail>> => {
+    return apiGet<InvoiceDetail>(`/portal/invoices/${id}`, config);
+  },
+
+  payInvoice: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ url: string }>> => {
+    return apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, undefined, config);
   },
 
   getProfile: async (config: ApiRequestConfig = {}): Promise<ApiResponse<Profile>> => {

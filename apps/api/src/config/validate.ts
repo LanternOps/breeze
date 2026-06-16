@@ -432,6 +432,12 @@ const envSchema = z
     BILLING_SERVICE_URL: z.string().optional(),
     BILLING_SERVICE_API_KEY: z.string().optional(),
 
+    // Stripe Connect payments (billing sub-project 4) — feature dormant unless set.
+    STRIPE_SECRET_KEY: z.string().optional(),
+    STRIPE_CONNECT_CLIENT_ID: z.string().optional(),
+    STRIPE_WEBHOOK_SECRET: z.string().optional(),
+    STRIPE_OAUTH_REDIRECT_URL: z.string().optional(),
+
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),
     S3_ACCESS_KEY: z.string().optional(),
@@ -1196,6 +1202,10 @@ export function validateConfig(): AppConfig {
     BREEZE_BILLING_API_KEY: env.BREEZE_BILLING_API_KEY,
     BILLING_SERVICE_URL: env.BILLING_SERVICE_URL,
     BILLING_SERVICE_API_KEY: env.BILLING_SERVICE_API_KEY,
+    STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+    STRIPE_CONNECT_CLIENT_ID: env.STRIPE_CONNECT_CLIENT_ID,
+    STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,
+    STRIPE_OAUTH_REDIRECT_URL: env.STRIPE_OAUTH_REDIRECT_URL,
     S3_BUCKET: env.S3_BUCKET,
     S3_ACCESS_KEY: env.S3_ACCESS_KEY,
     S3_SECRET_KEY: env.S3_SECRET_KEY,

@@ -24,7 +24,8 @@ import {
   Ticket,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
-import type { Device, DeviceStatus, OSType } from './DeviceList';
+import type { Device, DeviceStatus } from './DeviceList';
+import { formatDeviceSummaryOs } from './osDisplay';
 import DeviceActions from './DeviceActions';
 import DeviceInfoTab from './DeviceInfoTab';
 import DeviceHardwareInventory from './DeviceHardwareInventory';
@@ -102,24 +103,6 @@ const statusLabels: Record<DeviceStatus, string> = {
   updating: 'Updating',
   pending: 'Pending'
 };
-
-const osLabels: Record<OSType, string> = {
-  windows: 'Windows',
-  macos: 'macOS',
-  linux: 'Linux'
-};
-
-function formatOsVersion(os: OSType, osVersion: string): string {
-  if (!osVersion) return osLabels[os];
-  let v = osVersion;
-  // Strip redundant "Microsoft Windows" prefix since osLabels already shows "Windows"
-  v = v.replace(/^Microsoft Windows\s*/i, '');
-  // Strip kernel name prefix (e.g. "darwin 26.3.1" → "26.3.1")
-  v = v.replace(/^(darwin|linux)\s*/i, '');
-  // Strip build/version numbers (e.g. "10.0.26200.7623 Build 26200.7623")
-  v = v.replace(/\s*\d+\.\d+\.\d+[\d.]*\s*(Build\s*[\d.]+)?/i, '').trim();
-  return v ? `${osLabels[os]} ${v}` : osLabels[os];
-}
 
 function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
@@ -223,7 +206,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                 )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                <span>{formatOsVersion(device.os, device.osVersion)}</span>
+                <span>{formatDeviceSummaryOs(device.os, device.osVersion)}</span>
                 <span>Agent v{device.agentVersion}</span>
                 <span>{device.siteName}</span>
               </div>

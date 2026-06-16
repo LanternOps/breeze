@@ -71,6 +71,53 @@ describe('org store', () => {
     expect(getCurrentOrganization()?.id).toBe('org-1');
   });
 
+  it('keeps explicit All-orgs scope across a re-fetch (does not snap back to first org)', async () => {
+    // The All-orgs pill clears the selection: currentOrgId null + allOrgs true.
+    useOrgStore.getState().setOrganization('');
+    expect(useOrgStore.getState().currentOrgId).toBeNull();
+    expect(useOrgStore.getState().allOrgs).toBe(true);
+
+    useOrgStore.setState({ currentPartnerId: 'partner-1' });
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({
+        data: [{ id: 'org-1', partnerId: 'partner-1', name: 'Org One', status: 'active' }]
+      })
+    );
+
+    await useOrgStore.getState().fetchOrganizations();
+    await flushAsync();
+
+    // Auto-select must be suppressed so the user's All-orgs choice survives the
+    // post-switch reload instead of silently jumping to org-1.
+    expect(useOrgStore.getState().currentOrgId).toBeNull();
+    expect(useOrgStore.getState().allOrgs).toBe(true);
+  });
+
+  it('clearOrgContext resets the persisted scope fields (no cross-session leak)', () => {
+    useOrgStore.getState().setOrganization('org-9');
+    useOrgStore.getState().setOrganization(''); // explicit All-orgs
+    expect(useOrgStore.getState().allOrgs).toBe(true);
+    expect(useOrgStore.getState().lastOrgId).toBe('org-9');
+
+    useOrgStore.getState().clearOrgContext();
+
+    // A logout must not leave All-orgs / a stale lastOrgId for the next user.
+    expect(useOrgStore.getState().allOrgs).toBe(false);
+    expect(useOrgStore.getState().lastOrgId).toBeNull();
+    expect(useOrgStore.getState().currentOrgId).toBeNull();
+  });
+
+  it('selecting a concrete org records it as lastOrgId and clears All-orgs', () => {
+    useOrgStore.getState().setOrganization('');
+    expect(useOrgStore.getState().allOrgs).toBe(true);
+
+    useOrgStore.getState().setOrganization('org-7');
+
+    expect(useOrgStore.getState().currentOrgId).toBe('org-7');
+    expect(useOrgStore.getState().allOrgs).toBe(false);
+    expect(useOrgStore.getState().lastOrgId).toBe('org-7');
+  });
+
   it('fetchPartners uses orgs route and auto-selects first partner', async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(

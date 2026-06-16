@@ -2,7 +2,7 @@
  * PAM admin route tests (#1163) — CAS guards on respond/revoke, the
  * no-criteria rule refine, and runAction-compatible bodies.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const authMocks = vi.hoisted(() => ({
@@ -68,10 +68,55 @@ vi.mock('../db/schema', () => ({
   },
   aiToolExecutions: { id: 'id', status: 'status' },
   softwarePolicies: { id: 'id', name: 'name' },
+  authenticatorDevices: {
+    id: 'id',
+    userId: 'user_id',
+    credentialId: 'credential_id',
+    kind: 'kind',
+    transports: 'transports',
+    disabledAt: 'disabled_at',
+  },
 }));
 
 vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
+}));
+
+// Phase 2: the respond path now resolves assurance through assertApprovalAssurance
+// (verifies an optional browser proof). Default the no-proof L1 result; tests
+// override per-case. resolveElevationAssurance stays exported for any callers.
+vi.mock('../services/authenticatorAssurance', () => ({
+  resolveElevationAssurance: vi.fn(() => ({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  })),
+  assertApprovalAssurance: vi.fn(async () => ({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  })),
+  // Real error class so the route's `instanceof StepUpRequiredError` (Phase 4
+  // 403 mapping) resolves instead of throwing on `instanceof undefined`.
+  StepUpRequiredError: class StepUpRequiredError extends Error {
+    constructor(public requiredLevel: number, public achievedLevel: number) {
+      super('step-up required');
+      this.name = 'StepUpRequiredError';
+    }
+  },
+}));
+
+vi.mock('../services/approverWebAuthn', () => ({
+  generateApprovalAssertionOptions: vi.fn(async () => ({
+    challenge: 'chal-pam',
+    rpId: 'breeze.test',
+    allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
+    userVerification: 'required',
+  })),
 }));
 
 const busMocks = vi.hoisted(() => ({ publishEvent: vi.fn() }));
@@ -85,6 +130,8 @@ vi.mock('./softwarePolicies', () => ({
 
 import { db } from '../db';
 import { pamRoutes } from './pam';
+import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
+import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 
 const ORG_ID = '7b41c9a2-0000-4000-8000-000000000001';
 const REQ_ID = '7b41c9a2-0000-4000-8000-000000000002';
@@ -358,11 +405,31 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
   });
 });
 
+// clearAllMocks wipes the mocked-service implementations; re-establish the
+// no-proof (L1 session_tap) assurance default so the unchanged approve/deny
+// tests keep recording session_tap and per-case overrides start clean.
+function resetAssuranceDefaults() {
+  vi.mocked(assertApprovalAssurance).mockResolvedValue({
+    requiredLevel: 1,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    pinVerified: false,
+  });
+  vi.mocked(generateApprovalAssertionOptions).mockResolvedValue({
+    challenge: 'chal-pam',
+    rpId: 'breeze.test',
+    allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
+    userVerification: 'required',
+  } as any);
+}
+
 describe('POST /pam/elevation-requests/:id/respond', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
     busMocks.publishEvent.mockResolvedValue('evt');
+    resetAssuranceDefaults();
   });
 
   it('approves a pending request (CAS wins) and emits elevation.approved', async () => {
@@ -406,6 +473,24 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     expect(set.denialReason).toBe('nope');
   });
 
+  it('returns 403 step_up_required when an enforcing policy rejects the approve (Phase 4)', async () => {
+    const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(new StepUpRequiredError(3, 1));
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', durationMinutes: 30 }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('step_up_required');
+    expect(body.requiredLevel).toBe(3);
+    // Enforcement rejects BEFORE the elevation row is mutated.
+    expect(updateSetCalls.length).toBe(0);
+  });
+
   it('409s when the CAS loses (request no longer pending)', async () => {
     rigTransaction({ row: { ...activeRow, status: 'denied' }, casWins: false });
 
@@ -431,6 +516,338 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     });
 
     expect(res.status).toBe(404);
+  });
+
+  it('records session_tap factor columns + audit assurance on elevation approve', async () => {
+    const { updateSetCalls, auditInserts } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateSetCalls[0]).toMatchObject({
+      status: 'approved',
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: null,
+      pinVerified: false,
+    });
+    expect(auditInserts[0]).toMatchObject({
+      details: { assurance_level: 1, factor: 'session_tap' },
+    });
+  });
+
+  it('records session_tap factor columns + audit assurance on elevation deny', async () => {
+    const { updateSetCalls, auditInserts } = rigTransaction({
+      row: { ...activeRow, riskTier: 4 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'deny', reason: 'nope' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateSetCalls[0]).toMatchObject({
+      status: 'denied',
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: null,
+      pinVerified: false,
+    });
+    expect(auditInserts[0]).toMatchObject({
+      details: { assurance_level: 1, factor: 'session_tap' },
+    });
+  });
+});
+
+describe('POST /pam/elevation-requests/:id/assertion-challenge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    resetAssuranceDefaults();
+  });
+
+  // clearAllMocks does NOT drain a queued mockReturnValueOnce; reset the db
+  // method mocks after each case so a queued-but-unconsumed once can't leak
+  // into a later describe block.
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+  });
+
+  const elevRow = {
+    id: REQ_ID,
+    orgId: ORG_ID,
+    siteId: null,
+    status: 'pending',
+  };
+
+  it('returns assertion options for the caller active approver devices', async () => {
+    // 1) pending elevation lookup (scoped by canAccessOrg); 2) device list.
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([elevRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: 'dev-1', credentialId: 'cred-1', transports: ['internal'] },
+          ]),
+        }),
+      } as any);
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/assertion-challenge`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.options.challenge).toBe('chal-pam');
+    expect(generateApprovalAssertionOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: REQ_ID,
+        userId: USER_ID,
+        devices: [{ credentialId: 'cred-1', transports: ['internal'] }],
+      }),
+    );
+  });
+
+  it('404s when the elevation is not pending / not in the caller org', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/assertion-challenge`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+  });
+
+  it('404s when the elevation belongs to another org (canAccessOrg false)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ ...elevRow, orgId: 'other-org' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/assertion-challenge`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    busMocks.publishEvent.mockResolvedValue('evt');
+    resetAssuranceDefaults();
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+  });
+
+  const proof = {
+    credentialId: 'cred-1',
+    authenticatorData: 'AA',
+    clientDataJSON: 'BB',
+    signature: 'CC',
+    userHandle: null,
+  };
+
+  it('records webauthn_platform / L2 when a valid proof is presented', async () => {
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 2,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+      pinVerified: false,
+    });
+    const { updateSetCalls, auditInserts } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof }),
+    });
+
+    expect(res.status).toBe(200);
+    // Phase 3: the webauthn proof now carries the `type` discriminator (defaulted
+    // for back-compat by assertionProofSchema) when threaded to the assurance svc.
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: REQ_ID,
+        userId: USER_ID,
+        proof: { ...proof, type: 'webauthn_platform' },
+      }),
+    );
+    expect(updateSetCalls[0]).toMatchObject({
+      status: 'approved',
+      decidedVia: 'webauthn_platform',
+      decidedAssuranceLevel: 2,
+      authenticatorDeviceId: 'dev-1',
+      pinVerified: false,
+    });
+    expect(auditInserts[0]).toMatchObject({
+      details: { assurance_level: 2, factor: 'webauthn_platform' },
+    });
+  });
+
+  it('still records session_tap / L1 when no proof is presented (unchanged)', async () => {
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: REQ_ID, userId: USER_ID, proof: undefined }),
+    );
+    expect(updateSetCalls[0]).toMatchObject({
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: null,
+    });
+  });
+
+  it('401s assertion_failed when a presented proof fails verification (no silent downgrade)', async () => {
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(
+      new Error('assertion verification failed'),
+    );
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof }),
+    });
+
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe('assertion_failed');
+    // A failed assertion must NOT silently downgrade — the CAS update never runs.
+    expect(updateSetCalls.length).toBe(0);
+    expect(busMocks.publishEvent).not.toHaveBeenCalled();
+  });
+
+  // Phase 3: the respond body now also accepts the mobile_hw_key proof variant
+  // and an optional approver PIN, both threaded to assertApprovalAssurance.
+  const mobileProof = {
+    type: 'mobile_hw_key',
+    credentialId: 'mobile-dev-1',
+    nonce: 'server-nonce-xyz',
+    signature: 'cmVhbC1zaWc=',
+  };
+
+  it('threads a mobile_hw_key proof through to the assurance service (L2)', async () => {
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'mobile-dev-1',
+      pinVerified: false,
+    });
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof: mobileProof }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: REQ_ID, userId: USER_ID, proof: mobileProof }),
+    );
+    expect(updateSetCalls[0]).toMatchObject({
+      decidedVia: 'mobile_hw_key',
+      decidedAssuranceLevel: 2,
+      authenticatorDeviceId: 'mobile-dev-1',
+    });
+  });
+
+  it('threads an optional PIN alongside a proof (L3, pinVerified)', async () => {
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'mobile-dev-1',
+      pinVerified: true,
+    });
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof: mobileProof, pin: '1234' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ proof: mobileProof, pin: '1234' }),
+    );
+    expect(updateSetCalls[0]).toMatchObject({
+      decidedAssuranceLevel: 3,
+      pinVerified: true,
+    });
+  });
+
+  it('rejects a malformed PIN at validation (400, before any decision)', async () => {
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, riskTier: 3 },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof: mobileProof, pin: 'abcd' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(updateSetCalls.length).toBe(0);
   });
 });
 

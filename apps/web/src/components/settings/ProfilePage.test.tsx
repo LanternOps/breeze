@@ -22,6 +22,12 @@ vi.mock('@/lib/avatarBlobCache', () => ({
   useAvatarBlobUrl: (url: string | null | undefined) => url ?? null,
 }));
 
+// Approval-security section loads approver devices on mount; stub it so it
+// doesn't touch this file's fetch mock. Covered by ApproverDevicesSection.test.tsx.
+vi.mock('./ApproverDevicesSection', () => ({
+  default: () => null,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

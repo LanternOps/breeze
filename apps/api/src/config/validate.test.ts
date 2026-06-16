@@ -658,6 +658,28 @@ describe('validateConfig', () => {
     warnSpy.mockRestore();
   });
 
+  it('accepts optional Stripe Connect env vars', () => {
+    withEnv({
+      ...validEnv,
+      STRIPE_SECRET_KEY: 'sk_test_x',
+      STRIPE_CONNECT_CLIENT_ID: 'ca_test_x',
+      STRIPE_WEBHOOK_SECRET: 'whsec_test_x',
+      STRIPE_OAUTH_REDIRECT_URL: 'https://app.example.com/partner/stripe/callback',
+    }, () => {
+      const config = validateConfig();
+      expect(config.STRIPE_SECRET_KEY).toBe('sk_test_x');
+      expect(config.STRIPE_CONNECT_CLIENT_ID).toBe('ca_test_x');
+      expect(config.STRIPE_WEBHOOK_SECRET).toBe('whsec_test_x');
+      expect(config.STRIPE_OAUTH_REDIRECT_URL).toBe('https://app.example.com/partner/stripe/callback');
+    });
+  });
+
+  it('boots without any Stripe env (feature dormant)', () => {
+    withEnv(validEnv, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
   it('includes formatted error banner on failure', () => {
     withEnv({ ...validEnv, DATABASE_URL: '' }, () => {
       try {

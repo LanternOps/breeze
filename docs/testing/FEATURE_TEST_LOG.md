@@ -4,6 +4,62 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Breeze AI for Office (PR #1314) — Tier B in-Excel SSO + session loop — 2026-06-13
+
+**Branch:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
+**Host:** Excel for Mac (desktop), real Entra app reg in tenant OliveTech LLC (`dba1c0e6-…`), account `todd@olivetech.co`
+**Result:** **Auth + read/chat loop PASS; workbook WRITE path FAILs (open).**
+
+### What works (verified live via API logs)
+- **Silent Office SSO** (`OfficeRuntime.auth.getAccessToken`) → real Entra v2 token, no popup.
+- **`POST /auth/exchange` → 200** — full JWKS sig + audience(=client-id) + issuer-per-tid verification, tenant-mapping lookup, `portal_user` auto-provisioned (`todd@olivetech.co`), Redis session minted.
+- **Session loop:** `POST /sessions 201` → `messages 202` → `GET /events 200` (SSE) → `tool-results 200` (read-tool round-trip). Multi-tool turns ran clean.
+- **SSE streams through the Vite proxy** (the mixed-content fix, below) without buffering issues.
+
+### Workbook write — root-caused + FIXED (bug #6)
+- **Symptom:** every `write_range` failed instantly (no preview card), model kept retrying and guessing about "the cells parameter."
+- **Root cause:** param-name mismatch. Server schema + wire contract (DLP, tool-result output, bridge) use **`cells`**; two client read-sites read **`values`** — `tools/writeRange.ts` (executor) and `approval/buildPreview.ts` (preview builder). The preview builder reading `values` is why it failed *before* Apply.
+- **Fix:** aligned both client sites + their tests to `cells`. `writeRange.test.ts` + `buildPreview.test.ts` → 7/7 pass. (Client was internally consistent on `values`; it disagreed with the model/server contract, which is `cells`.)
+- **Pending:** live re-verify in Excel (reopen pane → write produces preview → Apply lands data).
+
+### Bugs / gaps found bringing Tier B up (fix in the PR — my fixes were local-only)
+1. **`VITE_API_BASE_URL` default omits `/api/v1`** → every add-in API call 404s out of the box. (`session.ts`/`client.ts` build `${base}/client-ai/...`; routes are under `/api/v1/client-ai/...`.)
+2. **No dev proxy → mixed-content block on macOS/Safari.** The `https://localhost:3000` pane calling the `http://localhost:3001` API is blocked by WebKit (`Fetch … cannot load … due to access control checks`). Chrome exempts `http://localhost`; Excel-for-Mac's WebKit view does not. Fixed locally with a Vite `server.proxy` (`/api/v1` → http API, same-origin https). **Recommend shipping the proxy + a relative/same-origin default base.**
+3. **`CLIENT_AI_ENTRA_CLIENT_ID` not mapped in tracked compose** (`docker-compose.yml`/`.override.yml.dev`) — value in `.env` never reaches the api container. Matches the PR's open reviewer checkbox.
+4. **Exchange `200` writes no `client_ai.auth.exchange` audit row** — `MANUAL_TESTS.md` item 3 expects one; none appeared in `audit_logs`. Verify the success-path audit is wired.
+5. **macOS dev-cert CA not trusted by the System keychain** — `office-addin-dev-certs install` reported "already trusted" but `security verify-cert` → `CSSMERR_TP_NOT_TRUSTED`; Excel showed "isn't signed by a valid security certificate". Needed a manual `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.office-addin-dev-certs/ca.crt`. Worth a README note for Mac.
+
+### Local setup left in place (uncommitted) for resuming
+- Stack re-pointed to `breeze-ai4office` (project `breeze`); placeholder→real `CLIENT_AI_ENTRA_CLIENT_ID=4ad559f9-…` in API `.env` + `docker-compose.override.clientai.yml`.
+- Add-in `.env`: `VITE_API_BASE_URL=https://localhost:3000/api/v1`, `VITE_CLIENT_AI_ENTRA_CLIENT_ID=4ad559f9-…`; `vite.config.ts` has a local `server.proxy` for `/api/v1`.
+- Org "Default Organization" (`b50945ac-…`) mapped to tenant `dba1c0e6-…`, policy enabled.
+- **TEMP debug line** in `apps/api/src/routes/clientAi/auth.ts` (`[client-ai][TIER-B-DEBUG]`) — remove before any commit.
+- Pane server: `cd apps/excel-addin && PATH=…/v22.20.0/bin:$PATH pnpm dev`.
+
+## Breeze AI for Office (PR #1314) — Tier A control-plane sweep — 2026-06-13
+
+**Branch tested:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
+**Tested by:** Claude (feature-testing skill, live API + SQL + Playwright)
+**Result:** **Tier A PASS** (foundation, admin API, DLP defaults, RLS, dashboard UI). Tier B (in-Excel client flow / Entra SSO) deferred — needs an Entra app registration.
+
+### Environment note
+Re-pointed the shared `breeze` dev stack (`docker compose -p breeze`) from the `breeze-impeccable-device-overview` worktree to `breeze-ai4office` (code-mounted hot-reload). Auto-migrate applied `2026-06-12-b-client-ai-foundation.sql` (4 new tables). Set a **placeholder** `CLIENT_AI_ENTRA_CLIENT_ID` (admin routes only need it non-empty; the client `/auth/exchange` path is the only one that verifies real Entra tokens). The var is **not yet mapped in tracked compose** — added via an uncommitted `docker-compose.override.clientai.yml`; this matches the PR's own open reviewer checkbox. Creds: `admin@breeze.local` (partner-scoped). Browser→API at `http://localhost` (CORS-allowed).
+
+### Results
+| # | Area | Result | Evidence |
+|---|---|---|---|
+| 1 | Migration / schema | **PASS** | 4 tables created (`client_ai_tenant_mappings`/`org_policies`/`usage`/`prompt_templates`); all show RLS **enabled + forced**; migration row recorded |
+| 2 | Admin API dark-gate + scope | **PASS** | `GET /client-ai/admin/orgs` → 200 (not the 404 dark-gate) returning only the 3 accessible orgs (`auth.orgCondition` scope filter working) |
+| 3 | Write endpoints | **PASS** | `PUT …/policy` 200, `POST …/templates` 201, `PUT …/tenant-mapping` 200 (`requireMfa()` passed — bootstrap admin has no MFA enrolled) |
+| 4 | RLS functional forge (`breeze_app`) | **PASS** | Org-scoped to Default: control insert succeeded; cross-tenant insert targeting Acme → `ERROR: new row violates row-level security policy`; SELECT isolation showed only Default's rows. (Satisfies the PR's unchecked reviewer item) |
+| 5 | Dashboard — Organizations tab | **PASS** | Default Org row shows AI enabled=Yes, mapped Entra tenant, "Consent pending", Manage/Policy/Unmap actions — seeded data flows through |
+| 6 | Dashboard — Templates tab | **PASS** | Seeded "Summarize selection" template (scope: Default Organization, category: analysis) |
+| 7 | Dashboard — Policy editor | **PASS** | All sections render; seeded budgets ($5/$50), rate limits (20/500), read-write mode persisted; DLP built-ins show spec §6 defaults (financial/credential=Redact, email/phone=Off); custom-rule add present |
+| 8 | Console health | **PASS** | 0 console errors across the full UI session |
+
+### Not covered (Tier B — deferred, needs Entra app registration)
+Excel add-in (`apps/excel-addin`), Office/MSAL SSO → `/client-ai/auth/exchange`, the SSE session loop, write-preview Apply/Reject, live DLP block banner in-host. Author's 16-item hand checklist: `apps/excel-addin/MANUAL_TESTS.md`.
+
 ## Since-Release E2E Sweep (v0.68.2 → HEAD) — 2026-06-01
 
 **Branch tested:** `feat/google-identity-device-tasks` @ `cba95590` (16 identity commits on top of merged main work since the v0.68.2 tag)
@@ -2038,3 +2094,39 @@ Direct INSERT: patches row source=third_party external_id='qa-e2e:Google.Chrome:
 ### CVE enrichment — dormant-as-shipped (code follow-up, 2026-05-15) → issue #731
 - ❌ **CVE enrichment is doubly inert.** (1) `cveEnrichmentWorker`/`runCveEnrichmentBatch` has zero references outside its own file — not in `index.ts`, not a registered BullMQ worker, absent from the ~20-job recurring bootstrap. (2) The batch gates on `isNotNull(osvEcosystem)` (`cveEnrichmentWorker.ts:48`) but `osv_ecosystem` is NULL in all 20 seeded catalog rows, not accepted by the catalog create/update zod schema (`thirdPartyCatalog/schemas.ts`), and has no writer anywhere → zero rows would match even if scheduled.
 - Net: `patches.cveIds` never populates; CVE chips never render. Migration `2026-05-13-d` + OSV client shipped but unreachable. Filed #731 (Medium-High — silent dead feature, part of #690).
+
+---
+
+## Invoice Engine (billing sub-project 2) — 2026-06-15
+
+**Branch:** `feat/invoice-engine`
+**Commit:** `35d51e81`
+**Tested by:** Claude (local Docker dev stack, Playwright MCP)
+**Result:** PASS
+
+Loaded the branch into the local dev Docker stack (rebuilt `api` from the worktree so the new `pdfkit` dep installed; reused the existing dev DB volume) and drove the MSP UI end-to-end at `http://localhost:4321`.
+
+### What was tested (UI + API)
+- [x] **Invoices list** — renders; org/status/date filters; empty → populated; row shows `INV-2026-0001 · Default Organization · 6/15 → 7/15 · $2,208.65 · Balance $1,208.65 · Partially paid`. "Invoices" correctly under Operations nav.
+- [x] **Assemble (org-run)** — dialog (org + optional site + 30-day default range); pulled seeded billable work into a draft.
+- [x] **Draft editor** — time + part lines; minutes→hours (120m → 2.00h × $150 = $300); **unapproved-time warning banner** ("1 line reference unapproved time"); labor `taxable=false`, part `taxable=true`; live totals (Subtotal $565).
+- [x] **Catalog line** — picker lists active items (archived correctly excluded); added "QA Test Laptop" → $1,500 via `resolvePrice`; subtotal → $2,065.
+- [x] **Org billing settings** — Tax ID + tax rate 8.5% + full address; saved → DB `tax_rate=0.085` (✓ %→fraction).
+- [x] **Issue & Send** — `INV-2026-0001`; tax snapshot **8.5% = $143.65** (on part $190 + catalog $1,500 taxable; labor excluded); total **$2,208.65**; due = issue+30d; **bill-to snapshot** captured org address/tax-id at issue.
+- [x] **`/send` honest outcome (review fix)** — live API returned `emailed=false, reason=no_billing_contact, status=sent` (HTTP 200, no false success, no 500). UI shows warning toast.
+- [x] **Issued detail** — read-only lines; summary; PDF/Void buttons; payments panel.
+- [x] **Record partial payment** — $1,000 → `partially_paid`, balance $1,208.65, payment listed.
+- [x] **PDF download** — `GET /:id/pdf` → valid `%PDF-1.3` (1 page, 2,281 B), `content-type: application/pdf`, `content-disposition: attachment; filename="INV-2026-0001.pdf"` (sanitized filename, review fix).
+- [x] **Partner billing settings** — currency/prefix/terms/footer + default tax 5% → DB `default_tax_rate=0.050`.
+- [x] **Accounting-view toggle** — reveals Cost/Margin columns (SSD cost $60/margin $70; Laptop cost $1,000/margin $500; labor "—").
+
+### Not exercised here (covered by unit/integration tests)
+- **Customer portal UI** — the portal front-end app (`apps/portal`) is NOT served in this dev compose (only api/web/postgres/redis/caddy). Portal **API** verified live (`GET /api/v1/portal/invoices` → 401, auth-gated); portal components are unit-tested.
+- Void+reissue, bundle line expansion, overdue sweep, per-ticket "Create invoice" button — covered by the 100+ API tests.
+
+### Issues found
+- **None (no product bugs).** Two non-issues confirmed as *correct* behavior: archived catalog items are excluded from the line picker; the draft tax **preview** doesn't retroactively update when the org rate changes mid-draft (authoritative tax is snapshotted at issue — verified $143.65 applied correctly). Two test-harness hiccups were mine, not the product (a wrong `data-testid` guess for the Add button; a login rate-limit from repeated API logins).
+
+### Notes
+- **Dev DB test data seeded:** 2 billable time entries (1 unapproved) + 1 ticket part on "Default Organization"; re-activated 2 archived catalog items; set org + partner billing settings; created `INV-2026-0001` (number burned). All on the dev DB (5432).
+- **Stack state:** the dev stack is currently running the **`feat/invoice-engine`** code (swapped from `main`). To restore: `docker compose down` from the worktree, `docker compose up -d` from `/Users/toddhebebrand/breeze`, and remove the worktree `.env` symlink.

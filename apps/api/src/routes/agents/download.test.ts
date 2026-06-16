@@ -196,6 +196,15 @@ describe('GET /install.sh — generated installer script', () => {
     }
   });
 
+  it('restores the SELinux context on the installed Linux binary (issue #1389)', async () => {
+    const script = await fetchScript();
+    // Without this, the binary keeps the mktemp user_tmp_t label after the mv
+    // and systemd fails to exec it (203/EXEC) on SELinux-enforcing hosts. The
+    // restorecon must be guarded so it is a no-op on non-SELinux systems.
+    expect(script).toContain('command -v restorecon');
+    expect(script).toMatch(/restorecon -v "\$INSTALL_DIR\/\$BINARY_NAME"/);
+  });
+
   it('accepts a --token argument for enrollment-key based enrollment', async () => {
     const script = await fetchScript();
     // Argument parser handles --token and forwards it to `enroll` as the

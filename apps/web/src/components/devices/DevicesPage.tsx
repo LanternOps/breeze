@@ -23,6 +23,7 @@ import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMod
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
+import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
@@ -162,20 +163,24 @@ export default function DevicesPage() {
           }
         }),
         // Network arm of the unified list (#1322) — approved, unlinked
-        // discovered_assets. Best-effort: a transient/absent-endpoint failure
-        // here must not blank the agent fleet, so we degrade to an empty
-        // network set. A 401, however, is a real auth failure and must NOT be
-        // masked — re-throw it so it propagates to the outer catch and gets the
-        // same auth-redirect/logout handling as the agent arm (fetchWithAuth
-        // already triggered logout). Swallowing it would leave the user on a
-        // half-rendered, silently-broken page. (The endpoint-absent case is
-        // a 404, already degraded to empty inside fetchAllNetworkDevices.)
-        fetchAllNetworkDevices({ signal }).catch((err) => {
-          if (err instanceof Error && err.name === 'AbortError') throw err;
-          if (err instanceof Response && err.status === 401) throw err;
-          console.warn('Failed to fetch network devices:', err);
-          return { data: [], total: 0, pagesWalked: 0 };
-        }),
+        // discovered_assets. Gated behind ENABLE_NETWORK_DEVICES_IN_LIST and
+        // off by default; when disabled we skip the fetch entirely and the list
+        // is the agent-only view. Best-effort otherwise: a transient/absent-
+        // endpoint failure here must not blank the agent fleet, so we degrade to
+        // an empty network set. A 401, however, is a real auth failure and must
+        // NOT be masked — re-throw it so it propagates to the outer catch and
+        // gets the same auth-redirect/logout handling as the agent arm
+        // (fetchWithAuth already triggered logout). Swallowing it would leave the
+        // user on a half-rendered, silently-broken page. (The endpoint-absent
+        // case is a 404, already degraded to empty inside fetchAllNetworkDevices.)
+        ENABLE_NETWORK_DEVICES_IN_LIST
+          ? fetchAllNetworkDevices({ signal }).catch((err) => {
+              if (err instanceof Error && err.name === 'AbortError') throw err;
+              if (err instanceof Response && err.status === 401) throw err;
+              console.warn('Failed to fetch network devices:', err);
+              return { data: [], total: 0, pagesWalked: 0 };
+            })
+          : Promise.resolve({ data: [], total: 0, pagesWalked: 0 }),
         fetchWithAuth('/orgs', { signal }),
         fetchWithAuth('/orgs/sites', { signal }),
         fetchWithAuth('/device-groups?includeMemberships=true', { signal }).catch((err) => {
@@ -905,6 +910,7 @@ export default function DevicesPage() {
           onCreateGroup={() => setShowCreateGroup(true)}
           autoSelectGroupId={autoSelectGroupId}
           onAutoSelectConsumed={handleAutoSelectConsumed}
+          networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

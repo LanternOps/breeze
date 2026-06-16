@@ -347,10 +347,15 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   }, { refreshFam: familyId });
   await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
 
-  await db
-    .update(users)
-    .set({ lastLoginAt: new Date() })
-    .where(eq(users.id, user.id));
+  // System DB context required: passkey login is unauthenticated at this point,
+  // so without it the `users` RLS UPDATE silently matches 0 rows under
+  // breeze_app and last_login_at never moves (#1375).
+  await withSystemDbAccessContext(() =>
+    db
+      .update(users)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(users.id, user.id))
+  );
 
   auditLogin(c, {
     orgId: context.orgId ?? null,

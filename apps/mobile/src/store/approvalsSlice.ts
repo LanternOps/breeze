@@ -8,6 +8,7 @@ import {
   reportSuspicious as apiReportSuspicious,
 } from '../services/approvals';
 import { readCachedApprovals, writeCachedApprovals, clearCachedApproval } from '../services/approvalCache';
+import { gatherApprovalProof } from '../services/approverDevice';
 
 interface ApprovalsState {
   pending: ApprovalRequest[];
@@ -40,7 +41,13 @@ export const fetchOne = createAsyncThunk('approvals/fetchOne', async (id: string
 });
 
 export const approve = createAsyncThunk('approvals/approve', async (id: string) => {
-  const updated = await apiApprove(id);
+  // Breeze Authenticator (Phase 3) — opt-in hardware step-up. Best-effort: a
+  // signed proof upgrades the recorded decision to L2 (mobile_hw_key); a device
+  // without a registered key yields null and approves at L1 (Phase 3 never
+  // blocks — enforcement is Phase 4). A cancelled biometric prompt DOES throw,
+  // aborting the approve rather than silently downgrading a deliberate cancel.
+  const proof = await gatherApprovalProof(id);
+  const updated = await apiApprove(id, proof ? { proof } : undefined);
   await clearCachedApproval(id);
   return updated;
 });

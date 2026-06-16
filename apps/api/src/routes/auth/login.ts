@@ -480,11 +480,17 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // still works via the verified claim.
   await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
 
-  // Update last login
-  await db
-    .update(users)
-    .set({ lastLoginAt: new Date() })
-    .where(eq(users.id, user.id));
+  // Update last login. MUST run inside a system DB context: /login is an
+  // unauthenticated route, so no breeze.user_id/partner/org GUC is set and the
+  // `users` RLS UPDATE policy would match 0 rows silently under breeze_app —
+  // the bug that froze last_login_at platform-wide (#1375). System scope
+  // satisfies RLS the same way the pre-auth user lookup above does.
+  await withSystemDbAccessContext(() =>
+    db
+      .update(users)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(users.id, user.id))
+  );
 
   // Task 10: clear the per-account failure counter on successful login so
   // a real user with one fat-finger doesn't slowly approach a lockout over

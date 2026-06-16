@@ -5,10 +5,12 @@ import {
   X,
   Rocket,
   Plus,
+  Trash2,
   Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, handleActionError } from '../../lib/runAction';
 import DeploymentWizard from './DeploymentWizard';
 import SoftwareVersionManager from './SoftwareVersionManager';
 
@@ -43,6 +45,8 @@ export default function SoftwareCatalog() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<SoftwareItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [addForm, setAddForm] = useState({
     name: '',
     vendor: '',
@@ -134,6 +138,24 @@ export default function SoftwareCatalog() {
       setError(err instanceof Error ? err.message : 'Failed to add package');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeletePackage = async (item: SoftwareItem) => {
+    try {
+      setDeleting(true);
+      await runAction({
+        request: () => fetchWithAuth(`/software/catalog/${item.id}`, { method: 'DELETE' }),
+        errorFallback: 'Failed to delete package',
+        successMessage: `Deleted "${item.name}"`,
+      });
+      setCatalogItems(prev => prev.filter(i => i.id !== item.id));
+      setConfirmDelete(null);
+      setSelectedSoftware(prev => (prev?.id === item.id ? null : prev));
+    } catch (err) {
+      handleActionError(err, 'Failed to delete package');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -342,7 +364,15 @@ export default function SoftwareCatalog() {
                     {selectedSoftware.description}
                   </div>
                 )}
-                <div className="mt-5 flex items-center justify-end">
+                <div className="mt-5 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(selectedSoftware)}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-destructive/40 bg-background px-4 text-sm font-medium text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -362,6 +392,46 @@ export default function SoftwareCatalog() {
                 <SoftwareVersionManager catalogId={selectedSoftware.id} />
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-destructive/10">
+                <Trash2 className="h-5 w-5 text-destructive" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold">Delete package?</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  This removes <span className="font-medium text-foreground">{confirmDelete.name}</span> from
+                  the software library, along with all of its versions and stored installer references. This
+                  cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+                className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeletePackage(confirmDelete)}
+                disabled={deleting}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-destructive px-4 text-sm font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+              >
+                {deleting && <Loader2 className="h-4 w-4 animate-spin" />}
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
           </div>
         </div>
       )}

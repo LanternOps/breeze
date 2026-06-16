@@ -16,7 +16,10 @@ export * from './businessEmail';
 export * from './remoteAccessLauncherScheme';
 export * from './remoteAccessInlineSettings';
 export * from './safeRelativePath';
+export * from './authenticator';
 export * from './catalog';
+export * from './invoices';
+export * from './contracts';
 
 // ============================================
 // Device Roles
@@ -666,6 +669,7 @@ export * from './tickets';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './clientAiDlp';
 
 // ============================================
 // Backup Target Validators
