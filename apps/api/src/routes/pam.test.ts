@@ -91,14 +91,12 @@ vi.mock('../services/authenticatorAssurance', () => ({
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   })),
   assertApprovalAssurance: vi.fn(async () => ({
     requiredLevel: 1,
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   })),
   // Real error classes so the route's `instanceof` checks (Phase 4 403 step-up
   // mapping + critical-tier 401 'reauth_required' mapping) resolve instead of
@@ -431,7 +429,6 @@ function resetAssuranceDefaults() {
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   });
   vi.mocked(generateApprovalAssertionOptions).mockResolvedValue({
     challenge: 'chal-pam',
@@ -701,7 +698,6 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
       decidedAssuranceLevel: 2,
       decidedVia: 'webauthn_platform',
       authenticatorDeviceId: 'dev-1',
-      pinVerified: false,
     });
     const { updateSetCalls, auditInserts } = rigTransaction({
       row: { ...activeRow, riskTier: 3 },
@@ -796,7 +792,6 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
       decidedAssuranceLevel: 2,
       decidedVia: 'mobile_hw_key',
       authenticatorDeviceId: 'mobile-dev-1',
-      pinVerified: false,
     });
     const { updateSetCalls } = rigTransaction({
       row: { ...activeRow, riskTier: 3 },
@@ -831,7 +826,6 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
       decidedAssuranceLevel: 4,
       decidedVia: 'mobile_hw_key',
       authenticatorDeviceId: 'mobile-dev-1',
-      pinVerified: false,
     });
     rigTransaction({ row: { ...activeRow, riskTier: 4 }, casWins: true });
 

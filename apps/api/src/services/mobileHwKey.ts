@@ -2,8 +2,6 @@ import crypto from 'node:crypto';
 import { getRedis } from './redis'; // match the import used by approverWebAuthn.ts
 
 const ASSERTION_TTL = 120;
-const REG_TTL = 300;
-const regKey = (userId: string) => `mobile-reg:${userId}`;
 const assertionKey = (approvalId: string, userId: string) => `mobile-assertion:${approvalId}:${userId}`;
 
 /** Verify an RSA-SHA256 signature (PKCS#1 v1.5) over `payload` against an SPKI DER public key (base64).
@@ -57,7 +55,5 @@ async function consumeNonce(key: string): Promise<ConsumedNonce | null> {
   return stored == null ? null : decodeNonce(stored);
 }
 
-export const issueMobileRegistrationNonce = (userId: string) => issueNonce(regKey(userId), REG_TTL);
-export const consumeMobileRegistrationNonce = (userId: string) => consumeNonce(regKey(userId));
 export const issueMobileAssertionNonce = (approvalId: string, userId: string) => issueNonce(assertionKey(approvalId, userId), ASSERTION_TTL);
 export const consumeMobileAssertionNonce = (approvalId: string, userId: string) => consumeNonce(assertionKey(approvalId, userId));

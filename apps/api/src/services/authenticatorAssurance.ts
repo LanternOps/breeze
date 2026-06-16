@@ -61,7 +61,6 @@ export interface AssuranceDecision {
   /** Factor recorded: 'session_tap' when no proof was presented, else the verified L2 factor. */
   decidedVia: 'session_tap' | 'mobile_hw_key' | 'webauthn_platform';
   authenticatorDeviceId: string | null;
-  pinVerified: boolean;
   /** Phase 4: under-assured but allowed because enforcement is off / in grace. */
   graceDowngrade?: boolean;
 }
@@ -77,7 +76,6 @@ function assertDecisionConsistent(d: AssuranceDecision): void {
   const violations: string[] = [];
   if (isSession !== (d.decidedAssuranceLevel === 1)) violations.push('session_tap must be exactly L1');
   if (isSession !== (d.authenticatorDeviceId === null)) violations.push('session_tap must have no device id');
-  if (d.pinVerified && d.decidedAssuranceLevel < 3) violations.push('pinVerified requires L3');
   if (!isSession && d.authenticatorDeviceId === null) violations.push('an L2+ factor must record a device id');
   if (violations.length > 0) {
     throw new Error(`inconsistent assurance decision: ${violations.join('; ')}`);
@@ -99,7 +97,6 @@ export function resolveApprovalAssurance(riskTier: RiskTier): AssuranceDecision 
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   };
 }
 
@@ -175,7 +172,6 @@ export async function assertApprovalAssurance(input: {
       }),
       decidedVia: factor.decidedVia,
       authenticatorDeviceId: factor.authenticatorDeviceId,
-      pinVerified: false,
     };
   }
 

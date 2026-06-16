@@ -197,7 +197,7 @@ describe('assertApprovalAssurance (Phase 2: verify a presented proof, non-blocki
   });
 });
 
-describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
+describe('assertApprovalAssurance — mobile_hw_key (L2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -226,7 +226,6 @@ describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
     expect(d.decidedVia).toBe('mobile_hw_key');
     expect(d.decidedAssuranceLevel).toBe(2);
     expect(d.authenticatorDeviceId).toBe('mobile-dev-1');
-    expect(d.pinVerified).toBe(false);
     // anti-clone counter advances even though the mobile signer carries no counter
     expect(capture.updateSet?.signCount).toBe(8);
     expect(capture.updateSet?.lastUsedAt).toBeInstanceOf(Date);
@@ -481,7 +480,6 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
   it('does not require a PIN for high', async () => {
     const r = await assertApprovalAssurance(highApprovalCtx({ challengeAgeMs: 5_000 }));
     expect(r.decidedAssuranceLevel).toBe(3);
-    expect(r.pinVerified).toBe(false);
   });
 });
 
@@ -499,7 +497,6 @@ describe('resolveApprovalAssurance (Phase 1: resolve-only, never blocks)', () =>
       expect(d.decidedVia).toBe('session_tap');
       expect(d.decidedAssuranceLevel).toBe(1);
       expect(d.authenticatorDeviceId).toBeNull();
-      expect(d.pinVerified).toBe(false);
     }
   });
 });

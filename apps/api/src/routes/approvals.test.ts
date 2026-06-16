@@ -64,14 +64,12 @@ vi.mock('../services/authenticatorAssurance', () => ({
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   })),
   assertApprovalAssurance: vi.fn(async () => ({
     requiredLevel: 1,
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   })),
   // Real error classes so the route's `instanceof` checks resolve (the route
   // imports StepUpRequiredError for the Phase 4 403 mapping and
@@ -225,7 +223,6 @@ beforeEach(() => {
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   });
   vi.mocked(generateApprovalAssertionOptions).mockResolvedValue({
     challenge: 'chal-xyz',
@@ -631,7 +628,6 @@ describe('POST /approvals/:id/approve with assertion proof', () => {
       decidedAssuranceLevel: 2,
       decidedVia: 'webauthn_platform',
       authenticatorDeviceId: 'dev-1',
-      pinVerified: false,
     });
     const set = mockDecideFlow({
       existing: { ...updatedRow, status: 'pending' },
@@ -735,7 +731,6 @@ describe('POST /approvals/:id/approve with assertion proof', () => {
       decidedAssuranceLevel: 2,
       decidedVia: 'mobile_hw_key',
       authenticatorDeviceId: 'mobile-dev-1',
-      pinVerified: false,
     });
     const set = mockDecideFlow({
       existing: { ...updatedRow, status: 'pending' },
@@ -772,7 +767,6 @@ describe('POST /approvals/:id/approve with assertion proof', () => {
       decidedAssuranceLevel: 4,
       decidedVia: 'mobile_hw_key',
       authenticatorDeviceId: 'mobile-dev-1',
-      pinVerified: false,
     });
     const set = mockDecideFlow({
       existing: { ...updatedRow, status: 'pending' },

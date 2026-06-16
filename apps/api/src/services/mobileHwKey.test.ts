@@ -15,9 +15,7 @@ vi.mock('./redis', () => ({
 import { getRedis } from './redis';
 import {
   consumeMobileAssertionNonce,
-  consumeMobileRegistrationNonce,
   issueMobileAssertionNonce,
-  issueMobileRegistrationNonce,
   verifyMobileSignature,
 } from './mobileHwKey';
 
@@ -76,21 +74,6 @@ describe('verifyMobileSignature', () => {
 });
 
 describe('mobile nonce helpers', () => {
-  it('issueMobileRegistrationNonce stores <issuedAt>:<nonce> at mobile-reg:<userId> for 300s', async () => {
-    const before = Date.now();
-    const nonce = await issueMobileRegistrationNonce('u1');
-    // 32 random bytes -> 43 base64url chars (no padding), url-safe alphabet only
-    expect(nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    // stored value carries the issued-at prefix: `<epochMs>:<nonce>`
-    const [key, ttl, stored] = redisMock.setex.mock.calls[0]!;
-    expect(key).toBe('mobile-reg:u1');
-    expect(ttl).toBe(300);
-    const sep = (stored as string).indexOf(':');
-    const issuedAt = Number((stored as string).slice(0, sep));
-    expect((stored as string).slice(sep + 1)).toBe(nonce);
-    expect(issuedAt).toBeGreaterThanOrEqual(before);
-  });
-
   it('issueMobileAssertionNonce stores <issuedAt>:<nonce> at mobile-assertion:<approvalId>:<userId> for 120s', async () => {
     const before = Date.now();
     const nonce = await issueMobileAssertionNonce('ap1', 'u1');
@@ -102,13 +85,6 @@ describe('mobile nonce helpers', () => {
     const issuedAt = Number((stored as string).slice(0, sep));
     expect((stored as string).slice(sep + 1)).toBe(nonce);
     expect(issuedAt).toBeGreaterThanOrEqual(before);
-  });
-
-  it('consumeMobileRegistrationNonce getdels the key and returns {nonce, issuedAt} (single-use)', async () => {
-    redisMock.getdel.mockResolvedValue('1781000000000:stored-nonce');
-    const result = await consumeMobileRegistrationNonce('u1');
-    expect(redisMock.getdel).toHaveBeenCalledWith('mobile-reg:u1');
-    expect(result).toEqual({ nonce: 'stored-nonce', issuedAt: 1781000000000 });
   });
 
   it('consumeMobileAssertionNonce getdels the key and returns {nonce, issuedAt} (single-use)', async () => {
@@ -133,7 +109,7 @@ describe('mobile nonce helpers', () => {
 
   it('issue throws when redis is unavailable', async () => {
     getRedisMock.mockReturnValue(null as never);
-    await expect(issueMobileRegistrationNonce('u1')).rejects.toThrow('redis unavailable');
+    await expect(issueMobileAssertionNonce('ap1', 'u1')).rejects.toThrow('redis unavailable');
   });
 
   it('consume throws when redis is unavailable', async () => {

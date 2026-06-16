@@ -47,8 +47,6 @@ const {
       verifyApproverRegistration: vi.fn(),
     },
     mobileHwKeyMocks: {
-      issueMobileRegistrationNonce: vi.fn(),
-      consumeMobileRegistrationNonce: vi.fn(),
       verifyMobileSignature: vi.fn(),
     },
     helperMocks: {
@@ -206,10 +204,6 @@ describe('approver device routes', () => {
       aaguid: null,
       isPlatformBound: true,
     });
-    mobileHwKeyMocks.issueMobileRegistrationNonce.mockResolvedValue('reg-nonce-abc');
-    // consume now returns the {nonce, issuedAt} shape (issued-at travels with
-    // the nonce for the recency clock; registration only uses .nonce).
-    mobileHwKeyMocks.consumeMobileRegistrationNonce.mockResolvedValue({ nonce: 'reg-nonce-abc', issuedAt: Date.now() });
     mobileHwKeyMocks.verifyMobileSignature.mockReturnValue(true);
     app = new Hono();
     app.route('/authenticator', authenticatorRoutes);
@@ -389,7 +383,6 @@ describe('approver device routes', () => {
     expect(inserted).not.toHaveProperty('lastUsedAt');
     // No proof-of-possession at registration time — the password step-up and the
     // PoP nonce are gone; the first signature is the deferred proof.
-    expect(mobileHwKeyMocks.consumeMobileRegistrationNonce).not.toHaveBeenCalled();
     expect(mobileHwKeyMocks.verifyMobileSignature).not.toHaveBeenCalled();
     expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
     expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
