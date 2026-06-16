@@ -56,13 +56,16 @@ const USER_ROW = {
   email: 'finance.user@contoso.com',
   name: 'Finance User',
   status: 'active',
+  partnerAiForOfficeEnabled: true,
 };
 
 function setupUserSelect(row: object | null) {
+  const limit = vi.fn(() => Promise.resolve(row ? [row] : []));
+  const where = vi.fn(() => ({ limit }));
+  const innerJoin2 = vi.fn(() => ({ where }));
+  const innerJoin1 = vi.fn(() => ({ innerJoin: innerJoin2 }));
   dbSelectMock.mockImplementation(() => ({
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve(row ? [row] : [])) })),
-    })),
+    from: vi.fn(() => ({ innerJoin: innerJoin1 })),
   }));
 }
 
@@ -175,6 +178,22 @@ describe('requireClientAiEnabledMiddleware', () => {
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'user_not_permitted' });
+  });
+
+  it('403s with disabled when the partner has AI for Office disabled (even if org policy is enabled)', async () => {
+    setupUserSelect({ ...USER_ROW, partnerAiForOfficeEnabled: false });
+    getOrgPolicyMock.mockResolvedValue({
+      orgId: ORG_ID,
+      enabled: true,
+      userAccess: 'all',
+      selectedUserIds: [],
+      writeMode: 'readwrite',
+    });
+    const res = await buildGuardedApp().request('/guarded', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'disabled' });
   });
 
   it('passes the policy through to the handler when enabled', async () => {

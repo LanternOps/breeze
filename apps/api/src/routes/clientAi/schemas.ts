@@ -209,6 +209,7 @@ export type ClientAiAuthContext = {
   email: string;
   name: string | null;
   token: string;
+  partnerAiForOfficeEnabled: boolean;
 };
 
 declare module 'hono' {
