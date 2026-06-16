@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
+import UpdateIndicator from './components/UpdateIndicator';
 import { parseDeepLink, type ConnectionParams } from './lib/protocol';
 
 /**
@@ -94,26 +95,35 @@ export default function App() {
   }
 
   // ── Session window: viewer ─────────────────────────────────────────
+  // UpdateIndicator overlays every session-window state so an in-progress
+  // auto-update is visible whether connected or still connecting (the
+  // updater fires ~3s after launch, often during connection setup).
   if (params) {
     return (
-      <DesktopViewer
-        params={params}
-        onDisconnect={handleDisconnect}
-        onError={handleError}
-      />
+      <>
+        <UpdateIndicator />
+        <DesktopViewer
+          params={params}
+          onDisconnect={handleDisconnect}
+          onError={handleError}
+        />
+      </>
     );
   }
 
   // Waiting for deep link
   return (
-    <div className="flex items-center justify-center h-screen bg-gray-900">
-      <div className="text-center">
-        <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-        <p className="text-gray-400 text-sm">Connecting...</p>
-        {error && (
-          <p className="text-red-400 text-sm mt-2">{error}</p>
-        )}
+    <>
+      <UpdateIndicator />
+      <div className="flex items-center justify-center h-screen bg-gray-900">
+        <div className="text-center">
+          <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-gray-400 text-sm">Connecting...</p>
+          {error && (
+            <p className="text-red-400 text-sm mt-2">{error}</p>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
