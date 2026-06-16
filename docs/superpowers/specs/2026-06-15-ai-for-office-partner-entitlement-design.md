@@ -90,6 +90,18 @@ exchange**, with the admin surface gated secondarily for consistency.
   `details.reason: 'partner_not_enabled'`). No partner enabled ⇒ no session ⇒ no
   downstream AI spend. This sits **above** the existing per-org `policy.enabled`
   gate (three layers: instance env → partner → org).
+- **Per-request — `apps/api/src/middleware/clientAiAuth.ts`:** the exchange only
+  gates session *minting*; a session minted while the partner was enabled would
+  otherwise keep spending for the session TTL (~24h, sliding) after a disable. So
+  the partner flag is resolved in `clientAiAuthMiddleware`'s existing
+  system-scope user-hydration query (join `portalUsers→organizations→partners`,
+  RLS-safe) and stashed on the `clientAiAuth` context; `requireClientAiEnabledMiddleware`
+  checks it on **every** feature request (before the per-org policy check) and
+  403s `disabled` if the partner is off. This makes a disable take effect
+  immediately on live sessions — matching the middleware's existing "re-check
+  every request" contract for org disable. (The gate cannot read `partners` from
+  the org-scoped request context — partner RLS — which is why it is resolved in
+  the system-scope auth step.)
 - **Secondary — `apps/api/src/routes/clientAi/admin.ts` (`clientAiAdminRoutes.use('*', …)`):**
   extend the existing dark-gate so it 404s unless `CLIENT_AI_ENTRA_CLIENT_ID` is
   set **and** the caller's partner has `ai_for_office_enabled = true` (lookup by
