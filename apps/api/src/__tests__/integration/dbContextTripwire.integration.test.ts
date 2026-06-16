@@ -8,8 +8,8 @@
  *      inside a held context; warn-only by default, throws under strict mode.
  *   2. the held-context duration warning baked into withDbAccessContext.
  *
- * Real-DB integration test because both mechanisms depend on a genuinely held
- * transaction (withSystemDbAccessContext opens one on the breeze_app pool).
+ * Real-DB integration test because the duration warning depends on a genuinely
+ * held transaction (withSystemDbAccessContext opens one on the breeze_app pool).
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,8 +19,14 @@ import {
   assertOutsideHeldDbContext,
 } from '../../db';
 
+const HELD = 'held a pooled connection';
+
 describe('#1105 DB-context tripwires', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  function heldWarns(): unknown[][] {
+    return warnSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes(HELD));
+  }
 
   beforeEach(() => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -29,6 +35,7 @@ describe('#1105 DB-context tripwires', () => {
   afterEach(() => {
     warnSpy.mockRestore();
     delete process.env.DB_CONTEXT_TRIPWIRE_STRICT;
+    delete process.env.DB_CONTEXT_HELD_WARN_MS;
   });
 
   describe('assertOutsideHeldDbContext', () => {
@@ -56,8 +63,17 @@ describe('#1105 DB-context tripwires', () => {
       expect(hit).toBeUndefined();
     });
 
-    it('throws inside a held context under strict mode (CI)', async () => {
+    it('throws inside a held context under strict mode (=1)', async () => {
       process.env.DB_CONTEXT_TRIPWIRE_STRICT = '1';
+      await expect(
+        withSystemDbAccessContext(async () => {
+          assertOutsideHeldDbContext('redis.enqueue');
+        }),
+      ).rejects.toThrow(/#1105/);
+    });
+
+    it('accepts truthy spellings for strict mode (e.g. "true")', async () => {
+      process.env.DB_CONTEXT_TRIPWIRE_STRICT = 'true';
       await expect(
         withSystemDbAccessContext(async () => {
           assertOutsideHeldDbContext('redis.enqueue');
@@ -67,36 +83,57 @@ describe('#1105 DB-context tripwires', () => {
   });
 
   describe('held-context duration warning', () => {
-    it('warns when a context is held longer than DB_CONTEXT_HELD_WARN_MS', async () => {
-      const prev = process.env.DB_CONTEXT_HELD_WARN_MS;
+    it('warns (with scope) when a context is held longer than DB_CONTEXT_HELD_WARN_MS', async () => {
       process.env.DB_CONTEXT_HELD_WARN_MS = '50';
-      try {
+      await withSystemDbAccessContext(async () => {
+        // Stand in for slow non-DB work (Redis/HTTP) inside the context.
+        await new Promise((resolve) => setTimeout(resolve, 90));
+      });
+      const hits = heldWarns();
+      expect(hits).toHaveLength(1);
+      expect(String(hits[0]![0])).toContain('#1105');
+      expect(String(hits[0]![0])).toContain('scope=system');
+    });
+
+    it('still warns when fn THROWS after holding the context too long (the finally path)', async () => {
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+      await expect(
+        withSystemDbAccessContext(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 90));
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+      // The original error must still propagate AND the warn must have fired.
+      expect(heldWarns()).toHaveLength(1);
+    });
+
+    it('does not double-warn for a nested context (only the outermost holds the txn)', async () => {
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+      await withSystemDbAccessContext(async () => {
+        // Nested call short-circuits (reuses the parent context, no new txn).
         await withSystemDbAccessContext(async () => {
-          // Stand in for slow non-DB work (Redis/HTTP) inside the context.
           await new Promise((resolve) => setTimeout(resolve, 90));
         });
-      } finally {
-        if (prev === undefined) delete process.env.DB_CONTEXT_HELD_WARN_MS;
-        else process.env.DB_CONTEXT_HELD_WARN_MS = prev;
-      }
-      const hit = warnSpy.mock.calls.find((c: unknown[]) => String(c[0]).includes('held a pooled connection'));
-      expect(hit).toBeTruthy();
-      expect(String(hit![0])).toContain('#1105');
+      });
+      expect(heldWarns()).toHaveLength(1);
+    });
+
+    it('disables the duration warn when DB_CONTEXT_HELD_WARN_MS=0', async () => {
+      process.env.DB_CONTEXT_HELD_WARN_MS = '0';
+      await withSystemDbAccessContext(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      });
+      expect(heldWarns()).toHaveLength(0);
     });
 
     it('does not warn for a fast DB-only context (no slow work)', async () => {
-      const prev = process.env.DB_CONTEXT_HELD_WARN_MS;
-      process.env.DB_CONTEXT_HELD_WARN_MS = '500';
-      try {
-        await withSystemDbAccessContext(async () => {
-          // trivial; well under threshold
-        });
-      } finally {
-        if (prev === undefined) delete process.env.DB_CONTEXT_HELD_WARN_MS;
-        else process.env.DB_CONTEXT_HELD_WARN_MS = prev;
-      }
-      const hit = warnSpy.mock.calls.find((c: unknown[]) => String(c[0]).includes('held a pooled connection'));
-      expect(hit).toBeUndefined();
+      // Generous threshold so the real set_config round-trips on a slow CI DB
+      // can't spuriously trip it.
+      process.env.DB_CONTEXT_HELD_WARN_MS = '5000';
+      await withSystemDbAccessContext(async () => {
+        // trivial; well under threshold
+      });
+      expect(heldWarns()).toHaveLength(0);
     });
   });
 });

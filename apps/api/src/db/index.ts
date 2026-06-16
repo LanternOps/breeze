@@ -117,15 +117,20 @@ function serializeAccessibleIds(scope: DbAccessScope, accessibleIds: string[] | 
 // does slow NON-DB work (Redis/BullMQ enqueue, outbound HTTP, per-device
 // loops) the connection sits idle-in-transaction; under a mass agent reconnect
 // those connections are killed by idle_in_transaction_session_timeout and
-// cascade into a pool-poisoning login outage. A context held far longer than
-// pure DB work should take is the signal. Warn-only (prod-safe, like the
-// contextless-write guard below); tune or disable via DB_CONTEXT_HELD_WARN_MS
-// (0 disables). The fix at a flagged site is to move the slow work after the
-// context closes, or wrap it in runOutsideDbContext().
+// cascade into a pool-poisoning connection-exhaustion outage.
+//
+// This is a COARSE heuristic: it measures total time `fn` held the context,
+// which it cannot distinguish from a legitimately slow DB query that keeps the
+// connection busy (not idle). Both are worth knowing about, but the precise
+// "slow non-DB work inside a context" signal comes from assertOutsideHeldDbContext
+// once it is wired into the slow primitives (Phase 2). The default threshold is
+// therefore set well above normal request latency to stay an outlier signal.
+// Warn-only (prod-safe, mirroring the contextless-write guard, #1375); tune or
+// disable via DB_CONTEXT_HELD_WARN_MS (0 disables).
 function getHeldContextWarnMs(): number {
   const raw = Number.parseInt(process.env.DB_CONTEXT_HELD_WARN_MS ?? '', 10);
   if (!Number.isFinite(raw) || raw < 0) {
-    return 500;
+    return 2000;
   }
   return raw;
 }
@@ -155,17 +160,25 @@ export async function withDbAccessContext<T>(
     try {
       return await dbContextStorage.run(tx as unknown as typeof baseDb, fn);
     } finally {
-      if (warnMs > 0) {
-        const heldMs = Date.now() - startedAt;
-        if (heldMs >= warnMs) {
-          const message =
-            `withDbAccessContext (scope=${context.scope}) held a pooled connection in an open `
-            + `transaction for ${heldMs}ms (>= ${warnMs}ms) — likely slow non-DB work inside the `
-            + `context. Move Redis/HTTP/loops after the context closes or wrap them in `
-            + `runOutsideDbContext (#1105).`;
-          console.warn(message);
-          captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+      // The whole point of this block is to SURFACE problems, so it must never
+      // BECOME one: any throw here (e.g. a Sentry transport hiccup) would, from
+      // a finally, mask fn's real return value or error. Swallow instrumentation
+      // failures so the transaction's true outcome always propagates unchanged.
+      try {
+        if (warnMs > 0) {
+          const heldMs = Date.now() - startedAt;
+          if (heldMs >= warnMs) {
+            const message =
+              `withDbAccessContext (scope=${context.scope}) held a pooled connection in an open `
+              + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
+              + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
+              + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
+            console.warn(message);
+            captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+          }
         }
+      } catch {
+        // Detection instrumentation must never alter fn's real result/error.
       }
     }
   });
@@ -202,20 +215,22 @@ export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T =>
 
 /**
  * #1105 tripwire guard. Call at the top of a known-slow primitive — a
- * Redis/BullMQ enqueue, an outbound HTTP request, or anything that acquires a
- * second pooled connection — to flag when it runs while a withDbAccessContext
- * transaction is still held. That is the txn-around-slow-work pattern: the
- * primitive pins the open transaction's pooled connection idle-in-transaction
- * across its own latency, and under a mass agent reconnect those connections
- * are killed and cascade into a pool-poisoning login outage.
+ * Redis/BullMQ enqueue or an outbound HTTP request — to flag when it runs while
+ * a withDbAccessContext transaction is still held. That is the txn-around-slow-
+ * work pattern: the held transaction's pooled connection sits idle across the
+ * primitive's latency, and under a mass agent reconnect those connections are
+ * killed and cascade into a pool-poisoning connection-exhaustion outage.
  *
  * The fix at a call site is to do the slow work AFTER the context closes, or
  * inside `runOutsideDbContext(...)` (which exits the context so this guard is a
  * no-op). Warn-only by default — prod-safe, mirroring the contextless-write
- * guard — so it never breaks a running deploy. Set DB_CONTEXT_TRIPWIRE_STRICT=1
- * (intended for CI) to throw instead, so a newly-introduced violation fails the
- * build rather than only surfacing in Sentry after an incident.
+ * guard (#1375) — so it never breaks a running deploy. Set
+ * DB_CONTEXT_TRIPWIRE_STRICT (1/true/yes/on) to throw instead, so a
+ * newly-introduced violation fails the build rather than only surfacing in
+ * Sentry after an incident.
  */
+const STRICT_TRIPWIRE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
 export function assertOutsideHeldDbContext(operation: string): void {
   if (!hasDbAccessContext()) {
     return;
@@ -224,7 +239,7 @@ export function assertOutsideHeldDbContext(operation: string): void {
     `${operation} ran inside a held withDbAccessContext transaction — it pins a pooled `
     + `connection idle-in-transaction across slow work (#1105). Move it after the context `
     + `closes or wrap it in runOutsideDbContext().`;
-  if (process.env.DB_CONTEXT_TRIPWIRE_STRICT === '1') {
+  if (STRICT_TRIPWIRE_VALUES.has((process.env.DB_CONTEXT_TRIPWIRE_STRICT ?? '').trim().toLowerCase())) {
     throw new Error(message);
   }
   console.warn(message);
