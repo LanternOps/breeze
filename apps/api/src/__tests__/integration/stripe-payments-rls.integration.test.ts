@@ -193,4 +193,34 @@ describe('invoice_stripe_payments RLS (breeze_app)', () => {
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
+
+  // The reconcile layer's idempotency guard (mapping.invoice_payment_id) is the
+  // first line of defense against a Stripe redelivery, but it races a concurrent
+  // delivery. The unique index invoice_stripe_payments_object_uq on
+  // stripe_object_id is the DB-level backstop: two rows for the same Stripe object
+  // can never coexist, so a redelivery that loses the race surfaces a unique
+  // violation (23505) rather than a duplicate payment mapping. This pins that index.
+  runDb('the stripe_object_id unique index backstops the app idempotency guard', async () => {
+    const { orgA, invoiceA } = await seed();
+    const sameObjectId = `cs_idem_${invoiceA.id.slice(0, 8)}`;
+
+    const insertOnce = () =>
+      withDbAccessContext(orgCtx(orgA.id), () =>
+        db.insert(invoiceStripePayments).values({
+          orgId: orgA.id,
+          invoiceId: invoiceA.id,
+          stripeAccountId: 'acct_idem',
+          stripeObjectType: 'checkout_session',
+          stripeObjectId: sameObjectId, // SAME object id both times
+          amount: '1.00',
+          currency: 'USD',
+          status: 'pending',
+        })
+      );
+
+    // First insert succeeds (legitimate org-A write).
+    await expect(insertOnce()).resolves.toBeDefined();
+    // Second insert of the SAME stripe_object_id is rejected by the unique index.
+    await expect(insertOnce()).rejects.toMatchObject({ cause: { code: '23505' } });
+  });
 });
