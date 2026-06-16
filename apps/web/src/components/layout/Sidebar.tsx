@@ -47,7 +47,6 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
-import { ENABLE_AI_FOR_OFFICE } from '../../lib/featureFlags';
 import BrandHeader from './BrandHeader';
 
 interface SidebarProps {
@@ -92,9 +91,9 @@ type NavItem = {
   // partner-branding fetch below; undecodable tokens fall through to visible
   // and the server re-checks everything.
   partnerScopeOnly?: boolean;
-  // Hidden when explicitly false — used to gate a nav item behind a build-time
-  // feature flag (e.g. ENABLE_AI_FOR_OFFICE). Undefined means always shown.
-  featureEnabled?: boolean;
+  // Shown only when the current partner has AI for Office enabled (runtime flag
+  // from /orgs/partners/me). Undefined means not gated on the partner flag.
+  requiresAiForOffice?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -130,7 +129,7 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
       { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
-      { name: 'AI for Office', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, featureEnabled: ENABLE_AI_FOR_OFFICE },
+      { name: 'AI for Office', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
@@ -303,6 +302,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
+  const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
 
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
@@ -344,12 +344,13 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{ name?: string; settings?: { branding?: { logoUrl?: string } } }>;
+        return r.json() as Promise<{ name?: string; aiForOfficeEnabled?: boolean; settings?: { branding?: { logoUrl?: string } } }>;
       })
       .then((data) => {
         if (cancelled || !data) return;
         setBrandName(data.name ?? null);
         setBrandLogoUrl(data.settings?.branding?.logoUrl ?? null);
+        setAiForOfficeEnabled(data.aiForOfficeEnabled === true);
       })
       .catch((err) => {
         console.warn('[Sidebar] Failed to fetch partner branding:', err);
@@ -447,7 +448,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   // --- Render a single nav item -------------------------------------------
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
-    if (item.featureEnabled === false) return null;
+    if (item.requiresAiForOffice && !aiForOfficeEnabled) return null;
     if (item.platformAdminOnly && !isPlatformAdmin) return null;
     if (item.partnerScopeOnly) {
       const { scope } = getJwtClaims();
