@@ -168,6 +168,32 @@ describe('portal invoices routes', () => {
     }));
   });
 
+  it('POST /invoices/:id/pay uses currency-aware minor units for a zero-decimal currency (no 100x overcharge)', async () => {
+    // A JPY invoice with a 1000-yen balance: JPY is zero-decimal, so unit_amount
+    // must be 1000 (not 100000). The mapping amount stays the major-unit string.
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '1000.00', currencyCode: 'JPY', invoiceNumber: 'INV-JPY',
+    }]);
+    getConnectionMock.mockResolvedValue({ status: 'connected', stripeAccountId: 'acct_9' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_jpy', url: 'https://checkout.stripe.com/c/cs_jpy', payment_intent: 'pi_jpy' });
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(sessionsCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [expect.objectContaining({
+          price_data: expect.objectContaining({ unit_amount: 1000, currency: 'jpy' }),
+        })],
+        metadata: expect.objectContaining({ invoice_balance_cents: '1000' }),
+      }),
+      { stripeAccount: 'acct_9', idempotencyKey: `inv_${INV_ID}_1000` },
+    );
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      stripeObjectId: 'cs_jpy', amount: '1000.00', currency: 'JPY',
+    }));
+  });
+
   it('POST /invoices/:id/pay returns 409 when the partner has not connected Stripe', async () => {
     dbResults.push([{
       id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',

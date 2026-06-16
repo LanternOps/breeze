@@ -16,6 +16,7 @@ import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getConnection } from '../../services/stripeConnectService';
 import { getStripe, getConnectedStripeOptions } from '../../services/stripeClient';
+import { toMinorUnits } from '../../services/stripeMoney';
 
 // Invoice statuses that may be paid online. Drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
@@ -145,8 +146,10 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   if (!inv) return c.json({ error: 'Invoice not found' }, 404);
   if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable' }, 409);
 
-  const balanceCents = Math.round(Number(inv.balance) * 100);
-  if (balanceCents <= 0) return c.json({ error: 'Nothing to pay' }, 409);
+  // Currency-aware minor units: zero-decimal currencies (JPY, KRW, …) must NOT be
+  // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
+  const balanceMinor = toMinorUnits(inv.balance, inv.currencyCode);
+  if (balanceMinor <= 0) return c.json({ error: 'Nothing to pay' }, 409);
 
   // stripe_connect_accounts is a partner-axis table. This handler runs under the
   // portal user's ORGANIZATION scope (portal/auth.ts), where breeze_has_partner_access
@@ -166,7 +169,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     line_items: [{
       price_data: {
         currency: inv.currencyCode.toLowerCase(),
-        unit_amount: balanceCents,
+        unit_amount: balanceMinor,
         product_data: { name: `Invoice ${inv.invoiceNumber ?? inv.id}` },
       },
       quantity: 1,
@@ -177,13 +180,13 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       invoice_id: inv.id,
       org_id: inv.orgId,
       partner_id: inv.partnerId,
-      invoice_balance_cents: String(balanceCents),
+      invoice_balance_cents: String(balanceMinor),
     },
   }, {
     ...getConnectedStripeOptions(conn.stripeAccountId),
     // Dedupe double-click / retry: identical (invoice, balance) reuses the same
     // Checkout session instead of creating a second pending mapping row.
-    idempotencyKey: `inv_${inv.id}_${balanceCents}`,
+    idempotencyKey: `inv_${inv.id}_${balanceMinor}`,
   });
 
   await db.insert(invoiceStripePayments).values({
@@ -193,7 +196,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     stripeObjectType: 'checkout_session',
     stripeObjectId: session.id,
     stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-    amount: (balanceCents / 100).toFixed(2),
+    amount: Number(inv.balance).toFixed(2),
     currency: inv.currencyCode,
     status: 'pending',
   });
