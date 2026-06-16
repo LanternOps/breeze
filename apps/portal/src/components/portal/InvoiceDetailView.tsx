@@ -86,7 +86,13 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
       window.location.href = result.data.url;
       return; // keep the button disabled while the browser navigates to Checkout
     }
-    setPayError(result.error || 'Could not start the payment. Please try again.');
+    if (result.statusCode === 409) {
+      // Terminal condition (online payment unavailable / invoice not payable). Show the
+      // server's reason verbatim — "Please try again" would mislead since a retry won't help.
+      setPayError(result.error || 'Online payment is not available for this invoice.');
+    } else {
+      setPayError(result.error || 'Could not start the payment. Please try again.');
+    }
     setPaying(false);
   };
 

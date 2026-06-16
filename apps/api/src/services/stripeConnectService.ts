@@ -50,12 +50,11 @@ export async function consumeState(state: string, partnerId: string): Promise<bo
 export async function completeOAuth(input: { code: string; partnerId: string; userId: string }): Promise<{ stripeAccountId: string }> {
   const resp = await getStripe().oauth.token({ grant_type: 'authorization_code', code: input.code });
   const stripeAccountId = resp.stripe_user_id!;
-  const credentials = JSON.stringify({ accessToken: encryptSecret(resp.access_token ?? null) });
   await withSystemDbAccessContext(async () => {
     await db.insert(stripeConnectAccounts).values({
       partnerId: input.partnerId,
       stripeAccountId,
-      credentials: JSON.parse(credentials),
+      credentials: { accessToken: encryptSecret(resp.access_token ?? null) },
       livemode: Boolean(resp.livemode),
       status: 'connected',
       scope: resp.scope ?? 'read_write',
