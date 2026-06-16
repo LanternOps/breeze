@@ -372,11 +372,14 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             <textarea
               value={notes}
               onChange={(e) => { setNotes(e.target.value); setNotesDirty(true); }}
+              // Gate ENTRY, not save (disabled, like the qty/price inputs) — a
+              // readOnly field is still focusable, so if canWrite flipped false
+              // mid-edit the onBlur guard would silently drop the typed note.
               onBlur={() => { if (canWrite) void saveNotes(); }}
-              readOnly={!canWrite}
+              disabled={!canWrite}
               data-testid="invoice-notes"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring read-only:opacity-60"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
               placeholder="Internal or customer notes…"
             />
           </div>

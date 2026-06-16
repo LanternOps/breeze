@@ -45,7 +45,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore, type Permission } from '../../stores/auth';
 import { hasPermission } from '../../lib/permissions';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
@@ -100,7 +100,7 @@ type NavItem = {
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden.
-  requiredPermission?: { resource: string; action: string };
+  requiredPermission?: Permission;
 };
 
 // ---------------------------------------------------------------------------
