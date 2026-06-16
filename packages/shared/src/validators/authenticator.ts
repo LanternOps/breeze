@@ -44,8 +44,8 @@ export type MobileHwKeyProof = z.infer<typeof mobileHwKeyProofSchema>;
 /**
  * The proof a technician presents when approving — EITHER the WebAuthn platform
  * assertion (L2) OR the mobile hardware-key assertion (L2), discriminated on
- * `type`. An optional approver PIN (L3) rides alongside this proof in the
- * request body, threaded separately (see `approverPinSchema`).
+ * `type`. Higher assurance (L3 recency, L4 fresh re-auth) is derived from the
+ * signature + account re-auth on the server, not from a separate PIN factor.
  */
 export const approvalProofSchema = z.discriminatedUnion('type', [
   z.object({
@@ -58,12 +58,20 @@ export const approvalProofSchema = z.discriminatedUnion('type', [
 export type ApprovalProof = z.infer<typeof approvalProofSchema>;
 
 /**
- * Approver PIN — a 4-6 digit numeric secret used as the L3 step-up factor.
- * Stored argon2-hashed server-side; this only constrains the wire format.
+ * Mobile hardware-key registration body. A phone registers itself as an
+ * approver device by POSTing its Secure-Enclave / Keystore SPKI public key —
+ * no password step-up and no PIN. The key is stored pending and activates on
+ * its first approval signature (deferred proof-of-possession). `.strict()` so a
+ * stray `currentPassword` / `pin` field is rejected rather than silently kept.
  */
-export const approverPinSchema = z.string().regex(/^\d{4,6}$/);
+export const mobileHwKeyRegisterSchema = z
+  .object({
+    publicKey: z.string().min(1),
+    label: z.string().min(1).max(255),
+  })
+  .strict();
 
-export type ApproverPin = z.infer<typeof approverPinSchema>;
+export type MobileHwKeyRegister = z.infer<typeof mobileHwKeyRegisterSchema>;
 
 /**
  * Partner (MSP) approval-security policy (Phase 4). `floorOverrides` may only
