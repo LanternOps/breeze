@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
@@ -354,37 +355,15 @@ export default function CatalogItemsTab() {
                           {formatMargin(margin)}
                         </td>
                         <td className="px-3 py-3 text-right">
-                          <span className="inline-flex gap-3 whitespace-nowrap">
-                            <button
-                              type="button"
-                              onClick={() => openEdit(it)}
-                              className="text-sm text-muted-foreground hover:text-foreground"
-                              data-testid={`catalog-edit-${it.id}`}
-                            >
-                              Edit
-                            </button>
-                            {view === 'active' ? (
-                              <button
-                                type="button"
-                                onClick={() => void archive(it.id)}
-                                disabled={archivingId !== null}
-                                className="text-sm text-destructive hover:underline disabled:opacity-50"
-                                data-testid={`catalog-archive-${it.id}`}
-                              >
-                                {archivingId === it.id ? 'Archiving…' : 'Archive'}
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => void restore(it.id)}
-                                disabled={archivingId !== null}
-                                className="text-sm text-primary hover:underline disabled:opacity-50"
-                                data-testid={`catalog-restore-${it.id}`}
-                              >
-                                {archivingId === it.id ? 'Restoring…' : 'Restore'}
-                              </button>
-                            )}
-                          </span>
+                          <RowActions
+                            item={it}
+                            view={view}
+                            busy={archivingId === it.id}
+                            disabled={archivingId !== null}
+                            onEdit={() => openEdit(it)}
+                            onArchive={() => void archive(it.id)}
+                            onRestore={() => void restore(it.id)}
+                          />
                         </td>
                       </tr>
                       {isOpen && (
@@ -450,4 +429,122 @@ export default function CatalogItemsTab() {
 // element (which would be invalid inside <tbody>).
 function FragmentRow({ children }: { children: ReactNode }) {
   return <>{children}</>;
+}
+
+// Per-row overflow ("⋯") menu. The table scrolls horizontally (overflow-x-auto),
+// which would clip an absolutely-positioned dropdown, so the menu is portalled to
+// <body> and positioned with fixed coordinates from the trigger's rect.
+function RowActions({
+  item, view, busy, disabled, onEdit, onArchive, onRestore,
+}: {
+  item: CatalogItem;
+  view: View;
+  busy: boolean;
+  disabled: boolean;
+  onEdit: () => void;
+  onArchive: () => void;
+  onRestore: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const place = useCallback(() => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setCoords({ top: r.bottom + 4, right: window.innerWidth - r.right });
+  }, []);
+
+  const openMenu = () => { place(); setOpen(true); };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node) || btnRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const close = () => setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    // Any scroll/resize invalidates the fixed coords — just close.
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  const itemCls = 'flex w-full items-center px-3 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50';
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        disabled={disabled && !busy}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Row actions"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+        data-testid={`catalog-actions-${item.id}`}
+      >
+        {busy ? (
+          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+        ) : (
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.6" />
+            <circle cx="12" cy="12" r="1.6" />
+            <circle cx="19" cy="12" r="1.6" />
+          </svg>
+        )}
+      </button>
+
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-50 w-36 overflow-hidden rounded-md border bg-card py-1 shadow-lg"
+          style={{ top: coords.top, right: coords.right }}
+          data-testid={`catalog-actions-menu-${item.id}`}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { setOpen(false); onEdit(); }}
+            className={itemCls}
+            data-testid={`catalog-edit-${item.id}`}
+          >
+            Edit
+          </button>
+          {view === 'active' ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setOpen(false); onArchive(); }}
+              className={`${itemCls} text-destructive`}
+              data-testid={`catalog-archive-${item.id}`}
+            >
+              Archive
+            </button>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setOpen(false); onRestore(); }}
+              className={`${itemCls} text-primary`}
+              data-testid={`catalog-restore-${item.id}`}
+            >
+              Restore
+            </button>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
 }

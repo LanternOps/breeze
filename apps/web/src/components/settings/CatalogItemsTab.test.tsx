@@ -81,6 +81,21 @@ describe('CatalogItemsTab', () => {
     await waitFor(() => expect(detail).toHaveTextContent('60.0%'));
   });
 
+  it('archives an item from the row overflow (kebab) menu', async () => {
+    render(<CatalogItemsTab />);
+    await screen.findByText('Laptop');
+    // Archive is hidden until the kebab is opened.
+    expect(screen.queryByTestId('catalog-archive-l1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('catalog-actions-l1'));
+    fireEvent.click(await screen.findByTestId('catalog-archive-l1'));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        (c) => String(c[0]) === '/catalog/l1/archive' && (c[1] as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+    });
+  });
+
   it('creates a bundle and PUTs components including showOnInvoice', async () => {
     render(<CatalogItemsTab />);
     await screen.findByText('Widget Service');
