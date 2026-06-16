@@ -12,6 +12,7 @@ import {
   type ContractSummary,
 } from '../../lib/api/contracts';
 import { formatMoney } from '../billing/invoiceTypes';
+import { usePermissions } from '../../lib/permissions';
 
 interface Organization {
   id: string;
@@ -71,6 +72,7 @@ interface Props {
 }
 
 export default function ContractsList({ lockedOrgId }: Props = {}) {
+  const { can } = usePermissions();
   const [contracts, setContracts] = useState<ContractSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,13 +156,15 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
             Recurring agreements that auto-generate draft invoices on a cadence.
           </p>
         </div>
-        <a
-          href={newContractHref}
-          data-testid="new-contract-btn"
-          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          New contract
-        </a>
+        {can('contracts', 'write') && (
+          <a
+            href={newContractHref}
+            data-testid="new-contract-btn"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            New contract
+          </a>
+        )}
       </div>
 
       {/* Filters */}

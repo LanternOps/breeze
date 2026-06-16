@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
+import { usePermissions } from '../../lib/permissions';
 import { formatMoney } from '../../lib/timeFormat';
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
 import {
@@ -45,6 +46,9 @@ export default function CatalogItemsTab() {
   // load error; only a confirmed 'organization' scope is blocked (a missing or
   // undecodable token falls through and the server re-checks).
   const isOrgScoped = getJwtClaims().scope === 'organization';
+
+  const { can } = usePermissions();
+  const canWrite = can('catalog', 'write');
 
   const load = useCallback(async (v: View) => {
     setLoading(true);
@@ -239,14 +243,16 @@ export default function CatalogItemsTab() {
           ))}
         </div>
 
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          data-testid="catalog-add-item"
-        >
-          Add item
-        </button>
+        {canWrite && (
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            data-testid="catalog-add-item"
+          >
+            Add item
+          </button>
+        )}
       </div>
 
       {/* Table card */}
@@ -285,14 +291,16 @@ export default function CatalogItemsTab() {
                 <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
                   Add the hardware, software, and service items you sell. Catalog items power quotes, contracts, and invoices.
                 </p>
-                <button
-                  type="button"
-                  onClick={openCreate}
-                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                  data-testid="catalog-empty-add"
-                >
-                  Add your first item
-                </button>
+                {canWrite && (
+                  <button
+                    type="button"
+                    onClick={openCreate}
+                    className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                    data-testid="catalog-empty-add"
+                  >
+                    Add your first item
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -455,6 +463,15 @@ function RowActions({
   onArchive: () => void;
   onRestore: () => void;
 }) {
+  const { can } = usePermissions();
+  const canWrite = can('catalog', 'write');
+  const canDelete = can('catalog', 'delete');
+  // Edit/Restore need write; Archive needs delete. View determines which of
+  // archive/restore is even offered.
+  const showEdit = canWrite;
+  const showArchive = view === 'active' && canDelete;
+  const showRestore = view === 'archived' && canWrite;
+
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -490,6 +507,9 @@ function RowActions({
 
   const itemCls = 'flex w-full items-center px-3 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50';
 
+  // Nothing actionable for this user → don't render an empty popover trigger.
+  if (!showEdit && !showArchive && !showRestore) return null;
+
   return (
     <>
       <button
@@ -522,16 +542,18 @@ function RowActions({
           style={{ top: coords.top, right: coords.right }}
           data-testid={`catalog-actions-menu-${item.id}`}
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => { setOpen(false); onEdit(); }}
-            className={itemCls}
-            data-testid={`catalog-edit-${item.id}`}
-          >
-            Edit
-          </button>
-          {view === 'active' ? (
+          {showEdit && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setOpen(false); onEdit(); }}
+              className={itemCls}
+              data-testid={`catalog-edit-${item.id}`}
+            >
+              Edit
+            </button>
+          )}
+          {showArchive && (
             <button
               type="button"
               role="menuitem"
@@ -541,7 +563,8 @@ function RowActions({
             >
               Archive
             </button>
-          ) : (
+          )}
+          {showRestore && (
             <button
               type="button"
               role="menuitem"

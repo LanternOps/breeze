@@ -46,6 +46,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { hasPermission } from '../../lib/permissions';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
@@ -96,6 +97,10 @@ type NavItem = {
   // Shown only when the current partner has AI for Office enabled (runtime flag
   // from /orgs/partners/me). Undefined means not gated on the partner flag.
   requiresAiForOffice?: boolean;
+  // Hidden unless the user holds this permission (e.g. billing nav gated on
+  // invoices:read). UX only — the route still enforces it server-side. While
+  // the permission set is still loading, the item stays hidden.
+  requiredPermission?: { resource: string; action: string };
 };
 
 // ---------------------------------------------------------------------------
@@ -163,9 +168,9 @@ export const navSections: NavSection[] = [
     label: 'Operations',
     icon: Layers,
     items: [
-      { name: 'Invoices', href: '/billing/invoices', icon: Receipt },
-      { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true },
-      { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true },
+      { name: 'Invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
+      { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
+      { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
       { name: 'Software Library', href: '/software', icon: Package },
       { name: 'Software Policies', href: '/software-inventory', icon: Package },
       { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
@@ -297,6 +302,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [hovered, setHovered] = useState(false);
   const currentPath = useCurrentPath(initialPath);
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
+  const permissions = useAuthStore((s) => s.user?.permissions);
 
   // --- Responsive breakpoints -----------------------------------------------
   // Track whether viewport is below lg (1024px) or md (768px) to override mode
@@ -457,6 +463,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     if (item.partnerScopeOnly) {
       const { scope } = getJwtClaims();
       if (scope !== null && scope !== 'partner') return null;
+    }
+    if (item.requiredPermission) {
+      if (!hasPermission(permissions, item.requiredPermission.resource, item.requiredPermission.action)) {
+        return null;
+      }
     }
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;

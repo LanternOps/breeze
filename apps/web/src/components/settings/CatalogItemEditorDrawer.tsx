@@ -7,6 +7,7 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { usePermissions } from '../../lib/permissions';
 import {
   createCatalogItem, updateCatalogItem, getCatalogItem, setBundleComponents,
   computeMargin, formatMargin, marginTone,
@@ -52,6 +53,9 @@ function bundleFriendly(code: string): string | undefined {
 
 export default function CatalogItemEditorDrawer({ open, item, allItems, onClose, onSaved }: Props) {
   const editId = item?.id ?? null;
+
+  const { can } = usePermissions();
+  const canWrite = can('catalog', 'write');
 
   const [itemType, setItemType] = useState<CatalogItemType>('service');
   const [name, setName] = useState('');
@@ -369,14 +373,16 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
             <div className="space-y-2 rounded-md border p-3" data-testid="catalog-bundle-builder">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">Items included in this bundle</span>
-                <button
-                  type="button"
-                  onClick={addComponent}
-                  className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                  data-testid="catalog-bundle-add"
-                >
-                  Add component
-                </button>
+                {canWrite && (
+                  <button
+                    type="button"
+                    onClick={addComponent}
+                    className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                    data-testid="catalog-bundle-add"
+                  >
+                    Add component
+                  </button>
+                )}
               </div>
 
               {componentsLoading ? (
@@ -415,17 +421,19 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                             className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
                             data-testid={`catalog-bundle-qty-${idx}`}
                           />
-                          <button
-                            type="button"
-                            onClick={() => removeComponent(idx)}
-                            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"
-                            aria-label="Remove component"
-                            data-testid={`catalog-bundle-remove-${idx}`}
-                          >
-                            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M3 6h18M8 6V4h8v2m-9 0v14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          </button>
+                          {canWrite && (
+                            <button
+                              type="button"
+                              onClick={() => removeComponent(idx)}
+                              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"
+                              aria-label="Remove component"
+                              data-testid={`catalog-bundle-remove-${idx}`}
+                            >
+                              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M3 6h18M8 6V4h8v2m-9 0v14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            </button>
+                          )}
                         </div>
                         <label className="flex items-center gap-2 text-xs text-muted-foreground">
                           <input
@@ -456,15 +464,17 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
           >
             Cancel
           </button>
-          <button
-            type="button"
-            onClick={() => void save()}
-            disabled={!canSave}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-            data-testid="catalog-form-save"
-          >
-            {saving ? 'Saving…' : editId ? 'Save changes' : 'Create item'}
-          </button>
+          {canWrite && (
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={!canSave}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              data-testid="catalog-form-save"
+            >
+              {saving ? 'Saving…' : editId ? 'Save changes' : 'Create item'}
+            </button>
+          )}
         </div>
       </div>
     </div>,

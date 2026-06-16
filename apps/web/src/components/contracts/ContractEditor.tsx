@@ -18,6 +18,7 @@ import {
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 import { formatMoney } from '../billing/invoiceTypes';
+import { usePermissions } from '../../lib/permissions';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
@@ -51,6 +52,7 @@ interface Props {
 }
 
 export default function ContractEditor({ detail, presetOrgId, onChanged }: Props) {
+  const { can } = usePermissions();
   const isCreate = !detail;
   const contract = detail?.contract;
 
@@ -453,13 +455,15 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           </td>
                           <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
                           <td className="px-3 py-2 text-right">
-                            <button
-                              type="button" onClick={() => void removeLine(l.id)} disabled={busy}
-                              data-testid={`line-remove-${idx}`}
-                              className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                            >
-                              Remove
-                            </button>
+                            {can('contracts', 'write') && (
+                              <button
+                                type="button" onClick={() => void removeLine(l.id)} disabled={busy}
+                                data-testid={`line-remove-${idx}`}
+                                className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                              >
+                                Remove
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))
@@ -563,13 +567,15 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       ? 'Quantity resolved automatically at billing time.'
                       : `Line total: ${formatMoney(newLineEstimate, contract?.currencyCode)}`}
                   </span>
-                  <button
-                    type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim()}
-                    data-testid="add-line-btn"
-                    className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-                  >
-                    Add line
-                  </button>
+                  {can('contracts', 'write') && (
+                    <button
+                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim()}
+                      data-testid="add-line-btn"
+                      className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    >
+                      Add line
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -609,23 +615,27 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
           <div className="space-y-2">
             {isCreate ? (
-              <button
-                type="button" onClick={() => void saveCreate()} disabled={busy || !canSaveHeader}
-                data-testid="save-contract-btn"
-                className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                Create contract
-              </button>
+              can('contracts', 'write') && (
+                <button
+                  type="button" onClick={() => void saveCreate()} disabled={busy || !canSaveHeader}
+                  data-testid="save-contract-btn"
+                  className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  Create contract
+                </button>
+              )
             ) : (
               <>
-                <button
-                  type="button" onClick={() => void saveHeader()} disabled={busy || !canSaveHeader}
-                  data-testid="save-contract-btn"
-                  className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-                >
-                  Save changes
-                </button>
-                {contract?.status === 'draft' && (
+                {can('contracts', 'write') && (
+                  <button
+                    type="button" onClick={() => void saveHeader()} disabled={busy || !canSaveHeader}
+                    data-testid="save-contract-btn"
+                    className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    Save changes
+                  </button>
+                )}
+                {can('contracts', 'manage') && contract?.status === 'draft' && (
                   <button
                     type="button" onClick={() => void activate()} disabled={busy || lines.length === 0}
                     data-testid="activate-contract-btn"

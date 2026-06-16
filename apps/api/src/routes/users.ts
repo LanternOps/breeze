@@ -441,11 +441,20 @@ userRoutes.get('/me', async (c) => {
 
   const requiresSetup = userRequiresSetup(user);
 
+  // Surface the user's effective permission grants so the web app can hide nav
+  // items and action buttons the user can't use (e.g. billing pages/controls).
+  // This is UX only — every route still enforces requirePermission server-side.
+  const userPerms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined
+  });
+
   return c.json({
     ...user,
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,
+    permissions: userPerms?.permissions ?? [],
     requiresSetup
   });
 });

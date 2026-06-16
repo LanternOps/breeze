@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import {
@@ -24,6 +25,7 @@ interface Props {
 }
 
 export default function InvoiceDetail({ detail, onChanged }: Props) {
+  const { can } = usePermissions();
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
   const stripeConnected = detail.stripeConnected === true;
@@ -284,14 +286,16 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
           {/* PDF + void */}
           <div className="space-y-2">
-            <button
-              type="button" onClick={() => void downloadPdf()} disabled={busy}
-              data-testid="invoice-download-pdf"
-              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              Download PDF
-            </button>
-            {canVoid && (
+            {can('invoices', 'export') && (
+              <button
+                type="button" onClick={() => void downloadPdf()} disabled={busy}
+                data-testid="invoice-download-pdf"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Download PDF
+              </button>
+            )}
+            {canVoid && can('invoices', 'send') && (
               <button
                 type="button" onClick={() => { setVoidReason(''); setVoidReissue(false); setVoidOpen(true); }}
                 data-testid="invoice-void-open"
@@ -331,7 +335,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     {/* Stripe payments are refunded through Stripe, never hand-voided. */}
                     {p.source === 'stripe' ? (
                       <span className="whitespace-nowrap text-[11px] text-muted-foreground">via Stripe</span>
-                    ) : (
+                    ) : can('invoices', 'send') ? (
                       <button
                         type="button" onClick={() => void voidPayment(p.id)} disabled={busy || invoice.status === 'void'}
                         data-testid={`invoice-payment-void-${p.id}`}
@@ -339,13 +343,13 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                       >
                         Void
                       </button>
-                    )}
+                    ) : null}
                   </li>
                 ))}
               </ul>
             )}
 
-            {canRecordPayment && stripeConnected && (
+            {canRecordPayment && stripeConnected && can('invoices', 'send') && (
               <button
                 type="button" onClick={() => void sendPayLink()} disabled={busy}
                 data-testid="invoice-pay-link"
@@ -361,7 +365,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
               </p>
             )}
 
-            {canRecordPayment && (
+            {canRecordPayment && can('invoices', 'send') && (
               <div className="mt-3 space-y-2 border-t pt-3" data-testid="invoice-payment-form">
                 <div className="grid grid-cols-2 gap-2">
                   <input
@@ -427,13 +431,15 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           </label>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setVoidOpen(false)} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted">Cancel</button>
-            <button
-              type="button" onClick={() => void submitVoid()} disabled={busy || !voidReason.trim()}
-              data-testid="invoice-void-submit"
-              className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-            >
-              Void invoice
-            </button>
+            {can('invoices', 'send') && (
+              <button
+                type="button" onClick={() => void submitVoid()} disabled={busy || !voidReason.trim()}
+                data-testid="invoice-void-submit"
+                className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              >
+                Void invoice
+              </button>
+            )}
           </div>
         </div>
       </Dialog>

@@ -127,6 +127,17 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'catalog', action: 'write', description: 'Create and update catalog items, pricing, and bundles' },
   { resource: 'catalog', action: 'delete', description: 'Archive/delete catalog items' },
 
+  // Invoices (billing/invoicing program)
+  { resource: 'invoices', action: 'read', description: 'View invoices and payment history' },
+  { resource: 'invoices', action: 'write', description: 'Create, edit, and delete draft invoices and lines' },
+  { resource: 'invoices', action: 'send', description: 'Issue, send, void invoices and record/remove payments' },
+  { resource: 'invoices', action: 'export', description: 'Export and download invoice PDFs' },
+
+  // Contracts (recurring billing program)
+  { resource: 'contracts', action: 'read', description: 'View contracts, lines, and billing-period history' },
+  { resource: 'contracts', action: 'write', description: 'Create/edit/delete draft contracts and lines' },
+  { resource: 'contracts', action: 'manage', description: 'Activate/pause/resume/cancel contracts and generate invoices' },
+
   // Users
   { resource: 'users', action: 'read', description: 'View users' },
   { resource: 'users', action: 'write', description: 'Edit users' },
@@ -181,7 +192,6 @@ const SYSTEM_ROLES = [
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
       'tickets:read',
-      'catalog:read', 'catalog:write',
       'reports:read', 'reports:write',
       'sites:read',
       'organizations:read'
@@ -196,10 +206,29 @@ const SYSTEM_ROLES = [
       'scripts:read',
       'alerts:read',
       'tickets:read',
-      'catalog:read',
       'reports:read',
       'sites:read',
       'organizations:read'
+    ]
+  },
+  {
+    name: 'Partner Billing',
+    scope: 'partner' as const,
+    description: 'Full access to product catalog, invoices, and contracts',
+    permissions: [
+      'catalog:read', 'catalog:write', 'catalog:delete',
+      'invoices:read', 'invoices:write', 'invoices:send', 'invoices:export',
+      'contracts:read', 'contracts:write', 'contracts:manage'
+    ]
+  },
+  {
+    name: 'Partner Billing Viewer',
+    scope: 'partner' as const,
+    description: 'Read-only access to product catalog, invoices, and contracts',
+    permissions: [
+      'catalog:read',
+      'invoices:read', 'invoices:export',
+      'contracts:read'
     ]
   },
   {
