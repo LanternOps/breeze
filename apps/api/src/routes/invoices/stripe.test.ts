@@ -25,7 +25,7 @@ const payLink = vi.mocked(checkout.createInvoicePayLink);
 
 function app() {
   const a = new Hono();
-  a.use('*', async (c, next) => { c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', accessibleOrgIds: null }); await next(); });
+  a.use('*', async (c: any, next: any) => { c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', accessibleOrgIds: null }); await next(); });
   a.route('/', invoiceStripeRoutes);
   return a;
 }
