@@ -47,6 +47,9 @@ export interface InvoiceLine {
 export interface InvoiceDetail {
   invoice: InvoiceSummary;
   lines: InvoiceLine[];
+  /** Whether the partner has an active Stripe Connect account (gates "Send
+   *  payment link"). Absent on older API responses → treated as not connected. */
+  stripeConnected?: boolean;
 }
 
 export interface InvoicePayment {
@@ -58,6 +61,9 @@ export interface InvoicePayment {
   receivedAt: string;
   note: string | null;
   createdAt: string;
+  /** Origin of the payment: 'stripe' = collected via online checkout (refund
+   *  through Stripe, no manual void), 'manual' = recorded by an operator. */
+  source?: 'stripe' | 'manual';
 }
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
