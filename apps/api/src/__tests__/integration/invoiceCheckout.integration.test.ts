@@ -81,9 +81,9 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     expect(res.url).toBe('https://checkout.stripe.com/c/pay/abc');
     expect(sessionsCreateMock).toHaveBeenCalledTimes(1);
     // currency-aware minor units: $100.00 → 10000
-    const [args, opts] = sessionsCreateMock.mock.calls[0];
-    expect(args.line_items[0].price_data.unit_amount).toBe(10000);
-    expect(opts.idempotencyKey).toBe(`inv_${inv.id}_10000`);
+    const call = sessionsCreateMock.mock.calls[0]!;
+    expect(call[0].line_items[0].price_data.unit_amount).toBe(10000);
+    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000`);
 
     const mappings = await withSystemDbAccessContext(() =>
       db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, inv.id)));
