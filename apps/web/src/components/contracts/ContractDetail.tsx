@@ -14,6 +14,7 @@ import {
   type ContractStatus,
   type ContractTransition,
 } from '../../lib/api/contracts';
+import { formatMoney } from '../billing/invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -45,16 +46,6 @@ const TRANSITION_LABELS: Record<ContractTransition, string> = {
   resume: 'Resume',
   cancel: 'Cancel',
 };
-
-function formatMoney(value: string | number | null | undefined, currencyCode = 'USD'): string {
-  const n = typeof value === 'number' ? value : Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return '—';

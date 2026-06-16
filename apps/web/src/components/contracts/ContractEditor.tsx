@@ -17,6 +17,7 @@ import {
 } from '../../lib/api/contracts';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
+import { formatMoney } from '../billing/invoiceTypes';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
@@ -47,16 +48,6 @@ interface Props {
   presetOrgId?: string;
   /** Called after a successful mutation so the parent can reload. */
   onChanged?: () => void;
-}
-
-function formatMoney(value: string | number | null | undefined, currencyCode = 'USD'): string {
-  const n = typeof value === 'number' ? value : Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
 }
 
 export default function ContractEditor({ detail, presetOrgId, onChanged }: Props) {
