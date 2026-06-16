@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -102,11 +102,16 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
       currencyCode: quote.currencyCode ?? partner?.currency ?? 'USD',
     };
 
-    // Real image loader: pull bytes from quote_images by id (org-scoped row).
+    // Real image loader: pull bytes from quote_images, constrained to BOTH the
+    // image id AND this quote. RLS already blocks cross-tenant rows; matching
+    // quote_id additionally closes the same-org cross-quote case (an image that
+    // belongs to a different quote in the same org can't be embedded here).
     const loadImage = async (imageId: string): Promise<{ data: Buffer } | null> => {
       const [img] = await db
         .select({ data: quoteImages.imageData })
-        .from(quoteImages).where(eq(quoteImages.id, imageId)).limit(1);
+        .from(quoteImages)
+        .where(and(eq(quoteImages.id, imageId), eq(quoteImages.quoteId, id)))
+        .limit(1);
       return img?.data ? { data: img.data } : null;
     };
 
