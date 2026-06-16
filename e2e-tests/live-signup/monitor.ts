@@ -10,7 +10,7 @@ import { registerViaApi, type SignupResult } from './phases/apiSmoke';
 import { registerViaUi } from './phases/uiFlow';
 import { verifyEmail } from './phases/verifyEmail';
 import { simulatePaymentAndAssertActivation } from './phases/simulatePayment';
-import { purgePartner } from './phases/cleanup';
+import { purgePartner, sweepStaleCanaries } from './phases/cleanup';
 
 loadEnv({ path: join(dirname(fileURLToPath(import.meta.url)), '.env') });
 
@@ -76,6 +76,11 @@ async function runRegion(region: Region, opts: {
     phases.push(await timed(`cleanup:${c.partnerId.slice(0, 8)}`, () =>
       purgePartner(region, c.partnerId, opts.syntheticToken)));
   }
+
+  // Janitor sweep catches orphans from any run whose register response was lost
+  // (id never captured, so the per-run cleanup above can't see them).
+  phases.push(await timed('cleanup:stale-sweep', () =>
+    sweepStaleCanaries(region, opts.syntheticToken)));
 
   return { region: region.key, phases, ok: phases.every((p) => p.ok) };
 }

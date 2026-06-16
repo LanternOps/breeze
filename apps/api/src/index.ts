@@ -664,7 +664,7 @@ api.use('*', async (c, next) => {
   if (path.startsWith('/api/v1/users/me')) return next();
   if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return next();
   if (path.startsWith('/api/v1/agents/')) return next();
-  if (path.startsWith('/api/v1/internal/')) return next();   // synthetic test router — self-gated
+  if (path.startsWith('/api/v1/internal/synthetic/')) return next();   // synthetic test router — self-gated (token + canary latch)
   return partnerGuard(c, next);
 });
 

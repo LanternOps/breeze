@@ -1,13 +1,20 @@
 const RESEND_BASE = 'https://api.resend.com';
 
+// Length of the email-verification token the API embeds in the verify link.
+// Must track the server-side token generator; if that changes, this regex
+// stops matching and fetchVerifyToken times out with a clear "not observed"
+// error rather than a silent wrong-token bug.
+const VERIFY_TOKEN_LEN = 48;
+const VERIFY_TOKEN_RE = new RegExp(`verify-email\\?token=([A-Za-z0-9_-]{${VERIFY_TOKEN_LEN}})`);
+
 export function extractVerifyToken(html: string): string | null {
-  const m = html.match(/verify-email\?token=([A-Za-z0-9_-]{48})/);
+  const m = html.match(VERIFY_TOKEN_RE);
   return m ? m[1] : null;
 }
 
 interface ResendListItem { id: string; to: string[] | string; subject?: string; created_at?: string }
 
-async function resend(path: string, apiKey: string): Promise<any> {
+async function resend(path: string, apiKey: string): Promise<unknown> {
   const res = await fetch(`${RESEND_BASE}${path}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });

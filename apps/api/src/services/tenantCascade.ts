@@ -553,6 +553,13 @@ function quoteIdent(table: string): string {
   return `"${table}"`;
 }
 
+export interface PartnerCascadeStats {
+  orgsDeleted: number;
+  tablesSwept: number;
+  totalRowsDeleted: number;
+  tablesDeleted: Record<string, number>;
+}
+
 /**
  * Hard-deletes a partner and ALL its data. Built for synthetic test-canary
  * cleanup (see routes/internal/synthetic.ts). The caller MUST have already
@@ -564,12 +571,42 @@ function quoteIdent(table: string): string {
  *      this partner's rows children-first. One DELETE per call so a single FK
  *      failure cannot poison a shared transaction.
  *   3. Delete the partners row last.
+ *
+ * Returns the ACTUAL number of rows deleted per table (via `extractRowCount`),
+ * not the count of tables attempted — so a purge that silently matched zero
+ * rows (e.g. a future contextless-write regression under forced RLS, #1375)
+ * is visible as `totalRowsDeleted === 0` rather than masquerading as success.
+ *
+ * Audit trail: a `purge_started` row is written BEFORE any delete (org_id=NULL,
+ * so it survives the cascade); a `purged` completion row after. On a mid-sweep
+ * failure a best-effort `purge_failed` row records how far the sweep got before
+ * the error is rethrown — a destructive op must never abort without a forensic
+ * record. Both the completion and failure audit writes are best-effort: the
+ * partner is already (partly) deleted, so an audit hiccup must not change the
+ * outcome the caller sees.
+ *
  * Idempotent: re-running on an already-purged partner matches zero rows.
  */
 export async function cascadeDeletePartner(
   partnerId: string,
   performedBy: string,
-): Promise<{ orgsDeleted: number; tablesSwept: number }> {
+): Promise<PartnerCascadeStats> {
+  const startedAt = new Date().toISOString();
+  const tablesDeleted: Record<string, number> = {};
+  let totalRowsDeleted = 0;
+
+  // Forensic breadcrumb written first (org_id=NULL → survives the cascade).
+  await createAuditLog({
+    orgId: null,
+    actorType: 'system',
+    actorId: performedBy,
+    action: 'test.synthetic_partner.purge_started',
+    resourceType: 'partner',
+    resourceId: partnerId,
+    details: { partnerId, startedAt },
+    result: 'success',
+  });
+
   // Lookup child orgs under system context — organizations has partner-axis RLS;
   // bare breeze_app would silently return 0 rows.
   const orgRows = (await dbModule.withSystemDbAccessContext(() =>
@@ -581,7 +618,8 @@ export async function cascadeDeletePartner(
   // cascadeDeleteOrg manages its own per-statement withSystemDbAccessContext calls;
   // do NOT wrap these calls in an outer context (would nest transactions).
   for (const row of orgRows) {
-    await self.cascadeDeleteOrg(row.id, performedBy);
+    const orgStats = await self.cascadeDeleteOrg(row.id, performedBy);
+    totalRowsDeleted += orgStats.totalRowsDeleted;
   }
 
   // information_schema is not RLS-protected — bare db.execute is fine here.
@@ -601,12 +639,18 @@ export async function cascadeDeletePartner(
   // are RLS-protected and bare breeze_app cannot write them).
   for (const table of sweep) {
     try {
-      await dbModule.withSystemDbAccessContext(() =>
-        dbModule.db.execute(
+      const count = await dbModule.withSystemDbAccessContext(async () => {
+        const result = await dbModule.db.execute(
           sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE partner_id = ${partnerId}`,
-        ),
-      );
+        );
+        return extractRowCount(result);
+      });
+      tablesDeleted[table] = (tablesDeleted[table] ?? 0) + count;
+      totalRowsDeleted += count;
     } catch (err) {
+      // Best-effort forensic record of partial progress before we abort. The
+      // partner is now half-deleted; a re-run is idempotent and will finish.
+      await writePurgeFailedAudit(performedBy, partnerId, table, tablesDeleted, err);
       throw new Error(
         `[tenantCascade] DELETE from "${table}" failed for partner=${partnerId}: ${
           err instanceof Error ? err.message : String(err)
@@ -616,22 +660,59 @@ export async function cascadeDeletePartner(
   }
 
   // Final partners DELETE also needs system context.
-  await dbModule.withSystemDbAccessContext(() =>
-    dbModule.db.execute(sql`DELETE FROM partners WHERE id = ${partnerId}`),
-  );
-
-  await createAuditLog({
-    orgId: null,
-    actorType: 'system',
-    actorId: performedBy,
-    action: 'test.synthetic_partner.purged',
-    resourceType: 'partner',
-    resourceId: partnerId,
-    details: { partnerId, orgsDeleted: orgRows.length, tablesSwept: sweep.length },
-    result: 'success',
+  const partnerCount = await dbModule.withSystemDbAccessContext(async () => {
+    const result = await dbModule.db.execute(sql`DELETE FROM partners WHERE id = ${partnerId}`);
+    return extractRowCount(result);
   });
+  tablesDeleted.partners = (tablesDeleted.partners ?? 0) + partnerCount;
+  totalRowsDeleted += partnerCount;
 
-  return { orgsDeleted: orgRows.length, tablesSwept: sweep.length };
+  // Best-effort completion audit: the deletes have already landed, so an audit
+  // persistence hiccup must not turn a successful purge into a 500.
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'system',
+      actorId: performedBy,
+      action: 'test.synthetic_partner.purged',
+      resourceType: 'partner',
+      resourceId: partnerId,
+      details: { partnerId, startedAt, orgsDeleted: orgRows.length, tablesSwept: sweep.length, totalRowsDeleted, tablesDeleted },
+      result: 'success',
+    });
+  } catch (err) {
+    console.warn('[tenantCascade] purge-completed audit write failed:', err);
+  }
+
+  return { orgsDeleted: orgRows.length, tablesSwept: sweep.length, totalRowsDeleted, tablesDeleted };
+}
+
+async function writePurgeFailedAudit(
+  performedBy: string,
+  partnerId: string,
+  failedTable: string,
+  tablesDeleted: Record<string, number>,
+  err: unknown,
+): Promise<void> {
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'system',
+      actorId: performedBy,
+      action: 'test.synthetic_partner.purge_failed',
+      resourceType: 'partner',
+      resourceId: partnerId,
+      details: {
+        partnerId,
+        failedTable,
+        tablesDeleted,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      result: 'failure',
+    });
+  } catch (auditErr) {
+    console.warn('[tenantCascade] purge-failed audit write failed:', auditErr);
+  }
 }
 
 /**

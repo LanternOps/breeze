@@ -29,7 +29,10 @@ Exit `0` = all phases passed for all regions; `1` = a failure (the integration s
   then flips the partner pending→active on the next authenticated request. Stripe itself is NOT
   exercised (it lives in the separate breeze-billing service). See the design spec for the
   coverage tradeoff.
-- Cleanup runs for every partner the run created, even if an earlier phase failed.
+- Cleanup runs for every partner the run created, even if an earlier phase failed. After the
+  per-run cleanup, a `purge-stale-canaries` sweep purges any canary partner older than 120 min —
+  this catches orphans whose register response was lost (so their id was never captured). Every
+  candidate is re-validated through the same canary latch before deletion.
 
 ## Notes
 - Register rate limit is 3/hour/IP; two signups per region per run. Back-to-back runs from one IP

@@ -164,39 +164,105 @@ export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T =>
   return dbContextStorage.exit(fn);
 };
 
-// Write methods that, when invoked on the bare pool (no active RLS access
-// context), silently match 0 rows under the forced-RLS `breeze_app` role
-// instead of erroring (#1375). We instrument these to surface the
+// Query-builder write methods that, when invoked on the bare pool (no active
+// RLS access context), silently match 0 rows under the forced-RLS `breeze_app`
+// role instead of erroring (#1375). We instrument these to surface the
 // missing-context bug to logs + Sentry.
 const CONTEXTLESS_WRITE_GUARD_METHODS = new Set<PropertyKey>(['insert', 'update', 'delete']);
 
+// Raw SQL writes go through `db.execute(sql`...`)`, which the builder-method set
+// above cannot see — so a contextless raw DELETE/UPDATE/INSERT would slip the
+// guard entirely (the exact style cascadeDeletePartner uses). This classifies
+// the leading verb of an execute() statement. A leading CTE (`WITH ...`) is
+// skipped so `WITH ... DELETE` still classifies as a write. SELECT and catalog
+// reads never match, so they're left alone.
+const RAW_WRITE_RE = /^\s*(?:with\b[\s\S]*)?\b(insert|update|delete)\b/i;
+
+// Dedup so a hot contextless path can't flood Sentry and bury the signal.
+// Keyed by the originating stack → each distinct call site reports once.
+// `console.warn` still fires every time (logs stay complete); only the Sentry
+// capture is throttled. The reset hook keeps the guard's own tests deterministic.
+const reportedContextlessSites = new Set<string>();
+export function __resetContextlessWriteGuardForTests(): void {
+  reportedContextlessSites.clear();
+}
+
+// Warn-only (no throw) on purpose: it's a conservative, prod-safe rollout.
+// There ARE intentional contextless writers we must not break — the agent-WS
+// `device_commands` path is system-scoped, and the separate audit-admin pool
+// (auditAdminPool.ts) bypasses this proxy entirely — so a hard throw would
+// cause false-positive crashes. The throw-in-CI escalation is deferred to a
+// follow-up PR in #1379.
+function reportContextlessWrite(label: string): void {
+  const stack = new Error().stack;
+  const message =
+    `DB write ${label} ran with no RLS access context — `
+    + `wrap in withDbAccessContext/withSystemDbAccessContext (#1375)`;
+  console.warn(message);
+  const key = stack ?? label;
+  if (reportedContextlessSites.has(key)) return;
+  reportedContextlessSites.add(key);
+  captureMessage(message, 'warning', { stack });
+}
+
+// Best-effort extraction of the leading SQL text from a drizzle `sql` object so
+// execute() can be classified read-vs-write. Defensive: any shape surprise just
+// yields '' (treated as a non-write — fail open, since this is observability,
+// not a security control).
+function rawSqlLeadingText(arg: unknown): string {
+  try {
+    const chunks = (arg as { queryChunks?: unknown[] })?.queryChunks;
+    if (!Array.isArray(chunks)) return '';
+    let text = '';
+    for (const ch of chunks) {
+      const v = (ch as { value?: unknown })?.value;
+      if (typeof v === 'string') text += v;
+      else if (Array.isArray(v)) text += (v as unknown[]).join('');
+      if (text.length >= 256) break; // enough to clear a short leading CTE
+    }
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+// Returns the leading write verb ('insert'|'update'|'delete') of a raw `sql`
+// statement, or null for reads. Exported so the guard's classification can be
+// unit-tested without opening a DB connection.
+export function classifyContextlessExecuteVerb(arg: unknown): string | null {
+  const m = rawSqlLeadingText(arg).match(RAW_WRITE_RE);
+  return m && m[1] ? m[1].toLowerCase() : null;
+}
+
 const proxiedDb = new Proxy(baseDb, {
   get(_target, prop) {
-    // Contextless-write guard (#1375 / #1379). A DB write issued from a path
-    // with no `withDbAccessContext`/`withSystemDbAccessContext` wrapper runs
-    // on the bare pool as `breeze_app` with no RLS GUCs set, so forced RLS
-    // matches 0 rows and the write silently no-ops — no error, no rows.
-    //
-    // This is warn-only (no throw) on purpose: it's a conservative,
-    // prod-safe rollout. There ARE intentional contextless writers we must
-    // not break — the agent-WS `device_commands` path is system-scoped, and
-    // the separate audit-admin pool (auditAdminPool.ts) bypasses this proxy
-    // entirely — so a hard throw would cause false-positive crashes. The
-    // throw-in-CI escalation is deferred to a follow-up PR in #1379.
-    if (CONTEXTLESS_WRITE_GUARD_METHODS.has(prop) && !hasDbAccessContext()) {
-      const message =
-        `DB write .${String(prop)}() ran with no RLS access context — `
-        + `wrap in withDbAccessContext/withSystemDbAccessContext (#1375)`;
-      console.warn(message);
-      captureMessage(message, 'warning', { stack: new Error().stack });
-    }
-
     const activeDb = getCurrentDb() as unknown as Record<PropertyKey, unknown>;
     const value = activeDb[prop];
-    if (typeof value === 'function') {
-      return (value as (...args: unknown[]) => unknown).bind(activeDb);
+    if (typeof value !== 'function') {
+      return value;
     }
-    return value;
+    const bound = (value as (...args: unknown[]) => unknown).bind(activeDb);
+
+    // Contextless-write guard (#1375 / #1379). The check fires at CALL time, not
+    // on getter access, so merely referencing `db.update` no longer warns.
+    if (CONTEXTLESS_WRITE_GUARD_METHODS.has(prop)) {
+      return (...args: unknown[]) => {
+        if (!hasDbAccessContext()) reportContextlessWrite(`.${String(prop)}()`);
+        return bound(...args);
+      };
+    }
+
+    if (prop === 'execute') {
+      return (...args: unknown[]) => {
+        if (!hasDbAccessContext()) {
+          const verb = classifyContextlessExecuteVerb(args[0]);
+          if (verb) reportContextlessWrite(`.execute(${verb})`);
+        }
+        return bound(...args);
+      };
+    }
+
+    return bound;
   }
 }) as typeof baseDb;
 

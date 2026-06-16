@@ -17,6 +17,8 @@ describe('cascadeDeletePartner', () => {
 
   it('cascades each child org, sweeps partner-axis tables, then deletes the partner row', async () => {
     const mod = await import('./tenantCascade');
+    // cascadeDeletePartner now reads `.totalRowsDeleted` off each org's stats.
+    cascadeDeleteOrgMock.mockResolvedValue({ totalRowsDeleted: 0 });
     vi.spyOn(mod, 'cascadeDeleteOrg').mockImplementation(cascadeDeleteOrgMock);
     vi.spyOn(mod, 'topologicalCascadeOrder').mockResolvedValue(['scripts', 'users']);
 
