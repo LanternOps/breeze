@@ -8,8 +8,8 @@ import {
   type InvoiceLine,
   formatMoney,
 } from './invoiceTypes';
-
-interface CatalogItem { id: string; name: string; isBundle: boolean }
+import CatalogItemPicker from '../catalog/CatalogItemPicker';
+import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -18,7 +18,7 @@ interface Props {
   onChanged: () => void;
 }
 
-type AddMode = 'manual' | 'catalog' | 'bundle';
+type AddMode = 'catalog' | 'manual';
 
 export default function InvoiceEditor({ detail, onChanged }: Props) {
   const { invoice, lines } = detail;
@@ -29,26 +29,23 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const [notesDirty, setNotesDirty] = useState(false);
 
   // Add-line form
-  const [addMode, setAddMode] = useState<AddMode>('manual');
+  const [addMode, setAddMode] = useState<AddMode>('catalog');
   const [manualDesc, setManualDesc] = useState('');
   const [manualQty, setManualQty] = useState('1');
   const [manualPrice, setManualPrice] = useState('0.00');
   const [manualTaxable, setManualTaxable] = useState(false);
-  const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
-  const [bundles, setBundles] = useState<CatalogItem[]>([]);
-  const [pickItemId, setPickItemId] = useState('');
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [picked, setPicked] = useState<CatalogItem | null>(null);
   const [pickQty, setPickQty] = useState('1');
 
   useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
 
   const loadCatalog = useCallback(async () => {
-    const res = await fetchWithAuth('/catalog?isActive=true');
+    const res = await listCatalog({ isActive: true, limit: 200 });
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load catalog.'); return; }
     const body = (await res.json()) as { data: CatalogItem[] };
-    const all = body.data ?? [];
-    setCatalogItems(all.filter((i) => !i.isBundle));
-    setBundles(all.filter((i) => i.isBundle));
+    setCatalog(body.data ?? []);
   }, []);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
@@ -90,20 +87,20 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         });
         setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
       } else {
-        if (!pickItemId) return;
-        const path = addMode === 'catalog'
-          ? `/invoices/${invoice.id}/lines/catalog`
-          : `/invoices/${invoice.id}/lines/bundle`;
-        const body = addMode === 'catalog'
-          ? { catalogItemId: pickItemId, quantity: Number(pickQty) }
-          : { bundleId: pickItemId, quantity: Number(pickQty) };
+        if (!picked) return;
+        const path = picked.isBundle
+          ? `/invoices/${invoice.id}/lines/bundle`
+          : `/invoices/${invoice.id}/lines/catalog`;
+        const body = picked.isBundle
+          ? { bundleId: picked.id, quantity: Number(pickQty) }
+          : { catalogItemId: picked.id, quantity: Number(pickQty) };
         await runAction({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
           errorFallback: 'Could not add line.',
           successMessage: 'Line added',
           onUnauthorized: UNAUTHORIZED,
         });
-        setPickItemId(''); setPickQty('1');
+        setPicked(null); setPickQty('1');
       }
       refresh();
     } catch (err) {
@@ -111,7 +108,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, addMode, manualDesc, manualQty, manualPrice, manualTaxable, pickItemId, pickQty, invoice.id, refresh]);
+  }, [busy, addMode, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh]);
 
   const patchLine = useCallback(async (lineId: string, patch: Record<string, unknown>) => {
     if (busy) return;
@@ -264,17 +261,17 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           {/* Add line */}
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-add-line">
             <div className="mb-3 flex gap-2">
-              {(['manual', 'catalog', 'bundle'] as AddMode[]).map((m) => (
+              {(['catalog', 'manual'] as AddMode[]).map((m) => (
                 <button
                   key={m}
                   type="button"
                   onClick={() => setAddMode(m)}
                   data-testid={`invoice-add-mode-${m}`}
-                  className={`rounded-md border px-3 py-1.5 text-xs font-medium capitalize ${
+                  className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
                     addMode === m ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
                   }`}
                 >
-                  {m}
+                  {m === 'catalog' ? 'Catalog item' : 'Manual line'}
                 </button>
               ))}
             </div>
@@ -310,32 +307,41 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   Add
                 </button>
               </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_80px_auto]">
-                <select
-                  value={pickItemId} onChange={(e) => setPickItemId(e.target.value)}
-                  data-testid="invoice-pick-item"
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  <option value="">{addMode === 'catalog' ? 'Select an item…' : 'Select a bundle…'}</option>
-                  {(addMode === 'catalog' ? catalogItems : bundles).map((i) => (
-                    <option key={i.id} value={i.id}>{i.name}</option>
-                  ))}
-                </select>
+            ) : picked ? (
+              <div className="flex flex-wrap items-center gap-2" data-testid="invoice-catalog-picked">
+                <span className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2.5 py-1.5 text-sm">
+                  <span className="font-medium">{picked.name}</span>
+                  {picked.isBundle && (
+                    <span className="rounded border border-border bg-background px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Bundle</span>
+                  )}
+                  <button type="button" onClick={() => setPicked(null)} aria-label="Clear selection" className="ml-1 text-muted-foreground hover:text-foreground">×</button>
+                </span>
                 <input
-                  type="number" min="0" step="0.01" placeholder="Qty" value={pickQty}
-                  onChange={(e) => setPickQty(e.target.value)}
+                  type="number" min="0" step="0.01" value={pickQty}
+                  onChange={(e) => setPickQty(e.target.value)} aria-label="Quantity"
                   data-testid="invoice-pick-qty"
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
                 <button
-                  type="button" onClick={() => void addLine()} disabled={busy || !pickItemId}
-                  data-testid="invoice-add-line-submit"
+                  type="button" onClick={() => void addLine()} disabled={busy}
+                  data-testid="invoice-catalog-add"
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
                   Add
                 </button>
               </div>
+            ) : catalog.length === 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="invoice-catalog-empty">
+                No catalog items.{' '}
+                <a href="/settings/catalog" className="underline hover:text-foreground">Add some in Product Catalog</a>.
+              </p>
+            ) : (
+              <CatalogItemPicker
+                items={catalog}
+                onSelect={(it) => { setPicked(it); setPickQty('1'); }}
+                testId="invoice-catalog-picker"
+                placeholder="Search catalog by name or SKU"
+              />
             )}
           </div>
         </div>

@@ -172,7 +172,7 @@ export default function InvoicesPage() {
     if (mode === 'assemble' && (!assembleFrom || !assembleTo)) return;
     setAssembling(true);
     try {
-      const result = await runAction<{ data: { invoice: { id: string } } }>({
+      const result = await runAction<{ data: { id?: string; invoice?: { id?: string } } }>({
         request: () =>
           mode === 'assemble'
             ? fetchWithAuth(`/orgs/${assembleOrgId}/invoices/assemble`, {
@@ -190,7 +190,8 @@ export default function InvoicesPage() {
         onUnauthorized: UNAUTHORIZED,
       });
       setAssembleOpen(false);
-      const newId = result?.data?.invoice?.id;
+      // assemble nests under data.invoice.id; blank create returns the row at data.id.
+      const newId = result?.data?.invoice?.id ?? result?.data?.id;
       if (newId) void navigateTo(`/billing/invoices/${newId}`);
       else void loadInvoices(filters);
     } catch (err) {

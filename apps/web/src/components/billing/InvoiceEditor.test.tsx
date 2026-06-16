@@ -66,6 +66,8 @@ describe('InvoiceEditor', () => {
     render(<InvoiceEditor detail={draft([])} onChanged={onChanged} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
 
+    // Catalog is the default add mode now; switch to the manual line form.
+    fireEvent.click(screen.getByTestId('invoice-add-mode-manual'));
     fireEvent.change(screen.getByTestId('invoice-manual-desc'), { target: { value: 'New work' } });
     fireEvent.change(screen.getByTestId('invoice-manual-qty'), { target: { value: '3' } });
     fireEvent.change(screen.getByTestId('invoice-manual-price'), { target: { value: '20' } });
@@ -76,6 +78,35 @@ describe('InvoiceEditor', () => {
     expect(postCall).toBeTruthy();
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({
       description: 'New work', quantity: 3, unitPrice: 20, taxable: false,
+    });
+  });
+
+  it('adds a catalog item via the typeahead picker', async () => {
+    const catItem = (over: Record<string, unknown>) => ({
+      id: 'cat-1', partnerId: 'p1', itemType: 'service', name: 'Onboarding', sku: 'ONB-1',
+      description: null, billingType: 'one_time', unitPrice: '500.00', costBasis: null,
+      markupPercent: null, unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      isBundle: false, isActive: true, createdAt: '', updatedAt: '', ...over,
+    });
+    const onChanged = vi.fn();
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [catItem({}), catItem({ id: 'bun-1', name: 'Starter Bundle', isBundle: true })] });
+      if (input === '/invoices/inv-1/lines/catalog' && opts?.method === 'POST') return json({ data: { id: 'line-9' } });
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([])} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    // Catalog is the default mode — search and pick via the typeahead.
+    fireEvent.change(screen.getByTestId('invoice-catalog-picker-input'), { target: { value: 'Onb' } });
+    fireEvent.click(await screen.findByTestId('invoice-catalog-picker-option-cat-1'));
+    fireEvent.change(screen.getByTestId('invoice-pick-qty'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('invoice-catalog-add'));
+
+    await waitFor(() => {
+      const c = fetchMock.mock.calls.find((call) => call[0] === '/invoices/inv-1/lines/catalog');
+      expect(c).toBeTruthy();
+      expect(JSON.parse((c![1] as RequestInit).body as string)).toMatchObject({ catalogItemId: 'cat-1', quantity: 2 });
     });
   });
 
