@@ -14,6 +14,9 @@ type PatchApprovalModalProps = {
   open: boolean;
   patch?: Patch | null;
   ringId?: string | null;
+  /** Current org context (from the org switcher). When absent and no ring is
+   * selected, approval has no org to resolve, so the action is blocked. */
+  currentOrgId?: string | null;
   /** Name of the organization this patch approval applies to, for the confirm message. */
   orgName?: string | null;
   /** Number of devices in the target ring/scope, for the confirm message. */
@@ -55,6 +58,7 @@ export default function PatchApprovalModal({
   open,
   patch,
   ringId,
+  currentOrgId,
   orgName,
   ringDeviceCount,
   onClose,
@@ -89,6 +93,14 @@ export default function PatchApprovalModal({
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
+    // Approval is ring-scoped. With no ring and no current org (a partner on the
+    // global /patches view), the API has no org to attach the approval to and
+    // returns 400. Block early with a clear prompt — before opening the approve
+    // confirm dialog — instead of firing a doomed request.
+    if (!ringId && !currentOrgId) {
+      setSubmitError(`Select an update ring to ${action} patches`);
+      return;
+    }
     // Gate approve behind a scope-naming confirm dialog.
     if (action === 'approve') {
       setApproveConfirmOpen(true);

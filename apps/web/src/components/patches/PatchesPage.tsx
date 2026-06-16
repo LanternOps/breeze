@@ -184,6 +184,13 @@ export default function PatchesPage() {
   // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
   // See spec 2026-05-15-ws-a-action-feedback-design.md (targeted scope; sweeping migration is a non-goal).
   const handleBulkApprove = async (patchIds: string[]) => {
+    // Approval is ring-scoped. With no current org (a partner on the global
+    // /patches catalog view) and no ring selected, the API has no org to attach
+    // the approval to and returns 400 ('orgId is required for partner/system
+    // scope'). Guard with a clear prompt instead of firing a doomed request.
+    if (!selectedRingId && !currentOrgId) {
+      throw new Error('Select an update ring to approve patches');
+    }
     // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
       method: 'POST',
@@ -213,6 +220,10 @@ export default function PatchesPage() {
   };
 
   const handleBulkDecline = async (patchIds: string[]) => {
+    // Same ring/org context requirement as approve (see handleBulkApprove).
+    if (!selectedRingId && !currentOrgId) {
+      throw new Error('Select an update ring to decline patches');
+    }
     const failed: string[] = [];
     for (const id of patchIds) {
       // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
@@ -569,6 +580,7 @@ export default function PatchesPage() {
         open={modalOpen}
         patch={selectedPatch}
         ringId={selectedRingId}
+        currentOrgId={currentOrgId}
         orgName={currentOrg?.name ?? null}
         ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
         onClose={() => {

@@ -65,6 +65,32 @@ describe('PatchApprovalModal', () => {
     );
   });
 
+  it('blocks approve and prompts for a ring when there is no ring or org context', async () => {
+    render(
+      <PatchApprovalModal
+        open
+        patch={{
+          id: 'patch-1',
+          title: 'Security Update',
+          severity: 'critical',
+          source: 'Microsoft',
+          os: 'Windows',
+          releaseDate: '2026-04-01T00:00:00.000Z',
+          approvalStatus: 'pending',
+        }}
+        ringId={null}
+        currentOrgId={null}
+        onClose={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Approve/i }).at(-1)!);
+
+    await screen.findByText(/select an update ring/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('confirm-fleet-action')).toBeNull();
+  });
+
   it('surfaces backend approval errors instead of a generic message', async () => {
     fetchMock.mockResolvedValueOnce(makeJsonResponse({ error: 'Ring access denied' }, false, 403));
 
