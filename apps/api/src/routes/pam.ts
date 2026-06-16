@@ -43,7 +43,7 @@ import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGov
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
-import { requireCurrentPasswordStepUp } from './auth/helpers';
+import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
 import {
   assertionProofSchema,
   mobileHwKeyProofSchema,
@@ -316,6 +316,9 @@ const respondSchema = z.object({
   // satisfy the critical-tier re-authentication factor (spec §5). Verified
   // server-side; absent → reauthVerified=false (only a critical approve needs it).
   reauthPassword: z.string().min(1).max(256).optional(),
+  // Login-MFA (TOTP) fallback for SSO-only / passwordless accounts that can't
+  // satisfy the password re-auth above (spec §5). Verified server-side.
+  reauthMfaCode: z.string().min(1).max(16).optional(),
 });
 
 // Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
@@ -410,6 +413,16 @@ pamRoutes.post(
         auth.user.id,
         body.reauthPassword,
         'pam:reauth'
+      );
+      if (reauthError) return reauthError;
+      reauthVerified = true;
+    } else if (body.reauthMfaCode) {
+      // Login-MFA (TOTP) fallback for SSO-only / passwordless accounts.
+      const reauthError = await requireFreshMfaStepUp(
+        c,
+        auth.user.id,
+        body.reauthMfaCode,
+        'pam:reauth-mfa'
       );
       if (reauthError) return reauthError;
       reauthVerified = true;

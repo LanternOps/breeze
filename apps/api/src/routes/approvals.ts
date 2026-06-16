@@ -14,7 +14,7 @@ import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
-import { requireCurrentPasswordStepUp } from './auth/helpers';
+import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
 import { authenticatorDevices } from '../db/schema/authenticatorDevices';
 import {
   assertionProofSchema,
@@ -252,6 +252,17 @@ approvalRoutes.post('/:id/approve', async (c) => {
       c.get('auth').user.id,
       raw.reauthPassword,
       'approval:reauth'
+    );
+    if (reauthError) return reauthError;
+    reauthVerified = true;
+  } else if (raw && typeof raw.reauthMfaCode === 'string' && raw.reauthMfaCode.length > 0) {
+    // Login-MFA (TOTP) fallback for SSO-only / passwordless accounts that have
+    // no password to satisfy the password step-up above.
+    const reauthError = await requireFreshMfaStepUp(
+      c,
+      c.get('auth').user.id,
+      raw.reauthMfaCode,
+      'approval:reauth-mfa'
     );
     if (reauthError) return reauthError;
     reauthVerified = true;
