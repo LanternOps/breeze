@@ -45,7 +45,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
-import { fetchWithAuth, useAuthStore, type Permission } from '../../stores/auth';
+import type { PermissionGrant } from '@breeze/shared';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { hasPermission } from '../../lib/permissions';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
@@ -99,8 +100,9 @@ type NavItem = {
   requiresAiForOffice?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
-  // the permission set is still loading, the item stays hidden.
-  requiredPermission?: Permission;
+  // the permission set is still loading, the item stays hidden. Typed as the
+  // exact-pair union so a typo'd resource/action fails to compile.
+  requiredPermission?: PermissionGrant;
 };
 
 // ---------------------------------------------------------------------------

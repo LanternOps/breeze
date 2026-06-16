@@ -1,3 +1,4 @@
+import type { PermissionResource, PermissionAction } from '@breeze/shared';
 import { useAuthStore, type Permission } from '../stores/auth';
 
 /**
@@ -11,8 +12,8 @@ import { useAuthStore, type Permission } from '../stores/auth';
  */
 export function hasPermission(
   permissions: Permission[] | undefined,
-  resource: string,
-  action: string,
+  resource: PermissionResource,
+  action: PermissionAction,
 ): boolean {
   if (!permissions) return false;
   return permissions.some(
@@ -32,11 +33,12 @@ export function hasPermission(
  */
 export function usePermissions(): {
   permissions: Permission[] | undefined;
-  can: (resource: string, action: string) => boolean;
+  can: (resource: PermissionResource, action: PermissionAction) => boolean;
 } {
   const permissions = useAuthStore((s) => s.user?.permissions);
   return {
     permissions,
-    can: (resource: string, action: string) => hasPermission(permissions, resource, action),
+    can: (resource: PermissionResource, action: PermissionAction) =>
+      hasPermission(permissions, resource, action),
   };
 }
