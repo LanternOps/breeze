@@ -47,7 +47,7 @@ operationsRoutes.post('/', zValidator('json', upsertCatalogSchema), async (c) =>
 // .partial() for PATCH, but strip the create-time `source` default: v4 re-injects
 // defaults on absent keys, and `data` is spread into .set() below — an omitted
 // source would otherwise silently reset the row's source to 'third_party'.
-const patchCatalogSchema = upsertCatalogSchema
+export const patchCatalogSchema = upsertCatalogSchema
   .partial()
   .extend({ source: upsertCatalogSchema.shape.source.removeDefault().optional() });
 
