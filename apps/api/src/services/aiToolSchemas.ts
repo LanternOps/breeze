@@ -18,7 +18,7 @@ import {
 } from '../db/schema';
 
 // Reusable validators
-const uuid = z.string().uuid();
+const uuid = z.string().guid();
 const deviceId = z.object({ deviceId: uuid });
 const ipAddress = z.string().trim().max(45).refine(
   (value) => {
@@ -339,9 +339,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     policy_action: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
     target_type: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional(),
     target_ids: z.object({
-      siteIds: z.array(z.string().uuid()).max(1000).optional(),
-      groupIds: z.array(z.string().uuid()).max(1000).optional(),
-      deviceIds: z.array(z.string().uuid()).max(5000).optional(),
+      siteIds: z.array(z.string().guid()).max(1000).optional(),
+      groupIds: z.array(z.string().guid()).max(1000).optional(),
+      deviceIds: z.array(z.string().guid()).max(5000).optional(),
     }).optional(),
     is_active: z.boolean().optional(),
     exception: z.object({

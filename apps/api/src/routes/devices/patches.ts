@@ -15,12 +15,12 @@ export const patchesRoutes = new Hono();
 patchesRoutes.use('*', authMiddleware);
 
 const installPatchesSchema = z.object({
-  patchIds: z.array(z.string().uuid()).min(1)
+  patchIds: z.array(z.string().guid()).min(1)
 });
 
 const rollbackPatchParamsSchema = z.object({
-  id: z.string().uuid(),
-  patchId: z.string().uuid()
+  id: z.string().guid(),
+  patchId: z.string().guid()
 });
 
 const patchHistoryQuerySchema = z.object({

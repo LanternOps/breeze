@@ -73,15 +73,15 @@ userRoutes.use('*', async (c, next) => {
 const inviteUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1).max(255),
-  roleId: z.string().uuid(),
+  roleId: z.string().guid(),
   orgAccess: z.enum(['all', 'selected', 'none']).optional(),
-  orgIds: z.array(z.string().uuid()).optional(),
-  siteIds: z.array(z.string().uuid()).optional(),
-  deviceGroupIds: z.array(z.string().uuid()).optional()
+  orgIds: z.array(z.string().guid()).optional(),
+  siteIds: z.array(z.string().guid()).optional(),
+  deviceGroupIds: z.array(z.string().guid()).optional()
 });
 
 const resendInviteSchema = z.object({
-  userId: z.string().uuid()
+  userId: z.string().guid()
 });
 
 // .strict() so unknown keys surface as 400, not silently dropped. Role is not
@@ -92,7 +92,7 @@ const updateUserSchema = z.object({
 }).strict();
 
 const assignRoleSchema = z.object({
-  roleId: z.string().uuid()
+  roleId: z.string().guid()
 });
 
 type ScopeContext =

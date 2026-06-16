@@ -9,7 +9,7 @@ import {
   listTimeEntriesQuerySchema, bulkApproveSchema, timesheetQuerySchema
 } from '@breeze/shared';
 
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 import {
   createTimeEntry, startTimer, stopTimer, updateTimeEntry, deleteTimeEntry,
   approveTimeEntries, listTimeEntries, getRunningTimer, getTimesheet,

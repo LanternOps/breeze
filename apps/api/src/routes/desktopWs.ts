@@ -115,7 +115,7 @@ const desktopConnectExchangeSchema = z.object({
 });
 
 const desktopSessionIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 type ViewerAccessResult =

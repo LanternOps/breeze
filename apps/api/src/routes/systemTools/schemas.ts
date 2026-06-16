@@ -1,16 +1,16 @@
 import { z } from 'zod';
 
 export const deviceIdParamSchema = z.object({
-  deviceId: z.string().uuid()
+  deviceId: z.string().guid()
 });
 
 export const pidParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   pid: z.string().transform(val => parseInt(val, 10))
 });
 
 export const serviceNameParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   name: z.string().min(1).max(256)
 });
 
@@ -48,7 +48,7 @@ export const registryKeyQuerySchema = z.object({
 });
 
 export const eventLogNameParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   name: z.string().min(1).max(256)
 });
 
@@ -63,13 +63,13 @@ export const eventLogQuerySchema = z.object({
 });
 
 export const eventRecordParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   name: z.string().min(1).max(256),
   recordId: z.string().transform(val => parseInt(val, 10))
 });
 
 export const taskPathParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   path: z.string().min(1).max(512)
 });
 

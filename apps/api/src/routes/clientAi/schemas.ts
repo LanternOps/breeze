@@ -51,7 +51,7 @@ export const putPolicySchema = z
   .object({
     enabled: z.boolean().optional(),
     userAccess: z.enum(['all', 'selected']).optional(),
-    selectedUserIds: z.array(z.string().uuid()).max(1000).optional(),
+    selectedUserIds: z.array(z.string().guid()).max(1000).optional(),
     allowedProviders: z.array(z.string().min(1).max(50)).min(1).max(10).optional(),
     allowedModels: z.array(z.string().min(1).max(100)).max(50).optional(),
     writeMode: z.enum(['readwrite', 'readonly']).optional(),
@@ -93,7 +93,7 @@ export const adminUsageQuerySchema = z
   .object({
     from: z.string().regex(USAGE_MONTH_REGEX, 'must be YYYY-MM'),
     to: z.string().regex(USAGE_MONTH_REGEX, 'must be YYYY-MM'),
-    orgId: z.string().uuid().optional(),
+    orgId: z.string().guid().optional(),
   })
   .refine((q) => q.from <= q.to, { message: 'from must be <= to' });
 
@@ -102,8 +102,8 @@ const parsableDate = z
   .refine((v) => !Number.isNaN(Date.parse(v)), 'must be a parsable date');
 
 export const adminSessionListQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  clientUserId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  clientUserId: z.string().guid().optional(),
   from: parsableDate.optional(),
   to: parsableDate.optional(),
   flagged: z.enum(['true', 'false']).optional(),
@@ -127,7 +127,7 @@ export const templateBodySchema = z
      */
     hosts: z.array(z.enum(CLIENT_HOSTS)).nullable().optional(),
     /** null/absent ⇒ partner-wide row (org_id NULL, partner_id set). */
-    orgId: z.string().uuid().nullable().optional(),
+    orgId: z.string().guid().nullable().optional(),
   })
   .strict();
 
@@ -137,7 +137,7 @@ export const templateUpdateSchema = templateBodySchema
   .strict();
 
 export const templateListQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   scope: z.enum(['partner', 'org']).optional(),
 });
 

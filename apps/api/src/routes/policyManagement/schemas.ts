@@ -15,7 +15,7 @@ export type AuthContext = {
 export const listPoliciesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
   enabled: z.enum(['true', 'false']).optional(),
 });
@@ -92,7 +92,7 @@ export const policyRulesSchema = z.array(
 export const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const basePolicyPayloadSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   enabled: z.boolean().default(true),
@@ -103,7 +103,7 @@ export const basePolicyPayloadSchema = z.object({
   enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
   enforcementLevel: z.enum(['monitor', 'warn', 'enforce']).optional(),
   checkIntervalMinutes: z.number().int().min(5).max(10080).default(60),
-  remediationScriptId: z.string().uuid().optional(),
+  remediationScriptId: z.string().guid().optional(),
   type: z.string().optional(),
 });
 
@@ -120,7 +120,7 @@ export const updatePolicySchema = z.object({
   enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
   enforcementLevel: z.enum(['monitor', 'warn', 'enforce']).optional(),
   checkIntervalMinutes: z.number().int().min(5).max(10080).optional(),
-  remediationScriptId: z.string().uuid().nullable().optional(),
+  remediationScriptId: z.string().guid().nullable().optional(),
   type: z.string().optional(),
 });
 
@@ -130,4 +130,4 @@ export const listComplianceSchema = z.object({
   status: z.enum(['compliant', 'non_compliant', 'pending', 'error']).optional(),
 });
 
-export const policyIdSchema = z.object({ id: z.string().uuid() });
+export const policyIdSchema = z.object({ id: z.string().guid() });

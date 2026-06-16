@@ -213,8 +213,8 @@ const dnsConfigSchema = z.object({
 });
 
 const createMonitorSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  assetId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  assetId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   monitorType: z.enum(monitorTypes),
   target: z.string().min(1).max(500),
@@ -241,8 +241,8 @@ const updateMonitorSchema = z.object({
 });
 
 const listMonitorsSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  assetId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  assetId: z.string().guid().optional(),
   monitorType: z.enum(monitorTypes).optional(),
   status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
   search: z.string().optional()
@@ -255,7 +255,7 @@ const resultsQuerySchema = z.object({
 });
 
 const createAlertRuleSchema = z.object({
-  monitorId: z.string().uuid(),
+  monitorId: z.string().guid(),
   condition: z.enum(['offline', 'degraded', 'response_time_gt', 'consecutive_failures_gt']),
   threshold: z.string().optional(),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
@@ -265,8 +265,8 @@ const createAlertRuleSchema = z.object({
 
 const updateAlertRuleSchema = createAlertRuleSchema.partial().omit({ monitorId: true });
 
-const monitorIdParamSchema = z.object({ id: z.string().uuid() });
-const monitorIdAltParamSchema = z.object({ monitorId: z.string().uuid() });
+const monitorIdParamSchema = z.object({ id: z.string().guid() });
+const monitorIdAltParamSchema = z.object({ monitorId: z.string().guid() });
 
 // --- Router ---
 

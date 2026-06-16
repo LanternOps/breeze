@@ -31,11 +31,11 @@ type SavedFilterResponse = {
 };
 
 const filterIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 const createFilterSchema = createSavedFilterSchema.extend({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const previewQuerySchema = z.object({

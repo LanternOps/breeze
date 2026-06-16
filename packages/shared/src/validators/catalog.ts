@@ -58,7 +58,7 @@ export const orgPriceOverrideSchema = z.object({ unitPrice: money });
 export type OrgPriceOverrideInput = z.infer<typeof orgPriceOverrideSchema>;
 
 export const bundleComponentSchema = z.object({
-  componentItemId: z.string().uuid(),
+  componentItemId: z.string().guid(),
   quantity: bundleQuantity,
   showOnInvoice: z.boolean().default(false),
   revenueAllocation: money.nullable().optional()
@@ -80,6 +80,6 @@ export const listCatalogQuerySchema = z.object({
   isBundle: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   search: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
-  cursor: z.string().uuid().optional()
+  cursor: z.string().guid().optional()
 });
 export type ListCatalogQuery = z.infer<typeof listCatalogQuerySchema>;

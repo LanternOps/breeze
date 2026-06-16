@@ -13,8 +13,8 @@ export const PATCH_SORT_KEYS = [
 export const listPatchesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
-  ringId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  ringId: z.string().guid().optional(),
   source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
@@ -23,11 +23,11 @@ export const listPatchesSchema = z.object({
 });
 
 export const patchIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 export const scanSchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1),
+  deviceIds: z.array(z.string().guid()).min(1),
   source: z.string().min(1).max(100).optional()
 });
 
@@ -38,21 +38,21 @@ export const listSourcesSchema = z.object({
 export const listApprovalsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
-  ringId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  ringId: z.string().guid().optional(),
   status: z.enum(['approved', 'rejected', 'deferred', 'pending']).optional(),
-  patchId: z.string().uuid().optional()
+  patchId: z.string().guid().optional()
 });
 
 export const approvalActionSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  ringId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  ringId: z.string().guid().optional(),
   note: z.string().max(1000).optional()
 });
 
 export const deferSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  ringId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  ringId: z.string().guid().optional(),
   deferUntil: z.string().datetime(),
   note: z.string().max(1000).optional()
 });
@@ -61,7 +61,7 @@ export const rollbackSchema = z.object({
   reason: z.string().max(2000).optional(),
   scheduleType: z.enum(['immediate', 'scheduled']).default('immediate'),
   scheduledTime: z.string().datetime().optional(),
-  deviceIds: z.array(z.string().uuid()).optional()
+  deviceIds: z.array(z.string().guid()).optional()
 }).superRefine((value, ctx) => {
   if (value.scheduleType === 'scheduled' && !value.scheduledTime) {
     ctx.addIssue({
@@ -73,21 +73,21 @@ export const rollbackSchema = z.object({
 });
 
 export const bulkApproveSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  ringId: z.string().uuid().optional(),
-  patchIds: z.array(z.string().uuid()).min(1),
+  orgId: z.string().guid().optional(),
+  ringId: z.string().guid().optional(),
+  patchIds: z.array(z.string().guid()).min(1),
   note: z.string().max(1000).optional()
 });
 
 export const complianceSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  ringId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  ringId: z.string().guid().optional(),
   source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional()
 });
 
 export const complianceReportSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
   format: z.enum(['csv', 'pdf']).optional()

@@ -78,7 +78,7 @@ export const backupVerificationStructuredResultSchema = z.object({
 }).passthrough();
 
 export const vaultSyncStructuredResultSchema = z.object({
-  vaultId: z.string().uuid().optional(),
+  vaultId: z.string().guid().optional(),
   snapshotId: z.string().min(1).max(255).optional(),
   vaultPath: z.string().min(1).max(4096).optional(),
   fileCount: z.number().int().nonnegative().optional(),

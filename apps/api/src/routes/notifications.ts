@@ -20,7 +20,7 @@ const listQuerySchema = z.object({
 });
 
 const markReadSchema = z.object({
-  ids: z.array(z.string().uuid()).optional(),
+  ids: z.array(z.string().guid()).optional(),
   all: z.boolean().optional(),
   read: z.boolean().optional()
 });
@@ -142,7 +142,7 @@ notificationRoutes.patch(
 // DELETE /notifications/:id - Delete a notification
 notificationRoutes.delete(
   '/:id',
-  zValidator('param', z.object({ id: z.string().uuid() })),
+  zValidator('param', z.object({ id: z.string().guid() })),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');

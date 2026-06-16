@@ -23,12 +23,12 @@ import {
 } from './schemas';
 
 const deviceIdParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
 });
 
 const vmIdParamSchema = z.object({
-  deviceId: z.string().uuid(),
-  vmId: z.string().uuid(),
+  deviceId: z.string().guid(),
+  vmId: z.string().guid(),
 });
 
 export const hypervRoutes = new Hono();

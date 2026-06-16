@@ -9,7 +9,7 @@
 import { z } from 'zod';
 
 // Reusable validators (duplicated locally to avoid circular imports)
-const uuid = z.string().uuid();
+const uuid = z.string().guid();
 const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
 const backupPath = z.string().max(4096).refine(

@@ -59,7 +59,7 @@ const createReviewSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
   description: z.string().optional(),
   dueDate: z.string().datetime().optional(),
-  reviewerId: z.string().uuid().optional()
+  reviewerId: z.string().guid().optional()
 });
 
 const updateItemSchema = z.object({

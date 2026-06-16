@@ -502,7 +502,7 @@ helperRoutes.post(
     imageBase64: z.string().max(2_000_000),
     width: z.number().int().min(1).max(10000),
     height: z.number().int().min(1).max(10000),
-    sessionId: z.string().uuid().optional(),
+    sessionId: z.string().guid().optional(),
     reason: z.string().max(200).optional(),
   })),
   async (c) => {

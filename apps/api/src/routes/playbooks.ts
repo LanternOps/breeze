@@ -27,21 +27,21 @@ const executionStatusSchema = z.enum([
 
 const playbookCategorySchema = z.enum(['disk', 'service', 'memory', 'patch', 'security']);
 
-const uuidParamSchema = z.object({ id: z.string().uuid() });
+const uuidParamSchema = z.object({ id: z.string().guid() });
 
 const listPlaybooksQuerySchema = z.object({
   category: playbookCategorySchema.or(z.literal('all')).optional(),
 });
 
 const listExecutionsQuerySchema = z.object({
-  deviceId: z.string().uuid().optional(),
-  playbookId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  playbookId: z.string().guid().optional(),
   status: executionStatusSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
 const executePlaybookBodySchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   variables: z.record(z.string(), z.unknown()).optional(),
   context: z.record(z.string(), z.unknown()).optional(),
 });

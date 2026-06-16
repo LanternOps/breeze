@@ -769,7 +769,7 @@ export function createBreezeMcpServer(
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
 ) {
-  const uuid = z.string().uuid();
+  const uuid = z.string().guid();
   const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
   const tools = [
@@ -779,7 +779,7 @@ export function createBreezeMcpServer(
       {
         status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
         osType: z.enum(['windows', 'macos', 'linux']).optional(),
-        siteId: z.string().uuid().optional(),
+        siteId: z.string().guid().optional(),
         search: z.string().max(200).optional(),
         tags: z.array(z.string().max(100)).max(20).optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -1085,7 +1085,7 @@ export function createBreezeMcpServer(
       'delete_tenant',
       'Soft-delete this tenant with a 30-day restore window. confirmation_phrase must exactly equal "delete <tenant_name> permanently" (lowercase, trimmed). Can ONLY delete the tenant this API key belongs to.',
       {
-        tenant_id: z.string().uuid(),
+        tenant_id: z.string().guid(),
         confirmation_phrase: z.string().min(1).max(500),
       },
       makeHandler('delete_tenant', getAuth, onPreToolUse, onPostToolUse)
