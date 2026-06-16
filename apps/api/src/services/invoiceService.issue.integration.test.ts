@@ -88,6 +88,9 @@ describe.runIf(RUN)('issueInvoice', () => {
 
     expect(issued.invoiceNumber).toMatch(/^INV-\d{4}-0001$/);
     expect(issued.status).toBe('sent');
+    // sentAt is NULL on issue — it means "emailed", stamped only by sendInvoiceEmail.
+    // This guards the Issued-vs-Sent label fix from silently regressing.
+    expect(issued.sentAt).toBeNull();
     expect(issued.subtotal).toBe('150.00');
     expect(issued.total).toBe('150.00'); // labor is non-taxable
     expect(issued.balance).toBe('150.00');

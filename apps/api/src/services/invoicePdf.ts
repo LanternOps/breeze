@@ -375,7 +375,8 @@ export interface SendInvoiceResult {
 export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): Promise<SendInvoiceResult> {
   const { issueInvoice } = await import('./invoiceService');
 
-  // 1. Issue if still draft (issueInvoice asserts draft + sets sent_at on its own).
+  // 1. Issue if still draft. issueInvoice asserts draft but intentionally does
+  //    NOT stamp sent_at (sent_at = "send attempted"); this send stamps it below.
   let [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
 
@@ -433,8 +434,11 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
     console.warn(`[invoicePdf] No billing email for org ${invoice.orgId} — invoice ${invoiceId} issued but not emailed`);
   }
 
-  // 5. Stamp sent_at (issueInvoice already sets it; this keeps it current for a
-  //    re-send of an already-issued invoice).
+  // 5. Stamp sent_at. This is the SOLE place sent_at is set — issueInvoice
+  //    leaves it null on purpose so a plain Issue reads "Issued", and only an
+  //    explicit send (this path) marks it. sent_at means "send attempted",
+  //    so it's stamped even when no email service / billing contact exists
+  //    (see the emailed:false case + invoicePdf.integration.test).
   await db.update(invoices).set({ sentAt: new Date(), updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
 
   // 6. Emit the invoice.sent lifecycle event (spec §16). The send action has

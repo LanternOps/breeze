@@ -15,6 +15,7 @@ export interface InvoiceSummary {
   currencyCode: string;
   issueDate: string | null;
   dueDate: string | null;
+  sentAt: string | null;
   subtotal: string;
   taxRate: string | null;
   taxTotal: string;
@@ -84,6 +85,14 @@ export const STATUS_COLORS: Record<InvoiceStatus, string> = {
   paid: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
   void: 'border-border bg-muted text-muted-foreground line-through',
 };
+
+/** Display label for an invoice's status. The 'sent' lifecycle status means
+ *  "issued"; it only reads as "Sent" once an email actually went out (sentAt).
+ *  This keeps a plain Issue from mislabeling itself as Sent. */
+export function statusLabel(invoice: { status: InvoiceStatus; sentAt: string | null }): string {
+  if (invoice.status === 'sent' && !invoice.sentAt) return 'Issued';
+  return STATUS_LABELS[invoice.status];
+}
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cash: 'Cash',

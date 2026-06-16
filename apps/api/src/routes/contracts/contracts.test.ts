@@ -13,7 +13,8 @@ vi.mock('../../services/contractService', () => ({
   pauseContract: vi.fn(),
   resumeContract: vi.fn(),
   cancelContract: vi.fn(),
-  generateDueInvoice: vi.fn()
+  generateDueInvoice: vi.fn(),
+  computeContractEstimate: vi.fn()
 }));
 
 // Mock db context helpers used by /generate route.
@@ -270,5 +271,19 @@ describe('contract generate route', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('NOTHING_DUE');
+  });
+
+  it('GET /:id/estimate returns the resolved period estimate', async () => {
+    (svc.computeContractEstimate as any).mockResolvedValue({
+      currencyCode: 'USD', periodTotal: '450.00',
+      lines: [{ lineId: LINE_ID, lineType: 'per_device', quantity: 9, value: '450.00', live: true }],
+    });
+    const res = await app().request(`/${CONTRACT_ID}/estimate`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: {
+      currencyCode: 'USD', periodTotal: '450.00',
+      lines: [{ lineId: LINE_ID, lineType: 'per_device', quantity: 9, value: '450.00', live: true }],
+    } });
+    expect(svc.computeContractEstimate).toHaveBeenCalledWith(CONTRACT_ID, expect.objectContaining({ partnerId: 'p1' }));
   });
 });

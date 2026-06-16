@@ -7,7 +7,7 @@ import {
   type InvoiceStatus,
   type InvoiceSummary,
   STATUS_COLORS,
-  STATUS_LABELS,
+  statusLabel,
   formatDate,
   formatMoney,
 } from './invoiceTypes';
@@ -232,7 +232,8 @@ export default function InvoicesPage() {
     const open = invoices.filter((i) => i.status !== 'void' && num(i.balance) > 0);
     const outstanding = open.reduce((sum, i) => sum + num(i.balance), 0);
     const overdue = invoices.filter((i) => i.status === 'overdue').length;
-    // Single-currency partners are the norm; format with the most common code.
+    // Single-currency partners are the norm; label the strip with the first
+    // invoice's currency. Multi-currency outstanding totals are not split in v1.
     const ccy = (invoices[0]?.currencyCode) || 'USD';
     return { outstanding, overdue, openCount: open.length, ccy };
   }, [invoices]);
@@ -438,7 +439,7 @@ export default function InvoicesPage() {
                           className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
                           data-testid={`invoices-status-${inv.id}`}
                         >
-                          {STATUS_LABELS[inv.status]}
+                          {statusLabel(inv)}
                         </span>
                       </td>
                     </tr>

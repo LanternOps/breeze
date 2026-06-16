@@ -79,7 +79,73 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
-  return rows;
+  if (rows.length === 0) return rows;
+
+  // Enrich each row with estimatedPeriodValue (live counts for per_device/per_seat
+  // lines). All lines for the page load in one query; device/seat counts are
+  // memoized per (org, site) / org so distinct counts run once, not per contract.
+  const ids = rows.map((r) => r.id);
+  const allLines = await db.select().from(contractLines).where(inArray(contractLines.contractId, ids));
+  const byContract = new Map<string, typeof allLines>();
+  for (const l of allLines) {
+    const list = byContract.get(l.contractId);
+    if (list) list.push(l); else byContract.set(l.contractId, [l]);
+  }
+  const dc: DeviceCache = new Map();
+  const sc: SeatCache = new Map();
+  const out = [];
+  for (const c of rows) {
+    let total = 0;
+    for (const l of byContract.get(c.id) ?? []) {
+      const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
+      total += Number(l.unitPrice) * quantity;
+    }
+    out.push({ ...c, estimatedPeriodValue: total.toFixed(2) });
+  }
+  return out;
+}
+
+// ---- recurring-value estimate (live per_device/per_seat resolution) --------
+type DeviceCache = Map<string, number>; // key `${orgId}|${siteId ?? 'all'}`
+type SeatCache = Map<string, number>;   // key orgId
+type ContractLineRow = typeof contractLines.$inferSelect;
+
+async function resolveLineQty(
+  orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
+): Promise<{ quantity: number; live: boolean }> {
+  switch (line.lineType) {
+    case 'flat': return { quantity: 1, live: false };
+    case 'manual': return { quantity: Number(line.manualQuantity ?? '0'), live: false };
+    case 'per_device': {
+      const key = `${orgId}|${line.siteId ?? 'all'}`;
+      if (!dc.has(key)) dc.set(key, await countContractDevices(orgId, line.siteId));
+      return { quantity: dc.get(key)!, live: true };
+    }
+    case 'per_seat': {
+      if (!sc.has(orgId)) sc.set(orgId, await countContractSeats(orgId));
+      return { quantity: sc.get(orgId)!, live: true };
+    }
+    default: return { quantity: 0, live: false };
+  }
+}
+
+/** Per-line resolved quantities + values + period total for one contract, using
+ *  live device/seat counts as of now. Powers the editor sidebar and detail. */
+export async function computeContractEstimate(contractId: string, actor: ContractActor) {
+  const contract = await getOwnedContractOr404(contractId, actor);
+  const lines = await db.select().from(contractLines)
+    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+  const dc: DeviceCache = new Map();
+  const sc: SeatCache = new Map();
+  let total = 0;
+  const out = [];
+  for (const l of lines) {
+    const { quantity, live } = await resolveLineQty(contract.orgId, l, dc, sc);
+    const value = Number(l.unitPrice) * quantity;
+    total += value;
+    out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live });
+  }
+  return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out };
 }
 
 export async function updateContract(contractId: string, patch: UpdateContractInput, actor: ContractActor) {
