@@ -8,6 +8,7 @@ vi.mock('../../services/quoteService', () => ({
   updateQuote: vi.fn(),
   deleteDraftQuote: vi.fn(),
   addBlock: vi.fn(),
+  deleteBlock: vi.fn(),
   addManualLine: vi.fn(),
   addCatalogLine: vi.fn(),
   updateLine: vi.fn(),
@@ -71,6 +72,7 @@ function app() {
 
 const QUOTE_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
+const BLOCK_ID = '33333333-3333-3333-3333-333333333333';
 
 describe('quote crud + lines routes', () => {
   beforeEach(() => {
@@ -164,6 +166,15 @@ describe('quote crud + lines routes', () => {
     const body = await res.json();
     expect(body.data.ok).toBe(true);
     expect(svc.deleteDraftQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('DELETE /:id/blocks/:blockId deletes a block (200, forwards ids)', async () => {
+    (svc.deleteBlock as any).mockResolvedValue(undefined);
+    const res = await app().request(`/${QUOTE_ID}/blocks/${BLOCK_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.ok).toBe(true);
+    expect(svc.deleteBlock).toHaveBeenCalledWith(QUOTE_ID, BLOCK_ID, expect.anything());
   });
 
   it('maps a QuoteServiceError to its status (NOT_A_DRAFT → 409)', async () => {

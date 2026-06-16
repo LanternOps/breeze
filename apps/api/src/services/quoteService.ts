@@ -172,6 +172,20 @@ export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: Q
   return row!;
 }
 
+/**
+ * Delete a block and any lines attached to it. Deleting the block's lines first
+ * (rather than relying solely on a DB cascade) keeps a pricing-table section's
+ * removal atomic at the app layer — removing a line_items block also removes its
+ * lines, never orphaning them — and lets recomputeAndPersist re-derive the
+ * header totals from the lines that remain.
+ */
+export async function deleteBlock(quoteId: string, blockId: string, actor: QuoteActor) {
+  await loadDraft(quoteId, actor);
+  await db.delete(quoteLines).where(and(eq(quoteLines.quoteId, quoteId), eq(quoteLines.blockId, blockId)));
+  await db.delete(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)));
+  await recomputeAndPersist(quoteId);
+}
+
 // ---------------------------------------------------------------------------
 // Lines
 // ---------------------------------------------------------------------------

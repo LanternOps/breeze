@@ -89,6 +89,11 @@ export function addBlock(id: string, body: QuoteBlockInput): Promise<Response> {
   });
 }
 
+/** Delete a block and its lines (DELETE /quotes/:id/blocks/:blockId). */
+export function deleteBlock(id: string, blockId: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/blocks/${blockId}`, { method: 'DELETE' });
+}
+
 export function addManualLine(id: string, body: QuoteLineInput): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/lines`, {
     method: 'POST',

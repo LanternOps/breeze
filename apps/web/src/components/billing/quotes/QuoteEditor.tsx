@@ -3,6 +3,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import {
   addBlock,
+  deleteBlock,
   addManualLine,
   addCatalogLine,
   removeLine,
@@ -114,31 +115,26 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     }
   }, [busy, addType, headingText, richText, tableLabel, quote.id, refresh]);
 
+  // Real block delete: removes the block and (server-side) any lines attached to
+  // it. Works for every block type — heading, rich_text, and line_items — so the
+  // "Remove" button is no longer a silent no-op for heading/rich_text blocks.
   const removeBlock = useCallback(async (block: QuoteBlock) => {
     if (busy) return;
     setBusy(true);
     try {
-      // Removing the block's lines first keeps the pricing table consistent; the
-      // block delete endpoint is Phase 2, so for v1 we clear lines then leave an
-      // empty block. Pricing tables with lines are removed line-by-line here.
-      const blockLines = linesForBlock(block.id);
-      for (const l of blockLines) {
-        // runaction-exempt: aggregate clear — each removeLine is surfaced via the
-        // single runAction below; a per-line toast would spam. Failure of the
-        // batch is caught and toasted once.
-        await runAction({
-          request: () => removeLine(quote.id, l.id),
-          errorFallback: 'Could not clear the block lines.',
-          onUnauthorized: UNAUTHORIZED,
-        });
-      }
+      await runAction({
+        request: () => deleteBlock(quote.id, block.id),
+        errorFallback: 'Could not remove the block.',
+        successMessage: 'Block removed',
+        onUnauthorized: UNAUTHORIZED,
+      });
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not clear the block lines.');
+      handleActionError(err, 'Could not remove the block.');
     } finally {
       setBusy(false);
     }
-  }, [busy, quote.id, linesForBlock, refresh]);
+  }, [busy, quote.id, refresh]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
   const addCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
@@ -416,7 +412,7 @@ function BlockCard({
           data-testid={`quote-block-remove-${block.id}`}
           className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
         >
-          {isTable && lines.length > 0 ? 'Clear lines' : 'Remove'}
+          Remove
         </button>
       </div>
 

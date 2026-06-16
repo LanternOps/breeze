@@ -10,7 +10,7 @@ import {
 } from '@breeze/shared';
 import {
   createQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
-  addManualLine, addCatalogLine, updateLine, removeLine, addBlock,
+  addManualLine, addCatalogLine, updateLine, removeLine, addBlock, deleteBlock,
 } from '../../services/quoteService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
@@ -25,6 +25,7 @@ const readPerm = requirePermission(PERMISSIONS.QUOTES_READ.resource, PERMISSIONS
 const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIONS.QUOTES_WRITE.action);
 const idParam = z.object({ id: z.string().uuid() });
 const lineParam = z.object({ id: z.string().uuid(), lineId: z.string().uuid() });
+const blockParam = z.object({ id: z.string().uuid(), blockId: z.string().uuid() });
 
 export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
   const auth = c.get('auth') as AuthContext;
@@ -57,6 +58,10 @@ quoteCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), 
 });
 quoteCrudRoutes.post('/:id/blocks', scopes, writePerm, zValidator('param', idParam), zValidator('json', quoteBlockInputSchema), async (c) => {
   try { return c.json({ data: await addBlock(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.delete('/:id/blocks/:blockId', scopes, writePerm, zValidator('param', blockParam), async (c) => {
+  try { const p = c.req.valid('param'); await deleteBlock(p.id, p.blockId, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.post('/:id/lines', scopes, writePerm, zValidator('param', idParam), zValidator('json', quoteLineInputSchema), async (c) => {
