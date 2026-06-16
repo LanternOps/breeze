@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -12,6 +13,11 @@ import {
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock,
 } from '../../services/quoteService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
+import { db } from '../../db';
+import { quoteImages } from '../../db/schema/quotes';
+import { partners } from '../../db/schema/orgs';
+import { portalBranding } from '../../db/schema/portal';
+import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -68,4 +74,53 @@ quoteCrudRoutes.patch('/:id/lines/:lineId', scopes, writePerm, zValidator('param
 quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), async (c) => {
   try { const p = c.req.valid('param'); await removeLine(p.id, p.lineId, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
   catch (err) { return handleServiceError(c, err); }
+});
+
+// GET /:id/pdf — render the proposal PDF (blocks in order) and stream it inline.
+// getQuote() enforces the org-access guard (404 cross-tenant). Image bytes are
+// loaded from quote_images under the request's RLS context (org-scoped rows, so
+// the bare `db` is correct here — same pattern the service uses to read its
+// tables). Branding resolves like invoicePdf: partner name + portal logo/color +
+// partner invoice footer/currency.
+quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
+  try {
+    const { quote, blocks, lines } = await getQuote(id, quoteActorFrom(c));
+
+    const [partner] = await db
+      .select({ name: partners.name, footer: partners.invoiceFooter, currency: partners.currencyCode })
+      .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+    const [brand] = await db
+      .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText })
+      .from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+
+    const branding = {
+      partnerName: partner?.name ?? 'Proposal',
+      logoUrl: brand?.logoUrl ?? null,
+      primaryColor: brand?.primaryColor ?? null,
+      footer: quote.terms ?? partner?.footer ?? brand?.footerText ?? null,
+      currencyCode: quote.currencyCode ?? partner?.currency ?? 'USD',
+    };
+
+    // Real image loader: pull bytes from quote_images by id (org-scoped row).
+    const loadImage = async (imageId: string): Promise<{ data: Buffer } | null> => {
+      const [img] = await db
+        .select({ data: quoteImages.imageData })
+        .from(quoteImages).where(eq(quoteImages.id, imageId)).limit(1);
+      return img?.data ? { data: img.data } : null;
+    };
+
+    const { renderQuotePdf } = await import('../../services/quotePdf');
+    const pdf = await renderQuotePdf(quote, blocks, lines, loadImage, branding);
+
+    const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
+    return new Response(new Uint8Array(pdf), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `inline; filename="${filename}"`,
+        'Content-Length': String(pdf.length),
+      },
+    });
+  } catch (err) { return handleServiceError(c, err); }
 });
