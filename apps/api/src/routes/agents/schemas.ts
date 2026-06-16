@@ -290,7 +290,9 @@ export const sensitiveDataCommandTypes = {
 export const managementPostureIngestSchema = z.object({
   collectedAt: z.string().datetime(),
   scanDurationMs: z.number().int().nonnegative(),
-  categories: z.record(
+  // v4: z.record(enum, …) is exhaustive; agents report only the categories they
+  // detect, so partialRecord preserves the v3 partial-ingest behavior.
+  categories: z.partialRecord(
     z.enum(['mdm', 'rmm', 'remoteAccess', 'endpointSecurity',
             'policyEngine', 'backup', 'identityMfa', 'siem',
             'dnsFiltering', 'zeroTrustVpn', 'patchManagement']),

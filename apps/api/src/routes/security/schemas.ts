@@ -128,7 +128,7 @@ export const listStatusQuerySchema = z.object({
   status: z.enum(['protected', 'at_risk', 'unprotected', 'offline']).optional(),
   riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   search: z.string().optional()
 });
 
@@ -139,7 +139,7 @@ export const listThreatsQuerySchema = z.object({
   status: z.enum(['active', 'quarantined', 'removed']).optional(),
   category: z.enum(['trojan', 'pup', 'malware', 'ransomware', 'spyware']).optional(),
   providerId: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   search: z.string().optional()
@@ -176,22 +176,32 @@ export const createPolicySchema = z.object({
   exclusions: z.array(z.string().min(1)).optional().default([])
 });
 
-export const updatePolicySchema = createPolicySchema.partial();
+// PATCH body. v4's .partial() applies child .default()s on absent keys (unlike
+// v3), which would silently reset protection settings (realTimeProtection,
+// autoQuarantine, …) whenever a client patches an unrelated field. Strip the
+// create-time defaults from the defaulted fields so omitted keys stay absent.
+export const updatePolicySchema = createPolicySchema.partial().extend({
+  scanSchedule: createPolicySchema.shape.scanSchedule.removeDefault().optional(),
+  realTimeProtection: createPolicySchema.shape.realTimeProtection.removeDefault().optional(),
+  autoQuarantine: createPolicySchema.shape.autoQuarantine.removeDefault().optional(),
+  severityThreshold: createPolicySchema.shape.severityThreshold.removeDefault().optional(),
+  exclusions: createPolicySchema.shape.exclusions.removeDefault().optional(),
+});
 
 export const dashboardQuerySchema = z.object({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const deviceIdParamSchema = z.object({
-  deviceId: z.string().uuid()
+  deviceId: z.string().guid()
 });
 
 export const threatIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 export const policyIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 export const recommendationActionSchema = z.object({
@@ -205,7 +215,7 @@ export const trendsQuerySchema = z.object({
 export const postureQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   minScore: z.string().optional(),
   maxScore: z.string().optional(),
   riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
@@ -222,7 +232,7 @@ export const firewallQuerySchema = z.object({
   // an otherwise-cross-org view to a single org. listStatusRows() already
   // supports this; the schema previously stripped it before the handler
   // could read it, so the matrix saw 201 always regardless of orgId.
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const encryptionQuerySchema = z.object({
@@ -231,7 +241,7 @@ export const encryptionQuerySchema = z.object({
   status: z.enum(['encrypted', 'partial', 'unencrypted']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
   search: z.string().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const passwordPolicyQuerySchema = z.object({
@@ -240,7 +250,7 @@ export const passwordPolicyQuerySchema = z.object({
   compliance: z.enum(['compliant', 'non_compliant']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
   search: z.string().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const adminAuditQuerySchema = z.object({
@@ -249,7 +259,7 @@ export const adminAuditQuerySchema = z.object({
   issue: z.enum(['default_account', 'weak_password', 'stale_account', 'no_issues']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
   search: z.string().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const recommendationsQuerySchema = z.object({
@@ -258,5 +268,5 @@ export const recommendationsQuerySchema = z.object({
   priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
   category: z.string().optional(),
   status: z.enum(['open', 'dismissed', 'completed']).optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });

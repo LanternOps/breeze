@@ -36,7 +36,7 @@ export const scriptSchema = z.object({
   content: z.string().min(1, 'Script content is required'),
   parameters: z.array(parameterSchema).optional(),
   timeoutSeconds: z.coerce
-    .number({ invalid_type_error: 'Enter a timeout value' })
+    .number({ error: 'Enter a timeout value' })
     .int('Timeout must be a whole number')
     .min(1, 'Timeout must be at least 1 second')
     .max(86400, 'Timeout cannot exceed 24 hours'),
