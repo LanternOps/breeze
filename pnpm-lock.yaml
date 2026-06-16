@@ -16,6 +16,7 @@ overrides:
   devalue@>=5.6.4 <=5.8.0: '>=5.8.1'
   dompurify@>=3.1.3 <=3.3.1: '>=3.3.2'
   dompurify@<3.4.0: '>=3.4.0'
+  form-data@<4.0.6: '>=4.0.6'
   h3@<1.15.10: '>=1.15.10'
   lodash@>=4.0.0 <=4.17.22: '>=4.17.23'
   minimatch@<3.1.4: '>=3.1.4'
@@ -24,7 +25,7 @@ overrides:
   picomatch@<2.3.2: '>=2.3.2'
   picomatch@>=4.0.0 <4.0.4: '>=4.0.4'
   picomatch@4.0.3: 4.0.4
-  protobufjs@<8.0.2: '>=8.0.2'
+  protobufjs@<8.4.1: '>=8.4.1'
   fast-xml-builder@<1.1.7: '>=1.1.7'
   glob@>=10.0.0 <10.5.0: '>=10.5.0'
   micromatch@4.0.8>picomatch: 4.0.4
@@ -6148,12 +6149,8 @@ packages:
     resolution: {integrity: sha512-Wp1zXWPVUPBmfoa3Cqc9ctaKuzKAV6uLstRqlR56kSjplf5uAce+qeyYym7F+PHbGTk+tCEdkCW6RD7DX/gBZw==}
     engines: {node: '>=20'}
 
-  form-data@2.5.5:
-    resolution: {integrity: sha512-jqdObeR2rxZZbPSGL+3VckHMYtu+f9//KXBsVny6JSX/pa38Fy+bGjuG8eW/H6USNQWhLi8Num++cU2yOCNz4A==}
-    engines: {node: '>= 0.12'}
-
-  form-data@4.0.5:
-    resolution: {integrity: sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==}
+  form-data@4.0.6:
+    resolution: {integrity: sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==}
     engines: {node: '>= 6'}
 
   formdata-polyfill@4.0.10:
@@ -8107,8 +8104,8 @@ packages:
     resolution: {integrity: sha512-SAzp/O4Yh02jGdRc+uIrGoe87dkN/XtwxfZ4ZyafJHymd79ozp5VG5nyZ7ygqPM5+cpLDjjGnYFUkngonyDPOQ==}
     engines: {node: '>=14.0.0'}
 
-  protobufjs@8.3.0:
-    resolution: {integrity: sha512-JpJpFaR7yKNb6WqKvJJ1MLbiuIQWQnbUUb06nDtf2/i8YWYYLEfP6xf9BwSJoJQg1wAy61EQB8dssQg64oX4aA==}
+  protobufjs@8.6.3:
+    resolution: {integrity: sha512-alQyzT0j401LGBtwsqu6uprjR6pfNH1UJf9N6GBFMjIcd+HzTe0/HrjAbFCqun+zvnfLarrxAtMM2xvZ+kFZ5A==}
     engines: {node: '>=12.0.0'}
 
   proxy-from-env@1.1.0:
@@ -11567,7 +11564,7 @@ snapshots:
       fast-deep-equal: 3.1.3
       functional-red-black-tree: 1.0.1
       google-gax: 4.6.1
-      protobufjs: 8.3.0
+      protobufjs: 8.6.3
     transitivePeerDependencies:
       - encoding
       - supports-color
@@ -11641,7 +11638,7 @@ snapshots:
     dependencies:
       lodash.camelcase: 4.3.0
       long: 5.3.2
-      protobufjs: 8.3.0
+      protobufjs: 8.6.3
       yargs: 17.7.2
     optional: true
 
@@ -11649,7 +11646,7 @@ snapshots:
     dependencies:
       lodash.camelcase: 4.3.0
       long: 5.3.2
-      protobufjs: 8.3.0
+      protobufjs: 8.6.3
       yargs: 17.7.2
     optional: true
 
@@ -13898,7 +13895,7 @@ snapshots:
       '@types/caseless': 0.12.5
       '@types/node': 25.9.3
       '@types/tough-cookie': 4.0.5
-      form-data: 2.5.5
+      form-data: 4.0.6
     optional: true
 
   '@types/sax@1.2.7':
@@ -14422,7 +14419,7 @@ snapshots:
   axios@1.16.1:
     dependencies:
       follow-redirects: 1.16.0
-      form-data: 4.0.5
+      form-data: 4.0.6
       https-proxy-agent: 5.0.1
       proxy-from-env: 2.1.0
     transitivePeerDependencies:
@@ -15449,7 +15446,7 @@ snapshots:
       es-errors: 1.3.0
       get-intrinsic: 1.3.0
       has-tostringtag: 1.0.2
-      hasown: 2.0.3
+      hasown: 2.0.4
 
   esast-util-from-estree@2.0.0:
     dependencies:
@@ -16004,22 +16001,12 @@ snapshots:
     dependencies:
       tiny-inflate: 1.0.3
 
-  form-data@2.5.5:
+  form-data@4.0.6:
     dependencies:
       asynckit: 0.4.0
       combined-stream: 1.0.8
       es-set-tostringtag: 2.1.0
-      hasown: 2.0.3
-      mime-types: 2.1.35
-      safe-buffer: 5.2.1
-    optional: true
-
-  form-data@4.0.5:
-    dependencies:
-      asynckit: 0.4.0
-      combined-stream: 1.0.8
-      es-set-tostringtag: 2.1.0
-      hasown: 2.0.3
+      hasown: 2.0.4
       mime-types: 2.1.35
 
   formdata-polyfill@4.0.10:
@@ -16217,7 +16204,7 @@ snapshots:
       node-fetch: 2.7.0
       object-hash: 3.0.0
       proto3-json-serializer: 2.0.2
-      protobufjs: 8.3.0
+      protobufjs: 8.6.3
       retry-request: 7.0.2
       uuid: 14.0.0
     transitivePeerDependencies:
@@ -18580,10 +18567,10 @@ snapshots:
 
   proto3-json-serializer@2.0.2:
     dependencies:
-      protobufjs: 8.3.0
+      protobufjs: 8.6.3
     optional: true
 
-  protobufjs@8.3.0:
+  protobufjs@8.6.3:
     dependencies:
       long: 5.3.2
     optional: true
