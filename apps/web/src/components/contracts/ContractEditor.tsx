@@ -81,6 +81,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [notes, setNotes] = useState(contract?.notes ?? '');
   const [terms, setTerms] = useState(contract?.terms ?? '');
   const [liveEstimate, setLiveEstimate] = useState<ContractEstimate | null>(null);
+  const [estimateFailed, setEstimateFailed] = useState(false);
 
   // ---- reference data ------------------------------------------------------
   const [orgs, setOrgs] = useState<Organization[]>([]);
@@ -127,10 +128,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
   const loadEstimate = useCallback(async () => {
     if (!contract) return;
-    const res = await getContractEstimate(contract.id);
+    let res: Response;
+    try {
+      res = await getContractEstimate(contract.id);
+    } catch {
+      setEstimateFailed(true); return;
+    }
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) return; // estimate is best-effort; the static fallback still shows
+    if (!res.ok) { setEstimateFailed(true); return; }
     const body = (await res.json().catch(() => null)) as { data?: ContractEstimate } | null;
+    setEstimateFailed(false);
     setLiveEstimate(body?.data ?? null);
   }, [contract]);
 
@@ -597,6 +604,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 {liveEstimate && liveEstimate.lines.some((l) => l.live) && (
                   <p className="mt-1 text-xs text-muted-foreground">
                     Includes live device / seat counts as of today.
+                  </p>
+                )}
+                {!liveEstimate && estimateFailed && (
+                  <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
+                    Couldn&rsquo;t load live counts{estimate.hasAuto ? ' — per-device/seat lines are not included in this total.' : '.'}{' '}
+                    <button type="button" onClick={() => void loadEstimate()} className="underline hover:text-foreground">Retry</button>
                   </p>
                 )}
               </>

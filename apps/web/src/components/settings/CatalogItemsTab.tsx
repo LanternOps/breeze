@@ -22,6 +22,7 @@ interface Sort { key: SortKey; dir: 'asc' | 'desc' }
 
 interface ExpandState {
   loading: boolean;
+  failed: boolean;
   components: BundleComponentRow[];
   economics: BundleEconomics | null;
 }
@@ -114,18 +115,22 @@ export default function CatalogItemsTab() {
       void Promise.all([getCatalogItem(it.id), getBundleEconomics(it.id)])
         .then(async ([detailRes, econRes]) => {
           if (detailRes.status === 401 || econRes.status === 401) return UNAUTHORIZED();
-          const detail = detailRes.ok
-            ? ((await detailRes.json().catch(() => null)) as { data?: CatalogItemDetail } | null)?.data ?? null
-            : null;
+          // The component list is the load-bearing read; a failure must NOT render
+          // as "empty bundle" (that misrepresents contents). Economics is optional.
+          if (!detailRes.ok) {
+            setExpanded((p) => (p[it.id] ? { ...p, [it.id]: { loading: false, failed: true, components: [], economics: null } } : p));
+            return;
+          }
+          const detail = ((await detailRes.json().catch(() => null)) as { data?: CatalogItemDetail } | null)?.data ?? null;
           const econ = econRes.ok
             ? ((await econRes.json().catch(() => null)) as { data?: BundleEconomics } | null)?.data ?? null
             : null;
           setExpanded((p) => (p[it.id]
-            ? { ...p, [it.id]: { loading: false, components: detail?.components ?? [], economics: econ } }
+            ? { ...p, [it.id]: { loading: false, failed: false, components: detail?.components ?? [], economics: econ } }
             : p));
         })
-        .catch(() => setExpanded((p) => (p[it.id] ? { ...p, [it.id]: { loading: false, components: [], economics: null } } : p)));
-      return { ...prev, [it.id]: { loading: true, components: [], economics: null } };
+        .catch(() => setExpanded((p) => (p[it.id] ? { ...p, [it.id]: { loading: false, failed: true, components: [], economics: null } } : p)));
+      return { ...prev, [it.id]: { loading: true, failed: false, components: [], economics: null } };
     });
   }, []);
 
@@ -371,6 +376,11 @@ export default function CatalogItemsTab() {
                           <td colSpan={7} className="px-3 py-3">
                             {exp.loading ? (
                               <p className="pl-6 text-xs text-muted-foreground">Loading components.</p>
+                            ) : exp.failed ? (
+                              <p className="pl-6 text-xs text-destructive">
+                                Couldn&rsquo;t load components.{' '}
+                                <button type="button" onClick={() => { toggleExpand(it); toggleExpand(it); }} className="underline hover:text-foreground">Retry</button>
+                              </p>
                             ) : exp.components.length === 0 ? (
                               <p className="pl-6 text-xs text-muted-foreground">This bundle has no components yet.</p>
                             ) : (

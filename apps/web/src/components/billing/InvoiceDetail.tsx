@@ -148,6 +148,10 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           // Clipboard blocked (insecure context / permissions) — surface the URL.
           window.prompt('Share this payment link with your customer:', url);
         }
+      } else {
+        // 200 without a URL shouldn't happen (the API throws STRIPE_NO_URL), but
+        // never leave a money action with no feedback.
+        showToast({ type: 'error', message: 'No payment link was returned. Try again.' });
       }
     } catch (err) {
       handleActionError(err, 'Could not create a payment link.');
