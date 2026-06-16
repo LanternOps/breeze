@@ -207,7 +207,9 @@ describe('approver device routes', () => {
       isPlatformBound: true,
     });
     mobileHwKeyMocks.issueMobileRegistrationNonce.mockResolvedValue('reg-nonce-abc');
-    mobileHwKeyMocks.consumeMobileRegistrationNonce.mockResolvedValue('reg-nonce-abc');
+    // consume now returns the {nonce, issuedAt} shape (issued-at travels with
+    // the nonce for the recency clock; registration only uses .nonce).
+    mobileHwKeyMocks.consumeMobileRegistrationNonce.mockResolvedValue({ nonce: 'reg-nonce-abc', issuedAt: Date.now() });
     mobileHwKeyMocks.verifyMobileSignature.mockReturnValue(true);
     app = new Hono();
     app.route('/authenticator', authenticatorRoutes);

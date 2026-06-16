@@ -17,17 +17,44 @@ export function verifyMobileSignature(input: { publicKeySpkiB64: string; payload
   }
 }
 
+/** A consumed assertion nonce carries the epoch-ms it was ISSUED so the L3/L4
+ *  recency gate can bound how stale the signed challenge was — derived
+ *  server-side from the stored value, never trusted from the client/route. */
+export interface ConsumedNonce {
+  nonce: string;
+  issuedAt: number;
+}
+
+// Stored value is `<issuedAtMs>:<nonce>` so the recency clock travels with the
+// nonce (Redis TTL alone proves "within window", but the explicit issued-at
+// gives an exact server-side age for the L3 recency bound and audit).
+function encodeNonce(nonce: string, issuedAt: number): string {
+  return `${issuedAt}:${nonce}`;
+}
+function decodeNonce(stored: string): ConsumedNonce {
+  const sep = stored.indexOf(':');
+  // Legacy/raw value (no issued-at prefix): treat as issued "now" so a nonce
+  // written before this change still verifies (it was alive → within TTL).
+  if (sep === -1) return { nonce: stored, issuedAt: Date.now() };
+  const issuedAt = Number(stored.slice(0, sep));
+  return {
+    nonce: stored.slice(sep + 1),
+    issuedAt: Number.isFinite(issuedAt) ? issuedAt : Date.now(),
+  };
+}
+
 async function issueNonce(key: string, ttl: number): Promise<string> {
   const nonce = crypto.randomBytes(32).toString('base64url');
   const redis = getRedis();
   if (!redis) throw new Error('redis unavailable');
-  await redis.setex(key, ttl, nonce);
+  await redis.setex(key, ttl, encodeNonce(nonce, Date.now()));
   return nonce;
 }
-async function consumeNonce(key: string): Promise<string | null> {
+async function consumeNonce(key: string): Promise<ConsumedNonce | null> {
   const redis = getRedis();
   if (!redis) throw new Error('redis unavailable');
-  return redis.getdel(key);
+  const stored = await redis.getdel(key);
+  return stored == null ? null : decodeNonce(stored);
 }
 
 export const issueMobileRegistrationNonce = (userId: string) => issueNonce(regKey(userId), REG_TTL);

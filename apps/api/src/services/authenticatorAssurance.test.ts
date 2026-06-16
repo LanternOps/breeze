@@ -213,7 +213,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
       publicKey: spkiB64,
       signCount: 7,
     });
-    mockConsumeNonce.mockResolvedValue(nonce);
+    mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
 
     const d = await assertApprovalAssurance({
       approvalId: 'appr-1',
@@ -245,7 +245,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
       publicKey: spkiB64,
       signCount: 7,
     });
-    mockConsumeNonce.mockResolvedValue(issuedNonce);
+    mockConsumeNonce.mockResolvedValue({ nonce: issuedNonce, issuedAt: Date.now() });
 
     await expect(
       assertApprovalAssurance({
@@ -271,7 +271,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
       publicKey: enrolled.spkiB64, // stored = the enrolled device's key
       signCount: 7,
     });
-    mockConsumeNonce.mockResolvedValue(nonce);
+    mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
 
     await expect(
       assertApprovalAssurance({
@@ -296,7 +296,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
       signCount: 7,
     });
     // server issued a different nonce than the proof claims
-    mockConsumeNonce.mockResolvedValue('the-real-server-nonce');
+    mockConsumeNonce.mockResolvedValue({ nonce: 'the-real-server-nonce', issuedAt: Date.now() });
 
     await expect(
       assertApprovalAssurance({
@@ -358,7 +358,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
       publicKey: spkiB64,
       signCount: 7,
     });
-    mockConsumeNonce.mockResolvedValue(nonce);
+    mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
 
     await expect(
       assertApprovalAssurance({
@@ -384,8 +384,12 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
 
   /** A valid high-tier (L3) mobile approval context. `challengeAgeMs` controls
    * how long ago the assertion challenge was issued — fresh satisfies the
-   * recency window, stale fails it. The signature is REAL (RSA over the nonce)
-   * and the device row is wired through the shared db mock. */
+   * recency window, stale fails it. The recency timestamp is the issued-at the
+   * *consume path itself returns* (Redis carries it alongside the nonce) — the
+   * decide route does NOT thread it; the guard derives it internally. This
+   * mirrors the real callers (approvals.ts / pam.ts), which pass NO
+   * challengeIssuedAt. The signature is REAL (RSA over the nonce) and the device
+   * row is wired through the shared db mock. */
   function highApprovalCtx(opts: { challengeAgeMs?: number; isPlatformBound?: boolean } = {}) {
     const { spkiB64, privateKey } = makeDeviceKeypair();
     const nonce = 'server-nonce-L3';
@@ -398,18 +402,24 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
       signCount: 0,
       isPlatformBound: opts.isPlatformBound ?? true,
     });
-    mockConsumeNonce.mockResolvedValue(nonce);
+    // consume returns the issued-at the server stored with the nonce — this is
+    // the recency clock, derived server-side, never client/route supplied.
+    mockConsumeNonce.mockResolvedValue({
+      nonce,
+      issuedAt: Date.now() - (opts.challengeAgeMs ?? 5_000),
+    });
     return {
       approvalId: 'appr-1',
       userId: 'user-1',
       riskTier: 'high' as const,
       proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
-      challengeIssuedAt: Date.now() - (opts.challengeAgeMs ?? 5_000),
     };
   }
 
   /** A critical-tier (L4) mobile approval context. Adds the platform-bound key +
-   * fresh re-auth flag on top of the L3 recency requirement. */
+   * fresh re-auth flag on top of the L3 recency requirement. `reauthVerified` is
+   * the ONLY route-supplied factor (a fresh re-auth completed at the decide
+   * surface); recency is still derived from the consumed nonce's issued-at. */
   function criticalCtx(opts: { reauth?: boolean; isPlatformBound?: boolean; challengeAgeMs?: number } = {}) {
     const { spkiB64, privateKey } = makeDeviceKeypair();
     const nonce = 'server-nonce-L4';
@@ -422,13 +432,15 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
       signCount: 0,
       isPlatformBound: opts.isPlatformBound ?? true,
     });
-    mockConsumeNonce.mockResolvedValue(nonce);
+    mockConsumeNonce.mockResolvedValue({
+      nonce,
+      issuedAt: Date.now() - (opts.challengeAgeMs ?? 5_000),
+    });
     return {
       approvalId: 'appr-1',
       userId: 'user-1',
       riskTier: 'critical' as const,
       proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
-      challengeIssuedAt: Date.now() - (opts.challengeAgeMs ?? 5_000),
       reauthVerified: opts.reauth ?? false,
     };
   }
@@ -439,6 +451,16 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
     expect(fresh.decidedAssuranceLevel).toBe(3);
     await expect(assertApprovalAssurance(highApprovalCtx({ challengeAgeMs: 130_000 })))
       .rejects.toThrow(/expired|recency/i);
+  });
+
+  // The breakage the verifier caught: a real high-tier caller passes NO
+  // challengeIssuedAt — recency must come from the consumed nonce, not throw.
+  it('L3 (high) resolves WITHOUT a route-supplied challengeIssuedAt (real-caller shape)', async () => {
+    const ctx = highApprovalCtx({ challengeAgeMs: 10_000 });
+    // sanity: the context the routes build carries no recency param of its own
+    expect('challengeIssuedAt' in ctx).toBe(false);
+    const d = await assertApprovalAssurance(ctx);
+    expect(d.decidedAssuranceLevel).toBe(3);
   });
 
   // L4: critical needs hardware-bound key AND a fresh re-auth assertion.

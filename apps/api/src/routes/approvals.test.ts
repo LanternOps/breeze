@@ -74,19 +74,28 @@ vi.mock('../services/authenticatorAssurance', () => ({
     pinVerified: false,
   })),
   // Real error classes so the route's `instanceof` checks resolve (the route
-  // imports StepUpRequiredError for the Phase 4 403 mapping).
+  // imports StepUpRequiredError for the Phase 4 403 mapping and
+  // ReauthRequiredError for the critical-tier 401 'reauth_required' mapping).
   StepUpRequiredError: class StepUpRequiredError extends Error {
     constructor(public requiredLevel: number, public achievedLevel: number) {
       super('step-up required');
       this.name = 'StepUpRequiredError';
     }
   },
-  PinVerificationError: class PinVerificationError extends Error {
-    constructor(public locked: boolean) {
-      super('pin');
-      this.name = 'PinVerificationError';
+  ReauthRequiredError: class ReauthRequiredError extends Error {
+    constructor() {
+      super('fresh account re-authentication required for this approval');
+      this.name = 'ReauthRequiredError';
     }
   },
+}));
+
+// The approve route imports requireCurrentPasswordStepUp from ./auth/helpers
+// (L4 re-auth). Stub it so the heavy services barrel that helpers pulls in does
+// not load into this suite. Default: password verification passes (returns
+// null). Only invoked when a reauthPassword is present in the body.
+vi.mock('./auth/helpers', () => ({
+  requireCurrentPasswordStepUp: vi.fn(async () => null),
 }));
 
 vi.mock('../services/approverWebAuthn', () => ({
@@ -130,9 +139,10 @@ vi.mock('../middleware/auth', () => ({
 import { approvalRoutes } from './approvals';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
+import { requireCurrentPasswordStepUp } from './auth/helpers';
 
 function buildApp() {
   const app = new Hono();
@@ -223,6 +233,9 @@ beforeEach(() => {
     allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
     userVerification: 'required',
   } as any);
+  // Re-establish the default "password ok" (null = no error) after clearAllMocks
+  // wipes the factory implementation; per-case overrides set their own.
+  vi.mocked(requireCurrentPasswordStepUp).mockResolvedValue(null);
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -745,6 +758,103 @@ describe('POST /approvals/:id/approve with assertion proof', () => {
         authenticatorDeviceId: 'mobile-dev-1',
       }),
     );
+  });
+
+  // L4 re-auth wiring (the gap the assurance redesign fixes): the route must
+  // VERIFY a fresh password and thread reauthVerified into the guard — and must
+  // NOT thread a challengeIssuedAt (recency is server-derived from the consumed
+  // challenge, not route-supplied). Without this wiring a critical approval with
+  // a valid signature would 401 forever.
+  it('verifies reauthPassword and threads reauthVerified:true (no challengeIssuedAt) into the guard', async () => {
+    vi.mocked(requireCurrentPasswordStepUp).mockResolvedValueOnce(null); // password ok
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 4,
+      decidedAssuranceLevel: 4,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'mobile-dev-1',
+      pinVerified: false,
+    });
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof, reauthPassword: 'hunter2' }),
+    });
+    expect(res.status).toBe(200);
+    expect(requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST_USER.id,
+      'hunter2',
+      'approval:reauth',
+    );
+    const call = vi.mocked(assertApprovalAssurance).mock.calls[0]![0];
+    expect(call.reauthVerified).toBe(true);
+    // recency is server-derived, NEVER route-supplied
+    expect('challengeIssuedAt' in call).toBe(false);
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({ decidedAssuranceLevel: 4 }),
+    );
+  });
+
+  it('defaults reauthVerified:false when no reauthPassword is supplied', async () => {
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+    await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof }),
+    });
+    expect(requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+    expect(vi.mocked(assertApprovalAssurance).mock.calls[0]![0].reauthVerified).toBe(false);
+    expect(set).toHaveBeenCalled();
+  });
+
+  it('returns 401 reauth_required when the guard throws ReauthRequiredError (critical w/o re-auth)', async () => {
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(new ReauthRequiredError());
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof }),
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe('reauth_required');
+    // re-auth required is NOT a silent downgrade — no decision is written.
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits with the helper response when reauthPassword is rejected', async () => {
+    // helper returns its own 401 Response for a bad password
+    vi.mocked(requireCurrentPasswordStepUp).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const set = mockDecideFlow({
+      existing: { ...updatedRow, status: 'pending' },
+      updateReturns: [updatedRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof, reauthPassword: 'wrong' }),
+    });
+    expect(res.status).toBe(401);
+    // the assurance guard is never reached, no decision is written
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
   });
 
   // PIN step-up cases removed: the static approver PIN was dropped in favor of

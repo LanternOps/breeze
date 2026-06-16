@@ -216,14 +216,14 @@ authenticatorRoutes.post(
 
     // Consume the single-use nonce first; a missing/expired nonce is a 400 and
     // the signature is never checked (no oracle).
-    const nonce = await consumeMobileRegistrationNonce(auth.user.id);
-    if (!nonce) {
+    const consumed = await consumeMobileRegistrationNonce(auth.user.id);
+    if (!consumed) {
       return c.json({ error: 'Registration challenge expired or missing' }, 400);
     }
 
     const verified = verifyMobileSignature({
       publicKeySpkiB64: publicKey,
-      payload: nonce,
+      payload: consumed.nonce,
       signatureB64: signature,
     });
     if (!verified) {

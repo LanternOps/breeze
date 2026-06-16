@@ -76,31 +76,59 @@ describe('verifyMobileSignature', () => {
 });
 
 describe('mobile nonce helpers', () => {
-  it('issueMobileRegistrationNonce stores a 32-byte base64url nonce at mobile-reg:<userId> for 300s', async () => {
+  it('issueMobileRegistrationNonce stores <issuedAt>:<nonce> at mobile-reg:<userId> for 300s', async () => {
+    const before = Date.now();
     const nonce = await issueMobileRegistrationNonce('u1');
-    expect(redisMock.setex).toHaveBeenCalledWith('mobile-reg:u1', 300, nonce);
     // 32 random bytes -> 43 base64url chars (no padding), url-safe alphabet only
     expect(nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // stored value carries the issued-at prefix: `<epochMs>:<nonce>`
+    const [key, ttl, stored] = redisMock.setex.mock.calls[0]!;
+    expect(key).toBe('mobile-reg:u1');
+    expect(ttl).toBe(300);
+    const sep = (stored as string).indexOf(':');
+    const issuedAt = Number((stored as string).slice(0, sep));
+    expect((stored as string).slice(sep + 1)).toBe(nonce);
+    expect(issuedAt).toBeGreaterThanOrEqual(before);
   });
 
-  it('issueMobileAssertionNonce stores a 32-byte base64url nonce at mobile-assertion:<approvalId>:<userId> for 120s', async () => {
+  it('issueMobileAssertionNonce stores <issuedAt>:<nonce> at mobile-assertion:<approvalId>:<userId> for 120s', async () => {
+    const before = Date.now();
     const nonce = await issueMobileAssertionNonce('ap1', 'u1');
-    expect(redisMock.setex).toHaveBeenCalledWith('mobile-assertion:ap1:u1', 120, nonce);
     expect(nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const [key, ttl, stored] = redisMock.setex.mock.calls[0]!;
+    expect(key).toBe('mobile-assertion:ap1:u1');
+    expect(ttl).toBe(120);
+    const sep = (stored as string).indexOf(':');
+    const issuedAt = Number((stored as string).slice(0, sep));
+    expect((stored as string).slice(sep + 1)).toBe(nonce);
+    expect(issuedAt).toBeGreaterThanOrEqual(before);
   });
 
-  it('consumeMobileRegistrationNonce getdels the registration key (single-use)', async () => {
-    redisMock.getdel.mockResolvedValue('stored-nonce');
+  it('consumeMobileRegistrationNonce getdels the key and returns {nonce, issuedAt} (single-use)', async () => {
+    redisMock.getdel.mockResolvedValue('1781000000000:stored-nonce');
     const result = await consumeMobileRegistrationNonce('u1');
     expect(redisMock.getdel).toHaveBeenCalledWith('mobile-reg:u1');
-    expect(result).toBe('stored-nonce');
+    expect(result).toEqual({ nonce: 'stored-nonce', issuedAt: 1781000000000 });
   });
 
-  it('consumeMobileAssertionNonce getdels the assertion key (single-use)', async () => {
-    redisMock.getdel.mockResolvedValue('stored-nonce');
+  it('consumeMobileAssertionNonce getdels the key and returns {nonce, issuedAt} (single-use)', async () => {
+    redisMock.getdel.mockResolvedValue('1781000000000:stored-nonce');
     const result = await consumeMobileAssertionNonce('ap1', 'u1');
     expect(redisMock.getdel).toHaveBeenCalledWith('mobile-assertion:ap1:u1');
-    expect(result).toBe('stored-nonce');
+    expect(result).toEqual({ nonce: 'stored-nonce', issuedAt: 1781000000000 });
+  });
+
+  it('consume returns null when the key is absent (expired / never issued)', async () => {
+    redisMock.getdel.mockResolvedValue(null);
+    expect(await consumeMobileAssertionNonce('ap1', 'u1')).toBeNull();
+  });
+
+  it('consume tolerates a legacy bare nonce (no issued-at prefix) as issued-now', async () => {
+    const before = Date.now();
+    redisMock.getdel.mockResolvedValue('legacy-bare-nonce');
+    const result = await consumeMobileAssertionNonce('ap1', 'u1');
+    expect(result?.nonce).toBe('legacy-bare-nonce');
+    expect(result?.issuedAt).toBeGreaterThanOrEqual(before);
   });
 
   it('issue throws when redis is unavailable', async () => {

@@ -41,8 +41,9 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
-import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import { requireCurrentPasswordStepUp } from './auth/helpers';
 import {
   assertionProofSchema,
   mobileHwKeyProofSchema,
@@ -311,6 +312,10 @@ const respondSchema = z.object({
   // Present-but-invalid → 401 (NOT a silent downgrade). When the partner policy
   // enforces, an under-assured APPROVE is rejected (403); a deny is never blocked.
   proof: z.union([mobileHwKeyProofSchema, assertionProofSchema]).optional(),
+  // L4 (critical) re-auth: a fresh account password the technician re-enters to
+  // satisfy the critical-tier re-authentication factor (spec §5). Verified
+  // server-side; absent → reauthVerified=false (only a critical approve needs it).
+  reauthPassword: z.string().min(1).max(256).optional(),
 });
 
 // Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
@@ -393,6 +398,23 @@ pamRoutes.post(
     const approve = body.decision === 'approve';
     const durationMinutes = body.durationMinutes ?? DEFAULT_APPROVAL_DURATION_MINUTES;
 
+    // L4 (critical) re-auth: verify the fresh password BEFORE opening the
+    // transaction (it does its own DB/Redis work; we don't want it holding the
+    // txn open). A bad/rate-limited password short-circuits with the helper's
+    // own 401/429/503; absent → reauthVerified=false (only a critical approve
+    // needs it, which then 401s 'reauth_required' so the client can retry).
+    let reauthVerified = false;
+    if (body.reauthPassword) {
+      const reauthError = await requireCurrentPasswordStepUp(
+        c,
+        auth.user.id,
+        body.reauthPassword,
+        'pam:reauth'
+      );
+      if (reauthError) return reauthError;
+      reauthVerified = true;
+    }
+
     let result:
       | { kind: 'not_found' }
       | { kind: 'forbidden' }
@@ -425,10 +447,13 @@ pamRoutes.post(
           return { kind: 'forbidden' as const };
         }
 
-        // Phase 2/3: verify an optional assertion proof + PIN. No proof → L1
-        // session tap. A presented-but-invalid proof/PIN throws → 401 (NOT a
-        // silent downgrade). Phase 4: an ENFORCING partner policy may reject an
-        // under-assured APPROVE (StepUpRequiredError → 403); the deny path passes
+        // Phase 2/3: verify an optional assertion proof. No proof → L1 session
+        // tap. A presented-but-invalid proof throws → 401 (NOT a silent
+        // downgrade). The L3 recency clock is derived server-side from the
+        // consumed challenge (no param); `reauthVerified` is the only
+        // decide-surface factor (verified above; required for critical/L4).
+        // Phase 4: an ENFORCING partner policy may reject an under-assured
+        // APPROVE (StepUpRequiredError → 403); the deny path passes
         // decision:'denied' so it is never blocked.
         let assurance;
         try {
@@ -439,9 +464,11 @@ pamRoutes.post(
             proof: body.proof,
             partnerId: auth.partnerId ?? null,
             decision: body.decision === 'approve' ? 'approved' : 'denied',
+            reauthVerified,
           });
         } catch (err) {
           if (err instanceof StepUpRequiredError) throw err; // → 403 at the outer catch
+          if (err instanceof ReauthRequiredError) throw err; // → 401 reauth_required at the outer catch
           console.error('[PAM] assertion verification failed:', err);
           throw new AssertionFailedError();
         }
@@ -517,6 +544,12 @@ pamRoutes.post(
         // Phase 4: an enforcing policy requires a higher assurance than this
         // approve achieved. Only ever thrown for an approve — a deny is exempt.
         return c.json({ success: false, error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
+      }
+      if (err instanceof ReauthRequiredError) {
+        // Critical (L4) approve with a valid signature but no fresh re-auth —
+        // tell the client to re-collect the password and retry (not a generic
+        // failure). Only ever thrown for an approve.
+        return c.json({ success: false, error: 'reauth_required' }, 401);
       }
       if (err instanceof AssertionFailedError) {
         // Presented-but-bad proof — fail closed (401), never downgrade to L1.

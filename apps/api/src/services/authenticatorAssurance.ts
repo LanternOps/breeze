@@ -122,10 +122,13 @@ export function resolveElevationAssurance(riskTierNum: number | null): Assurance
  * The L3/L4 ladder is derived from the SAME signature plus context — no PIN:
  *  - L3 (high): the verified L2 signature, plus a RECENCY check — the
  *    approval-assertion challenge must have been issued within
- *    `APPROVAL_CHALLENGE_TTL_MS` (a stale-but-valid signature is rejected).
+ *    `APPROVAL_CHALLENGE_TTL_MS`. The issued-at is read server-side from the
+ *    consumed challenge (it travels with the nonce in Redis), NOT supplied by
+ *    the route — so a stale-but-valid signature is rejected automatically.
  *  - L4 (critical): L3 conditions, plus a hardware/platform-bound key
  *    (`device.is_platform_bound`) and a FRESH account re-authentication
- *    (`reauthVerified === true`, satisfied inline at the decide surface).
+ *    (`reauthVerified === true`, satisfied inline at the decide surface — this
+ *    is the only route-supplied factor).
  *
  * Non-blocking by design:
  *  - No proof presented → today's behavior (session tap, L1). NEVER blocks here.
@@ -148,11 +151,10 @@ export async function assertApprovalAssurance(input: {
   partnerId?: string | null;
   /** Phase 4: enforcement applies to an approve only — a deny is never blocked. */
   decision?: 'approved' | 'denied';
-  /** L3 recency: epoch ms the approval-assertion challenge was issued. Required
-   * to reach L3+ (high/critical) — absence or staleness fails the recency gate. */
-  challengeIssuedAt?: number | null;
   /** L4 re-auth: a fresh account re-authentication completed at the decide
-   * surface (password / login-MFA). Required to reach L4 (critical). */
+   * surface (password / login-MFA). Required to reach L4 (critical). The L3
+   * recency clock is NOT a parameter — it is derived server-side from the
+   * consumed challenge's issued-at, so a real caller passes nothing for it. */
   reauthVerified?: boolean;
 }): Promise<AssuranceDecision> {
   // 1. Establish the achieved factor. No proof → session tap, L1. A
@@ -169,7 +171,6 @@ export async function assertApprovalAssurance(input: {
     decision = {
       requiredLevel: resolveApprovalAssurance(input.riskTier).requiredLevel,
       decidedAssuranceLevel: escalateAchievedLevel(input.riskTier, factor, {
-        challengeIssuedAt: input.challengeIssuedAt ?? null,
         reauthVerified: input.reauthVerified ?? false,
       }),
       decidedVia: factor.decidedVia,
@@ -198,33 +199,38 @@ export async function assertApprovalAssurance(input: {
 }
 
 /** The result of a verified L2 factor — carries the device's platform-bound
- * flag so the L4 escalation can gate on a hardware/platform-bound key. */
+ * flag so the L4 escalation can gate on a hardware/platform-bound key, and the
+ * epoch-ms the signed challenge was ISSUED so the L3 recency gate has an exact,
+ * server-derived age (the consume path reads it from Redis; it is never trusted
+ * from the route/client). */
 interface VerifiedFactor {
   decidedVia: AssuranceDecision['decidedVia'];
   authenticatorDeviceId: string;
   isPlatformBound: boolean;
+  challengeIssuedAt: number;
 }
 
 /**
  * Derive the achieved assurance level from a verified L2 factor plus the
- * tier's recency / re-auth context. The L2 signature is always the base; high
- * adds a recency window, critical adds a platform-bound key + fresh re-auth.
- * Throws (never silently downgrades) when a higher tier's factor is missing.
+ * tier's re-auth context. The L2 signature is always the base; high adds a
+ * recency window (read from the factor's server-derived challenge issued-at),
+ * critical adds a platform-bound key + fresh re-auth. Throws (never silently
+ * downgrades) when a higher tier's factor is missing.
  */
 function escalateAchievedLevel(
   riskTier: RiskTier,
   factor: VerifiedFactor,
-  ctx: { challengeIssuedAt: number | null; reauthVerified: boolean },
+  ctx: { reauthVerified: boolean },
 ): AssuranceLevel {
   // low / medium are satisfied by the L2 factor alone.
   if (riskTier !== 'high' && riskTier !== 'critical') return 2;
 
-  // L3 recency: the signed challenge must have been issued within the window.
-  // No issuance timestamp = cannot prove freshness = fail (never silent L2).
-  if (ctx.challengeIssuedAt == null) {
-    throw new RecencyExpiredError(Infinity);
-  }
-  const ageMs = Date.now() - ctx.challengeIssuedAt;
+  // L3 recency: the signed challenge must have been ISSUED within the window.
+  // The issued-at travels with the consumed challenge (Redis), so a verified L2
+  // factor inherently proves freshness — but we re-assert the explicit bound so
+  // a window TIGHTER than the Redis TTL (or a clock-skew edge) still fails
+  // closed rather than silently recording L2.
+  const ageMs = Date.now() - factor.challengeIssuedAt;
   if (ageMs > APPROVAL_CHALLENGE_TTL_MS) {
     throw new RecencyExpiredError(ageMs);
   }
@@ -260,7 +266,7 @@ async function verifyWebauthnFactor(
     .limit(1);
   if (!device) throw new Error('authenticator device not registered or disabled');
 
-  const { verified, newSignCount } = await verifyApprovalAssertion({
+  const { verified, newSignCount, challengeIssuedAt } = await verifyApprovalAssertion({
     approvalId,
     userId,
     response: {
@@ -295,6 +301,7 @@ async function verifyWebauthnFactor(
     decidedVia: 'webauthn_platform',
     authenticatorDeviceId: device.id,
     isPlatformBound: device.isPlatformBound === true,
+    challengeIssuedAt,
   };
 }
 
@@ -328,14 +335,15 @@ async function verifyMobileFactor(
 
   // Single-use nonce: getdel so a replay finds nothing. Must match the nonce the
   // client signed (defeats a client that signs an arbitrary self-chosen string).
-  const serverNonce = await consumeMobileAssertionNonce(approvalId, userId);
-  if (!serverNonce || serverNonce !== proof.nonce) {
+  // The consumed value carries the issued-at — the L3/L4 recency clock.
+  const consumed = await consumeMobileAssertionNonce(approvalId, userId);
+  if (!consumed || consumed.nonce !== proof.nonce) {
     throw new Error('mobile assertion nonce missing or mismatched');
   }
 
   const verified = verifyMobileSignature({
     publicKeySpkiB64: device.publicKey,
-    payload: serverNonce,
+    payload: consumed.nonce,
     signatureB64: proof.signature,
   });
   if (!verified) throw new Error('mobile assertion signature verification failed');
@@ -351,5 +359,6 @@ async function verifyMobileFactor(
     decidedVia: 'mobile_hw_key',
     authenticatorDeviceId: device.id,
     isPlatformBound: device.isPlatformBound === true,
+    challengeIssuedAt: consumed.issuedAt,
   };
 }
