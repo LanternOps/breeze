@@ -58,6 +58,7 @@ const MAPPING_ROW = {
   entraTenantId: TID,
   createdAt: new Date(),
   updatedAt: new Date(),
+  aiForOfficeEnabled: true,
 };
 
 function selectChain(rows: unknown[]) {
@@ -97,6 +98,14 @@ describe('client-ai admin — tenant mapping', () => {
     expect(res.status).toBe(401);
   });
 
+  it('404s when the caller partner has AI for Office disabled', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ aiForOfficeEnabled: false }]));
+    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/tenant-mapping`, {
+      headers: AUTHED,
+    });
+    expect(res.status).toBe(404);
+  });
+
   it('404s for an org outside the caller scope (no existence oracle)', async () => {
     const res = await buildApp().request(
       `/client-ai/admin/orgs/${OTHER_ORG_ID}/tenant-mapping`,
@@ -115,7 +124,10 @@ describe('client-ai admin — tenant mapping', () => {
   });
 
   it('GET returns mapping: null when absent', async () => {
-    dbSelectMock.mockImplementation(() => selectChain([]));
+    // First db.select is the partner entitlement gate; second is the mapping lookup.
+    dbSelectMock
+      .mockImplementationOnce(() => selectChain([{ aiForOfficeEnabled: true }]))
+      .mockImplementationOnce(() => selectChain([]));
     const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/tenant-mapping`, {
       headers: AUTHED,
     });

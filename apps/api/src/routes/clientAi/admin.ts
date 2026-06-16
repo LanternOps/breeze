@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
+import { partners } from '../../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -39,9 +40,23 @@ const requireOrgsWrite = requirePermission(
 clientAiAdminRoutes.use('*', authMiddleware);
 
 // Whole group is dark unless the add-in app registration is configured.
+// Secondary defense-in-depth: a partner whose AI for Office entitlement is
+// disabled cannot reach the admin config surface. System callers (no partnerId)
+// are not partner-scoped and pass this layer unconditionally.
 clientAiAdminRoutes.use('*', async (c, next) => {
   if (!CLIENT_AI_ENTRA_CLIENT_ID) {
     return c.json({ error: 'Breeze AI for Office is not enabled' }, 404);
+  }
+  const auth = c.get('auth');
+  if (auth?.partnerId) {
+    const [partner] = await db
+      .select({ aiForOfficeEnabled: partners.aiForOfficeEnabled })
+      .from(partners)
+      .where(eq(partners.id, auth.partnerId))
+      .limit(1);
+    if (!partner?.aiForOfficeEnabled) {
+      return c.json({ error: 'Breeze AI for Office is not enabled' }, 404);
+    }
   }
   await next();
 });
