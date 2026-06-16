@@ -13,10 +13,12 @@ invoice: alongside line items it carries an **ordered list of content blocks**
 (headings, rich text, images, pricing tables) so it reads like a proposal, and
 that block model is the natural foundation for the future slide-deck view.
 
-Customers receive a **public tokenized link** (same pattern as the invoice
-Stripe pay-link) where they review, **accept + e-sign** (built-in typed
-signature, tamper-evident), which **auto-creates an invoice** they pay through
-the existing #1422 flow.
+Customers review and **accept + e-sign** (built-in typed signature,
+tamper-evident) either in the **customer portal** (`apps/portal/`, like the
+existing portal invoices) or via a **public tokenized link** for recipients
+without a portal account. Acceptance **auto-creates an invoice** they pay
+through the existing #1422 flow. Internal MSP access is RBAC-scoped with new
+`QUOTES_*` permissions.
 
 Lives under `/api/v1/quotes` (API) and `/quotes` (web), beside Invoices and
 Contracts.
@@ -37,6 +39,15 @@ Contracts.
 - **Accept conversion (§4):** **Option (a)** — conversion creates a single
   invoice; recurring lines shown as their first-period amount. The
   recurring→Contract tie-in is deferred to Phase 4.
+- **Customer portal:** Quotes are viewable and acceptable in the customer
+  portal (`apps/portal/`), following the existing portal-invoices pattern.
+  Two customer-facing access paths share one accept path (§4):
+  authenticated portal users, and a **public tokenized link** for recipients
+  who don't yet have a portal account (typical for prospects).
+- **RBAC:** Internal MSP access is gated by new `QUOTES_*` permissions,
+  registered and seeded exactly like the existing `INVOICES_*` / `CATALOG_*` /
+  `CONTRACTS_*` modules (which are already RBAC-scoped). Portal/customer users
+  have no permission model — access is implicit via org-bound portal session.
 
 ## Existing patterns this builds on
 
@@ -147,16 +158,40 @@ the #1422 flow.
 invoice, spin up a recurring **Contract** for subscription lines while invoicing
 only one-time items — fully tying Quotes ↔ Invoices ↔ Contracts together.
 
-## 4. Public acceptance page + e-sign
+## 4. Customer-facing access + e-sign
 
+Quotes reach customers through **two paths that funnel into one accept flow**:
+
+**(a) Customer portal (`apps/portal/`)** — for org users with portal accounts.
+Mirrors the existing portal-invoices implementation:
+- New `apps/api/src/routes/portal/quotes.ts` under `portalAuthMiddleware`
+  (no RBAC; org-bound by session, like `portal/invoices.ts`). Endpoints:
+  `GET /portal/quotes`, `GET /portal/quotes/:id`, `GET /portal/quotes/:id/pdf`,
+  `POST /portal/quotes/:id/accept`, `POST /portal/quotes/:id/decline`.
+  Filters out drafts; scoped by `eq(quotes.org_id, session.orgId)` as
+  defense-in-depth atop RLS.
+- New portal pages `apps/portal/src/pages/quotes/index.astro` + `[id].astro`,
+  components `QuoteList.tsx` / `QuoteDetailView.tsx`, a sidebar nav entry in
+  `PortalSidebar.tsx`, and client methods in `apps/portal/src/lib/api.ts`.
+- On accept, the acceptance record's signer identity comes from the
+  authenticated `portal_user`.
+
+**(b) Public tokenized link** — for recipients without a portal account
+(prospects). Same mechanism as the invoice pay-link:
 - `GET /quotes/public/:token` — unauthenticated; serves quote JSON + images by
-  signed token (JWT with `jti`, like pay-link). Stamps `first_viewed_at`.
-- Web: a public Astro page renders blocks top-to-bottom (headings, rich text,
+  signed token (JWT with `jti`). Stamps `first_viewed_at`.
+- Public Astro page in `apps/portal/` (alongside login/branding, the existing
+  pre-auth surface) renders blocks top-to-bottom (headings, rich text,
   sanitized images, pricing tables with the recurring summary), with **Accept &
   Sign** / **Decline** actions.
-- Accept: customer types full name (typed signature); record
-  name/email/IP/UA + content hash → `quote_acceptances`, transition to
-  accepted, create invoice, redirect to the invoice pay-link.
+- On accept, signer types their full name; identity comes from the typed
+  signature + token claims.
+
+**Shared accept logic (both paths):** record signer name/email/IP/UA + content
+hash → `quote_acceptances`, transition status to `accepted`, auto-create the
+invoice (§3). Portal users are then routed to the existing
+`POST /portal/invoices/:id/pay`; token users redirect to the invoice's public
+pay-link.
 
 ## 5. API routes
 
@@ -168,11 +203,32 @@ only one-time items — fully tying Quotes ↔ Invoices ↔ Contracts together.
 - `lifecycle.ts` — `issue`, `send`, `decline`, `expire`.
 - `accept.ts` + public sub-router — token view + accept + convert.
 - `pdf.ts` — `GET /:id/pdf` via pdfkit, rendering blocks in order.
-- Permissions: `QUOTES_READ, QUOTES_WRITE, QUOTES_SEND`; reuse `INVOICES_WRITE`
-  for the conversion side.
 
 Use `withDbAccessContext` for request paths; post-commit email runs outside DB
 context (like contracts `generate`).
+
+### RBAC (internal MSP side)
+
+Quotes follow the identical permission pattern already used by Invoices,
+Catalog, and Contracts (all of which are RBAC-scoped today via
+`requirePermission(...)`):
+
+1. **Register constants** in `apps/api/src/services/permissions.ts` `PERMISSIONS`:
+   `QUOTES_READ` (`quotes:read`), `QUOTES_WRITE` (`quotes:write`),
+   `QUOTES_SEND` (`quotes:send`). Conversion reuses `INVOICES_WRITE`.
+2. **Gate every internal route** with
+   `requirePermission(PERMISSIONS.QUOTES_*.resource, .action)` (read on GETs,
+   write on mutations, send on issue/send) — exactly as `invoices/invoices.ts`.
+3. **Seed via migration** (`apps/api/migrations/YYYY-MM-DD-quotes.sql`,
+   idempotent): create the three `permissions` rows, then grant them to the
+   built-in **partner-scope** system roles that already hold `tickets:write`
+   (read+write+send) / `tickets:read` (read only), with `NOT EXISTS` guards —
+   copying `2026-06-15-d-recurring-contracts.sql`.
+
+**Portal/customer side has no RBAC.** `portal/quotes.ts` uses
+`portalAuthMiddleware` only; authorization is the org-bound portal session
+(a customer can act only on their own org's quotes). This matches
+`portal/invoices.ts` and is the correct model for self-service acceptance.
 
 ## 6. Web components
 
@@ -185,9 +241,16 @@ Under `apps/web/src/components/billing/quotes/`:
   recurring buckets), reusing the contract-estimate UX.
 - `QuoteDetail.tsx` — sent/accepted view, acceptance record, convert/invoice
   link.
-- Public: `apps/web/src/pages/quote/[token].astro` + `PublicQuoteView.tsx`.
 - API client: `apps/web/src/lib/api/quotes.ts`; types/format helpers in
   `quoteTypes.ts` (mirror `invoiceTypes.ts`).
+
+**Customer-facing (`apps/portal/`)** — see §4:
+- `pages/quotes/index.astro` + `[id].astro`, `QuoteList.tsx` /
+  `QuoteDetailView.tsx`, `PortalSidebar.tsx` nav entry, `lib/api.ts` methods
+  (`getQuotes`, `getQuote`, `acceptQuote`, `declineQuote`) — mirror the portal
+  invoices files.
+- Public tokenized acceptance page (pre-auth, alongside portal login):
+  `pages/quote/[token].astro` + `PublicQuoteView.tsx`.
 - All mutations wrapped in `runAction` per CLAUDE.md.
 - UI state via `window.location.hash`, not query params.
 
@@ -213,13 +276,21 @@ New `packages/shared/src/validators/quotes.ts`:
   `src/__tests__/integration/*.integration.test.ts`).
 - Public token path: verify unauth access is token-gated and that a tampered
   quote hash mismatches the recorded acceptance.
+- RBAC: route tests asserting `QUOTES_READ`/`WRITE`/`SEND` gates return 403
+  without the permission; confirm the migration seeds them onto partner-scope
+  system roles.
+- Portal: a portal user can list/view/accept only their own org's non-draft
+  quotes (cross-org returns 404); accept from portal records the
+  `portal_user` as signer.
 
 ## 9. Phasing
 
-1. **Phase 1:** schema + migrations + RLS, CRUD, block editor, catalog fields,
-   PDF render.
-2. **Phase 2:** send + public acceptance page + built-in e-sign accept.
-3. **Phase 3:** accept → convert-to-invoice + pay-link.
+1. **Phase 1:** schema + migrations + RLS + `QUOTES_*` permissions/seeding,
+   internal CRUD (RBAC-gated), block editor, catalog fields, PDF render.
+2. **Phase 2:** send + customer portal view (`portal/quotes`) + public
+   tokenized acceptance page + built-in e-sign accept.
+3. **Phase 3:** accept → convert-to-invoice + pay-link (portal pay + public
+   pay-link).
 4. **Phase 4 (optional):** recurring lines → auto-create Contract.
 
 ## Open items
