@@ -111,6 +111,25 @@ function serializeAccessibleIds(scope: DbAccessScope, accessibleIds: string[] | 
   return accessibleIds.join(',');
 }
 
+// #1105 — held-context duration tripwire. withDbAccessContext sets the RLS
+// GUCs with SET LOCAL, so it MUST hold an open transaction for the full
+// duration of `fn` — pinning one pooled connection the whole time. If `fn`
+// does slow NON-DB work (Redis/BullMQ enqueue, outbound HTTP, per-device
+// loops) the connection sits idle-in-transaction; under a mass agent reconnect
+// those connections are killed by idle_in_transaction_session_timeout and
+// cascade into a pool-poisoning login outage. A context held far longer than
+// pure DB work should take is the signal. Warn-only (prod-safe, like the
+// contextless-write guard below); tune or disable via DB_CONTEXT_HELD_WARN_MS
+// (0 disables). The fix at a flagged site is to move the slow work after the
+// context closes, or wrap it in runOutsideDbContext().
+function getHeldContextWarnMs(): number {
+  const raw = Number.parseInt(process.env.DB_CONTEXT_HELD_WARN_MS ?? '', 10);
+  if (!Number.isFinite(raw) || raw < 0) {
+    return 500;
+  }
+  return raw;
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
   fn: () => Promise<T>
@@ -131,7 +150,24 @@ export async function withDbAccessContext<T>(
     await tx.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
     await tx.execute(sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`);
 
-    return dbContextStorage.run(tx as unknown as typeof baseDb, fn);
+    const warnMs = getHeldContextWarnMs();
+    const startedAt = warnMs > 0 ? Date.now() : 0;
+    try {
+      return await dbContextStorage.run(tx as unknown as typeof baseDb, fn);
+    } finally {
+      if (warnMs > 0) {
+        const heldMs = Date.now() - startedAt;
+        if (heldMs >= warnMs) {
+          const message =
+            `withDbAccessContext (scope=${context.scope}) held a pooled connection in an open `
+            + `transaction for ${heldMs}ms (>= ${warnMs}ms) — likely slow non-DB work inside the `
+            + `context. Move Redis/HTTP/loops after the context closes or wrap them in `
+            + `runOutsideDbContext (#1105).`;
+          console.warn(message);
+          captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+        }
+      }
+    }
   });
 }
 
@@ -163,6 +199,37 @@ export type RunOutsideDbContextFn = <T>(fn: () => T) => T;
 export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T => {
   return dbContextStorage.exit(fn);
 };
+
+/**
+ * #1105 tripwire guard. Call at the top of a known-slow primitive — a
+ * Redis/BullMQ enqueue, an outbound HTTP request, or anything that acquires a
+ * second pooled connection — to flag when it runs while a withDbAccessContext
+ * transaction is still held. That is the txn-around-slow-work pattern: the
+ * primitive pins the open transaction's pooled connection idle-in-transaction
+ * across its own latency, and under a mass agent reconnect those connections
+ * are killed and cascade into a pool-poisoning login outage.
+ *
+ * The fix at a call site is to do the slow work AFTER the context closes, or
+ * inside `runOutsideDbContext(...)` (which exits the context so this guard is a
+ * no-op). Warn-only by default — prod-safe, mirroring the contextless-write
+ * guard — so it never breaks a running deploy. Set DB_CONTEXT_TRIPWIRE_STRICT=1
+ * (intended for CI) to throw instead, so a newly-introduced violation fails the
+ * build rather than only surfacing in Sentry after an incident.
+ */
+export function assertOutsideHeldDbContext(operation: string): void {
+  if (!hasDbAccessContext()) {
+    return;
+  }
+  const message =
+    `${operation} ran inside a held withDbAccessContext transaction — it pins a pooled `
+    + `connection idle-in-transaction across slow work (#1105). Move it after the context `
+    + `closes or wrap it in runOutsideDbContext().`;
+  if (process.env.DB_CONTEXT_TRIPWIRE_STRICT === '1') {
+    throw new Error(message);
+  }
+  console.warn(message);
+  captureMessage(message, 'warning', { operation, stack: new Error().stack });
+}
 
 // Write methods that, when invoked on the bare pool (no active RLS access
 // context), silently match 0 rows under the forced-RLS `breeze_app` role
