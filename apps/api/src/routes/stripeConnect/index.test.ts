@@ -98,10 +98,13 @@ describe('stripe-connect routes', () => {
     expect(await res.json()).toMatchObject({ status: 'disconnected' });
   });
 
-  it('GET /oauth/callback consumes state, completes oauth, and audits', async () => {
+  it('GET /oauth/callback consumes state, completes oauth, audits, and REDIRECTS to billing settings', async () => {
     const res = await stripeConnectRoutes.request('/oauth/callback?code=ac_1&state=st_1', { method: 'GET' });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ connected: true, stripeAccountId: 'acct_9' });
+    // UX: redirect the browser back to the partner billing-settings page (not raw JSON).
+    expect(res.status).toBe(302);
+    const location = res.headers.get('location') ?? '';
+    expect(location).toContain('/settings/billing');
+    expect(location).toContain('stripe_connected=1');
     expect(consumeState).toHaveBeenCalledWith('st_1', 'partner-1');
     expect(completeOAuth).toHaveBeenCalledWith({
       code: 'ac_1',
@@ -111,16 +114,22 @@ describe('stripe-connect routes', () => {
     expect(writeRouteAudit).toHaveBeenCalled();
   });
 
-  it('GET /oauth/callback rejects an invalid state', async () => {
+  it('GET /oauth/callback REDIRECTS with an error flag on invalid state', async () => {
     (consumeState as any).mockResolvedValue(false);
     const res = await stripeConnectRoutes.request('/oauth/callback?code=ac_1&state=bad', { method: 'GET' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(302);
+    const location = res.headers.get('location') ?? '';
+    expect(location).toContain('/settings/billing');
+    expect(location).toContain('stripe_error=');
     expect(completeOAuth).not.toHaveBeenCalled();
   });
 
-  it('GET /oauth/callback 400s on missing code/state', async () => {
+  it('GET /oauth/callback REDIRECTS with an error flag on missing code/state', async () => {
     const res = await stripeConnectRoutes.request('/oauth/callback', { method: 'GET' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(302);
+    const location = res.headers.get('location') ?? '';
+    expect(location).toContain('/settings/billing');
+    expect(location).toContain('stripe_error=');
   });
 
   it('DELETE / disconnects and audits', async () => {

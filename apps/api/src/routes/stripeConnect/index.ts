@@ -13,6 +13,15 @@ import {
 
 export const stripeConnectRoutes = new Hono();
 
+// Web app base URL (mirrors routes/portal/invoices.ts). The OAuth callback is a
+// browser redirect from Stripe, so it must land the user back on a real page —
+// the partner billing-settings page — rather than returning raw JSON.
+function billingSettingsUrl(params: Record<string, string>): string {
+  const base = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');
+  const qs = new URLSearchParams(params).toString();
+  return `${base}/settings/billing${qs ? `?${qs}` : ''}`;
+}
+
 stripeConnectRoutes.use('*', authMiddleware);
 
 stripeConnectRoutes.post(
@@ -36,9 +45,13 @@ stripeConnectRoutes.get(
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
     const code = c.req.query('code');
     const state = c.req.query('state');
-    if (!code || !state) throw new HTTPException(400, { message: 'Missing code/state' });
+    // Invalid/expired/forged callbacks redirect back to billing settings with an
+    // error flag — a raw 400 JSON body would strand the user on an API URL.
+    if (!code || !state) {
+      return c.redirect(billingSettingsUrl({ stripe_error: 'missing_params' }));
+    }
     if (!(await consumeState(state, auth.partnerId))) {
-      throw new HTTPException(400, { message: 'Invalid state' });
+      return c.redirect(billingSettingsUrl({ stripe_error: 'invalid_state' }));
     }
     const { stripeAccountId } = await completeOAuth({
       code,
@@ -52,7 +65,7 @@ stripeConnectRoutes.get(
       resourceId: auth.partnerId,
       details: { stripeAccountId },
     });
-    return c.json({ connected: true, stripeAccountId });
+    return c.redirect(billingSettingsUrl({ stripe_connected: '1' }));
   }
 );
 
