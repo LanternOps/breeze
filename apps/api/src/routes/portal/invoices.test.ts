@@ -155,6 +155,9 @@ describe('portal invoices routes', () => {
     expect(sessionsCreateMock).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: 'payment',
+        // v1 is card-only — the session must restrict to card so completion
+        // never arrives 'unpaid' from an async method.
+        payment_method_types: ['card'],
         // metadata key matches the design spec (section 6 step 3).
         metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
       }),

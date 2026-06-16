@@ -67,10 +67,25 @@ describe('handleStripeEvent', () => {
     dbResults.length = 0;
   });
 
-  it('checkout.session.completed → records payment', async () => {
+  it('checkout.session.completed (payment_status=paid) → records payment', async () => {
     await handleStripeEvent({ type: 'checkout.session.completed', account: 'acct_1', livemode: true,
-      data: { object: { id: 'cs_1', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' } } } as any);
+      data: { object: { id: 'cs_1', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd', payment_status: 'paid' } } } as any);
     expect(recordStripePayment).toHaveBeenCalledWith(expect.objectContaining({ stripeObjectId: 'cs_1', stripePaymentIntentId: 'pi_1' }));
+  });
+
+  it('checkout.session.completed with payment_status=unpaid is IGNORED (async method not settled)', async () => {
+    // An async method (bank debit) fires completed with unpaid; settlement comes
+    // later via async_payment_succeeded. Recording now would mark paid on money we
+    // do not have.
+    await handleStripeEvent({ type: 'checkout.session.completed', account: 'acct_1', livemode: true,
+      data: { object: { id: 'cs_1', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd', payment_status: 'unpaid' } } } as any);
+    expect(recordStripePayment).not.toHaveBeenCalled();
+  });
+
+  it('checkout.session.async_payment_succeeded → records payment (mirrors paid completed)', async () => {
+    await handleStripeEvent({ type: 'checkout.session.async_payment_succeeded', account: 'acct_1', livemode: true,
+      data: { object: { id: 'cs_async', payment_intent: 'pi_async', amount_total: 10000, currency: 'usd', payment_status: 'paid' } } } as any);
+    expect(recordStripePayment).toHaveBeenCalledWith(expect.objectContaining({ stripeObjectId: 'cs_async', stripePaymentIntentId: 'pi_async' }));
   });
 
   it('payment_intent.succeeded is IGNORED (no retry storm — only the session records a capture)', async () => {

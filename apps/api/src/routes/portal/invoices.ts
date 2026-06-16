@@ -166,6 +166,10 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
 
   const session = await getStripe().checkout.sessions.create({
     mode: 'payment',
+    // v1 is card-only. Restricting payment_method_types keeps the recorded
+    // invoice_payments.method ('card') accurate and avoids enabling async/
+    // delayed-settlement methods (which would land as 'unpaid' on completion).
+    payment_method_types: ['card'],
     line_items: [{
       price_data: {
         currency: inv.currencyCode.toLowerCase(),

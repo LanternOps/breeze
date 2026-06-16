@@ -31,6 +31,7 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
   // exempt: a revoked account legitimately may no longer match.
   const MONEY_MOVING = new Set([
     'checkout.session.completed',
+    'checkout.session.async_payment_succeeded',
     'charge.refunded',
     'payment_intent.payment_failed',
   ]);
@@ -46,12 +47,22 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
   }
 
   switch (event.type) {
-    case 'checkout.session.completed': {
+    case 'checkout.session.completed':
+    case 'checkout.session.async_payment_succeeded': {
       // ONLY the Checkout session records a capture: it is keyed on the session id
       // (the mapping's stripe_object_id) and carries payment_intent + amount_total.
       // payment_intent.succeeded is intentionally NOT handled — handling both would
       // double-fire on every payment and trigger a redelivery/retry storm.
       const session = event.data.object as Stripe.Checkout.Session;
+      // Funds-settled gate: a completed session is NOT necessarily paid. Async
+      // methods (e.g. bank debits) fire checkout.session.completed with
+      // payment_status='unpaid' and only later settle via
+      // checkout.session.async_payment_succeeded (which carries
+      // payment_status='paid'). Recording before funds settle would mark the
+      // invoice paid on money we don't have. v1 is card-only so this is
+      // belt-and-suspenders, but it must hold if an MSP later enables async
+      // methods. Only record once payment_status is 'paid'.
+      if (session.payment_status !== 'paid') return;
       const stripeObjectId = session.id;
       const paymentIntentId = String(session.payment_intent ?? '');
       const amountCents = Number(session.amount_total ?? 0);
