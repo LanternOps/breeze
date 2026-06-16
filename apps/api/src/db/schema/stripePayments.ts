@@ -25,7 +25,7 @@ export const stripeConnectAccounts = pgTable('stripe_connect_accounts', {
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   stripeAccountId: text('stripe_account_id').notNull(),
   // encrypted via secretCrypto; used only for deauthorize. Charges use platform key + Stripe-Account header.
-  credentials: jsonb('credentials'),
+  credentials: jsonb('credentials').$type<{ accessToken: string | null }>(),
   livemode: boolean('livemode').notNull().default(false),
   status: stripeConnectStatusEnum('status').notNull().default('connected'),
   scope: varchar('scope', { length: 50 }),

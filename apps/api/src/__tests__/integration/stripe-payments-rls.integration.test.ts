@@ -224,3 +224,40 @@ describe('invoice_stripe_payments RLS (breeze_app)', () => {
     await expect(insertOnce()).rejects.toMatchObject({ cause: { code: '23505' } });
   });
 });
+
+// DB-enforced state-machine invariants (migration 2026-06-17-stripe-payments-guards).
+// These run under system scope (RLS bypassed) so the ONLY reason an insert fails is
+// the CHECK constraint, surfacing as a 23514 (check_violation) on the wrapper cause.
+describe('stripe payments integrity CHECKs (breeze_app)', () => {
+  runDb("a 'succeeded' mapping with no linked payment is rejected", async () => {
+    const { orgA, invoiceA } = await seed();
+    await expect(
+      withSystemDbAccessContext(() =>
+        db.insert(invoiceStripePayments).values({
+          orgId: orgA.id,
+          invoiceId: invoiceA.id,
+          stripeAccountId: 'acct_chk',
+          stripeObjectType: 'checkout_session',
+          stripeObjectId: 'cs_succeeded_no_payment',
+          amount: '1.00',
+          currency: 'USD',
+          status: 'succeeded', // succeeded but invoicePaymentId omitted (null) → CHECK fails
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb("a 'disconnected' account with a null disconnected_at is rejected", async () => {
+    const { partnerB } = await seed();
+    await expect(
+      withSystemDbAccessContext(() =>
+        db.insert(stripeConnectAccounts).values({
+          partnerId: partnerB.id,
+          stripeAccountId: 'acct_chk_disc',
+          livemode: false,
+          status: 'disconnected', // disconnected but disconnectedAt omitted (null) → CHECK fails
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+});
