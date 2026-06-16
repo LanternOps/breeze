@@ -640,6 +640,113 @@ describe('org routes', () => {
         expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
       });
     });
+
+    // aiForOfficeEnabled — operator-only entitlement flag.
+    // The field must flow through updatePartnerSchema → the db.update(..).set(...)
+    // call unchanged. The partner-scope /partners/me route uses a separate
+    // updatePartnerSettingsSchema that does NOT include aiForOfficeEnabled, so a
+    // partner can never self-enable by posting to that endpoint.
+    it('passes aiForOfficeEnabled: true through to the db update payload (system scope)', async () => {
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', aiForOfficeEnabled: true }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aiForOfficeEnabled: true })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.aiForOfficeEnabled).toBe(true);
+    });
+
+    it('passes aiForOfficeEnabled: false through to the db update payload (system scope)', async () => {
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', aiForOfficeEnabled: false }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aiForOfficeEnabled: false })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.aiForOfficeEnabled).toBe(false);
+    });
+
+    it('rejects a non-boolean aiForOfficeEnabled value with 400 (schema guard)', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aiForOfficeEnabled: 'yes' })
+      });
+
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not allow partner-scope user to set aiForOfficeEnabled via /partners/me (schema isolation)', async () => {
+      // updatePartnerSettingsSchema (used by PATCH /partners/me) does NOT include
+      // aiForOfficeEnabled. Any value sent in that field is stripped by Zod before
+      // reaching the handler — the db write never sees the field.
+      // This test exercises the schema-level boundary directly via the HTTP route.
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      let capturedUpdateData: any;
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aiForOfficeEnabled: true })
+      });
+
+      // The route succeeds (200) because the unknown key is stripped, NOT because
+      // it was accepted — Zod strips unrecognised keys from object schemas.
+      // The key guarantee is that the db write does NOT carry aiForOfficeEnabled.
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData?.aiForOfficeEnabled).toBeUndefined();
+    });
   });
 
   describe('PATCH /orgs/partners/me — ticketing.inbound merge safety', () => {

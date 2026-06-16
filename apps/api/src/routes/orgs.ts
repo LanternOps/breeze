@@ -67,6 +67,9 @@ function settingsAllowlistEntriesValid(settings: unknown): boolean {
 
 const updatePartnerSchema = createPartnerSchema.partial().extend({
   status: z.enum(['pending', 'active', 'suspended', 'churned']).optional(),
+  // Operator-only per-partner AI for Office entitlement. Settable here (system
+  // scope) but NOT on /partners/me (partner scope) — partners can't self-enable.
+  aiForOfficeEnabled: z.boolean().optional(),
   settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
   }),
