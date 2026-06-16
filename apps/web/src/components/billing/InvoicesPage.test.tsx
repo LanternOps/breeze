@@ -56,9 +56,10 @@ describe('InvoicesPage', () => {
     expect(within(row).getByText('Acme Corp')).toBeInTheDocument();
     // Total + balance both render $100.00 in this row.
     expect(within(row).getAllByText('$100.00')).toHaveLength(2);
-    // Overdue badge label + danger row background.
+    // Overdue badge label + restrained overdue cue (red dot indicator + due tone),
+    // replacing the old full-row red tint.
     expect(screen.getByTestId('invoices-status-inv-1')).toHaveTextContent('Overdue');
-    expect(row.className).toContain('bg-red-500/5');
+    expect(row.querySelector('.bg-red-500')).not.toBeNull();
   });
 
   it('writes filter selections to the URL hash', async () => {

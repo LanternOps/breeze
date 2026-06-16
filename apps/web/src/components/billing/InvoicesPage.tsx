@@ -31,6 +31,9 @@ const STATUS_OPTIONS: { value: '' | InvoiceStatus; label: string }[] = [
   { value: 'void', label: 'Void' },
 ];
 
+type SortKey = 'issued' | 'due' | 'total' | 'balance';
+interface Sort { key: SortKey; dir: 'asc' | 'desc' }
+
 // ---- hash filter state (key=value&key=value) ----------------------------
 interface Filters {
   orgId: string;
@@ -64,6 +67,8 @@ function writeFilters(f: Filters): void {
 }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
+const num = (s: string | null | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
+const ts = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
 
 export default function InvoicesPage() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
@@ -71,9 +76,12 @@ export default function InvoicesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [filters, setFilters] = useState<Filters>(() => readFilters());
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<Sort | null>(null);
 
-  // Assemble dialog state
+  // New-invoice dialog state
   const [assembleOpen, setAssembleOpen] = useState(false);
+  const [mode, setMode] = useState<'assemble' | 'blank'>('assemble');
   const [assembleOrgId, setAssembleOrgId] = useState('');
   const [assembleSiteId, setAssembleSiteId] = useState('');
   const [assembleFrom, setAssembleFrom] = useState('');
@@ -134,7 +142,7 @@ export default function InvoicesPage() {
     });
   }, []);
 
-  // Load sites for the assemble org picker.
+  // Load sites for the org picker in the dialog.
   const loadAssembleSites = useCallback(async (orgId: string) => {
     setAssembleSiteId('');
     setAssembleSites([]);
@@ -147,6 +155,7 @@ export default function InvoicesPage() {
   }, []);
 
   const openAssemble = useCallback(() => {
+    setMode('assemble');
     setAssembleOrgId(filters.orgId || '');
     setAssembleSiteId('');
     setAssembleSites([]);
@@ -158,23 +167,26 @@ export default function InvoicesPage() {
     if (filters.orgId) void loadAssembleSites(filters.orgId);
   }, [filters.orgId, loadAssembleSites]);
 
-  const submitAssemble = useCallback(async () => {
-    if (assembling) return;
-    if (!assembleOrgId || !assembleFrom || !assembleTo) return;
+  const submitDialog = useCallback(async () => {
+    if (assembling || !assembleOrgId) return;
+    if (mode === 'assemble' && (!assembleFrom || !assembleTo)) return;
     setAssembling(true);
     try {
       const result = await runAction<{ data: { invoice: { id: string } } }>({
         request: () =>
-          fetchWithAuth(`/orgs/${assembleOrgId}/invoices/assemble`, {
-            method: 'POST',
-            body: JSON.stringify({
-              siteId: assembleSiteId || undefined,
-              from: assembleFrom,
-              to: assembleTo,
-            }),
-          }),
-        errorFallback: 'Could not assemble an invoice for that range.',
-        successMessage: 'Draft invoice assembled',
+          mode === 'assemble'
+            ? fetchWithAuth(`/orgs/${assembleOrgId}/invoices/assemble`, {
+                method: 'POST',
+                body: JSON.stringify({ siteId: assembleSiteId || undefined, from: assembleFrom, to: assembleTo }),
+              })
+            : fetchWithAuth('/invoices', {
+                method: 'POST',
+                body: JSON.stringify({ orgId: assembleOrgId, siteId: assembleSiteId || undefined }),
+              }),
+        errorFallback: mode === 'assemble'
+          ? 'Could not assemble an invoice for that range.'
+          : 'Could not create a draft invoice.',
+        successMessage: mode === 'assemble' ? 'Draft invoice assembled' : 'Draft invoice created',
         onUnauthorized: UNAUTHORIZED,
       });
       setAssembleOpen(false);
@@ -182,18 +194,64 @@ export default function InvoicesPage() {
       if (newId) void navigateTo(`/billing/invoices/${newId}`);
       else void loadInvoices(filters);
     } catch (err) {
-      handleActionError(err, 'Could not assemble an invoice for that range.');
+      handleActionError(err, 'Could not create the invoice.');
     } finally {
       setAssembling(false);
     }
-  }, [assembling, assembleOrgId, assembleSiteId, assembleFrom, assembleTo, filters, loadInvoices]);
+  }, [assembling, mode, assembleOrgId, assembleSiteId, assembleFrom, assembleTo, filters, loadInvoices]);
 
-  const isOverdue = (inv: InvoiceSummary) => inv.status === 'overdue';
+  const toggleSort = (key: SortKey) =>
+    setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
 
-  const rows = useMemo(() => invoices, [invoices]);
+  // ---- derived rows: search filter (client) then optional sort ------------
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let out = invoices.filter((inv) => {
+      if (!q) return true;
+      return (inv.invoiceNumber ?? '').toLowerCase().includes(q) || orgName(inv.orgId).toLowerCase().includes(q);
+    });
+    if (sort) {
+      const dir = sort.dir === 'asc' ? 1 : -1;
+      out = [...out].sort((a, b) => {
+        if (sort.key === 'total') return (num(a.total) - num(b.total)) * dir;
+        if (sort.key === 'balance') return (num(a.balance) - num(b.balance)) * dir;
+        const av = ts(sort.key === 'issued' ? a.issueDate : a.dueDate);
+        const bv = ts(sort.key === 'issued' ? b.issueDate : b.dueDate);
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1; // nulls (drafts) always last
+        if (bv == null) return -1;
+        return (av - bv) * dir;
+      });
+    }
+    return out;
+  }, [invoices, search, sort, orgName]);
+
+  // ---- outstanding summary (open balance + overdue count) -----------------
+  const summary = useMemo(() => {
+    const open = invoices.filter((i) => i.status !== 'void' && num(i.balance) > 0);
+    const outstanding = open.reduce((sum, i) => sum + num(i.balance), 0);
+    const overdue = invoices.filter((i) => i.status === 'overdue').length;
+    // Single-currency partners are the norm; format with the most common code.
+    const ccy = (invoices[0]?.currencyCode) || 'USD';
+    return { outstanding, overdue, openCount: open.length, ccy };
+  }, [invoices]);
+
+  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => (
+    <th className="px-3 py-3 text-right font-medium">
+      <button
+        type="button"
+        onClick={() => toggleSort(sortKey)}
+        className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
+        data-testid={`invoices-sort-${sortKey}`}
+      >
+        {label}
+        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      </button>
+    </th>
+  );
 
   return (
-    <div className="space-y-6" data-testid="invoices-page">
+    <div className="space-y-5" data-testid="invoices-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Invoices</h1>
@@ -207,66 +265,96 @@ export default function InvoicesPage() {
           data-testid="invoices-assemble-open"
           className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
-          Assemble invoice
+          New invoice
         </button>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3" data-testid="invoices-filters">
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Organization
-          <select
-            value={filters.orgId}
-            onChange={(e) => applyFilter({ orgId: e.target.value })}
-            data-testid="invoices-filter-org"
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="">All organizations</option>
-            {orgs.map((o) => (
-              <option key={o.id} value={o.id}>{o.name}</option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Status
-          <select
-            value={filters.status}
-            onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
-            data-testid="invoices-filter-status"
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            {STATUS_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          From
-          <input
-            type="date"
-            value={filters.from}
-            onChange={(e) => applyFilter({ from: e.target.value })}
-            data-testid="invoices-filter-from"
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          To
-          <input
-            type="date"
-            value={filters.to}
-            onChange={(e) => applyFilter({ to: e.target.value })}
-            data-testid="invoices-filter-to"
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </label>
+      {/* Outstanding summary */}
+      {!loading && !error && invoices.length > 0 && (
+        <div className="flex flex-wrap gap-3" data-testid="invoices-outstanding-strip">
+          <div className="rounded-lg border bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground">Outstanding</div>
+            <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(summary.outstanding, summary.ccy)}</div>
+            <div className="text-xs text-muted-foreground">{summary.openCount} open</div>
+          </div>
+          {summary.overdue > 0 && (
+            <button
+              type="button"
+              onClick={() => applyFilter({ status: 'overdue' })}
+              className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-left transition hover:bg-red-500/10"
+              data-testid="invoices-overdue-card"
+            >
+              <div className="text-xs text-red-700 dark:text-red-400">Overdue</div>
+              <div className="mt-0.5 text-lg font-semibold tabular-nums text-red-700 dark:text-red-400">{summary.overdue}</div>
+              <div className="text-xs text-muted-foreground">needs follow-up</div>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Toolbar: search + filters */}
+      <div className="flex flex-wrap items-end gap-2" data-testid="invoices-filters">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search number or org"
+          aria-label="Search invoices"
+          className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          data-testid="invoices-search"
+        />
+        <select
+          value={filters.orgId}
+          onChange={(e) => applyFilter({ orgId: e.target.value })}
+          data-testid="invoices-filter-org"
+          aria-label="Filter by organization"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          <option value="">All organizations</option>
+          {orgs.map((o) => (
+            <option key={o.id} value={o.id}>{o.name}</option>
+          ))}
+        </select>
+        <select
+          value={filters.status}
+          onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
+          data-testid="invoices-filter-status"
+          aria-label="Filter by status"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s.value} value={s.value}>{s.label}</option>
+          ))}
+        </select>
+        <input
+          type="date"
+          value={filters.from}
+          onChange={(e) => applyFilter({ from: e.target.value })}
+          data-testid="invoices-filter-from"
+          aria-label="Issued from"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <input
+          type="date"
+          value={filters.to}
+          onChange={(e) => applyFilter({ to: e.target.value })}
+          data-testid="invoices-filter-to"
+          aria-label="Issued to"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
       </div>
 
       {/* Table */}
       <div className="rounded-lg border bg-card shadow-sm">
         {loading ? (
-          <div className="flex items-center justify-center py-12" data-testid="invoices-loading">
-            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <div className="divide-y" data-testid="invoices-loading">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4 px-4 py-3.5">
+                <div className="h-4 w-20 animate-pulse rounded bg-muted" />
+                <div className="h-4 w-1/4 animate-pulse rounded bg-muted" />
+                <div className="ml-auto h-4 w-24 animate-pulse rounded bg-muted" />
+                <div className="h-5 w-16 animate-pulse rounded-full bg-muted" />
+              </div>
+            ))}
           </div>
         ) : error ? (
           <div className="p-6 text-center text-sm text-destructive" data-testid="invoices-error">
@@ -281,8 +369,23 @@ export default function InvoicesPage() {
               </button>
             </div>
           </div>
+        ) : invoices.length === 0 ? (
+          <div className="px-4 py-14 text-center" data-testid="invoices-empty">
+            <h3 className="text-sm font-semibold">No invoices yet</h3>
+            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+              Assemble unbilled time and parts into a draft, or start a blank invoice.
+            </p>
+            <button
+              type="button"
+              onClick={openAssemble}
+              className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+              data-testid="invoices-empty-new"
+            >
+              New invoice
+            </button>
+          </div>
         ) : rows.length === 0 ? (
-          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="invoices-empty">
+          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="invoices-no-match">
             No invoices match these filters.
           </div>
         ) : (
@@ -292,62 +395,94 @@ export default function InvoicesPage() {
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-3 py-3 font-medium">Number</th>
                   <th className="px-3 py-3 font-medium">Organization</th>
-                  <th className="px-3 py-3 font-medium">Issued</th>
-                  <th className="px-3 py-3 font-medium">Due</th>
-                  <th className="px-3 py-3 text-right font-medium">Total</th>
-                  <th className="px-3 py-3 text-right font-medium">Balance</th>
+                  <SortHeaderLeft label="Issued" sortKey="issued" sort={sort} onSort={toggleSort} />
+                  <SortHeaderLeft label="Due" sortKey="due" sort={sort} onSort={toggleSort} />
+                  <SortHeader label="Total" sortKey="total" />
+                  <SortHeader label="Balance" sortKey="balance" />
                   <th className="px-3 py-3 font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((inv) => (
-                  <tr
-                    key={inv.id}
-                    onClick={() => void navigateTo(`/billing/invoices/${inv.id}`)}
-                    data-testid={`invoices-row-${inv.id}`}
-                    className={`cursor-pointer border-t transition hover:bg-muted/40 ${
-                      isOverdue(inv) ? 'bg-red-500/5' : ''
-                    }`}
-                  >
-                    <td className="px-3 py-3 font-medium">
-                      {inv.invoiceNumber ?? <span className="text-muted-foreground">Draft</span>}
-                    </td>
-                    <td className="px-3 py-3">{orgName(inv.orgId)}</td>
-                    <td className="px-3 py-3">{formatDate(inv.issueDate)}</td>
-                    <td className="px-3 py-3">{formatDate(inv.dueDate)}</td>
-                    <td className="px-3 py-3 text-right">{formatMoney(inv.total, inv.currencyCode)}</td>
-                    <td className="px-3 py-3 text-right">{formatMoney(inv.balance, inv.currencyCode)}</td>
-                    <td className="px-3 py-3">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
-                        data-testid={`invoices-status-${inv.id}`}
-                      >
-                        {STATUS_LABELS[inv.status]}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {rows.map((inv) => {
+                  const overdue = inv.status === 'overdue';
+                  const hasBalance = num(inv.balance) > 0 && inv.status !== 'void';
+                  return (
+                    <tr
+                      key={inv.id}
+                      onClick={() => void navigateTo(`/billing/invoices/${inv.id}`)}
+                      data-testid={`invoices-row-${inv.id}`}
+                      className="cursor-pointer border-t transition hover:bg-muted/40"
+                    >
+                      <td className="px-3 py-3 font-medium">
+                        <span className="flex items-center gap-2">
+                          <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-red-500' : 'bg-transparent'}`} aria-hidden="true" />
+                          {inv.invoiceNumber ?? (
+                            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Draft
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">{orgName(inv.orgId)}</td>
+                      <td className="px-3 py-3 text-muted-foreground">{formatDate(inv.issueDate)}</td>
+                      <td className={`px-3 py-3 ${overdue ? 'font-medium text-red-700 dark:text-red-400' : 'text-muted-foreground'}`}>
+                        {formatDate(inv.dueDate)}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums">{formatMoney(inv.total, inv.currencyCode)}</td>
+                      <td className={`px-3 py-3 text-right tabular-nums ${hasBalance ? 'font-medium' : 'text-muted-foreground'}`}>
+                        {formatMoney(inv.balance, inv.currencyCode)}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
+                          data-testid={`invoices-status-${inv.id}`}
+                        >
+                          {STATUS_LABELS[inv.status]}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {/* Assemble dialog */}
+      {/* New-invoice dialog (assemble | blank) */}
       <Dialog
         open={assembleOpen}
         onClose={() => setAssembleOpen(false)}
-        title="Assemble invoice"
+        title="New invoice"
         maxWidth="lg"
         className="p-6"
       >
         <div className="space-y-4" data-testid="invoices-assemble-dialog">
           <div>
-            <h2 className="text-lg font-semibold">Assemble invoice</h2>
+            <h2 className="text-lg font-semibold">New invoice</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Pull unbilled time entries and parts for an organization into a new draft.
+              Assemble unbilled work into a draft, or start a blank invoice.
             </p>
           </div>
+
+          {/* Mode toggle */}
+          <div className="flex gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Invoice source">
+            {(['assemble', 'blank'] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                aria-pressed={mode === m}
+                className={`flex-1 rounded px-3 py-1.5 text-sm font-medium transition ${
+                  mode === m ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+                data-testid={`invoices-mode-${m}`}
+              >
+                {m === 'assemble' ? 'Assemble from work' : 'Blank invoice'}
+              </button>
+            ))}
+          </div>
+
           <label className="flex flex-col gap-1 text-sm">
             Organization
             <select
@@ -377,28 +512,32 @@ export default function InvoicesPage() {
               ))}
             </select>
           </label>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="flex flex-col gap-1 text-sm">
-              From
-              <input
-                type="date"
-                value={assembleFrom}
-                onChange={(e) => setAssembleFrom(e.target.value)}
-                data-testid="invoices-assemble-from"
-                className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              To
-              <input
-                type="date"
-                value={assembleTo}
-                onChange={(e) => setAssembleTo(e.target.value)}
-                data-testid="invoices-assemble-to"
-                className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </label>
-          </div>
+
+          {mode === 'assemble' && (
+            <div className="grid grid-cols-2 gap-3">
+              <label className="flex flex-col gap-1 text-sm">
+                From
+                <input
+                  type="date"
+                  value={assembleFrom}
+                  onChange={(e) => setAssembleFrom(e.target.value)}
+                  data-testid="invoices-assemble-from"
+                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                To
+                <input
+                  type="date"
+                  value={assembleTo}
+                  onChange={(e) => setAssembleTo(e.target.value)}
+                  data-testid="invoices-assemble-to"
+                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </label>
+            </div>
+          )}
+
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -409,17 +548,37 @@ export default function InvoicesPage() {
             </button>
             <button
               type="button"
-              onClick={() => void submitAssemble()}
-              disabled={!assembleOrgId || !assembleFrom || !assembleTo || assembling}
+              onClick={() => void submitDialog()}
+              disabled={!assembleOrgId || (mode === 'assemble' && (!assembleFrom || !assembleTo)) || assembling}
               data-testid="invoices-assemble-submit"
               className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
-              {assembling ? 'Assembling…' : 'Assemble'}
+              {assembling ? 'Working…' : mode === 'assemble' ? 'Assemble' : 'Create draft'}
             </button>
           </div>
         </div>
       </Dialog>
     </div>
+  );
+}
+
+// Left-aligned sortable header (Issued/Due). Right-aligned headers use the inline
+// SortHeader defined in the component.
+function SortHeaderLeft({
+  label, sortKey, sort, onSort,
+}: { label: string; sortKey: SortKey; sort: Sort | null; onSort: (k: SortKey) => void }) {
+  return (
+    <th className="px-3 py-3 font-medium">
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className="inline-flex items-center gap-1 hover:text-foreground"
+        data-testid={`invoices-sort-${sortKey}`}
+      >
+        {label}
+        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      </button>
+    </th>
   );
 }
 
