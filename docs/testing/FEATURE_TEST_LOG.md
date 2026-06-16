@@ -4,6 +4,29 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Script AI assistant — editor insertion fix (PR #1453) — 2026-06-16
+
+**Branch:** `fix/script-ai-editor-insert` @ `1702e315`
+**Tested by:** Claude
+**Result:** **PASS**
+
+### What was tested
+- [x] API/SSE (the layer changed): drove `POST /ai/script-builder/sessions/:id/messages` via curl, captured the SSE stream, inspected the `tool_result` event for `apply_script_code`.
+- [x] DB invariant: confirmed the persisted `ai_messages.tool_output` row stays compacted (no script body) so the #568 LLM-context goal is preserved.
+- [x] UI: logged into web app, opened `/scripts/new` → Script AI Assistant, prompted "Write a one-line PowerShell script that prints Hello Breeze and put it in the editor"; verified the Monaco editor populated.
+
+### Evidence
+- SSE `tool_result.output` now contains `code: 'Write-Host "Hello Breeze"'` + `language: 'powershell'` (alongside the compacted `codeOmitted/codeChars`). Before the fix the published event had no `code`.
+- DB row: `{"applied":true,"language":"powershell","toolName":"apply_script_code","codeChars":25,"codeOmitted":true}` → `LIKE '%Hello Breeze%'` = **compacted-ok** (no leak).
+- Browser: editor showed `Write-Host "Hello Breeze"`; both `apply_script_code` and `apply_script_metadata` tool calls completed; a "Revert" control appeared; assistant replied "I've added the script to the editor." Screenshot: `script-ai-insert-verified.png`.
+- Unit: 2 new `createSessionPostToolUse` tests (fail before / pass after); `aiAgentSdk.test.ts` 43/43; typecheck clean.
+
+### Issues Found
+- (none) — the one browser console error is a pre-existing, unrelated dev-only SSR hydration mismatch on the `⌘S`/`Ctrl+S` save hint, present on initial load before any AI interaction.
+
+### Notes
+- Tested against local Docker dev (`http://localhost`, code-mounted hot-reload); `2breeze.app` tunnel down per project notes. Local admin password is the dev seed `BreezeAdmin123!` (the `.env` `E2E_ADMIN_PASSWORD` is for the hosted tunnel, not the local DB).
+
 ## Breeze AI for Office (PR #1314) — Tier B in-Excel SSO + session loop — 2026-06-13
 
 **Branch:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
