@@ -33,6 +33,7 @@ import { ticketsRoutes } from './routes/tickets';
 import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
+import { quoteRoutes } from './routes/quotes';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
@@ -738,6 +739,7 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
 api.route('/invoices', invoiceRoutes);
+api.route('/quotes', quoteRoutes);
 api.route('/partner/stripe-connect', stripeConnectRoutes);
 api.route('/contracts', contractRoutes);
 // Assembly routes nest under the existing /orgs and /tickets namespaces, so they
