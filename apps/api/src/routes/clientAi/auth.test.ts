@@ -89,7 +89,7 @@ const CLAIMS = {
   iat: Math.floor(Date.now() / 1000),
 };
 
-const MAPPING_ROW = { id: 'a1a1a1a1-1111-4222-8333-444455556666', orgId: ORG_ID, entraTenantId: TID };
+const MAPPING_ROW = { id: 'a1a1a1a1-1111-4222-8333-444455556666', orgId: ORG_ID, entraTenantId: TID, partnerEnabled: true };
 const USER_ROW = {
   id: PORTAL_USER_ID,
   orgId: ORG_ID,
@@ -106,10 +106,13 @@ const ENABLED_POLICY = {
 };
 
 function selectChain(rows: unknown[]) {
+  const terminus = { limit: vi.fn(() => Promise.resolve(rows)) };
+  const withJoin = {
+    innerJoin: vi.fn(() => withJoin),
+    where: vi.fn(() => terminus),
+  };
   return {
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve(rows)) })),
-    })),
+    from: vi.fn(() => withJoin),
   };
 }
 
@@ -200,6 +203,13 @@ describe('POST /client-ai/auth/exchange', () => {
       expect.anything(),
       expect.objectContaining({ result: 'denied', orgId: ORG_ID })
     );
+  });
+
+  it("403s with disabled when the org's partner has AI for Office disabled", async () => {
+    setupDb({ mapping: { ...MAPPING_ROW, partnerEnabled: false }, user: USER_ROW });
+    const res = await postExchange(buildApp());
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('disabled');
   });
 
   it('403s with user_not_permitted under userAccess=selected when the user is not listed', async () => {
