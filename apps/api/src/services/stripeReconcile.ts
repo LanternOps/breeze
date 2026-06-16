@@ -5,6 +5,7 @@ import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { recomputeInvoiceStatus } from './invoiceService';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { fromMinorUnits } from './stripeMoney';
+import { captureException } from './sentry';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -40,6 +41,10 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     // failed, surface a payment.failed event, and RETURN 202-cleanly.
     const terminalFail = async (reason: string): Promise<{ invoiceId: string }> => {
       console.warn('[stripeReconcile] terminal payment failure', { stripeObjectId: input.stripeObjectId, invoiceId: inv.id, reason });
+      // A customer was charged on Stripe and we are refusing to record it (currency
+      // mismatch, overpayment, account mismatch, void/draft invoice). That is a money
+      // divergence requiring human reconciliation — surface it to Sentry, not just logs.
+      captureException(new Error(`[stripeReconcile] terminal payment failure (${reason}) stripeObjectId=${input.stripeObjectId} invoiceId=${inv.id}`));
       await markMapping(mapping.id, 'failed');
       await emitInvoiceEvent({ type: 'payment.failed', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId });
       return { invoiceId: inv.id };
@@ -96,6 +101,7 @@ interface RefundInput {
   amountRefundedCents: number; // cumulative refunded on the charge
   chargeAmountCents: number;   // original captured amount
   currency: string;           // charge currency (drives minor-unit conversion)
+  stripeAccountId: string;    // event.account — must match the mapping's connected account
 }
 
 /** Reflect a Stripe-side refund. No Breeze-initiated money movement. System context. */
@@ -103,7 +109,28 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
   await withSystemDbAccessContext(async () => {
     const [mapping] = await db.select().from(invoiceStripePayments)
       .where(eq(invoiceStripePayments.stripePaymentIntentId, input.stripePaymentIntentId)).limit(1);
-    if (!mapping || !mapping.invoicePaymentId) return; // nothing to reflect
+    if (!mapping) {
+      // No mapping for this PI — leave a forensic trail (money divergence: a refund
+      // landed for a charge we have no record of, or a redelivery after cleanup).
+      console.warn('[stripeReconcile] refund for unknown payment_intent — no mapping', { stripePaymentIntentId: input.stripePaymentIntentId });
+      return;
+    }
+    if (!mapping.invoicePaymentId) {
+      // Mapping exists but was never linked to a payment row (e.g. the charge was
+      // terminal-failed). Nothing to reflect, but record why for reconciliation.
+      console.warn('[stripeReconcile] refund for a payment_intent with no linked payment row', { stripePaymentIntentId: input.stripePaymentIntentId, mappingId: mapping.id });
+      return;
+    }
+
+    // Account binding (mirror recordStripePayment's guard): a refund event whose
+    // account does not match the mapping's connected account must never mutate
+    // another account's payment row.
+    if (!input.stripeAccountId || input.stripeAccountId !== mapping.stripeAccountId) {
+      console.warn('[stripeReconcile] refund account mismatch — refusing to mutate payment row', {
+        stripePaymentIntentId: input.stripePaymentIntentId, eventAccount: input.stripeAccountId, mappingAccount: mapping.stripeAccountId,
+      });
+      return;
+    }
 
     const paymentId = mapping.invoicePaymentId;
     const full = input.amountRefundedCents >= input.chargeAmountCents;

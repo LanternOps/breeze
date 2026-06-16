@@ -123,7 +123,7 @@ describe('handleStripeEvent', () => {
   it('charge.refunded → reflects refund (currency-aware)', async () => {
     await handleStripeEvent({ type: 'charge.refunded', account: 'acct_1', livemode: true,
       data: { object: { payment_intent: 'pi_1', amount: 10000, amount_refunded: 4000, currency: 'usd' } } } as any);
-    expect(reflectStripeRefund).toHaveBeenCalledWith({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'usd' });
+    expect(reflectStripeRefund).toHaveBeenCalledWith({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'usd', stripeAccountId: 'acct_1' });
   });
 
   it('account.application.deauthorized → marks disconnected (exempt from livemode guard)', async () => {

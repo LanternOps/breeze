@@ -79,7 +79,12 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
       await withSystemDbAccessContext(async () => {
         const [m] = await db.select().from(invoiceStripePayments)
           .where(eq(invoiceStripePayments.stripePaymentIntentId, pi.id)).limit(1);
-        if (!m) return;
+        if (!m) {
+          // No mapping for this PI — a payment_failed for a charge we never tracked
+          // (or a redelivery after cleanup). Leave a forensic trail before returning.
+          console.warn('[stripeWebhook] payment_intent.payment_failed for unknown payment_intent', { paymentIntentId: pi.id, account: event.account });
+          return;
+        }
         await db.update(invoiceStripePayments)
           .set({ status: 'failed', lastEventAt: new Date(), updatedAt: new Date() })
           .where(eq(invoiceStripePayments.id, m.id));
@@ -101,7 +106,8 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
         stripePaymentIntentId: String(ch.payment_intent),
         amountRefundedCents: Number(ch.amount_refunded ?? 0),
         chargeAmountCents: Number(ch.amount ?? 0),
-        currency: String(ch.currency ?? 'usd')
+        currency: String(ch.currency ?? 'usd'),
+        stripeAccountId: event.account ?? '' // account-binding guard in reflectStripeRefund
       });
       return;
     }
