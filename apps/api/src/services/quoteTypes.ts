@@ -1,5 +1,9 @@
-export type QuoteStatus =
-  | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
+import type { z } from 'zod';
+import { quoteStatusSchema } from '@breeze/shared';
+
+// Single source of truth for the quote status union lives in the shared Zod
+// schema (validators/quotes.ts); infer the type here rather than re-declaring it.
+export type QuoteStatus = z.infer<typeof quoteStatusSchema>;
 
 export interface QuoteActor {
   /** The user who initiated the action, or null for system/background actors. */

@@ -295,14 +295,24 @@ export async function renderQuotePdf(
       }
     } else if (b.blockType === 'image') {
       const imageId = (b.content as { imageId?: string }).imageId;
-      const img = imageId ? await loadImage(imageId) : null;
+      // loadImage performs DB I/O and can reject; a failed fetch must degrade to
+      // skip-the-image rather than escaping renderQuotePdf (which would skip
+      // doc.end() and surface as a 500).
+      let img: { data: Buffer } | null = null;
+      try {
+        img = imageId ? await loadImage(imageId) : null;
+      } catch (e) {
+        console.error('[quotePdf] loadImage failed', imageId, e instanceof Error ? e.message : e);
+        img = null;
+      }
       if (img?.data) {
         const fitWidth = Number((b.content as { width?: number }).width ?? 400);
         try {
           doc.image(img.data, c.left, y, { fit: [Math.min(fitWidth, c.contentWidth), 400] });
           y = doc.y + 6;
-        } catch {
+        } catch (e) {
           // A corrupt/unsupported image must not abort the whole document.
+          console.error('[quotePdf] doc.image failed', imageId, e instanceof Error ? e.message : e);
           y += 6;
         }
         const caption = (b.content as { caption?: string }).caption;

@@ -86,7 +86,8 @@ quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('para
 // loaded from quote_images under the request's RLS context (org-scoped rows, so
 // the bare `db` is correct here — same pattern the service uses to read its
 // tables). Branding resolves like invoicePdf: partner name + portal logo/color +
-// partner invoice footer/currency.
+// partner invoice footer/currency. Footer precedence is
+// quote.terms ?? partner invoice footer ?? portal footer text.
 quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {

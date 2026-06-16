@@ -1,7 +1,10 @@
 import { z } from 'zod';
 
-const money = z.number().nonnegative().multipleOf(0.01);
-const positiveQty = z.number().positive().multipleOf(0.01);
+// Bounded to numeric(12,2) (max 9,999,999,999.99) so out-of-range inputs fail
+// fast with a 400 rather than overflowing at insert (DB-layer 500). Mirrors the
+// money/quantity ceiling in validators/catalog.ts.
+const money = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
+const positiveQty = z.number().positive().max(9_999_999_999.99).multipleOf(0.01);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
 const taxRate = z.number().min(0).max(1);
 
@@ -34,7 +37,7 @@ export const quoteLineInputSchema = z.object({
   customerVisible: z.boolean().default(true),
   recurrence: quoteLineRecurrenceSchema.default('one_time'),
   termMonths: z.number().int().min(1).max(120).nullable().optional(),
-  billingFrequency: z.enum(['monthly', 'quarterly', 'annual']).nullable().optional(),
+  billingFrequency: z.enum(['monthly', 'annual']).nullable().optional(),
 });
 
 export const catalogQuoteLineSchema = z.object({ catalogItemId: z.string().uuid(), quantity: positiveQty, blockId: z.string().uuid().optional() });

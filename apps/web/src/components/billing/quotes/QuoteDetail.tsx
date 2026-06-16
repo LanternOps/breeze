@@ -42,7 +42,7 @@ export default function QuoteDetail({ detail }: Props) {
     [lines],
   );
 
-  // Lines not attached to any block (legacy / direct lines) render in a trailing
+  // Lines not attached to any block (direct/unsectioned lines) render in a trailing
   // table so nothing is dropped from the view.
   const looseLines = useMemo(() => linesForBlock(null), [linesForBlock]);
 
@@ -137,7 +137,7 @@ export default function QuoteDetail({ detail }: Props) {
             </div>
             {hasRecurring && (
               <p className="mt-2 text-xs text-muted-foreground">
-                First-invoice total combines one-time charges with the first recurring period.
+                First-invoice total combines one-time charges with the first period of each recurring cadence (monthly + annual).
               </p>
             )}
           </div>

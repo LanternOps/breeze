@@ -32,7 +32,8 @@ function assertOrg(actor: QuoteActor, orgId: string): void {
 /**
  * Recompute the header buckets (subtotal/tax/total + one-time/monthly/annual)
  * from the quote's current lines. Runs after EVERY line insert/update/delete
- * and after a header tax-rate change. Routes per-line cents through the shared
+ * and after any header update (tax rate is the only header field that moves
+ * totals). Routes per-line cents through the shared
  * computeLineTotal/toCents discipline (via computeQuoteTotals) so the header
  * totals are penny-consistent with the persisted line_total and with invoices.
  */
@@ -233,6 +234,8 @@ export async function addCatalogLine(
   const q = await loadDraft(quoteId, actor);
   const [item] = await db.select().from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
   if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+  // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
+  // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
   const recurrence = item.billingType === 'recurring'
     ? (item.billingFrequency === 'annual' ? 'annual' : 'monthly')
     : 'one_time';

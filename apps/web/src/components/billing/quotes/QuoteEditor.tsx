@@ -353,7 +353,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
             </div>
             {hasRecurring && (
               <p className="mt-2 text-xs text-muted-foreground" data-testid="quote-totals-recurring-hint">
-                First-invoice total combines one-time charges with the first recurring period.
+                First-invoice total combines one-time charges with the first period of each recurring cadence (monthly + annual).
               </p>
             )}
           </div>

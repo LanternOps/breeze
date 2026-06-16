@@ -6,7 +6,7 @@ export type CatalogItemType = z.infer<typeof catalogItemTypeSchema>;
 export const catalogBillingTypeSchema = z.enum(['one_time', 'recurring']);
 export type CatalogBillingType = z.infer<typeof catalogBillingTypeSchema>;
 
-export const catalogBillingFrequencySchema = z.enum(['monthly', 'quarterly', 'annual']);
+export const catalogBillingFrequencySchema = z.enum(['monthly', 'annual']);
 export type CatalogBillingFrequency = z.infer<typeof catalogBillingFrequencySchema>;
 
 // Bounded to numeric(12,2) (max 9,999,999,999.99) so out-of-range inputs fail

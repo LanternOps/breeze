@@ -100,6 +100,8 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
       sku: input.sku ?? null,
       description: input.description ?? null,
       billingType: input.billingType,
+      billingFrequency: input.billingFrequency ?? null,
+      commitmentTermMonths: input.commitmentTermMonths ?? null,
       unitPrice,
       costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
       markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null,
@@ -171,6 +173,8 @@ export async function updateCatalogItem(id: string, input: UpdateCatalogItemInpu
   if (input.sku !== undefined) patch.sku = input.sku;
   if (input.description !== undefined) patch.description = input.description;
   if (input.billingType !== undefined) patch.billingType = input.billingType;
+  if (input.billingFrequency !== undefined) patch.billingFrequency = input.billingFrequency;
+  if (input.commitmentTermMonths !== undefined) patch.commitmentTermMonths = input.commitmentTermMonths;
   if (shouldDeriveUnitPrice) patch.unitPrice = unitPrice;
   if (input.costBasis !== undefined) patch.costBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
   if (input.markupPercent !== undefined) patch.markupPercent = input.markupPercent != null ? input.markupPercent.toFixed(2) : null;
