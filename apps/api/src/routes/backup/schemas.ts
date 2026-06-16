@@ -232,7 +232,7 @@ export const bmrCompleteSchema = z.object({
   result: z.object({
     status: z.enum(['completed', 'failed', 'partial']),
     filesRestored: z.number().int().optional(),
-    bytesRestored: z.number().int().optional(),
+    bytesRestored: z.number().refine(Number.isInteger, 'expected integer').optional(),
     stateApplied: z.boolean().optional(),
     driversInjected: z.number().int().optional(),
     validated: z.boolean().optional(),
