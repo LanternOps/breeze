@@ -32,7 +32,7 @@ const ringSchema = z.object({
   ringOrder: z.coerce.number().int().min(0).max(100),
   // Fallback hold for category overrides that don't set their own. Kept in sync
   // with the default rule's hold on submit (see onSubmit transform below) so it
-  // never surfaces as a third, orphaned "deferral" field in the UI.
+  // never surfaces as an orphaned "deferral" field in the UI.
   deferralDays: z.coerce.number().int().min(0).max(365),
   deadlineDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
   gracePeriodHours: z.coerce.number().int().min(0).max(168),
@@ -50,7 +50,7 @@ type UpdateRingFormProps = {
   submitLabel?: string;
   loading?: boolean;
   /** When editing, surfaces the blast radius of a change. */
-  usage?: { deviceCount?: number | null };
+  usage?: { deviceCount?: number };
 };
 
 type Severity = 'critical' | 'important' | 'moderate' | 'low';
@@ -175,8 +175,9 @@ export default function UpdateRingForm({
 }: UpdateRingFormProps) {
   // Normalize incoming defaults: legacy category rules can carry a null
   // `deferralDaysOverride` (meaning "inherit the ring hold"). We resolve that to
-  // the inherited number up front so every override row shows a real value
-  // instead of a blank field, and so re-saving an old ring is a no-op.
+  // the current inherited number up front so every override row shows a real
+  // value instead of a blank field. Note: this pins a previously-inheriting
+  // override to a concrete hold, so re-saving converts inherit -> explicit.
   const initialValues = useMemo<Partial<UpdateRingFormValues>>(() => {
     const merged = {
       name: '',
@@ -253,11 +254,17 @@ export default function UpdateRingForm({
 
   return (
     <form
-      onSubmit={handleSubmit((values) =>
-        // Keep the legacy fallback hold in sync with the default rule so it
-        // stays consistent and invisible (the orphaned top-level field is gone).
-        onSubmit?.({ ...values, deferralDays: values.autoApprove.deferralDays })
-      )}
+      onSubmit={handleSubmit((values) => {
+        // The default rule's hold doubles as the ring's legacy fallback
+        // `deferralDays` (the orphaned top-level field is gone from the UI). A
+        // disabled default rule is "manual", so it must not persist a stale hold.
+        const hold = values.autoApprove.enabled ? values.autoApprove.deferralDays : 0;
+        return onSubmit?.({
+          ...values,
+          deferralDays: hold,
+          autoApprove: { ...values.autoApprove, deferralDays: hold },
+        });
+      })}
       className="space-y-6"
     >
       {/* Zone A — Identity */}

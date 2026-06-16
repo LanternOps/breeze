@@ -10,6 +10,7 @@ import PatchAppRulesSection, { type PolicyAppRule } from './PatchAppRulesSection
 import { Dialog } from '../../shared/Dialog';
 import UpdateRingForm, { type UpdateRingFormValues } from '../../patches/UpdateRingForm';
 import type { UpdateRingItem as UpdateRing } from '../../patches/UpdateRingList';
+import { normalizeRing } from '../../patches/patchHelpers';
 
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
@@ -86,6 +87,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   );
   const [rings, setRings] = useState<UpdateRing[]>([]);
   const [ringsLoading, setRingsLoading] = useState(false);
+  const [ringsError, setRingsError] = useState<string>();
 
   const [settings, setSettings] = useState<PatchDeploymentSettings>(() => {
     const inline = effectiveLink?.inlineSettings as Partial<PatchDeploymentSettings> | undefined;
@@ -102,14 +104,21 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
 
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
+    setRingsError(undefined);
     try {
       const response = await fetchWithAuth('/update-rings');
-      if (response.ok) {
-        const payload = await response.json();
-        setRings(Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : []);
-      }
-    } catch {
-      // Silently fail
+      // fetchWithAuth doesn't throw on 4xx/5xx — without this the picker would
+      // silently show an empty list (indistinguishable from "no rings") and a
+      // linked ring would blank out.
+      if (!response.ok) throw new Error('Failed to load update rings');
+      const payload = await response.json();
+      const raw = Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : [];
+      // Normalize so the form hydrates with typed defaults (a ring whose
+      // auto_approve JSONB is `{}` — the DB default / pre-#1317 rows — would
+      // otherwise fail the editor's zod validation and silently refuse to save).
+      setRings(raw.map((r: Record<string, unknown>) => normalizeRing(r)));
+    } catch (err) {
+      setRingsError(err instanceof Error ? err.message : 'Failed to load update rings');
     } finally {
       setRingsLoading(false);
     }
@@ -202,6 +211,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
     setRingEditorError(undefined);
     try {
       const url = editing ? `/update-rings/${selectedRing!.id}` : '/update-rings';
+      // runaction-exempt: inline ringEditorError UI (banner in the ring editor dialog)
       const response = await fetchWithAuth(url, {
         method: editing ? 'PATCH' : 'POST',
         body: JSON.stringify({
@@ -296,6 +306,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
             </button>
           </div>
         )}
+        {ringsError && <p className="mt-2 text-xs text-destructive">{ringsError}</p>}
         {selectedRing && (
           <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
             <span>Hold: {selectedRing.deferralDays === 0 ? 'None' : `${selectedRing.deferralDays}d`}</span>
@@ -394,7 +405,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
         </div>
       </div>
 
-      {/* Inline ring editor — same component as the /patches page */}
+      {/* Inline ring editor */}
       <Dialog
         open={ringEditorOpen}
         onClose={() => setRingEditorOpen(false)}
