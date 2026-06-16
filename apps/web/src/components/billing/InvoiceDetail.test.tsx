@@ -30,7 +30,7 @@ const lines: InvoiceDetailData['lines'] = [
 const issued: InvoiceDetailData = {
   invoice: {
     id: 'inv-1', invoiceNumber: 'INV-0007', orgId: 'org-1', siteId: null, status: 'sent',
-    currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30', subtotal: '120.00',
+    currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30', sentAt: null, subtotal: '120.00',
     taxRate: '0.000', taxTotal: '0.00', total: '120.00', amountPaid: '0.00', balance: '120.00',
     billToName: 'Acme', notes: null, createdAt: '2026-06-01T00:00:00Z',
   },

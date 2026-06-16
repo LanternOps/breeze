@@ -463,9 +463,13 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     };
 
     await db.update(invoices).set({
+      // status 'sent' is the lifecycle "issued/finalized" state. sentAt is left
+      // NULL here on purpose — it means "emailed to the customer" and is stamped
+      // only by sendInvoiceEmail. That lets the UI distinguish "Issued" (no email
+      // yet) from "Sent" (emailed) instead of mislabeling a plain Issue as Sent.
       status: 'sent', invoiceNumber: number, currencyCode: partner?.currencyCode ?? 'USD',
       issueDate: issueDate.toISOString().slice(0, 10), dueDate: dueDate.toISOString().slice(0, 10),
-      taxRate, subtotal, taxTotal, total, balance: total, sentAt: issueDate,
+      taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
       billToTaxExempt: org?.taxExempt ?? false, terms: partner?.invoiceFooter ?? null, updatedAt: issueDate
     }).where(eq(invoices.id, invoiceId));

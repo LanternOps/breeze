@@ -7,7 +7,7 @@ import {
   type InvoiceStatus,
   type InvoiceSummary,
   STATUS_COLORS,
-  STATUS_LABELS,
+  statusLabel,
   formatDate,
   formatMoney,
 } from './invoiceTypes';
@@ -438,7 +438,7 @@ export default function InvoicesPage() {
                           className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
                           data-testid={`invoices-status-${inv.id}`}
                         >
-                          {STATUS_LABELS[inv.status]}
+                          {statusLabel(inv)}
                         </span>
                       </td>
                     </tr>

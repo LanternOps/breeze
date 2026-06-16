@@ -18,7 +18,7 @@ function draft(lines: InvoiceDetail['lines']): InvoiceDetail {
   return {
     invoice: {
       id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status: 'draft',
-      currencyCode: 'USD', issueDate: null, dueDate: null, subtotal: '0.00', taxRate: null,
+      currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '0.00', taxRate: null,
       taxTotal: '0.00', total: '0.00', amountPaid: '0.00', balance: '0.00', billToName: 'Acme',
       notes: '', createdAt: '2026-06-01T00:00:00Z',
     },

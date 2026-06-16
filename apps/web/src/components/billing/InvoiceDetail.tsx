@@ -11,7 +11,7 @@ import {
   type PaymentMethod,
   PAYMENT_METHOD_LABELS,
   STATUS_COLORS,
-  STATUS_LABELS,
+  statusLabel,
   formatDate,
   formatMoney,
 } from './invoiceTypes';
@@ -256,7 +256,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
               <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status">
-                {STATUS_LABELS[invoice.status]}
+                {statusLabel(invoice)}
               </span>
               <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
             </div>
