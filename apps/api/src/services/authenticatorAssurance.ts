@@ -12,13 +12,31 @@ import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
 import { loadPartnerPolicy, isEnforcing } from './authenticatorPolicy';
 
-/** Thrown when an approver PIN is presented but cannot be verified. The decide
- * paths map this (like an assertion failure) to a 401 — a presented-but-bad PIN
- * is an error, never a silent downgrade to the L2 factor-only result. */
-export class PinVerificationError extends Error {
-  constructor(public readonly locked: boolean) {
-    super(locked ? 'approver PIN is locked' : 'approver PIN verification failed');
-    this.name = 'PinVerificationError';
+/**
+ * Recency window for the L3/L4 ladder: an approval-assertion challenge must be
+ * CONSUMED within this window of being issued for the signature to count as
+ * "fresh" (spec §5). Matches the 120s Redis challenge TTL — the L2 signature is
+ * already per-request and short-lived; this is the explicit server-side bound.
+ */
+export const APPROVAL_CHALLENGE_TTL_MS = 120_000;
+
+/** Thrown when an L3+ approval's challenge was issued outside the recency window
+ * (a stale signature replayed late). The decide paths map this to a 401 — a
+ * stale-but-valid signature is rejected, never silently downgraded to L2. */
+export class RecencyExpiredError extends Error {
+  constructor(public readonly ageMs: number) {
+    super(`approval challenge expired (recency): ${ageMs}ms > ${APPROVAL_CHALLENGE_TTL_MS}ms`);
+    this.name = 'RecencyExpiredError';
+  }
+}
+
+/** Thrown when a critical (L4) approval lacks the required fresh account
+ * re-authentication. The decide paths map this to a 401/step-up — a critical
+ * approve without re-auth is never silently downgraded to L3. */
+export class ReauthRequiredError extends Error {
+  constructor() {
+    super('fresh account re-authentication required for this approval');
+    this.name = 'ReauthRequiredError';
   }
 }
 
@@ -101,19 +119,25 @@ export function resolveElevationAssurance(riskTierNum: number | null): Assurance
  *    over the single-use server nonce, verified against the device's stored SPKI
  *    public key. `proof.credentialId` carries the approver device id.
  *
- * An optional approver `pin` (Phase 3) steps a verified L2 factor up to L3.
+ * The L3/L4 ladder is derived from the SAME signature plus context — no PIN:
+ *  - L3 (high): the verified L2 signature, plus a RECENCY check — the
+ *    approval-assertion challenge must have been issued within
+ *    `APPROVAL_CHALLENGE_TTL_MS` (a stale-but-valid signature is rejected).
+ *  - L4 (critical): L3 conditions, plus a hardware/platform-bound key
+ *    (`device.is_platform_bound`) and a FRESH account re-authentication
+ *    (`reauthVerified === true`, satisfied inline at the decide surface).
  *
  * Non-blocking by design:
- *  - No proof presented → today's behavior (session tap, L1). NEVER blocks here;
- *    a presented PIN with no factor cannot stand alone and stays L1. Enforcing
- *    that a proof is REQUIRED for a given tier is Phase 4.
- *  - Proof present and valid → L2 (factor recorded, anti-clone counter bumped);
- *    a valid PIN on top → L3 (`pinVerified=true`).
+ *  - No proof presented → today's behavior (session tap, L1). NEVER blocks here.
+ *    Enforcing that a proof is REQUIRED for a given tier is Phase 4.
+ *  - Proof present and valid → L2 (factor recorded, anti-clone counter bumped),
+ *    escalated to L3/L4 when the tier's recency / re-auth factors are satisfied.
  *  - Proof present but INVALID (device not registered/disabled, nonce expired or
  *    tampered, or signature fails) → throw. A presented-but-bad proof is an
  *    error, not a silent downgrade to L1.
- *  - PIN presented alongside a valid factor but wrong/locked → throw. A
- *    presented-but-bad PIN never silently records the L2 factor-only result.
+ *  - The L3 recency window blown, or an L4 critical missing its platform-bound
+ *    key / re-auth → throw (RecencyExpiredError / ReauthRequiredError). A
+ *    higher tier is never silently recorded at a lower achieved level.
  */
 export async function assertApprovalAssurance(input: {
   approvalId: string;
@@ -124,11 +148,16 @@ export async function assertApprovalAssurance(input: {
   partnerId?: string | null;
   /** Phase 4: enforcement applies to an approve only — a deny is never blocked. */
   decision?: 'approved' | 'denied';
+  /** L3 recency: epoch ms the approval-assertion challenge was issued. Required
+   * to reach L3+ (high/critical) — absence or staleness fails the recency gate. */
+  challengeIssuedAt?: number | null;
+  /** L4 re-auth: a fresh account re-authentication completed at the decide
+   * surface (password / login-MFA). Required to reach L4 (critical). */
+  reauthVerified?: boolean;
 }): Promise<AssuranceDecision> {
-  // 1. Establish the achieved factor. No proof → session tap, L1 (a PIN cannot
-  //    stand alone — without a verified factor there is nothing to step up).
-  //    A presented-but-invalid proof/PIN throws inside these branches (never a
-  //    silent downgrade).
+  // 1. Establish the achieved factor. No proof → session tap, L1. A
+  //    presented-but-invalid proof throws inside these branches (never a silent
+  //    downgrade).
   let decision: AssuranceDecision;
   if (!input.proof) {
     decision = resolveApprovalAssurance(input.riskTier);
@@ -139,7 +168,10 @@ export async function assertApprovalAssurance(input: {
         : await verifyWebauthnFactor(input.approvalId, input.userId, input.proof);
     decision = {
       requiredLevel: resolveApprovalAssurance(input.riskTier).requiredLevel,
-      decidedAssuranceLevel: 2,
+      decidedAssuranceLevel: escalateAchievedLevel(input.riskTier, factor, {
+        challengeIssuedAt: input.challengeIssuedAt ?? null,
+        reauthVerified: input.reauthVerified ?? false,
+      }),
       decidedVia: factor.decidedVia,
       authenticatorDeviceId: factor.authenticatorDeviceId,
       pinVerified: false,
@@ -165,12 +197,55 @@ export async function assertApprovalAssurance(input: {
   return decision;
 }
 
+/** The result of a verified L2 factor — carries the device's platform-bound
+ * flag so the L4 escalation can gate on a hardware/platform-bound key. */
+interface VerifiedFactor {
+  decidedVia: AssuranceDecision['decidedVia'];
+  authenticatorDeviceId: string;
+  isPlatformBound: boolean;
+}
+
+/**
+ * Derive the achieved assurance level from a verified L2 factor plus the
+ * tier's recency / re-auth context. The L2 signature is always the base; high
+ * adds a recency window, critical adds a platform-bound key + fresh re-auth.
+ * Throws (never silently downgrades) when a higher tier's factor is missing.
+ */
+function escalateAchievedLevel(
+  riskTier: RiskTier,
+  factor: VerifiedFactor,
+  ctx: { challengeIssuedAt: number | null; reauthVerified: boolean },
+): AssuranceLevel {
+  // low / medium are satisfied by the L2 factor alone.
+  if (riskTier !== 'high' && riskTier !== 'critical') return 2;
+
+  // L3 recency: the signed challenge must have been issued within the window.
+  // No issuance timestamp = cannot prove freshness = fail (never silent L2).
+  if (ctx.challengeIssuedAt == null) {
+    throw new RecencyExpiredError(Infinity);
+  }
+  const ageMs = Date.now() - ctx.challengeIssuedAt;
+  if (ageMs > APPROVAL_CHALLENGE_TTL_MS) {
+    throw new RecencyExpiredError(ageMs);
+  }
+  if (riskTier === 'high') return 3;
+
+  // L4 (critical): L3 recency + a platform/hardware-bound key + fresh re-auth.
+  if (!factor.isPlatformBound) {
+    throw new StepUpRequiredError(4, 3);
+  }
+  if (!ctx.reauthVerified) {
+    throw new ReauthRequiredError();
+  }
+  return 4;
+}
+
 /** Verify a WebAuthn platform assertion (Phase 2) and bump the signCount. */
 async function verifyWebauthnFactor(
   approvalId: string,
   userId: string,
   proof: Extract<ApprovalProof, { type: 'webauthn_platform' }>,
-): Promise<{ decidedVia: AssuranceDecision['decidedVia']; authenticatorDeviceId: string }> {
+): Promise<VerifiedFactor> {
   const [device] = await db
     .select()
     .from(authenticatorDevices)
@@ -216,7 +291,11 @@ async function verifyWebauthnFactor(
     .set({ signCount: newSignCount, lastUsedAt: new Date() })
     .where(eq(authenticatorDevices.id, device.id));
 
-  return { decidedVia: 'webauthn_platform', authenticatorDeviceId: device.id };
+  return {
+    decidedVia: 'webauthn_platform',
+    authenticatorDeviceId: device.id,
+    isPlatformBound: device.isPlatformBound === true,
+  };
 }
 
 /**
@@ -232,7 +311,7 @@ async function verifyMobileFactor(
   approvalId: string,
   userId: string,
   proof: Extract<ApprovalProof, { type: 'mobile_hw_key' }>,
-): Promise<{ decidedVia: AssuranceDecision['decidedVia']; authenticatorDeviceId: string }> {
+): Promise<VerifiedFactor> {
   const [device] = await db
     .select()
     .from(authenticatorDevices)
@@ -268,5 +347,9 @@ async function verifyMobileFactor(
     .set({ signCount: device.signCount + 1, lastUsedAt: new Date() })
     .where(eq(authenticatorDevices.id, device.id));
 
-  return { decidedVia: 'mobile_hw_key', authenticatorDeviceId: device.id };
+  return {
+    decidedVia: 'mobile_hw_key',
+    authenticatorDeviceId: device.id,
+    isPlatformBound: device.isPlatformBound === true,
+  };
 }

@@ -376,6 +376,93 @@ describe('assertApprovalAssurance — mobile_hw_key (L2) + PIN (L3)', () => {
   // The new L3/L4 cases are added in the assurance-ladder task.
 });
 
+describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadPolicy.mockResolvedValue(null);
+  });
+
+  /** A valid high-tier (L3) mobile approval context. `challengeAgeMs` controls
+   * how long ago the assertion challenge was issued — fresh satisfies the
+   * recency window, stale fails it. The signature is REAL (RSA over the nonce)
+   * and the device row is wired through the shared db mock. */
+  function highApprovalCtx(opts: { challengeAgeMs?: number; isPlatformBound?: boolean } = {}) {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-L3';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 0,
+      isPlatformBound: opts.isPlatformBound ?? true,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+    return {
+      approvalId: 'appr-1',
+      userId: 'user-1',
+      riskTier: 'high' as const,
+      proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+      challengeIssuedAt: Date.now() - (opts.challengeAgeMs ?? 5_000),
+    };
+  }
+
+  /** A critical-tier (L4) mobile approval context. Adds the platform-bound key +
+   * fresh re-auth flag on top of the L3 recency requirement. */
+  function criticalCtx(opts: { reauth?: boolean; isPlatformBound?: boolean; challengeAgeMs?: number } = {}) {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-L4';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      signCount: 0,
+      isPlatformBound: opts.isPlatformBound ?? true,
+    });
+    mockConsumeNonce.mockResolvedValue(nonce);
+    return {
+      approvalId: 'appr-1',
+      userId: 'user-1',
+      riskTier: 'critical' as const,
+      proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+      challengeIssuedAt: Date.now() - (opts.challengeAgeMs ?? 5_000),
+      reauthVerified: opts.reauth ?? false,
+    };
+  }
+
+  // L3: a valid signature whose challenge is within TTL satisfies high; expired fails.
+  it('L3 (high) accepts a fresh signature and rejects an expired challenge', async () => {
+    const fresh = await assertApprovalAssurance(highApprovalCtx({ challengeAgeMs: 10_000 }));
+    expect(fresh.decidedAssuranceLevel).toBe(3);
+    await expect(assertApprovalAssurance(highApprovalCtx({ challengeAgeMs: 130_000 })))
+      .rejects.toThrow(/expired|recency/i);
+  });
+
+  // L4: critical needs hardware-bound key AND a fresh re-auth assertion.
+  it('L4 (critical) requires hardware-bound key + fresh re-auth', async () => {
+    await expect(assertApprovalAssurance(criticalCtx({ reauth: false })))
+      .rejects.toThrow(/re-?auth/i);
+    const ok = await assertApprovalAssurance(criticalCtx({ reauth: true, isPlatformBound: true }));
+    expect(ok.decidedAssuranceLevel).toBe(4);
+  });
+
+  // L4: a critical approval on a non-platform-bound key is rejected even with re-auth.
+  it('L4 (critical) rejects a non-platform-bound key', async () => {
+    await expect(assertApprovalAssurance(criticalCtx({ reauth: true, isPlatformBound: false })))
+      .rejects.toThrow();
+  });
+
+  // PIN is gone: no pin in context, high still satisfiable by signature + recency alone.
+  it('does not require a PIN for high', async () => {
+    const r = await assertApprovalAssurance(highApprovalCtx({ challengeAgeMs: 5_000 }));
+    expect(r.decidedAssuranceLevel).toBe(3);
+    expect(r.pinVerified).toBe(false);
+  });
+});
+
 describe('resolveApprovalAssurance (Phase 1: resolve-only, never blocks)', () => {
   it('reports the would-be required level scaled to risk tier', () => {
     expect(resolveApprovalAssurance('low').requiredLevel).toBe(1);
