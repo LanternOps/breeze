@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Download, RefreshCw, CheckCircle2 } from 'lucide-react';
+import { Download, RefreshCw, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
   updateStatusMessage,
   updateProgressPercent,
   isUpdateActive,
+  isUpdateStatus,
   shouldAutoDismiss,
   type UpdateStatus,
 } from '../lib/updateStatus';
@@ -25,11 +26,19 @@ export default function UpdateIndicator() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<UpdateStatus>('update-status', (event) => {
-      setStatus(event.payload);
+    const unlisten = listen<unknown>('update-status', (event) => {
+      // Validate at the IPC boundary: a drifted/renamed Rust variant is dropped
+      // (banner just doesn't show) rather than crashing the render.
+      if (isUpdateStatus(event.payload)) {
+        setStatus(event.payload);
+      } else {
+        console.warn('Ignoring malformed update-status payload', event.payload);
+      }
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(() => {});
+      unlisten
+        .then((fn) => fn())
+        .catch((e) => console.error('Failed to detach update-status listener', e));
     };
   }, []);
 
@@ -50,9 +59,12 @@ export default function UpdateIndicator() {
   const Icon =
     status.phase === 'deferred'
       ? CheckCircle2
-      : status.phase === 'restarting'
-        ? RefreshCw
-        : Download;
+      : status.phase === 'failed'
+        ? AlertTriangle
+        : status.phase === 'restarting'
+          ? RefreshCw
+          : Download;
+  const iconColor = status.phase === 'failed' ? 'text-amber-400' : 'text-blue-400';
 
   return (
     <div
@@ -66,7 +78,7 @@ export default function UpdateIndicator() {
     >
       <div className="flex items-center gap-2 text-xs">
         <Icon
-          className={`w-3.5 h-3.5 text-blue-400 ${status.phase === 'restarting' ? 'animate-spin' : ''}`}
+          className={`w-3.5 h-3.5 ${iconColor} ${status.phase === 'restarting' ? 'animate-spin' : ''}`}
         />
         <span className="whitespace-nowrap">{message}</span>
       </div>

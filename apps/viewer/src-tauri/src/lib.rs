@@ -449,6 +449,7 @@ enum UpdateStatus {
     Installing { version: String },
     Restarting { version: String },
     Deferred { version: String },
+    Failed { version: String },
 }
 
 /// Best-effort broadcast of update status. Emit failures are non-fatal — the
@@ -456,6 +457,18 @@ enum UpdateStatus {
 fn emit_update_status(app: &tauri::AppHandle, status: UpdateStatus) {
     if let Err(e) = app.emit("update-status", status) {
         eprintln!("Failed to emit update-status: {}", e);
+    }
+}
+
+/// Whole-percent download progress, used to throttle UI events to one event
+/// per percent. Returns `-1` as a sentinel when the total is unknown or zero
+/// (no Content-Length) so the first such call matches the caller's initial
+/// `-1` and no spurious `downloading` event is emitted — the banner stays on
+/// its indeterminate state instead.
+fn download_percent(downloaded: u64, total: Option<u64>) -> i64 {
+    match total {
+        Some(total) if total > 0 => ((downloaded * 100) / total) as i64,
+        _ => -1,
     }
 }
 
@@ -510,10 +523,7 @@ async fn auto_update(app: tauri::AppHandle) {
                 if let Some(total) = content_len {
                     eprintln!("Update download: {downloaded}/{total} bytes");
                 }
-                let pct = match content_len {
-                    Some(total) if total > 0 => ((downloaded * 100) / total) as i64,
-                    _ => -1,
-                };
+                let pct = download_percent(downloaded, content_len);
                 if pct != last_emitted_pct {
                     last_emitted_pct = pct;
                     emit_update_status(
@@ -535,6 +545,9 @@ async fn auto_update(app: tauri::AppHandle) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("Update download failed: {}", e);
+            // Surface the failure so a banner already showing "Downloading…"
+            // doesn't stay pinned forever, reintroducing the silent-crash look.
+            emit_update_status(&app, UpdateStatus::Failed { version: version.clone() });
             return;
         }
     };
@@ -549,6 +562,9 @@ async fn auto_update(app: tauri::AppHandle) {
     // On Windows this call does not return (process exits after launching installer).
     if let Err(e) = update.install(bytes) {
         eprintln!("Update install failed: {}", e);
+        // On Windows install() doesn't return on success; reaching here means it
+        // failed, so clear the pinned "Installing…" banner with a failure notice.
+        emit_update_status(&app, UpdateStatus::Failed { version: version.clone() });
         return;
     }
 
@@ -737,6 +753,78 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_percent_cases() {
+        let cases = [
+            // (downloaded, total, expected)
+            (0, Some(200), 0),
+            (50, Some(200), 25),
+            (1, Some(3), 33),   // integer floor, matches the throttle's intent
+            (2, Some(3), 66),   // floor, not rounded — display rounds separately
+            (200, Some(200), 100),
+            (210, Some(200), 105), // overshoot is not clamped here; the TS display clamps
+            (0, Some(0), -1),      // zero total → sentinel, no divide-by-zero
+            (50, None, -1),        // unknown total → sentinel
+        ];
+        for (downloaded, total, expected) in cases {
+            assert_eq!(
+                download_percent(downloaded, total),
+                expected,
+                "download_percent({downloaded}, {total:?})"
+            );
+        }
+    }
+
+    /// Locks the wire shape the TS `UpdateStatus` union in
+    /// `src/lib/updateStatus.ts` depends on. If a variant is renamed or a field
+    /// changes, this fails — forcing the TS mirror to be updated in lockstep.
+    #[test]
+    fn update_status_serializes_to_expected_shape() {
+        use serde_json::json;
+        let v = "1.2.3".to_string();
+        let cases = [
+            (
+                UpdateStatus::Available { version: v.clone() },
+                json!({ "phase": "available", "version": "1.2.3" }),
+            ),
+            (
+                UpdateStatus::Downloading {
+                    version: v.clone(),
+                    downloaded: 50,
+                    total: Some(200),
+                },
+                json!({ "phase": "downloading", "version": "1.2.3", "downloaded": 50, "total": 200 }),
+            ),
+            (
+                UpdateStatus::Downloading {
+                    version: v.clone(),
+                    downloaded: 50,
+                    total: None,
+                },
+                json!({ "phase": "downloading", "version": "1.2.3", "downloaded": 50, "total": null }),
+            ),
+            (
+                UpdateStatus::Installing { version: v.clone() },
+                json!({ "phase": "installing", "version": "1.2.3" }),
+            ),
+            (
+                UpdateStatus::Restarting { version: v.clone() },
+                json!({ "phase": "restarting", "version": "1.2.3" }),
+            ),
+            (
+                UpdateStatus::Deferred { version: v.clone() },
+                json!({ "phase": "deferred", "version": "1.2.3" }),
+            ),
+            (
+                UpdateStatus::Failed { version: v.clone() },
+                json!({ "phase": "failed", "version": "1.2.3" }),
+            ),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(serde_json::to_value(&status).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn extract_device_id_cases() {
