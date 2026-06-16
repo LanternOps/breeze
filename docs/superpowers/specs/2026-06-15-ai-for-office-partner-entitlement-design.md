@@ -73,13 +73,30 @@ rls-coverage contract test; no new table = no allowlist change.)
 - The partner-scope `PATCH /orgs/partners/me` is **not** changed — partners cannot
   set this field.
 
-### API — server enforcement (the real gate)
-- `apps/api/src/routes/clientAi/admin.ts` — extend the group gate
-  (`clientAiAdminRoutes.use('*', …)`) so it returns 404 unless
-  **both** `CLIENT_AI_ENTRA_CLIENT_ID` is set **and** the caller's partner has
-  `ai_for_office_enabled = true`. Load the flag by `auth.partnerId` (single
-  indexed lookup; partners are few and the result can be read inside the gate).
-  System-scope callers with no `partnerId` are handled explicitly (see Edge cases).
+### API — server enforcement (the real cost gate)
+
+The AI spend comes from **client end-users** running the add-in, not from the MSP
+admin config surface. So the authoritative gate is the **session-minting
+exchange**, with the admin surface gated secondarily for consistency.
+
+- **Primary — `apps/api/src/routes/clientAi/auth.ts` (`POST /auth/exchange`):**
+  this is the pre-auth chokepoint where an Entra token is resolved to an org
+  (`clientAiTenantMappings.entraTenantId → orgId`) and an end-user session is
+  minted. Inside the existing `withSystemDbAccessContext` resolution block, after
+  the tenant mapping is found and **before** `getOrgPolicy(...)`, resolve the
+  org's partner (`organizations.partnerId`) and check
+  `partners.ai_for_office_enabled`. If false, return the same shape as the
+  existing per-org `disabled` denial (HTTP 403, `error: 'disabled'`,
+  `details.reason: 'partner_not_enabled'`). No partner enabled ⇒ no session ⇒ no
+  downstream AI spend. This sits **above** the existing per-org `policy.enabled`
+  gate (three layers: instance env → partner → org).
+- **Secondary — `apps/api/src/routes/clientAi/admin.ts` (`clientAiAdminRoutes.use('*', …)`):**
+  extend the existing dark-gate so it 404s unless `CLIENT_AI_ENTRA_CLIENT_ID` is
+  set **and** the caller's partner has `ai_for_office_enabled = true` (lookup by
+  `auth.partnerId`). A disabled partner's MSP admin can't configure AI for Office
+  either. System-scope callers with no `partnerId` pass the partner layer (see
+  Edge cases). This is config-surface defense-in-depth; the exchange gate is what
+  actually controls cost.
 
 ### API — read for the web
 - `/orgs/partners/me` already returns the full partner row, so the new column
@@ -113,12 +130,14 @@ Operator: PATCH /orgs/partners/:id { aiForOfficeEnabled: true }   (system scope)
                          ▼
               partners.ai_for_office_enabled = true   (audit: partner.update)
                          │
-          ┌──────────────┴───────────────┐
-          ▼                               ▼
-Web: GET /orgs/partners/me        API: /client-ai/admin/* gate
-  → partner.aiForOfficeEnabled       → CLIENT_AI_ENTRA_CLIENT_ID set
-  → Sidebar shows the nav item          AND partner.ai_for_office_enabled
-                                        else 404 (dark)
+          ┌──────────────┬───────────────────────────┐
+          ▼              ▼                           ▼
+Web nav            API: /auth/exchange         API: /client-ai/admin/* gate
+GET /orgs/          (end-user session mint)     (MSP admin config)
+  partners/me        → resolve org→partner       → CLIENT_AI_ENTRA_CLIENT_ID set
+  → aiForOffice-     → partner.ai_for_office_       AND caller partner enabled
+    Enabled            enabled? else 403 disabled   else 404 (dark)
+  → show/hide nav    (THE cost gate)             (config defense-in-depth)
 ```
 
 ## Edge cases
@@ -143,7 +162,11 @@ Web: GET /orgs/partners/me        API: /client-ai/admin/* gate
 
 ## Testing
 
-- **API gate** (`clientAi/admin` tests): enabled partner → passes; disabled
+- **API exchange gate** (`clientAi/auth` tests — the cost gate): a partner-enabled
+  org's tenant exchanges successfully (existing happy path stays green); a
+  partner-DISABLED org's exchange is denied 403 `disabled` /
+  `partner_not_enabled`, even when the per-org policy is enabled.
+- **API admin gate** (`clientAi/admin` tests): enabled partner → passes; disabled
   partner → 404; `CLIENT_AI_ENTRA_CLIENT_ID` unset → 404; system caller without
   partnerId → not locked out by the partner layer.
 - **API update** (`orgs` route tests): system-scope PATCH sets the column;
