@@ -8,15 +8,18 @@ import {
   addContractLine,
   removeContractLine,
   contractTransition,
+  getContractEstimate,
   type ContractBillingTiming,
   type ContractDetail,
   type ContractLine,
   type ContractLineType,
+  type ContractEstimate,
 } from '../../lib/api/contracts';
+import CatalogItemPicker from '../catalog/CatalogItemPicker';
+import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
-interface CatalogItem { id: string; name: string; isBundle: boolean }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -76,6 +79,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [endDate, setEndDate] = useState(contract?.endDate ?? '');
   const [autoIssue, setAutoIssue] = useState(contract?.autoIssue ?? false);
   const [notes, setNotes] = useState(contract?.notes ?? '');
+  const [terms, setTerms] = useState(contract?.terms ?? '');
+  const [liveEstimate, setLiveEstimate] = useState<ContractEstimate | null>(null);
 
   // ---- reference data ------------------------------------------------------
   const [orgs, setOrgs] = useState<Organization[]>([]);
@@ -103,7 +108,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, []);
 
   const loadCatalog = useCallback(async () => {
-    const res = await fetchWithAuth('/catalog?isActive=true');
+    const res = await listCatalog({ isActive: true, limit: 200 });
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) return; // catalog is optional context; don't block the editor
     const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
@@ -120,9 +125,19 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     setSites(Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : []);
   }, []);
 
+  const loadEstimate = useCallback(async () => {
+    if (!contract) return;
+    const res = await getContractEstimate(contract.id);
+    if (res.status === 401) return UNAUTHORIZED();
+    if (!res.ok) return; // estimate is best-effort; the static fallback still shows
+    const body = (await res.json().catch(() => null)) as { data?: ContractEstimate } | null;
+    setLiveEstimate(body?.data ?? null);
+  }, [contract]);
+
   useEffect(() => { if (isCreate) void loadOrgs(); }, [isCreate, loadOrgs]);
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
   useEffect(() => { void loadSites(orgId); }, [orgId, loadSites]);
+  useEffect(() => { if (!isCreate) void loadEstimate(); }, [isCreate, loadEstimate]);
 
   const intervalIsValid = intervalMonths >= 1 && intervalMonths <= 60;
   const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalIsValid;
@@ -141,13 +156,20 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     return { known, hasAuto };
   }, [lines]);
 
+  // Resolved live quantity per line (per_device/per_seat) from the estimate.
+  const estByLine = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of liveEstimate?.lines ?? []) m.set(e.lineId, e.quantity);
+    return m;
+  }, [liveEstimate]);
+
   const newLineEstimate = useMemo(() => {
     if (AUTO_QTY_TYPES.has(lineType)) return null;
     const qty = lineType === 'manual' ? Number(lineQty || '0') : 1;
     return qty * Number(linePrice || '0');
   }, [lineType, lineQty, linePrice]);
 
-  const refresh = useCallback(() => { onChanged?.(); }, [onChanged]);
+  const refresh = useCallback(() => { onChanged?.(); void loadEstimate(); }, [onChanged, loadEstimate]);
 
   // ---- create flow ---------------------------------------------------------
   const saveCreate = useCallback(async () => {
@@ -164,6 +186,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           endDate: endDate || null,
           autoIssue,
           notes: notes.trim() || null,
+          terms: terms.trim() || null,
         }),
         errorFallback: 'Could not create the contract.',
         successMessage: 'Contract created',
@@ -176,7 +199,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, canSaveHeader, orgId, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, notes]);
+  }, [busy, canSaveHeader, orgId, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, notes, terms]);
 
   // ---- edit flow -----------------------------------------------------------
   const saveHeader = useCallback(async () => {
@@ -192,6 +215,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           endDate: endDate || null,
           autoIssue,
           notes: notes.trim() || null,
+          terms: terms.trim() || null,
         }),
         errorFallback: 'Could not save the contract.',
         successMessage: 'Contract saved',
@@ -203,7 +227,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, canSaveHeader, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, notes, refresh]);
+  }, [busy, contract, canSaveHeader, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, notes, terms, refresh]);
 
   const addLine = useCallback(async () => {
     if (busy || !contract || !lineDesc.trim()) return;
@@ -377,6 +401,15 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </label>
+              <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
+                Terms (optional, shown on the invoice)
+                <textarea
+                  value={terms} onChange={(e) => setTerms(e.target.value)} rows={2}
+                  data-testid="contract-form-terms"
+                  placeholder="e.g. Net 30. Auto-renews unless cancelled 30 days prior."
+                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </label>
             </div>
           </div>
 
@@ -413,9 +446,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           </td>
                           <td className="px-3 py-2">{l.description}</td>
                           <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, contract?.currencyCode)}</td>
-                          <td className="px-3 py-2 text-right">
+                          <td className="px-3 py-2 text-right tabular-nums">
                             {AUTO_QTY_TYPES.has(l.lineType)
-                              ? <span className="text-muted-foreground">auto</span>
+                              ? (estByLine.has(l.id)
+                                  ? estByLine.get(l.id)
+                                  : <span className="text-muted-foreground">auto</span>)
                               : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                           </td>
                           <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
@@ -494,17 +529,27 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     </label>
                   )}
                   {catalogItems.length > 0 && (
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
                       Link catalog item (optional)
-                      <select
-                        value={lineCatalogId} onChange={(e) => setLineCatalogId(e.target.value)}
-                        data-testid="contract-line-catalog"
-                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      >
-                        <option value="">No catalog link</option>
-                        {catalogItems.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
-                      </select>
-                    </label>
+                      {lineCatalogId ? (
+                        <span className="inline-flex h-9 items-center gap-1.5 self-start rounded-md border bg-muted/40 px-2.5 text-sm text-foreground" data-testid="contract-line-catalog-picked">
+                          <span className="font-medium">{catalogItems.find((i) => i.id === lineCatalogId)?.name ?? 'Item'}</span>
+                          <button type="button" onClick={() => setLineCatalogId('')} aria-label="Clear catalog link" className="ml-1 text-muted-foreground hover:text-foreground">×</button>
+                        </span>
+                      ) : (
+                        <CatalogItemPicker
+                          items={catalogItems}
+                          includeBundles={false}
+                          onSelect={(it) => {
+                            setLineCatalogId(it.id);
+                            if (!lineDesc.trim()) setLineDesc(it.name);
+                            setLinePrice(it.unitPrice);
+                          }}
+                          testId="contract-line-catalog-picker"
+                          placeholder="Search catalog…"
+                        />
+                      )}
+                    </div>
                   )}
                   <label className="flex items-center gap-2 text-sm">
                     <input
@@ -541,13 +586,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
               <p className="text-sm text-muted-foreground">Save the contract, then add lines to see an estimate.</p>
             ) : (
               <>
-                <p className="text-2xl font-semibold" data-testid="contract-estimate-total">
-                  {formatMoney(estimate.known, contract?.currencyCode)}
-                  {estimate.hasAuto && <span className="ml-1 align-middle text-sm font-normal text-muted-foreground">+ auto</span>}
+                <p className="text-2xl font-semibold tabular-nums" data-testid="contract-estimate-total">
+                  {liveEstimate
+                    ? formatMoney(liveEstimate.periodTotal, contract?.currencyCode)
+                    : formatMoney(estimate.known, contract?.currencyCode)}
+                  {!liveEstimate && estimate.hasAuto && (
+                    <span className="ml-1 align-middle text-sm font-normal text-muted-foreground">+ auto</span>
+                  )}
                 </p>
-                {estimate.hasAuto && (
+                {liveEstimate && liveEstimate.lines.some((l) => l.live) && (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Per-device / per-seat lines are quantified from live counts when the invoice is generated.
+                    Includes live device / seat counts as of today.
                   </p>
                 )}
               </>

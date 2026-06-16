@@ -1,13 +1,15 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import {
   contractTransition,
   generateContractInvoice,
+  getContractEstimate,
   formatCadence,
   CONTRACT_STATUS_COLORS,
   CONTRACT_STATUS_LABELS,
   type ContractDetail as ContractDetailData,
+  type ContractEstimate,
   type ContractLineType,
   type ContractStatus,
   type ContractTransition,
@@ -66,6 +68,17 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   const currency = contract.currencyCode;
 
   const [busy, setBusy] = useState(false);
+  const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getContractEstimate(contract.id).then(async (res) => {
+      if (cancelled || !res.ok) return;
+      const body = (await res.json().catch(() => null)) as { data?: ContractEstimate } | null;
+      if (!cancelled) setEstimate(body?.data ?? null);
+    });
+    return () => { cancelled = true; };
+  }, [contract.id]);
 
   const refresh = useCallback(() => onChanged(), [onChanged]);
 
@@ -144,16 +157,11 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 <dt className="text-xs uppercase text-muted-foreground">Auto-issue</dt>
                 <dd className="mt-1 font-medium">{contract.autoIssue ? 'Yes' : 'No (drafts)'}</dd>
               </div>
-              {/* Informational stat — sourced from contract-status time reporting
-                  once that ships. No endpoint exists yet, so render a placeholder. */}
+              {/* Estimated value per billing period, from live device/seat counts. */}
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Hours under contract</dt>
-                <dd
-                  className="mt-1 font-medium text-muted-foreground"
-                  data-testid="contract-hours-stat"
-                  title="Available when contract-time reporting ships"
-                >
-                  —
+                <dt className="text-xs uppercase text-muted-foreground">Est. / period</dt>
+                <dd className="mt-1 font-medium tabular-nums" data-testid="contract-estimate-stat">
+                  {estimate ? formatMoney(estimate.periodTotal, currency) : '—'}
                 </dd>
               </div>
             </dl>

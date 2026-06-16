@@ -36,6 +36,22 @@ export interface ContractSummary {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Resolved period value (live per_device/per_seat counts), added by GET /contracts. */
+  estimatedPeriodValue?: string;
+}
+
+/** One line's resolved estimate from GET /contracts/:id/estimate. */
+export interface ContractEstimateLine {
+  lineId: string;
+  lineType: ContractLineType;
+  quantity: number;
+  value: string;
+  live: boolean;
+}
+export interface ContractEstimate {
+  currencyCode: string;
+  periodTotal: string;
+  lines: ContractEstimateLine[];
 }
 
 export interface ContractLine {
@@ -93,6 +109,10 @@ export function listContracts(query: ListContractsQuery = {}): Promise<Response>
 
 export function getContract(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}`);
+}
+
+export function getContractEstimate(id: string): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/estimate`);
 }
 
 export function createContract(body: unknown): Promise<Response> {
@@ -168,4 +188,12 @@ export function formatCadence(intervalMonths: number): string {
     default:
       return `Every ${intervalMonths} months`;
   }
+}
+
+/** Normalize a per-period value to an estimated monthly figure (annual ÷ 12,
+ *  quarterly ÷ 3) for an "Est. monthly recurring" rollup. */
+export function monthlyValue(periodValue: string | number | null | undefined, intervalMonths: number): number {
+  const v = Number(periodValue);
+  if (!Number.isFinite(v) || intervalMonths <= 0) return 0;
+  return v / intervalMonths;
 }
