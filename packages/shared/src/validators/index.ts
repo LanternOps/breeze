@@ -20,6 +20,7 @@ export * from './authenticator';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
+export * from './quotes';
 
 // ============================================
 // Device Roles
