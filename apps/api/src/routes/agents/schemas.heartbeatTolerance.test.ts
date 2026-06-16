@@ -200,6 +200,46 @@ describe('heartbeatSchema — Layer A tolerance', () => {
   });
 });
 
+// uint64Counter guards the cumulative byte/packet counters against v4's new
+// z.number().int() 2^53 cap. The agent emits Go uint64 counters (bigint columns)
+// that exceed 2^53 on busy/long-uptime hosts; a revert to .int() would, via the
+// .catch(undefined)/array-catch guards, SILENTLY drop them. These boundary tests
+// lock that in — no existing test exercises a value above 2^53.
+describe('heartbeatSchema — large uint64 counters (v4 .int() 2^53 cap)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const BIG = 18_014_398_509_481_984; // 2^54, above Number.MAX_SAFE_INTEGER (2^53)
+  const baseMetrics = { cpuPercent: 5, ramPercent: 50, ramUsedMb: 4096, diskPercent: 30, diskUsedGb: 100 };
+
+  it('accepts cumulative byte/packet counters above 2^53 and preserves them', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      metrics: {
+        ...baseMetrics,
+        networkInBytes: BIG,
+        diskReadBytes: BIG,
+        interfaceStats: [
+          { name: 'eth0', inBytesPerSec: 0, outBytesPerSec: 0, inBytes: BIG, outBytes: BIG, inPackets: BIG, outPackets: 0, inErrors: 0, outErrors: 0 },
+        ],
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.metrics?.networkInBytes).toBe(BIG);
+    expect(result.data.metrics?.diskReadBytes).toBe(BIG);
+    // If inBytes/inPackets were still .int(), the whole interface object would
+    // fail and the array .catch would drop interfaceStats entirely.
+    expect(result.data.metrics?.interfaceStats?.[0]?.inBytes).toBe(BIG);
+    expect(result.data.metrics?.interfaceStats?.[0]?.inPackets).toBe(BIG);
+  });
+
+  it('still drops a fractional byte counter (refine integer check intact)', () => {
+    const result = heartbeatSchema.safeParse({ ...minimal, metrics: { ...baseMetrics, networkInBytes: 1.5 } });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.metrics?.networkInBytes).toBeUndefined();
+  });
+});
+
 // #1121 — the watchdogState collapse premise: a corrupted (non-string) value
 // must drop to undefined rather than 400 the heartbeat. The route-side
 // observability for this collapse is detectWatchdogStateCollapse in

@@ -92,11 +92,12 @@ const ipEntrySchema = z.object({
 });
 
 // v4's z.number().int() rejects integers above 2^53 (Number.MAX_SAFE_INTEGER);
-// the agent's cumulative uint64 byte counters exceed that on busy/long-uptime
-// hosts (v3 .int() had no magnitude cap, and the DB columns are bigint). Keep v3
-// semantics — integer-valued, any magnitude — so large counters aren't silently
-// dropped (the fractional/negative case still fails the refine and is caught).
-const byteCounter = z.number().min(0).refine(Number.isInteger, 'expected integer');
+// the agent's cumulative uint64 counters (byte and packet totals from gopsutil)
+// exceed that on busy/long-uptime hosts (v3 .int() had no magnitude cap, and the
+// DB columns are bigint). Keep v3 semantics — integer-valued, any magnitude — so
+// large counters aren't silently dropped. Fractional values still fail the refine
+// and negatives fail .min(0), so bad input is caught either way.
+const uint64Counter = z.number().min(0).refine(Number.isInteger, 'expected integer');
 
 export const heartbeatSchema = z.object({
   metrics: z.object({
@@ -106,26 +107,26 @@ export const heartbeatSchema = z.object({
     diskPercent: z.number(),
     diskUsedGb: z.number(),
     diskActivityAvailable: z.boolean().optional().catch(undefined),
-    diskReadBytes: byteCounter.optional().catch(undefined),
-    diskWriteBytes: byteCounter.optional().catch(undefined),
+    diskReadBytes: uint64Counter.optional().catch(undefined),
+    diskWriteBytes: uint64Counter.optional().catch(undefined),
     diskReadBps: z.number().int().min(0).optional().catch(undefined),
     diskWriteBps: z.number().int().min(0).optional().catch(undefined),
     diskReadOps: z.number().int().min(0).optional().catch(undefined),
     diskWriteOps: z.number().int().min(0).optional().catch(undefined),
-    networkInBytes: byteCounter.optional().catch(undefined),
-    networkOutBytes: byteCounter.optional().catch(undefined),
+    networkInBytes: uint64Counter.optional().catch(undefined),
+    networkOutBytes: uint64Counter.optional().catch(undefined),
     bandwidthInBps: z.number().int().min(0).optional().catch(undefined),
     bandwidthOutBps: z.number().int().min(0).optional().catch(undefined),
     interfaceStats: z.array(z.object({
       name: z.string().min(1),
       inBytesPerSec: z.number().int().min(0),
       outBytesPerSec: z.number().int().min(0),
-      inBytes: byteCounter,
-      outBytes: byteCounter,
-      inPackets: z.number().int().min(0),
-      outPackets: z.number().int().min(0),
-      inErrors: z.number().int().min(0),
-      outErrors: z.number().int().min(0),
+      inBytes: uint64Counter,
+      outBytes: uint64Counter,
+      inPackets: uint64Counter,
+      outPackets: uint64Counter,
+      inErrors: uint64Counter,
+      outErrors: uint64Counter,
       speed: z.number().int().min(0).optional().catch(undefined)
     })).max(100).optional().catch(undefined),
     processCount: z.number().int().optional().catch(undefined)
