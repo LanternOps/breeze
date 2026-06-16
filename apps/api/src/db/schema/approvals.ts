@@ -67,8 +67,6 @@ export const approvalRequests = pgTable(
     decidedVia: approvalFactorEnum('decided_via'),
     /** The authenticator device that signed the decision (null for session_tap). */
     authenticatorDeviceId: uuid('authenticator_device_id'),
-    /** Whether the approver PIN was verified for this decision. */
-    pinVerified: boolean('pin_verified').notNull().default(false),
 
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
