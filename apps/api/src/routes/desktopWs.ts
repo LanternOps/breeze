@@ -618,7 +618,7 @@ function createDesktopWsHandlers(
 
         const parsed = desktopMessageSchema.safeParse(raw);
         if (!parsed.success) {
-          console.warn(`Invalid desktop message from session ${sessionId}:`, parsed.error.errors);
+          console.warn(`Invalid desktop message from session ${sessionId}:`, parsed.error.issues);
           return;
         }
         const message = parsed.data;
