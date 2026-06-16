@@ -4,6 +4,7 @@ import { invoices, invoicePayments } from '../db/schema/invoices';
 import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { recomputeInvoiceStatus } from './invoiceService';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { fromMinorUnits } from './stripeMoney';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -25,18 +26,40 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
   return withSystemDbAccessContext(async () => {
     const [mapping] = await db.select().from(invoiceStripePayments)
       .where(eq(invoiceStripePayments.stripeObjectId, input.stripeObjectId)).limit(1);
+    // A genuinely missing mapping is unexpected/transient (race against the pay
+    // route's INSERT, or a stale redelivery) — throw so the webhook 500s and
+    // Stripe retries, by which point the mapping should exist.
     if (!mapping) throw new Error(`No mapping for stripe object ${input.stripeObjectId}`);
     if (mapping.invoicePaymentId) return { invoiceId: mapping.invoiceId }; // already recorded — no-op
 
     const [inv] = await db.select().from(invoices).where(eq(invoices.id, mapping.invoiceId)).limit(1);
     if (!inv) throw new Error(`Invoice ${mapping.invoiceId} not found`);
-    if (inv.status === 'draft' || inv.status === 'void') {
+
+    // TERMINAL conditions: a retry will NEVER succeed, so we must not throw (a
+    // thrown error → 500 → Stripe retries forever). Instead mark the mapping
+    // failed, surface a payment.failed event, and RETURN 202-cleanly.
+    const terminalFail = async (reason: string): Promise<{ invoiceId: string }> => {
+      console.warn('[stripeReconcile] terminal payment failure', { stripeObjectId: input.stripeObjectId, invoiceId: inv.id, reason });
       await markMapping(mapping.id, 'failed');
-      throw new Error(`Cannot record payment on ${inv.status} invoice`);
+      await emitInvoiceEvent({ type: 'payment.failed', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId });
+      return { invoiceId: inv.id };
+    };
+
+    if (inv.status === 'draft' || inv.status === 'void') {
+      return terminalFail(`invoice is ${inv.status}`);
+    }
+    // Defense-in-depth (F4): the verified webhook amount must be in the invoice's
+    // own currency, and the charge must have landed on the account the mapping
+    // was created against. A mismatch means tampering or a routing bug, never a
+    // transient — terminal-fail rather than silently writing a wrong-currency row.
+    if (String(input.currency).toUpperCase() !== String(inv.currencyCode).toUpperCase()) {
+      return terminalFail(`currency mismatch (event=${input.currency} invoice=${inv.currencyCode})`);
+    }
+    if (!input.stripeAccountId || input.stripeAccountId !== mapping.stripeAccountId) {
+      return terminalFail(`account mismatch (event=${input.stripeAccountId} mapping=${mapping.stripeAccountId})`);
     }
     if (toCents(input.amount) > toCents(inv.balance)) {
-      await markMapping(mapping.id, 'failed');
-      throw new Error('OVERPAYMENT: payment exceeds balance');
+      return terminalFail('overpayment: payment exceeds balance');
     }
 
     const [payment] = await db.insert(invoicePayments).values({
@@ -72,6 +95,7 @@ interface RefundInput {
   stripePaymentIntentId: string;
   amountRefundedCents: number; // cumulative refunded on the charge
   chargeAmountCents: number;   // original captured amount
+  currency: string;           // charge currency (drives minor-unit conversion)
 }
 
 /** Reflect a Stripe-side refund. No Breeze-initiated money movement. System context. */
@@ -91,9 +115,10 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
         .where(eq(invoiceStripePayments.id, mapping.id));
     } else {
       // Partial refund → reduce the positive payment amount (stays > 0; respects the amount>0 CHECK).
+      // Currency-aware: zero-decimal currencies (JPY, …) must NOT be divided by 100.
       const remainingCents = input.chargeAmountCents - input.amountRefundedCents;
       await db.update(invoicePayments)
-        .set({ amount: (remainingCents / 100).toFixed(2) })
+        .set({ amount: fromMinorUnits(remainingCents, input.currency) })
         .where(eq(invoicePayments.id, paymentId));
       await db.update(invoiceStripePayments)
         .set({ status: 'partially_refunded', lastEventAt: new Date(), updatedAt: new Date() })

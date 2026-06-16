@@ -18,11 +18,22 @@ export type InvoiceEvent =
       actorUserId?: string;
     }
   | {
-      type: 'payment.recorded' | 'payment.voided' | 'payment.failed';
+      type: 'payment.recorded' | 'payment.voided';
       invoiceId: string;
       orgId: string;
       partnerId: string;
       paymentId: string;
+      actorUserId?: string;
+    }
+  | {
+      // payment.failed can fire BEFORE any invoice_payments row exists (a Stripe
+      // charge that we terminally reject pre-write), so paymentId is optional —
+      // the event still carries the real invoice/org/partner context.
+      type: 'payment.failed';
+      invoiceId: string;
+      orgId: string;
+      partnerId: string;
+      paymentId?: string;
       actorUserId?: string;
     };
 
