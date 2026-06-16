@@ -127,7 +127,7 @@ const updateScriptSchema = z.object({
 
 const executeScriptSchema = z.object({
   deviceIds: z.array(z.string().uuid()).min(1),
-  parameters: z.record(z.any()).refine(
+  parameters: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),

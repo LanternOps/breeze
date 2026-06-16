@@ -158,7 +158,7 @@ const createRingSchema = z.object({
   // Ring-level auto-approval gate (#1317). Typed shape replaces the old
   // free-form record so the ring owns approval rules with validated severities.
   autoApprove: ringAutoApproveSchema.optional(),
-  targets: z.record(z.unknown()).optional(),
+  targets: z.record(z.string(), z.unknown()).optional(),
 });
 
 const updateRingSchema = z.object({
@@ -175,7 +175,7 @@ const updateRingSchema = z.object({
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
   // Ring-level auto-approval gate (#1317). See createRingSchema.
   autoApprove: ringAutoApproveSchema.optional(),
-  targets: z.record(z.unknown()).optional(),
+  targets: z.record(z.string(), z.unknown()).optional(),
 });
 
 const ringIdParamSchema = z.object({

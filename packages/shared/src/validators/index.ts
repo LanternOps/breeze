@@ -89,14 +89,14 @@ export const createOrgSchema = z.object({
   maxDevices: z.number().positive().optional(),
   contractStart: z.coerce.date().optional(),
   contractEnd: z.coerce.date().optional(),
-  billingContact: z.record(z.unknown()).optional()
+  billingContact: z.record(z.string(), z.unknown()).optional()
 });
 
 export const createSiteSchema = z.object({
   name: z.string().min(1).max(255),
-  address: z.record(z.unknown()).optional(),
+  address: z.record(z.string(), z.unknown()).optional(),
   timezone: z.string().default('UTC'),
-  contact: z.record(z.unknown()).optional()
+  contact: z.record(z.string(), z.unknown()).optional()
 });
 
 // ============================================
@@ -137,7 +137,7 @@ export const createDeviceGroupSchema = z.object({
   name: z.string().min(1).max(255),
   siteId: z.string().uuid().optional(),
   type: z.enum(['static', 'dynamic']),
-  rules: z.record(z.unknown()).optional(),
+  rules: z.record(z.string(), z.unknown()).optional(),
   parentId: z.string().uuid().optional()
 });
 
@@ -172,7 +172,7 @@ export const createScriptSchema = z.object({
   osTypes: z.array(z.enum(OS_TYPES)).min(1),
   language: z.enum(SCRIPT_LANGUAGES),
   content: z.string().min(1),
-  parameters: z.record(z.unknown()).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
   timeoutSeconds: z.number().min(1).max(3600).default(300),
   runAs: z.enum(SCRIPT_RUN_AS).default('system')
 });
@@ -180,7 +180,7 @@ export const createScriptSchema = z.object({
 export const executeScriptSchema = z.object({
   deviceIds: z.array(z.string().uuid()).optional(),
   groupId: z.string().uuid().optional(),
-  parameters: z.record(z.unknown()).optional()
+  parameters: z.record(z.string(), z.unknown()).optional()
 }).refine(
   (data) => data.deviceIds?.length || data.groupId,
   { message: 'Must provide either deviceIds or groupId' }
@@ -215,18 +215,18 @@ export const createAutomationSchema = z.object({
   description: z.string().max(2000).optional(),
   enabled: z.boolean().default(true),
   trigger: automationTriggerSchema,
-  conditions: z.record(z.unknown()).optional(),
-  actions: z.array(z.record(z.unknown())).min(1),
+  conditions: z.record(z.string(), z.unknown()).optional(),
+  actions: z.array(z.record(z.string(), z.unknown())).min(1),
   onFailure: z.enum(['stop', 'continue', 'notify']).default('stop'),
-  notificationTargets: z.record(z.unknown()).optional()
+  notificationTargets: z.record(z.string(), z.unknown()).optional()
 });
 
 export const createPolicySchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(2000).optional(),
   enabled: z.boolean().default(true),
-  targets: z.record(z.unknown()),
-  rules: z.array(z.record(z.unknown())).min(1),
+  targets: z.record(z.string(), z.unknown()),
+  rules: z.array(z.record(z.string(), z.unknown())).min(1),
   enforcement: z.enum(['monitor', 'warn', 'enforce']).default('monitor'),
   checkIntervalMinutes: z.number().min(5).max(1440).default(60),
   remediationScriptId: z.string().uuid().optional()
@@ -241,11 +241,11 @@ export const createAlertRuleSchema = z.object({
   description: z.string().max(2000).optional(),
   enabled: z.boolean().default(true),
   severity: z.enum(ALERT_SEVERITIES),
-  targets: z.record(z.unknown()),
-  conditions: z.record(z.unknown()),
+  targets: z.record(z.string(), z.unknown()),
+  conditions: z.record(z.string(), z.unknown()),
   cooldownMinutes: z.number().min(1).max(1440).default(15),
   escalationPolicyId: z.string().uuid().optional(),
-  notificationChannels: z.array(z.record(z.unknown())).optional(),
+  notificationChannels: z.array(z.record(z.string(), z.unknown())).optional(),
   autoResolve: z.boolean().default(true)
 });
 
@@ -438,7 +438,7 @@ export const updateConfigPolicySchema = z.object({
 export const addFeatureLinkSchema = z.object({
   featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam']),
   featurePolicyId: z.string().uuid().optional(),
-  inlineSettings: z.record(z.unknown()).optional(),
+  inlineSettings: z.record(z.string(), z.unknown()).optional(),
 }).refine(
   (data) => data.featurePolicyId || data.inlineSettings,
   { message: 'At least one of featurePolicyId or inlineSettings is required' }
@@ -616,7 +616,7 @@ export const monitoringInlineSettingsSchema = z.object({
 
 export const updateFeatureLinkSchema = z.object({
   featurePolicyId: z.string().uuid().nullable().optional(),
-  inlineSettings: z.record(z.unknown()).nullable().optional(),
+  inlineSettings: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
 export const assignPolicySchema = z.object({

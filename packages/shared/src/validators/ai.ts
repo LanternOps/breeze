@@ -29,7 +29,7 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('custom'),
     label: z.string(),
-    data: z.record(z.unknown())
+    data: z.record(z.string(), z.unknown())
   })
 ]);
 

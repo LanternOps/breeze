@@ -342,7 +342,7 @@ const createDeploymentSchema = z.object({
   scheduleType: z.enum(['immediate', 'scheduled', 'maintenance']),
   scheduledAt: z.string().datetime().optional(),
   maintenanceWindowId: z.string().uuid().optional(),
-  options: z.record(z.unknown()).optional()
+  options: z.record(z.string(), z.unknown()).optional()
 });
 
 const cancelDeploymentSchema = z.object({

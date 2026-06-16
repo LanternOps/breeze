@@ -243,7 +243,7 @@ export const deploymentScheduleSchema = z.object({
 export const scriptPayloadSchema = z.object({
   type: z.literal('script'),
   scriptId: z.string().uuid(),
-  parameters: z.record(z.unknown()).optional()
+  parameters: z.record(z.string(), z.unknown()).optional()
 });
 
 export const patchPayloadSchema = z.object({

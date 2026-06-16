@@ -33,7 +33,7 @@ export const registryValueBodySchema = z.object({
     z.number(),
     z.array(z.string()),
     z.array(z.number()),
-    z.record(z.number())
+    z.record(z.string(), z.number())
   ])
 });
 

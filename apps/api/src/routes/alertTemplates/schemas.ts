@@ -85,11 +85,11 @@ export const createTemplateSchema = z.object({
   description: z.string().optional(),
   category: z.string().min(1).max(100).optional(),
   severity: severitySchema,
-  conditions: z.record(z.any()).refine(
+  conditions: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional().default({}),
-  targets: z.record(z.any()).refine(
+  targets: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
@@ -101,11 +101,11 @@ export const updateTemplateSchema = z.object({
   description: z.string().optional(),
   category: z.string().min(1).max(100).optional(),
   severity: severitySchema.optional(),
-  conditions: z.record(z.any()).refine(
+  conditions: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
-  targets: z.record(z.any()).refine(
+  targets: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
@@ -131,11 +131,11 @@ export const createRuleSchema = z.object({
   description: z.string().optional(),
   enabled: z.boolean().optional().default(true),
   severity: severitySchema.optional(),
-  targets: z.record(z.any()).refine(
+  targets: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
-  conditions: z.record(z.any()).refine(
+  conditions: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
@@ -147,11 +147,11 @@ export const updateRuleSchema = z.object({
   description: z.string().optional(),
   enabled: z.boolean().optional(),
   severity: severitySchema.optional(),
-  targets: z.record(z.any()).refine(
+  targets: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
-  conditions: z.record(z.any()).refine(
+  conditions: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),

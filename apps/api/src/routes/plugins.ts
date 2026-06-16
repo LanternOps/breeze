@@ -72,12 +72,12 @@ const catalogQuerySchema = z.object({
 
 const installPluginSchema = z.object({
   catalogId: z.string().uuid(),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   orgId: z.string().uuid().optional()
 });
 
 const updatePluginSchema = z.object({
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional()
 });
 

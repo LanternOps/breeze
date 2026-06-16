@@ -64,7 +64,7 @@ export const putPolicySchema = z
     perUserMessagesPerMinute: z.number().int().min(1).max(600).optional(),
     orgMessagesPerHour: z.number().int().min(1).max(100000).optional(),
     retentionDays: z.number().int().min(1).max(3650).nullable().optional(),
-    branding: z.record(z.unknown()).optional(),
+    branding: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 

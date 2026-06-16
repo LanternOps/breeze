@@ -25,7 +25,7 @@ const agentLogEntrySchema = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']),
   component: z.string().max(100),
   message: z.string().max(10000),
-  fields: z.record(z.any()).optional().refine(
+  fields: z.record(z.string(), z.any()).optional().refine(
     (val) => !val || JSON.stringify(val).length <= 32000,
     { message: 'fields object too large (max 32KB)' }
   ),

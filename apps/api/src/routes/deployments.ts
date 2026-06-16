@@ -100,7 +100,7 @@ const createDeploymentSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
   type: z.string().min(1).max(50),
-  payload: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
   targetType: z.enum(['devices', 'groups', 'filter', 'all']),
   targetConfig: targetConfigSchema,
   schedule: scheduleSchema,
@@ -110,7 +110,7 @@ const createDeploymentSchema = z.object({
 const updateDeploymentSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   type: z.string().min(1).max(50).optional(),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   targetType: z.enum(['devices', 'groups', 'filter', 'all']).optional(),
   targetConfig: targetConfigSchema.optional(),
   schedule: scheduleSchema,

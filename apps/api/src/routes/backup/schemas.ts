@@ -19,7 +19,7 @@ export const configSchema = z.object({
   provider: z.enum(['s3', 'local']),
   enabled: z.boolean().optional(),
   encryption: z.boolean().optional(),
-  details: z.record(z.any()).refine(
+  details: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional()
@@ -29,7 +29,7 @@ export const configUpdateSchema = z.object({
   name: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   encryption: z.boolean().optional(),
-  details: z.record(z.any()).refine(
+  details: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional()
@@ -202,7 +202,7 @@ export const bmrCreateTokenSchema = z.object({
   snapshotId: z.string().uuid(),
   restoreType: z.enum(['full', 'selective', 'bare_metal']),
   targetConfig: z
-    .record(z.any())
+    .record(z.string(), z.any())
     .refine((val) => JSON.stringify(val).length <= 65536, {
       message: 'targetConfig too large (max 64KB)',
     })
@@ -381,7 +381,7 @@ export const drGroupCreateSchema = z.object({
   sequence: z.number().int().min(0).optional(),
   dependsOnGroupId: z.string().uuid().optional(),
   devices: z.array(z.string().uuid()).optional(),
-  restoreConfig: z.record(z.any()).optional(),
+  restoreConfig: z.record(z.string(), z.any()).optional(),
   estimatedDurationMinutes: z.number().int().min(0).optional(),
 });
 
@@ -390,7 +390,7 @@ export const drGroupUpdateSchema = z.object({
   sequence: z.number().int().min(0).optional(),
   dependsOnGroupId: z.string().uuid().nullable().optional(),
   devices: z.array(z.string().uuid()).optional(),
-  restoreConfig: z.record(z.any()).optional(),
+  restoreConfig: z.record(z.string(), z.any()).optional(),
   estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
 });
 

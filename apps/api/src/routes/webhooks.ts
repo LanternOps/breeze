@@ -257,7 +257,7 @@ const listDeliveriesSchema = z.object({
 
 const testWebhookSchema = z.object({
   event: z.string().min(1).optional(),
-  payload: z.record(z.unknown()).optional()
+  payload: z.record(z.string(), z.unknown()).optional()
 });
 
 // ============================================

@@ -48,7 +48,7 @@ const createUpdateBaselineSchema = z.object({
   name: z.string().trim().min(1).max(200),
   osType: osTypeSchema,
   profile: profileSchema,
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
   isActive: z.boolean().optional(),
 });
 

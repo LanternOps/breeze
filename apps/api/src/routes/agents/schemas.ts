@@ -237,15 +237,15 @@ export const securityStatusIngestSchema = z.object({
   threatCount: z.number().int().min(0).optional(),
   firewallEnabled: z.boolean().optional(),
   encryptionStatus: z.string().optional(),
-  encryptionDetails: z.record(z.unknown()).optional().refine(
+  encryptionDetails: z.record(z.string(), z.unknown()).optional().refine(
     (val) => !val || JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ),
-  localAdminSummary: z.record(z.unknown()).optional().refine(
+  localAdminSummary: z.record(z.string(), z.unknown()).optional().refine(
     (val) => !val || JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ),
-  passwordPolicySummary: z.record(z.unknown()).optional().refine(
+  passwordPolicySummary: z.record(z.string(), z.unknown()).optional().refine(
     (val) => !val || JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ),
@@ -514,7 +514,7 @@ export const agentLogEntrySchema = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']),
   component: z.string().max(100),
   message: z.string(),
-  fields: z.record(z.any()).optional().refine(
+  fields: z.record(z.string(), z.any()).optional().refine(
     (val) => !val || JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ),
@@ -537,7 +537,7 @@ export const submitEventLogsSchema = z.object({
     source: z.string().min(1),
     eventId: z.string().optional(),
     message: z.string().min(1),
-    details: z.record(z.any()).optional().refine(
+    details: z.record(z.string(), z.any()).optional().refine(
       (val) => !val || JSON.stringify(val).length <= 65536,
       { message: 'Object too large (max 64KB)' }
     )
@@ -599,15 +599,15 @@ export const submitChangesSchema = z.object({
     changeType: z.enum(changeTypeValues),
     changeAction: z.enum(changeActionValues),
     subject: z.string().min(1).max(500),
-    beforeValue: z.record(z.any()).optional().refine(
+    beforeValue: z.record(z.string(), z.any()).optional().refine(
       (value) => !value || JSON.stringify(value).length <= 65535,
       { message: 'beforeValue too large (max 64KB)' }
     ),
-    afterValue: z.record(z.any()).optional().refine(
+    afterValue: z.record(z.string(), z.any()).optional().refine(
       (value) => !value || JSON.stringify(value).length <= 65535,
       { message: 'afterValue too large (max 64KB)' }
     ),
-    details: z.record(z.any()).optional().refine(
+    details: z.record(z.string(), z.any()).optional().refine(
       (value) => !value || JSON.stringify(value).length <= 65535,
       { message: 'details too large (max 64KB)' }
     ),

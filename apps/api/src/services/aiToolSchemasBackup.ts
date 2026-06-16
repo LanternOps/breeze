@@ -293,7 +293,7 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     sequence: z.number().int().min(0).optional(),
     dependsOnGroupId: uuid.optional(),
     devices: z.array(uuid).max(5000).optional(),
-    restoreConfig: z.record(z.unknown()).optional(),
+    restoreConfig: z.record(z.string(), z.unknown()).optional(),
     estimatedDurationMinutes: z.number().int().min(0).optional(),
   }).superRefine((data, ctx) => {
     if ((data.action === 'update_plan' || data.action === 'add_group' || data.action === 'update_group' || data.action === 'delete_group') && !data.planId) {

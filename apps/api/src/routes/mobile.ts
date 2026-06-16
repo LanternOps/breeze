@@ -235,7 +235,7 @@ const listDevicesSchema = z.object({
 const deviceActionSchema = z.object({
   action: z.enum(['reboot', 'wake', 'run_script']),
   scriptId: z.string().uuid().optional(),
-  parameters: z.record(z.unknown()).optional()
+  parameters: z.record(z.string(), z.unknown()).optional()
 }).superRefine((data, ctx) => {
   if (data.action === 'run_script' && !data.scriptId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'scriptId is required for run_script' });

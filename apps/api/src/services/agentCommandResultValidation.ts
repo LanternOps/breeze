@@ -58,7 +58,7 @@ export const restoreStructuredResultSchema = z.object({
   durationMs: z.number().int().nonnegative().optional(),
   bootTimeMs: z.number().int().nonnegative().optional(),
   backgroundSyncActive: z.boolean().optional(),
-  syncProgress: z.union([z.number(), z.record(z.unknown())]).optional(),
+  syncProgress: z.union([z.number(), z.record(z.string(), z.unknown())]).optional(),
   databaseName: z.string().max(255).optional(),
   restoredAs: z.string().max(255).optional(),
 }).passthrough();

@@ -53,7 +53,7 @@ const policyScopeSchema = z.object({
   suppressPaths: z.array(z.string().min(1).max(2048)).max(256).optional(),
   suppressPatternIds: z.array(z.string().min(1).max(80)).max(200).optional(),
   suppressFilePathRegex: z.array(z.string().min(1).max(300)).max(80).optional(),
-  ruleToggles: z.record(z.boolean()).optional(),
+  ruleToggles: z.record(z.string(), z.boolean()).optional(),
 }).strict();
 
 const policyScheduleSchema = z.object({

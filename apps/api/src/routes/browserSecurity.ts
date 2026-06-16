@@ -181,7 +181,7 @@ const policyCreateSchema = z.object({
   allowedExtensions: z.array(z.string()).optional(),
   blockedExtensions: z.array(z.string()).optional(),
   requiredExtensions: z.array(z.string()).optional(),
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
   isActive: z.boolean().optional(),
 });
 
