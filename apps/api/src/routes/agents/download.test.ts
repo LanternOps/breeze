@@ -251,6 +251,20 @@ describe('GET /install.sh — generated installer script', () => {
     const script = await fetchScript();
     expect(script).toContain('--token YOUR_ENROLLMENT_TOKEN');
   });
+
+  it('restores the SELinux context on the installed Linux binary (#1389)', async () => {
+    const script = await fetchScript();
+    // The binary is downloaded to mktemp (/tmp, labeled user_tmp_t) and moved
+    // to /usr/local/bin. mv preserves the source SELinux label, leaving the
+    // service binary mislabeled so init_t/systemd is denied execute access
+    // (203/EXEC) after reboot on SELinux-enforcing hosts. restorecon resets it
+    // to the destination directory's default type (bin_t).
+    expect(script).toContain('restorecon');
+    // Must be guarded so it is a no-op on systems without SELinux tooling.
+    expect(script).toMatch(/command -v restorecon/);
+    // And it must target the installed binary, not the temp file.
+    expect(script).toContain('restorecon -F "$INSTALL_DIR/$BINARY_NAME"');
+  });
 });
 
 describe('GET /uninstall.sh — generated uninstaller script', () => {

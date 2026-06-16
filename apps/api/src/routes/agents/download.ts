@@ -755,6 +755,15 @@ fi
 info "Installing to \$INSTALL_DIR/\$BINARY_NAME..."
 mv "\$TMPFILE" "\$INSTALL_DIR/\$BINARY_NAME"
 chmod 755 "\$INSTALL_DIR/\$BINARY_NAME"
+# Restore the SELinux file context on the installed binary. The download lands
+# in mktemp (/tmp, labeled user_tmp_t) and \`mv\` preserves that label onto
+# /usr/local/bin, so init_t/systemd is denied execute access and the service
+# enters a 203/EXEC restart loop after reboot on SELinux-enforcing hosts
+# (#1389). restorecon resets it to the destination directory's default type
+# (bin_t). Guarded so it is a no-op where SELinux tooling is absent.
+if command -v restorecon &>/dev/null; then
+  restorecon -F "\$INSTALL_DIR/\$BINARY_NAME" 2>/dev/null || true
+fi
 trap - EXIT
 success "Installed \$INSTALL_DIR/\$BINARY_NAME"
 
