@@ -18,13 +18,18 @@ const ZERO_DECIMAL = new Set([
 export function toMinorUnits(amountMajor: string | number, currency: string): number {
   const c = String(currency).toUpperCase();
   const n = Number(amountMajor);
+  // Reject NaN/Infinity up front — silently rounding a non-finite value would
+  // write garbage (NaN) as an amount or send an invalid charge to Stripe.
+  if (!Number.isFinite(n)) throw new Error('stripeMoney: non-finite amount');
   return ZERO_DECIMAL.has(c) ? Math.round(n) : Math.round(n * 100);
 }
 
 /** Convert Stripe minor units back into a fixed-2 major-unit string. */
 export function fromMinorUnits(minor: string | number, currency: string): string {
   const c = String(currency).toUpperCase();
-  return ZERO_DECIMAL.has(c) ? Number(minor).toFixed(2) : (Number(minor) / 100).toFixed(2);
+  const n = Number(minor);
+  if (!Number.isFinite(n)) throw new Error('stripeMoney: non-finite amount');
+  return ZERO_DECIMAL.has(c) ? n.toFixed(2) : (n / 100).toFixed(2);
 }
 
 export function isZeroDecimal(currency: string): boolean {

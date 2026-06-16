@@ -19,6 +19,13 @@ describe('stripeMoney', () => {
       expect(toMinorUnits(10.005, 'USD')).toBe(1001);
       expect(toMinorUnits(1000.4, 'JPY')).toBe(1000);
     });
+
+    it('throws on non-finite input (never writes NaN as an amount)', () => {
+      expect(() => toMinorUnits(NaN, 'USD')).toThrow(/non-finite/);
+      expect(() => toMinorUnits('not-a-number', 'USD')).toThrow(/non-finite/);
+      expect(() => toMinorUnits(Infinity, 'USD')).toThrow(/non-finite/);
+      expect(() => toMinorUnits(-Infinity, 'JPY')).toThrow(/non-finite/);
+    });
   });
 
   describe('fromMinorUnits', () => {
@@ -30,6 +37,12 @@ describe('stripeMoney', () => {
     it('keeps zero-decimal currencies as-is (fixed to 2 places)', () => {
       expect(fromMinorUnits(1000, 'JPY')).toBe('1000.00');
       expect(fromMinorUnits(5000, 'krw')).toBe('5000.00');
+    });
+
+    it('throws on non-finite input (never writes NaN as an amount)', () => {
+      expect(() => fromMinorUnits(NaN, 'USD')).toThrow(/non-finite/);
+      expect(() => fromMinorUnits('not-a-number', 'USD')).toThrow(/non-finite/);
+      expect(() => fromMinorUnits(Infinity, 'USD')).toThrow(/non-finite/);
     });
   });
 

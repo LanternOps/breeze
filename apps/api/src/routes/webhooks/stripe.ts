@@ -4,6 +4,7 @@ import { getTrustedClientIp } from '../../services/clientIp'; // match the helpe
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { verifyStripeEvent, handleStripeEvent } from '../../services/stripeWebhook';
+import { captureException } from '../../services/sentry';
 
 export const stripeWebhookRoutes = new Hono();
 
@@ -30,6 +31,9 @@ stripeWebhookRoutes.post('/stripe/connect', async (c) => {
     await handleStripeEvent(event);
   } catch (err) {
     console.error('[stripeWebhook] handler error', event.type, err instanceof Error ? err.message : String(err));
+    // A money-moving webhook failed to reconcile — surface to Sentry (with a
+    // breadcrumb-ish error) so the retry storm doesn't silently bury a real bug.
+    captureException(err instanceof Error ? err : new Error(`[stripeWebhook] handler error for ${event.type}: ${String(err)}`), c);
     // Return 500 so Stripe retries on transient errors; idempotency makes retries safe.
     return c.json({ error: 'Handler error' }, 500);
   }
