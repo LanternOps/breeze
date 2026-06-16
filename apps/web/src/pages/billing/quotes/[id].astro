@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import QuoteWorkspace from '../../../components/billing/quotes/QuoteWorkspace';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Quote">
+  <QuoteWorkspace id={id} client:load />
+</DashboardLayout>
