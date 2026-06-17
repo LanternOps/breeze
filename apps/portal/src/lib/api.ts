@@ -644,5 +644,40 @@ export const portalApi = {
       { reason },
       config
     );
+  },
+
+  // Public, token-gated proposal access for prospects without a portal account.
+  // These hit /quotes/public/* (NOT /portal/*) — no auth cookie required.
+  getPublicQuote: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicQuoteDetail }>> => {
+    return apiGet<{ data: PublicQuoteDetail }>(
+      `/quotes/public/${encodeURIComponent(token)}`,
+      config
+    );
+  },
+
+  acceptPublicQuote: async (
+    token: string,
+    signerName: string,
+    signerEmail?: string
+  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null } }>> => {
+    return apiPost<{ data: { status: string; invoiceNumber: string | null } }>(
+      `/quotes/public/${encodeURIComponent(token)}/accept`,
+      { signerName, signerEmail },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  declinePublicQuote: async (
+    token: string,
+    reason?: string
+  ): Promise<ApiResponse<{ data: { status: string } }>> => {
+    return apiPost<{ data: { status: string } }>(
+      `/quotes/public/${encodeURIComponent(token)}/decline`,
+      { reason },
+      { redirectOnUnauthorized: false }
+    );
   }
 };
