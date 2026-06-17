@@ -1,0 +1,89 @@
+---
+title: Invoices
+description: Create invoices from your catalog, tracked time, and parts; issue and send them; record payments; void and reissue; and download a clean PDF -- all inside Breeze.
+sidebar:
+  label: "Invoices"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Breeze's invoice engine turns the work you already track -- catalog items, time entries, and parts -- into invoices you can issue, send, and collect on without leaving the platform. Open **Billing → Invoices** to get started.
+
+Invoices are **partner-scoped**: you can invoice any of your customer organizations from one place.
+
+## The Invoice List
+
+The list shows every invoice with its number, organization, status, issue and due dates, total, and outstanding balance. An **Outstanding** summary strip at the top totals what's still owed across all invoices. Search by number or organization, filter by status, organization, or date, and sort by issued date, due date, total, or balance.
+
+### Invoice Statuses
+
+| Status | Meaning |
+|--------|---------|
+| Draft | Being assembled; not yet issued and not visible to the customer |
+| Sent | Issued and delivered to the customer |
+| Partially paid | One or more payments recorded, but a balance remains |
+| Paid | Fully paid |
+| Overdue | Past its due date with a balance remaining |
+| Void | Cancelled; no longer collectible |
+
+## Creating an Invoice
+
+<Steps>
+1. Go to **Billing → Invoices** and click **New invoice**.
+2. Choose **Assemble from work** to pull in tracked time and parts, or **Blank invoice** to start empty.
+3. Select the customer organization the invoice is for.
+4. The invoice opens as a **draft** for editing.
+</Steps>
+
+### Adding Line Items
+
+The draft editor's primary way to add lines is the shared **catalog picker** -- start typing to search your [Product Catalog](/features/product-catalog/) by name or SKU, pick an item or bundle, and set the quantity. Catalog items use the customer's per-customer price when one is set. You can also add a **manual line** with a custom description, quantity, and price for anything not in the catalog.
+
+Line items can come from several sources: catalog items, bundles, tracked time entries, parts, recurring contracts, or manual entries. The running subtotal, tax, total, and balance update live as you edit.
+
+<Aside>
+  If your catalog is empty, the editor links straight to **Product Catalog** so you can add the items you sell.
+</Aside>
+
+## Issuing and Sending
+
+**Issuing** an invoice finalizes it: it assigns the next sequential invoice number (using your partner prefix and the current year), sets the issue and due dates, and generates the PDF. **Sending** emails the invoice to the customer.
+
+<Steps>
+1. Review the draft and confirm the line items and totals.
+2. Click **Issue** to assign a number and lock the invoice.
+3. Click **Send** to email it to the customer.
+</Steps>
+
+The issued-invoice view puts the **balance due** front and center, shows recorded payments, and offers a one-click **PDF download**.
+
+## Recording Payments
+
+When a customer pays offline, record it against the invoice so the balance and status stay accurate. Payments collected online through [Stripe](/features/online-payments/) are recorded automatically and badged **Online**.
+
+<Steps>
+1. Open the issued invoice.
+2. Click **Record payment**.
+3. Choose the method -- cash, check, bank transfer, card, or other -- and enter the amount, date, and an optional reference.
+4. Save. The invoice moves to **partially paid** or **paid** automatically based on the remaining balance.
+</Steps>
+
+You can void a manually recorded payment if it was entered in error. Payments collected online through Stripe are reconciled from Stripe and can't be voided by hand.
+
+## Voiding and Reissuing
+
+If an issued invoice needs to be cancelled, **void** it with a reason. You can optionally **reissue** at the same time, which creates a fresh draft you can correct and issue anew -- keeping the original on record for audit purposes.
+
+## PDF and Accounting View
+
+Every issued invoice can be downloaded as a clean, single-page **PDF** to send or archive. The detail view also offers an accounting-oriented breakdown of subtotal, tax, total, payments, and balance.
+
+## Permissions
+
+Invoice access is governed by role permissions: viewing requires invoice read access, creating and editing drafts requires invoice write access, and issuing, sending, voiding, and recording payments require invoice send access. Assign these through **Settings → Users & Roles**.
+
+## Related
+
+- [Product Catalog](/features/product-catalog/) -- the price list invoices pull from
+- [Recurring Contracts](/features/contracts/) -- generate invoices automatically on a schedule
+- [Online Payments](/features/online-payments/) -- collect card payments online

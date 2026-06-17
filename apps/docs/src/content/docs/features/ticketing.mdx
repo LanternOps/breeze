@@ -83,7 +83,34 @@ Tickets enter the queue from four directions:
 - **By a technician.** Click **Create ticket** on the Tickets page, pick the organization, enter a subject and description, and optionally attach a device, category, and priority.
 - **From an alert.** Open any alert and click its **Create ticket** button. The ticket is pre-filled from the alert and linked to it, so the alert shows up in the ticket's properties rail.
 - **From the customer portal.** End-users submit tickets through their [Customer Portal](/features/portal/), and those tickets land directly in the queue for triage.
+- **By email.** Customers email your inbound address and their message becomes a ticket -- see [Email-to-Ticket](#email-to-ticket) below.
 - **Through the API**, for integrations and automation.
+
+## Email-to-Ticket
+
+Breeze can turn customer emails into tickets automatically, so your help desk works entirely over email like a full PSA. Configure it under **Settings → Ticketing → Inbound email**.
+
+### Your inbound address
+
+Each partner gets an **inbound address** -- the email address customers send to. Copy it from the Inbound email card and share it with your customers (or forward your existing support mailbox to it). Mail sent to that address is converted into tickets.
+
+### How emails become tickets
+
+- **New tickets.** An email from a recognized customer creates a new ticket, with the subject as the ticket subject and the body as the first message.
+- **Threading.** Replies are matched back to their original ticket using the email's reply headers or the ticket number in the subject (for example `T-2026-0042`), so an ongoing conversation stays on one ticket. A reply to a resolved ticket reopens it.
+- **Public replies thread back.** When a technician sends a public reply, it reaches the customer over email, and their response threads back into the same ticket.
+
+### Autoresponder
+
+An optional **autoresponder** sends customers a one-time acknowledgement when their email is received, so they know the ticket was created. It's rate-limited to avoid mail loops and is toggled per partner on the Inbound email card.
+
+### Review queue
+
+Emails from **unknown senders** and any that failed to process land in a **review queue** instead of creating tickets automatically -- so unsolicited mail doesn't flood the queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it.
+
+<Aside>
+  An email with no usable sender address can't become a ticket. Those appear in the review queue to be dismissed or followed up out-of-band.
+</Aside>
 
 ## Categories and SLAs
 

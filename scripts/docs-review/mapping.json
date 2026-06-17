@@ -948,6 +948,124 @@
         "reference/users-and-roles.mdx",
         "security/overview.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/catalog/**",
+      "docs": [
+        "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/catalog.ts",
+      "docs": [
+        "features/product-catalog.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/invoices/**",
+      "docs": [
+        "features/invoices.mdx",
+        "features/online-payments.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/invoices.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/invoiceDocuments.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/**",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/contracts.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/stripePayments.ts",
+      "docs": [
+        "features/online-payments.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/portal/**",
+      "docs": [
+        "features/portal.mdx",
+        "features/online-payments.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/portal.ts",
+      "docs": [
+        "features/portal.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/clientAi/**",
+      "docs": [
+        "features/ai-for-office.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/clientAiAuth.ts",
+      "docs": [
+        "features/ai-for-office.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/clientAi.ts",
+      "docs": [
+        "features/ai-for-office.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/emailWebhook.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/inboundEmailWorker.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/inboundEmail/**",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/emailInbound.ts",
+      "docs": [
+        "features/ticketing.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/InboundEmailCard.tsx",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
     }
   ]
 }

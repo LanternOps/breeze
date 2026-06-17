@@ -1,0 +1,84 @@
+---
+title: Product Catalog
+description: A reusable catalog of the products and services you sell, with per-customer pricing, bundles, and live margins -- the price list that invoices and contracts pull from.
+sidebar:
+  label: "Product Catalog"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The Product Catalog is your single, reusable price list for everything you sell -- hardware, software licenses, and services. Building it once means invoices and recurring contracts pull from consistent pricing instead of being retyped each time, and it gives you live margin visibility on every line.
+
+The catalog is **partner-scoped**: it belongs to your MSP and is shared across all of your customers. Open it from **Settings → Product Catalog**.
+
+## Catalog Items
+
+Each item represents one thing you sell. Items can be billed **one-time** (a piece of hardware, a project) or **recurring** (a monthly service), and are typed as **hardware**, **software**, or **service**.
+
+<Steps>
+1. Go to **Settings → Product Catalog**.
+2. Click **Add item**.
+3. Enter a name, choose the item type, and set whether it's one-time or recurring.
+4. Set the price -- enter a **unit price** directly, or enter your **cost** and a **markup %** and let Breeze calculate the sell price.
+5. Optionally add a **SKU**, a **unit of measure** (each, seat, device, month…), and mark the item **taxable**.
+6. Save.
+</Steps>
+
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| Name | What the item is called on invoices and contracts |
+| Type | Hardware, software, or service |
+| Billing | One-time or recurring |
+| SKU | Optional unique identifier for your own reference |
+| Unit price | The price you sell the item for |
+| Cost | Your internal cost, used to calculate margin |
+| Markup % | An alternative to unit price -- sell price is derived from cost |
+| Unit of measure | How the item is counted (each, seat, device, month) |
+| Taxable | Whether tax applies to the item |
+
+The list view shows each item's **margin** at a glance, with a negative margin called out in a warning color so under-priced items are easy to spot. You can search by name or SKU, filter by type, and sort by name, price, or margin.
+
+## Per-Customer Pricing
+
+You can override an item's price for a specific customer without changing the base price everyone else gets. The override applies automatically wherever that item is added to an invoice or contract for that organization.
+
+<Steps>
+1. Open an item from the catalog.
+2. In the pricing section, choose an organization and enter its custom unit price.
+3. Save. That customer now bills at the override price; all other customers keep the base price.
+</Steps>
+
+Remove an override at any time to return the customer to base pricing.
+
+## Bundles
+
+A bundle groups several catalog items together so you can sell and price them as a package. When you add a bundle to an invoice, its components are expanded automatically -- and you choose, per component, whether it appears as its own line on the customer's invoice or is rolled into the bundle.
+
+<Steps>
+1. Click **Add item** and choose to build a **bundle**.
+2. Add component items and set the quantity of each.
+3. For each component, set whether it **shows on the invoice** as a separate line.
+4. Save.
+</Steps>
+
+In the catalog list, a bundle row expands in place to show its components and the rolled-up economics -- the combined cost, price, and margin across everything in the package.
+
+## Archiving Items
+
+Items you no longer sell can be **archived** rather than deleted, so historical invoices and contracts that reference them stay intact. Switch the catalog to the **Archived** view to see them, and **Restore** an item to bring it back into active use.
+
+<Aside>
+  An item that is still attached to an active contract or a deployed deployment can't be removed outright -- Breeze returns a clear conflict message instead of an error. Archive it to retire it while preserving history.
+</Aside>
+
+## Permissions
+
+Catalog access is governed by role permissions: viewing requires catalog read access, creating and editing items and bundles requires catalog write access, and archiving requires catalog delete access. Assign these through **Settings → Users & Roles**.
+
+## Related
+
+- [Invoices](/features/invoices/) -- build invoices from catalog items and bundles
+- [Recurring Contracts](/features/contracts/) -- bill catalog items on a schedule
+- [Online Payments](/features/online-payments/) -- let customers pay invoices by card
