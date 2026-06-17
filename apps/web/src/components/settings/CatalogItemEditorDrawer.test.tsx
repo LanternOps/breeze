@@ -102,4 +102,11 @@ describe('CatalogItemEditorDrawer — per-org pricing (#1368)', () => {
     await waitFor(() => expect(screen.getByTestId('catalog-item-editor')).toBeInTheDocument());
     expect(screen.queryByTestId('catalog-org-pricing')).not.toBeInTheDocument();
   });
+
+  it('hides the section for a partner-scope user with a null partnerId', async () => {
+    claimsMock.mockReturnValue({ scope: 'partner', partnerId: null, orgId: null });
+    renderDrawer();
+    await waitFor(() => expect(screen.getByTestId('catalog-item-editor')).toBeInTheDocument());
+    expect(screen.queryByTestId('catalog-org-pricing')).not.toBeInTheDocument();
+  });
 });
