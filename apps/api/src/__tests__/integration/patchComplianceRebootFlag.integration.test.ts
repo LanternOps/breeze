@@ -17,10 +17,11 @@
  * Drizzle mock would return whatever rows we fabricate and never run the
  * aggregate).
  *
- * Prerequisites:
- *   docker compose -f docker-compose.test.yml up -d
- * Run:
- *   pnpm test:integration -- src/__tests__/integration/patchComplianceRebootFlag.integration.test.ts
+ * Prerequisites (test:integration lives in apps/api; the compose file is at the
+ * repo root — `test:docker` wraps up + run + down from apps/api):
+ *   cd apps/api && pnpm test:docker:up
+ * Run (from apps/api):
+ *   cd apps/api && pnpm test:integration -- src/__tests__/integration/patchComplianceRebootFlag.integration.test.ts
  */
 import './setup';
 
@@ -143,5 +144,26 @@ describe('GET /patches/compliance — pendingReboot reflects the live OS signal 
     const listed = body.data.devicesNeedingPatches.find((d: { id: string }) => d.id === deviceId);
     expect(listed).toBeDefined();
     expect(listed.pendingReboot).toBe(true);
+  });
+
+  it('keeps each device\'s flag independent — bool_or must not bleed across devices', async () => {
+    // Guards the GROUP BY: the query groups on devicePatches.deviceId, so each
+    // device's bool_or(devices.pendingReboot) must reflect only that device. A
+    // refactor that dropped the device from the grouping (or joined wrong)
+    // would aggregate one device's `true` onto the other.
+    const rebootDeviceId = await seedDevice(orgId, siteId, 'mixed-reboot-true', /* pendingReboot */ true);
+    await seedDevicePatch({ orgId, deviceId: rebootDeviceId, status: 'pending', requiresReboot: false });
+
+    const cleanDeviceId = await seedDevice(orgId, siteId, 'mixed-reboot-false', /* pendingReboot */ false);
+    await seedDevicePatch({ orgId, deviceId: cleanDeviceId, status: 'pending', requiresReboot: false });
+
+    const res = await client.get(`/patches/compliance?orgId=${orgId}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const rebootListed = body.data.devicesNeedingPatches.find((d: { id: string }) => d.id === rebootDeviceId);
+    const cleanListed = body.data.devicesNeedingPatches.find((d: { id: string }) => d.id === cleanDeviceId);
+    expect(rebootListed?.pendingReboot).toBe(true);
+    expect(cleanListed?.pendingReboot).toBe(false);
   });
 });
