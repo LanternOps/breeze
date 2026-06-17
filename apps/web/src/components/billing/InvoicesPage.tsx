@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import { usePermissions } from '../../lib/permissions';
 import { Dialog } from '../shared/Dialog';
 import {
   type InvoiceStatus,
@@ -71,6 +72,7 @@ const num = (s: string | null | undefined) => { const n = Number(s); return Numb
 const ts = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
 
 export default function InvoicesPage() {
+  const { can } = usePermissions();
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -261,14 +263,16 @@ export default function InvoicesPage() {
             Assemble, issue, and track customer invoices.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openAssemble}
-          data-testid="invoices-assemble-open"
-          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          New invoice
-        </button>
+        {can('invoices', 'write') && (
+          <button
+            type="button"
+            onClick={openAssemble}
+            data-testid="invoices-assemble-open"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            New invoice
+          </button>
+        )}
       </div>
 
       {/* Outstanding summary */}
@@ -377,14 +381,16 @@ export default function InvoicesPage() {
             <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
               Assemble unbilled time and parts into a draft, or start a blank invoice.
             </p>
-            <button
-              type="button"
-              onClick={openAssemble}
-              className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-              data-testid="invoices-empty-new"
-            >
-              New invoice
-            </button>
+            {can('invoices', 'write') && (
+              <button
+                type="button"
+                onClick={openAssemble}
+                className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                data-testid="invoices-empty-new"
+              >
+                New invoice
+              </button>
+            )}
           </div>
         ) : rows.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="invoices-no-match">
@@ -548,15 +554,17 @@ export default function InvoicesPage() {
             >
               Cancel
             </button>
-            <button
-              type="button"
-              onClick={() => void submitDialog()}
-              disabled={!assembleOrgId || (mode === 'assemble' && (!assembleFrom || !assembleTo)) || assembling}
-              data-testid="invoices-assemble-submit"
-              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-            >
-              {assembling ? 'Working…' : mode === 'assemble' ? 'Assemble' : 'Create draft'}
-            </button>
+            {can('invoices', 'write') && (
+              <button
+                type="button"
+                onClick={() => void submitDialog()}
+                disabled={!assembleOrgId || (mode === 'assemble' && (!assembleFrom || !assembleTo)) || assembling}
+                data-testid="invoices-assemble-submit"
+                className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                {assembling ? 'Working…' : mode === 'assemble' ? 'Assemble' : 'Create draft'}
+              </button>
+            )}
           </div>
         </div>
       </Dialog>

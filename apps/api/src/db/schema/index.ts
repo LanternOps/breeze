@@ -88,4 +88,5 @@ export * from './invoices';
 export * from './stripePayments';
 export * from './invoiceDocuments';
 export * from './contracts';
+export * from './quotes';
 export * from './clientAi';

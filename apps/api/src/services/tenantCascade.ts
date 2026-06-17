@@ -39,6 +39,11 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { createAuditLog } from './auditService';
+// Self-import so cascadeDeletePartner calls cascadeDeleteOrg /
+// topologicalCascadeOrder through the module namespace. This keeps those
+// internal calls interceptable by `vi.spyOn(mod, ...)` (an ESM live-binding
+// reference, which bare in-module calls bypass).
+import * as self from './tenantCascade';
 
 /**
  * Authoritative list of `org_id`-scoped public tables that participate
@@ -206,6 +211,11 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'portal_users',
   'provision_credential_handles',
   'psa_connections',
+  'quote_acceptances',
+  'quote_blocks',
+  'quote_images',
+  'quote_lines',
+  'quotes',
   'recovery_boot_media_artifacts',
   'recovery_media_artifacts',
   'recovery_readiness',
@@ -317,8 +327,10 @@ interface FkEdge {
  * loud error so the deploy fails rather than silently producing a
  * partial cascade.
  */
-export async function topologicalCascadeOrder(): Promise<string[]> {
-  const tableSet = new Set(ORG_CASCADE_DELETE_ORDER);
+export async function topologicalCascadeOrder(
+  tables: Iterable<string> = ORG_CASCADE_DELETE_ORDER,
+): Promise<string[]> {
+  const tableSet = new Set(tables);
   const edges = (await dbModule.db.execute(sql`
     SELECT
       tc.relname AS child_table,
@@ -556,6 +568,168 @@ function quoteIdent(table: string): string {
     throw new Error(`[tenantCascade] refusing to quote unsafe identifier: ${table}`);
   }
   return `"${table}"`;
+}
+
+export interface PartnerCascadeStats {
+  orgsDeleted: number;
+  tablesSwept: number;
+  totalRowsDeleted: number;
+  tablesDeleted: Record<string, number>;
+}
+
+/**
+ * Hard-deletes a partner and ALL its data. Built for synthetic test-canary
+ * cleanup (see routes/internal/synthetic.ts). The caller MUST have already
+ * verified the partner is a disposable canary — this helper does not re-check.
+ *
+ * Strategy (mirrors cascadeDeleteOrg):
+ *   1. For each child org -> cascadeDeleteOrg (also removes the organizations row).
+ *   2. FK-safe sweep of every public table with a `partner_id` column, deleting
+ *      this partner's rows children-first. One DELETE per call so a single FK
+ *      failure cannot poison a shared transaction.
+ *   3. Delete the partners row last.
+ *
+ * Returns the ACTUAL number of rows deleted per table (via `extractRowCount`),
+ * not the count of tables attempted — so a purge that silently matched zero
+ * rows (e.g. a future contextless-write regression under forced RLS, #1375)
+ * is visible as `totalRowsDeleted === 0` rather than masquerading as success.
+ *
+ * Audit trail: a `purge_started` row is written BEFORE any delete (org_id=NULL,
+ * so it survives the cascade); a `purged` completion row after. On a mid-sweep
+ * failure a best-effort `purge_failed` row records how far the sweep got before
+ * the error is rethrown — a destructive op must never abort without a forensic
+ * record. Both the completion and failure audit writes are best-effort: the
+ * partner is already (partly) deleted, so an audit hiccup must not change the
+ * outcome the caller sees.
+ *
+ * Idempotent: re-running on an already-purged partner matches zero rows.
+ */
+export async function cascadeDeletePartner(
+  partnerId: string,
+  performedBy: string,
+): Promise<PartnerCascadeStats> {
+  const startedAt = new Date().toISOString();
+  const tablesDeleted: Record<string, number> = {};
+  let totalRowsDeleted = 0;
+
+  // Forensic breadcrumb written first (org_id=NULL → survives the cascade).
+  await createAuditLog({
+    orgId: null,
+    actorType: 'system',
+    actorId: performedBy,
+    action: 'test.synthetic_partner.purge_started',
+    resourceType: 'partner',
+    resourceId: partnerId,
+    details: { partnerId, startedAt },
+    result: 'success',
+  });
+
+  // Lookup child orgs under system context — organizations has partner-axis RLS;
+  // bare breeze_app would silently return 0 rows.
+  const orgRows = (await dbModule.withSystemDbAccessContext(() =>
+    dbModule.db.execute(
+      sql`SELECT id FROM organizations WHERE partner_id = ${partnerId}`,
+    ),
+  )) as unknown as Array<{ id: string }>;
+
+  // cascadeDeleteOrg manages its own per-statement withSystemDbAccessContext calls;
+  // do NOT wrap these calls in an outer context (would nest transactions).
+  for (const row of orgRows) {
+    const orgStats = await self.cascadeDeleteOrg(row.id, performedBy);
+    totalRowsDeleted += orgStats.totalRowsDeleted;
+  }
+
+  // information_schema is not RLS-protected — bare db.execute is fine here.
+  const partnerTableRows = (await dbModule.db.execute(sql`
+    SELECT table_name FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND column_name = 'partner_id'
+      AND table_name <> 'organizations'
+  `)) as unknown as Array<{ table_name: string }>;
+  const partnerTables = partnerTableRows.map((r) => r.table_name);
+  const order = await self.topologicalCascadeOrder(partnerTables);
+  const orderedSet = new Set(order);
+  const sweep = [...order, ...partnerTables.filter((t) => !orderedSet.has(t))];
+
+  // Wrap each partner-axis DELETE individually under system context so they
+  // don't silently match zero rows under breeze_app RLS (partner-axis tables
+  // are RLS-protected and bare breeze_app cannot write them).
+  for (const table of sweep) {
+    try {
+      const count = await dbModule.withSystemDbAccessContext(async () => {
+        const result = await dbModule.db.execute(
+          sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE partner_id = ${partnerId}`,
+        );
+        return extractRowCount(result);
+      });
+      tablesDeleted[table] = (tablesDeleted[table] ?? 0) + count;
+      totalRowsDeleted += count;
+    } catch (err) {
+      // Best-effort forensic record of partial progress before we abort. The
+      // partner is now half-deleted; a re-run is idempotent and will finish.
+      await writePurgeFailedAudit(performedBy, partnerId, table, tablesDeleted, err);
+      throw new Error(
+        `[tenantCascade] DELETE from "${table}" failed for partner=${partnerId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  // Final partners DELETE also needs system context.
+  const partnerCount = await dbModule.withSystemDbAccessContext(async () => {
+    const result = await dbModule.db.execute(sql`DELETE FROM partners WHERE id = ${partnerId}`);
+    return extractRowCount(result);
+  });
+  tablesDeleted.partners = (tablesDeleted.partners ?? 0) + partnerCount;
+  totalRowsDeleted += partnerCount;
+
+  // Best-effort completion audit: the deletes have already landed, so an audit
+  // persistence hiccup must not turn a successful purge into a 500.
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'system',
+      actorId: performedBy,
+      action: 'test.synthetic_partner.purged',
+      resourceType: 'partner',
+      resourceId: partnerId,
+      details: { partnerId, startedAt, orgsDeleted: orgRows.length, tablesSwept: sweep.length, totalRowsDeleted, tablesDeleted },
+      result: 'success',
+    });
+  } catch (err) {
+    console.warn('[tenantCascade] purge-completed audit write failed:', err);
+  }
+
+  return { orgsDeleted: orgRows.length, tablesSwept: sweep.length, totalRowsDeleted, tablesDeleted };
+}
+
+async function writePurgeFailedAudit(
+  performedBy: string,
+  partnerId: string,
+  failedTable: string,
+  tablesDeleted: Record<string, number>,
+  err: unknown,
+): Promise<void> {
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'system',
+      actorId: performedBy,
+      action: 'test.synthetic_partner.purge_failed',
+      resourceType: 'partner',
+      resourceId: partnerId,
+      details: {
+        partnerId,
+        failedTable,
+        tablesDeleted,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      result: 'failure',
+    });
+  } catch (auditErr) {
+    console.warn('[tenantCascade] purge-failed audit write failed:', auditErr);
+  }
 }
 
 /**

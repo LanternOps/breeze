@@ -25,6 +25,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   reports: 'Reports',
   billing: 'Billing',
   catalog: 'Product Catalog',
+  quotes: 'Quotes',
   invoices: 'Invoices',
   contracts: 'Contracts'
 };

@@ -33,6 +33,7 @@ import { ticketsRoutes } from './routes/tickets';
 import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
+import { quoteRoutes } from './routes/quotes';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
@@ -135,6 +136,7 @@ import { googleRoutes } from './routes/google';
 import { m365Routes } from './routes/m365';
 import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
+import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException, flushSentry, initSentry } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
@@ -663,6 +665,7 @@ api.use('*', async (c, next) => {
   if (path.startsWith('/api/v1/users/me')) return next();
   if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return next();
   if (path.startsWith('/api/v1/agents/')) return next();
+  if (path.startsWith('/api/v1/internal/synthetic/')) return next();   // synthetic test router — self-gated (token + canary latch)
   return partnerGuard(c, next);
 });
 
@@ -736,6 +739,7 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
 api.route('/invoices', invoiceRoutes);
+api.route('/quotes', quoteRoutes);
 api.route('/partner/stripe-connect', stripeConnectRoutes);
 api.route('/contracts', contractRoutes);
 // Assembly routes nest under the existing /orgs and /tickets namespaces, so they
@@ -826,6 +830,7 @@ api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
 api.route('/partner', partnerRoutes);
+api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
 api.route('/tags', tagRoutes);
 api.route('/custom-fields', customFieldRoutes);

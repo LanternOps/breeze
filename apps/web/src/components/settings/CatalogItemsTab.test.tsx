@@ -4,7 +4,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CatalogItemsTab from './CatalogItemsTab';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
+  // the admin wildcard so every gated control renders and these tests exercise
+  // full functionality.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
 vi.mock('../../lib/authScope', () => ({
   getJwtClaims: () => ({ scope: 'partner' }),
   loginPathWithNext: () => '/login',

@@ -441,11 +441,26 @@ userRoutes.get('/me', async (c) => {
 
   const requiresSetup = userRequiresSetup(user);
 
+  // Surface the user's effective permission grants so the web app can hide nav
+  // items and action buttons the user can't use. This is UX only — every route
+  // still enforces requirePermission server-side.
+  //
+  // Contract: getUserPermissions returns null ONLY for "no resolvable role"
+  // (no membership row / null roleId) — a genuine zero-grant user, for whom
+  // `?? []` is correct fail-closed behavior. It must NEVER swallow a transient
+  // cache/DB fault into null: those throw, so /me 500s and the client keeps its
+  // last-known grants rather than silently blanking every gated control.
+  const userPerms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined
+  });
+
   return c.json({
     ...user,
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,
+    permissions: userPerms?.permissions ?? [],
     requiresSetup
   });
 });

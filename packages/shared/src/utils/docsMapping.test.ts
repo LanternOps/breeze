@@ -31,6 +31,30 @@ describe('getDocsForPath', () => {
       expect(result.label).toBe('Timesheet');
       expect(result.url).toContain('/features/ticketing/');
     });
+
+    it('/contracts maps to recurring contracts docs', () => {
+      const result = getDocsForPath('/contracts');
+      expect(result.label).toBe('Recurring Contracts');
+      expect(result.url).toContain('/features/contracts/');
+    });
+
+    it('/settings/catalog maps to product catalog docs', () => {
+      const result = getDocsForPath('/settings/catalog');
+      expect(result.label).toBe('Product Catalog');
+      expect(result.url).toContain('/features/product-catalog/');
+    });
+
+    it('/settings/billing maps to online payments docs', () => {
+      const result = getDocsForPath('/settings/billing');
+      expect(result.label).toBe('Online Payments');
+      expect(result.url).toContain('/features/online-payments/');
+    });
+
+    it('/billing/invoices maps to invoices docs, not generic billing', () => {
+      const result = getDocsForPath('/billing/invoices');
+      expect(result.label).toBe('Invoices');
+      expect(result.url).toContain('/features/invoices/');
+    });
   });
 
   describe('prefix matches', () => {

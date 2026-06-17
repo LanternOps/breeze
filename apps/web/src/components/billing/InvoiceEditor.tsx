@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import {
   type InvoiceDetail,
@@ -21,6 +22,8 @@ interface Props {
 type AddMode = 'catalog' | 'manual';
 
 export default function InvoiceEditor({ detail, onChanged }: Props) {
+  const { can } = usePermissions();
+  const canWrite = can('invoices', 'write');
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
 
@@ -259,6 +262,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           </div>
 
           {/* Add line */}
+          {canWrite && (
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-add-line">
             <div className="mb-3 flex gap-2">
               {(['catalog', 'manual'] as AddMode[]).map((m) => (
@@ -344,6 +348,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               />
             )}
           </div>
+          )}
         </div>
 
         {/* Summary + bill-to + notes + actions */}
@@ -367,33 +372,41 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             <textarea
               value={notes}
               onChange={(e) => { setNotes(e.target.value); setNotesDirty(true); }}
-              onBlur={() => void saveNotes()}
+              // Gate ENTRY, not save (disabled, like the qty/price inputs) — a
+              // readOnly field is still focusable, so if canWrite flipped false
+              // mid-edit the onBlur guard would silently drop the typed note.
+              onBlur={() => { if (canWrite) void saveNotes(); }}
+              disabled={!canWrite}
               data-testid="invoice-notes"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
               placeholder="Internal or customer notes…"
             />
           </div>
 
           <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => void issue(false)}
-              disabled={busy || !hasVisibleLines}
-              data-testid="invoice-issue"
-              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              Issue
-            </button>
-            <button
-              type="button"
-              onClick={() => void issue(true)}
-              disabled={busy || !hasVisibleLines}
-              data-testid="invoice-issue-send"
-              className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              Issue &amp; Send
-            </button>
+            {can('invoices', 'send') && (
+              <button
+                type="button"
+                onClick={() => void issue(false)}
+                disabled={busy || !hasVisibleLines}
+                data-testid="invoice-issue"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Issue
+              </button>
+            )}
+            {can('invoices', 'send') && (
+              <button
+                type="button"
+                onClick={() => void issue(true)}
+                disabled={busy || !hasVisibleLines}
+                data-testid="invoice-issue-send"
+                className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                Issue &amp; Send
+              </button>
+            )}
             {!hasVisibleLines && (
               <p className="text-center text-xs text-muted-foreground" data-testid="invoice-no-visible-hint">
                 Add at least one customer-visible line to issue.
@@ -416,6 +429,9 @@ function LineRow({
   onPatch: (lineId: string, patch: Record<string, unknown>) => void;
   onRemove: (lineId: string) => void;
 }) {
+  const { can } = usePermissions();
+  const canWrite = can('invoices', 'write');
+  const editDisabled = disabled || !canWrite;
   const [qty, setQty] = useState(line.quantity);
   const [price, setPrice] = useState(line.unitPrice);
   useEffect(() => { setQty(line.quantity); setPrice(line.unitPrice); }, [line.quantity, line.unitPrice]);
@@ -426,45 +442,47 @@ function LineRow({
         <td className="px-3 py-2">{line.description}</td>
         <td className="px-3 py-2 text-right">
           <input
-            type="number" min="0" step="0.01" value={qty} disabled={disabled}
+            type="number" min="0" step="0.01" value={qty} disabled={editDisabled}
             onChange={(e) => setQty(e.target.value)}
-            onBlur={() => { if (qty !== line.quantity) onPatch(line.id, { quantity: Number(qty) }); }}
+            onBlur={() => { if (canWrite && qty !== line.quantity) onPatch(line.id, { quantity: Number(qty) }); }}
             data-testid={`invoice-line-qty-${line.id}`}
             className="h-8 w-20 rounded-md border bg-background px-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </td>
         <td className="px-3 py-2 text-right">
           <input
-            type="number" min="0" step="0.01" value={price} disabled={disabled}
+            type="number" min="0" step="0.01" value={price} disabled={editDisabled}
             onChange={(e) => setPrice(e.target.value)}
-            onBlur={() => { if (price !== line.unitPrice) onPatch(line.id, { unitPrice: Number(price) }); }}
+            onBlur={() => { if (canWrite && price !== line.unitPrice) onPatch(line.id, { unitPrice: Number(price) }); }}
             data-testid={`invoice-line-price-${line.id}`}
             className="h-8 w-24 rounded-md border bg-background px-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </td>
         <td className="px-3 py-2 text-center">
           <input
-            type="checkbox" checked={line.taxable} disabled={disabled}
+            type="checkbox" checked={line.taxable} disabled={editDisabled}
             onChange={(e) => onPatch(line.id, { taxable: e.target.checked })}
             data-testid={`invoice-line-taxable-${line.id}`}
           />
         </td>
         <td className="px-3 py-2 text-center">
           <input
-            type="checkbox" checked={line.customerVisible} disabled={disabled}
+            type="checkbox" checked={line.customerVisible} disabled={editDisabled}
             onChange={(e) => onPatch(line.id, { customerVisible: e.target.checked })}
             data-testid={`invoice-line-visible-${line.id}`}
           />
         </td>
         <td className="px-3 py-2 text-right">{formatMoney(line.lineTotal, currency)}</td>
         <td className="px-3 py-2 text-right">
-          <button
-            type="button" onClick={() => onRemove(line.id)} disabled={disabled}
-            data-testid={`invoice-line-remove-${line.id}`}
-            className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-          >
-            Remove
-          </button>
+          {canWrite && (
+            <button
+              type="button" onClick={() => onRemove(line.id)} disabled={disabled}
+              data-testid={`invoice-line-remove-${line.id}`}
+              className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              Remove
+            </button>
+          )}
         </td>
       </tr>
       {children.map((ch) => (

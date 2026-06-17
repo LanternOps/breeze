@@ -106,6 +106,27 @@ describe('setBundleComponentsSchema', () => {
   });
 });
 
+describe('catalog subscription fields', () => {
+  it('accepts billingFrequency + commitmentTermMonths', () => {
+    const parsed = createCatalogItemSchema.parse({
+      itemType: 'software', name: 'Microsoft 365 Business Premium',
+      billingType: 'recurring', unitPrice: 22, unitOfMeasure: 'seat',
+      taxable: true, isBundle: false,
+      billingFrequency: 'monthly', commitmentTermMonths: 12,
+    });
+    expect(parsed.billingFrequency).toBe('monthly');
+    expect(parsed.commitmentTermMonths).toBe(12);
+  });
+
+  it('rejects an unknown billingFrequency', () => {
+    expect(() => createCatalogItemSchema.parse({
+      itemType: 'software', name: 'x', billingType: 'recurring',
+      unitPrice: 1, unitOfMeasure: 'seat', taxable: true, isBundle: false,
+      billingFrequency: 'weekly',
+    })).toThrow();
+  });
+});
+
 describe('listCatalogQuerySchema boolean params', () => {
   it('parses isActive=false to false (not truthy-coerced to true)', () => {
     const r = listCatalogQuerySchema.parse({ isActive: 'false' });

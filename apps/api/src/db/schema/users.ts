@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, integer, pgEnum, customType } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, integer, pgEnum, customType, primaryKey } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
@@ -98,7 +98,11 @@ export const rolePermissions = pgTable('role_permissions', {
   roleId: uuid('role_id').notNull().references(() => roles.id),
   permissionId: uuid('permission_id').notNull().references(() => permissions.id),
   constraints: jsonb('constraints')
-});
+}, (t) => ({
+  // A role holds a given permission at most once. Composite PK both de-dups and
+  // makes the seed's ON-conflict (23505) path real, so re-seeding is idempotent.
+  pk: primaryKey({ columns: [t.roleId, t.permissionId] })
+}));
 
 export const partnerUsers = pgTable('partner_users', {
   id: uuid('id').primaryKey().defaultRandom(),

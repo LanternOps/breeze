@@ -39,6 +39,8 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/roles', docsPath: '/reference/users-and-roles/', label: 'Roles' },
   { pattern: '/settings/profile', docsPath: '/reference/users-and-roles/', label: 'Profile' },
   { pattern: '/settings/ticketing', docsPath: '/features/ticketing/', label: 'Ticketing' },
+  { pattern: '/settings/catalog', docsPath: '/features/product-catalog/', label: 'Product Catalog' },
+  { pattern: '/settings/billing', docsPath: '/features/online-payments/', label: 'Online Payments' },
   { pattern: '/settings', docsPath: '/reference/users-and-roles/', label: 'Settings' },
 
   // Admin / Partner
@@ -55,6 +57,9 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/alerts', docsPath: '/features/alerts/', label: 'Alerts' },
   { pattern: '/tickets', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/timesheet', docsPath: '/features/ticketing/', label: 'Timesheet' },
+  { pattern: '/billing/invoices', docsPath: '/features/invoices/', label: 'Invoices' },
+  { pattern: '/billing', docsPath: '/features/invoices/', label: 'Billing' },
+  { pattern: '/contracts', docsPath: '/features/contracts/', label: 'Recurring Contracts' },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },
   { pattern: '/patches', docsPath: '/features/patch-management/', label: 'Patch Management' },
   { pattern: '/remote/tools', docsPath: '/features/system-tools/', label: 'System Tools' },

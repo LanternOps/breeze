@@ -1,0 +1,60 @@
+---
+title: Online Payments
+description: Let your customers pay invoices by card online, settled directly into your own Stripe account -- Breeze takes no fee and never touches the funds.
+sidebar:
+  label: "Online Payments"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Online Payments lets your customers pay their invoices by card through a secure checkout, with the money settling directly into **your own Stripe account**. Breeze stays out of the middle: there's no platform fee, no funds pass through us, and your business remains the merchant of record on your customer's statement.
+
+## How It Works
+
+You connect your Stripe account to Breeze once. After that, any issued invoice can carry a shareable **payment link**, and customers can also pay from the [Customer Portal](/features/portal/). Payments collected online are recorded against the invoice automatically.
+
+- **You are the merchant of record.** Your customer's card statement shows your business, and you handle any chargebacks -- not Breeze.
+- **No platform fee.** You receive the full payment, less Stripe's own processing fees. Breeze adds nothing.
+- **Card payments, hosted by Stripe.** Customers complete checkout on Stripe's secure hosted page; card details never touch Breeze.
+
+## Connecting Stripe
+
+Connecting Stripe is a one-time authorization, done per partner.
+
+<Steps>
+1. Go to **Settings → Billing**.
+2. In the **Online payments** section, click **Connect Stripe**.
+3. Authorize Breeze on Stripe's screen and you're returned to billing settings, now showing as connected.
+</Steps>
+
+The billing settings show your current connection status and whether you're in live or test mode. Connecting and disconnecting Stripe require multi-factor authentication.
+
+<Aside>
+  One Stripe account connects per MSP partner. Until Stripe is connected, invoices show a quiet prompt to connect rather than a payment link.
+</Aside>
+
+## Sending a Payment Link
+
+<Steps>
+1. Open an issued [invoice](/features/invoices/).
+2. Click **Send payment link** to generate a secure Stripe Checkout URL for the invoice's outstanding balance.
+3. Share the link with your customer. When they pay, the payment is recorded against the invoice automatically and badged **Online**.
+</Steps>
+
+## Paying from the Customer Portal
+
+Customers who use the [Customer Portal](/features/portal/) can view their issued invoices and pay any with an outstanding balance using a **Pay now** button, which opens the same secure Stripe Checkout. Once payment succeeds, the invoice's balance and status update on their own.
+
+## Refunds
+
+Refunds are **reflect-only**: you issue a refund from your own Stripe dashboard, and Breeze stays in sync automatically -- the refunded amount is reflected back on the invoice. There's no separate refund step inside Breeze.
+
+## Permissions
+
+Connecting and disconnecting Stripe requires billing management permission plus multi-factor authentication. Creating payment links on an invoice uses the same permission as issuing and sending invoices.
+
+## Related
+
+- [Invoices](/features/invoices/) -- send payment links from issued invoices
+- [Customer Portal](/features/portal/) -- where customers view and pay online
+- [Recurring Contracts](/features/contracts/) -- auto-generated invoices can be paid online too
