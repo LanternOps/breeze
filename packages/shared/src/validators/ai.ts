@@ -7,7 +7,7 @@ import { z } from 'zod';
 export const aiPageContextSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('device'),
-    id: z.string().uuid(),
+    id: z.string().guid(),
     hostname: z.string(),
     os: z.string().optional(),
     status: z.string().optional(),
@@ -15,7 +15,7 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('alert'),
-    id: z.string().uuid(),
+    id: z.string().guid(),
     title: z.string(),
     severity: z.string().optional(),
     deviceHostname: z.string().optional()
@@ -29,7 +29,7 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('custom'),
     label: z.string(),
-    data: z.record(z.unknown())
+    data: z.record(z.string(), z.unknown())
   })
 ]);
 
@@ -77,7 +77,7 @@ export const aiSessionQuerySchema = z.object({
 // ============================================
 
 export const scriptBuilderContextSchema = z.object({
-  scriptId: z.string().uuid().optional(),
+  scriptId: z.string().guid().optional(),
   editorSnapshot: z.object({
     name: z.string().max(255).optional(),
     content: z.string().max(500_000).optional(),

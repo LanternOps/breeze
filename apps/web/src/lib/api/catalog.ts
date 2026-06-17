@@ -138,6 +138,21 @@ export function getBundleEconomics(id: string, orgId?: string): Promise<Response
   return fetchWithAuth(`/catalog/${id}/economics${qs}`);
 }
 
+// Per-org price overrides (#1368). The route is partner/system-scoped: an MSP
+// sets a customer-specific price distinct from the catalog base. unitPrice is a
+// number (money) to match orgPriceOverrideSchema.
+export function setOrgPriceOverride(id: string, orgId: string, unitPrice: number): Promise<Response> {
+  return fetchWithAuth(`/catalog/${id}/pricing/${orgId}`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ unitPrice }),
+  });
+}
+
+export function removeOrgPriceOverride(id: string, orgId: string): Promise<Response> {
+  return fetchWithAuth(`/catalog/${id}/pricing/${orgId}`, { method: 'DELETE' });
+}
+
 // ---- presentation helpers -------------------------------------------------
 
 export const CATALOG_TYPE_LABELS: Record<CatalogItemType, string> = {

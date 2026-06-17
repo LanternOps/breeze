@@ -78,7 +78,7 @@ internalSyntheticRoutes.use('*', async (c, next) => {
 // safety gate, but validating the shape here gives a clean 400 instead of a
 // Postgres 22P02 (invalid_input_syntax) bubbling up as a 500 when a non-uuid
 // is passed to the uuid-typed `partners.id` column.
-const bodySchema = z.object({ partnerId: z.string().uuid() });
+const bodySchema = z.object({ partnerId: z.string().guid() });
 
 /**
  * The canary latch. Returns true only when the partner has at least one member

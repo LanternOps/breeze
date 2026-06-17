@@ -18,19 +18,19 @@ const providerSchema = z.enum(['jira', 'servicenow', 'connectwise', 'autotask', 
 const listConnectionsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   provider: providerSchema.optional()
 });
 
 const createConnectionSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   provider: providerSchema,
   name: z.string().min(1).max(255),
-  credentials: z.record(z.any()).refine(
+  credentials: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ),
-  settings: z.record(z.any()).refine(
+  settings: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional().default({})
@@ -38,11 +38,11 @@ const createConnectionSchema = z.object({
 
 const updateConnectionSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  credentials: z.record(z.any()).refine(
+  credentials: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
-  settings: z.record(z.any()).refine(
+  settings: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional()

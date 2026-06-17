@@ -18,7 +18,7 @@ import {
 
 export const vaultRoutes = new Hono();
 
-const vaultIdParam = z.object({ id: z.string().uuid() });
+const vaultIdParam = z.object({ id: z.string().guid() });
 
 async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: UserPermissions | undefined): Promise<boolean> {
   if (!permissions?.allowedSiteIds) return false;

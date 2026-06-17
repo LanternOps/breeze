@@ -15,9 +15,9 @@ const createRoutingRuleSchema = z.object({
     severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
     conditionTypes: z.array(z.string()).optional(),
     deviceTags: z.array(z.string()).optional(),
-    siteIds: z.array(z.string().uuid()).optional(),
+    siteIds: z.array(z.string().guid()).optional(),
   }),
-  channelIds: z.array(z.string().uuid()).min(1),
+  channelIds: z.array(z.string().guid()).min(1),
   enabled: z.boolean().optional().default(true),
 });
 
@@ -28,9 +28,9 @@ const updateRoutingRuleSchema = z.object({
     severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
     conditionTypes: z.array(z.string()).optional(),
     deviceTags: z.array(z.string()).optional(),
-    siteIds: z.array(z.string().uuid()).optional(),
+    siteIds: z.array(z.string().guid()).optional(),
   }).optional(),
-  channelIds: z.array(z.string().uuid()).min(1).optional(),
+  channelIds: z.array(z.string().guid()).min(1).optional(),
   enabled: z.boolean().optional(),
 });
 

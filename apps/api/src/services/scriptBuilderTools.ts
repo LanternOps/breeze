@@ -164,7 +164,7 @@ export function createScriptBuilderMcpServer(
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
-  const uuid = z.string().uuid();
+  const uuid = z.string().guid();
 
   const tools = [
     // --- Apply tools (script-builder-only) ---
@@ -281,7 +281,7 @@ export function createScriptBuilderMcpServer(
       {
         scriptId: uuid.describe('The saved script ID to execute'),
         deviceIds: z.array(uuid).min(1).max(10).describe('Target device IDs'),
-        parameters: z.record(z.unknown()).optional(),
+        parameters: z.record(z.string(), z.unknown()).optional(),
       },
       makeExistingHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
     ),

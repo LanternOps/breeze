@@ -43,7 +43,7 @@ export const createConnectionSchema = z
     }
   });
 
-export const idParamSchema = z.object({ id: z.string().uuid() });
+export const idParamSchema = z.object({ id: z.string().guid() });
 
 // ── Config schemas ──────────────────────────────────────────────────────────
 
@@ -61,11 +61,11 @@ export const c2cBackupScopes = [
 ] as const;
 
 export const createC2cConfigSchema = z.object({
-  connectionId: z.string().uuid(),
+  connectionId: z.string().guid(),
   name: z.string().min(1).max(200),
   backupScope: z.enum(c2cBackupScopes),
   targetUsers: z.array(z.string().email()).optional(),
-  storageConfigId: z.string().uuid().optional(),
+  storageConfigId: z.string().guid().optional(),
   schedule: z
     .object({
       frequency: z.enum(['hourly', 'daily', 'weekly']),
@@ -85,7 +85,7 @@ export const updateC2cConfigSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   backupScope: z.enum(c2cBackupScopes).optional(),
   targetUsers: z.array(z.string().email()).optional(),
-  storageConfigId: z.string().uuid().nullable().optional(),
+  storageConfigId: z.string().guid().nullable().optional(),
   schedule: z
     .object({
       frequency: z.enum(['hourly', 'daily', 'weekly']),
@@ -105,7 +105,7 @@ export const updateC2cConfigSchema = z.object({
 // ── Job list schema ─────────────────────────────────────────────────────────
 
 export const c2cJobListSchema = z.object({
-  configId: z.string().uuid().optional(),
+  configId: z.string().guid().optional(),
   status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled']).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -114,7 +114,7 @@ export const c2cJobListSchema = z.object({
 // ── Item search schema ──────────────────────────────────────────────────────
 
 export const c2cItemSearchSchema = z.object({
-  configId: z.string().uuid().optional(),
+  configId: z.string().guid().optional(),
   userEmail: z.string().optional(),
   itemType: z.string().optional(),
   search: z.string().optional(),
@@ -125,6 +125,6 @@ export const c2cItemSearchSchema = z.object({
 // ── Restore schema ──────────────────────────────────────────────────────────
 
 export const c2cRestoreSchema = z.object({
-  itemIds: z.array(z.string().uuid()).min(1).max(1000),
-  targetConnectionId: z.string().uuid().optional(),
+  itemIds: z.array(z.string().guid()).min(1).max(1000),
+  targetConnectionId: z.string().guid().optional(),
 });

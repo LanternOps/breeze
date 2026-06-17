@@ -13,7 +13,7 @@ import { contractActorFrom, handleContractError } from './contracts';
 export const contractGenerateRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const managePerm = requirePermission(PERMISSIONS.CONTRACTS_MANAGE.resource, PERMISSIONS.CONTRACTS_MANAGE.action);
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 contractGenerateRoutes.post('/:id/generate', scopes, managePerm, zValidator('param', idParam), async (c) => {
   try {

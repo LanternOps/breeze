@@ -91,12 +91,12 @@ export const brandingParamSchema = z.object({
 export const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const forgotPasswordSchema = z.object({
   email: z.string().email(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const resetPasswordSchema = z.object({
@@ -118,7 +118,7 @@ export const createTicketSchema = z.object({
 });
 
 export const ticketParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 export const commentSchema = z.object({
@@ -126,7 +126,7 @@ export const commentSchema = z.object({
 });
 
 export const assetParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 export const checkoutSchema = z.object({

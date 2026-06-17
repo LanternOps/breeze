@@ -10,7 +10,7 @@ export const invoiceStripeRoutes = new Hono();
 
 const scopes = requireScope('partner', 'system');
 const sendPerm = requirePermission(PERMISSIONS.INVOICES_SEND.resource, PERMISSIONS.INVOICES_SEND.action);
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 // POST /invoices/:id/pay-link — partner-initiated Stripe Checkout link for the
 // invoice balance (to share with the customer). Gated on the partner's Stripe

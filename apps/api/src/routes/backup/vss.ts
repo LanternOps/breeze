@@ -10,7 +10,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { resolveScopedOrgId } from './helpers';
 
 const deviceIdParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
 });
 
 export const vssRoutes = new Hono();

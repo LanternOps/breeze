@@ -74,43 +74,43 @@ const filterConditionGroupSchema: z.ZodType<FilterConditionGroup> = z.lazy(() =>
 ) as z.ZodType<FilterConditionGroup>;
 
 const listGroupsQuerySchema = z.object({
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   type: z.enum(['static', 'dynamic']).optional(),
-  parentId: z.string().uuid().optional(),
+  parentId: z.string().guid().optional(),
   search: z.string().optional(),
   includeMemberships: z.enum(['true', 'false']).optional()
 });
 
 const createGroupSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['static', 'dynamic']).default('static'),
   rules: z.any().optional(),
   filterConditions: filterConditionGroupSchema.optional(),
-  parentId: z.string().uuid().optional()
+  parentId: z.string().guid().optional()
 });
 
 const updateGroupSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  siteId: z.string().uuid().nullable().optional(),
+  siteId: z.string().guid().nullable().optional(),
   type: z.enum(['static', 'dynamic']).optional(),
   rules: z.any().optional(),
   filterConditions: filterConditionGroupSchema.nullable().optional(),
-  parentId: z.string().uuid().nullable().optional()
+  parentId: z.string().guid().nullable().optional()
 });
 
 const addDevicesSchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1)
+  deviceIds: z.array(z.string().guid()).min(1)
 });
 
 const groupIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 const deviceIdParamSchema = z.object({
-  id: z.string().uuid(),
-  deviceId: z.string().uuid()
+  id: z.string().guid(),
+  deviceId: z.string().guid()
 });
 
 groupRoutes.use('*', authMiddleware);
@@ -1040,7 +1040,7 @@ groupRoutes.delete(
 
 // GET /:id/membership-log - Get audit log of membership changes
 const membershipLogQuerySchema = z.object({
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   action: z.enum(['added', 'removed']).optional(),
   limit: z.coerce.number().min(1).max(500).default(50),
   offset: z.coerce.number().min(0).default(0)

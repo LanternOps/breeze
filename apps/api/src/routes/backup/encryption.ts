@@ -12,7 +12,7 @@ import { createEncryptionKeySchema, rotateEncryptionKeySchema } from './schemas'
 
 export const encryptionRoutes = new Hono();
 
-const keyIdParamSchema = z.object({ id: z.string().uuid() });
+const keyIdParamSchema = z.object({ id: z.string().guid() });
 
 // ── List active keys for the org ─────────────────────────────────────────────
 

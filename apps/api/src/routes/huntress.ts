@@ -104,7 +104,7 @@ function requirePartnerManager(auth: RouteAuth, requested?: string): { partnerId
 }
 
 const upsertIntegrationSchema = z.object({
-  partnerId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   apiKey: z.string().min(1).max(5000).optional(),
   accountId: z.string().min(1).max(120).optional(),
@@ -123,33 +123,33 @@ const upsertIntegrationSchema = z.object({
 });
 
 const syncSchema = z.object({
-  partnerId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
 });
 
 const statusQuerySchema = z.object({
-  partnerId: z.string().uuid().optional(),
-  orgId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 const organizationsQuerySchema = z.object({
-  partnerId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
 });
 
 const organizationMapSchema = z.object({
-  integrationId: z.string().uuid(),
+  integrationId: z.string().guid(),
   huntressOrgId: z.string().min(1).max(128),
-  orgId: z.string().uuid().nullable(),
+  orgId: z.string().guid().nullable(),
 });
 
 const listIncidentsQuerySchema = z.object({
-  partnerId: z.string().uuid().optional(),
-  orgId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
   status: z.string().max(30).optional(),
   severity: z.string().max(20).optional(),
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   search: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional(),

@@ -331,6 +331,11 @@ describe('third-party catalog operations routes', () => {
       osvEcosystem: 'test-ecosystem',
       updatedAt: expect.any(Date),
     }));
+    // patchCatalogSchema strips the create-time `source` default so v4's
+    // .partial() default-injection can't silently reset a row's source on a
+    // PATCH that omits it. objectContaining above would miss a re-injected key,
+    // so assert absence directly on the .set() argument.
+    expect(set.mock.calls[0]?.[0]).not.toHaveProperty('source');
   });
 
   it('returns 404 when patching a missing catalog item', async () => {

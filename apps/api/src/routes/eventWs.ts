@@ -416,7 +416,7 @@ function createEventWsHandlers(ticket: string | undefined) {
 
       const parsed = clientMessageSchema.safeParse(raw);
       if (!parsed.success) {
-        sendJson(ws, { type: 'error', message: 'Invalid message: ' + parsed.error.errors[0]?.message });
+        sendJson(ws, { type: 'error', message: 'Invalid message: ' + parsed.error.issues[0]?.message });
         return;
       }
 

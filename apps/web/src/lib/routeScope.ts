@@ -9,6 +9,7 @@ const GLOBAL_ROUTE_PATTERNS: RegExp[] = [
   /^\/scripts(\/.*)?$/, // script library / new / detail+edit
   /^\/patches(\/.*)?$/, // approvals + compliance derive org from the selected ring
   /^\/alert-templates(\/.*)?$/,
+  /^\/settings\/alert-templates(\/.*)?$/, // partner-wide alert-template catalog (#1425)
 ];
 
 // Routes that share a global prefix but are genuinely per-org state.

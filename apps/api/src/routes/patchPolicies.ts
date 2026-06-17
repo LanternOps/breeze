@@ -65,7 +65,7 @@ async function getPatchPolicyWithOrgCheck(
 const listPatchPoliciesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   enabled: z.enum(['true', 'false']).optional()
 });
 

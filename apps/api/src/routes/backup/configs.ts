@@ -21,7 +21,7 @@ import { configSchema, configUpdateSchema } from './schemas';
 
 export const configsRoutes = new Hono();
 
-const configIdParamSchema = z.object({ id: z.string().uuid() });
+const configIdParamSchema = z.object({ id: z.string().guid() });
 const MASKED_SECRET = '********';
 const SECRET_FIELD_NAMES = new Set([
   'accesskey',

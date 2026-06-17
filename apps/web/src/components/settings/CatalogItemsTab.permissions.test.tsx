@@ -16,6 +16,9 @@ const state = vi.hoisted(() => ({ permissions: [] as Perm[] }));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore (pulled in transitively via the editor drawer's useOrgStore)
+  // registers an org-id provider at module load.
+  registerOrgIdProvider: vi.fn(),
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: Perm[] } }) => unknown) =>
       selector({ user: { permissions: state.permissions } }),

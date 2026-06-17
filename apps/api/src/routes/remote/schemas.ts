@@ -2,14 +2,14 @@ import { z } from 'zod';
 
 // Session schemas
 export const createSessionSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   type: z.enum(['terminal', 'desktop', 'file_transfer'])
 });
 
 export const listSessionsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   status: z.enum(['pending', 'connecting', 'active', 'disconnected', 'failed']).optional(),
   type: z.enum(['terminal', 'desktop', 'file_transfer']).optional(),
   includeEnded: z.enum(['true', 'false']).optional()
@@ -18,8 +18,8 @@ export const listSessionsSchema = z.object({
 export const sessionHistorySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  deviceId: z.string().uuid().optional(),
-  userId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  userId: z.string().guid().optional(),
   type: z.enum(['terminal', 'desktop', 'file_transfer']).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional()
@@ -46,8 +46,8 @@ export const iceCandidateSchema = z.object({
 
 // File transfer schemas
 export const createTransferSchema = z.object({
-  deviceId: z.string().uuid(),
-  sessionId: z.string().uuid().optional(),
+  deviceId: z.string().guid(),
+  sessionId: z.string().guid().optional(),
   direction: z.enum(['upload', 'download']),
   remotePath: z.string().min(1),
   localFilename: z.string().min(1),
@@ -57,7 +57,7 @@ export const createTransferSchema = z.object({
 export const listTransfersSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   status: z.enum(['pending', 'transferring', 'completed', 'failed']).optional(),
   direction: z.enum(['upload', 'download']).optional()
 });
