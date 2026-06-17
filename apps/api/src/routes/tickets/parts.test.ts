@@ -152,6 +152,34 @@ describe('parts routes', () => {
     expect(body.data).toHaveProperty('id', PART_ID);
   });
 
+  it('passes a catalogItemId through to the service (#1368 catalog link)', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.addTicketPart.mockResolvedValue({ id: PART_ID });
+    const catalogItemId = '9f3a1b2c-1111-4222-8333-444455556666';
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'SSD', quantity: 1, unitPrice: 120, catalogItemId })
+    });
+    expect(res.status).toBe(201);
+    expect(timeServiceMocks.addTicketPart).toHaveBeenCalledWith(
+      TICKET_ID,
+      expect.objectContaining({ catalogItemId }),
+      expect.anything(),
+    );
+  });
+
+  it('rejects a non-UUID catalogItemId (400, no service call)', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'SSD', quantity: 1, unitPrice: 120, catalogItemId: 'not-a-uuid' })
+    });
+    expect(res.status).toBe(400);
+    expect(timeServiceMocks.addTicketPart).not.toHaveBeenCalled();
+  });
+
   it('GET /:id/parts returns part list for in-scope ticket', async () => {
     getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
     dbSelectMock.mockResolvedValue([{ id: PART_ID, ticketId: TICKET_ID, description: 'SSD' }]);

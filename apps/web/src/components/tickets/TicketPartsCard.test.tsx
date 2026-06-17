@@ -90,4 +90,70 @@ describe('TicketPartsCard', () => {
       expect(Object.keys(body)).not.toContain('notes');
     });
   });
+
+  it('adds a part from the catalog — prefills fields and links catalogItemId (#1368)', async () => {
+    const catItem = {
+      id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
+      billingType: 'one_time', unitPrice: '150.00', costBasis: '90.00', markupPercent: null, unitOfMeasure: 'each',
+      taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
+    };
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === '/tickets/tk-1/parts') return jsonRes(parts);
+      if (url.startsWith('/catalog')) return jsonRes([catItem]);
+      return jsonRes({});
+    });
+
+    render(<TicketPartsCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-parts-add-toggle'));
+
+    fireEvent.change(await screen.findByTestId('ticket-parts-catalog-picker-input'), { target: { value: 'NVMe' } });
+    fireEvent.click(await screen.findByTestId('ticket-parts-catalog-picker-option-cat-1'));
+
+    expect(screen.getByTestId('ticket-parts-form-description')).toHaveValue('NVMe 1TB');
+    expect(screen.getByTestId('ticket-parts-form-unit-price')).toHaveValue(150);
+    expect(screen.getByTestId('ticket-parts-form-linked')).toHaveTextContent('NVMe 1TB');
+
+    fireEvent.change(screen.getByTestId('ticket-parts-form-quantity'), { target: { value: '1' } });
+    fireEvent.click(screen.getByTestId('ticket-parts-form-submit'));
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        (args) => args[0] === '/tickets/tk-1/parts' && (args[1] as RequestInit)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+        description: 'NVMe 1TB', unitPrice: 150, catalogItemId: 'cat-1',
+      });
+    });
+  });
+
+  it('unlinks a catalog selection, keeping the prefilled fields free-text', async () => {
+    const catItem = {
+      id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
+      billingType: 'one_time', unitPrice: '150.00', costBasis: '90.00', markupPercent: null, unitOfMeasure: 'each',
+      taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
+    };
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === '/tickets/tk-1/parts') return jsonRes(parts);
+      if (url.startsWith('/catalog')) return jsonRes([catItem]);
+      return jsonRes({});
+    });
+
+    render(<TicketPartsCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-parts-add-toggle'));
+    fireEvent.change(await screen.findByTestId('ticket-parts-catalog-picker-input'), { target: { value: 'NVMe' } });
+    fireEvent.click(await screen.findByTestId('ticket-parts-catalog-picker-option-cat-1'));
+
+    fireEvent.click(screen.getByTestId('ticket-parts-form-unlink'));
+    expect(screen.queryByTestId('ticket-parts-form-linked')).toBeNull();
+    expect(screen.getByTestId('ticket-parts-form-description')).toHaveValue('NVMe 1TB');
+
+    fireEvent.change(screen.getByTestId('ticket-parts-form-quantity'), { target: { value: '1' } });
+    fireEvent.click(screen.getByTestId('ticket-parts-form-submit'));
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        (args) => args[0] === '/tickets/tk-1/parts' && (args[1] as RequestInit)?.method === 'POST',
+      );
+      expect(JSON.parse((call![1] as RequestInit).body as string).catalogItemId).toBeNull();
+    });
+  });
 });
