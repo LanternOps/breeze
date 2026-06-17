@@ -580,15 +580,31 @@ if [[ "\$PREFLIGHT_CODE" != "200" ]]; then
       fatal "Connection to \$BREEZE_SERVER timed out. Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions." ;;
   esac
   if [[ "\$PREFLIGHT_CODE" == "000" ]]; then
-    fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions."
+    # No HTTP status line came back. Distinguish "connected, but the server gave
+    # an empty/garbled reply" (API down/crashing behind a working proxy) from a
+    # true network-layer failure — the remediation points at different layers.
+    case "\$CURL_RC" in
+      52|56|18|55)
+        fatal "\$BREEZE_SERVER accepted the connection but returned no valid HTTP response (curl error \$CURL_RC). The API may be down or crashing behind your reverse proxy — check the API service logs." ;;
+      *)
+        fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response, curl error \$CURL_RC). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions." ;;
+    esac
   fi
   fatal "Cannot reach the Breeze API at \$BREEZE_SERVER (HTTP \$PREFLIGHT_CODE). Verify the server URL is correct, the API is running, and your reverse proxy forwards /api/* to it (not just the web app)."
 fi
 
 # A 200 whose body is HTML means a middlebox answered for the API endpoint
-# instead of the Breeze server. Same guard as the metadata/pkg downloads below.
+# instead of the Breeze server. Same interception guard as the metadata download
+# below (the .pkg path checks xar magic bytes instead).
 if grep -qiE '<html|<!doctype' "\$PREFLIGHT_FILE"; then
   fatal "Got a web page instead of an API response from \$BREEZE_SERVER — a captive portal, router, or web filter may be intercepting traffic on this network."
+fi
+
+# Positively confirm the Breeze API answered — not merely "not HTML". The
+# agent-versions metadata always carries a "version" field; a 200 without it is
+# a wrong responder (proxy stub, auth gateway), so don't claim "reachable".
+if ! grep -q '"version"[[:space:]]*:' "\$PREFLIGHT_FILE"; then
+  fatal "Reached \$BREEZE_SERVER but the agent-versions API returned an unexpected response — something other than the Breeze server may be answering on this network."
 fi
 
 rm -f "\$PREFLIGHT_FILE"

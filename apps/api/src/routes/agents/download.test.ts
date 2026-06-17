@@ -512,4 +512,75 @@ describe('install.sh functional pre-flight behavior', () => {
       breeze.close();
     }
   });
+
+  it('passes the pre-flight when /health 404s but /api/* is served (the #1470 reverse proxy)', async () => {
+    // The exact #1470 deployment: a reverse proxy forwards /api/* to the API but
+    // returns the web app's 404 page for apex /health. The pre-flight must not
+    // depend on /health — it must pass on the metadata endpoint alone.
+    const proxy = createServer((req, res) => {
+      if (req.url?.startsWith('/api/v1/agent-versions/latest')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ version: '1.2.3', downloadUrl: '/dl', checksum: 'a'.repeat(64) }));
+      } else if (req.url === '/health') {
+        // The bug's trigger: the web app answers apex /health with its 404 page.
+        res.writeHead(404, { 'Content-Type': 'text/html' });
+        res.end('<html><body>404</body></html>');
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      }
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const { port } = proxy.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(output).toContain('Breeze server is reachable');
+      expect(output).not.toContain('Cannot reach the Breeze');
+      // Proof it got past the pre-flight: it fails later at the binary download.
+      expect(code).not.toBe(0);
+      expect(output).toContain('Failed to');
+    } finally {
+      proxy.close();
+    }
+  });
+
+  it('reports an HTTP error from the metadata endpoint distinctly from no-response', async () => {
+    // A proxy that forwards /api/* to a backend that errors (or a path that 5xxs)
+    // must produce the API-specific message — not the "no response" network one.
+    const errsrv = createServer((_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'boom' }));
+    });
+    await new Promise<void>((resolve) => errsrv.listen(0, '127.0.0.1', resolve));
+    const { port } = errsrv.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(code).not.toBe(0);
+      expect(output).toContain('Cannot reach the Breeze API');
+      expect(output).toContain('(HTTP 500)');
+      expect(output).not.toContain('no response');
+    } finally {
+      errsrv.close();
+    }
+  });
+
+  it('rejects a non-Breeze 200 responder that lacks the version field', async () => {
+    // A proxy/auth-gateway answering the probe with 200 + non-HTML JSON that
+    // isn't Breeze metadata must not be reported as "reachable" (the negative
+    // not-HTML guard alone would pass it; the positive version check catches it).
+    const wrong = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'blocked' }));
+    });
+    await new Promise<void>((resolve) => wrong.listen(0, '127.0.0.1', resolve));
+    const { port } = wrong.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(code).not.toBe(0);
+      expect(output).not.toContain('Breeze server is reachable');
+      expect(output).toContain('unexpected response');
+    } finally {
+      wrong.close();
+    }
+  });
 });
