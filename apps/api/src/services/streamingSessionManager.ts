@@ -28,6 +28,7 @@ import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk'
 import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText } from './aiToolOutput';
+import { isRecognizedSelfHostSignal } from '../config/env';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -80,17 +81,19 @@ export function buildClaudeSdkChildEnv(source: NodeJS.ProcessEnv = process.env):
     }
   }
 
-  // ANTHROPIC_BASE_URL (#1412): forward only on self-hosted deployments. On the
-  // hosted platform (IS_HOSTED=true) it is stripped so a stray/misconfigured
-  // value can never redirect platform AI traffic to a third-party backend. The
-  // config validator also boot-refuses this combo — this is defense-in-depth at
-  // the actual subprocess boundary (the function reads process.env directly,
-  // not the validated config singleton).
-  const hosted = ['1', 'true', 'yes', 'on'].includes(
-    (source.IS_HOSTED ?? '').trim().toLowerCase(),
-  );
+  // ANTHROPIC_BASE_URL (#1412): forward ONLY when self-host is affirmatively
+  // declared (IS_HOSTED explicitly false/0/no/off). Fail-closed — unset / empty
+  // / garbage / truthy IS_HOSTED all strip it, so a stray/misconfigured value
+  // (including the #570 unmapped-IS_HOSTED footgun) can never redirect platform
+  // AI traffic to a third-party backend. The config validator also boot-refuses
+  // this combo; this is defense-in-depth at the actual subprocess boundary (the
+  // function reads process.env directly, not the validated config singleton).
   const anthropicBaseUrl = source.ANTHROPIC_BASE_URL;
-  if (!hosted && typeof anthropicBaseUrl === 'string' && anthropicBaseUrl.length > 0) {
+  if (
+    isRecognizedSelfHostSignal(source.IS_HOSTED)
+    && typeof anthropicBaseUrl === 'string'
+    && anthropicBaseUrl.length > 0
+  ) {
     env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
   }
 

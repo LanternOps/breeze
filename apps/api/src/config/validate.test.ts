@@ -1288,16 +1288,23 @@ describe('validateConfig', () => {
 
   // #1412: ANTHROPIC_BASE_URL lets a self-hosted operator point the AI Agent
   // at an Anthropic-compatible /v1/messages backend (vLLM / LiteLLM). It must
-  // be a well-formed http(s) URL, and must be fail-closed on the hosted
-  // platform so a stray value can never redirect platform AI traffic.
+  // be a well-formed http(s) URL, and is FAIL-CLOSED: honored only when
+  // self-host is affirmatively declared (IS_HOSTED explicitly false/0/no/off).
+  // Unset / empty / garbage / truthy IS_HOSTED all refuse it, so a stray value
+  // or an unmapped IS_HOSTED (the #570 footgun) can never redirect AI traffic.
   describe('ANTHROPIC_BASE_URL (#1412)', () => {
-    it('accepts a well-formed http(s) base URL on a self-hosted deployment', () => {
-      withEnv({ ...validEnv, IS_HOSTED: 'false', ANTHROPIC_BASE_URL: 'http://localhost:8000' }, () => {
-        const config = validateConfig();
-        expect(config.ANTHROPIC_BASE_URL).toBe('http://localhost:8000');
-      });
-      withEnv({ ...validEnv, IS_HOSTED: 'false', ANTHROPIC_BASE_URL: 'https://litellm.internal/v1' }, () => {
-        expect(validateConfig().ANTHROPIC_BASE_URL).toBe('https://litellm.internal/v1');
+    it.each(['false', '0', 'no', 'off'])(
+      'accepts a well-formed http(s) base URL when self-host is declared (IS_HOSTED=%j)',
+      (isHosted) => {
+        withEnv({ ...validEnv, IS_HOSTED: isHosted, ANTHROPIC_BASE_URL: 'http://localhost:8000' }, () => {
+          expect(validateConfig().ANTHROPIC_BASE_URL).toBe('http://localhost:8000');
+        });
+      },
+    );
+
+    it('accepts an https URL with a port and path on a self-hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', ANTHROPIC_BASE_URL: 'https://litellm.internal:8443/v1' }, () => {
+        expect(validateConfig().ANTHROPIC_BASE_URL).toBe('https://litellm.internal:8443/v1');
       });
     });
 
@@ -1306,6 +1313,17 @@ describe('validateConfig', () => {
         expect(() => validateConfig()).not.toThrow();
       });
     });
+
+    it.each(['', '   '])(
+      'treats an empty/whitespace ANTHROPIC_BASE_URL as unset (no error, no value) (%j)',
+      (value) => {
+        withEnv({ ...validEnv, IS_HOSTED: 'true', ANTHROPIC_BASE_URL: value }, () => {
+          // Empty/whitespace short-circuits before the fail-closed gate even on
+          // a hosted deploy — it is "unset", not a misconfig.
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
 
     it.each(['ftp://example.com', 'not-a-url', 'ws://localhost:8000'])(
       'rejects a non-http(s) ANTHROPIC_BASE_URL (%j)',
@@ -1316,10 +1334,15 @@ describe('validateConfig', () => {
       },
     );
 
-    it('boot-refuses ANTHROPIC_BASE_URL when IS_HOSTED is true (fail-closed)', () => {
-      withEnv({ ...validEnv, IS_HOSTED: 'true', ANTHROPIC_BASE_URL: 'https://litellm.internal/v1' }, () => {
-        expect(() => validateConfig()).toThrow('ANTHROPIC_BASE_URL');
-      });
-    });
+    // Fail-closed: every non-affirmative-self-host IS_HOSTED value must refuse a
+    // set base URL. 'true'/'1' = hosted; '' = unmapped (#570); 'maybe' = garbage.
+    it.each(['true', '1', '', 'maybe'])(
+      'boot-refuses ANTHROPIC_BASE_URL when IS_HOSTED is not an affirmative self-host signal (%j)',
+      (isHosted) => {
+        withEnv({ ...validEnv, IS_HOSTED: isHosted, ANTHROPIC_BASE_URL: 'https://litellm.internal/v1' }, () => {
+          expect(() => validateConfig()).toThrow('ANTHROPIC_BASE_URL');
+        });
+      },
+    );
   });
 });

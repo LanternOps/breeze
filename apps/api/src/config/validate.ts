@@ -1,5 +1,6 @@
 import { isIP } from 'net';
 import { z } from 'zod';
+import { isRecognizedSelfHostSignal } from './env';
 
 // ---------------------------------------------------------------------------
 // Insecure default detection
@@ -592,21 +593,23 @@ const envSchema = z
     }
 
     // ANTHROPIC_BASE_URL (#1412): when set it must be a well-formed http(s)
-    // URL, and it is fail-closed on the hosted platform. Enforced in every
-    // environment so a misconfig is caught at boot, not at first AI request.
+    // URL, and it is fail-closed — permitted ONLY when self-host is
+    // affirmatively declared (IS_HOSTED explicitly false/0/no/off). Unset /
+    // empty / garbage / truthy IS_HOSTED all refuse it, so a stray value (or an
+    // unmapped IS_HOSTED — the #570 footgun) can never redirect platform AI
+    // traffic to a third-party endpoint. Enforced in every environment so a
+    // misconfig is caught at boot, not at first AI request.
     const anthropicBaseUrl = data.ANTHROPIC_BASE_URL?.trim();
     if (anthropicBaseUrl) {
-      const isHostedDeploy = ['true', '1', 'yes', 'on'].includes(
-        (data.IS_HOSTED ?? '').trim().toLowerCase(),
-      );
-      if (isHostedDeploy) {
+      if (!isRecognizedSelfHostSignal(data.IS_HOSTED)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['ANTHROPIC_BASE_URL'],
           message:
-            'ANTHROPIC_BASE_URL must not be set when IS_HOSTED=true. Redirecting AI traffic to a '
-            + 'custom backend is a self-hosted-only feature; on the hosted platform it is refused '
-            + 'so a stray value cannot route platform AI traffic to a third-party endpoint.',
+            'ANTHROPIC_BASE_URL is a self-hosted-only feature and is refused unless self-host is '
+            + 'affirmatively declared. Set IS_HOSTED explicitly to false (or 0/no/off) to use it. '
+            + 'On the hosted platform — or with IS_HOSTED unset/invalid — it is refused so a stray '
+            + 'value cannot route platform AI traffic to a third-party endpoint.',
         });
       }
       let parsedUrl: URL | null = null;
@@ -1321,5 +1324,25 @@ export function validateConfig(): AppConfig {
   }
 
   _config = result.data;
+
+  // #1412: surface an off-default AI route at boot so there is an audit trail
+  // (and a self-hoster sees confirmation their backend is active). Reaching
+  // here means the fail-closed gate already accepted it, i.e. self-host is
+  // affirmatively declared. Log host only — never the auth token.
+  const anthropicBaseUrl = _config.ANTHROPIC_BASE_URL?.trim();
+  if (anthropicBaseUrl) {
+    let host = '(unparseable)';
+    try {
+      host = new URL(anthropicBaseUrl).host;
+    } catch {
+      host = '(unparseable)';
+    }
+    console.warn(
+      `[config] AI Agent routed to a custom Anthropic-compatible backend (ANTHROPIC_BASE_URL host=${host}). `
+      + 'Cost tracking is best-effort: an unrecognized model id is priced at conservative '
+      + 'DEFAULT_PRICING (Opus-tier), not actual backend cost.',
+    );
+  }
+
   return _config;
 }
