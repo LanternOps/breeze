@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { handleActionError } from '../../../lib/runAction';
+import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
-import { quotePdfUrl } from '../../../lib/api/quotes';
+import { quotePdfUrl, sendQuote } from '../../../lib/api/quotes';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -19,17 +19,38 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
   detail: QuoteDetailData;
-  // Kept for symmetry with the editor/workspace contract (the parent reloads on
-  // change); the detail view has no mutations in Phase 1.
+  // The parent reloads the quote when an action mutates it (e.g. send flips the
+  // status draft→sent and stamps sentAt). Phase 1 had no detail-view mutations;
+  // Phase 2's Send button uses it.
   onChanged?: () => void;
 }
 
-export default function QuoteDetail({ detail }: Props) {
+export default function QuoteDetail({ detail, onChanged }: Props) {
   const { can } = usePermissions();
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
 
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+  const refresh = useCallback(() => onChanged?.(), [onChanged]);
+
+  const send = useCallback(async () => {
+    if (sending) return;
+    setSending(true);
+    try {
+      await runAction({
+        request: () => sendQuote(quote.id),
+        errorFallback: 'Could not send the proposal.',
+        successMessage: 'Proposal sent',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not send the proposal.');
+    } finally {
+      setSending(false);
+    }
+  }, [sending, quote.id, refresh]);
 
   const sortedBlocks = useMemo(
     () => [...blocks].sort((a, b) => a.sortOrder - b.sortOrder),
@@ -160,18 +181,19 @@ export default function QuoteDetail({ detail }: Props) {
                 Download PDF
               </button>
             )}
-            {/* Sending is Phase 2 — show the affordance disabled so the surface is
-                discoverable without implying it works yet. Gated on quotes:send so
-                only operators who will be able to send ever see it. */}
-            {can('quotes', 'send') && (
+            {/* Send a draft proposal: issues a number, emails the customer's billing
+                contact with the PDF + a public accept link, and flips draft→sent.
+                Gated on quotes:send. Only a draft can be sent — once sent, the
+                button drops out (the status pill above reflects the new state). */}
+            {can('quotes', 'send') && quote.status === 'draft' && (
               <button
                 type="button"
-                disabled
-                title="Sending quotes is coming soon"
-                data-testid="quote-send-disabled"
-                className="inline-flex w-full cursor-not-allowed items-center justify-center rounded-md border px-4 py-2 text-sm font-medium opacity-50"
+                onClick={() => void send()}
+                disabled={sending}
+                data-testid="quote-send"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
               >
-                Send (coming soon)
+                {sending ? 'Sending…' : 'Send proposal'}
               </button>
             )}
           </div>

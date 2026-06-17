@@ -8,6 +8,8 @@ import {
   addManualLine,
   addCatalogLine,
   removeLine,
+  uploadQuoteImage,
+  quoteImageUrl,
 } from '../../../lib/api/quotes';
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
@@ -22,13 +24,15 @@ import {
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
-// Phase 1: only these three block kinds are offered. The schema + PDF renderer
-// support `image`, but there is no image-upload endpoint yet (Phase 2), so the
-// add-block menu intentionally does NOT expose it.
-type AddableBlockType = 'heading' | 'rich_text' | 'line_items';
+// Phase 2: the add-block menu now offers `image` as well. Because there is no
+// block-update endpoint (blocks are add/remove only), an image block is created
+// with its uploaded `imageId` already in `content` — the editor uploads the file
+// first (POST /:id/images), then adds the block with `{ imageId }`.
+type AddableBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
 const ADD_BLOCK_OPTIONS: { value: AddableBlockType; label: string }[] = [
   { value: 'heading', label: 'Heading' },
   { value: 'rich_text', label: 'Rich text' },
+  { value: 'image', label: 'Image' },
   { value: 'line_items', label: 'Pricing table' },
 ];
 
@@ -58,6 +62,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const [headingText, setHeadingText] = useState('');
   const [richText, setRichText] = useState('');
   const [tableLabel, setTableLabel] = useState('');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageCaption, setImageCaption] = useState('');
 
   const refresh = useCallback(() => onChanged(), [onChanged]);
 
@@ -88,6 +94,44 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   // ---- add block -----------------------------------------------------------
   const submitBlock = useCallback(async () => {
     if (busy) return;
+
+    // Image blocks have no block-update endpoint, so the file must exist before
+    // the block: upload it (POST /:id/images → { data: { imageId } }), then add
+    // an image block with that imageId already in its content. Both steps go
+    // through runAction so success/failure is always surfaced.
+    if (addType === 'image') {
+      const file = imageFile;
+      if (!file) return;
+      setBusy(true);
+      try {
+        const uploaded = await runAction<{ imageId: string }>({
+          request: () => uploadQuoteImage(quote.id, file),
+          errorFallback: 'Could not upload the image.',
+          successMessage: 'Image uploaded',
+          onUnauthorized: UNAUTHORIZED,
+          parseSuccess: (d) => (d as { data: { imageId: string } }).data,
+        });
+        await runAction({
+          request: () => addBlock(quote.id, {
+            blockType: 'image' as const,
+            content: imageCaption.trim()
+              ? { imageId: uploaded.imageId, caption: imageCaption.trim() }
+              : { imageId: uploaded.imageId },
+          }),
+          errorFallback: 'Image uploaded, but adding the block failed.',
+          successMessage: 'Image block added',
+          onUnauthorized: UNAUTHORIZED,
+        });
+        setImageFile(null); setImageCaption('');
+        refresh();
+      } catch (err) {
+        handleActionError(err, 'Could not add the image block.');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     let body;
     if (addType === 'heading') {
       if (!headingText.trim()) return;
@@ -116,7 +160,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, addType, headingText, richText, tableLabel, quote.id, refresh]);
+  }, [busy, addType, headingText, richText, tableLabel, imageFile, imageCaption, quote.id, refresh]);
 
   // Real block delete: removes the block and (server-side) any lines attached to
   // it. Works for every block type — heading, rich_text, and line_items — so the
@@ -244,6 +288,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               <BlockCard
                 key={block.id}
                 block={block}
+                quoteId={quote.id}
                 lines={linesForBlock(block.id)}
                 currency={currency}
                 catalog={catalog}
@@ -297,6 +342,26 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 className="mb-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             )}
+            {addType === 'image' && (
+              <div className="mb-3 space-y-2">
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+                  data-testid="quote-block-image-file"
+                  className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
+                />
+                <input
+                  type="text"
+                  value={imageCaption}
+                  onChange={(e) => setImageCaption(e.target.value)}
+                  placeholder="Caption (optional)"
+                  data-testid="quote-block-image-caption"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <p className="text-xs text-muted-foreground">PNG, JPEG, or WebP, up to 5 MB.</p>
+              </div>
+            )}
             {addType === 'line_items' && (
               <input
                 type="text"
@@ -315,12 +380,13 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 disabled={
                   busy ||
                   (addType === 'heading' && !headingText.trim()) ||
-                  (addType === 'rich_text' && !richText.trim())
+                  (addType === 'rich_text' && !richText.trim()) ||
+                  (addType === 'image' && !imageFile)
                 }
                 data-testid="quote-add-block-submit"
                 className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                Add block
+                {addType === 'image' ? 'Upload & add image' : 'Add block'}
               </button>
             </div>
           </div>
@@ -371,9 +437,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, lines, currency, catalog, busy, canWrite, onAddCatalog, onAddManual, onRemoveLine, onRemoveBlock,
+  block, quoteId, lines, currency, catalog, busy, canWrite, onAddCatalog, onAddManual, onRemoveLine, onRemoveBlock,
 }: {
   block: QuoteBlock;
+  quoteId: string;
   lines: QuoteLine[];
   currency: string;
   catalog: CatalogItem[];
@@ -399,6 +466,8 @@ function BlockCard({
   const heading = (block.content?.text as string | undefined) ?? '';
   const html = (block.content?.html as string | undefined) ?? '';
   const tableLabel = (block.content?.label as string | undefined) ?? '';
+  const imageId = (block.content?.imageId as string | undefined) ?? '';
+  const imageCaption = (block.content?.caption as string | undefined) ?? '';
 
   const submitManual = () => {
     onAddManual(block.id, { description: desc, quantity: qty, unitPrice: price, taxable, recurrence, saveToCatalog });
@@ -433,7 +502,21 @@ function BlockCard({
           <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
         )}
         {block.blockType === 'image' && (
-          <p className="text-sm text-muted-foreground">Image block (rendered in the PDF).</p>
+          imageId ? (
+            <figure className="space-y-1" data-testid={`quote-block-image-content-${block.id}`}>
+              {/* Served by GET /quotes/:id/images/:imageId (quotes:read). fetchWithAuth
+                  is not used for <img src>; the route allows a cookie-backed session
+                  and the editor is already an authed surface. */}
+              <img
+                src={quoteImageUrl(quoteId, imageId)}
+                alt={imageCaption || 'Quote image'}
+                className="max-h-64 rounded border"
+              />
+              {imageCaption && <figcaption className="text-xs text-muted-foreground">{imageCaption}</figcaption>}
+            </figure>
+          ) : (
+            <p className="text-sm text-muted-foreground">Image block (rendered in the PDF).</p>
+          )
         )}
 
         {isTable && (
