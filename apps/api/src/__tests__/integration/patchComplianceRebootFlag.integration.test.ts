@@ -163,7 +163,9 @@ describe('GET /patches/compliance — pendingReboot reflects the live OS signal 
 
     const rebootListed = body.data.devicesNeedingPatches.find((d: { id: string }) => d.id === rebootDeviceId);
     const cleanListed = body.data.devicesNeedingPatches.find((d: { id: string }) => d.id === cleanDeviceId);
-    expect(rebootListed?.pendingReboot).toBe(true);
-    expect(cleanListed?.pendingReboot).toBe(false);
+    expect(rebootListed).toBeDefined();
+    expect(cleanListed).toBeDefined();
+    expect(rebootListed.pendingReboot).toBe(true);
+    expect(cleanListed.pendingReboot).toBe(false);
   });
 });
