@@ -41,8 +41,8 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 
 export const sessionRoutes = new Hono();
 
-const sessionIdParamSchema = z.object({ id: z.string().uuid() });
-const iceServersQuerySchema = z.object({ sessionId: z.string().uuid() });
+const sessionIdParamSchema = z.object({ id: z.string().guid() });
+const iceServersQuerySchema = z.object({ sessionId: z.string().guid() });
 
 async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
   if (!perms?.allowedSiteIds) return null;

@@ -127,7 +127,7 @@ function resolveOrgId(
 }
 
 const integrationUpsertSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   managementUrl: z.string().url().max(2_000).superRefine((value, ctx) => {
     const result = checkSsrfSafe(value, {
@@ -146,9 +146,9 @@ const integrationUpsertSchema = z.object({
 });
 
 const listThreatsQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
-  deviceId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
   status: z.string().max(30).optional(),
   severity: z.string().max(20).optional(),
   search: z.string().max(200).optional(),
@@ -159,30 +159,30 @@ const listThreatsQuerySchema = z.object({
 });
 
 const isolateSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  deviceIds: z.array(z.string().uuid()).min(1).max(200),
+  orgId: z.string().guid().optional(),
+  deviceIds: z.array(z.string().guid()).min(1).max(200),
   isolate: z.boolean().optional()
 });
 
 const threatActionSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   action: z.enum(['kill', 'quarantine', 'rollback']),
   threatIds: z.array(z.string().min(1).max(128)).min(1).max(200)
 });
 
 const syncSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional()
+  orgId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional()
 });
 
 const integrationQuerySchema = z.object({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const siteMapSchema = z.object({
-  integrationId: z.string().uuid(),
+  integrationId: z.string().guid(),
   siteName: z.string().min(1).max(200),
-  orgId: z.string().uuid().nullable()
+  orgId: z.string().guid().nullable()
 });
 
 function normalizedHost(value: string): string {

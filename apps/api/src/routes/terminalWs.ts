@@ -525,7 +525,7 @@ function createTerminalWsHandlers(
 
         const parsed = terminalMessageSchema.safeParse(raw);
         if (!parsed.success) {
-          console.warn(`Invalid terminal message from session ${sessionId}:`, parsed.error.errors);
+          console.warn(`Invalid terminal message from session ${sessionId}:`, parsed.error.issues);
           return;
         }
         const message = parsed.data;

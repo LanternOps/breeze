@@ -16,7 +16,7 @@ export const contractCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 export function contractActorFrom(c: { get: (k: string) => unknown }): ContractActor {
   const auth = c.get('auth') as AuthContext;

@@ -283,7 +283,7 @@ const catalogSearchSchema = z.object({
   category: categorySchema.optional()
 });
 
-const catalogIdParamSchema = z.object({ id: z.string().uuid() });
+const catalogIdParamSchema = z.object({ id: z.string().guid() });
 
 const createCatalogSchema = z.object({
   name: z.string().min(1).max(200),
@@ -293,7 +293,7 @@ const createCatalogSchema = z.object({
   iconUrl: z.string().url().optional(),
   websiteUrl: z.string().url().optional(),
   isManaged: z.boolean().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const updateCatalogSchema = z.object({
@@ -306,8 +306,8 @@ const updateCatalogSchema = z.object({
   isManaged: z.boolean().optional()
 });
 
-const versionParamSchema = z.object({ id: z.string().uuid() });
-const versionIdParamSchema = z.object({ id: z.string().uuid(), versionId: z.string().uuid() });
+const versionParamSchema = z.object({ id: z.string().guid() });
+const versionIdParamSchema = z.object({ id: z.string().guid(), versionId: z.string().guid() });
 
 const createVersionSchema = z.object({
   version: z.string().min(1).max(100),
@@ -330,19 +330,19 @@ const listDeploymentsSchema = z.object({
   limit: z.string().optional()
 });
 
-const deploymentIdParamSchema = z.object({ id: z.string().uuid() });
+const deploymentIdParamSchema = z.object({ id: z.string().guid() });
 
 const createDeploymentSchema = z.object({
   name: z.string().min(1).max(255),
-  softwareVersionId: z.string().uuid(),
+  softwareVersionId: z.string().guid(),
   deploymentType: z.enum(['install', 'uninstall', 'update']),
   targetType: z.enum(['devices', 'groups', 'sites', 'all', 'filter']),
-  targetIds: z.array(z.string().uuid()).optional(),
+  targetIds: z.array(z.string().guid()).optional(),
   targetFilter: z.unknown().optional(),
   scheduleType: z.enum(['immediate', 'scheduled', 'maintenance']),
   scheduledAt: z.string().datetime().optional(),
-  maintenanceWindowId: z.string().uuid().optional(),
-  options: z.record(z.unknown()).optional()
+  maintenanceWindowId: z.string().guid().optional(),
+  options: z.record(z.string(), z.unknown()).optional()
 });
 
 const cancelDeploymentSchema = z.object({
@@ -350,11 +350,11 @@ const cancelDeploymentSchema = z.object({
 });
 
 const listInventorySchema = z.object({
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   search: z.string().optional()
 });
 
-const inventoryParamSchema = z.object({ deviceId: z.string().uuid() });
+const inventoryParamSchema = z.object({ deviceId: z.string().guid() });
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -1063,13 +1063,13 @@ softwareRoutes.post(
   zValidator(
     'json',
     z.object({
-      softwareId: z.string().uuid(),
+      softwareId: z.string().guid(),
       version: z.string().min(1).max(64),
       targets: z
         .object({
-          deviceIds: z.array(z.string().uuid()).max(1000).optional(),
-          siteIds: z.array(z.string().uuid()).max(100).optional(),
-          deviceGroupIds: z.array(z.string().uuid()).max(100).optional(),
+          deviceIds: z.array(z.string().guid()).max(1000).optional(),
+          siteIds: z.array(z.string().guid()).max(100).optional(),
+          deviceGroupIds: z.array(z.string().guid()).max(100).optional(),
         })
         .optional(),
       configuration: z

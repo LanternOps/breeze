@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 
-const uuid = z.string().uuid();
+const uuid = z.string().guid();
 
 export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   manage_deployments: z.object({
@@ -15,11 +15,11 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['draft', 'pending', 'running', 'paused', 'completed', 'failed', 'cancelled']).optional(),
     name: z.string().min(1).max(200).optional(),
     type: z.string().max(50).optional(),
-    payload: z.record(z.unknown()).optional(),
+    payload: z.record(z.string(), z.unknown()).optional(),
     targetType: z.string().max(20).optional(),
-    targetConfig: z.record(z.unknown()).optional(),
-    rolloutConfig: z.record(z.unknown()).optional(),
-    schedule: z.record(z.unknown()).optional(),
+    targetConfig: z.record(z.string(), z.unknown()).optional(),
+    rolloutConfig: z.record(z.string(), z.unknown()).optional(),
+    schedule: z.record(z.string(), z.unknown()).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }).refine(
     (d) => {
@@ -76,7 +76,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     name: z.string().min(1).max(255).optional(),
     type: z.enum(['static', 'dynamic']).optional(),
     siteId: uuid.optional(),
-    filterConditions: z.record(z.unknown()).optional(),
+    filterConditions: z.record(z.string(), z.unknown()).optional(),
     deviceIds: z.array(uuid).max(100).optional(),
     limit: z.number().int().min(1).max(200).optional(),
   }).refine(
@@ -105,7 +105,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     endTime: z.string().datetime({ offset: true }).optional(),
     timezone: z.string().max(50).optional(),
     recurrence: z.enum(['once', 'daily', 'weekly', 'monthly', 'custom']).optional(),
-    recurrenceRule: z.record(z.unknown()).optional(),
+    recurrenceRule: z.record(z.string(), z.unknown()).optional(),
     targetType: z.string().max(50).optional(),
     siteIds: z.array(uuid).optional(),
     groupIds: z.array(uuid).optional(),
@@ -130,9 +130,9 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     automationId: uuid.optional(),
     name: z.string().min(1).max(200).optional(),
     description: z.string().max(2000).optional(),
-    trigger: z.record(z.unknown()).optional(),
-    conditions: z.record(z.unknown()).optional(),
-    actions: z.array(z.record(z.unknown())).min(1).max(20).optional(),
+    trigger: z.record(z.string(), z.unknown()).optional(),
+    conditions: z.record(z.string(), z.unknown()).optional(),
+    actions: z.array(z.record(z.string(), z.unknown())).min(1).max(20).optional(),
     onFailure: z.enum(['stop', 'continue', 'notify']).optional(),
     enabled: z.boolean().optional(),
     triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']).optional(),
@@ -155,7 +155,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     templateId: uuid.optional(),
     targetType: z.enum(['device', 'group', 'site', 'org', 'all']).optional(),
     targetId: uuid.optional(),
-    overrideSettings: z.record(z.unknown()).optional(),
+    overrideSettings: z.record(z.string(), z.unknown()).optional(),
     isActive: z.boolean().optional(),
     category: z.string().max(100).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
@@ -177,7 +177,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     reportRunId: uuid.optional(),
     reportType: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
     name: z.string().min(1).max(255).optional(),
-    config: z.record(z.unknown()).optional(),
+    config: z.record(z.string(), z.unknown()).optional(),
     schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
     format: z.enum(['csv', 'pdf', 'excel']).optional(),
     limit: z.number().int().min(1).max(100).optional(),

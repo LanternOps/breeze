@@ -189,20 +189,20 @@ export const customFieldQuerySchema = z.object({
 
 export const createDynamicGroupSchema = z.object({
   name: z.string().min(1).max(255),
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   filterConditions: filterConditionGroupSchema,
-  parentId: z.string().uuid().optional()
+  parentId: z.string().guid().optional()
 });
 
 export const updateDynamicGroupSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  siteId: z.string().uuid().nullable().optional(),
+  siteId: z.string().guid().nullable().optional(),
   filterConditions: filterConditionGroupSchema.optional(),
-  parentId: z.string().uuid().nullable().optional()
+  parentId: z.string().guid().nullable().optional()
 });
 
 export const pinDeviceToGroupSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   pin: z.boolean()
 });
 
@@ -229,37 +229,37 @@ export const rolloutConfigSchema = z.object({
 
 export const deploymentTargetConfigSchema = z.object({
   type: z.enum(['devices', 'groups', 'filter', 'all']),
-  deviceIds: z.array(z.string().uuid()).optional(),
-  groupIds: z.array(z.string().uuid()).optional(),
+  deviceIds: z.array(z.string().guid()).optional(),
+  groupIds: z.array(z.string().guid()).optional(),
   filter: filterConditionGroupSchema.optional()
 });
 
 export const deploymentScheduleSchema = z.object({
   type: z.enum(['immediate', 'scheduled', 'maintenance_window']),
   scheduledAt: z.coerce.date().optional(),
-  maintenanceWindowId: z.string().uuid().optional()
+  maintenanceWindowId: z.string().guid().optional()
 });
 
 export const scriptPayloadSchema = z.object({
   type: z.literal('script'),
-  scriptId: z.string().uuid(),
-  parameters: z.record(z.unknown()).optional()
+  scriptId: z.string().guid(),
+  parameters: z.record(z.string(), z.unknown()).optional()
 });
 
 export const patchPayloadSchema = z.object({
   type: z.literal('patch'),
-  patchIds: z.array(z.string().uuid()).min(1)
+  patchIds: z.array(z.string().guid()).min(1)
 });
 
 export const softwarePayloadSchema = z.object({
   type: z.literal('software'),
-  packageId: z.string().uuid(),
+  packageId: z.string().guid(),
   action: z.enum(['install', 'uninstall', 'update'])
 });
 
 export const policyPayloadSchema = z.object({
   type: z.literal('policy'),
-  policyId: z.string().uuid()
+  policyId: z.string().guid()
 });
 
 export const deploymentPayloadSchema = z.discriminatedUnion('type', [

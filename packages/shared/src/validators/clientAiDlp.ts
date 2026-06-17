@@ -94,7 +94,7 @@ export function validateDlpPattern(pattern: string): DlpPatternValidation {
 
 export const dlpCustomRuleSchema = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     name: z.string().trim().min(1).max(60),
     pattern: z
       .string()
@@ -124,7 +124,11 @@ export const dlpBuiltinsSchema = z
     phone: dlpBuiltinSettingSchema.default('off'),
   })
   .strict()
-  .default({});
+  // v4: .default() short-circuits parsing, so child-field .default()s would NOT
+  // apply and an untouched org would get {} (DLP silently disabled). .prefault()
+  // re-parses the {} through the schema, materialising all builtin defaults —
+  // the v3 behavior. DEFAULT_DLP_CONFIG depends on this.
+  .prefault({});
 
 export const dlpConfigSchema = z
   .object({
@@ -137,8 +141,13 @@ export const dlpConfigSchema = z
       })
       .default([]),
   })
-  .strict()
-  .default({});
+  // No top-level default/prefault here. builtins (.prefault) + customRules
+  // (.default) already materialise the full config for dlpConfigSchema.parse({})
+  // (→ DEFAULT_DLP_CONFIG). A top-level default would, under v4, ALSO fire for
+  // `dlpConfig: dlpConfigSchema.optional()` on an absent key, injecting a full
+  // config and breaking partial-PUT semantics (the field must stay undefined
+  // when the client omits it).
+  .strict();
 export type DlpConfig = z.infer<typeof dlpConfigSchema>;
 
 /** The materialised defaults — what an untouched org gets. */

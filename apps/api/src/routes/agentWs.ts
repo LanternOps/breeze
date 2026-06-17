@@ -1600,7 +1600,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         if (message?.type === 'terminal_output') {
           const parsed = terminalOutputFastPathSchema.safeParse(message);
           if (!parsed.success) {
-            console.warn(`[AgentWs] Dropping malformed terminal_output from agent ${agentId}: ${parsed.error.errors[0]?.message}`);
+            console.warn(`[AgentWs] Dropping malformed terminal_output from agent ${agentId}: ${parsed.error.issues[0]?.message}`);
             return;
           }
           const { sessionId, data: termData, encoding } = parsed.data;
@@ -1656,7 +1656,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (!fastPathParse.success) {
             console.warn(
               `[AgentWs] Dropping malformed ${isTerm ? 'term-' : 'desk-'}command_result from agent ${agentId}: ` +
-              `${fastPathParse.error.errors[0]?.message ?? 'invalid shape'}`
+              `${fastPathParse.error.issues[0]?.message ?? 'invalid shape'}`
             );
             return;
           }
@@ -1839,12 +1839,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         const parsed = agentMessageSchema.safeParse(message);
 
         if (!parsed.success) {
-          console.warn(`Invalid message from agent ${agentId}:`, parsed.error.errors);
+          console.warn(`Invalid message from agent ${agentId}:`, parsed.error.issues);
           ws.send(JSON.stringify({
             type: 'error',
             code: 'INVALID_MESSAGE',
             message: 'Invalid message format',
-            details: parsed.error.errors
+            details: parsed.error.issues
           }));
           return;
         }

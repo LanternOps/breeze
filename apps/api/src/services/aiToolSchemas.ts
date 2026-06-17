@@ -18,7 +18,7 @@ import {
 } from '../db/schema';
 
 // Reusable validators
-const uuid = z.string().uuid();
+const uuid = z.string().guid();
 const deviceId = z.object({ deviceId: uuid });
 const ipAddress = z.string().trim().max(45).refine(
   (value) => {
@@ -339,9 +339,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     policy_action: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
     target_type: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional(),
     target_ids: z.object({
-      siteIds: z.array(z.string().uuid()).max(1000).optional(),
-      groupIds: z.array(z.string().uuid()).max(1000).optional(),
-      deviceIds: z.array(z.string().uuid()).max(5000).optional(),
+      siteIds: z.array(z.string().guid()).max(1000).optional(),
+      groupIds: z.array(z.string().guid()).max(1000).optional(),
+      deviceIds: z.array(z.string().guid()).max(5000).optional(),
     }).optional(),
     is_active: z.boolean().optional(),
     exception: z.object({
@@ -436,13 +436,13 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'file_list', 'file_read',
       'event_logs_list', 'event_logs_query',
     ]),
-    payload: z.record(z.unknown()).optional(),
+    payload: z.record(z.string(), z.unknown()).optional(),
   }),
 
   run_script: z.object({
     scriptId: uuid,
     deviceIds: z.array(uuid).min(1).max(10),
-    parameters: z.record(z.unknown()).optional(),
+    parameters: z.record(z.string(), z.unknown()).optional(),
   }),
 
   manage_services: z.object({
@@ -667,7 +667,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid,
     contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
     summary: z.string().min(1).max(255),
-    details: z.record(z.unknown()).optional(),
+    details: z.record(z.string(), z.unknown()).optional(),
     expiresInDays: z.number().int().positive().max(365).optional(),
   }),
 
@@ -936,7 +936,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'warranty', 'helper',
     ]).optional(),
     featurePolicyId: uuid.optional().nullable(),
-    inlineSettings: z.record(z.unknown()).optional().nullable(),
+    inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
   }),
 
   // Playbook tools
@@ -947,8 +947,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   execute_playbook: z.object({
     playbookId: uuid,
     deviceId: uuid,
-    variables: z.record(z.unknown()).optional(),
-    context: z.record(z.unknown()).optional(),
+    variables: z.record(z.string(), z.unknown()).optional(),
+    context: z.record(z.string(), z.unknown()).optional(),
   }),
 
   get_playbook_history: z.object({
@@ -992,7 +992,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     target: z.string().max(500).optional(),
     pollingInterval: z.number().int().min(10).max(86400).optional(),
     timeout: z.number().int().min(1).max(120).optional(),
-    config: z.record(z.unknown()).optional(),
+    config: z.record(z.string(), z.unknown()).optional(),
     isActive: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }).refine(

@@ -216,7 +216,7 @@ const inboxQuerySchema = z.object({
   limit: z.string().optional(),
   cursor: z.string().optional(),
   status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const resolveAlertSchema = z.object({
@@ -227,15 +227,15 @@ const listDevicesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   cursor: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
   search: z.string().optional()
 });
 
 const deviceActionSchema = z.object({
   action: z.enum(['reboot', 'wake', 'run_script']),
-  scriptId: z.string().uuid().optional(),
-  parameters: z.record(z.unknown()).optional()
+  scriptId: z.string().guid().optional(),
+  parameters: z.record(z.string(), z.unknown()).optional()
 }).superRefine((data, ctx) => {
   if (data.action === 'run_script' && !data.scriptId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'scriptId is required for run_script' });
@@ -243,7 +243,7 @@ const deviceActionSchema = z.object({
 });
 
 const summaryQuerySchema = z.object({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 // Apply auth middleware to all routes

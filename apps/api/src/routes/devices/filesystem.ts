@@ -23,7 +23,7 @@ export const filesystemRoutes = new Hono();
 filesystemRoutes.use('*', authMiddleware);
 
 const deviceIdParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const scanFilesystemBodySchema = z.object({

@@ -27,23 +27,23 @@ const executionStatusSchema = z.enum([
 
 const playbookCategorySchema = z.enum(['disk', 'service', 'memory', 'patch', 'security']);
 
-const uuidParamSchema = z.object({ id: z.string().uuid() });
+const uuidParamSchema = z.object({ id: z.string().guid() });
 
 const listPlaybooksQuerySchema = z.object({
   category: playbookCategorySchema.or(z.literal('all')).optional(),
 });
 
 const listExecutionsQuerySchema = z.object({
-  deviceId: z.string().uuid().optional(),
-  playbookId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  playbookId: z.string().guid().optional(),
   status: executionStatusSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
 const executePlaybookBodySchema = z.object({
-  deviceId: z.string().uuid(),
-  variables: z.record(z.unknown()).optional(),
-  context: z.record(z.unknown()).optional(),
+  deviceId: z.string().guid(),
+  variables: z.record(z.string(), z.unknown()).optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
 });
 
 const patchExecutionBodySchema = z.object({
@@ -54,14 +54,14 @@ const patchExecutionBodySchema = z.object({
     stepName: z.string().min(1).max(255),
     status: z.enum(['pending', 'running', 'completed', 'failed', 'skipped']),
     toolUsed: z.string().max(100).optional(),
-    toolInput: z.record(z.unknown()).optional(),
+    toolInput: z.record(z.string(), z.unknown()).optional(),
     toolOutput: z.string().max(200_000).optional(),
     error: z.string().max(5000).optional(),
     startedAt: z.string().datetime().optional(),
     completedAt: z.string().datetime().optional(),
     durationMs: z.number().int().min(0).max(86_400_000).optional(),
   })).max(200).optional(),
-  context: z.record(z.unknown()).optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
   errorMessage: z.string().max(5000).nullable().optional(),
   rollbackExecuted: z.boolean().optional(),
   startedAt: z.string().datetime().nullable().optional(),

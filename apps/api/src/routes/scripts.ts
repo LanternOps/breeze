@@ -83,7 +83,7 @@ function canAccessDeviceSite(siteId: string | null | undefined, userPerms: UserP
 const listScriptsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   category: z.string().optional(),
   osType: z.enum(['windows', 'macos', 'linux']).optional(),
   language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
@@ -97,7 +97,7 @@ const listScriptsSchema = z.object({
 // derivation lives in services/scriptSeverity.ts.
 
 const createScriptSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   category: z.string().max(100).optional(),
@@ -126,8 +126,8 @@ const updateScriptSchema = z.object({
 });
 
 const executeScriptSchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1),
-  parameters: z.record(z.any()).refine(
+  deviceIds: z.array(z.string().guid()).min(1),
+  parameters: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
@@ -139,10 +139,10 @@ const listExecutionsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   status: z.enum(['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled']).optional(),
-  deviceId: z.string().uuid().optional()
+  deviceId: z.string().guid().optional()
 });
 
-const scriptIdParamSchema = z.object({ id: z.string().uuid() });
+const scriptIdParamSchema = z.object({ id: z.string().guid() });
 
 // Apply auth middleware to all routes
 scriptRoutes.use('*', authMiddleware);
@@ -278,7 +278,7 @@ scriptRoutes.post(
   requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
   requireMfa(),
   zValidator('param', scriptIdParamSchema),
-  zValidator('json', z.object({ orgId: z.string().uuid().optional() })),
+  zValidator('json', z.object({ orgId: z.string().guid().optional() })),
   async (c) => {
     const auth = c.get('auth');
     const { id: sourceId } = c.req.valid('param');

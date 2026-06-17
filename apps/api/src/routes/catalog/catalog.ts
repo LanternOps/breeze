@@ -17,7 +17,7 @@ const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CATALOG_READ.resource, PERMISSIONS.CATALOG_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
 const deletePerm = requirePermission(PERMISSIONS.CATALOG_DELETE.resource, PERMISSIONS.CATALOG_DELETE.action);
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 export function catalogActorFrom(c: { get: (k: string) => unknown }): CatalogActor {
   const auth = c.get('auth') as AuthContext;

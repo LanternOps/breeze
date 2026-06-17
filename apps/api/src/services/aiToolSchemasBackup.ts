@@ -9,7 +9,7 @@
 import { z } from 'zod';
 
 // Reusable validators (duplicated locally to avoid circular imports)
-const uuid = z.string().uuid();
+const uuid = z.string().guid();
 const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
 const backupPath = z.string().max(4096).refine(
@@ -293,7 +293,7 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     sequence: z.number().int().min(0).optional(),
     dependsOnGroupId: uuid.optional(),
     devices: z.array(uuid).max(5000).optional(),
-    restoreConfig: z.record(z.unknown()).optional(),
+    restoreConfig: z.record(z.string(), z.unknown()).optional(),
     estimatedDurationMinutes: z.number().int().min(0).optional(),
   }).superRefine((data, ctx) => {
     if ((data.action === 'update_plan' || data.action === 'add_group' || data.action === 'update_group' || data.action === 'delete_group') && !data.planId) {

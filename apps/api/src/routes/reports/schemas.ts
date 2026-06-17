@@ -3,13 +3,13 @@ import { z } from 'zod';
 export const listReportsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   type: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional()
 });
 
 export const createReportSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']),
   config: z.object({
@@ -19,8 +19,8 @@ export const createReportSchema = z.object({
       preset: z.enum(['last_7_days', 'last_30_days', 'last_90_days', 'custom']).optional()
     }).optional(),
     filters: z.object({
-      siteIds: z.array(z.string().uuid()).optional(),
-      deviceIds: z.array(z.string().uuid()).optional(),
+      siteIds: z.array(z.string().guid()).optional(),
+      deviceIds: z.array(z.string().guid()).optional(),
       osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
       status: z.array(z.string()).optional(),
       severity: z.array(z.string()).optional()
@@ -50,27 +50,27 @@ export const generateReportSchema = z.object({
       preset: z.enum(['last_7_days', 'last_30_days', 'last_90_days', 'custom']).optional()
     }).optional(),
     filters: z.object({
-      siteIds: z.array(z.string().uuid()).optional(),
-      deviceIds: z.array(z.string().uuid()).optional(),
+      siteIds: z.array(z.string().guid()).optional(),
+      deviceIds: z.array(z.string().guid()).optional(),
       osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
       status: z.array(z.string()).optional(),
       severity: z.array(z.string()).optional()
     }).optional()
   }).optional().default({}),
   format: z.enum(['csv', 'pdf', 'excel']).default('csv'),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const listRunsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  reportId: z.string().uuid().optional(),
+  reportId: z.string().guid().optional(),
   status: z.enum(['pending', 'running', 'completed', 'failed']).optional()
 });
 
 export const dataQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   limit: z.string().optional(),

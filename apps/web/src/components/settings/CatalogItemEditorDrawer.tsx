@@ -6,13 +6,15 @@ import { createPortal } from 'react-dom';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { loginPathWithNext } from '../../lib/authScope';
+import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
+import { useOrgStore } from '@/stores/orgStore';
 import {
   createCatalogItem, updateCatalogItem, getCatalogItem, setBundleComponents,
+  setOrgPriceOverride, removeOrgPriceOverride,
   computeMargin, formatMargin, marginTone,
   CATALOG_TYPE_LABELS, CATALOG_TYPE_ORDER,
-  type CatalogItem, type CatalogItemType, type CatalogItemDetail,
+  type CatalogItem, type CatalogItemType, type CatalogItemDetail, type OrgPriceOverride,
 } from '../../lib/api/catalog';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -56,6 +58,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   const { can } = usePermissions();
   const canWrite = can('catalog', 'write');
+  // Per-org overrides are a partner surface (an MSP pricing a customer). Detect
+  // partner scope from the JWT claims — useOrgStore().partners is only populated
+  // from a system-scope-only endpoint, so a real partner-scope user gets an empty
+  // array and the section would never render (#1368).
+  const { organizations } = useOrgStore();
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
 
   const [itemType, setItemType] = useState<CatalogItemType>('service');
   const [name, setName] = useState('');
@@ -66,6 +75,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const [components, setComponents] = useState<ComponentDraft[]>([]);
   const [componentsLoading, setComponentsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Per-org price overrides (#1368). Loaded for an existing item and edited as a
+  // sub-resource — each set/remove applies immediately (the item already exists),
+  // independent of the main Save.
+  const [overrides, setOverrides] = useState<OrgPriceOverride[]>([]);
+  const [newOverrideOrgId, setNewOverrideOrgId] = useState('');
+  const [newOverridePrice, setNewOverridePrice] = useState('');
+  const [overrideBusy, setOverrideBusy] = useState(false);
   // Once a *new* item is created we hold its id, so a retry after a partial
   // failure (item saved, components failed) PATCHes instead of creating a dupe.
   const [committedId, setCommittedId] = useState<string | null>(null);
@@ -80,6 +96,9 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     if (!open) return;
     setCommittedId(null);
     setSaving(false);
+    setOverrides([]);
+    setNewOverrideOrgId('');
+    setNewOverridePrice('');
     if (item) {
       setItemType(item.itemType);
       setName(item.name);
@@ -88,22 +107,23 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       setCostBasis(item.costBasis ?? '');
       setIsBundle(item.isBundle);
       setComponents([]);
-      if (item.isBundle) {
-        setComponentsLoading(true);
-        void getCatalogItem(item.id)
-          .then(async (res) => {
-            if (res.status === 401) return UNAUTHORIZED();
-            if (!res.ok) return;
-            const body = (await res.json().catch(() => null)) as { data?: CatalogItemDetail } | null;
-            const rows = body?.data?.components ?? [];
-            setComponents(rows.map((r) => ({
-              componentItemId: r.componentItemId,
-              quantity: r.quantity,
-              showOnInvoice: r.showOnInvoice,
-            })));
-          })
-          .finally(() => setComponentsLoading(false));
-      }
+      // Existing items carry sub-resources (bundle components + per-org price
+      // overrides) — load the detail once and hydrate both.
+      setComponentsLoading(item.isBundle);
+      void getCatalogItem(item.id)
+        .then(async (res) => {
+          if (res.status === 401) return UNAUTHORIZED();
+          if (!res.ok) return;
+          const body = (await res.json().catch(() => null)) as { data?: CatalogItemDetail } | null;
+          const rows = body?.data?.components ?? [];
+          setComponents(rows.map((r) => ({
+            componentItemId: r.componentItemId,
+            quantity: r.quantity,
+            showOnInvoice: r.showOnInvoice,
+          })));
+          setOverrides(body?.data?.overrides ?? []);
+        })
+        .finally(() => setComponentsLoading(false));
     } else {
       setItemType('service');
       setName('');
@@ -165,6 +185,64 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const removeComponent = (idx: number) => setComponents((cs) => cs.filter((_, i) => i !== idx));
   const patchComponent = (idx: number, patch: Partial<ComponentDraft>) =>
     setComponents((cs) => cs.map((c, i) => (i === idx ? { ...c, ...patch } : c)));
+
+  // ---- per-org price overrides (#1368) ------------------------------------
+  const orgNameFor = useCallback(
+    (orgId: string) => organizations.find((o) => o.id === orgId)?.name ?? orgId,
+    [organizations],
+  );
+  const overriddenOrgIds = useMemo(() => new Set(overrides.map((o) => o.orgId)), [overrides]);
+  const orgsWithoutOverride = useMemo(
+    () => organizations.filter((o) => !overriddenOrgIds.has(o.id)),
+    [organizations, overriddenOrgIds],
+  );
+  // Org pricing only applies to a persisted, non-bundle item (a bundle's price
+  // derives from its components), for a partner-scope user who can write.
+  const showOrgPricing = !!effectiveId && !isBundle && isPartnerScope && canWrite;
+
+  const addOverride = useCallback(async () => {
+    if (overrideBusy || !effectiveId) return;
+    if (!newOverrideOrgId) { showToast({ message: 'Pick an organization.', type: 'error' }); return; }
+    const price = Number(newOverridePrice);
+    if (newOverridePrice.trim() === '' || !Number.isFinite(price) || price < 0) {
+      showToast({ message: 'Enter a valid override price.', type: 'error' });
+      return;
+    }
+    setOverrideBusy(true);
+    try {
+      const saved = await runAction<{ data: OrgPriceOverride }>({
+        request: () => setOrgPriceOverride(effectiveId, newOverrideOrgId, price),
+        errorFallback: 'Could not set the override. Retry.',
+        successMessage: 'Override saved',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setOverrides((cur) => [...cur.filter((o) => o.orgId !== newOverrideOrgId), saved.data]);
+      setNewOverrideOrgId('');
+      setNewOverridePrice('');
+    } catch (err) {
+      handleActionError(err, 'Could not set the override. Retry.');
+    } finally {
+      setOverrideBusy(false);
+    }
+  }, [overrideBusy, effectiveId, newOverrideOrgId, newOverridePrice]);
+
+  const deleteOverride = useCallback(async (orgId: string) => {
+    if (overrideBusy || !effectiveId) return;
+    setOverrideBusy(true);
+    try {
+      await runAction({
+        request: () => removeOrgPriceOverride(effectiveId, orgId),
+        errorFallback: 'Could not remove the override. Retry.',
+        successMessage: 'Override removed',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setOverrides((cur) => cur.filter((o) => o.orgId !== orgId));
+    } catch (err) {
+      handleActionError(err, 'Could not remove the override. Retry.');
+    } finally {
+      setOverrideBusy(false);
+    }
+  }, [overrideBusy, effectiveId]);
 
   // ---- save ----------------------------------------------------------------
   const priceNum = Number(unitPrice);
@@ -448,6 +526,82 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                     );
                   })}
                 </ul>
+              )}
+            </div>
+          )}
+
+          {/* Per-organization price overrides (#1368) */}
+          {showOrgPricing && (
+            <div className="space-y-2 rounded-md border p-3" data-testid="catalog-org-pricing">
+              <span className="text-xs font-medium text-muted-foreground">Per-organization pricing</span>
+              <p className="text-xs text-muted-foreground">
+                Override the base unit price for a specific customer. Everyone else is billed the catalog price.
+              </p>
+
+              {overrides.length === 0 ? (
+                <p className="py-2 text-center text-xs text-muted-foreground" data-testid="catalog-org-pricing-empty">
+                  No overrides — every organization is billed the base price.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {overrides.map((o) => (
+                    <li
+                      key={o.orgId}
+                      className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm"
+                      data-testid={`catalog-override-row-${o.orgId}`}
+                    >
+                      <span className="flex-1 truncate">{orgNameFor(o.orgId)}</span>
+                      <span className="tabular-nums" data-testid={`catalog-override-price-${o.orgId}`}>{o.unitPrice}</span>
+                      <button
+                        type="button"
+                        onClick={() => void deleteOverride(o.orgId)}
+                        disabled={overrideBusy}
+                        aria-label={`Remove override for ${orgNameFor(o.orgId)}`}
+                        data-testid={`catalog-override-remove-${o.orgId}`}
+                        className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-50"
+                      >
+                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M3 6h18M8 6V4h8v2m-9 0v14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={newOverrideOrgId}
+                  onChange={(e) => setNewOverrideOrgId(e.target.value)}
+                  className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  data-testid="catalog-override-org"
+                >
+                  <option value="">Select organization…</option>
+                  {orgsWithoutOverride.map((o) => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+                <input
+                  value={newOverridePrice}
+                  onChange={(e) => setNewOverridePrice(e.target.value)}
+                  inputMode="decimal"
+                  aria-label="Override price"
+                  placeholder="0.00"
+                  className="h-9 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
+                  data-testid="catalog-override-price-input"
+                />
+                <button
+                  type="button"
+                  onClick={() => void addOverride()}
+                  disabled={overrideBusy || !newOverrideOrgId}
+                  className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  data-testid="catalog-override-add"
+                >
+                  Set
+                </button>
+              </div>
+              {organizations.length > 0 && orgsWithoutOverride.length === 0 && (
+                <p className="text-center text-[11px] text-muted-foreground">All organizations have an override.</p>
               )}
             </div>
           )}
