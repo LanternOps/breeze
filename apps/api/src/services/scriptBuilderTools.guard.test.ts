@@ -1,37 +1,48 @@
 import { describe, it, expect } from 'vitest';
 import { TOOL_TIERS } from './aiAgentSdkTools';
-import { TOOL_PERMISSIONS } from './aiGuardrails';
+import { TOOL_PERMISSIONS, checkGuardrails } from './aiGuardrails';
+import { SCRIPT_BUILDER_TOOL_TIERS } from './scriptBuilderTools';
 
 /**
  * Guard against the "Unknown tool" regression (script-builder could not search
  * or read the existing script library).
  *
- * The script-builder assistant exposes a curated set of context tools that flow
- * through makeExistingHandler -> createSessionPreToolUse -> executeTool. Each
- * such tool MUST be present in BOTH:
+ * Every script-builder *context* tool flows through makeExistingHandler ->
+ * createSessionPreToolUse -> executeTool, and MUST be present in BOTH:
  *   - TOOL_TIERS (aiAgentSdkTools)    — else createSessionPreToolUse rejects it
  *                                        as "Unknown tool" before execution.
  *   - TOOL_PERMISSIONS (aiGuardrails) — else checkToolPermission denies it with
  *                                        "No RBAC permission mapping for tool".
  *
- * These are the executeTool handler names passed to makeExistingHandler in
- * createScriptBuilderMcpServer (scriptBuilderTools.ts). The apply tools
- * (apply_script_code / apply_script_metadata) intentionally bypass preToolUse
- * via makeApplyHandler, so they are excluded here. Keep this list in sync with
- * createScriptBuilderMcpServer.
+ * The list is DERIVED from the script-builder's own source-of-truth tool list
+ * (SCRIPT_BUILDER_TOOL_TIERS) rather than hardcoded, so adding a new context
+ * tool there without wiring it into the global maps fails this test — the exact
+ * drift that caused the original bug.
  */
-const SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS = [
-  'query_devices',
-  'get_device_details',
-  'manage_alerts',
-  'list_scripts',
-  'get_script_details',
-  'list_script_templates',
-  'get_script_execution_history',
-  'run_script', // exposed to the model as execute_script_on_device
-] as const;
+
+// The apply tools bypass preToolUse via makeApplyHandler, so they don't need
+// (and must not require) TOOL_TIERS / TOOL_PERMISSIONS entries.
+const APPLY_TOOLS = new Set(['apply_script_code', 'apply_script_metadata']);
+
+// A few MCP tool names dispatch to a differently-named executeTool handler;
+// preToolUse / checkToolPermission see the HANDLER name. Keep in sync with the
+// makeExistingHandler(...) call sites in createScriptBuilderMcpServer.
+const MCP_NAME_TO_HANDLER: Record<string, string> = {
+  execute_script_on_device: 'run_script',
+};
+
+const SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS = Object.keys(SCRIPT_BUILDER_TOOL_TIERS)
+  .filter((name) => !APPLY_TOOLS.has(name))
+  .map((name) => MCP_NAME_TO_HANDLER[name] ?? name);
 
 describe('script-builder context tools are fully wired for the session guardrail', () => {
+  it('derives the handler-tool list from SCRIPT_BUILDER_TOOL_TIERS (so new tools cannot silently skip the guard)', () => {
+    expect(SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS.length).toBeGreaterThan(0);
+    expect(SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS).toContain('list_scripts');
+    expect(SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS).toContain('run_script'); // execute_script_on_device
+    expect(SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS).not.toContain('apply_script_code');
+  });
+
   it.each(SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS)(
     '%s has a TOOL_TIERS entry (preToolUse would otherwise reject it as "Unknown tool")',
     (toolName) => {
@@ -51,4 +62,19 @@ describe('script-builder context tools are fully wired for the session guardrail
       ).toBeDefined();
     },
   );
+
+  // Membership is necessary but not sufficient: a mis-set tier or an unintended
+  // action-escalation could still block a read-only library call. Verify the
+  // four library tools actually resolve as allowed, tier-1 (auto-execute) reads.
+  it.each([
+    'list_scripts',
+    'get_script_details',
+    'list_script_templates',
+    'get_script_execution_history',
+  ])('checkGuardrails permits %s as a tier-1 read tool (no approval)', (toolName) => {
+    const result = checkGuardrails(toolName, {});
+    expect(result.allowed).toBe(true);
+    expect(result.tier).toBe(1);
+    expect(result.requiresApproval).toBe(false);
+  });
 });
