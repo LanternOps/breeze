@@ -44,20 +44,19 @@ describe('public quote token path', () => {
     const res = await withSystemDbAccessContext(() => acceptQuote({ quoteId: created.id, signerName: 'Pat' }));
     const [acc] = await withSystemDbAccessContext(() => db.select().from(quoteAcceptances).where(eq(quoteAcceptances.id, res.acceptanceId)));
 
-    // Re-render the SAME content → hash equals the recorded one. The hash was
-    // captured inside acceptQuote while the quote was 'sent'; accept then
-    // transitions it to 'converted'. Since computeQuoteSha256 is status-sensitive
-    // (it's part of the canonical content), re-render with the at-accept status
-    // ('sent') to reproduce the recorded hash — the quote body itself is immutable
-    // once sent, so this isolates the tamper-evidence check to the line content.
+    // Re-render from the LIVE quote — which is now 'converted' — and the hash
+    // STILL matches the one recorded at accept time (when it was 'sent'). This
+    // proves the content hash excludes volatile workflow fields like status (C4):
+    // a future verifier can re-hash the converted quote without a false tamper
+    // signal. A real edit to a line amount, however, still mismatches.
     const { computeQuoteSha256 } = await import('../../services/quoteContentHash');
     const { quoteBlocks, quoteLines } = await import('../../db/schema/quotes');
     const [qRow] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
-    const q = { ...qRow, status: 'sent' };
+    expect(qRow!.status).toBe('converted'); // the live status differs from the at-accept status
     const blocks = await withSystemDbAccessContext(() => db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, created.id)));
     const lines = await withSystemDbAccessContext(() => db.select().from(quoteLines).where(eq(quoteLines.quoteId, created.id)));
-    expect(computeQuoteSha256(q as any, blocks as any, lines as any)).toBe(acc!.quoteSha256);
+    expect(computeQuoteSha256(qRow as any, blocks as any, lines as any)).toBe(acc!.quoteSha256);
     const tampered = lines.map((l) => ({ ...l, unitPrice: '1.00', lineTotal: '1.00' }));
-    expect(computeQuoteSha256(q as any, blocks as any, tampered as any)).not.toBe(acc!.quoteSha256);
+    expect(computeQuoteSha256(qRow as any, blocks as any, tampered as any)).not.toBe(acc!.quoteSha256);
   });
 });

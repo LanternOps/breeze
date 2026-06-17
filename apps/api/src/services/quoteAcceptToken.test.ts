@@ -17,4 +17,14 @@ describe('quote-accept token', () => {
     const viewer = await createViewerAccessToken({ sub: 'u1', email: 'a@b.com', sessionId: 's1' });
     expect(await verifyQuoteAcceptToken(viewer)).toBeNull();
   });
+  it('honors a future expiresAt (quote expiry_date in the future)', async () => {
+    const { token } = await createQuoteAcceptToken({ quoteId: 'q1', orgId: 'o1', partnerId: 'p1', expiresAt: new Date(Date.now() + 3_600_000) });
+    expect(await verifyQuoteAcceptToken(token)).not.toBeNull();
+  });
+  it('a past expiresAt falls back to the default TTL (never mints an already-expired token)', async () => {
+    // The expiry derivation deliberately defaults to +30d when expiresAt is in
+    // the past, so a stale quote.expiry_date can't produce a born-dead link.
+    const { token } = await createQuoteAcceptToken({ quoteId: 'q1', orgId: 'o1', partnerId: 'p1', expiresAt: new Date(Date.now() - 60_000) });
+    expect(await verifyQuoteAcceptToken(token)).not.toBeNull();
+  });
 });

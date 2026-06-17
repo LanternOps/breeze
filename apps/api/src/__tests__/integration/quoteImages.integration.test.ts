@@ -36,4 +36,25 @@ describe('quote image storage', () => {
     expect(read?.mime).toBe('image/png');
     expect(read?.data.equals(PNG)).toBe(true);
   });
+
+  // TA-6: readQuoteImage is scoped to BOTH imageId AND quoteId. Within ONE org,
+  // RLS does NOT separate two quotes — the quote_id predicate is the ONLY barrier
+  // stopping a valid token holder for quote B from serving quote A's image bytes
+  // on the system-scope public image route. This is the test RLS can't be.
+  runDb('does not serve an image under a different quote in the same org (cross-quote IDOR guard)', async () => {
+    const { ctx, quoteA, quoteB } = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner(); const org = await createOrganization({ partnerId: partner.id });
+      const [qA] = await db.insert(quotes).values({ partnerId: partner.id, orgId: org.id, currencyCode: 'USD' }).returning({ id: quotes.id });
+      const [qB] = await db.insert(quotes).values({ partnerId: partner.id, orgId: org.id, currencyCode: 'USD' }).returning({ id: quotes.id });
+      const ctx: DbAccessContext = { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id], accessiblePartnerIds: [partner.id], userId: null };
+      return { ctx, quoteA: qA!.id, quoteB: qB!.id };
+    });
+    const imgA = await withDbAccessContext(ctx, () => writeQuoteImage(quoteA, ctx.orgId!, 'image/png', PNG));
+    // Same org, image belongs to quote A — requesting it under quote B must miss.
+    const crossed = await withDbAccessContext(ctx, () => readQuoteImage(imgA.id, quoteB));
+    expect(crossed).toBeNull();
+    // Sanity: the correct quote still returns the bytes (the predicate isn't deny-all).
+    const ok = await withDbAccessContext(ctx, () => readQuoteImage(imgA.id, quoteA));
+    expect(ok?.data.equals(PNG)).toBe(true);
+  });
 });

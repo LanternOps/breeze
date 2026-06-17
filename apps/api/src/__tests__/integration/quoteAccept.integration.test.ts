@@ -62,4 +62,27 @@ describe('quote accept → convert', () => {
     // still draft
     await expect(withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }))).rejects.toMatchObject({ status: 409 });
   });
+
+  // TA-1 / atom-1: accepting a quote is at-most-once. A second accept (the
+  // double-submit / replay case) must 409 and create NO second invoice — the
+  // single most important invariant of the convert pipeline.
+  runDb('a second accept of the same quote is rejected and creates no duplicate invoice', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 100, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+
+    const first = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }));
+    await expect(
+      withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane (again)' }))
+    ).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+
+    // Exactly one invoice + one acceptance exist for the quote.
+    const invs = await withSystemDbAccessContext(() => db.select({ id: invoices.id }).from(invoices).where(eq(invoices.orgId, org.id)));
+    expect(invs).toHaveLength(1);
+    expect(invs[0]!.id).toBe(first.invoiceId);
+    const accs = await withSystemDbAccessContext(() => db.select({ id: quoteAcceptances.id }).from(quoteAcceptances).where(eq(quoteAcceptances.quoteId, created.id)));
+    expect(accs).toHaveLength(1);
+  });
 });

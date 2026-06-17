@@ -20,4 +20,10 @@ describe('computeQuoteSha256', () => {
     const tampered = [{ ...lines[0], unitPrice: '1.00', lineTotal: '1.00' }];
     expect(computeQuoteSha256(quote, blocks, tampered)).not.toBe(computeQuoteSha256(quote, blocks, lines));
   });
+  it('ignores volatile workflow fields — status + quote number (C4)', () => {
+    // The quote legitimately transitions sent→converted (and gets a number) during
+    // accept; the content hash must NOT change, or a later re-verify false-positives.
+    const evolved = { ...quote, status: 'converted', quoteNumber: 'Q-9999-9999' };
+    expect(computeQuoteSha256(evolved, blocks, lines)).toBe(computeQuoteSha256(quote, blocks, lines));
+  });
 });
