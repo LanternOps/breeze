@@ -2,7 +2,7 @@
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { loadPortalBranding } from '../lib/server';
-import { BASE_PATH, stripBase, withBase } from '../lib/basePath';
+import { stripBase, withBase } from '../lib/basePath';
 
 interface Props {
   title: string;
@@ -115,6 +115,7 @@ const isActive = (href: string) => {
             <button
               type="button"
               data-portal-logout
+              data-login-path={withBase('/login')}
               class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-accent"
             >
               Sign Out
@@ -127,14 +128,23 @@ const isActive = (href: string) => {
         </main>
       </div>
     </div>
-    <script is:inline define:vars={{ basePath: BASE_PATH }}>
-      (() => {
-        if (window.__portalLogoutInit) {
+    {/*
+      Bundled (NOT is:inline) so Astro serves it from /portal/_astro/ — allowed by
+      `script-src 'self'` with no per-page hash. An inline script would need a hash
+      that changes per page, which the View-Transitions ClientRouter can't satisfy
+      after a client-side navigation (the initial document's CSP stays in force).
+      The base-aware login path is read from the button's data attribute rather
+      than via define:vars (which would force is:inline again).
+    */}
+    <script>
+      function bindPortalLogout() {
+        const btn = document.querySelector('[data-portal-logout]');
+        if (!(btn instanceof HTMLButtonElement) || btn.dataset.logoutBound === 'true') {
           return;
         }
-        window.__portalLogoutInit = true;
+        btn.dataset.logoutBound = 'true';
 
-        const getCookie = (name) => {
+        const getCookie = (name: string): string | null => {
           const target = `${name}=`;
           for (const part of document.cookie.split(';')) {
             const trimmed = part.trim();
@@ -145,43 +155,35 @@ const isActive = (href: string) => {
           return null;
         };
 
-        const bindLogout = () => {
-          const logoutButton = document.querySelector('[data-portal-logout]');
-          if (!logoutButton || !(logoutButton instanceof HTMLButtonElement)) {
-            return;
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          const loginPath = btn.dataset.loginPath || '/login';
+          try {
+            const csrf = getCookie('breeze_portal_csrf_token');
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (csrf) {
+              headers['x-breeze-csrf'] = csrf;
+            }
+            await fetch('/api/v1/portal/auth/logout', {
+              method: 'POST',
+              credentials: 'include',
+              headers
+            });
+          } catch {
+            // Continue to login even if the logout request fails.
           }
 
-          logoutButton.onclick = async () => {
-            logoutButton.disabled = true;
-            try {
-              const csrf = getCookie('breeze_portal_csrf_token');
-              const headers = { 'Content-Type': 'application/json' };
-              if (csrf) {
-                headers['x-breeze-csrf'] = csrf;
-              }
+          try {
+            const { navigate } = await import('astro:transitions/client');
+            await navigate(loginPath, { history: 'replace' });
+          } catch {
+            window.location.replace(loginPath);
+          }
+        });
+      }
 
-              await fetch('/api/v1/portal/auth/logout', {
-                method: 'POST',
-                credentials: 'include',
-                headers
-              });
-            } catch {
-              // Continue to login even if logout request fails.
-            }
-
-            const loginPath = `${basePath}/login`;
-            try {
-              const { navigate } = await import('astro:transitions/client');
-              await navigate(loginPath, { history: 'replace' });
-            } catch {
-              window.location.replace(loginPath);
-            }
-          };
-        };
-
-        bindLogout();
-        document.addEventListener('astro:page-load', bindLogout);
-      })();
+      bindPortalLogout();
+      document.addEventListener('astro:page-load', bindPortalLogout);
     </script>
   </body>
 </html>
