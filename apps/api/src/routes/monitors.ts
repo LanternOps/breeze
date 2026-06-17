@@ -200,7 +200,7 @@ const httpConfigSchema = z.object({
   method: z.enum(['GET', 'HEAD', 'POST', 'PUT', 'OPTIONS']).optional(),
   expectedStatus: z.number().int().min(100).max(599).optional(),
   expectedBody: z.string().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   followRedirects: z.boolean().optional(),
   verifySsl: z.boolean().optional()
 });
@@ -213,12 +213,12 @@ const dnsConfigSchema = z.object({
 });
 
 const createMonitorSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  assetId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  assetId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   monitorType: z.enum(monitorTypes),
   target: z.string().min(1).max(500),
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
   pollingInterval: z.number().int().min(10).max(86400).optional(),
   timeout: z.number().int().min(1).max(300).optional()
 }).superRefine((data, ctx) => {
@@ -234,15 +234,15 @@ const createMonitorSchema = z.object({
 const updateMonitorSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   target: z.string().min(1).max(500).optional(),
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
   pollingInterval: z.number().int().min(10).max(86400).optional(),
   timeout: z.number().int().min(1).max(300).optional(),
   isActive: z.boolean().optional()
 });
 
 const listMonitorsSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  assetId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  assetId: z.string().guid().optional(),
   monitorType: z.enum(monitorTypes).optional(),
   status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
   search: z.string().optional()
@@ -255,7 +255,7 @@ const resultsQuerySchema = z.object({
 });
 
 const createAlertRuleSchema = z.object({
-  monitorId: z.string().uuid(),
+  monitorId: z.string().guid(),
   condition: z.enum(['offline', 'degraded', 'response_time_gt', 'consecutive_failures_gt']),
   threshold: z.string().optional(),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
@@ -265,8 +265,8 @@ const createAlertRuleSchema = z.object({
 
 const updateAlertRuleSchema = createAlertRuleSchema.partial().omit({ monitorId: true });
 
-const monitorIdParamSchema = z.object({ id: z.string().uuid() });
-const monitorIdAltParamSchema = z.object({ monitorId: z.string().uuid() });
+const monitorIdParamSchema = z.object({ id: z.string().guid() });
+const monitorIdAltParamSchema = z.object({ monitorId: z.string().guid() });
 
 // --- Router ---
 

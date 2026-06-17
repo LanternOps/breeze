@@ -59,8 +59,8 @@ export const listDevicesSchema = z.object({
   includeTotal: boolStr,
 
   // Single-value filters (compat).
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
 
   // First-class multi-value filters (#742). Plural form of the singletons
   // above; both may be supplied. The handler ANDs them with auth's
@@ -84,8 +84,8 @@ export const listNetworkDevicesSchema = z.object({
   limit: z.string().optional(),
   includeTotal: boolStr,
 
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   orgIds: csvUuidList,
   siteIds: csvUuidList,
 
@@ -99,7 +99,7 @@ export const updateDeviceSchema = z.object({
   // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
   // can unset the name; the devices.display_name column is nullable. See PR #787.
   displayName: z.string().max(255).nullable().optional(),
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   tags: z.array(z.string()).optional(),
   customFields: z.record(
     z.string().max(100),
@@ -112,16 +112,16 @@ export const updateDeviceSchema = z.object({
 // agent config so the agent never has to call /agents/enroll. orgId+siteId
 // come from the admin's input (not from an enrollment key).
 export const provisionDeviceSchema = z.object({
-  orgId: z.string().uuid(),
-  siteId: z.string().uuid(),
+  orgId: z.string().guid(),
+  siteId: z.string().guid(),
   hostname: z.string().min(1).max(255),
   osType: z.enum(['windows', 'macos', 'linux']),
   displayName: z.string().max(255).optional(),
 });
 
 export const moveOrgSchema = z.object({
-  orgId: z.string().uuid(),
-  siteId: z.string().uuid(),
+  orgId: z.string().guid(),
+  siteId: z.string().guid(),
 });
 
 export const metricsQuerySchema = z.object({
@@ -163,7 +163,7 @@ export const createCommandSchema = z.object({
 export const BULK_COMMAND_MAX_DEVICES = 500;
 
 export const bulkCommandSchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1).max(BULK_COMMAND_MAX_DEVICES),
+  deviceIds: z.array(z.string().guid()).min(1).max(BULK_COMMAND_MAX_DEVICES),
   type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment', 'wake', 'refresh_inventory']),
   payload: z.any().optional()
 });
@@ -174,12 +174,12 @@ export const maintenanceModeSchema = z.object({
 });
 
 export const createGroupSchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().guid(),
   name: z.string().min(1).max(255),
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   type: z.enum(['static', 'dynamic']),
   rules: z.any().optional(),
-  parentId: z.string().uuid().optional()
+  parentId: z.string().guid().optional()
 });
 
 export const updateGroupSchema = createGroupSchema.partial().omit({ orgId: true });

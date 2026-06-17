@@ -36,7 +36,7 @@ if (MCP_OAUTH_ENABLED) {
     // and currently unvalidated. A spoofed value could be used to
     // impersonate known integrations (e.g. "claude-desktop") in any
     // future UI surface that displays it. We reject it outright; if a
-    // legitimate need arises, gate it behind .uuid() validation and a
+    // legitimate need arises, gate it behind .guid() validation and a
     // partner-trusted IAT flow.
     'software_id',
   ];

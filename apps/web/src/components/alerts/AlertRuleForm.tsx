@@ -28,7 +28,7 @@ const alertRuleSchema = z.object({
   conditions: z.array(conditionSchema).min(1, 'At least one condition is required'),
   notificationChannelIds: z.array(z.string()),
   cooldownMinutes: z.coerce
-    .number({ invalid_type_error: 'Enter a cooldown value' })
+    .number({ error: 'Enter a cooldown value' })
     .int('Cooldown must be a whole number')
     .min(1, 'Cooldown must be at least 1 minute')
     .max(1440, 'Cooldown cannot exceed 24 hours'),
@@ -110,7 +110,7 @@ export default function AlertRuleForm({
     watch,
     setValue,
     formState: { errors, isSubmitting }
-  } = useForm<AlertRuleFormValues>({
+  } = useForm<z.input<typeof alertRuleSchema>, unknown, z.output<typeof alertRuleSchema>>({
     resolver: zodResolver(alertRuleSchema),
     defaultValues: {
       name: '',

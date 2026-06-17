@@ -24,7 +24,7 @@ invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes,
   });
 
 invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', authMiddleware, scopes, writePerm,
-  zValidator('param', z.object({ orgId: z.string().uuid() })),
+  zValidator('param', z.object({ orgId: z.string().guid() })),
   zValidator('json', orgBillingSettingsSchema),
   async (c) => {
     try { return c.json({ data: await updateOrgBillingSettings(c.req.valid('param').orgId, c.req.valid('json'), invoiceActorFrom(c)) }); }

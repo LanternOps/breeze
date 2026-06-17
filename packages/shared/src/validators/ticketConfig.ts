@@ -40,12 +40,14 @@ export const updateTicketStatusSchema = z.object({
 export type UpdateTicketStatusInput = z.infer<typeof updateTicketStatusSchema>;
 
 export const reorderTicketStatusesSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(200)
+  ids: z.array(z.string().guid()).min(1).max(200)
 }).refine((v) => new Set(v.ids).size === v.ids.length, { message: 'ids must be unique', path: ['ids'] });
 export type ReorderTicketStatusesInput = z.infer<typeof reorderTicketStatusesSchema>;
 
 export const prioritySettingsSchema = z.object({
-  priorities: z.record(ticketPrioritySchema, z.object({
+  // v4: z.record(enum, …) requires all enum keys at runtime; partialRecord keeps
+  // the v3 "override only some priorities" semantics.
+  priorities: z.partialRecord(ticketPrioritySchema, z.object({
     label: z.string().trim().min(1).max(40).nullable().optional(),
     responseSlaMinutes: slaMinutes.optional(),
     resolutionSlaMinutes: slaMinutes.optional()
@@ -54,7 +56,7 @@ export const prioritySettingsSchema = z.object({
 export type PrioritySettingsInput = z.infer<typeof prioritySettingsSchema>;
 
 export const orgTicketSettingsSchema = z.object({
-  slaOverrides: z.record(ticketPrioritySchema, z.object({
+  slaOverrides: z.partialRecord(ticketPrioritySchema, z.object({
     responseMinutes: slaMinutes.optional(),
     resolutionMinutes: slaMinutes.optional()
   })).optional(),

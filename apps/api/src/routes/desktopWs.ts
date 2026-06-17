@@ -115,7 +115,7 @@ const desktopConnectExchangeSchema = z.object({
 });
 
 const desktopSessionIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 type ViewerAccessResult =
@@ -618,7 +618,7 @@ function createDesktopWsHandlers(
 
         const parsed = desktopMessageSchema.safeParse(raw);
         if (!parsed.success) {
-          console.warn(`Invalid desktop message from session ${sessionId}:`, parsed.error.errors);
+          console.warn(`Invalid desktop message from session ${sessionId}:`, parsed.error.issues);
           return;
         }
         const message = parsed.data;

@@ -13,7 +13,7 @@ const organizationSchema = z
     type: z.enum(['customer', 'internal']),
     status: z.enum(['active', 'trial', 'suspended', 'churned']),
     maxDevices: z.coerce
-      .number({ invalid_type_error: 'Enter a max device limit' })
+      .number({ error: 'Enter a max device limit' })
       .int('Max devices must be a whole number')
       .min(1, 'Max devices must be at least 1'),
     contractStart: z.string().optional(),
@@ -66,7 +66,7 @@ export default function OrganizationForm({
     register,
     handleSubmit,
     formState: { errors, isSubmitting }
-  } = useForm<OrganizationFormValues>({
+  } = useForm<z.input<typeof organizationSchema>, unknown, z.output<typeof organizationSchema>>({
     resolver: zodResolver(organizationSchema),
     defaultValues: {
       name: '',

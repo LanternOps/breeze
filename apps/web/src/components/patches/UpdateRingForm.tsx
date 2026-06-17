@@ -78,7 +78,7 @@ export default function UpdateRingForm({
     setValue,
     control,
     formState: { errors, isSubmitting },
-  } = useForm<UpdateRingFormValues>({
+  } = useForm<z.input<typeof ringSchema>, unknown, z.output<typeof ringSchema>>({
     resolver: zodResolver(ringSchema),
     defaultValues: {
       name: '',

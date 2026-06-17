@@ -11,7 +11,7 @@ import { invoiceActorFrom, handleServiceError } from './invoices';
 export const invoicePdfRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const exportPerm = requirePermission(PERMISSIONS.INVOICES_EXPORT.resource, PERMISSIONS.INVOICES_EXPORT.action);
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 // GET /:id/pdf — stream the stored invoice PDF, rendering on demand if absent.
 // getInvoice() enforces the org-access guard (404 on cross-tenant); the bytea is

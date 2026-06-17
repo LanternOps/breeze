@@ -33,7 +33,7 @@ import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 export const tenantErasureRoutes = new Hono();
 
 const erasureSchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().guid(),
   confirmEmail: z.string().email(),
 });
 

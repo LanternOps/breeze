@@ -169,7 +169,7 @@ const integrationConfigSchema = z.object({
 });
 
 const createIntegrationSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   provider: z.enum(dnsProviderEnum.enumValues),
   name: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
@@ -255,8 +255,8 @@ const listEventsQuerySchema = z.object({
   action: z.enum(dnsActionEnum.enumValues).optional(),
   category: z.enum(dnsThreatCategoryEnum.enumValues).optional(),
   domain: z.string().max(500).optional(),
-  deviceId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional()
 });
@@ -264,8 +264,8 @@ const listEventsQuerySchema = z.object({
 const statsQuerySchema = z.object({
   start: z.string().optional(),
   end: z.string().optional(),
-  integrationId: z.string().uuid().optional(),
-  deviceId: z.string().uuid().optional(),
+  integrationId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
   action: z.enum(dnsActionEnum.enumValues).optional(),
   category: z.enum(dnsThreatCategoryEnum.enumValues).optional(),
   topN: z.coerce.number().int().min(1).max(100).optional()
@@ -278,8 +278,8 @@ const topBlockedQuerySchema = z.object({
 });
 
 const createPolicySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  integrationId: z.string().uuid(),
+  orgId: z.string().guid().optional(),
+  integrationId: z.string().guid(),
   name: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
   type: z.enum(['blocklist', 'allowlist']),
