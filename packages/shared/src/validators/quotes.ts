@@ -74,6 +74,15 @@ export const updateQuoteSchema = z.object({
 
 export const reorderBlocksSchema = z.object({ blockIds: z.array(z.string().guid()).min(1) });
 
+export const acceptQuoteSchema = z.object({
+  signerName: z.string().min(1).max(255),
+  signerEmail: z.string().email().max(255).optional(),
+});
+
+export const declineQuoteSchema = z.object({
+  reason: z.string().max(5000).optional(),
+});
+
 export const listQuotesQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   status: quoteStatusSchema.optional(),
@@ -88,3 +97,5 @@ export type QuoteBlockInput = z.infer<typeof quoteBlockInputSchema>;
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
 export type UpdateQuoteInput = z.infer<typeof updateQuoteSchema>;
 export type ListQuotesQuery = z.infer<typeof listQuotesQuerySchema>;
+export type AcceptQuoteInput = z.infer<typeof acceptQuoteSchema>;
+export type DeclineQuoteInput = z.infer<typeof declineQuoteSchema>;
