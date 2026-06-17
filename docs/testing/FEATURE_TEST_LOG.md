@@ -2130,3 +2130,27 @@ Loaded the branch into the local dev Docker stack (rebuilt `api` from the worktr
 ### Notes
 - **Dev DB test data seeded:** 2 billable time entries (1 unapproved) + 1 ticket part on "Default Organization"; re-activated 2 archived catalog items; set org + partner billing settings; created `INV-2026-0001` (number burned). All on the dev DB (5432).
 - **Stack state:** the dev stack is currently running the **`feat/invoice-engine`** code (swapped from `main`). To restore: `docker compose down` from the worktree, `docker compose up -d` from `/Users/toddhebebrand/breeze`, and remove the worktree `.env` symlink.
+
+## ANTHROPIC_BASE_URL self-hosted AI backend (#1412) — 2026-06-17
+
+**Branch:** `fix/1412-anthropic-base-url`
+**Commit:** `50719f55`
+**Tested by:** Claude
+**Result:** PASS
+
+### What was tested
+- [x] API (boot/config gate): ran the REAL `validateConfig()` boot path inside a throwaway container built from `breeze-api:dev` (linux), mounting the branch's `apps/api/src` over the image so MY code executed (`PROBE_HAS_HELPER=true` confirmed). API-only feature; no UI/agent layer.
+
+### Evidence — boot-gate matrix (in-container)
+- S1 `IS_HOSTED=false` + `http://litellm:4000/v1` → **PASS** + forensic log `host=litellm:4000` (host only, no token).
+- S2 `IS_HOSTED=true` + base URL → **REFUSED** ("self-hosted-only feature … refused unless self-host is affirmatively declared").
+- S3 `IS_HOSTED` **unset** + base URL → **REFUSED** (fail-closed; the #570 unmapped-IS_HOSTED case).
+- S4 `IS_HOSTED=false` + `ftp://bad/x` → **REFUSED** ("must be a well-formed http(s) URL").
+- S5 `IS_HOSTED=off` + `https://litellm.internal:8443/v1` → **PASS** + forensic log.
+- Fail-closed gate predicate (`isRecognizedSelfHostSignal`, shared by validator + subprocess strip) verified in-container: only `false/0/no/off` → self-host-confirmed; `true/1/maybe/""/undefined` → not.
+
+### Issues Found
+- (none in the feature) — the runtime subprocess-env probe (`buildClaudeSdkChildEnv`) could not import in-container because the **stale `breeze-api:dev` image** still ships Zod 3 while `main` is post the Zod 4 migration (`z.partialRecord is not a function` in an unrelated import-chain schema). Not a #1412 defect. The forwarding/strip wrapper is covered by the 161 green unit tests; its shared gate predicate was verified in-container directly.
+
+### Notes
+- 161 unit/config tests green + clean `tsc` on the branch. Boot gate proven end-to-end in the real container image. CI left to run the full suite (per request).
