@@ -11,7 +11,9 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 // (that array is system-scope-only and is always [] for a real partner user — #1425).
 // Hoisted vi.fn so each test can override scope; default is partner-scope.
 const { getJwtClaimsMock } = vi.hoisted(() => ({
-  getJwtClaimsMock: vi.fn(() => ({ scope: 'partner', partnerId: 'p-1', orgId: null })),
+  getJwtClaimsMock: vi.fn<() => { scope: 'system' | 'partner' | 'organization' | null; partnerId: string | null; orgId: string | null }>(
+    () => ({ scope: 'partner', partnerId: 'p-1', orgId: null })
+  ),
 }));
 vi.mock('@/lib/authScope', async () => {
   const actual = await vi.importActual<typeof import('@/lib/authScope')>('@/lib/authScope');
