@@ -85,6 +85,11 @@ export const createTemplateSchema = z.object({
   description: z.string().optional(),
   category: z.string().min(1).max(100).optional(),
   severity: severitySchema,
+  // Scope selector for partner-scope creators (#1425). 'partner' → a partner-
+  // wide template (org_id NULL); 'org' (default) → a specific org. The backend
+  // ignores it for org-scope users. orgId targets a specific org under 'org'.
+  availability: z.enum(['org', 'partner']).optional(),
+  orgId: z.string().uuid().optional(),
   conditions: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
