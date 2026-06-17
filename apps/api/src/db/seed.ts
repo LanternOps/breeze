@@ -784,20 +784,16 @@ export async function seedRoles() {
         console.warn(`  Role "${roleDef.name}" references unknown permission "${permKey}" — skipping`);
         continue;
       }
-      try {
-        await db.insert(rolePermissions).values({
-          roleId,
-          permissionId: permId
-        });
-      } catch (err) {
-        // 23505 = unique_violation. Permission already assigned — safe to
-        // ignore. Any other error (RLS, connection loss, FK) must surface
-        // so a broken seed doesn't silently leave partial role grants.
-        if ((err as { code?: string } | null)?.code === '23505') {
-          continue;
-        }
-        throw err;
-      }
+      // Permission may already be assigned (re-seed, or a duplicate key in
+      // roleDef.permissions). Let the DB no-op on the (role_id, permission_id)
+      // PK conflict rather than catching a unique_violation — postgres.js wraps
+      // the error in a DrizzleQueryError, so the pg `23505` code lives on
+      // err.cause, not err, and a hand-rolled catch silently re-throws it.
+      // Any genuine error (RLS, FK, connection loss) still surfaces.
+      await db
+        .insert(rolePermissions)
+        .values({ roleId, permissionId: permId })
+        .onConflictDoNothing();
     }
   }
 
