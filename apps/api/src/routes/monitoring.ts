@@ -118,7 +118,7 @@ async function resolveSiteAllowedAssetIds(orgId: string, perms: UserPermissions 
 }
 
 const listAssetsSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   includeUnconfigured: z.coerce.boolean().optional()
 });
 
@@ -391,7 +391,7 @@ const upsertSnmpSchema = z.object({
   authPassword: z.string().optional(),
   privProtocol: z.enum(['des', 'aes', 'aes256']).optional(),
   privPassword: z.string().optional(),
-  templateId: z.string().uuid().nullable().optional(),
+  templateId: z.string().guid().nullable().optional(),
   pollingInterval: z.number().int().min(30).max(86400).optional(),
   port: z.number().int().min(1).max(65535).optional()
 }).refine((data) => {
@@ -527,7 +527,7 @@ const patchSnmpSchema = z.object({
   authPassword: z.string().optional(),
   privProtocol: z.enum(['des', 'aes', 'aes256']).optional(),
   privPassword: z.string().optional(),
-  templateId: z.string().uuid().nullable().optional(),
+  templateId: z.string().guid().nullable().optional(),
   pollingInterval: z.number().int().min(30).max(86400).optional(),
   port: z.number().int().min(1).max(65535).optional(),
   isActive: z.boolean().optional()
@@ -660,7 +660,7 @@ monitoringRoutes.delete(
 // ============================================
 
 const knownServicesQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   search: z.string().max(255).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(200),
 });
@@ -760,13 +760,13 @@ monitoringRoutes.get(
 // ============================================
 
 const checkResultsQuerySchema = z.object({
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   watchType: z.enum(['service', 'process']).optional(),
   name: z.string().max(255).optional(),
   since: z.coerce.date().optional(),
   until: z.coerce.date().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 monitoringRoutes.get(

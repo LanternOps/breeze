@@ -115,18 +115,18 @@ export const updateTemplateSchema = z.object({
 export const listRulesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   enabled: z.enum(['true', 'false']).optional(),
   severity: severitySchema.optional(),
-  templateId: z.string().uuid().optional(),
+  templateId: z.string().guid().optional(),
   targetType: z.enum(['device', 'site', 'organization', 'tag']).optional(),
   targetValue: z.string().optional(),
   search: z.string().optional()
 });
 
 export const createRuleSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  templateId: z.string().uuid(),
+  orgId: z.string().guid().optional(),
+  templateId: z.string().guid(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   enabled: z.boolean().optional().default(true),
@@ -165,11 +165,11 @@ export const toggleRuleSchema = z.object({
 export const listCorrelationsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  alertId: z.string().uuid().optional(),
+  alertId: z.string().guid().optional(),
   minConfidence: z.string().optional()
 });
 
 export const analyzeCorrelationsSchema = z.object({
-  alertIds: z.array(z.string().uuid()).optional(),
+  alertIds: z.array(z.string().guid()).optional(),
   windowMinutes: z.number().int().min(5).max(1440).optional()
 });

@@ -34,7 +34,7 @@ export const alertsRoutes = new Hono();
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 const requireAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
 
-const alertIdParamSchema = z.object({ id: z.string().uuid() });
+const alertIdParamSchema = z.object({ id: z.string().guid() });
 
 // GET /alerts - List alerts with filters
 alertsRoutes.get(
@@ -681,9 +681,9 @@ alertsRoutes.post(
   zValidator('param', alertIdParamSchema),
   zValidator('json', z.object({
     subject: z.string().min(1).max(255).optional(),
-    categoryId: z.string().uuid().optional(),
+    categoryId: z.string().guid().optional(),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
-    assigneeId: z.string().uuid().optional()
+    assigneeId: z.string().guid().optional()
   })),
   async (c) => {
     const { id } = c.req.valid('param');

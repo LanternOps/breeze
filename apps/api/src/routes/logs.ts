@@ -39,15 +39,15 @@ const logSearchSchema = z.object({
   level: z.array(levelSchema).max(4).optional(),
   category: z.array(categorySchema).max(4).optional(),
   source: z.string().max(255).optional(),
-  deviceIds: z.array(z.string().uuid()).max(500).optional(),
-  siteIds: z.array(z.string().uuid()).max(500).optional(),
+  deviceIds: z.array(z.string().guid()).max(500).optional(),
+  siteIds: z.array(z.string().guid()).max(500).optional(),
   limit: z.number().int().min(1).max(1000).optional(),
   offset: z.number().int().min(0).optional(),
   cursor: z.string().max(1024).optional(),
   countMode: z.enum(['exact', 'estimated', 'none']).optional(),
   sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional(),
-  savedQueryId: z.string().uuid().optional(),
+  savedQueryId: z.string().guid().optional(),
 });
 
 const aggregationQuerySchema = z.object({
@@ -74,8 +74,8 @@ const trendsQuerySchema = z.object({
 });
 
 const correlationDetectSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  ruleIds: z.array(z.string().uuid()).max(200).optional(),
+  orgId: z.string().guid().optional(),
+  ruleIds: z.array(z.string().guid()).max(200).optional(),
   pattern: z.string().min(1).max(1000).optional(),
   isRegex: z.boolean().optional(),
   timeWindow: z.number().int().min(30).max(86_400).optional(),
@@ -84,14 +84,14 @@ const correlationDetectSchema = z.object({
 });
 
 const correlationListQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['active', 'resolved', 'ignored']).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
 
 const savedSearchCreateSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
   isShared: z.boolean().optional(),
@@ -100,7 +100,7 @@ const savedSearchCreateSchema = z.object({
 
 const ALLOWED_LEVELS = new Set(levelSchema.options);
 const ALLOWED_CATEGORIES = new Set(categorySchema.options);
-const uuidParser = z.string().uuid();
+const uuidParser = z.string().guid();
 
 function parseCsv<T extends string>(value: string | undefined, parser?: (item: string) => T): T[] | undefined {
   if (!value) return undefined;

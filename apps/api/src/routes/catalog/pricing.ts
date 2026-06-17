@@ -11,7 +11,7 @@ export const catalogPricingRoutes = new Hono();
 
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
-const param = z.object({ id: z.string().uuid(), orgId: z.string().uuid() });
+const param = z.object({ id: z.string().guid(), orgId: z.string().guid() });
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);

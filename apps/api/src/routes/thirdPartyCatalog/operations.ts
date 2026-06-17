@@ -44,7 +44,14 @@ operationsRoutes.post('/', zValidator('json', upsertCatalogSchema), async (c) =>
   return c.json(row, 201);
 });
 
-operationsRoutes.patch('/:id', zValidator('json', upsertCatalogSchema.partial()), async (c) => {
+// .partial() for PATCH, but strip the create-time `source` default: v4 re-injects
+// defaults on absent keys, and `data` is spread into .set() below — an omitted
+// source would otherwise silently reset the row's source to 'third_party'.
+export const patchCatalogSchema = upsertCatalogSchema
+  .partial()
+  .extend({ source: upsertCatalogSchema.shape.source.removeDefault().optional() });
+
+operationsRoutes.patch('/:id', zValidator('json', patchCatalogSchema), async (c) => {
   const id = c.req.param('id');
   const data = c.req.valid('json');
   const [row] = await db.update(thirdPartyPackageCatalog)

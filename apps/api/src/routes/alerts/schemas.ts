@@ -5,26 +5,26 @@ import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
 export const listAlertRulesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   isActive: z.enum(['true', 'false']).optional(),
   enabled: z.enum(['true', 'false']).optional()
 });
 
 export const createAlertRuleSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  templateId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  templateId: z.string().guid().optional(),
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(2000).optional(),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
   targetType: z.string().min(1).max(50).optional(),
-  targetId: z.string().uuid().optional(),
+  targetId: z.string().guid().optional(),
   targets: z.object({
     type: z.enum(['all', 'org', 'site', 'group', 'device']),
-    ids: z.array(z.string().uuid()).optional()
+    ids: z.array(z.string().guid()).optional()
   }).optional(),
   conditions: z.any().optional(),
-  notificationChannelIds: z.array(z.string().uuid()).optional(),
-  notificationChannels: z.array(z.string().uuid()).optional(),
+  notificationChannelIds: z.array(z.string().guid()).optional(),
+  notificationChannels: z.array(z.string().guid()).optional(),
   cooldownMinutes: z.coerce.number().int().min(1).max(1440).optional(),
   autoResolve: z.boolean().optional(),
   enabled: z.boolean().optional(),
@@ -32,7 +32,7 @@ export const createAlertRuleSchema = z.object({
   isActive: z.boolean().optional(),
   overrideSettings: z.any().optional(),
   overrides: z.any().optional(),
-  escalationPolicyId: z.string().uuid().optional()
+  escalationPolicyId: z.string().guid().optional()
 }).superRefine((data, ctx) => {
   if (!data.templateId) {
     if (!data.name) {
@@ -60,46 +60,46 @@ export const createAlertRuleSchema = z.object({
 });
 
 export const updateAlertRuleSchema = z.object({
-  templateId: z.string().uuid().optional(),
+  templateId: z.string().guid().optional(),
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(2000).optional(),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
   targetType: z.string().min(1).max(50).optional(),
-  targetId: z.string().uuid().optional(),
+  targetId: z.string().guid().optional(),
   targets: z.object({
     type: z.enum(['all', 'org', 'site', 'group', 'device']),
-    ids: z.array(z.string().uuid()).optional()
+    ids: z.array(z.string().guid()).optional()
   }).optional(),
   conditions: z.any().optional(),
-  notificationChannelIds: z.array(z.string().uuid()).optional(),
-  notificationChannels: z.array(z.string().uuid()).optional(),
+  notificationChannelIds: z.array(z.string().guid()).optional(),
+  notificationChannels: z.array(z.string().guid()).optional(),
   cooldownMinutes: z.coerce.number().int().min(1).max(1440).optional(),
   autoResolve: z.boolean().optional(),
   enabled: z.boolean().optional(),
   active: z.boolean().optional(),
   overrideSettings: z.any().optional(),
   overrides: z.any().optional(),
-  escalationPolicyId: z.string().uuid().optional(),
+  escalationPolicyId: z.string().guid().optional(),
   isActive: z.boolean().optional()
 });
 
 export const testAlertRuleSchema = z.object({
-  deviceId: z.string().uuid()
+  deviceId: z.string().guid()
 });
 
 export const bulkAlertActionSchema = z.object({
   action: z.enum(['acknowledge', 'resolve']),
-  alertIds: z.array(z.string().uuid()).min(1).max(100)
+  alertIds: z.array(z.string().guid()).min(1).max(100)
 });
 
 // Alerts schemas
 export const listAlertsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional()
 });
@@ -116,13 +116,13 @@ export const suppressAlertSchema = z.object({
 export const listChannelsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   type: z.enum(NOTIFICATION_CHANNEL_TYPES).optional(),
   enabled: z.enum(['true', 'false']).optional()
 });
 
 export const createChannelSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(NOTIFICATION_CHANNEL_TYPES),
   config: z.record(z.string(), z.unknown()), // JSONB for type-specific config
@@ -144,11 +144,11 @@ export const updateChannelSchema = z.object({
 export const listPoliciesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 export const createPolicySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   steps: z.any() // JSONB for escalation steps
 });

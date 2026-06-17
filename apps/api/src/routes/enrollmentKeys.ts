@@ -463,7 +463,7 @@ export async function mintChildEnrollmentKey(
 const listEnrollmentKeysSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   expired: z.enum(["true", "false"]).optional(),
 });
 
@@ -482,8 +482,8 @@ const MAX_TTL_MINUTES = 525_600;
 // returned 201 with `maxUsage: 1` (the default), masking the typo.
 // Closes #945.
 const createEnrollmentKeySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   maxUsage: z.number().int().min(1).max(100000).optional(),
   expiresAt: z.string().datetime().optional(),
@@ -520,7 +520,7 @@ function sanitizeEnrollmentKey(
   return safeRecord;
 }
 
-const idParamSchema = z.object({ id: z.string().uuid() });
+const idParamSchema = z.object({ id: z.string().guid() });
 
 // ============================================
 // Routes

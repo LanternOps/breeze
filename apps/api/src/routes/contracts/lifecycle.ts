@@ -12,7 +12,7 @@ import { contractActorFrom, handleContractError } from './contracts';
 export const contractLifecycleRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const managePerm = requirePermission(PERMISSIONS.CONTRACTS_MANAGE.resource, PERMISSIONS.CONTRACTS_MANAGE.action);
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 type LifecycleFn = (contractId: string, actor: ContractActor) => Promise<unknown>;
 const lifecycleActions: Array<[string, LifecycleFn]> = [

@@ -15,7 +15,7 @@ import { publishEvent } from '../../services/eventBus';
 const submitPeripheralEventsSchema = z.object({
   events: z.array(z.object({
     eventId: z.string().min(1).max(255).optional(),
-    policyId: z.string().uuid().optional(),
+    policyId: z.string().guid().optional(),
     eventType: z.enum(peripheralEventTypeEnum.enumValues),
     peripheralType: z.string().min(1).max(40),
     vendor: z.string().max(255).optional(),

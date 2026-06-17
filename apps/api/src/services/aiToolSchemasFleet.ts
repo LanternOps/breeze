@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 
-const uuid = z.string().uuid();
+const uuid = z.string().guid();
 
 export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   manage_deployments: z.object({

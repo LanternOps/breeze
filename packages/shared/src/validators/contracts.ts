@@ -8,9 +8,9 @@ export const contractLineInputSchema = z.object({
   description: z.string().min(1).max(2000),
   unitPrice: money,
   taxable: z.boolean(),
-  catalogItemId: z.string().uuid().optional(),
+  catalogItemId: z.string().guid().optional(),
   manualQuantity: money.optional(),
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   sortOrder: z.number().int().min(0).optional()
 }).refine(
   (l) => l.lineType !== 'manual' || l.manualQuantity !== undefined,
@@ -21,7 +21,7 @@ export const contractLineInputSchema = z.object({
 );
 
 export const createContractSchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().guid(),
   name: z.string().min(1).max(255),
   billingTiming: z.enum(['advance', 'arrears']),
   intervalMonths: z.number().int().min(1).max(60),
@@ -50,10 +50,10 @@ export const updateContractSchema = z.object({
 });
 
 export const listContractsQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().uuid().optional()
+  cursor: z.string().guid().optional()
 });
 
 export type ContractLineInput = z.infer<typeof contractLineInputSchema>;

@@ -34,7 +34,7 @@ const eventCategoryEnum = z.enum([
 ]);
 
 const eventsParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const eventsQuerySchema = z.object({

@@ -132,7 +132,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
 // ============================================
 
 const listRingsSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 const categoryRuleSchema = z.object({
@@ -143,7 +143,7 @@ const categoryRuleSchema = z.object({
 });
 
 const createRingSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().max(2000).optional(),
   enabled: z.boolean().optional(),
@@ -179,7 +179,7 @@ const updateRingSchema = z.object({
 });
 
 const ringIdParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const ringPatchesQuerySchema = z.object({

@@ -164,7 +164,7 @@ export function createScriptBuilderMcpServer(
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
-  const uuid = z.string().uuid();
+  const uuid = z.string().guid();
 
   const tools = [
     // --- Apply tools (script-builder-only) ---

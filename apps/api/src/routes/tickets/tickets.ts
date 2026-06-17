@@ -22,7 +22,7 @@ import type { AuthContext } from '../../middleware/auth';
 // requireScope/requirePermission below depend on c.get('auth') being populated there.
 export const ticketsRoutes = new Hono();
 
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 const OPEN_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
 const CLOSED_STATUSES = ['resolved', 'closed'] as const;
@@ -525,7 +525,7 @@ ticketsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
   zValidator('param', idParam),
-  zValidator('json', z.object({ alertId: z.string().uuid() })),
+  zValidator('json', z.object({ alertId: z.string().guid() })),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
@@ -567,7 +567,7 @@ ticketsRoutes.delete(
   '/:id/alerts/:alertId',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
-  zValidator('param', z.object({ id: z.string().uuid(), alertId: z.string().uuid() })),
+  zValidator('param', z.object({ id: z.string().guid(), alertId: z.string().guid() })),
   async (c) => {
     const auth = c.get('auth');
     const { id, alertId } = c.req.valid('param');

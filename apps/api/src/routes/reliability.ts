@@ -14,8 +14,8 @@ import {
 import { getDeviceWithOrgCheck } from './devices/helpers';
 
 const listQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   scoreRange: z.string().optional(),
   trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
   issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
@@ -26,11 +26,11 @@ const listQuerySchema = z.object({
 });
 
 const deviceIdParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
 });
 
 const orgIdParamSchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().guid(),
 });
 
 const historyQuerySchema = z.object({

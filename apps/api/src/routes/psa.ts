@@ -18,12 +18,12 @@ const providerSchema = z.enum(['jira', 'servicenow', 'connectwise', 'autotask', 
 const listConnectionsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   provider: providerSchema.optional()
 });
 
 const createConnectionSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   provider: providerSchema,
   name: z.string().min(1).max(255),
   credentials: z.record(z.string(), z.any()).refine(

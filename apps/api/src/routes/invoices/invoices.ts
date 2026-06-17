@@ -17,8 +17,8 @@ export const invoiceCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.INVOICES_READ.resource, PERMISSIONS.INVOICES_READ.action);
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
-const idParam = z.object({ id: z.string().uuid() });
-const lineParam = z.object({ id: z.string().uuid(), lineId: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
+const lineParam = z.object({ id: z.string().guid(), lineId: z.string().guid() });
 
 export function invoiceActorFrom(c: { get: (k: string) => unknown }): InvoiceActor {
   const auth = c.get('auth') as AuthContext;

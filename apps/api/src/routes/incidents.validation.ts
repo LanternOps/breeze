@@ -9,28 +9,28 @@ export type IncidentStatus = z.infer<typeof incidentStatusSchema>;
 export type IncidentActionStatus = z.infer<typeof incidentActionStatusSchema>;
 
 export const uuidParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 export const createIncidentSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   title: z.string().min(3).max(500),
   classification: z.string().min(2).max(40),
   severity: incidentSeveritySchema,
   summary: z.string().max(10_000).optional(),
-  relatedAlerts: z.array(z.string().uuid()).max(1000).optional(),
-  affectedDevices: z.array(z.string().uuid()).max(5000).optional(),
-  assignedTo: z.string().uuid().optional(),
+  relatedAlerts: z.array(z.string().guid()).max(1000).optional(),
+  affectedDevices: z.array(z.string().guid()).max(5000).optional(),
+  assignedTo: z.string().guid().optional(),
   detectedAt: z.string().datetime({ offset: true }).optional(),
   status: z.enum(['detected', 'analyzing']).optional(),
 });
 
 export const listIncidentsSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: incidentStatusSchema.optional(),
   severity: incidentSeveritySchema.optional(),
   classification: z.string().max(40).optional(),
-  assignedTo: z.string().uuid().optional(),
+  assignedTo: z.string().guid().optional(),
   startDate: z.string().datetime({ offset: true }).optional(),
   endDate: z.string().datetime({ offset: true }).optional(),
   page: z.coerce.number().int().min(1).optional(),
