@@ -152,6 +152,9 @@ jobs:
       - name: Build Web image
         run: docker build -f docker/Dockerfile.web -t breeze-web:security-scan .
 
+      - name: Build Portal image
+        run: docker build -f apps/portal/Dockerfile -t breeze-portal:security-scan .
+
       - name: Scan API image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -164,6 +167,14 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'breeze-web:security-scan'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1'
+
+      - name: Scan Portal image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 'breeze-portal:security-scan'
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'

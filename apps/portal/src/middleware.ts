@@ -1,5 +1,6 @@
 import { defineMiddleware } from 'astro:middleware';
 import { hasPortalSessionCookie } from './lib/session';
+import { stripBase, withBase } from './lib/basePath';
 
 const protectedPrefixes = ['/devices', '/tickets', '/assets', '/profile'];
 const authOnlyPaths = new Set(['/login', '/forgot-password']);
@@ -50,19 +51,21 @@ const fallbackCspDirectives = [
 ].join('; ');
 
 export const onRequest = defineMiddleware(async (context, next) => {
-  const pathname = context.url.pathname;
+  // context.url.pathname includes the configured base (e.g. /c/login); strip it
+  // so the route checks below stay base-agnostic, and re-apply withBase on redirect.
+  const pathname = stripBase(context.url.pathname);
   const hasSession = hasPortalSessionCookie(context.request);
 
   if (pathname === '/') {
-    return context.redirect(hasSession ? '/devices' : '/login', 302);
+    return context.redirect(withBase(hasSession ? '/devices' : '/login'), 302);
   }
 
   if (isProtectedPath(pathname) && !hasSession) {
-    return context.redirect('/login', 302);
+    return context.redirect(withBase('/login'), 302);
   }
 
   if (hasSession && authOnlyPaths.has(pathname)) {
-    return context.redirect('/devices', 302);
+    return context.redirect(withBase('/devices'), 302);
   }
 
   const response = await next();

@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -103,7 +104,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         </div>
 
         <a
-          href="/login"
+          href={withBase("/login")}
           className={cn(
             'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
             'hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2'

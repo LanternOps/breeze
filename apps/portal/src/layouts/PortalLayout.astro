@@ -2,13 +2,16 @@
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { loadPortalBranding } from '../lib/server';
+import { BASE_PATH, stripBase, withBase } from '../lib/basePath';
 
 interface Props {
   title: string;
 }
 
 const { title } = Astro.props;
-const pathname = Astro.url.pathname;
+// Astro.url.pathname includes the base (e.g. /c/devices); strip it so the
+// active-nav comparison below stays base-agnostic.
+const pathname = stripBase(Astro.url.pathname);
 const branding = await loadPortalBranding(Astro.request);
 const navItems = [
   { label: 'Devices', href: '/devices' },
@@ -30,7 +33,7 @@ const isActive = (href: string) => {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Customer Portal" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
     <title>{title} | Customer Portal</title>
     <ClientRouter />
   </head>
@@ -48,7 +51,7 @@ const isActive = (href: string) => {
         <nav class="flex-1 space-y-1 p-4">
           {navItems.map((item) => (
             <a
-              href={item.href}
+              href={withBase(item.href)}
               class:list={[
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 isActive(item.href)
@@ -89,7 +92,7 @@ const isActive = (href: string) => {
               <nav class="absolute left-0 top-12 z-30 w-56 rounded-md border bg-card p-2 shadow-lg">
                 {navItems.map((item) => (
                   <a
-                    href={item.href}
+                    href={withBase(item.href)}
                     class:list={[
                       'block rounded-md px-3 py-2 text-sm',
                       isActive(item.href)
@@ -106,7 +109,7 @@ const isActive = (href: string) => {
           </div>
 
           <div class="flex items-center gap-2">
-            <a href="/profile" class="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+            <a href={withBase('/profile')} class="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
               Profile
             </a>
             <button
@@ -124,7 +127,7 @@ const isActive = (href: string) => {
         </main>
       </div>
     </div>
-    <script is:inline>
+    <script is:inline define:vars={{ basePath: BASE_PATH }}>
       (() => {
         if (window.__portalLogoutInit) {
           return;
@@ -166,11 +169,12 @@ const isActive = (href: string) => {
               // Continue to login even if logout request fails.
             }
 
+            const loginPath = `${basePath}/login`;
             try {
               const { navigate } = await import('astro:transitions/client');
-              await navigate('/login', { history: 'replace' });
+              await navigate(loginPath, { history: 'replace' });
             } catch {
-              window.location.replace('/login');
+              window.location.replace(loginPath);
             }
           };
         };

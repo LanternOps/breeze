@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import React, { useState } from 'react';
 import { Bell, ChevronDown, LogOut, Settings, User } from 'lucide-react';
 import { usePortalAuth, portalLogout } from '@/lib/auth';
@@ -58,7 +59,7 @@ export function PortalHeader() {
               />
               <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-md border bg-popover py-1 shadow-lg">
                 <a
-                  href="/profile"
+                  href={withBase("/profile")}
                   className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-accent"
                 >
                   <Settings className="h-4 w-4" />

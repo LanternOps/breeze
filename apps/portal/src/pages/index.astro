@@ -1,6 +1,7 @@
 ---
 import { hasPortalSessionCookie } from '../lib/session';
+import { withBase } from '../lib/basePath';
 
 const target = hasPortalSessionCookie(Astro.request) ? '/devices' : '/login';
-return Astro.redirect(target, 302);
+return Astro.redirect(withBase(target), 302);
 ---
