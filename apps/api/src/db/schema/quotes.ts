@@ -43,6 +43,7 @@ export const quotes = pgTable('quotes', {
   billToTaxId: varchar('bill_to_tax_id', { length: 100 }),
   introNotes: text('intro_notes'),
   terms: text('terms'),
+  declineReason: text('decline_reason'),
   convertedInvoiceId: uuid('converted_invoice_id'),
   pdfDocumentRef: text('pdf_document_ref'),
   pdfSha256: char('pdf_sha256', { length: 64 }),
