@@ -23,9 +23,9 @@ export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.QUOTES_READ.resource, PERMISSIONS.QUOTES_READ.action);
 const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIONS.QUOTES_WRITE.action);
-const idParam = z.object({ id: z.string().uuid() });
-const lineParam = z.object({ id: z.string().uuid(), lineId: z.string().uuid() });
-const blockParam = z.object({ id: z.string().uuid(), blockId: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
+const lineParam = z.object({ id: z.string().guid(), lineId: z.string().guid() });
+const blockParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
 
 export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
   const auth = c.get('auth') as AuthContext;

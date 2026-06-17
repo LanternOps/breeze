@@ -43,7 +43,9 @@ export const restoreStructuredResultSchema = z.object({
   snapshotId: z.string().min(1).max(255).optional(),
   status: z.enum(['completed', 'failed', 'partial', 'degraded']).optional(),
   filesRestored: z.number().int().nonnegative().optional(),
-  bytesRestored: z.number().int().nonnegative().optional(),
+  // v4 .int() caps at 2^53; cumulative byte totals can exceed it — keep v3
+  // semantics (integer, any magnitude) so a large backup isn't recorded failed.
+  bytesRestored: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
   filesFailed: z.number().int().nonnegative().optional(),
   failedFiles: z.array(z.string().min(1).max(4096)).max(1000).optional(),
   warnings: warningListSchema.optional(),
@@ -58,7 +60,7 @@ export const restoreStructuredResultSchema = z.object({
   durationMs: z.number().int().nonnegative().optional(),
   bootTimeMs: z.number().int().nonnegative().optional(),
   backgroundSyncActive: z.boolean().optional(),
-  syncProgress: z.union([z.number(), z.record(z.unknown())]).optional(),
+  syncProgress: z.union([z.number(), z.record(z.string(), z.unknown())]).optional(),
   databaseName: z.string().max(255).optional(),
   restoredAs: z.string().max(255).optional(),
 }).passthrough();
@@ -68,7 +70,7 @@ export const backupVerificationStructuredResultSchema = z.object({
   status: z.enum(['passed', 'failed', 'partial']),
   filesVerified: z.number().int().nonnegative().optional(),
   filesFailed: z.number().int().nonnegative().optional(),
-  sizeBytes: z.number().int().nonnegative().optional(),
+  sizeBytes: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
   durationMs: z.number().int().nonnegative().optional(),
   restoreTimeSeconds: z.number().int().nonnegative().optional(),
   restorePath: z.string().max(4096).optional(),
@@ -78,11 +80,11 @@ export const backupVerificationStructuredResultSchema = z.object({
 }).passthrough();
 
 export const vaultSyncStructuredResultSchema = z.object({
-  vaultId: z.string().uuid().optional(),
+  vaultId: z.string().guid().optional(),
   snapshotId: z.string().min(1).max(255).optional(),
   vaultPath: z.string().min(1).max(4096).optional(),
   fileCount: z.number().int().nonnegative().optional(),
-  totalBytes: z.number().int().nonnegative().optional(),
+  totalBytes: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
   manifestVerified: z.boolean().optional(),
   auto: z.boolean().optional(),
   error: z.string().max(10_000).optional(),

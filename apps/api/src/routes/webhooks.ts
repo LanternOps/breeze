@@ -220,7 +220,7 @@ async function getDeliveryStats(webhookId: string) {
 const listWebhooksSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['active', 'paused', 'failed']).optional()
 });
 
@@ -232,7 +232,7 @@ const customHeadersSchema = z.array(z.object({ key: z.string().min(1), value: z.
 });
 
 const createWebhookSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   url: z.string().url(),
   secret: z.string().min(1).max(255),
@@ -257,15 +257,15 @@ const listDeliveriesSchema = z.object({
 
 const testWebhookSchema = z.object({
   event: z.string().min(1).optional(),
-  payload: z.record(z.unknown()).optional()
+  payload: z.record(z.string(), z.unknown()).optional()
 });
 
 // ============================================
 // Routes
 // ============================================
 
-const webhookIdParamSchema = z.object({ id: z.string().uuid() });
-const webhookRetryParamSchema = z.object({ id: z.string().uuid(), deliveryId: z.string().uuid() });
+const webhookIdParamSchema = z.object({ id: z.string().guid() });
+const webhookRetryParamSchema = z.object({ id: z.string().guid(), deliveryId: z.string().guid() });
 
 webhookRoutes.use('*', authMiddleware);
 

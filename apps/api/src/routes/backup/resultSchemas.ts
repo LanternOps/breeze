@@ -18,7 +18,7 @@ export const backupCommandResultSchema = z.object({
   jobId: z.string().optional(),
   snapshotId: z.string().optional(),
   filesBackedUp: z.number().int().nonnegative().optional(),
-  bytesBackedUp: z.number().int().nonnegative().optional(),
+  bytesBackedUp: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
   warning: z.string().optional(),
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),

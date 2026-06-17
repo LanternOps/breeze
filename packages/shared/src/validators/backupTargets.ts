@@ -87,7 +87,7 @@ const targetsMap = {
 export const backupInlineSettingsSchema = z
   .object({
     backupMode: backupModeSchema.default('file'),
-    targets: z.record(z.unknown()).default({}),
+    targets: z.record(z.string(), z.unknown()).default({}),
     schedule: backupScheduleSchema.optional(),
     retention: backupRetentionSchema.optional(),
     paths: z.array(z.string()).optional(),

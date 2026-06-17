@@ -21,15 +21,15 @@ tunnelRoutes.use('*', authMiddleware);
 
 // --- Schemas ---
 
-const idParamSchema = z.object({ id: z.string().uuid() });
-const listQuerySchema = z.object({ siteId: z.string().uuid().optional().nullable() });
+const idParamSchema = z.object({ id: z.string().guid() });
+const listQuerySchema = z.object({ siteId: z.string().guid().optional().nullable() });
 const allowlistIdParamSchema = idParamSchema;
 const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'] as const;
 
 const createTunnelSchema = z.discriminatedUnion('type', [
-  z.object({ deviceId: z.string().uuid(), type: z.literal('vnc') }),
+  z.object({ deviceId: z.string().guid(), type: z.literal('vnc') }),
   z.object({
-    deviceId: z.string().uuid(),
+    deviceId: z.string().guid(),
     type: z.literal('proxy'),
     targetHost: z.string().max(255),
     targetPort: z.number().int().min(1).max(65535),
@@ -40,9 +40,9 @@ const allowlistRuleSchema = z.object({
   direction: z.enum(['destination', 'source']),
   pattern: z.string().min(1).max(255),
   description: z.string().max(500).optional(),
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   source: z.enum(['manual', 'discovery', 'policy']).optional(),
-  discoveredAssetId: z.string().uuid().optional(),
+  discoveredAssetId: z.string().guid().optional(),
 });
 
 const updateAllowlistSchema = z.object({

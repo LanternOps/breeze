@@ -24,7 +24,7 @@ const osTypeSchema = z.enum(['windows', 'macos', 'linux']);
 const baselineLevelSchema = z.enum(['l1', 'l2', 'custom']);
 
 const listBaselinesQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   osType: osTypeSchema.optional(),
   active: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().positive().max(200).optional(),
@@ -38,8 +38,8 @@ const baselineScanScheduleSchema = z.object({
 });
 
 const upsertBaselineSchema = z.object({
-  id: z.string().uuid().optional(),
-  orgId: z.string().uuid().optional(),
+  id: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().trim().min(1).max(200),
   osType: osTypeSchema,
   benchmarkVersion: z.string().trim().min(1).max(40),
@@ -50,14 +50,14 @@ const upsertBaselineSchema = z.object({
 });
 
 const triggerScanSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  baselineId: z.string().uuid(),
-  deviceIds: z.array(z.string().uuid()).max(500).optional(),
+  orgId: z.string().guid().optional(),
+  baselineId: z.string().guid(),
+  deviceIds: z.array(z.string().guid()).max(500).optional(),
 });
 
 const complianceQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  baselineId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  baselineId: z.string().guid().optional(),
   osType: osTypeSchema.optional(),
   minScore: z.coerce.number().int().min(0).max(100).optional(),
   maxScore: z.coerce.number().int().min(0).max(100).optional(),
@@ -66,22 +66,22 @@ const complianceQuerySchema = z.object({
 });
 
 const deviceReportQuerySchema = z.object({
-  baselineId: z.string().uuid().optional(),
+  baselineId: z.string().guid().optional(),
   limit: z.coerce.number().int().positive().max(200).optional(),
 });
 
 const remediateSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  deviceId: z.string().uuid(),
-  baselineId: z.string().uuid().optional(),
-  baselineResultId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  deviceId: z.string().guid(),
+  baselineId: z.string().guid().optional(),
+  baselineResultId: z.string().guid().optional(),
   checkIds: z.array(z.string().trim().min(1).max(120)).min(1).max(100),
   action: z.enum(['apply', 'rollback']).default('apply'),
   reason: z.string().trim().max(1000).optional(),
 });
 
 const approveRemediationSchema = z.object({
-  actionIds: z.array(z.string().uuid()).min(1).max(500),
+  actionIds: z.array(z.string().guid()).min(1).max(500),
   approved: z.boolean(),
   note: z.string().trim().max(1000).optional(),
 });
@@ -959,11 +959,11 @@ cisHardeningRoutes.post(
 );
 
 const listRemediationsQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['pending_approval', 'queued', 'in_progress', 'completed', 'failed', 'cancelled']).optional(),
   approvalStatus: z.enum(['pending', 'approved', 'rejected']).optional(),
-  deviceId: z.string().uuid().optional(),
-  baselineId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  baselineId: z.string().guid().optional(),
   limit: z.coerce.number().int().positive().max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

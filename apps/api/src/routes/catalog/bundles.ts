@@ -12,8 +12,8 @@ export const catalogBundleRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CATALOG_READ.resource, PERMISSIONS.CATALOG_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
-const idParam = z.object({ id: z.string().uuid() });
-const econQuery = z.object({ orgId: z.string().uuid().optional() });
+const idParam = z.object({ id: z.string().guid() });
+const econQuery = z.object({ orgId: z.string().guid().optional() });
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);

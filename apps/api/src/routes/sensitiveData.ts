@@ -53,7 +53,7 @@ const policyScopeSchema = z.object({
   suppressPaths: z.array(z.string().min(1).max(2048)).max(256).optional(),
   suppressPatternIds: z.array(z.string().min(1).max(80)).max(200).optional(),
   suppressFilePathRegex: z.array(z.string().min(1).max(300)).max(80).optional(),
-  ruleToggles: z.record(z.boolean()).optional(),
+  ruleToggles: z.record(z.string(), z.boolean()).optional(),
 }).strict();
 
 const policyScheduleSchema = z.object({
@@ -62,11 +62,11 @@ const policyScheduleSchema = z.object({
   intervalMinutes: z.number().int().min(5).max(7 * 24 * 60).optional(),
   cron: z.string().max(120).optional(),
   timezone: z.string().max(64).optional(),
-  deviceIds: z.array(z.string().uuid()).max(1000).optional(),
+  deviceIds: z.array(z.string().guid()).max(1000).optional(),
 }).strict();
 
 const createPolicySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   scope: policyScopeSchema.default({}),
   detectionClasses: z.array(z.enum(dataTypeValues)).min(1).max(5),
@@ -83,8 +83,8 @@ const updatePolicySchema = z.object({
 });
 
 const createScanSchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1).max(200),
-  policyId: z.string().uuid().optional(),
+  deviceIds: z.array(z.string().guid()).min(1).max(200),
+  policyId: z.string().guid().optional(),
   scope: policyScopeSchema.optional(),
   detectionClasses: z.array(z.enum(dataTypeValues)).min(1).max(5).optional(),
   idempotencyKey: z.string().min(8).max(128).optional(),
@@ -96,12 +96,12 @@ const reportQuerySchema = z.object({
   status: z.enum(findingStatusValues).optional(),
   risk: z.enum(riskValues).optional(),
   dataType: z.enum(dataTypeValues).optional(),
-  deviceId: z.string().uuid().optional(),
-  scanId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  scanId: z.string().guid().optional(),
 });
 
 const remediationsSchema = z.object({
-  findingIds: z.array(z.string().uuid()).min(1).max(250),
+  findingIds: z.array(z.string().guid()).min(1).max(250),
   action: z.enum(remediationActionValues),
   confirm: z.boolean().optional(),
   dryRun: z.boolean().optional().default(false),
@@ -112,11 +112,11 @@ const remediationsSchema = z.object({
 });
 
 const scanIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 const policyIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 function envFlag(name: string, fallback: boolean): boolean {
@@ -384,7 +384,7 @@ sensitiveDataRoutes.get(
         // Frontend always sends ?orgId=<currentOrgId> for partner-scope context;
         // we accept it so the strict() schema doesn't ZodError. Org scoping is
         // enforced by `auth.orgCondition(...)` below, not by this field.
-        orgId: z.string().uuid().optional(),
+        orgId: z.string().guid().optional(),
       })
       .strict()
       .optional()

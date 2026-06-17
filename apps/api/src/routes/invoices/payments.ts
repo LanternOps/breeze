@@ -11,8 +11,8 @@ export const invoicePaymentRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.INVOICES_READ.resource, PERMISSIONS.INVOICES_READ.action);
 const sendPerm = requirePermission(PERMISSIONS.INVOICES_SEND.resource, PERMISSIONS.INVOICES_SEND.action);
-const idParam = z.object({ id: z.string().uuid() });
-const payParam = z.object({ id: z.string().uuid(), pid: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
+const payParam = z.object({ id: z.string().guid(), pid: z.string().guid() });
 
 invoicePaymentRoutes.get('/:id/payments', scopes, readPerm, zValidator('param', idParam), async (c) => {
   try { return c.json({ data: await listPayments(c.req.valid('param').id, invoiceActorFrom(c)) }); }

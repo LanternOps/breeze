@@ -48,6 +48,26 @@ describe('extractApiError', () => {
     expect(extractApiError({ error: { issues: [] } }, FALLBACK)).toBe(FALLBACK);
   });
 
+  it('recovers issues from the zod v4 serialized ZodError (issues non-enumerable, buried in error.message)', () => {
+    // Mirrors a real @hono/zod-validator 400 body under zod 4: JSON.stringify
+    // drops the non-enumerable `issues`, leaving them as a JSON string in message.
+    const v4Body = {
+      success: false,
+      error: {
+        name: 'ZodError',
+        message: JSON.stringify([
+          { code: 'custom', message: 'ttlMinutes and expiresAt cannot both be set', path: ['ttlMinutes'] },
+          { code: 'invalid_type', message: 'name is required', path: ['name'] },
+        ]),
+      },
+    };
+    expect(extractApiError(v4Body, FALLBACK)).toBe('ttlMinutes and expiresAt cannot both be set; name is required');
+  });
+
+  it('falls back when a v4 ZodError message is not a JSON issues array', () => {
+    expect(extractApiError({ error: { name: 'ZodError', message: 'not-json' } }, FALLBACK)).toBe(FALLBACK);
+  });
+
   it('returns body.details when only details is set', () => {
     expect(extractApiError({ details: 'phone numbers required' }, FALLBACK)).toBe('phone numbers required');
   });

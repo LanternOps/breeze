@@ -33,8 +33,8 @@ const requireDrExecute = requirePermission(
 
 drRoutes.use('*', authMiddleware);
 
-const idParamSchema = z.object({ id: z.string().uuid() });
-const groupParamSchema = z.object({ id: z.string().uuid(), gid: z.string().uuid() });
+const idParamSchema = z.object({ id: z.string().guid() });
+const groupParamSchema = z.object({ id: z.string().guid(), gid: z.string().guid() });
 
 function resolveOrgId(
   auth: {
