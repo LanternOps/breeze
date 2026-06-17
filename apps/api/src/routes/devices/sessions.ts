@@ -13,7 +13,7 @@ export const sessionsRoutes = new Hono();
 sessionsRoutes.use('*', authMiddleware);
 
 const deviceIdParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const historyQuerySchema = z.object({

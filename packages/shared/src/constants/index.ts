@@ -1,3 +1,6 @@
+// Permission registry (resource:action grants) + derived literal-union types.
+export * from './permissions';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

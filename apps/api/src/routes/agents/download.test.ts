@@ -233,10 +233,16 @@ describe('GET /install.sh — generated installer script', () => {
     expect(script).not.toContain('BREEZE_ENROLLMENT_SECRET is required');
   });
 
-  it('pre-flights server connectivity via /health before downloading anything', async () => {
+  it('pre-flights connectivity via the /api version-metadata endpoint, not apex /health', async () => {
     const script = await fetchScript();
-    expect(script).toContain('/health"');
-    expect(script).toContain('Cannot reach the Breeze server');
+    // Probes an /api/* path the install actually depends on. A reverse proxy
+    // that forwards /api/* but not bare /health must not false-abort the
+    // install (#1470), so the pre-flight must NOT hit /health.
+    expect(script).toContain('"$VERSION_METADATA_URL"');
+    expect(script).toContain('agent-versions/latest');
+    // The probe must not target apex /health (the #1470 regression).
+    expect(script).not.toContain('"$BREEZE_SERVER/health"');
+    expect(script).toContain('Cannot reach the Breeze');
   });
 
   it('diagnoses TLS failures distinctly from generic unreachability', async () => {
@@ -249,10 +255,10 @@ describe('GET /install.sh — generated installer script', () => {
 
   it('flags intercepted responses (captive portal / wrong responder) distinctly', async () => {
     const script = await fetchScript();
-    // A 200 whose body is not Breeze's health JSON almost always means an
-    // intercepting device answered (captive portal, router, web filter) —
-    // the guest-VLAN field report behind this feature. The message must say
-    // so instead of letting `installer` fail cryptically.
+    // A 200 whose body is HTML almost always means an intercepting device
+    // answered (captive portal, router, web filter) — the guest-VLAN field
+    // report behind this feature. The message must say so instead of letting
+    // `installer` fail cryptically.
     expect(script).toContain('captive portal');
   });
 
@@ -400,15 +406,15 @@ describe('install.sh functional pre-flight behavior', () => {
     }
   });
 
-  it('attributes an intercepted download to the network when /health is clean', async () => {
-    // A path-selective middlebox (web filter allowlisting /health, or a
-    // portal that whitelists short URLs) passes the pre-flight and then
-    // serves HTML where the pkg/metadata should be. The failure must still
-    // point at interception — not at Gatekeeper or "missing checksum".
+  it('attributes an intercepted binary download to the network after a clean pre-flight', async () => {
+    // A path-selective middlebox that allowlists the metadata endpoint (so the
+    // pre-flight passes) but serves HTML where the binary/pkg should be. The
+    // tampered download must still be rejected after the pre-flight — not
+    // installed, and not blamed on Gatekeeper.
     const filter = createServer((req, res) => {
-      if (req.url === '/health') {
+      if (req.url?.startsWith('/api/v1/agent-versions/latest')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', version: 'test', uptime: 1 }));
+        res.end(JSON.stringify({ version: '1.2.3', downloadUrl: '/dl', checksum: 'a'.repeat(64) }));
       } else {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><body>Filtered</body></html>');
@@ -426,10 +432,9 @@ describe('install.sh functional pre-flight behavior', () => {
       expect(killed).toBe(false);
       expect(code).not.toBe(0);
       expect(output).toContain('Breeze server is reachable');
-      // Both platform branches must blame the network: darwin downloads the
-      // HTML as a .pkg (caught by the xar magic check), linux gets HTML as
-      // release metadata (caught before the checksum-extraction error).
-      expect(output).toContain('intercepting');
+      // Past the clean pre-flight the tampered download is rejected: linux by the
+      // checksum mismatch, macOS by the .pkg xar-magic interception guard.
+      expect(output).toMatch(/Checksum verification failed|intercepting/);
       expect(output).not.toContain('Gatekeeper');
     } finally {
       filter.close();
@@ -479,16 +484,14 @@ describe('install.sh functional pre-flight behavior', () => {
     expect(output).toContain('Cannot reach the Breeze server');
   });
 
-  it('proceeds past the pre-flight when /health returns the real Breeze body', async () => {
-    // Guards the cross-file contract between the script's grep and the
-    // GET /health payload in apps/api/src/index.ts: if either side drifts,
-    // a pre-flight that ALWAYS fails would still pass the failure-oriented
-    // tests above while bricking every real install.
+  it('proceeds past the pre-flight when the agent-versions endpoint returns real metadata', async () => {
+    // Guards against a pre-flight that ALWAYS fails — which would still pass the
+    // failure-oriented tests above while bricking every real install. The probe
+    // must accept a genuine /api/v1/agent-versions/latest response and continue.
     const breeze = createServer((req, res) => {
-      if (req.url === '/health') {
+      if (req.url?.startsWith('/api/v1/agent-versions/latest')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        // Mirrors the exact body shape of GET /health in index.ts.
-        res.end(JSON.stringify({ status: 'ok', version: 'test', uptime: 1 }));
+        res.end(JSON.stringify({ version: '1.2.3', downloadUrl: '/dl', checksum: 'a'.repeat(64) }));
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'not found' }));
@@ -499,14 +502,85 @@ describe('install.sh functional pre-flight behavior', () => {
     try {
       const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
       expect(output).toContain('Breeze server is reachable');
-      expect(output).not.toContain('Cannot reach the Breeze server');
+      expect(output).not.toContain('Cannot reach the Breeze');
       expect(output).not.toContain('captive portal');
-      // It then fails at the download step (the fake server 404s everything
-      // else) — beyond the pre-flight under test, but proof it got there.
+      // It then fails at the download step (the fake server 404s the binary) —
+      // beyond the pre-flight under test, but proof it got there.
       expect(code).not.toBe(0);
       expect(output).toContain('Failed to');
     } finally {
       breeze.close();
+    }
+  });
+
+  it('passes the pre-flight when /health 404s but /api/* is served (the #1470 reverse proxy)', async () => {
+    // The exact #1470 deployment: a reverse proxy forwards /api/* to the API but
+    // returns the web app's 404 page for apex /health. The pre-flight must not
+    // depend on /health — it must pass on the metadata endpoint alone.
+    const proxy = createServer((req, res) => {
+      if (req.url?.startsWith('/api/v1/agent-versions/latest')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ version: '1.2.3', downloadUrl: '/dl', checksum: 'a'.repeat(64) }));
+      } else if (req.url === '/health') {
+        // The bug's trigger: the web app answers apex /health with its 404 page.
+        res.writeHead(404, { 'Content-Type': 'text/html' });
+        res.end('<html><body>404</body></html>');
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      }
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const { port } = proxy.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(output).toContain('Breeze server is reachable');
+      expect(output).not.toContain('Cannot reach the Breeze');
+      // Proof it got past the pre-flight: it fails later at the binary download.
+      expect(code).not.toBe(0);
+      expect(output).toContain('Failed to');
+    } finally {
+      proxy.close();
+    }
+  });
+
+  it('reports an HTTP error from the metadata endpoint distinctly from no-response', async () => {
+    // A proxy that forwards /api/* to a backend that errors (or a path that 5xxs)
+    // must produce the API-specific message — not the "no response" network one.
+    const errsrv = createServer((_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'boom' }));
+    });
+    await new Promise<void>((resolve) => errsrv.listen(0, '127.0.0.1', resolve));
+    const { port } = errsrv.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(code).not.toBe(0);
+      expect(output).toContain('Cannot reach the Breeze API');
+      expect(output).toContain('(HTTP 500)');
+      expect(output).not.toContain('no response');
+    } finally {
+      errsrv.close();
+    }
+  });
+
+  it('rejects a non-Breeze 200 responder that lacks the version field', async () => {
+    // A proxy/auth-gateway answering the probe with 200 + non-HTML JSON that
+    // isn't Breeze metadata must not be reported as "reachable" (the negative
+    // not-HTML guard alone would pass it; the positive version check catches it).
+    const wrong = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'blocked' }));
+    });
+    await new Promise<void>((resolve) => wrong.listen(0, '127.0.0.1', resolve));
+    const { port } = wrong.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript(['--server', `http://127.0.0.1:${port}`, '--token', 'tok']);
+      expect(code).not.toBe(0);
+      expect(output).not.toContain('Breeze server is reachable');
+      expect(output).toContain('unexpected response');
+    } finally {
+      wrong.close();
     }
   });
 });

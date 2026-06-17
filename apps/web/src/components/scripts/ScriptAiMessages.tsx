@@ -14,12 +14,16 @@ function MessageBubble({ message }: { message: ScriptAiMessage }) {
       <div className="mx-3 my-1 flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
         <Wrench className="h-3 w-3 shrink-0" />
         <span className="truncate">
-          {isApplyTool && message.role === 'tool_result'
-            ? `Applied to editor`
-            : message.toolName ?? 'Tool call'}
+          {message.applyFailed
+            ? 'Could not apply to editor'
+            : isApplyTool && message.role === 'tool_result'
+              ? `Applied to editor`
+              : message.toolName ?? 'Tool call'}
         </span>
         {message.role === 'tool_result' && (
-          <Check className="h-3 w-3 shrink-0 text-green-500" />
+          message.applyFailed
+            ? <X className="h-3 w-3 shrink-0 text-destructive" />
+            : <Check className="h-3 w-3 shrink-0 text-green-500" />
         )}
       </div>
     );

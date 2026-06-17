@@ -4,6 +4,29 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Script AI assistant — editor insertion fix (PR #1453) — 2026-06-16
+
+**Branch:** `fix/script-ai-editor-insert` @ `1702e315`
+**Tested by:** Claude
+**Result:** **PASS**
+
+### What was tested
+- [x] API/SSE (the layer changed): drove `POST /ai/script-builder/sessions/:id/messages` via curl, captured the SSE stream, inspected the `tool_result` event for `apply_script_code`.
+- [x] DB invariant: confirmed the persisted `ai_messages.tool_output` row stays compacted (no script body) so the #568 LLM-context goal is preserved.
+- [x] UI: logged into web app, opened `/scripts/new` → Script AI Assistant, prompted "Write a one-line PowerShell script that prints Hello Breeze and put it in the editor"; verified the Monaco editor populated.
+
+### Evidence
+- SSE `tool_result.output` now contains `code: 'Write-Host "Hello Breeze"'` + `language: 'powershell'` (alongside the compacted `codeOmitted/codeChars`). Before the fix the published event had no `code`.
+- DB row: `{"applied":true,"language":"powershell","toolName":"apply_script_code","codeChars":25,"codeOmitted":true}` → `LIKE '%Hello Breeze%'` = **compacted-ok** (no leak).
+- Browser: editor showed `Write-Host "Hello Breeze"`; both `apply_script_code` and `apply_script_metadata` tool calls completed; a "Revert" control appeared; assistant replied "I've added the script to the editor." Screenshot: `script-ai-insert-verified.png`.
+- Unit: 2 new `createSessionPostToolUse` tests (fail before / pass after); `aiAgentSdk.test.ts` 43/43; typecheck clean.
+
+### Issues Found
+- (none) — the one browser console error is a pre-existing, unrelated dev-only SSR hydration mismatch on the `⌘S`/`Ctrl+S` save hint, present on initial load before any AI interaction.
+
+### Notes
+- Tested against local Docker dev (`http://localhost`, code-mounted hot-reload); `2breeze.app` tunnel down per project notes. Local admin password is the dev seed `BreezeAdmin123!` (the `.env` `E2E_ADMIN_PASSWORD` is for the hosted tunnel, not the local DB).
+
 ## Breeze AI for Office (PR #1314) — Tier B in-Excel SSO + session loop — 2026-06-13
 
 **Branch:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
@@ -2130,3 +2153,27 @@ Loaded the branch into the local dev Docker stack (rebuilt `api` from the worktr
 ### Notes
 - **Dev DB test data seeded:** 2 billable time entries (1 unapproved) + 1 ticket part on "Default Organization"; re-activated 2 archived catalog items; set org + partner billing settings; created `INV-2026-0001` (number burned). All on the dev DB (5432).
 - **Stack state:** the dev stack is currently running the **`feat/invoice-engine`** code (swapped from `main`). To restore: `docker compose down` from the worktree, `docker compose up -d` from `/Users/toddhebebrand/breeze`, and remove the worktree `.env` symlink.
+
+## ANTHROPIC_BASE_URL self-hosted AI backend (#1412) — 2026-06-17
+
+**Branch:** `fix/1412-anthropic-base-url`
+**Commit:** `50719f55`
+**Tested by:** Claude
+**Result:** PASS
+
+### What was tested
+- [x] API (boot/config gate): ran the REAL `validateConfig()` boot path inside a throwaway container built from `breeze-api:dev` (linux), mounting the branch's `apps/api/src` over the image so MY code executed (`PROBE_HAS_HELPER=true` confirmed). API-only feature; no UI/agent layer.
+
+### Evidence — boot-gate matrix (in-container)
+- S1 `IS_HOSTED=false` + `http://litellm:4000/v1` → **PASS** + forensic log `host=litellm:4000` (host only, no token).
+- S2 `IS_HOSTED=true` + base URL → **REFUSED** ("self-hosted-only feature … refused unless self-host is affirmatively declared").
+- S3 `IS_HOSTED` **unset** + base URL → **REFUSED** (fail-closed; the #570 unmapped-IS_HOSTED case).
+- S4 `IS_HOSTED=false` + `ftp://bad/x` → **REFUSED** ("must be a well-formed http(s) URL").
+- S5 `IS_HOSTED=off` + `https://litellm.internal:8443/v1` → **PASS** + forensic log.
+- Fail-closed gate predicate (`isRecognizedSelfHostSignal`, shared by validator + subprocess strip) verified in-container: only `false/0/no/off` → self-host-confirmed; `true/1/maybe/""/undefined` → not.
+
+### Issues Found
+- (none in the feature) — the runtime subprocess-env probe (`buildClaudeSdkChildEnv`) could not import in-container because the **stale `breeze-api:dev` image** still ships Zod 3 while `main` is post the Zod 4 migration (`z.partialRecord is not a function` in an unrelated import-chain schema). Not a #1412 defect. The forwarding/strip wrapper is covered by the 161 green unit tests; its shared gate predicate was verified in-container directly.
+
+### Notes
+- 161 unit/config tests green + clean `tsc` on the branch. Boot gate proven end-to-end in the real container image. CI left to run the full suite (per request).

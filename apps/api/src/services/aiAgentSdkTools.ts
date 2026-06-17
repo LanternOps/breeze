@@ -769,7 +769,7 @@ export function createBreezeMcpServer(
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
 ) {
-  const uuid = z.string().uuid();
+  const uuid = z.string().guid();
   const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
   const tools = [
@@ -779,7 +779,7 @@ export function createBreezeMcpServer(
       {
         status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
         osType: z.enum(['windows', 'macos', 'linux']).optional(),
-        siteId: z.string().uuid().optional(),
+        siteId: z.string().guid().optional(),
         search: z.string().max(200).optional(),
         tags: z.array(z.string().max(100)).max(20).optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -967,7 +967,7 @@ export function createBreezeMcpServer(
           'file_list', 'file_read',
           'event_logs_list', 'event_logs_query',
         ]),
-        payload: z.record(z.unknown()).optional(),
+        payload: z.record(z.string(), z.unknown()).optional(),
       },
       makeHandler('execute_command', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -978,7 +978,7 @@ export function createBreezeMcpServer(
       {
         scriptId: uuid,
         deviceIds: z.array(uuid).min(1).max(10),
-        parameters: z.record(z.unknown()).optional(),
+        parameters: z.record(z.string(), z.unknown()).optional(),
       },
       makeHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1085,7 +1085,7 @@ export function createBreezeMcpServer(
       'delete_tenant',
       'Soft-delete this tenant with a 30-day restore window. confirmation_phrase must exactly equal "delete <tenant_name> permanently" (lowercase, trimmed). Can ONLY delete the tenant this API key belongs to.',
       {
-        tenant_id: z.string().uuid(),
+        tenant_id: z.string().guid(),
         confirmation_phrase: z.string().min(1).max(500),
       },
       makeHandler('delete_tenant', getAuth, onPreToolUse, onPostToolUse)
@@ -1259,11 +1259,11 @@ export function createBreezeMcpServer(
         status: z.enum(['draft', 'pending', 'running', 'paused', 'completed', 'failed', 'cancelled']).optional(),
         name: z.string().max(200).optional(),
         type: z.string().max(50).optional(),
-        payload: z.record(z.unknown()).optional(),
+        payload: z.record(z.string(), z.unknown()).optional(),
         targetType: z.string().max(20).optional(),
-        targetConfig: z.record(z.unknown()).optional(),
-        rolloutConfig: z.record(z.unknown()).optional(),
-        schedule: z.record(z.unknown()).optional(),
+        targetConfig: z.record(z.string(), z.unknown()).optional(),
+        rolloutConfig: z.record(z.string(), z.unknown()).optional(),
+        schedule: z.record(z.string(), z.unknown()).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_deployments', getAuth, onPreToolUse, onPostToolUse)
@@ -1303,7 +1303,7 @@ export function createBreezeMcpServer(
         name: z.string().max(255).optional(),
         type: z.enum(['static', 'dynamic']).optional(),
         siteId: uuid.optional(),
-        filterConditions: z.record(z.unknown()).optional(),
+        filterConditions: z.record(z.string(), z.unknown()).optional(),
         deviceIds: z.array(uuid).max(100).optional(),
         limit: z.number().int().min(1).max(200).optional(),
       },
@@ -1322,7 +1322,7 @@ export function createBreezeMcpServer(
         endTime: z.string().optional(),
         timezone: z.string().max(50).optional(),
         recurrence: z.enum(['once', 'daily', 'weekly', 'monthly', 'custom']).optional(),
-        recurrenceRule: z.record(z.unknown()).optional(),
+        recurrenceRule: z.record(z.string(), z.unknown()).optional(),
         targetType: z.string().max(50).optional(),
         siteIds: z.array(uuid).optional(),
         groupIds: z.array(uuid).optional(),
@@ -1343,9 +1343,9 @@ export function createBreezeMcpServer(
         automationId: uuid.optional(),
         name: z.string().max(200).optional(),
         description: z.string().max(2000).optional(),
-        trigger: z.record(z.unknown()).optional(),
-        conditions: z.record(z.unknown()).optional(),
-        actions: z.array(z.record(z.unknown())).min(1).max(20).optional(),
+        trigger: z.record(z.string(), z.unknown()).optional(),
+        conditions: z.record(z.string(), z.unknown()).optional(),
+        actions: z.array(z.record(z.string(), z.unknown())).min(1).max(20).optional(),
         onFailure: z.enum(['stop', 'continue', 'notify']).optional(),
         enabled: z.boolean().optional(),
         triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']).optional(),
@@ -1364,7 +1364,7 @@ export function createBreezeMcpServer(
         templateId: uuid.optional(),
         targetType: z.enum(['device', 'group', 'site', 'org', 'all']).optional(),
         targetId: uuid.optional(),
-        overrideSettings: z.record(z.unknown()).optional(),
+        overrideSettings: z.record(z.string(), z.unknown()).optional(),
         isActive: z.boolean().optional(),
         category: z.string().max(100).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
@@ -1402,7 +1402,7 @@ export function createBreezeMcpServer(
         reportId: uuid.optional(),
         reportType: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
         name: z.string().max(255).optional(),
-        config: z.record(z.unknown()).optional(),
+        config: z.record(z.string(), z.unknown()).optional(),
         schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
         format: z.enum(['csv', 'pdf', 'excel']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -1429,7 +1429,7 @@ export function createBreezeMcpServer(
         deviceId: uuid,
         contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
         summary: z.string().min(1).max(255),
-        details: z.record(z.unknown()).optional(),
+        details: z.record(z.string(), z.unknown()).optional(),
         expiresInDays: z.number().int().positive().max(365).optional(),
       },
       makeHandler('set_device_context', getAuth, onPreToolUse, onPostToolUse)
@@ -1667,8 +1667,8 @@ export function createBreezeMcpServer(
       {
         playbookId: uuid,
         deviceId: uuid,
-        variables: z.record(z.unknown()).optional(),
-        context: z.record(z.unknown()).optional(),
+        variables: z.record(z.string(), z.unknown()).optional(),
+        context: z.record(z.string(), z.unknown()).optional(),
       },
       makeHandler('execute_playbook', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1711,7 +1711,7 @@ export function createBreezeMcpServer(
         target: z.string().max(500).optional(),
         pollingInterval: z.number().int().min(10).max(86400).optional(),
         timeout: z.number().int().min(1).max(120).optional(),
-        config: z.record(z.unknown()).optional(),
+        config: z.record(z.string(), z.unknown()).optional(),
         isActive: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
@@ -1742,7 +1742,7 @@ export function createBreezeMcpServer(
         title: z.string().min(1).max(255),
         steps: z.array(z.object({
           toolName: z.string(),
-          input: z.record(z.unknown()),
+          input: z.record(z.string(), z.unknown()),
           reasoning: z.string().max(500),
         })).min(1).max(20),
       },

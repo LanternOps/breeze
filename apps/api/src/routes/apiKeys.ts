@@ -105,12 +105,12 @@ function validateRequestedScopes(c: any, scopes: string[]) {
 const listApiKeysSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['active', 'revoked', 'expired']).optional()
 });
 
 const createApiKeySchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().guid(),
   name: z.string().min(1).max(255),
   scopes: z.array(z.string()).default([]),
   expiresAt: z.string().datetime().nullable().optional(),
@@ -127,7 +127,7 @@ const updateApiKeySchema = z.object({
 // Routes
 // ============================================
 
-const keyIdParamSchema = z.object({ id: z.string().uuid() });
+const keyIdParamSchema = z.object({ id: z.string().guid() });
 
 // Apply auth middleware to all routes
 apiKeyRoutes.use('*', authMiddleware);

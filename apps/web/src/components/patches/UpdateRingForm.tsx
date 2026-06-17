@@ -178,7 +178,7 @@ export default function UpdateRingForm({
   // the current inherited number up front so every override row shows a real
   // value instead of a blank field. Note: this pins a previously-inheriting
   // override to a concrete hold, so re-saving converts inherit -> explicit.
-  const initialValues = useMemo<Partial<UpdateRingFormValues>>(() => {
+  const initialValues = useMemo<Partial<z.input<typeof ringSchema>>>(() => {
     const merged = {
       name: '',
       description: '',
@@ -210,7 +210,7 @@ export default function UpdateRingForm({
     setValue,
     control,
     formState: { errors, isSubmitting },
-  } = useForm<UpdateRingFormValues>({
+  } = useForm<z.input<typeof ringSchema>, unknown, z.output<typeof ringSchema>>({
     resolver: zodResolver(ringSchema),
     defaultValues: initialValues,
   });

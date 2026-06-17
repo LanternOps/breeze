@@ -132,7 +132,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
 // ============================================
 
 const listRingsSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 const categoryRuleSchema = z.object({
@@ -143,7 +143,7 @@ const categoryRuleSchema = z.object({
 });
 
 const createRingSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().max(2000).optional(),
   enabled: z.boolean().optional(),
@@ -158,7 +158,7 @@ const createRingSchema = z.object({
   // Ring-level auto-approval gate (#1317). Typed shape replaces the old
   // free-form record so the ring owns approval rules with validated severities.
   autoApprove: ringAutoApproveSchema.optional(),
-  targets: z.record(z.unknown()).optional(),
+  targets: z.record(z.string(), z.unknown()).optional(),
 });
 
 const updateRingSchema = z.object({
@@ -175,11 +175,11 @@ const updateRingSchema = z.object({
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
   // Ring-level auto-approval gate (#1317). See createRingSchema.
   autoApprove: ringAutoApproveSchema.optional(),
-  targets: z.record(z.unknown()).optional(),
+  targets: z.record(z.string(), z.unknown()).optional(),
 });
 
 const ringIdParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const ringPatchesQuerySchema = z.object({

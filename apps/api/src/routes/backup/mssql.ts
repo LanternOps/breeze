@@ -28,23 +28,23 @@ export const mssqlRoutes = new Hono();
 const sqlIdentifierRegex = /^[a-zA-Z0-9_\-. ]+$/;
 
 const deviceIdParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
 });
 
 const snapshotIdParamSchema = z.object({
-  snapshotId: z.string().uuid(),
+  snapshotId: z.string().guid(),
 });
 
 const mssqlBackupSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
   instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters'),
   database: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid database name characters'),
   backupType: z.enum(['full', 'differential', 'log']).default('full'),
 });
 
 const mssqlRestoreSchema = z.object({
-  deviceId: z.string().uuid(),
-  snapshotId: z.string().uuid(),
+  deviceId: z.string().guid(),
+  snapshotId: z.string().guid(),
   instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters').optional(),
   targetDatabase: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid database name characters'),
   noRecovery: z.boolean().default(false),

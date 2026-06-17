@@ -21,8 +21,8 @@ import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/r
 
 export const mtlsRoutes = new Hono();
 
-const deviceIdParamSchema = z.object({ id: z.string().uuid() });
-const orgIdParamSchema = z.object({ orgId: z.string().uuid() });
+const deviceIdParamSchema = z.object({ id: z.string().guid() });
+const orgIdParamSchema = z.object({ orgId: z.string().guid() });
 
 // E4: per-device renewal cooldowns (Redis sliding window).
 // Short-term: 1 attempt / 30s — prevents agent-restart hammering.

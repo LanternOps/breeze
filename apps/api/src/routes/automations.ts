@@ -361,14 +361,14 @@ function serializeRunLogs(logs: unknown): string[] {
 const listAutomationsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   enabled: z.enum(['true', 'false']).optional(),
 });
 
 const triggerTypeSchema = z.enum(['schedule', 'event', 'webhook', 'manual']);
 
 const createAutomationSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   enabled: z.boolean().default(true),
@@ -379,7 +379,7 @@ const createAutomationSchema = z.object({
   actions: z.unknown().optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).default('stop'),
   notificationTargets: z.unknown().optional(),
-  notifyOnFailureChannelId: z.string().uuid().optional(),
+  notifyOnFailureChannelId: z.string().guid().optional(),
 });
 
 const updateAutomationSchema = z.object({
@@ -393,7 +393,7 @@ const updateAutomationSchema = z.object({
   actions: z.unknown().optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).optional(),
   notificationTargets: z.unknown().optional(),
-  notifyOnFailureChannelId: z.string().uuid().optional(),
+  notifyOnFailureChannelId: z.string().guid().optional(),
 });
 
 const listRunsSchema = z.object({

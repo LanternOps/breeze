@@ -43,7 +43,7 @@ const updateCustomFieldSchema = z.object({
 });
 
 const customFieldQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   deviceType: z.enum(['windows', 'macos', 'linux']).optional(),
   type: customFieldTypeSchema.optional(),
   search: z.string().optional(),
@@ -75,12 +75,12 @@ type CustomFieldDefinition = {
 };
 
 const customFieldIdParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 const createCustomFieldRequestSchema = createCustomFieldSchema.extend({
-  orgId: z.string().uuid().optional(),
-  partnerId: z.string().uuid().optional()
+  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional()
 });
 
 customFieldRoutes.use('*', authMiddleware);

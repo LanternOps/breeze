@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const reliabilityCrashEventSchema = z.object({
   type: z.enum(['bsod', 'kernel_panic', 'system_crash', 'oom_kill', 'unknown']),
   timestamp: z.string().datetime(),
-  details: z.record(z.unknown()).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const reliabilityAppHangSchema = z.object({

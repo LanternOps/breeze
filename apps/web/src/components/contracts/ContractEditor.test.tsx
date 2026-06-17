@@ -5,7 +5,17 @@ import ContractEditor from './ContractEditor';
 import { fetchWithAuth } from '../../stores/auth';
 import * as api from '../../lib/api/contracts';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
+  // the admin wildcard so every gated control renders and these tests exercise
+  // full functionality.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 // The catalog typeahead is exercised in the invoice-editor test; stub it here.

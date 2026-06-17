@@ -30,6 +30,10 @@ export interface ScriptAiMessage {
   toolOutput?: unknown;
   toolUseId?: string;
   isError?: boolean;
+  /** Set when an apply tool_result could not be applied to the editor (bridge
+   *  missing, empty payload, or a throw). Drives the failure chip in the UI so
+   *  the transcript doesn't show a success check next to the error banner. */
+  applyFailed?: boolean;
   isStreaming?: boolean;
   createdAt: Date;
 }
@@ -440,7 +444,7 @@ interface ProcessResult {
   snapshotTaken: boolean;
 }
 
-function processScriptStreamEvent(
+export function processScriptStreamEvent(
   event: AiStreamEvent,
   set: (fn: (s: ScriptAiState) => Partial<ScriptAiState>) => void,
   get: () => ScriptAiState,
@@ -511,8 +515,58 @@ function processScriptStreamEvent(
       // If this is an apply tool result, apply changes to the form via bridge
       if (toolName && isApplyTool(toolName) && !event.isError) {
         const bridge = state._bridge;
-        if (bridge) {
-          // Take snapshot before first apply in this turn
+
+        // Surface an apply failure: set the error banner AND flag the just-added
+        // tool_result message so its transcript chip shows failure instead of a
+        // success check (which would contradict the banner).
+        const failApply = (message: string) =>
+          set((s) => ({
+            error: message,
+            messages: s.messages.map((m) =>
+              m.id === `result-${event.toolUseId}` ? { ...m, applyFailed: true } : m
+            ),
+          }));
+
+        // No bridge means the editor isn't mounted/registered. Don't silently
+        // drop the change (and don't let the chat imply success) — surface it.
+        if (!bridge) {
+          console.warn('[ScriptAI] Apply tool result arrived but no editor bridge is registered; changes were not applied.');
+          failApply('Could not apply the changes: the script editor is not ready. Please try again.');
+          return { currentAssistantId, snapshotTaken: snapshotTakenThisTurn };
+        }
+
+        try {
+          const output = typeof event.output === 'string'
+            ? JSON.parse(event.output)
+            : event.output;
+
+          const base = baseToolName(toolName);
+          const values: Partial<ScriptFormSnapshot> = {};
+
+          if (base === 'apply_script_code') {
+            if (output.code != null) values.content = output.code;
+            if (output.language != null) values.language = output.language;
+          } else if (base === 'apply_script_metadata') {
+            if (output.name != null) values.name = output.name;
+            if (output.description != null) values.description = output.description;
+            if (output.category != null) values.category = output.category;
+            if (output.osTypes != null) values.osTypes = output.osTypes;
+            if (output.parameters != null) values.parameters = output.parameters;
+            if (output.runAs != null) values.runAs = output.runAs;
+            if (output.timeoutSeconds != null) values.timeoutSeconds = output.timeoutSeconds;
+          }
+
+          // An apply tool that carried nothing usable would leave the editor
+          // unchanged while the chat implies "applied" — surface it instead of
+          // claiming success. This is the failure mode the apply pipeline must
+          // never hide (see #568 fallout / PR #1453).
+          if (Object.keys(values).length === 0) {
+            console.warn('[ScriptAI] Apply tool result had no usable fields for', base);
+            failApply('The assistant ran an apply step but produced no changes to insert. Please try again.');
+            return { currentAssistantId, snapshotTaken: snapshotTakenThisTurn };
+          }
+
+          // Snapshot before the first real apply this turn (enables Revert).
           let didSnapshot = snapshotTakenThisTurn;
           if (!didSnapshot) {
             const snapshot = bridge.takeSnapshot();
@@ -520,37 +574,13 @@ function processScriptStreamEvent(
             didSnapshot = true;
           }
 
-          // Parse the output and apply to form
-          try {
-            const output = typeof event.output === 'string'
-              ? JSON.parse(event.output)
-              : event.output;
-
-            const base = baseToolName(toolName);
-
-            if (base === 'apply_script_code') {
-              const values: Partial<ScriptFormSnapshot> = {};
-              if (output.code != null) values.content = output.code;
-              if (output.language != null) values.language = output.language;
-              bridge.setFormValues(values);
-            } else if (base === 'apply_script_metadata') {
-              const values: Partial<ScriptFormSnapshot> = {};
-              if (output.name != null) values.name = output.name;
-              if (output.description != null) values.description = output.description;
-              if (output.category != null) values.category = output.category;
-              if (output.osTypes != null) values.osTypes = output.osTypes;
-              if (output.parameters != null) values.parameters = output.parameters;
-              if (output.runAs != null) values.runAs = output.runAs;
-              if (output.timeoutSeconds != null) values.timeoutSeconds = output.timeoutSeconds;
-              bridge.setFormValues(values);
-            }
-
-            set(() => ({ hasApplied: true, hasReverted: false, appliedSnapshot: null }));
-          } catch (applyErr) {
-            console.error('[ScriptAI] Failed to apply tool result to form:', applyErr);
-          }
-
+          bridge.setFormValues(values);
+          set(() => ({ hasApplied: true, hasReverted: false, appliedSnapshot: null, error: null }));
           return { currentAssistantId, snapshotTaken: didSnapshot };
+        } catch (applyErr) {
+          console.error('[ScriptAI] Failed to apply tool result to form:', applyErr);
+          failApply('Failed to apply the generated changes to the editor.');
+          return { currentAssistantId, snapshotTaken: snapshotTakenThisTurn };
         }
       }
 

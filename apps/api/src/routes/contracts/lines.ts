@@ -10,8 +10,8 @@ import { contractActorFrom, handleContractError } from './contracts';
 export const contractLineRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
-const idParam = z.object({ id: z.string().uuid() });
-const lineParam = z.object({ id: z.string().uuid(), lineId: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
+const lineParam = z.object({ id: z.string().guid(), lineId: z.string().guid() });
 
 contractLineRoutes.post('/:id/lines', scopes, writePerm, zValidator('param', idParam), zValidator('json', contractLineInputSchema), async (c) => {
   try { return c.json({ data: await addContractLineToContract(c.req.valid('param').id, c.req.valid('json'), contractActorFrom(c)) }); }

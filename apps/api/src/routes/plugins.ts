@@ -71,18 +71,18 @@ const catalogQuerySchema = z.object({
 });
 
 const installPluginSchema = z.object({
-  catalogId: z.string().uuid(),
-  config: z.record(z.unknown()).default({}),
-  orgId: z.string().uuid().optional()
+  catalogId: z.string().guid(),
+  config: z.record(z.string(), z.unknown()).default({}),
+  orgId: z.string().guid().optional()
 });
 
 const updatePluginSchema = z.object({
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional()
 });
 
 const installationQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['installed', 'error', 'installing', 'updating', 'uninstalling']).optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20)

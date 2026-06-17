@@ -523,6 +523,40 @@ describe('user routes', () => {
       const body = await res.json() as { isPlatformAdmin?: boolean };
       expect(body.isPlatformAdmin).toBe(true);
     });
+
+    // The web app hides billing nav and action buttons off this list. If /me
+    // stops surfacing the user's grants, gated controls would render for users
+    // who lack the permission (server still 403s, but it's a UX regression).
+    it('returns the user permission grants for client-side UI gating', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'admin@example.com',
+              name: 'Admin',
+              avatarUrl: null,
+              status: 'active',
+              mfaEnabled: false,
+              isPlatformAdmin: false,
+              createdAt: new Date(),
+              lastLoginAt: new Date(),
+              setupCompletedAt: new Date(),
+              passwordChangedAt: new Date(),
+              preferences: {}
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { permissions?: { resource: string; action: string }[] };
+      // Mocked getUserPermissions returns the admin wildcard grant.
+      expect(body.permissions).toEqual([{ resource: '*', action: '*' }]);
+    });
   });
 
   describe('PATCH /users/me validation', () => {

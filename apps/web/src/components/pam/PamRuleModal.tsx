@@ -27,9 +27,20 @@ function extractApiError(body: unknown): string {
   const b = body as { message?: unknown; error?: unknown; issues?: unknown };
   if (typeof b.message === 'string' && b.message) return b.message;
   if (typeof b.error === 'string' && b.error) return b.error;
-  const issues =
-    (b.error as { issues?: Array<{ message?: unknown }> } | undefined)?.issues ??
-    (b.issues as Array<{ message?: unknown }> | undefined);
+  const errObj = b.error as
+    | { issues?: Array<{ message?: unknown }>; name?: unknown; message?: unknown }
+    | undefined;
+  let issues = errObj?.issues ?? (b.issues as Array<{ message?: unknown }> | undefined);
+  // zod v4: ZodError.issues is non-enumerable, so JSON.stringify buries the
+  // issues array inside error.message — recover it.
+  if (!issues && errObj?.name === 'ZodError' && typeof errObj.message === 'string') {
+    try {
+      const parsed = JSON.parse(errObj.message);
+      if (Array.isArray(parsed)) issues = parsed;
+    } catch {
+      /* message wasn't a JSON issues array */
+    }
+  }
   const zodMsg = issues?.[0]?.message;
   return typeof zodMsg === 'string' && zodMsg ? zodMsg : '';
 }

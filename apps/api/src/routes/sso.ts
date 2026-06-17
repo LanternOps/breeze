@@ -122,7 +122,7 @@ function isValidSsoStateCookie(state: string, cookieHeader: string | undefined):
 // ============================================
 
 const createProviderSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['oidc', 'saml']),
   preset: z.string().optional(),
@@ -138,7 +138,7 @@ const createProviderSchema = z.object({
     groups: z.string().optional()
   }).optional(),
   autoProvision: z.boolean().optional(),
-  defaultRoleId: z.string().uuid().optional(),
+  defaultRoleId: z.string().guid().optional(),
   allowedDomains: z.string().optional(),
   enforceSSO: z.boolean().optional()
 });
@@ -353,8 +353,8 @@ function resolveOrgIdForProviderRoute(
   return { error: 'Organization ID required', status: 400 };
 }
 
-const providerIdParamSchema = z.object({ id: z.string().uuid() });
-const orgIdParamSchema = z.object({ orgId: z.string().uuid() });
+const providerIdParamSchema = z.object({ id: z.string().guid() });
+const orgIdParamSchema = z.object({ orgId: z.string().guid() });
 
 // ============================================
 // Provider Management Routes (Admin)

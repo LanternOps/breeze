@@ -15,6 +15,7 @@ import {
   type ContractTransition,
 } from '../../lib/api/contracts';
 import { formatMoney } from '../billing/invoiceTypes';
+import { usePermissions } from '../../lib/permissions';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -55,6 +56,7 @@ function formatDate(value: string | null | undefined): string {
 }
 
 export default function ContractDetail({ detail, onChanged }: Props) {
+  const { can } = usePermissions();
   const { contract, lines, periods } = detail;
   const currency = contract.currencyCode;
 
@@ -268,7 +270,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           </div>
 
           {/* Lifecycle */}
-          {availableTransitions.length > 0 && (
+          {can('contracts', 'manage') && availableTransitions.length > 0 && (
             <div className="space-y-2" data-testid="contract-lifecycle">
               {availableTransitions.map((verb) => {
                 const destructive = verb === 'cancel';
@@ -295,7 +297,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           )}
 
           {/* Generate now */}
-          {canGenerate && (
+          {can('contracts', 'manage') && canGenerate && (
             <button
               type="button"
               onClick={() => void generateNow()}

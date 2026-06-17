@@ -5,7 +5,17 @@ import InvoiceEditor from './InvoiceEditor';
 import type { InvoiceDetail } from './invoiceTypes';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
+  // the admin wildcard so every gated control renders and these tests exercise
+  // full functionality.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
@@ -130,6 +140,28 @@ describe('InvoiceEditor', () => {
     fireEvent.click(screen.getByTestId('invoice-issue-send'));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Invoice issued and sent' }));
+  });
+
+  it('shows an "Issuing…" label on the Issue button while the mutation is in flight (#1418)', async () => {
+    let resolveIssue: (r: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') {
+        return new Promise<Response>((res) => { resolveIssue = res; });
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+
+    // In flight: button is disabled AND relabelled so it never reads as a stuck "Issue".
+    await waitFor(() => expect(screen.getByTestId('invoice-issue')).toHaveTextContent('Issuing…'));
+    expect(screen.getByTestId('invoice-issue')).toBeDisabled();
+
+    resolveIssue(json({ data: { id: 'inv-1', status: 'sent' } }));
+    await waitFor(() => expect(screen.getByTestId('invoice-issue')).toHaveTextContent('Issue'));
   });
 
   it('Issue & Send shows a WARNING toast (not error) when nothing was emailed (emailed:false)', async () => {

@@ -27,7 +27,7 @@ const profileSchema = z.enum(['cis_l1', 'cis_l2', 'custom']);
 const approvalDecisionSchema = z.enum(['approved', 'rejected']);
 
 const listBaselinesSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   osType: osTypeSchema.optional(),
   profile: profileSchema.optional(),
   isActive: z.preprocess((value) => {
@@ -43,46 +43,46 @@ const listBaselinesSchema = z.object({
 });
 
 const createUpdateBaselineSchema = z.object({
-  id: z.string().uuid().optional(),
-  orgId: z.string().uuid().optional(),
+  id: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().trim().min(1).max(200),
   osType: osTypeSchema,
   profile: profileSchema,
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
   isActive: z.boolean().optional(),
 });
 
 const complianceSummarySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  baselineId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  baselineId: z.string().guid().optional(),
   osType: osTypeSchema.optional(),
 });
 
 const deviceParamSchema = z.object({
-  deviceId: z.string().uuid(),
+  deviceId: z.string().guid(),
 });
 
 const applyBaselineSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  baselineId: z.string().uuid(),
-  deviceIds: z.array(z.string().uuid()).min(1).max(500),
+  orgId: z.string().guid().optional(),
+  baselineId: z.string().guid(),
+  deviceIds: z.array(z.string().guid()).min(1).max(500),
   dryRun: z.boolean().optional().default(false),
-  approvalRequestId: z.string().uuid().optional(),
+  approvalRequestId: z.string().guid().optional(),
 });
 
 const createApplyRequestSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  baselineId: z.string().uuid(),
-  deviceIds: z.array(z.string().uuid()).min(1).max(500),
+  orgId: z.string().guid().optional(),
+  baselineId: z.string().guid(),
+  deviceIds: z.array(z.string().guid()).min(1).max(500),
   expiresInMinutes: z.number().int().min(5).max(24 * 60).optional(),
 });
 
 const applyApprovalParamSchema = z.object({
-  approvalId: z.string().uuid(),
+  approvalId: z.string().guid(),
 });
 
 const applyApprovalDecisionSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   decision: approvalDecisionSchema,
 });
 
@@ -632,9 +632,9 @@ auditBaselineRoutes.post(
 );
 
 const listApplyRequestsSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['pending', 'approved', 'rejected', 'expired', 'consumed']).optional(),
-  baselineId: z.string().uuid().optional(),
+  baselineId: z.string().guid().optional(),
 });
 
 auditBaselineRoutes.get(

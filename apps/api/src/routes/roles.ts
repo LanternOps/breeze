@@ -75,14 +75,14 @@ const createRoleSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().optional(),
   permissions: z.array(permissionSchema).default([]),
-  parentRoleId: z.string().uuid().nullable().optional()
+  parentRoleId: z.string().guid().nullable().optional()
 });
 
 const updateRoleSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().optional(),
   permissions: z.array(permissionSchema).optional(),
-  parentRoleId: z.string().uuid().nullable().optional()
+  parentRoleId: z.string().guid().nullable().optional()
 });
 
 type ScopeContext =

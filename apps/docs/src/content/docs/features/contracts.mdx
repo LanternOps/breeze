@@ -1,0 +1,82 @@
+---
+title: Recurring Contracts
+description: Managed-services agreements that generate invoices automatically on a schedule, with live per-device and per-seat counts so recurring revenue is always accurate.
+sidebar:
+  label: "Recurring Contracts"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Recurring Contracts automate your managed-services billing. Define what a customer is charged and how often, and Breeze generates the invoices on schedule -- resolving per-device and per-seat counts at billing time so the amount always reflects the customer's actual environment. Open **Contracts** from the sidebar.
+
+Contracts are **partner-scoped** and bound to a customer organization.
+
+## How a Contract Bills
+
+Two settings determine the rhythm:
+
+- **Billing timing** -- *in advance* (bill at the start of each period) or *in arrears* (bill at the end).
+- **Interval** -- monthly, quarterly, annually, or a custom number of months.
+
+From these, Breeze computes the **next billing date**. When that date arrives, a billing period is created, line quantities are resolved, and -- if **auto-issue** is on -- an invoice is generated automatically.
+
+### Contract Statuses
+
+| Status | Meaning |
+|--------|---------|
+| Draft | Being set up; not yet billing |
+| Active | Billing on schedule |
+| Paused | Billing temporarily stopped |
+| Cancelled | Ended |
+| Expired | Past its end date |
+
+## Contract Lines
+
+Each line is one charge on the contract. Lines can resolve their quantity in different ways:
+
+| Line type | How quantity is determined |
+|-----------|----------------------------|
+| Flat | A fixed amount each period, regardless of count |
+| Per device | Counts the customer's devices at billing time × unit price |
+| Per seat | Counts the customer's seats/users at billing time × unit price |
+| Manual | A fixed quantity you set × unit price |
+
+Per-device and per-seat lines can be scoped to a specific **site** so you bill only the devices or seats at that location. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
+
+## Creating a Contract
+
+<Steps>
+1. Go to **Contracts** and click **New contract**.
+2. Select the customer organization, name the contract, and set the billing timing, interval, and start date.
+3. Add lines -- choose flat, per device, per seat, or manual, and set the price (and quantity where applicable). Link a catalog item to prefill description and price.
+4. Add any **terms** and notes.
+5. Review the **estimated value this period** -- per-device and per-seat lines resolve to live counts so the estimate is real, not a placeholder.
+6. **Activate** the contract to start billing.
+</Steps>
+
+The contract list shows an **estimated monthly recurring** strip across active contracts (normalized for cadence) and a per-contract **estimate** column, so you can see recurring value at a glance.
+
+## Managing the Lifecycle
+
+| Action | Effect |
+|--------|--------|
+| Activate | Move a draft to active and set the next billing date |
+| Pause | Temporarily stop generating invoices |
+| Resume | Continue billing from a paused state |
+| Cancel | End the contract |
+
+You can also **generate now** to create the current period's invoice immediately rather than waiting for the schedule.
+
+<Aside>
+  When auto-issue is enabled, generated invoices can be emailed to the customer automatically if a billing email is configured. Otherwise they land as drafts for you to review and send.
+</Aside>
+
+## Permissions
+
+Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. Assign these through **Settings → Users & Roles**.
+
+## Related
+
+- [Invoices](/features/invoices/) -- where generated invoices land
+- [Product Catalog](/features/product-catalog/) -- link contract lines to catalog items
+- [Online Payments](/features/online-payments/) -- let customers pay generated invoices online

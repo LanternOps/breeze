@@ -27,16 +27,16 @@ peripheralControlRoutes.use('*', authMiddleware);
 peripheralControlRoutes.use('*', requireScope('organization', 'partner', 'system'));
 
 const policySchema = z.object({
-  id: z.string().uuid().optional(),
-  orgId: z.string().uuid().optional(),
+  id: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues),
   action: z.enum(peripheralPolicyActionEnum.enumValues),
   targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional().default('organization'),
   targetIds: z.object({
-    siteIds: z.array(z.string().uuid()).max(1000).optional(),
-    groupIds: z.array(z.string().uuid()).max(1000).optional(),
-    deviceIds: z.array(z.string().uuid()).max(5000).optional(),
+    siteIds: z.array(z.string().guid()).max(1000).optional(),
+    groupIds: z.array(z.string().guid()).max(1000).optional(),
+    deviceIds: z.array(z.string().guid()).max(5000).optional(),
   }).optional().default({}),
   exceptions: z.array(z.object({
     vendor: z.string().min(1).max(255).optional(),
@@ -57,7 +57,7 @@ const policySchema = z.object({
 });
 
 const listPoliciesQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   isActive: z.enum(['true', 'false']).optional(),
   action: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
@@ -66,9 +66,9 @@ const listPoliciesQuerySchema = z.object({
 });
 
 const listActivityQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  deviceId: z.string().uuid().optional(),
-  policyId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
+  policyId: z.string().guid().optional(),
   eventType: z.enum(peripheralEventTypeEnum.enumValues).optional(),
   peripheralType: z.string().min(1).max(40).optional(),
   vendor: z.string().min(1).max(255).optional(),
@@ -81,11 +81,11 @@ const listActivityQuerySchema = z.object({
 });
 
 const disablePolicyParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const exceptionsSchema = z.object({
-  policyId: z.string().uuid(),
+  policyId: z.string().guid(),
   operation: z.enum(['add', 'remove']),
   exception: z.object({
     vendor: z.string().min(1).max(255).optional(),

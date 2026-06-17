@@ -21,7 +21,7 @@ export const ticketConfigRoutes = new Hono();
 // depend on c.get('auth') being populated.
 ticketConfigRoutes.use('*', authMiddleware);
 
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action);
@@ -83,7 +83,7 @@ ticketConfigRoutes.get('/email-inbound', scopes, writePerm, adminMiddleware, zVa
   return c.json(result);
 });
 
-const convertEmailInboundSchema = z.object({ orgId: z.string().uuid() });
+const convertEmailInboundSchema = z.object({ orgId: z.string().guid() });
 
 // POST /email-inbound/:id/convert — create a source:'email' ticket in the chosen
 // org and link the inbound row. The actor is the REAL authenticated admin (built

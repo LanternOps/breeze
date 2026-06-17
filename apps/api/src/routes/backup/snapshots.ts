@@ -21,7 +21,7 @@ import type { SnapshotTreeItem } from './types';
 
 export const snapshotsRoutes = new Hono();
 
-const snapshotIdParamSchema = z.object({ id: z.string().uuid() });
+const snapshotIdParamSchema = z.object({ id: z.string().guid() });
 
 async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
   if (!perms?.allowedSiteIds) return null;

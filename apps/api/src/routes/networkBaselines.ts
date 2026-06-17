@@ -44,18 +44,18 @@ const alertSettingsSchema = z.object({
 });
 
 const listBaselinesSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   subnet: cidrSchema.optional(),
   limit: z.coerce.number().int().positive().max(200).optional(),
   offset: z.coerce.number().int().min(0).optional()
 });
 
 const createBaselineSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid(),
   subnet: cidrSchema,
-  profileId: z.string().uuid().optional(),
+  profileId: z.string().guid().optional(),
   scanSchedule: scanScheduleSchema.optional(),
   alertSettings: alertSettingsSchema.optional()
 });

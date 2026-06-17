@@ -137,6 +137,27 @@ Tickets support linking to external ticketing systems through the `externalTicke
 
 ---
 
+## Invoices & Payments
+
+Portal users can view their organization's issued invoices, download the PDF, and -- when you've connected Stripe -- pay any invoice with an outstanding balance by card online.
+
+### Paying an Invoice
+
+<Steps>
+1. Log in to the customer portal and open **Invoices**.
+2. Select an invoice to see its line items, total, and balance due.
+3. Click **Pay now** to open a secure Stripe Checkout page and pay by card.
+4. Once payment succeeds, the invoice's balance and status update automatically.
+</Steps>
+
+Only issued invoices appear in the portal -- drafts are never shown. The **Pay now** button appears only on invoices with a balance due, and only when the partner has connected Stripe. Payments collected here settle directly into the MSP's own Stripe account; see [Online Payments](/features/online-payments/) for how to connect Stripe and send payment links.
+
+<Aside>
+  Invoice line items shown in the portal are limited to customer-visible lines -- internal cost and margin information is never exposed to portal users.
+</Aside>
+
+---
+
 ## Asset Checkout
 
 The asset checkout system lets portal users borrow shared devices from their organization's inventory and return them when finished.
@@ -235,6 +256,15 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | `POST` | `/tickets` | Yes | Create a new support ticket |
 | `GET` | `/tickets/:id` | Yes | Get ticket details with public comments |
 | `POST` | `/tickets/:id/comments` | Yes | Add a comment to a ticket |
+
+### Invoices
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/invoices` | Yes | List the organization's issued invoices |
+| `GET` | `/invoices/:id` | Yes | Get invoice detail with customer-visible lines |
+| `GET` | `/invoices/:id/pdf` | Yes | Download the invoice PDF |
+| `POST` | `/invoices/:id/pay` | Yes | Start a Stripe Checkout session to pay the balance |
 
 ### Assets
 

@@ -25,6 +25,7 @@ import { useScriptAiStore } from '@/stores/scriptAiStore';
 import type { ScriptFormBridge } from '@/stores/scriptAiStore';
 import type { OSType } from './ScriptList';
 import { useOrgStore } from '@/stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import {
   scriptSchema, languageOptions, categoryOptions,
   runAsOptions, parameterTypeOptions, severityOptions,
@@ -237,12 +238,17 @@ export default function ScriptForm({
   const watchParameters = watch('parameters');
   const watchAvailability = watch('availability');
 
-  // Partner-scope detection: a partner-scope user has partners loaded in the store.
-  // The "Available to" picker shows only for partner-scope users creating a NEW script
-  // with >1 accessible org (single-org partner users don't need to pick; org-scope users
-  // always write to their own org — the backend forces it).
-  const { partners, organizations } = useOrgStore();
-  const isPartnerScope = partners.length > 0;
+  // Partner-scope detection comes from the JWT scope claim — NOT
+  // `useOrgStore().partners`, which is populated only from the system-scope-only
+  // `GET /orgs/partners` endpoint and so is always empty for a real partner-scope
+  // user (the picker would never render for its own audience). `organizations` IS
+  // populated for partner users, so it still drives the >1-org check.
+  // The "Available to" picker shows only for partner-scope users creating a NEW
+  // script with >1 accessible org (single-org partner users don't need to pick;
+  // org-scope users always write to their own org — the backend forces it).
+  const { organizations } = useOrgStore();
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
   const showAvailabilityPicker = isNew && isPartnerScope && organizations.length > 1;
 
   const monacoLanguage = useMemo(() => {

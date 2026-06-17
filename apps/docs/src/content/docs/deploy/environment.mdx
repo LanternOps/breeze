@@ -288,3 +288,40 @@ Two rate-limit tiers protect the API. The generic per-user limit covers logged-i
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Anthropic API key for AI assistant (BYOK) |
+| `ANTHROPIC_BASE_URL` | — | **Self-hosted only.** Point the AI Agent at an Anthropic-compatible `/v1/messages` backend (vLLM 0.23+, LiteLLM). Must be an `http(s)` URL. Permitted only when `IS_HOSTED` is explicitly `false` (or `0`/`no`/`off`); refused at boot if `IS_HOSTED` is `true`, unset, or invalid. |
+| `ANTHROPIC_AUTH_TOKEN` | — | Bearer token for the custom backend (use instead of `ANTHROPIC_API_KEY` when `ANTHROPIC_BASE_URL` is set). |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Override the default model id for a raw vLLM backend. Leave unset with a LiteLLM gateway that aliases `claude-sonnet-4-6` → your model. |
+
+### Self-hosted: alternative Anthropic-compatible backends
+
+A self-hosted operator can run the AI Agent against any backend that speaks the
+Anthropic `/v1/messages` dialect — keeping full tool-use and the `aiGuardrails`
+stack — by setting:
+
+```bash
+IS_HOSTED=false                            # required — ANTHROPIC_BASE_URL is refused otherwise
+ANTHROPIC_BASE_URL=http://localhost:8000   # your vLLM / LiteLLM endpoint
+ANTHROPIC_AUTH_TOKEN=<backend bearer token>
+# Raw vLLM only — match the served model id (skip with a LiteLLM alias):
+ANTHROPIC_MODEL=<served-model-id>
+```
+
+The recommended route is a **LiteLLM gateway** that aliases `claude-sonnet-4-6`
+to your backend model, so no `ANTHROPIC_MODEL` override is needed. For an
+OpenAI-dialect-only endpoint, use the separate `MCP_LLM_*` openai-compatible
+path instead (chat-only, no tool-use).
+
+`ANTHROPIC_BASE_URL` is **fail-closed**: it is honored only when self-host is
+affirmatively declared (`IS_HOSTED` explicitly `false`/`0`/`no`/`off`). If
+`IS_HOSTED` is `true`, unset, or set to an unrecognized value, the API refuses
+to boot when `ANTHROPIC_BASE_URL` is present, and the value is also stripped
+from the SDK subprocess environment — so a stray or unmapped `IS_HOSTED` can
+never redirect platform AI traffic to a third-party endpoint.
+
+Cost tracking is best-effort. The SDK can't price a non-Anthropic model id, so
+it reports `total_cost_usd: 0`; Breeze then falls back to token-based pricing,
+and an **unrecognized model id is priced at conservative Opus-tier
+`DEFAULT_PRICING` ($5/$25 per MTok)** — i.e. likely an *over*-estimate for a
+cheap local model, not `$0`. For accurate accounting, add the served model id to
+`MODEL_PRICING` in `aiCostTracker.ts`, or use the openai-compatible path's
+`MCP_LLM_PRICE_*` overrides.

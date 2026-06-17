@@ -69,7 +69,11 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
 export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [
   'hostname',
   'class',
-  'type',
+  // 'type' is opt-in (#1386): it carries the asset_type of network-discovered
+  // devices and renders a dash for agent rows, so default-on it would show a
+  // column of dashes for the common agent-only fleet. The Class column already
+  // distinguishes Agent/Network; enable Type from the column picker when you
+  // have network inventory to inspect.
   'organization',
   'site',
   'os',
