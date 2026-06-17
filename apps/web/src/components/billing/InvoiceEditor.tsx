@@ -28,6 +28,10 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const currency = invoice.currencyCode;
 
   const [busy, setBusy] = useState(false);
+  // Distinct from `busy` (which any line edit sets) so the Issue buttons can show
+  // an unambiguous in-flight label. Without it the disabled-but-still-"Issue"
+  // button + still-"Draft" header during the POST reads as "done but stuck" (#1418).
+  const [issuing, setIssuing] = useState(false);
   const [notes, setNotes] = useState(invoice.notes ?? '');
   const [notesDirty, setNotesDirty] = useState(false);
 
@@ -174,6 +178,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const issue = useCallback(async (alsoSend: boolean) => {
     if (busy) return;
     setBusy(true);
+    setIssuing(true);
     try {
       // Issue first; on success optionally send.
       await runAction({
@@ -204,6 +209,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       // Always refresh: if issue succeeded but send threw, we still need to leave
       // the draft editor so a second click doesn't re-issue and hit 409 NOT_A_DRAFT.
       refresh();
+      setIssuing(false);
       setBusy(false);
     }
   }, [busy, invoice.id, refresh]);
@@ -393,7 +399,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                 data-testid="invoice-issue"
                 className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
-                Issue
+                {issuing ? 'Issuing…' : 'Issue'}
               </button>
             )}
             {can('invoices', 'send') && (
@@ -404,7 +410,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                 data-testid="invoice-issue-send"
                 className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                Issue &amp; Send
+                {issuing ? 'Issuing…' : 'Issue & Send'}
               </button>
             )}
             {!hasVisibleLines && (
