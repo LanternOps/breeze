@@ -79,6 +79,14 @@ export const TOOL_TIERS = {
   sync_huntress_data: 2,
   execute_command: 3,
   run_script: 3,
+  // Script library (read-only) — used by the script-builder assistant to
+  // reference existing scripts. Absent here, createSessionPreToolUse rejects
+  // them as "Unknown tool" before execution (the script-builder could not
+  // search/read the library). Keep in sync with TOOL_PERMISSIONS in aiGuardrails.
+  list_scripts: 1,
+  get_script_details: 1,
+  list_script_templates: 1,
+  get_script_execution_history: 1,
   manage_services: 3,
   security_scan: 3,
   get_security_posture: 1,
