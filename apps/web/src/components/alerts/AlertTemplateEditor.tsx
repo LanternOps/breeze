@@ -4,11 +4,17 @@ import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '@/stores/orgStore';
+import { navigateTo } from '@/lib/navigation';
+import { ScopeBadge } from '../shared/ScopeBadge';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
 type AlertTemplateEditorProps = {
   templateId?: string;
 };
+
+// Availability axis for partner-scope creators (mirrors Scripts #1357/#1425).
+type Availability = 'org' | 'partner';
 
 type MetricOption = 'cpu.usage' | 'memory.usage' | 'disk.free' | 'network.throughput' | 'latency.ms';
 
@@ -108,6 +114,9 @@ type AlertTemplateResponse = {
   category?: string;
   severity: AlertSeverity;
   builtIn?: boolean;
+  orgId?: string | null;
+  partnerId?: string | null;
+  isBuiltIn?: boolean;
   conditions?: Partial<TemplateConditionsPayload>;
   targets?: Record<string, unknown>;
   defaultCooldownMinutes?: number;
@@ -361,10 +370,26 @@ const stripEscalationIds = (rules: EscalationRule[]) =>
   }));
 
 export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorProps) {
-  const [loading, setLoading] = useState(true);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const isNew = templateId === 'new';
+  const [loading, setLoading] = useState(!isNew);
+  const [hasLoaded, setHasLoaded] = useState(isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+
+  // Scope of the template being edited (for the header badge); null until an
+  // existing template loads. New templates have no scope yet.
+  const [scopeInfo, setScopeInfo] = useState<{ orgId: string | null; partnerId: string | null; isBuiltIn: boolean } | null>(null);
+
+  // Partner-wide create controls (#1425). Only surfaced for partner-scope users
+  // with more than one org; org-scope users always create for their own org and
+  // the backend ignores these.
+  const { partners, organizations: scopeOrganizations } = useOrgStore();
+  const isPartnerScope = partners.length > 0;
+  const showAvailabilityPicker = isNew && isPartnerScope && scopeOrganizations.length > 1;
+  const [availability, setAvailability] = useState<Availability>('partner');
+  const [availabilityOrgId, setAvailabilityOrgId] = useState('');
+
+  const readOnly = scopeInfo?.isBuiltIn === true;
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -415,6 +440,12 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
   const selectedTargetIds = targetScope[targetKeyByType[targetScope.type]];
 
   const loadTemplate = useCallback(async () => {
+    // New templates have nothing to fetch — render the empty form immediately.
+    if (isNew) {
+      setLoading(false);
+      setHasLoaded(true);
+      return;
+    }
     if (!templateId) {
       setError('Missing alert template id.');
       setLoading(false);
@@ -466,6 +497,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
         normalizeSuppressionRules(conditionsPayload.suppression, template.defaultCooldownMinutes)
       );
       setTargetScope(normalizeTargets(template.targets));
+      setScopeInfo({
+        orgId: template.orgId ?? null,
+        partnerId: template.partnerId ?? null,
+        isBuiltIn: template.isBuiltIn ?? template.builtIn ?? false,
+      });
 
       setHasLoaded(true);
     } catch (err) {
@@ -473,7 +509,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
     } finally {
       setLoading(false);
     }
-  }, [templateId]);
+  }, [templateId, isNew]);
 
   const fetchOrganizations = useCallback(async () => {
     try {
@@ -667,7 +703,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
   };
 
   const handleSave = async () => {
-    if (!templateId) {
+    if (!isNew && !templateId) {
       setError('Missing alert template id.');
       return;
     }
@@ -681,7 +717,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
     setError(undefined);
 
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         name: name.trim(),
         description: description.trim(),
         category,
@@ -705,15 +741,31 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           : 0
       };
 
-      const response = await fetchWithAuth(`/alert-templates/templates/${templateId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(payload)
-      });
+      if (isNew && showAvailabilityPicker) {
+        // Partner-scope creator chose the audience. Org-scope users omit this
+        // entirely (the backend ignores it and uses their own org).
+        payload.availability = availability;
+        if (availability === 'org' && availabilityOrgId) payload.orgId = availabilityOrgId;
+      }
+
+      const response = isNew
+        ? await fetchWithAuth('/alert-templates/templates', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          })
+        : await fetchWithAuth(`/alert-templates/templates/${templateId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(payload)
+          });
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(extractApiError(data, 'Failed to save alert template.'));
       }
+
+      // After creating, return to the list so the new row (with its scope badge)
+      // is visible; editing stays in place.
+      if (isNew) void navigateTo('/settings/alert-templates');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred.');
     } finally {
@@ -751,21 +803,33 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
     <div className="space-y-6">
       <Breadcrumbs items={[
         { label: 'Settings', href: '/settings' },
-        { label: name || 'Alert Template' }
+        { label: 'Alert Templates', href: '/settings/alert-templates' },
+        { label: isNew ? 'New template' : (name || 'Alert Template') }
       ]} />
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Alert Template Editor</h1>
-          <p className="text-muted-foreground">Configure trigger logic, routing, and automation responses.</p>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">
+              {isNew ? 'New Alert Template' : 'Alert Template Editor'}
+            </h1>
+            {scopeInfo && (
+              <ScopeBadge orgId={scopeInfo.orgId} partnerId={scopeInfo.partnerId} isSystem={scopeInfo.isBuiltIn} />
+            )}
+          </div>
+          <p className="text-muted-foreground">
+            {readOnly
+              ? 'Built-in template — read-only. Duplicate it to customize.'
+              : 'Configure trigger logic, routing, and automation responses.'}
+          </p>
         </div>
         <button
           type="button"
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || readOnly}
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
         >
           <Save className="h-4 w-4" />
-          {saving ? 'Saving...' : 'Save template'}
+          {saving ? 'Saving...' : isNew ? 'Create template' : 'Save template'}
         </button>
       </div>
 
@@ -788,6 +852,53 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
+
+              {showAvailabilityPicker && (
+                <fieldset className="sm:col-span-2 space-y-2 rounded-md border p-4" data-testid="template-availability">
+                  <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Available to</legend>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="availability"
+                      value="partner"
+                      checked={availability === 'partner'}
+                      onChange={() => setAvailability('partner')}
+                      data-testid="availability-partner"
+                    />
+                    All my organizations <span className="text-muted-foreground">(partner-wide)</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="availability"
+                      value="org"
+                      checked={availability === 'org'}
+                      onChange={() => setAvailability('org')}
+                      data-testid="availability-org"
+                    />
+                    A specific organization
+                  </label>
+                  {availability === 'org' && (
+                    <div className="mt-2 space-y-1 pl-6">
+                      <label className="text-xs font-medium text-muted-foreground" htmlFor="template-availability-org">
+                        Organization
+                      </label>
+                      <select
+                        id="template-availability-org"
+                        value={availabilityOrgId}
+                        onChange={event => setAvailabilityOrgId(event.target.value)}
+                        data-testid="availability-org-select"
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        <option value="">Select an organization</option>
+                        {scopeOrganizations.map(org => (
+                          <option key={org.id} value={org.id}>{org.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </fieldset>
+              )}
               <div>
                 <label className="text-xs font-medium uppercase text-muted-foreground">Severity</label>
                 <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
