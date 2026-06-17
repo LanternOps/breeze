@@ -30,6 +30,10 @@ export interface ScriptAiMessage {
   toolOutput?: unknown;
   toolUseId?: string;
   isError?: boolean;
+  /** Set when an apply tool_result could not be applied to the editor (bridge
+   *  missing, empty payload, or a throw). Drives the failure chip in the UI so
+   *  the transcript doesn't show a success check next to the error banner. */
+  applyFailed?: boolean;
   isStreaming?: boolean;
   createdAt: Date;
 }
@@ -512,11 +516,22 @@ export function processScriptStreamEvent(
       if (toolName && isApplyTool(toolName) && !event.isError) {
         const bridge = state._bridge;
 
+        // Surface an apply failure: set the error banner AND flag the just-added
+        // tool_result message so its transcript chip shows failure instead of a
+        // success check (which would contradict the banner).
+        const failApply = (message: string) =>
+          set((s) => ({
+            error: message,
+            messages: s.messages.map((m) =>
+              m.id === `result-${event.toolUseId}` ? { ...m, applyFailed: true } : m
+            ),
+          }));
+
         // No bridge means the editor isn't mounted/registered. Don't silently
         // drop the change (and don't let the chat imply success) — surface it.
         if (!bridge) {
           console.warn('[ScriptAI] Apply tool result arrived but no editor bridge is registered; changes were not applied.');
-          set(() => ({ error: 'Could not apply the changes: the script editor is not ready. Please try again.' }));
+          failApply('Could not apply the changes: the script editor is not ready. Please try again.');
           return { currentAssistantId, snapshotTaken: snapshotTakenThisTurn };
         }
 
@@ -547,7 +562,7 @@ export function processScriptStreamEvent(
           // never hide (see #568 fallout / PR #1453).
           if (Object.keys(values).length === 0) {
             console.warn('[ScriptAI] Apply tool result had no usable fields for', base);
-            set(() => ({ error: 'The assistant ran an apply step but produced no changes to insert. Please try again.' }));
+            failApply('The assistant ran an apply step but produced no changes to insert. Please try again.');
             return { currentAssistantId, snapshotTaken: snapshotTakenThisTurn };
           }
 
@@ -564,7 +579,7 @@ export function processScriptStreamEvent(
           return { currentAssistantId, snapshotTaken: didSnapshot };
         } catch (applyErr) {
           console.error('[ScriptAI] Failed to apply tool result to form:', applyErr);
-          set(() => ({ error: 'Failed to apply the generated changes to the editor.' }));
+          failApply('Failed to apply the generated changes to the editor.');
           return { currentAssistantId, snapshotTaken: snapshotTakenThisTurn };
         }
       }
