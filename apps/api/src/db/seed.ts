@@ -146,6 +146,11 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'contracts', action: 'write', description: 'Create/edit/delete draft contracts and lines' },
   { resource: 'contracts', action: 'manage', description: 'Activate/pause/resume/cancel contracts and generate invoices' },
 
+  // Quotes / Proposals (billing program)
+  { resource: 'quotes', action: 'read', description: 'View quotes and proposals' },
+  { resource: 'quotes', action: 'write', description: 'Create/edit/delete draft quotes and proposal blocks' },
+  { resource: 'quotes', action: 'send', description: 'Send quotes/proposals and record acceptance' },
+
   // Users
   { resource: 'users', action: 'read', description: 'View users' },
   { resource: 'users', action: 'write', description: 'Edit users' },
@@ -223,9 +228,10 @@ export const SYSTEM_ROLES = [
   {
     name: 'Partner Billing',
     scope: 'partner' as const,
-    description: 'Full access to product catalog, invoices, and contracts',
+    description: 'Full access to product catalog, quotes, invoices, and contracts',
     permissions: [
       'catalog:read', 'catalog:write', 'catalog:delete',
+      'quotes:read', 'quotes:write', 'quotes:send',
       'invoices:read', 'invoices:write', 'invoices:send', 'invoices:export',
       'contracts:read', 'contracts:write', 'contracts:manage'
     ]
@@ -233,9 +239,10 @@ export const SYSTEM_ROLES = [
   {
     name: 'Partner Billing Viewer',
     scope: 'partner' as const,
-    description: 'Read-only access to product catalog, invoices, and contracts',
+    description: 'Read-only access to product catalog, quotes, invoices, and contracts',
     permissions: [
       'catalog:read',
+      'quotes:read',
       'invoices:read', 'invoices:export',
       'contracts:read'
     ]
