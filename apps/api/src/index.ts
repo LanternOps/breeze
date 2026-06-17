@@ -34,6 +34,7 @@ import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { quoteRoutes } from './routes/quotes';
+import { quotesPublicRoutes } from './routes/quotesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
@@ -739,6 +740,12 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
 api.route('/invoices', invoiceRoutes);
+// Public, token-gated quote acceptance (no auth) — MUST precede the auth-gated
+// /quotes router so the unauthenticated /quotes/public/* sub-path isn't swallowed
+// by quoteRoutes' authMiddleware (which it applies internally). partnerGuard
+// (the only global api.use) returns next() when there's no Authorization header,
+// so this surface stays unauthenticated.
+api.route('/quotes/public', quotesPublicRoutes);
 api.route('/quotes', quoteRoutes);
 api.route('/partner/stripe-connect', stripeConnectRoutes);
 api.route('/contracts', contractRoutes);
