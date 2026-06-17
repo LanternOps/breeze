@@ -62,7 +62,19 @@ export function extractApiError(data: unknown, fallback: string): string {
   if (typeof body.error === 'string' && body.error.length > 0) {
     parts.push(body.error);
   } else if (body.error && typeof body.error === 'object') {
-    const fromError = joinZodIssues((body.error as { issues?: unknown }).issues);
+    const errObj = body.error as { issues?: unknown; message?: unknown; name?: unknown };
+    let fromError = joinZodIssues(errObj.issues);
+    // zod v4: ZodError.issues is a NON-enumerable property, so JSON.stringify
+    // drops it and the issues array is JSON-stringified into error.message
+    // instead. @hono/zod-validator's default 400 hook emits the bare ZodError,
+    // so recover the issues from the message to keep validation text in the UI.
+    if (!fromError && errObj.name === 'ZodError' && typeof errObj.message === 'string') {
+      try {
+        fromError = joinZodIssues(JSON.parse(errObj.message));
+      } catch {
+        // message wasn't a JSON issues array — leave fromError null
+      }
+    }
     if (fromError) parts.push(fromError);
   }
 

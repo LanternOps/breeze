@@ -85,22 +85,22 @@ const rolloutConfigSchema = z.object({
 
 const targetConfigSchema = z.object({
   type: z.enum(['devices', 'groups', 'filter', 'all']),
-  deviceIds: z.array(z.string().uuid()).optional(),
-  groupIds: z.array(z.string().uuid()).optional(),
+  deviceIds: z.array(z.string().guid()).optional(),
+  groupIds: z.array(z.string().guid()).optional(),
   filter: z.any().optional()
 });
 
 const scheduleSchema = z.object({
   type: z.enum(['immediate', 'scheduled', 'maintenance_window']),
   scheduledAt: z.string().datetime().optional(),
-  maintenanceWindowId: z.string().uuid().optional()
+  maintenanceWindowId: z.string().guid().optional()
 }).optional();
 
 const createDeploymentSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   type: z.string().min(1).max(50),
-  payload: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
   targetType: z.enum(['devices', 'groups', 'filter', 'all']),
   targetConfig: targetConfigSchema,
   schedule: scheduleSchema,
@@ -110,7 +110,7 @@ const createDeploymentSchema = z.object({
 const updateDeploymentSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   type: z.string().min(1).max(50).optional(),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   targetType: z.enum(['devices', 'groups', 'filter', 'all']).optional(),
   targetConfig: targetConfigSchema.optional(),
   schedule: scheduleSchema,
@@ -118,12 +118,12 @@ const updateDeploymentSchema = z.object({
 });
 
 const idParamSchema = z.object({
-  id: z.string().uuid()
+  id: z.string().guid()
 });
 
 const deviceRetryParamSchema = z.object({
-  id: z.string().uuid(),
-  deviceId: z.string().uuid()
+  id: z.string().guid(),
+  deviceId: z.string().guid()
 });
 
 const listDevicesQuerySchema = z.object({

@@ -40,11 +40,11 @@ export const cisFindingSchema = z.object({
   title: z.string(),
   severity: z.enum(['low', 'medium', 'high', 'critical']),
   status: z.enum(['pass', 'fail', 'not_applicable', 'error']),
-  evidence: z.record(z.unknown()).nullable().optional(),
+  evidence: z.record(z.string(), z.unknown()).nullable().optional(),
   remediation: z.object({
     action: z.string().optional(),
     commandType: z.string().optional(),
-    payload: z.record(z.unknown()).optional(),
+    payload: z.record(z.string(), z.unknown()).optional(),
     rollbackHint: z.string().optional(),
   }).nullable().optional(),
   message: z.string().nullable().optional(),

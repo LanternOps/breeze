@@ -103,4 +103,12 @@ describe('authenticatorPolicySchema (Phase 4)', () => {
     expect(authenticatorPolicySchema.safeParse({ floorOverrides: { high: 5 }, requireEnrollment: true, enforceFrom: null }).success).toBe(false);
     expect(authenticatorPolicySchema.safeParse({ floorOverrides: { urgent: 3 }, requireEnrollment: true, enforceFrom: null }).success).toBe(false);
   });
+  it('preserves a single-tier partial override (partialRecord, not exhaustive z.record)', () => {
+    // v4 z.record(enum, V) is exhaustive (all keys required); floorOverrides uses
+    // z.partialRecord so an org can raise just one tier. This guards against a
+    // revert to z.record, which would reject { high: 3 } and break that.
+    const r = authenticatorPolicySchema.safeParse({ floorOverrides: { high: 3 }, requireEnrollment: true, enforceFrom: null });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.floorOverrides).toEqual({ high: 3 });
+  });
 });

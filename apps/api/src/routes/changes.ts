@@ -24,7 +24,7 @@ const changeActionValues = [
 ] as const;
 
 const listChangesQuerySchema = z.object({
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   startTime: z.string().datetime({ offset: true }).optional(),
   endTime: z.string().datetime({ offset: true }).optional(),
   changeType: z.enum(changeTypeValues).optional(),

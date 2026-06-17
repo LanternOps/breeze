@@ -19,7 +19,7 @@ const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISS
 
 // Mounted at top level so the paths read /orgs/:orgId/invoices/assemble and /tickets/:ticketId/invoice
 invoiceAssemblyRoutes.post('/orgs/:orgId/invoices/assemble', authMiddleware, scopes, writePerm,
-  zValidator('param', z.object({ orgId: z.string().uuid() })),
+  zValidator('param', z.object({ orgId: z.string().guid() })),
   zValidator('json', assembleFromOrgSchema.omit({ orgId: true })),
   async (c) => {
     try { const orgId = c.req.valid('param').orgId; const b = c.req.valid('json');
@@ -27,7 +27,7 @@ invoiceAssemblyRoutes.post('/orgs/:orgId/invoices/assemble', authMiddleware, sco
     catch (err) { return handleServiceError(c, err); }
   });
 invoiceAssemblyRoutes.post('/tickets/:ticketId/invoice', authMiddleware, scopes, writePerm,
-  zValidator('param', z.object({ ticketId: z.string().uuid() })),
+  zValidator('param', z.object({ ticketId: z.string().guid() })),
   async (c) => {
     try { return c.json({ data: await assembleDraftFromTicket(c.req.valid('param').ticketId, invoiceActorFrom(c)) }); }
     catch (err) { return handleServiceError(c, err); }

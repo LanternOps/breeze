@@ -8,8 +8,8 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { ticketPartSchema, updateTicketPartSchema, listTimeEntriesQuerySchema } from '@breeze/shared';
 
-const idParam = z.object({ id: z.string().uuid() });
-const partIdParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
+const partIdParam = z.object({ id: z.string().guid() });
 import {
   addTicketPart, updateTicketPart, deleteTicketPart,
   listTimeEntries, getTicketBillingSummary, TimeEntryServiceError

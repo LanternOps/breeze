@@ -7,31 +7,31 @@ export type TicketStatus = z.infer<typeof ticketStatusSchema>;
 export type TicketPriority = z.infer<typeof ticketPrioritySchema>;
 
 export const createTicketSchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().guid(),
   subject: z.string().min(1).max(255),
   description: z.string().max(50_000).optional(),
-  deviceId: z.string().uuid().optional(),
-  categoryId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  categoryId: z.string().guid().optional(),
   priority: ticketPrioritySchema.default('normal'),
   dueDate: z.coerce.date().optional(),
-  assigneeId: z.string().uuid().optional()
+  assigneeId: z.string().guid().optional()
 });
 
 export const updateTicketSchema = z.object({
   subject: z.string().min(1).max(255).optional(),
   description: z.string().max(50_000).optional(),
-  categoryId: z.string().uuid().nullable().optional(),
+  categoryId: z.string().guid().nullable().optional(),
   priority: ticketPrioritySchema.optional(),
   dueDate: z.coerce.date().nullable().optional(),
   responseSlaMinutes: z.number().int().positive().nullable().optional(),
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
-  deviceId: z.string().uuid().nullable().optional(),
+  deviceId: z.string().guid().nullable().optional(),
   tags: z.array(z.string().max(50)).max(20).optional()
 });
 
 export const changeTicketStatusSchema = z.object({
   status: ticketStatusSchema.optional(),
-  statusId: z.string().uuid().optional(),
+  statusId: z.string().guid().optional(),
   resolutionNote: z.string().min(1).max(10_000).optional(),
   pendingReason: z.string().max(500).optional()
 }).superRefine((v, ctx) => {
@@ -49,15 +49,15 @@ export const changeTicketStatusSchema = z.object({
 });
 
 export const assignTicketSchema = z.object({
-  assigneeId: z.string().uuid().nullable()
+  assigneeId: z.string().guid().nullable()
 });
 
 // Bulk queue actions (assign / status). Resolving is intentionally excluded:
 // it requires a per-ticket resolution note, so it stays a per-ticket action.
 export const bulkTicketActionSchema = z.object({
-  ticketIds: z.array(z.string().uuid()).min(1).max(100),
+  ticketIds: z.array(z.string().guid()).min(1).max(100),
   action: z.enum(['assign', 'status']),
-  assigneeId: z.string().uuid().nullable().optional(),
+  assigneeId: z.string().guid().nullable().optional(),
   status: ticketStatusSchema.optional()
 }).refine(
   (v) => v.action !== 'assign' || v.assigneeId !== undefined,
@@ -80,10 +80,10 @@ export const listTicketsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   status: ticketStatusSchema.optional(),
   statusGroup: z.enum(['open', 'closed']).optional(),
-  orgId: z.string().uuid().optional(),
-  deviceId: z.string().uuid().optional(),
-  assignee: z.union([z.literal('me'), z.literal('unassigned'), z.string().uuid()]).optional(),
-  categoryId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
+  assignee: z.union([z.literal('me'), z.literal('unassigned'), z.string().guid()]).optional(),
+  categoryId: z.string().guid().optional(),
   priority: ticketPrioritySchema.optional(),
   slaState: z.enum(['ok', 'at_risk', 'breached', 'breaching']).optional(),
   search: z.string().max(200).optional(),
@@ -93,7 +93,7 @@ export const listTicketsQuerySchema = z.object({
 export const ticketCategoryInputSchema = z.object({
   name: z.string().min(1).max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  parentId: z.string().uuid().nullable().optional(),
+  parentId: z.string().guid().nullable().optional(),
   defaultPriority: ticketPrioritySchema.nullable().optional(),
   responseSlaMinutes: z.number().int().positive().nullable().optional(),
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),

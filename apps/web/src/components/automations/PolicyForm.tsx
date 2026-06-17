@@ -232,7 +232,7 @@ export default function PolicyForm({
     watch,
     setValue,
     formState: { errors, isSubmitting }
-  } = useForm<PolicyFormValues>({
+  } = useForm<z.input<typeof policySchema>, unknown, z.output<typeof policySchema>>({
     resolver: zodResolver(policySchema),
     defaultValues: {
       name: '',

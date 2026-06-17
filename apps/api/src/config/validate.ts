@@ -327,7 +327,7 @@ const envSchema = z
   .object({
     // -- Required (always) ---------------------------------------------------
     DATABASE_URL: z
-      .string({ required_error: 'DATABASE_URL is required' })
+      .string({ error: 'DATABASE_URL is required' })
       .min(1, 'DATABASE_URL must not be empty')
       .refine((url) => url.startsWith('postgresql://') || url.startsWith('postgres://'), {
         message: 'DATABASE_URL must be a valid postgres:// or postgresql:// URL',
@@ -364,7 +364,7 @@ const envSchema = z
       .describe('Optional dedicated connection for the breeze_audit_admin role (audit retention worker, issue #915). If unset, retention uses the legacy breeze_app + SET ROLE path.'),
 
     JWT_SECRET: z
-      .string({ required_error: 'JWT_SECRET is required' })
+      .string({ error: 'JWT_SECRET is required' })
       .min(1, 'JWT_SECRET must not be empty'),
 
     // Optional: zero-downtime JWT signing key rotation via kid header.
@@ -378,11 +378,11 @@ const envSchema = z
     E2E_MODE: z.string().optional(),
 
     APP_ENCRYPTION_KEY: z
-      .string({ required_error: 'APP_ENCRYPTION_KEY is required' })
+      .string({ error: 'APP_ENCRYPTION_KEY is required' })
       .min(1, 'APP_ENCRYPTION_KEY must not be empty'),
 
     MFA_ENCRYPTION_KEY: z
-      .string({ required_error: 'MFA_ENCRYPTION_KEY is required' })
+      .string({ error: 'MFA_ENCRYPTION_KEY is required' })
       .min(1, 'MFA_ENCRYPTION_KEY must not be empty'),
 
     // -- Production-required -------------------------------------------------

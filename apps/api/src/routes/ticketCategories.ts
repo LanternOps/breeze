@@ -15,7 +15,7 @@ export const ticketCategoriesRoutes = new Hono();
 // depend on c.get('auth') being populated (same pattern as alerts/index.ts)
 ticketCategoriesRoutes.use('*', authMiddleware);
 
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 
 // GET /ticket-categories — list categories visible to the caller
 // RLS is the primary isolation; this adds defense-in-depth app-layer scoping.
@@ -86,7 +86,7 @@ ticketCategoriesRoutes.get(
 );
 
 const reorderSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(200)
+  ids: z.array(z.string().guid()).min(1).max(200)
 }).refine((v) => new Set(v.ids).size === v.ids.length, {
   message: 'ids must be unique',
   path: ['ids']

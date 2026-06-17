@@ -69,7 +69,7 @@ actuateElevationRoutes.use('*', async (c, next) => {
  */
 
 const actuateElevationSchema = z.object({
-  elevationRequestId: z.string().uuid(),
+  elevationRequestId: z.string().guid(),
   username: z.string().min(1).max(255).optional(),
   password: z.string().min(1).max(1024).optional(),
   timeoutMs: z.number().int().min(1000).max(60000).optional(),

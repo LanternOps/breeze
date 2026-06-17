@@ -27,16 +27,16 @@ const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resou
 const requirePatchExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
 const configPolicyIdParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const resolvePatchConfigParamSchema = z.object({
-  id: z.string().uuid(),
-  deviceId: z.string().uuid(),
+  id: z.string().guid(),
+  deviceId: z.string().guid(),
 });
 
 const createPatchJobFromConfigPolicySchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1).max(500),
+  deviceIds: z.array(z.string().guid()).min(1).max(500),
   name: z.string().min(1).max(255).optional(),
   scheduledAt: z.string().datetime().optional(),
 });

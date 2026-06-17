@@ -37,7 +37,7 @@ softwarePoliciesRoutes.use('*', authMiddleware);
 softwarePoliciesRoutes.use('*', requireScope('organization', 'partner', 'system'));
 
 const policyIdParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 const softwareRuleSchema = z.object({
@@ -45,7 +45,7 @@ const softwareRuleSchema = z.object({
   vendor: z.string().min(1).max(200).optional(),
   minVersion: z.string().min(1).max(100).optional(),
   maxVersion: z.string().min(1).max(100).optional(),
-  catalogId: z.string().uuid().optional(),
+  catalogId: z.string().guid().optional(),
   reason: z.string().min(1).max(1000).optional(),
 });
 
@@ -89,7 +89,7 @@ const listPoliciesQuerySchema = z.object({
 });
 
 const createPolicySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   description: z.string().max(4000).optional(),
   mode: z.enum(['allowlist', 'blocklist', 'audit']),
@@ -109,13 +109,13 @@ const updatePolicySchema = z.object({
 });
 
 const violationsQuerySchema = z.object({
-  policyId: z.string().uuid().optional(),
-  deviceId: z.string().uuid().optional(),
+  policyId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
 const optionalDeviceIdsSchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1).max(500).optional(),
+  deviceIds: z.array(z.string().guid()).min(1).max(500).optional(),
 });
 
 export function resolveOrgIdForWrite(

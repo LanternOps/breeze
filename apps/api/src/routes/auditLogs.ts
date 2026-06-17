@@ -41,7 +41,7 @@ const listLogsSchema = z.object({
   // auto-injects ?orgId=<current-org>; whitelist it here so zValidator keeps
   // it — otherwise it is stripped and every page spans the caller's full
   // accessible-org set, ignoring the dropdown selection.
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   // CSV of action codes to exclude (e.g. routine agent telemetry). Applied to
   // both the LATERAL fast-path (RecentActivity) and the standard query path.
   excludeActions: z.string().optional()
@@ -759,7 +759,7 @@ auditLogRoutes.post(
 
 // GET /export — used by AuditLogViewer export button (CSV download)
 const exportGetSchema = z.object({
-  userId: z.string().uuid().optional(),
+  userId: z.string().guid().optional(),
   columns: z.string().optional(),
   includeDetails: z.enum(['true', 'false']).optional().default('true')
 });

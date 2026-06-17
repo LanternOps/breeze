@@ -72,7 +72,7 @@ const recurrenceRuleSchema = z.object({
 }).optional();
 
 const createWindowSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(100),
   description: z.string().optional(),
   startTime: z.string().datetime(),
@@ -81,9 +81,9 @@ const createWindowSchema = z.object({
   recurrence: z.enum(['once', 'daily', 'weekly', 'monthly', 'custom']),
   recurrenceRule: recurrenceRuleSchema,
   targetType: z.enum(['all', 'site', 'group', 'device']),
-  siteIds: z.array(z.string().uuid()).optional(),
-  groupIds: z.array(z.string().uuid()).optional(),
-  deviceIds: z.array(z.string().uuid()).optional(),
+  siteIds: z.array(z.string().guid()).optional(),
+  groupIds: z.array(z.string().guid()).optional(),
+  deviceIds: z.array(z.string().guid()).optional(),
   suppressAlerts: z.boolean().default(true),
   suppressPatches: z.boolean().default(true),
   suppressAutomations: z.boolean().default(false),
@@ -105,9 +105,9 @@ const updateWindowSchema = z.object({
   recurrence: z.enum(['once', 'daily', 'weekly', 'monthly', 'custom']).optional(),
   recurrenceRule: recurrenceRuleSchema,
   targetType: z.enum(['all', 'site', 'group', 'device']).optional(),
-  siteIds: z.array(z.string().uuid()).optional(),
-  groupIds: z.array(z.string().uuid()).optional(),
-  deviceIds: z.array(z.string().uuid()).optional(),
+  siteIds: z.array(z.string().guid()).optional(),
+  groupIds: z.array(z.string().guid()).optional(),
+  deviceIds: z.array(z.string().guid()).optional(),
   suppressAlerts: z.boolean().optional(),
   suppressPatches: z.boolean().optional(),
   suppressAutomations: z.boolean().optional(),
@@ -117,13 +117,13 @@ const updateWindowSchema = z.object({
 });
 
 const listWindowsSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['scheduled', 'active', 'completed', 'cancelled']).optional(),
   targetType: z.enum(['all', 'site', 'group', 'device']).optional()
 });
 
 const listOccurrencesSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   status: z.enum(['scheduled', 'active', 'completed', 'cancelled']).optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional()
@@ -136,10 +136,10 @@ const updateOccurrenceSchema = z.object({
 });
 
 const activeWindowsSchema = z.object({
-  deviceId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
-  groupId: z.string().uuid().optional(),
-  orgId: z.string().uuid().optional()
+  deviceId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
+  groupId: z.string().guid().optional(),
+  orgId: z.string().guid().optional()
 });
 
 // Helper to generate occurrences based on recurrence rule

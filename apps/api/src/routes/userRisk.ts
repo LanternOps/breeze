@@ -15,8 +15,8 @@ import {
 } from '../services/userRiskScoring';
 
 const listScoresQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   minScore: z.coerce.number().int().min(0).max(100).optional(),
   maxScore: z.coerce.number().int().min(0).max(100).optional(),
   trendDirection: z.enum(['up', 'down', 'stable']).optional(),
@@ -26,16 +26,16 @@ const listScoresQuerySchema = z.object({
 });
 
 const detailParamSchema = z.object({
-  userId: z.string().uuid()
+  userId: z.string().guid()
 });
 
 const detailQuerySchema = z.object({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const eventsQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  userId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  userId: z.string().guid().optional(),
   eventType: z.string().max(60).optional(),
   severity: z.enum(['low', 'medium', 'high', 'critical']).optional(),
   from: z.string().datetime().optional(),
@@ -45,15 +45,15 @@ const eventsQuerySchema = z.object({
 });
 
 const policyPayloadSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   weights: z.record(z.string(), z.number().min(0)).optional(),
   thresholds: z.record(z.string(), z.number()).optional(),
   interventions: z.record(z.string(), z.unknown()).optional()
 });
 
 const assignTrainingSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  userId: z.string().uuid(),
+  orgId: z.string().guid().optional(),
+  userId: z.string().guid(),
   moduleId: z.string().min(1).max(120).optional(),
   reason: z.string().min(1).max(500).optional()
 });
@@ -287,7 +287,7 @@ userRiskRoutes.put(
   }
 );
 
-userRiskRoutes.get('/policy', requirePermission('users', 'read'), zValidator('query', z.object({ orgId: z.string().uuid().optional() })), async (c) => {
+userRiskRoutes.get('/policy', requirePermission('users', 'read'), zValidator('query', z.object({ orgId: z.string().guid().optional() })), async (c) => {
   const auth = c.get('auth');
   const { orgId } = c.req.valid('query');
 

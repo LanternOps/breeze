@@ -155,7 +155,7 @@ function serializeDiscoveryProfile(profile: typeof discoveryProfiles.$inferSelec
 // --- Zod Schemas ---
 
 const listProfilesSchema = z.object({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const scheduleSchema = z.object({
@@ -189,8 +189,8 @@ const alertSettingsSchema = z.object({
 }).optional();
 
 const createProfileSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   subnets: z.array(z.string().min(1)).min(1),
@@ -227,13 +227,13 @@ const updateProfileSchema = z.object({
 });
 
 const scanSchema = z.object({
-  profileId: z.string().uuid(),
+  profileId: z.string().guid(),
   agentId: z.string().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const listJobsSchema = z.object({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 // --- Next-run helpers ---
@@ -258,8 +258,8 @@ function getNextIntervalRun(lastRunAt: Date | null, intervalMinutes: number, now
 }
 
 const listAssetsSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
   assetType: z.enum([
     'workstation', 'server', 'printer', 'router', 'switch',
@@ -268,19 +268,19 @@ const listAssetsSchema = z.object({
 });
 
 const linkAssetSchema = z.object({
-  deviceId: z.string().uuid()
+  deviceId: z.string().guid()
 });
 
 const topologyQuerySchema = z.object({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const bulkApproveSchema = z.object({
-  assetIds: z.array(z.string().uuid()).min(1).max(200)
+  assetIds: z.array(z.string().guid()).min(1).max(200)
 });
 
 const bulkDismissSchema = z.object({
-  assetIds: z.array(z.string().uuid()).min(1).max(200)
+  assetIds: z.array(z.string().guid()).min(1).max(200)
 });
 
 const updateAssetSchema = z.object({
