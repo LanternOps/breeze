@@ -12,6 +12,7 @@ import { acceptQuote } from '../../services/quoteAcceptService';
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
 export const quoteRoutes = new Hono();
 const idParam = z.object({ id: z.string().guid() });
@@ -76,7 +77,7 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
   try {
     const res = await acceptQuote({
       quoteId: id, signerName: auth.user.name || auth.user.email, signerEmail: auth.user.email,
-      ipAddress: c.req.header('x-forwarded-for') ?? null, userAgent: c.req.header('user-agent') ?? null, actorUserId: null,
+      ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null, actorUserId: null,
     });
     return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }

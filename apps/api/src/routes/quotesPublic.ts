@@ -7,11 +7,12 @@ import { quotes, quoteBlocks, quoteLines } from '../db/schema/quotes';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
-import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked } from '../services/quoteAcceptToken';
+import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
 import { acceptQuote } from '../services/quoteAcceptService';
 import { readQuoteImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -74,9 +75,11 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
   try {
     const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
       quoteId: claims.quoteId, signerName: body.signerName, signerEmail: body.signerEmail ?? null,
-      ipAddress: c.req.header('x-forwarded-for') ?? null, userAgent: c.req.header('user-agent') ?? null,
+      ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
       acceptanceTokenJti: claims.jti, actorUserId: null,
     })));
+    // Post-commit (atom-2): consume the single-use token so the link can't be replayed.
+    try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
     return c.json({ data: { status: res.quote.status, invoiceNumber: null } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });
@@ -93,5 +96,7 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
     return true;
   }));
   if (!ok) return c.json({ error: 'This quote can no longer be declined' }, 409);
+  // Consume the single-use token post-commit so a declined link can't be replayed.
+  try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
   return c.json({ data: { status: 'declined' } });
 });

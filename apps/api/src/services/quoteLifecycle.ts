@@ -24,7 +24,7 @@ function formatMoneyish(n: string | null | undefined, currency: string): string 
   return currency === 'USD' ? `$${v}` : `${v} ${currency}`;
 }
 
-/** Issue (if draft) + send: assign number, status→sent, sentAt, mint token, email post-commit. */
+/** Issue (if draft) + send: assign number, status→sent, sentAt, mint token, best-effort email. */
 export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote: QuoteRow; emailed: boolean; acceptUrl: string }> {
   const { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
   if (quote.status !== 'draft') {
@@ -39,7 +39,17 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
 
   const now = new Date();
   const issueDate = quote.issueDate ?? now.toISOString().slice(0, 10);
-  await db.update(quotes).set({ status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now }).where(eq(quotes.id, id));
+  // Conditional on status='draft' so two concurrent sends can't both flip the
+  // quote (the second matches 0 rows and 409s). Counter gaps from the losing
+  // send are acceptable, per allocateQuoteCounter's contract (C3).
+  const claimed = await db
+    .update(quotes)
+    .set({ status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now })
+    .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
+    .returning({ id: quotes.id });
+  if (claimed.length === 0) {
+    throw new QuoteServiceError('Quote was already sent', 409, 'INVALID_STATE');
+  }
 
   // Mint the public accept token (expiry = quote.expiryDate if future, else +30d).
   const { token } = await createQuoteAcceptToken({
@@ -48,7 +58,12 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
   });
   const acceptUrl = `${portalBase()}/quote/${token}`;
 
-  // Post-commit email — never block or fail the send on email/PDF I/O (mirrors invoice send).
+  // Best-effort email, rendered + sent here within the request transaction
+  // (it commits when the handler returns). A failure is swallowed so the send
+  // still commits. NOTE: unlike the invoice path (contractService returns a
+  // deferred so the caller emails AFTER commit), this is not yet truly
+  // post-commit — moving PDF+email outside the request txn is a tracked
+  // follow-up (atom-3); the email-failure swallow keeps the send safe meanwhile.
   let emailed = false;
   try {
     const [org] = await db.select({ billingContact: organizations.billingContact }).from(organizations).where(eq(organizations.id, quote.orgId)).limit(1);

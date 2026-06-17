@@ -5,7 +5,6 @@ import { invoices, invoiceLines } from '../db/schema/invoices';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
-import { revokeQuoteAcceptJti } from './quoteAcceptToken';
 import { computeLineTotal, computeInvoiceTotals } from './invoiceMath';
 
 export interface AcceptQuoteParams {
@@ -26,14 +25,24 @@ type QuoteRow = typeof quotes.$inferSelect;
  * org scope; the public route wraps this in
  * runOutsideDbContext(withSystemDbAccessContext(...)) because it's unauthenticated.
  *
- * Pipeline: guard status → compute content hash → provider.capture →
- * insert quote_acceptances → convert ONE-TIME lines to a draft invoice via
- * invoiceMath → status→converted → revoke the public token jti.
+ * Pipeline: lock quote row → guard status → compute content hash →
+ * provider.capture → insert quote_acceptances → convert ONE-TIME lines to a
+ * draft invoice via invoiceMath → status→converted.
+ *
+ * The caller's context wraps this in ONE Postgres transaction, so the whole
+ * accept is atomic. The opening SELECT ... FOR UPDATE serializes concurrent
+ * accepts of the same quote (double-submit / two tabs): the second transaction
+ * blocks on the row lock, then re-reads status='converted' and 409s — preventing
+ * duplicate acceptances + duplicate draft invoices. Revoking the public token's
+ * jti is left to the caller, post-commit (so a rolled-back accept never revokes).
  */
 export async function acceptQuote(
   params: AcceptQuoteParams
 ): Promise<{ quote: QuoteRow; acceptanceId: string; invoiceId: string }> {
-  const [quote] = await db.select().from(quotes).where(eq(quotes.id, params.quoteId)).limit(1);
+  // FOR UPDATE: serialize concurrent accepts on the same quote (we're already in
+  // the caller's transaction). Without the row lock two READ COMMITTED accepts
+  // both pass the status guard and each create an invoice (atom-1/C2).
+  const [quote] = await db.select().from(quotes).where(eq(quotes.id, params.quoteId)).for('update').limit(1);
   if (!quote) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
@@ -70,7 +79,10 @@ export async function acceptQuote(
       orgId: quote.orgId,
       signerName: captured.signerName,
       signerEmail: captured.signerEmail,
-      ipAddress: params.ipAddress ?? null,
+      // Defense-in-depth: routes already resolve a single validated client IP,
+      // but ip_address is varchar(64) — clamp so a stray long value can never
+      // overflow and roll back the whole accept (C1).
+      ipAddress: params.ipAddress ? params.ipAddress.slice(0, 64) : null,
       userAgent: params.userAgent ?? null,
       quoteSha256,
       acceptanceTokenJti: params.acceptanceTokenJti ?? null,
@@ -141,14 +153,8 @@ export async function acceptQuote(
     })
     .where(eq(quotes.id, quote.id));
 
-  // 4. Best-effort revoke the public token so the link can't be reused.
-  if (params.acceptanceTokenJti) {
-    try {
-      await revokeQuoteAcceptJti(params.acceptanceTokenJti);
-    } catch (err) {
-      console.error('[quoteAcceptService] jti revoke failed', err);
-    }
-  }
+  // Note: the public token's jti is revoked by the CALLER after the transaction
+  // commits (atom-2) — revoking here would fire even if the txn later rolled back.
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, quote.id)).limit(1);
   return { quote: updated!, acceptanceId: acceptance!.id, invoiceId: invoice!.id };
