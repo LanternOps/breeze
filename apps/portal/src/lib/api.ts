@@ -5,7 +5,12 @@
 
 import { navigateTo } from './navigation';
 
-const API_BASE = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+// Client API base. Empty (the default) → same-origin **relative** requests
+// (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
+// is the production + full-stack-dev path and needs no per-origin configuration.
+// Set PUBLIC_API_URL to an absolute origin only for a standalone portal dev server
+// without a proxy, or a genuinely cross-origin API.
+const PUBLIC_API_BASE = import.meta.env.PUBLIC_API_URL || '';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
 
@@ -35,25 +40,29 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 function resolveApiBase(): string {
-  // Server-side (SSR): there is no window to rewrite the loopback host against,
-  // so the same-origin trick used on the client doesn't apply. The portal
+  // Server-side (SSR): there is no window to derive same-origin from. The portal
   // container reaches the API over the internal network (e.g. http://api:3001)
   // via INTERNAL_API_URL. Fall back to PUBLIC_API_URL, then the dev default.
   if (typeof window === 'undefined') {
-    const internal =
+    const fromEnv =
       (typeof process !== 'undefined' &&
         process.env &&
         (process.env.INTERNAL_API_URL || process.env.PUBLIC_API_URL)) ||
       '';
-    return (internal || API_BASE).replace(/\/+$/, '');
+    return (fromEnv || PUBLIC_API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
   }
 
-  if (!API_BASE) {
+  // Client: empty base → same-origin relative requests (return ''). buildPortalApiUrl
+  // then produces `/api/v1/...`, which the reverse proxy routes to the API. This
+  // avoids the localhost:PORT trap (a loopback rewrite can't fix a port mismatch).
+  if (!PUBLIC_API_BASE) {
     return '';
   }
 
+  // Explicit absolute base: normalize, rewriting a loopback host to the current
+  // origin for dev convenience.
   try {
-    const parsed = new URL(API_BASE, window.location.origin);
+    const parsed = new URL(PUBLIC_API_BASE, window.location.origin);
     const windowHostname = window.location.hostname;
 
     if (isLoopbackHostname(windowHostname) && parsed.hostname !== windowHostname) {
@@ -67,7 +76,7 @@ function resolveApiBase(): string {
 
     return parsed.origin;
   } catch {
-    return API_BASE;
+    return PUBLIC_API_BASE;
   }
 }
 
