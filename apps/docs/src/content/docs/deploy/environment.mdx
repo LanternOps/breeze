@@ -288,3 +288,33 @@ Two rate-limit tiers protect the API. The generic per-user limit covers logged-i
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Anthropic API key for AI assistant (BYOK) |
+| `ANTHROPIC_BASE_URL` | — | **Self-hosted only.** Point the AI Agent at an Anthropic-compatible `/v1/messages` backend (vLLM 0.23+, LiteLLM). Must be an `http(s)` URL. Refused at boot when `IS_HOSTED=true`. |
+| `ANTHROPIC_AUTH_TOKEN` | — | Bearer token for the custom backend (use instead of `ANTHROPIC_API_KEY` when `ANTHROPIC_BASE_URL` is set). |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Override the default model id for a raw vLLM backend. Leave unset with a LiteLLM gateway that aliases `claude-sonnet-4-6` → your model. |
+
+### Self-hosted: alternative Anthropic-compatible backends
+
+A self-hosted operator can run the AI Agent against any backend that speaks the
+Anthropic `/v1/messages` dialect — keeping full tool-use and the `aiGuardrails`
+stack — by setting:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8000   # your vLLM / LiteLLM endpoint
+ANTHROPIC_AUTH_TOKEN=<backend bearer token>
+# Raw vLLM only — match the served model id (skip with a LiteLLM alias):
+ANTHROPIC_MODEL=<served-model-id>
+```
+
+The recommended route is a **LiteLLM gateway** that aliases `claude-sonnet-4-6`
+to your backend model, so no `ANTHROPIC_MODEL` override is needed. For an
+OpenAI-dialect-only endpoint, use the separate `MCP_LLM_*` openai-compatible
+path instead (chat-only, no tool-use).
+
+`ANTHROPIC_BASE_URL` is **fail-closed on the hosted platform**: the API refuses
+to boot if it is set while `IS_HOSTED=true`, and the value is stripped from the
+SDK subprocess environment — so it can never redirect the hosted platform's AI
+traffic to a third-party endpoint.
+
+Cost tracking is best-effort: the SDK prices usage against the Anthropic model
+id, so a non-Anthropic backend reports `$0`. Operators who need exact cost
+accounting should use the openai-compatible path's `MCP_LLM_PRICE_*` overrides.

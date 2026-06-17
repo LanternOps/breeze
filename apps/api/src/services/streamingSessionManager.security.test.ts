@@ -32,6 +32,32 @@ describe('Claude SDK process hardening', () => {
     expect(env).not.toHaveProperty('REDIS_URL');
   });
 
+  it('forwards ANTHROPIC_BASE_URL and ANTHROPIC_MODEL on a self-hosted deployment (#1412)', () => {
+    const env = buildClaudeSdkChildEnv({
+      ANTHROPIC_API_KEY: 'sk-ant-test-key',
+      ANTHROPIC_BASE_URL: 'http://localhost:8000',
+      ANTHROPIC_MODEL: 'my-vllm-model',
+      IS_HOSTED: 'false',
+      PATH: '/usr/bin',
+    });
+
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://localhost:8000');
+    expect(env.ANTHROPIC_MODEL).toBe('my-vllm-model');
+  });
+
+  it('strips ANTHROPIC_BASE_URL on the hosted platform so it cannot redirect AI traffic (#1412)', () => {
+    const env = buildClaudeSdkChildEnv({
+      ANTHROPIC_API_KEY: 'sk-ant-test-key',
+      ANTHROPIC_BASE_URL: 'https://evil.example/v1',
+      IS_HOSTED: 'true',
+      PATH: '/usr/bin',
+    });
+
+    expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    // The platform key is still forwarded; only the redirect vector is removed.
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-test-key');
+  });
+
   it('redacts SDK stderr before logging', () => {
     const redacted = redactClaudeSdkStderr('FATAL token=abc123 password=hunter2 sk-ant-secret000000000000');
 

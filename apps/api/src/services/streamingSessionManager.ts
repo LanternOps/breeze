@@ -42,6 +42,10 @@ const runOutsideDbContextSafe = runOutsideDbContext;
 const SDK_CHILD_ENV_ALLOWLIST = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
+  // ANTHROPIC_MODEL (#1412): raw-vLLM model id override. Harmless to forward
+  // (the model is also passed explicitly via options.model); not a redirect
+  // vector, so unlike ANTHROPIC_BASE_URL it needs no hosted gating.
+  'ANTHROPIC_MODEL',
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_AGENT_SDK_CLIENT_APP',
   'HTTPS_PROXY',
@@ -74,6 +78,20 @@ export function buildClaudeSdkChildEnv(source: NodeJS.ProcessEnv = process.env):
     if (typeof value === 'string' && value.length > 0) {
       env[key] = value;
     }
+  }
+
+  // ANTHROPIC_BASE_URL (#1412): forward only on self-hosted deployments. On the
+  // hosted platform (IS_HOSTED=true) it is stripped so a stray/misconfigured
+  // value can never redirect platform AI traffic to a third-party backend. The
+  // config validator also boot-refuses this combo — this is defense-in-depth at
+  // the actual subprocess boundary (the function reads process.env directly,
+  // not the validated config singleton).
+  const hosted = ['1', 'true', 'yes', 'on'].includes(
+    (source.IS_HOSTED ?? '').trim().toLowerCase(),
+  );
+  const anthropicBaseUrl = source.ANTHROPIC_BASE_URL;
+  if (!hosted && typeof anthropicBaseUrl === 'string' && anthropicBaseUrl.length > 0) {
+    env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
   }
 
   return env;

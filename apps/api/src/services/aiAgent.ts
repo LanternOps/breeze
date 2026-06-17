@@ -19,7 +19,15 @@ import { getActiveDeviceContext } from './brainDeviceContext';
 // Current model id so the Claude Agent SDK can price it natively. A stale id makes the
 // SDK report total_cost_usd: 0 → $0.00 cost tracking (issue #1326). Successor to the
 // previous default claude-sonnet-4-5-20250929, at the same $3/$15 per-MTok tier.
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
+//
+// ANTHROPIC_MODEL (#1412) overrides the default for self-hosted operators
+// pointing at a raw vLLM backend whose served model id differs from the
+// Anthropic alias. With a LiteLLM gateway the alias route maps
+// claude-sonnet-4-6 → backend model, so the override is unnecessary there.
+// Cost tracking stays best-effort: the SDK prices against the Anthropic id, so
+// a non-Anthropic backend reports $0 — operators needing exact cost should use
+// the openai-compatible path's MCP_LLM_PRICE_* overrides.
+const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-6';
 
 // ============================================
 // Session Management

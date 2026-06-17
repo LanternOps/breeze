@@ -497,6 +497,17 @@ const envSchema = z
     MAILGUN_INBOUND_SIGNING_KEY: z.string().optional(),
     TICKETS_INBOUND_DOMAIN: z.string().optional(),
 
+    // -- Anthropic-compatible backend override (#1412) -----------------------
+    // Self-hosted operators can point the AI Agent at any Anthropic
+    // /v1/messages-dialect backend (local vLLM 0.23+, a LiteLLM gateway) while
+    // keeping full tool-use + the aiGuardrails stack — the SDK already honors
+    // ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN. Validated as http(s) and
+    // fail-closed when IS_HOSTED=true (see superRefine) so a stray value can
+    // never redirect the platform's AI traffic. ANTHROPIC_MODEL overrides the
+    // default model id for raw vLLM (no LiteLLM alias).
+    ANTHROPIC_BASE_URL: z.string().optional(),
+    ANTHROPIC_MODEL: z.string().optional(),
+
     // -- Alternative LLM backend (openai-compatible, e.g. vLLM) ---------------
     // Off by default. Chat-only PoC; tool-calling is not supported on this path.
     MCP_LLM_PROVIDER: z.enum(['anthropic', 'openai-compatible']).default('anthropic'),
@@ -578,6 +589,41 @@ const envSchema = z
         path: ['JWT_ACTIVE_KID'],
         message: 'JWT_ACTIVE_KID is set but JWT_SIGNING_KEYRING is empty.',
       });
+    }
+
+    // ANTHROPIC_BASE_URL (#1412): when set it must be a well-formed http(s)
+    // URL, and it is fail-closed on the hosted platform. Enforced in every
+    // environment so a misconfig is caught at boot, not at first AI request.
+    const anthropicBaseUrl = data.ANTHROPIC_BASE_URL?.trim();
+    if (anthropicBaseUrl) {
+      const isHostedDeploy = ['true', '1', 'yes', 'on'].includes(
+        (data.IS_HOSTED ?? '').trim().toLowerCase(),
+      );
+      if (isHostedDeploy) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['ANTHROPIC_BASE_URL'],
+          message:
+            'ANTHROPIC_BASE_URL must not be set when IS_HOSTED=true. Redirecting AI traffic to a '
+            + 'custom backend is a self-hosted-only feature; on the hosted platform it is refused '
+            + 'so a stray value cannot route platform AI traffic to a third-party endpoint.',
+        });
+      }
+      let parsedUrl: URL | null = null;
+      try {
+        parsedUrl = new URL(anthropicBaseUrl);
+      } catch {
+        parsedUrl = null;
+      }
+      if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['ANTHROPIC_BASE_URL'],
+          message:
+            'ANTHROPIC_BASE_URL must be a well-formed http(s) URL (e.g. http://localhost:8000 or '
+            + 'https://litellm.internal/v1).',
+        });
+      }
     }
 
     // MCP_LLM_PROVIDER openai-compatible: vLLM endpoint + auth + model id required at boot
@@ -1235,6 +1281,8 @@ export function validateConfig(): AppConfig {
     E2E_MODE: env.E2E_MODE,
     PARTNER_HOOKS_URL: env.PARTNER_HOOKS_URL,
     PARTNER_HOOKS_SECRET: env.PARTNER_HOOKS_SECRET,
+    ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
+    ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,
     MCP_LLM_PROVIDER: env.MCP_LLM_PROVIDER,
     MCP_LLM_BASE_URL: env.MCP_LLM_BASE_URL,
     MCP_LLM_API_KEY: env.MCP_LLM_API_KEY,
