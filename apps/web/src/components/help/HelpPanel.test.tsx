@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useHelpStore } from '@/stores/helpStore';
 import HelpPanel from './HelpPanel';
@@ -52,5 +52,26 @@ describe('HelpPanel keyboard shortcut', () => {
       new KeyboardEvent('keydown', { key: 'h', metaKey: true, bubbles: true })
     );
     expect(useHelpStore.getState().isOpen).toBe(false);
+  });
+});
+
+// #1419: the off-canvas shell stays mounted (transition:persist), so when
+// collapsed it must be inert + pointer-events-none — otherwise it intercepts
+// clicks on wide layouts and exposes an off-viewport Close control.
+describe('HelpPanel collapsed-shell interactivity', () => {
+  it('is inert and pointer-events-none when collapsed', () => {
+    useHelpStore.setState({ isOpen: false });
+    render(<HelpPanel />);
+    const shell = screen.getByTestId('help-panel');
+    expect(shell).toHaveAttribute('inert');
+    expect(shell.className).toContain('pointer-events-none');
+  });
+
+  it('is interactive (no inert, no pointer-events-none) when open', () => {
+    useHelpStore.setState({ isOpen: true });
+    render(<HelpPanel />);
+    const shell = screen.getByTestId('help-panel');
+    expect(shell).not.toHaveAttribute('inert');
+    expect(shell.className).not.toContain('pointer-events-none');
   });
 });
