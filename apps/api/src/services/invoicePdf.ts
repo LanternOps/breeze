@@ -452,7 +452,7 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
 }
 
 /** Pull an email address out of the organizations.billing_contact JSONB blob. */
-function resolveBillingEmail(billingContact: unknown): string | null {
+export function resolveBillingEmail(billingContact: unknown): string | null {
   if (billingContact && typeof billingContact === 'object') {
     const email = (billingContact as { email?: unknown }).email;
     if (typeof email === 'string' && email.includes('@')) return email;

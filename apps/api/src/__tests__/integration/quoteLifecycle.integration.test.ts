@@ -1,0 +1,77 @@
+import './setup';
+import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { quotes } from '../../db/schema/quotes';
+import { createPartner, createOrganization } from './db-utils';
+import { createQuote, addManualLine } from '../../services/quoteService';
+import { sendQuote, markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
+import type { QuoteActor } from '../../services/quoteTypes';
+
+const runDb = it.runIf(!!process.env.DATABASE_URL);
+
+async function seed() {
+  return withSystemDbAccessContext(async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    return { partner, org };
+  });
+}
+function ctxFor(orgId: string, partnerId: string): DbAccessContext {
+  return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [partnerId], userId: null };
+}
+function actorFor(orgId: string, partnerId: string): QuoteActor {
+  return { userId: null, partnerId, accessibleOrgIds: [orgId] };
+}
+
+describe('quote lifecycle', () => {
+  runDb('sendQuote assigns a number, sets sent + sentAt, returns an accept URL', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 100, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+
+    const result = await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    expect(result.quote.status).toBe('sent');
+    expect(result.quote.quoteNumber).toMatch(/^Q-\d{4}-\d{4}$/);
+    expect(result.quote.sentAt).toBeTruthy();
+    expect(result.acceptUrl).toContain('/quote/');
+  });
+
+  runDb('markQuoteViewed flips sent→viewed and stamps first_viewed_at once', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    await markQuoteViewed(created.id, org.id);
+    const [v1] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
+    expect(v1!.status).toBe('viewed');
+    const firstViewed = v1!.firstViewedAt;
+    await markQuoteViewed(created.id, org.id); // idempotent
+    const [v2] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
+    expect(v2!.firstViewedAt).toEqual(firstViewed);
+  });
+
+  runDb('declineQuoteByActor sets declined + reason', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    const declined = await withDbAccessContext(ctx, () => declineQuoteByActor(created.id, 'Budget cut', actor));
+    expect(declined.status).toBe('declined');
+    expect(declined.declineReason).toBe('Budget cut');
+    expect(declined.declinedAt).toBeTruthy();
+  });
+
+  runDb('sendQuote rejects a non-draft', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    await expect(withDbAccessContext(ctx, () => sendQuote(created.id, actor))).rejects.toMatchObject({ status: 409 });
+  });
+});
