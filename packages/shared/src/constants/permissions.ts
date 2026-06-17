@@ -10,8 +10,7 @@
 // fails to compile instead of silently never matching.
 //
 // NB: named PERMISSION_GRANTS (not PERMISSIONS) to avoid colliding with the
-// older nested PERMISSIONS constant in this package. The API re-exports this as
-// `PERMISSIONS` from services/permissions.ts.
+// older nested PERMISSIONS constant in this package.
 export const PERMISSION_GRANTS = {
   // Backup / recovery
   BACKUP_READ: { resource: 'backup', action: 'read' },

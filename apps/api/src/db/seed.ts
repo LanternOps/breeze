@@ -96,7 +96,15 @@ export function resolveBootstrapAdminConfig(
 }
 
 // Default permissions
-const DEFAULT_PERMISSIONS = [
+//
+// Exported for the seed↔registry consistency test (seed.test.ts), which
+// asserts every resource:action referenced by SYSTEM_ROLES below exists here.
+// This is intentionally a subset of PERMISSION_GRANTS (the shared registry):
+// the registry may define permissions no system role grants yet (e.g.
+// time_entries:*, automations:*) without those needing a seeded row — only
+// permissions a system role actually references must be seeded, or seedRoles
+// silently drops the grant.
+export const DEFAULT_PERMISSIONS = [
   // Backup / recovery
   { resource: 'backup', action: 'read', description: 'View backup and recovery resources' },
   { resource: 'backup', action: 'write', description: 'Create and manage backup and recovery resources' },
@@ -175,7 +183,8 @@ const DEFAULT_PERMISSIONS = [
 ];
 
 // Default system roles
-const SYSTEM_ROLES = [
+// Exported for the seed↔registry consistency test (seed.test.ts).
+export const SYSTEM_ROLES = [
   {
     name: 'Partner Admin',
     scope: 'partner' as const,
@@ -719,15 +728,20 @@ export async function seedPermissions() {
   console.log('Seeding permissions...');
 
   for (const perm of DEFAULT_PERMISSIONS) {
+    // Match on the full (resource, action) pair. The previous existence check
+    // filtered on resource alone with .limit(1), so for a resource with several
+    // actions (e.g. devices read/write/delete/execute) the single returned row
+    // frequently had the wrong action — the .find(action) missed and re-inserted
+    // a duplicate on every re-seed. permissions has no unique constraint to catch
+    // that, and the duplicate ids then let seedRoles slip extra role_permissions
+    // grants past the (role_id, permission_id) PK. Make the dedup exact.
     const existing = await db
       .select()
       .from(permissions)
-      .where(eq(permissions.resource, perm.resource))
+      .where(and(eq(permissions.resource, perm.resource), eq(permissions.action, perm.action)))
       .limit(1);
 
-    const match = existing.find(e => e.action === perm.action);
-
-    if (!match) {
+    if (existing.length === 0) {
       await db.insert(permissions).values(perm);
       console.log('  Created permission:', perm.resource + ':' + perm.action);
     }
@@ -785,11 +799,14 @@ export async function seedRoles() {
         continue;
       }
       // Permission may already be assigned (re-seed, or a duplicate key in
-      // roleDef.permissions). Let the DB no-op on the (role_id, permission_id)
-      // PK conflict rather than catching a unique_violation — postgres.js wraps
-      // the error in a DrizzleQueryError, so the pg `23505` code lives on
-      // err.cause, not err, and a hand-rolled catch silently re-throws it.
-      // Any genuine error (RLS, FK, connection loss) still surfaces.
+      // roleDef.permissions). This PR added the (role_id, permission_id)
+      // composite PK and switched to onConflictDoNothing so the DB no-ops on a
+      // re-seed. A hand-rolled catch is the wrong tool here: it would have
+      // checked `err.code === '23505'`, but under Drizzle's DrizzleQueryError
+      // wrapper `err.code` is undefined (the pg `23505` lives on `err.cause`),
+      // so the catch would have re-thrown the conflict and broken re-seeding.
+      // onConflictDoNothing absorbs only the PK conflict — any genuine error
+      // (RLS, FK, connection loss) still surfaces.
       await db
         .insert(rolePermissions)
         .values({ roleId, permissionId: permId })
