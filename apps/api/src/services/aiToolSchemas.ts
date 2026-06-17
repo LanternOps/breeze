@@ -974,6 +974,27 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     includeVersionHistory: z.boolean().optional(),
     includeExecutionStats: z.boolean().optional(),
   }),
+  // Script-library read tools used by the script-builder assistant. These were
+  // wired through TOOL_TIERS + TOOL_PERMISSIONS (#1457) but lacked an input
+  // schema here, so validateToolInput rejected every call ("No input schema
+  // defined") — the tool surfaced past the guardrail yet still never executed.
+  // Shapes mirror the script-builder tool registrations in scriptBuilderTools.ts.
+  list_scripts: z.object({
+    search: z.string().max(200).optional(),
+    category: z.string().optional(),
+    language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
+    osType: z.enum(['windows', 'macos', 'linux']).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  list_script_templates: z.object({
+    search: z.string().max(200).optional(),
+    category: z.string().optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  get_script_execution_history: z.object({
+    scriptId: uuid,
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
 
   // Monitoring tools
   query_monitors: z.object({

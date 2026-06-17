@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import { TOOL_PERMISSIONS, checkGuardrails } from './aiGuardrails';
 import { SCRIPT_BUILDER_TOOL_TIERS } from './scriptBuilderTools';
+import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 
 /**
  * Guard against the "Unknown tool" regression (script-builder could not search
@@ -76,5 +77,35 @@ describe('script-builder context tools are fully wired for the session guardrail
     expect(result.allowed).toBe(true);
     expect(result.tier).toBe(1);
     expect(result.requiresApproval).toBe(false);
+  });
+
+  // The THIRD map: validateToolInput rejects any tool missing from
+  // toolInputSchemas ("No input schema defined for tool"), so a tool can clear
+  // TOOL_TIERS and TOOL_PERMISSIONS above and STILL never execute. That was the
+  // #1457 follow-on bug — list_scripts surfaced past the guard but every call
+  // was rejected for lack of a schema, and the AI looped until it gave up.
+  it.each(SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS)(
+    '%s has a registered input schema (validateToolInput would otherwise reject every call)',
+    (toolName) => {
+      expect(
+        toolInputSchemas[toolName],
+        `${toolName} is missing from toolInputSchemas — validateToolInput rejects input as "No input schema defined for tool"`,
+      ).toBeDefined();
+    },
+  );
+
+  it('validateToolInput accepts a no-arg list_scripts call (the script-builder default)', () => {
+    expect(validateToolInput('list_scripts', {})).toEqual({ success: true });
+  });
+
+  it('validateToolInput accepts representative library-tool inputs', () => {
+    expect(validateToolInput('list_scripts', { search: 'backup', language: 'powershell', limit: 5 }).success).toBe(true);
+    expect(validateToolInput('list_script_templates', { category: 'Maintenance' }).success).toBe(true);
+    expect(
+      validateToolInput('get_script_execution_history', {
+        scriptId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        limit: 10,
+      }).success,
+    ).toBe(true);
   });
 });
