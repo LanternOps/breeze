@@ -7,9 +7,15 @@ import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+// Partner scope is detected from the JWT claims, NOT from useOrgStore().partners
+// (that array is system-scope-only and is always [] for a real partner user — #1425).
+vi.mock('@/lib/authScope', () => ({
+  getJwtClaims: () => ({ scope: 'partner', partnerId: 'p-1', orgId: null }),
+}));
 vi.mock('@/stores/orgStore', () => ({
   useOrgStore: () => ({
-    partners: [{ id: 'p-1', name: 'MSP' }],
+    // partners is empty for a real partner-scope user (403 on /orgs/partners).
+    partners: [],
     organizations: [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Beta' }],
   }),
 }));

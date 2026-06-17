@@ -5,6 +5,7 @@ import { extractApiError } from '@/lib/apiError';
 import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '@/stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -383,8 +384,9 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
   // Partner-wide create controls (#1425). Only surfaced for partner-scope users
   // with more than one org; org-scope users always create for their own org and
   // the backend ignores these.
-  const { partners, organizations: scopeOrganizations } = useOrgStore();
-  const isPartnerScope = partners.length > 0;
+  const { organizations: scopeOrganizations } = useOrgStore();
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
   const showAvailabilityPicker = isNew && isPartnerScope && scopeOrganizations.length > 1;
   const [availability, setAvailability] = useState<Availability>('partner');
   const [availabilityOrgId, setAvailabilityOrgId] = useState('');
