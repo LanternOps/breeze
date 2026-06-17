@@ -4,7 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import QuotesPage from './QuotesPage';
 import { fetchWithAuth } from '../../../stores/auth';
 
-vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 const showToast = vi.fn();

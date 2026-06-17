@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
+import { usePermissions } from '../../../lib/permissions';
 import { Dialog } from '../../shared/Dialog';
 import { listQuotes, createQuote } from '../../../lib/api/quotes';
 import {
@@ -67,6 +68,8 @@ const num = (s: string | null | undefined) => { const n = Number(s); return Numb
 const ts = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
 
 export default function QuotesPage() {
+  const { can } = usePermissions();
+  const canWrite = can('quotes', 'write');
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -218,14 +221,16 @@ export default function QuotesPage() {
             Build proposals with rich blocks and recurring pricing, then send them to customers.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          data-testid="quotes-create-open"
-          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          New quote
-        </button>
+        {canWrite && (
+          <button
+            type="button"
+            onClick={openCreate}
+            data-testid="quotes-create-open"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            New quote
+          </button>
+        )}
       </div>
 
       {/* Toolbar: search + filters */}
@@ -295,14 +300,16 @@ export default function QuotesPage() {
             <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
               Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.
             </p>
-            <button
-              type="button"
-              onClick={openCreate}
-              className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-              data-testid="quotes-empty-new"
-            >
-              New quote
-            </button>
+            {canWrite && (
+              <button
+                type="button"
+                onClick={openCreate}
+                className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                data-testid="quotes-empty-new"
+              >
+                New quote
+              </button>
+            )}
           </div>
         ) : rows.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="quotes-no-match">

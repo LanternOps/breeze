@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
+import { usePermissions } from '../../../lib/permissions';
 import {
   addBlock,
   deleteBlock,
@@ -44,6 +45,8 @@ interface Props {
 }
 
 export default function QuoteEditor({ detail, onChanged }: Props) {
+  const { can } = usePermissions();
+  const canWrite = can('quotes', 'write');
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
 
@@ -245,6 +248,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 currency={currency}
                 catalog={catalog}
                 busy={busy}
+                canWrite={canWrite}
                 onAddCatalog={addCatalog}
                 onAddManual={addManual}
                 onRemoveLine={deleteLine}
@@ -254,6 +258,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           )}
 
           {/* Add block */}
+          {canWrite && (
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-add-block">
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Add block</h3>
             <div className="mb-3 flex flex-wrap gap-2">
@@ -319,6 +324,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               </button>
             </div>
           </div>
+          )}
         </div>
 
         {/* ── live totals ────────────────────────────────────────────── */}
@@ -365,13 +371,14 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, lines, currency, catalog, busy, onAddCatalog, onAddManual, onRemoveLine, onRemoveBlock,
+  block, lines, currency, catalog, busy, canWrite, onAddCatalog, onAddManual, onRemoveLine, onRemoveBlock,
 }: {
   block: QuoteBlock;
   lines: QuoteLine[];
   currency: string;
   catalog: CatalogItem[];
   busy: boolean;
+  canWrite: boolean;
   onAddCatalog: (blockId: string, item: CatalogItem) => void;
   onAddManual: (
     blockId: string,
@@ -405,15 +412,17 @@ function BlockCard({
           {BLOCK_TYPE_LABELS[block.blockType] ?? block.blockType}
           {isTable && tableLabel ? ` · ${tableLabel}` : ''}
         </span>
-        <button
-          type="button"
-          onClick={() => onRemoveBlock(block)}
-          disabled={busy}
-          data-testid={`quote-block-remove-${block.id}`}
-          className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-        >
-          Remove
-        </button>
+        {canWrite && (
+          <button
+            type="button"
+            onClick={() => onRemoveBlock(block)}
+            disabled={busy}
+            data-testid={`quote-block-remove-${block.id}`}
+            className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            Remove
+          </button>
+        )}
       </div>
 
       <div className="p-4">
@@ -460,15 +469,17 @@ function BlockCard({
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
                       <td className="px-2 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => onRemoveLine(l.id)}
-                          disabled={busy}
-                          data-testid={`quote-line-remove-${l.id}`}
-                          className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                        >
-                          Remove
-                        </button>
+                        {canWrite && (
+                          <button
+                            type="button"
+                            onClick={() => onRemoveLine(l.id)}
+                            disabled={busy}
+                            data-testid={`quote-line-remove-${l.id}`}
+                            className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -477,6 +488,7 @@ function BlockCard({
             </table>
 
             {/* Add line to this pricing table */}
+            {canWrite && (
             <div className="rounded-md border bg-background/40 p-3" data-testid={`quote-block-add-line-${block.id}`}>
               <div className="mb-2 flex gap-2">
                 {(['catalog', 'manual'] as const).map((m) => (
@@ -566,6 +578,7 @@ function BlockCard({
                 </div>
               )}
             </div>
+            )}
           </div>
         )}
       </div>

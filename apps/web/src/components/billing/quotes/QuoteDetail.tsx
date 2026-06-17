@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { handleActionError } from '../../../lib/runAction';
+import { usePermissions } from '../../../lib/permissions';
 import { quotePdfUrl } from '../../../lib/api/quotes';
 import {
   type QuoteDetail as QuoteDetailData,
@@ -24,6 +25,7 @@ interface Props {
 }
 
 export default function QuoteDetail({ detail }: Props) {
+  const { can } = usePermissions();
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
 
@@ -144,26 +146,34 @@ export default function QuoteDetail({ detail }: Props) {
 
           {/* Actions */}
           <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => void downloadPdf()}
-              disabled={busy}
-              data-testid="quote-download-pdf"
-              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              Download PDF
-            </button>
+            {/* PDF download is a read affordance — quotes has no dedicated export
+                action, so it's gated on quotes:read (visible to anyone who can view
+                the quote). */}
+            {can('quotes', 'read') && (
+              <button
+                type="button"
+                onClick={() => void downloadPdf()}
+                disabled={busy}
+                data-testid="quote-download-pdf"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Download PDF
+              </button>
+            )}
             {/* Sending is Phase 2 — show the affordance disabled so the surface is
-                discoverable without implying it works yet. */}
-            <button
-              type="button"
-              disabled
-              title="Sending quotes is coming soon"
-              data-testid="quote-send-disabled"
-              className="inline-flex w-full cursor-not-allowed items-center justify-center rounded-md border px-4 py-2 text-sm font-medium opacity-50"
-            >
-              Send (coming soon)
-            </button>
+                discoverable without implying it works yet. Gated on quotes:send so
+                only operators who will be able to send ever see it. */}
+            {can('quotes', 'send') && (
+              <button
+                type="button"
+                disabled
+                title="Sending quotes is coming soon"
+                data-testid="quote-send-disabled"
+                className="inline-flex w-full cursor-not-allowed items-center justify-center rounded-md border px-4 py-2 text-sm font-medium opacity-50"
+              >
+                Send (coming soon)
+              </button>
+            )}
           </div>
         </div>
       </div>
