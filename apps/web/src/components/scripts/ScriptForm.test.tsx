@@ -33,8 +33,12 @@ vi.mock('@/stores/scriptAiStore', () => ({
 // Partner-scope gate (#1386 sibling): the availability picker keys off the JWT
 // scope claim, not `useOrgStore().partners`. Mock both so the gate is testable.
 const { getJwtClaimsMock, orgStoreMock } = vi.hoisted(() => ({
-  getJwtClaimsMock: vi.fn(() => ({ scope: 'partner', partnerId: 'p-1', orgId: null })),
-  orgStoreMock: vi.fn(() => ({ organizations: [], partners: [], sites: [] }))
+  getJwtClaimsMock: vi.fn<() => { scope: 'system' | 'partner' | 'organization' | null; partnerId: string | null; orgId: string | null }>(
+    () => ({ scope: 'partner', partnerId: 'p-1', orgId: null })
+  ),
+  orgStoreMock: vi.fn<() => { organizations: Array<{ id: string; name: string }>; partners: unknown[]; sites: unknown[] }>(
+    () => ({ organizations: [], partners: [], sites: [] })
+  )
 }));
 
 vi.mock('@/lib/authScope', async () => {
