@@ -128,9 +128,9 @@ services:
       NODE_ENV: development
       HOST: 0.0.0.0
       PORT: 4322
-      PORTAL_BASE_PATH: /c
+      PORTAL_BASE_PATH: /portal
     healthcheck:
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4322/c/login']
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4322/portal/login']
       start_period: 60s
 
   coturn:

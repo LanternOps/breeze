@@ -24,7 +24,7 @@ COPY apps/portal ./apps/portal
 WORKDIR /app/apps/portal
 
 # Base path the dev server serves under (matches the Caddy carve-out).
-ENV PORTAL_BASE_PATH=/c
+ENV PORTAL_BASE_PATH=/portal
 
 # Expose port
 EXPOSE 4322

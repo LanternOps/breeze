@@ -410,7 +410,16 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
   let emailed = false;
   let reason: SendInvoiceResult['reason'];
   if (emailService && recipient) {
-    const portalLink = `${(process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '')}/portal/invoices/${invoiceId}`;
+    // The customer portal is served under PUBLIC_PORTAL_URL (e.g.
+    // https://<domain>/c); the invoice detail page lives at <portal>/invoices/<id>.
+    // Fall back to the app/dashboard origin when the portal URL isn't configured.
+    const portalBase = (
+      process.env.PUBLIC_PORTAL_URL ||
+      process.env.PUBLIC_APP_URL ||
+      process.env.DASHBOARD_URL ||
+      'http://localhost:4321'
+    ).replace(/\/$/, '');
+    const portalLink = `${portalBase}/invoices/${invoiceId}`;
     const template = buildInvoiceTemplate({
       invoiceNumber: invoice.invoiceNumber ?? '',
       partnerName: partner?.name ?? 'your provider',

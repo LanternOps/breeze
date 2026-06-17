@@ -3,11 +3,11 @@ import react from '@astrojs/react';
 import tailwind from '@astrojs/tailwind';
 import node from '@astrojs/node';
 
-// Base path the portal is served under. Defaults to `/c` so the portal can be
-// reverse-proxied behind the main domain (e.g. https://example.com/c/...) without
+// Base path the portal is served under. Defaults to `/portal` so the portal can be
+// reverse-proxied behind the main domain (e.g. https://example.com/portal/...) without
 // a dedicated hostname. Override with PORTAL_BASE_PATH (build-time) — set to `/`
-// to serve at the root. See docker/Caddyfile.prod for the matching `/c` carve-out.
-const PORTAL_BASE = process.env.PORTAL_BASE_PATH || '/c';
+// to serve at the root. See docker/Caddyfile.prod for the matching `/portal` carve-out.
+const PORTAL_BASE = process.env.PORTAL_BASE_PATH || '/portal';
 
 export default defineConfig({
   output: 'server',

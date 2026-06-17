@@ -10,7 +10,7 @@ export async function navigateTo(path: string, options: NavigateOptions = {}): P
   }
 
   // Callers pass app-relative paths (e.g. "/login"); prefix the portal base path
-  // so navigation works when served under /c. withBase is idempotent and leaves
+  // so navigation works when served under /portal. withBase is idempotent and leaves
   // external URLs untouched.
   const target = withBase(path);
 

@@ -1,7 +1,7 @@
 # ============================================
 # Breeze RMM Customer Portal - Multi-stage Dockerfile
 # ============================================
-# Astro SSR (node standalone) app served under a base path (default /c) behind
+# Astro SSR (node standalone) app served under a base path (default /portal) behind
 # the main domain's reverse proxy. See docker/Caddyfile.prod for the carve-out.
 
 # Stage 1: Base image with pnpm
@@ -27,9 +27,10 @@ WORKDIR /app
 
 ARG NODE_ENV=production
 # Base path the portal is served under. Baked at build time (Astro `base`).
-ARG PORTAL_BASE_PATH=/c
-# PUBLIC_API_URL is intentionally empty: the portal calls the API same-origin
-# (/api/v1/...), which the reverse proxy routes to the API service.
+ARG PORTAL_BASE_PATH=/portal
+# PUBLIC_API_URL is intentionally empty: the browser calls the API same-origin
+# (/api/v1/...), which the reverse proxy routes to the API service. Server-side
+# rendering uses INTERNAL_API_URL at runtime (see docker-compose.yml).
 ARG PUBLIC_API_URL=
 ENV NODE_ENV=${NODE_ENV}
 ENV PORTAL_BASE_PATH=${PORTAL_BASE_PATH}
@@ -58,7 +59,7 @@ RUN apk add --no-cache wget
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=4322
-ENV PORTAL_BASE_PATH=/c
+ENV PORTAL_BASE_PATH=/portal
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \

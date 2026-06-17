@@ -2414,7 +2414,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            PORTAL_BASE_PATH=/c
+            PORTAL_BASE_PATH=/portal
             PUBLIC_API_URL=
           cache-from: type=gha
           cache-to: type=gha,mode=max

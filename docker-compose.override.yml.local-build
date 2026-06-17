@@ -48,10 +48,10 @@ services:
       context: .
       dockerfile: apps/portal/Dockerfile
       args:
-        PORTAL_BASE_PATH: ${PORTAL_BASE_PATH:-/c}
+        PORTAL_BASE_PATH: ${PORTAL_BASE_PATH:-/portal}
         PUBLIC_API_URL: ""
     healthcheck:
-      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider "http://127.0.0.1:4322${PORTAL_BASE_PATH:-/c}/login"']
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider "http://127.0.0.1:4322${PORTAL_BASE_PATH:-/portal}/login"']
       interval: 30s
       timeout: 10s
       retries: 3

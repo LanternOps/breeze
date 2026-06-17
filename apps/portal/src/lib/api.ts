@@ -35,12 +35,21 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 function resolveApiBase(): string {
-  if (!API_BASE) {
-    return '';
+  // Server-side (SSR): there is no window to rewrite the loopback host against,
+  // so the same-origin trick used on the client doesn't apply. The portal
+  // container reaches the API over the internal network (e.g. http://api:3001)
+  // via INTERNAL_API_URL. Fall back to PUBLIC_API_URL, then the dev default.
+  if (typeof window === 'undefined') {
+    const internal =
+      (typeof process !== 'undefined' &&
+        process.env &&
+        (process.env.INTERNAL_API_URL || process.env.PUBLIC_API_URL)) ||
+      '';
+    return (internal || API_BASE).replace(/\/+$/, '');
   }
 
-  if (typeof window === 'undefined') {
-    return API_BASE;
+  if (!API_BASE) {
+    return '';
   }
 
   try {

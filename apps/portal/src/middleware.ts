@@ -51,7 +51,7 @@ const fallbackCspDirectives = [
 ].join('; ');
 
 export const onRequest = defineMiddleware(async (context, next) => {
-  // context.url.pathname includes the configured base (e.g. /c/login); strip it
+  // context.url.pathname includes the configured base (e.g. /portal/login); strip it
   // so the route checks below stay base-agnostic, and re-apply withBase on redirect.
   const pathname = stripBase(context.url.pathname);
   const hasSession = hasPortalSessionCookie(context.request);
