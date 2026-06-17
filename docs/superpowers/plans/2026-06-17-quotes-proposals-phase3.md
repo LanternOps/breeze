@@ -26,7 +26,7 @@ for invoices, and the quotes schema already carries the `expired` enum value, th
 - **Accept → pay.**
   - **Portal pay** (authed): on a converted quote / its invoice, a "Pay now" action
     that mints a Stripe hosted-checkout URL and redirects.
-  - **Public pay-link** (unauthenticated): the public quote page (`/c/quote/<token>`)
+  - **Public pay-link** (unauthenticated): the public quote page (`/portal/quote/<token>`)
     offers payment after acceptance, via a tokized redirect to checkout — for
     prospects without a portal account.
   - Settlement is **webhook-driven** (reuse the existing `checkout.session.completed`
@@ -82,7 +82,7 @@ invoice's status), add it in one idempotent migration with the existing RLS shap
   records (e.g. payment intent ref) run pre-/cross-auth and will silently write 0
   rows under `breeze_app` RLS otherwise (the `rls_silent_zero_row_write` class).
 - **Caddy carve-out** — any new public route under `/api/v1/quotes/public/*` is
-  already covered by the `/api/*` block; the portal page is under `/c/*` (shipped in
+  already covered by the `/api/*` block; the portal page is under `/portal/*` (shipped in
   the portal-deploy PR #1474). Verify no new top-level path needs a carve-out.
 - **At-most-once settlement / no double-charge** — guard the pay action so an
   already-paid (or non-converted) quote can't mint a fresh checkout; mirror Phase 2's
@@ -106,7 +106,7 @@ invoice's status), add it in one idempotent migration with the existing RLS shap
 - Pay (portal + public): accept → convert → pay returns a Stripe checkout URL;
   simulated `checkout.session.completed` webhook marks the converted invoice paid;
   re-initiating pay on a paid quote is rejected.
-- No regression to Phase 2 accept/convert or the portal `/c` routing.
+- No regression to Phase 2 accept/convert or the portal `/portal` routing.
 
 ## Deferred to later plans
 
