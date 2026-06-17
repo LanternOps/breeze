@@ -94,6 +94,43 @@ export default function DevicesPage() {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
+  // #1459 — distinct software names for the filter picker, fetched server-side
+  // (debounced) as the user types so the picker searches the real inventory
+  // instead of falling back to free-text. Passing a defined array also flips
+  // SoftwareMultiSelect out of its `noBackend` CSV fallback.
+  const [softwareOptions, setSoftwareOptions] = useState<string[]>([]);
+  const softwareSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const softwareSearchAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    if (softwareSearchTimerRef.current) clearTimeout(softwareSearchTimerRef.current);
+    softwareSearchAbortRef.current?.abort();
+  }, []);
+  const handleSoftwareSearch = useCallback((q: string) => {
+    if (softwareSearchTimerRef.current) clearTimeout(softwareSearchTimerRef.current);
+    const term = q.trim();
+    if (!term) {
+      setSoftwareOptions([]);
+      return;
+    }
+    softwareSearchTimerRef.current = setTimeout(async () => {
+      softwareSearchAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      softwareSearchAbortRef.current = ctrl;
+      try {
+        const res = await fetchWithAuth(
+          `/software-inventory/names?q=${encodeURIComponent(term)}`,
+          { signal: ctrl.signal }
+        );
+        if (!res.ok) return;
+        const body = await res.json();
+        setSoftwareOptions(Array.isArray(body.data) ? body.data : []);
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        console.warn('Failed to fetch software names:', err);
+      }
+    }, 250);
+  }, []);
+
   // Track every in-flight wake watcher so navigating away aborts the
   // long-running poll loop. Without this, each wake fired on this page
   // keeps polling /devices/:id for up to 4 minutes after unmount and
@@ -851,6 +888,8 @@ export default function DevicesPage() {
             onChange={setAdvancedFilter}
             orgs={orgs}
             sites={sites}
+            softwareOptions={softwareOptions}
+            onSoftwareSearch={handleSoftwareSearch}
           />
           <QuickAddChips value={advancedFilter} onChange={setAdvancedFilter} />
         </div>

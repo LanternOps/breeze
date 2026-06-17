@@ -165,6 +165,27 @@ describe('FilterChipBar', () => {
     expect(lastCall.operator).toBe('hasAll');
   });
 
+  // #1459 — typing in the software picker calls onSoftwareSearch so the parent
+  // can debounce-fetch matching names from the server-side endpoint.
+  it('software picker calls onSoftwareSearch as the user types', () => {
+    const onSoftwareSearch = vi.fn();
+    render(
+      <FilterValueEditor
+        field={getFieldDef('software.installed')!}
+        condition={{ field: 'software.installed', operator: 'hasAny', value: [] }}
+        onChange={vi.fn()}
+        softwareOptions={[]}
+        onSoftwareSearch={onSoftwareSearch}
+      />
+    );
+
+    fireEvent.change(screen.getByTestId('filter-software-search'), {
+      target: { value: 'chrome' }
+    });
+
+    expect(onSoftwareSearch).toHaveBeenCalledWith('chrome');
+  });
+
   // ---- Spec 4.4 — Quick-add chip adds correct condition ----
   it('quick-add chip toggles the canonical condition (add, mark active, remove)', () => {
     const onChange = vi.fn();
