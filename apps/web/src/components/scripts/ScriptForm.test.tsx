@@ -144,6 +144,13 @@ describe('ScriptForm availability picker — partner-scope gate', () => {
     expect(queryByText('Available to')).toBeNull();
   });
 
+  it('hides the picker for a partner-scope user with a null partnerId — guards the `&& !!partnerId` half of the gate', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: null, orgId: null });
+    const { queryByText } = render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(queryByText('Available to')).toBeNull();
+  });
+
   it('hides the picker for a single-org partner user', async () => {
     orgStoreMock.mockReturnValue({
       organizations: [{ id: 'o-1', name: 'Org One' }],
