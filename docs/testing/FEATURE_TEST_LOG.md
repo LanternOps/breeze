@@ -2142,7 +2142,7 @@ Loaded the branch into the local dev Docker stack (rebuilt `api` from the worktr
 - [x] API (real running branch on :3009): login → create quote → add lines → **send (quotes:send)** → status=sent, number assigned, emailed=true; **public GET (unauth)** → sent→viewed; **public accept (unauth typed signature)** → converted; **single-use token** → reuse 401. DB verified: converted invoice total $500.00 = one-time line ONLY ($80 monthly excluded), acceptance row has signer + 64-char content hash + jti.
 - [x] UI dashboard (Playwright, interactive): quotes list shows Phase 2 statuses + a Converted quote; opened a draft; Detail tab shows the real **"Send proposal"** button (not "coming soon"); clicked it → number Q-2026-0002 assigned, status→Sent, button correctly hidden (gated on status==='draft'). Editor offers the **Image** block.
 - [x] UI public page (Playwright, SSR): /quote/<token> renders branded proposal + intro + heading block + pricing table with **only the customer-visible line** (a customerVisible:false line was correctly filtered out) + typed-signature accept form.
-- [~] UI public **Accept button click**: not exercised in dev — see Notes. Logic covered by API + quotesPublicRoutes.integration.test.ts.
+- [x] UI public **Accept button click** (verified on a PRODUCTION build, :4334 via `astro build` + node adapter): the React island hydrated, the typed-signature Accept fired, and the page transitioned to "Thank you — your acceptance has been recorded." DB confirmed quote→converted, invoice total $640.00 (one-time), acceptance "Casey Customer" + 64-char hash + jti.
 
 ### Evidence
 - Converted invoice: status=draft, total=500.00 (one-time only); invoice_lines = ["Onboarding setup" $500.00].
@@ -2150,7 +2150,7 @@ Loaded the branch into the local dev Docker stack (rebuilt `api` from the worktr
 - Dashboard: heading "Draft quote" → "Q-2026-0002", status badge Draft → Sent after clicking Send.
 
 ### Issues found
-- None in the feature. The public Accept button could not be clicked through `astro dev` because (1) the portal's hardened CSP `script-src 'self'` blocks astro dev-mode inline hydration scripts (production uses external hashed module scripts → works), and (2) the dev CSP `connect-src` allows only :3001 while this test ran the API on :3009. Both are environmental; the accept path is fully covered by the API run + the HTTP-level integration test.
+- None in the feature. The public Accept button does not work under `astro dev` (dev-only): the portal's hardened CSP `script-src 'self'` blocks astro's dev-mode *un-hashed* inline hydration scripts, so the React island never hydrates. RESOLVED by testing a PRODUCTION build (`astro build`), where Astro emits **hashed** inline scripts (`script-src 'self' 'sha256-…'`) → the island hydrates and the Accept button works end-to-end (confirmed above). The accept fetch additionally needs the API origin in `connect-src` — production's `connect-src … https:` (apps/portal/astro.config.mjs:21) covers any HTTPS API; the only reason it failed locally is the test API was HTTP (`http://localhost:3009`). Verified by temporarily adding the local origin to connect-src (reverted after).
 
 ### Notes
 - `apps/portal` is not deployed in prod (no compose service / caddy upstream) — pre-existing gap; the portal/public pages are dormant until a serving layer is added.
