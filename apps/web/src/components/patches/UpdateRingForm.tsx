@@ -199,8 +199,8 @@ export default function UpdateRingForm({
         deferralDaysOverride: r.deferralDaysOverride ?? inheritedHold,
       })),
     };
-    // defaultValues is only read on mount by react-hook-form.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // defaultValues is only read on mount by react-hook-form, so the empty
+    // dependency array is intentional.
   }, []);
 
   const {
