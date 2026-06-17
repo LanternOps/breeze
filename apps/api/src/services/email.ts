@@ -94,7 +94,7 @@ export interface AlertNotificationEmailParams {
   orgName?: string;
 }
 
-interface EmailTemplate {
+export interface EmailTemplate {
   subject: string;
   html: string;
   text: string;
@@ -614,10 +614,10 @@ async function sendViaMailgun(
   }
 }
 
-const BODY_PARA = 'margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;';
-const MUTED_PARA = 'margin: 12px 0 0; font-size: 13px; line-height: 1.55; color: #6b7280;';
+export const BODY_PARA = 'margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;';
+export const MUTED_PARA = 'margin: 12px 0 0; font-size: 13px; line-height: 1.55; color: #6b7280;';
 
-function supportFooter(explicit: string | undefined, prefix: string): string | undefined {
+export function supportFooter(explicit: string | undefined, prefix: string): string | undefined {
   const support = getSupportEmail(explicit);
   return support ? `${prefix} ${support}.` : undefined;
 }
