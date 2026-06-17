@@ -137,7 +137,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
 
       {status === 'converted' && (
         <div data-testid="public-quote-accepted" className="rounded-md bg-success/10 p-4 text-sm text-success">
-          {msg}
+          {msg ?? 'This proposal has already been accepted.'}
         </div>
       )}
       {status === 'declined' && msg && (

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
+import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
 import {
@@ -107,7 +108,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         const uploaded = await runAction<{ imageId: string }>({
           request: () => uploadQuoteImage(quote.id, file),
           errorFallback: 'Could not upload the image.',
-          successMessage: 'Image uploaded',
+          // No success toast: the upload is an internal step of "add image block";
+          // only the final "Image block added" toast below is meaningful (web-2).
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: { imageId: string } }).data,
         });
@@ -504,14 +506,7 @@ function BlockCard({
         {block.blockType === 'image' && (
           imageId ? (
             <figure className="space-y-1" data-testid={`quote-block-image-content-${block.id}`}>
-              {/* Served by GET /quotes/:id/images/:imageId (quotes:read). fetchWithAuth
-                  is not used for <img src>; the route allows a cookie-backed session
-                  and the editor is already an authed surface. */}
-              <img
-                src={quoteImageUrl(quoteId, imageId)}
-                alt={imageCaption || 'Quote image'}
-                className="max-h-64 rounded border"
-              />
+              <QuoteImagePreview quoteId={quoteId} imageId={imageId} caption={imageCaption} />
               {imageCaption && <figcaption className="text-xs text-muted-foreground">{imageCaption}</figcaption>}
             </figure>
           ) : (
@@ -667,4 +662,34 @@ function BlockCard({
       </div>
     </div>
   );
+}
+
+// Editor image preview. GET /quotes/:id/images/:imageId requires the Bearer auth
+// header, so a bare <img src> would 401 (web-1). Mirror QuoteWorkspace's PDF
+// preview: fetchWithAuth → blob → object URL, revoked on unmount/change.
+function QuoteImagePreview({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
+  const [url, setUrl] = useState<string>();
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(quoteImageUrl(quoteId, imageId));
+        if (!res.ok) { if (!cancelled) setFailed(true); return; }
+        const blob = await res.blob();
+        if (cancelled) return;
+        objectUrl = window.URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; if (objectUrl) window.URL.revokeObjectURL(objectUrl); };
+  }, [quoteId, imageId]);
+
+  if (failed) return <p className="text-sm text-muted-foreground">Image preview unavailable.</p>;
+  if (!url) return <div className="h-24 w-full animate-pulse rounded border bg-muted" data-testid="quote-image-loading" />;
+  return <img src={url} alt={caption || 'Quote image'} className="max-h-64 rounded border" />;
 }
