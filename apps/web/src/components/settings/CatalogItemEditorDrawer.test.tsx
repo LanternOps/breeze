@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
 import type { CatalogItem } from '../../lib/api/catalog';
 import * as catalogApi from '../../lib/api/catalog';
+import * as authScope from '../../lib/authScope';
 
 // Keep the real presentation helpers + constants; stub only the network calls.
 vi.mock('../../lib/api/catalog', async (importActual) => {
@@ -20,14 +21,21 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('@/stores/orgStore', () => ({
   useOrgStore: () => ({
-    partners: [{ id: 'p-1', name: 'MSP' }],
     organizations: [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Beta' }],
   }),
 }));
+// Per-org pricing is gated on partner scope, read from the JWT claims (not from
+// useOrgStore().partners, which is system-scope-only — #1368). Default to a
+// partner-scope user; individual tests override the scope as needed.
+vi.mock('../../lib/authScope', async (importActual) => {
+  const actual = await importActual<typeof import('../../lib/authScope')>();
+  return { ...actual, getJwtClaims: vi.fn() };
+});
 
 const getMock = vi.mocked(catalogApi.getCatalogItem);
 const setMock = vi.mocked(catalogApi.setOrgPriceOverride);
 const delMock = vi.mocked(catalogApi.removeOrgPriceOverride);
+const claimsMock = vi.mocked(authScope.getJwtClaims);
 const json = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 500, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
@@ -43,6 +51,8 @@ const detail = (overrides: Array<{ orgId: string; unitPrice: string }>) =>
 describe('CatalogItemEditorDrawer — per-org pricing (#1368)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: a partner-scope user (the audience for per-org pricing).
+    claimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
     getMock.mockResolvedValue(detail([{ orgId: 'org-1', unitPrice: '80.00' }]));
     setMock.mockResolvedValue(json({ data: { id: 'ov-new', catalogItemId: 'item-1', orgId: 'org-2', unitPrice: '70.00' } }));
     delMock.mockResolvedValue(json({ data: { id: 'ov-0', catalogItemId: 'item-1', orgId: 'org-1', unitPrice: '80.00' } }));
@@ -83,6 +93,13 @@ describe('CatalogItemEditorDrawer — per-org pricing (#1368)', () => {
     getMock.mockResolvedValue(json({ data: { item: item({ isBundle: true }), components: [], overrides: [] } }));
     renderDrawer({ item: item({ isBundle: true }) });
     await waitFor(() => expect(screen.getByTestId('catalog-bundle-builder')).toBeInTheDocument());
+    expect(screen.queryByTestId('catalog-org-pricing')).not.toBeInTheDocument();
+  });
+
+  it('hides the section for an org-scope (non-partner) user', async () => {
+    claimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'org-1' });
+    renderDrawer();
+    await waitFor(() => expect(screen.getByTestId('catalog-item-editor')).toBeInTheDocument());
     expect(screen.queryByTestId('catalog-org-pricing')).not.toBeInTheDocument();
   });
 });

@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { loginPathWithNext } from '../../lib/authScope';
+import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { useOrgStore } from '@/stores/orgStore';
 import {
@@ -58,10 +58,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   const { can } = usePermissions();
   const canWrite = can('catalog', 'write');
-  // Per-org overrides are a partner/system surface (an MSP pricing a customer);
-  // mirror the route's scope by gating on partner presence.
-  const { partners, organizations } = useOrgStore();
-  const isPartnerScope = partners.length > 0;
+  // Per-org overrides are a partner surface (an MSP pricing a customer). Detect
+  // partner scope from the JWT claims — useOrgStore().partners is only populated
+  // from a system-scope-only endpoint, so a real partner-scope user gets an empty
+  // array and the section would never render (#1368).
+  const { organizations } = useOrgStore();
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
 
   const [itemType, setItemType] = useState<CatalogItemType>('service');
   const [name, setName] = useState('');
