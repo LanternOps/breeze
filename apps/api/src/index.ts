@@ -318,10 +318,11 @@ app.use(
 
 const startedAt = Date.now();
 
-// Health check — basic liveness with version and uptime
-// NOTE: the agent install.sh connectivity pre-flight greps this body for
-// "status":"ok" (see routes/agents/download.ts) — keep that contract if
-// changing the payload, or healthy installs will report a captive portal.
+// Health check — basic liveness with version and uptime.
+// Consumed by Caddy/k8s probes and monitoring. (The agent install.sh pre-flight
+// used to grep this for "status":"ok"; it now probes /api/v1/agent-versions
+// instead — see routes/agents/download.ts #1470 — so this payload is no longer
+// coupled to the installer.)
 app.get('/health', (c) => {
   const uptimeSeconds = Math.floor((Date.now() - startedAt) / 1000);
   return c.json({
