@@ -6,6 +6,7 @@ import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { formatMoney } from '../../lib/timeFormat';
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
   listCatalog, getCatalogItem, getBundleEconomics, archiveCatalogItem, updateCatalogItem,
   computeMargin, formatMargin, marginTone,
@@ -39,6 +40,9 @@ export default function CatalogItemsTab() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editItem, setEditItem] = useState<CatalogItem | null>(null);
   const [archivingId, setArchivingId] = useState<string | null>(null);
+  // Archive is a soft-delete that pulls the item from active pickers — guard it
+  // behind a confirm step (#1368) instead of acting on a single menu click.
+  const [pendingArchive, setPendingArchive] = useState<CatalogItem | null>(null);
   const [expanded, setExpanded] = useState<Record<string, ExpandState>>({});
 
   // Catalog routes enforce requireScope('partner','system') server-side. Mirror
@@ -374,7 +378,7 @@ export default function CatalogItemsTab() {
                             busy={archivingId === it.id}
                             disabled={archivingId !== null}
                             onEdit={() => openEdit(it)}
-                            onArchive={() => void archive(it.id)}
+                            onArchive={() => setPendingArchive(it)}
                             onRestore={() => void restore(it.id)}
                           />
                         </td>
@@ -438,6 +442,24 @@ export default function CatalogItemsTab() {
         allItems={items}
         onClose={() => setDrawerOpen(false)}
         onSaved={() => void load(view)}
+      />
+
+      <ConfirmDialog
+        open={pendingArchive !== null}
+        onClose={() => setPendingArchive(null)}
+        onConfirm={() => {
+          const target = pendingArchive;
+          setPendingArchive(null);
+          if (target) void archive(target.id);
+        }}
+        title="Archive item"
+        message={pendingArchive
+          ? `Archive "${pendingArchive.name}"? It will be hidden from active pickers (quotes, invoices, bundles). You can restore it from the Archived view.`
+          : ''}
+        confirmLabel="Archive"
+        variant="destructive"
+        isLoading={archivingId !== null && archivingId === pendingArchive?.id}
+        confirmTestId="catalog-archive-confirm"
       />
     </div>
   );

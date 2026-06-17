@@ -69,6 +69,9 @@ export const ticketPartSchema = z.object({
   description: z.string().min(1).max(2_000),
   partNumber: z.string().max(100).optional(),
   vendor: z.string().max(100).optional(),
+  // Optional link to a catalog item the part was added from (#1368). Null
+  // detaches it; description/price stay free-text and editable after picking.
+  catalogItemId: z.string().uuid().nullable().optional(),
   quantity: z.number().positive().multipleOf(0.01),
   unitPrice: z.number().nonnegative().multipleOf(0.01).default(0),
   costBasis: z.number().nonnegative().multipleOf(0.01).nullable().optional(),

@@ -94,13 +94,19 @@ describe('CatalogItemsTab', () => {
     await waitFor(() => expect(detail).toHaveTextContent('60.0%'));
   });
 
-  it('archives an item from the row overflow (kebab) menu', async () => {
+  it('archives an item from the row overflow (kebab) menu — after a confirm step (#1368)', async () => {
     render(<CatalogItemsTab />);
     await screen.findByText('Laptop');
     // Archive is hidden until the kebab is opened.
     expect(screen.queryByTestId('catalog-archive-l1')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('catalog-actions-l1'));
     fireEvent.click(await screen.findByTestId('catalog-archive-l1'));
+
+    // Archive no longer fires on the menu click — a confirm dialog gates it.
+    const confirm = await screen.findByTestId('catalog-archive-confirm');
+    expect(fetchMock.mock.calls.some((c) => String(c[0]) === '/catalog/l1/archive')).toBe(false);
+
+    fireEvent.click(confirm);
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(
         (c) => String(c[0]) === '/catalog/l1/archive' && (c[1] as RequestInit | undefined)?.method === 'POST',
