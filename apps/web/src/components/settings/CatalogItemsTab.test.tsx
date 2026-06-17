@@ -6,6 +6,9 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore (pulled in transitively via the editor drawer's useOrgStore)
+  // registers an org-id provider at module load.
+  registerOrgIdProvider: vi.fn(),
   // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
   // the admin wildcard so every gated control renders and these tests exercise
   // full functionality.
