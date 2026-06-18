@@ -102,7 +102,10 @@ describe('updateTicketStatusSchema', () => {
   it('rejects an empty object', () => {
     const r = updateTicketStatusSchema.safeParse({});
     expect(r.success).toBe(false);
-    if (!r.success) expect(r.error.issues[0].message).toBe('At least one field is required');
+    if (!r.success) {
+      const [issue] = r.error.issues;
+      expect(issue?.message).toBe('At least one field is required');
+    }
   });
   it('accepts a single-field patch', () => {
     expect(updateTicketStatusSchema.safeParse({ isActive: false }).success).toBe(true);

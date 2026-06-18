@@ -268,7 +268,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           diskTotalGb: { type: 'integer', nullable: true },
           serialNumber: { type: 'string', nullable: true },
           manufacturer: { type: 'string', nullable: true },
-          model: { type: 'string', nullable: true }
+          model: { type: 'string', nullable: true },
+          motherboardManufacturer: { type: 'string', nullable: true },
+          motherboardProduct: { type: 'string', nullable: true },
+          motherboardVersion: { type: 'string', nullable: true }
         }
       },
       DeviceMetrics: {

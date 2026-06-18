@@ -37,6 +37,9 @@ export const enrollSchema = z.object({
     serialNumber: z.string().optional(),
     manufacturer: z.string().optional(),
     model: z.string().optional(),
+    motherboardManufacturer: z.string().optional(),
+    motherboardProduct: z.string().optional(),
+    motherboardVersion: z.string().optional(),
     biosVersion: z.string().optional(),
     gpuModel: z.string().optional()
   }).optional(),
@@ -368,6 +371,9 @@ export const updateHardwareSchema = z.object({
   serialNumber: z.string().optional(),
   manufacturer: z.string().optional(),
   model: z.string().optional(),
+  motherboardManufacturer: z.string().optional(),
+  motherboardProduct: z.string().optional(),
+  motherboardVersion: z.string().optional(),
   biosVersion: z.string().optional(),
   gpuModel: z.string().optional()
 });

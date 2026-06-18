@@ -129,3 +129,49 @@ func TestExtractWindowsBuild(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanHardwareIdentityValue(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "keeps real manufacturer", in: "ASUS", want: "ASUS"},
+		{name: "keeps real serial", in: "PF4ABC123456", want: "PF4ABC123456"},
+		{name: "trims real value", in: "  ThinkPad X1 Carbon Gen 12  ", want: "ThinkPad X1 Carbon Gen 12"},
+		{name: "drops system serial placeholder", in: "System Serial Number", want: ""},
+		{name: "drops system product placeholder", in: "System Product Name", want: ""},
+		{name: "drops system manufacturer placeholder", in: "System Manufacturer", want: ""},
+		{name: "drops common OEM placeholder", in: "To Be Filled By O.E.M.", want: ""},
+		{name: "drops default string", in: "Default string", want: ""},
+		{name: "drops not specified", in: "Not Specified", want: ""},
+		{name: "drops all-zero placeholder", in: "00000000", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cleanHardwareIdentityValue(tt.in); got != tt.want {
+				t.Errorf("cleanHardwareIdentityValue(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFirstCleanHardwareIdentityValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []string
+		want   string
+	}{
+		{name: "keeps primary real serial", values: []string{"SERIAL-123", "BOARD-456"}, want: "SERIAL-123"},
+		{name: "falls back when primary is placeholder", values: []string{"System Serial Number", "BOARD-456"}, want: "BOARD-456"},
+		{name: "falls back when primary is empty", values: []string{"", "BOARD-456"}, want: "BOARD-456"},
+		{name: "drops all placeholders", values: []string{"System Serial Number", "To Be Filled By O.E.M."}, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstCleanHardwareIdentityValue(tt.values...); got != tt.want {
+				t.Errorf("firstCleanHardwareIdentityValue(%q) = %q, want %q", tt.values, got, tt.want)
+			}
+		})
+	}
+}

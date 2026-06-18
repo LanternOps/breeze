@@ -31,6 +31,68 @@ func wmicGet(args []string, property string) string {
 	return ""
 }
 
+func powershellWmiPropertyValues(className, property string) []string {
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$items = $null
+if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+  try {
+    $items = Get-CimInstance -ClassName '%s' -ErrorAction Stop
+  } catch {
+    $items = $null
+  }
+}
+if ($null -eq $items -and (Get-Command Get-WmiObject -ErrorAction SilentlyContinue)) {
+  $items = Get-WmiObject -Class '%s' -ErrorAction Stop
+}
+$values = $items |
+  Where-Object { $_.%s } |
+  Select-Object -ExpandProperty '%s'
+foreach ($entry in $values) {
+  if ($null -ne $entry) {
+    [Console]::WriteLine(([string]$entry).Trim())
+  }
+}
+`, className, className, property, property)
+
+	out, err := runCollectorOutput(wmicTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(script))
+	if err != nil {
+		slog.Debug("powershell WMI query failed", "class", className, "property", property, "error", err.Error())
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	values := make([]string, 0)
+	for _, line := range strings.Split(string(out), "\n") {
+		value := strings.TrimSpace(line)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
+}
+
+func powershellWmiFirstProperty(className, property string) string {
+	values := powershellWmiPropertyValues(className, property)
+	if len(values) == 0 {
+		return ""
+	}
+	return truncateCollectorString(values[0])
+}
+
+func powershellWmiJoinedProperties(className, property string) string {
+	values := powershellWmiPropertyValues(className, property)
+	if len(values) == 0 {
+		return ""
+	}
+	return truncateCollectorString(strings.Join(values, "; "))
+}
+
 // enrichOSInfo refines the OS version/build on Windows using the authoritative
 // registry source (HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion):
 //
@@ -75,9 +137,15 @@ func enrichOSInfo(info *SystemInfo) {
 }
 
 func collectPlatformHardware(hw *HardwareInfo) {
-	hw.SerialNumber = wmicGet([]string{"bios"}, "SerialNumber")
-	hw.Manufacturer = wmicGet([]string{"computersystem"}, "Manufacturer")
-	hw.Model = wmicGet([]string{"computersystem"}, "Model")
-	hw.BIOSVersion = wmicGet([]string{"bios"}, "SMBIOSBIOSVersion")
-	hw.GPUModel = wmicGet([]string{"path", "win32_videocontroller"}, "Name")
+	hw.SerialNumber = firstCleanHardwareIdentityValue(
+		powershellWmiFirstProperty("Win32_BIOS", "SerialNumber"),
+		powershellWmiFirstProperty("Win32_BaseBoard", "SerialNumber"),
+	)
+	hw.Manufacturer = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_ComputerSystem", "Manufacturer"))
+	hw.Model = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_ComputerSystem", "Model"))
+	hw.MotherboardManufacturer = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_BaseBoard", "Manufacturer"))
+	hw.MotherboardProduct = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_BaseBoard", "Product"))
+	hw.MotherboardVersion = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_BaseBoard", "Version"))
+	hw.BIOSVersion = powershellWmiFirstProperty("Win32_BIOS", "SMBIOSBIOSVersion")
+	hw.GPUModel = powershellWmiJoinedProperties("Win32_VideoController", "Name")
 }
