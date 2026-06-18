@@ -4,8 +4,13 @@ import { db } from '../db';
 import {
   agentLogs,
   alertCorrelations,
+  alertRules,
+  alertTemplates,
   alerts,
   brainDeviceContext,
+  configPolicyAlertRules,
+  configPolicyFeatureLinks,
+  configurationPolicies,
   deviceChangeLog,
   deviceEventLogs,
   devices,
@@ -15,6 +20,32 @@ import {
 type AlertRow = typeof alerts.$inferSelect;
 type CorrelationRow = typeof alertCorrelations.$inferSelect;
 type DeviceRow = Pick<typeof devices.$inferSelect, 'id' | 'hostname' | 'osType'>;
+
+type AlertRuleSource = {
+  ruleId: string;
+  ruleName: string;
+  ruleTargetType: string;
+  ruleTargetId: string;
+  ruleIsActive: boolean;
+  templateId: string | null;
+  templateName: string | null;
+  templateCategory: string | null;
+  templateSeverity: string | null;
+  templateIsBuiltIn: boolean | null;
+  templateCooldownMinutes: number | null;
+};
+
+type ConfigPolicyAlertSource = {
+  configPolicyAlertRuleId: string;
+  configPolicyAlertRuleName: string;
+  configPolicyAlertSeverity: string;
+  configPolicyAlertCooldownMinutes: number;
+  featureLinkId: string;
+  featureType: string;
+  configurationPolicyId: string;
+  configurationPolicyName: string;
+  configurationPolicyStatus: string;
+};
 
 export interface RcaEvidenceItem {
   id: string;
@@ -170,6 +201,51 @@ function buildCorrelationMetadata(link: CorrelationRow): Record<string, unknown>
   };
 }
 
+function buildAlertMetadata(
+  alert: AlertRow,
+  ruleSource: AlertRuleSource | undefined,
+  configSource: ConfigPolicyAlertSource | undefined,
+): Record<string, unknown> {
+  return {
+    alertId: alert.id,
+    status: alert.status,
+    ruleId: alert.ruleId,
+    configPolicyId: alert.configPolicyId,
+    configItemName: alert.configItemName,
+    contextSummary: summarizeJson(alert.context, 500) || null,
+    rule: ruleSource ? {
+      id: ruleSource.ruleId,
+      name: ruleSource.ruleName,
+      targetType: ruleSource.ruleTargetType,
+      targetId: ruleSource.ruleTargetId,
+      isActive: ruleSource.ruleIsActive,
+    } : null,
+    template: ruleSource?.templateId ? {
+      id: ruleSource.templateId,
+      name: ruleSource.templateName,
+      category: ruleSource.templateCategory,
+      severity: ruleSource.templateSeverity,
+      isBuiltIn: ruleSource.templateIsBuiltIn,
+      cooldownMinutes: ruleSource.templateCooldownMinutes,
+    } : null,
+    configSource: configSource ? {
+      configPolicyAlertRuleId: configSource.configPolicyAlertRuleId,
+      configPolicyAlertRuleName: configSource.configPolicyAlertRuleName,
+      severity: configSource.configPolicyAlertSeverity,
+      cooldownMinutes: configSource.configPolicyAlertCooldownMinutes,
+      featureLinkId: configSource.featureLinkId,
+      featureType: configSource.featureType,
+      configurationPolicyId: configSource.configurationPolicyId,
+      configurationPolicyName: configSource.configurationPolicyName,
+      configurationPolicyStatus: configSource.configurationPolicyStatus,
+      itemName: alert.configItemName,
+    } : alert.configPolicyId ? {
+      configPolicyAlertRuleId: alert.configPolicyId,
+      itemName: alert.configItemName,
+    } : null,
+  };
+}
+
 function rankEvidence(items: RcaEvidenceItem[]): RcaEvidenceItem[] {
   const sourceWeight: Record<RcaEvidenceItem['source'], number> = {
     alert: 100,
@@ -188,9 +264,23 @@ function rankEvidence(items: RcaEvidenceItem[]): RcaEvidenceItem[] {
   });
 }
 
-function buildAlertEvidence(alertRows: AlertRow[], deviceNames: Map<string, DeviceRow>): RcaEvidenceItem[] {
+function buildAlertEvidence(
+  alertRows: AlertRow[],
+  deviceNames: Map<string, DeviceRow>,
+  ruleSources: Map<string, AlertRuleSource>,
+  configSources: Map<string, ConfigPolicyAlertSource>,
+): RcaEvidenceItem[] {
   return alertRows.map((alert) => {
     const device = deviceNames.get(alert.deviceId);
+    const ruleSource = alert.ruleId ? ruleSources.get(alert.ruleId) : undefined;
+    const configSource = alert.configPolicyId ? configSources.get(alert.configPolicyId) : undefined;
+    const sourceSummary = ruleSource?.ruleName
+      ? ` via rule "${ruleSource.ruleName}"`
+      : configSource?.configPolicyAlertRuleName
+        ? ` via config policy rule "${configSource.configPolicyAlertRuleName}"`
+        : alert.configPolicyId
+          ? ` via config policy item "${alert.configItemName ?? alert.configPolicyId}"`
+        : '';
     return {
       id: `alert:${alert.id}`,
       source: 'alert',
@@ -200,7 +290,8 @@ function buildAlertEvidence(alertRows: AlertRow[], deviceNames: Map<string, Devi
       alertId: alert.id,
       severity: alert.severity,
       title: alert.title,
-      summary: `${alert.severity.toUpperCase()} alert on ${device?.hostname ?? alert.deviceId}: ${alert.message ?? alert.title}`,
+      summary: `${alert.severity.toUpperCase()} alert on ${device?.hostname ?? alert.deviceId}${sourceSummary}: ${alert.message ?? alert.title}`,
+      metadata: buildAlertMetadata(alert, ruleSource, configSource),
     };
   });
 }
@@ -345,6 +436,52 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
         .where(and(eq(devices.orgId, options.orgId), inArray(devices.id, deviceIds)))
     : [];
   const deviceNames = new Map(deviceRows.map((device) => [device.id, device]));
+  const ruleIds = [...new Set(alertRows.map((alert) => alert.ruleId).filter((id): id is string => Boolean(id)))];
+  const ruleSourceRows: AlertRuleSource[] = ruleIds.length > 0
+    ? await db
+        .select({
+          ruleId: alertRules.id,
+          ruleName: alertRules.name,
+          ruleTargetType: alertRules.targetType,
+          ruleTargetId: alertRules.targetId,
+          ruleIsActive: alertRules.isActive,
+          templateId: alertTemplates.id,
+          templateName: alertTemplates.name,
+          templateCategory: alertTemplates.category,
+          templateSeverity: alertTemplates.severity,
+          templateIsBuiltIn: alertTemplates.isBuiltIn,
+          templateCooldownMinutes: alertTemplates.cooldownMinutes,
+        })
+        .from(alertRules)
+        .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
+        .where(and(eq(alertRules.orgId, options.orgId), inArray(alertRules.id, ruleIds)))
+    : [];
+  const ruleSources = new Map(ruleSourceRows.map((row) => [row.ruleId, row]));
+  const configPolicyAlertRuleIds = [
+    ...new Set(alertRows.map((alert) => alert.configPolicyId).filter((id): id is string => Boolean(id)))
+  ];
+  const configSourceRows: ConfigPolicyAlertSource[] = configPolicyAlertRuleIds.length > 0
+    ? await db
+        .select({
+          configPolicyAlertRuleId: configPolicyAlertRules.id,
+          configPolicyAlertRuleName: configPolicyAlertRules.name,
+          configPolicyAlertSeverity: configPolicyAlertRules.severity,
+          configPolicyAlertCooldownMinutes: configPolicyAlertRules.cooldownMinutes,
+          featureLinkId: configPolicyFeatureLinks.id,
+          featureType: configPolicyFeatureLinks.featureType,
+          configurationPolicyId: configurationPolicies.id,
+          configurationPolicyName: configurationPolicies.name,
+          configurationPolicyStatus: configurationPolicies.status,
+        })
+        .from(configPolicyAlertRules)
+        .innerJoin(configPolicyFeatureLinks, eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id))
+        .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+        .where(and(
+          eq(configurationPolicies.orgId, options.orgId),
+          inArray(configPolicyAlertRules.id, configPolicyAlertRuleIds)
+        ))
+    : [];
+  const configSources = new Map(configSourceRows.map((row) => [row.configPolicyAlertRuleId, row]));
 
   const correlationRows = alertIds.length > 1
     ? await db
@@ -423,7 +560,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
   if (metricRows.length === 0) gaps.push('No 5-minute metric rollups were available in the incident window.');
 
   const evidence: RcaEvidenceItem[] = [
-    ...buildAlertEvidence(alertRows, deviceNames),
+    ...buildAlertEvidence(alertRows, deviceNames, ruleSources, configSources),
     ...correlationRows.map((link) => ({
       id: `correlation:${link.parentAlertId}:${link.childAlertId}`,
       source: 'correlation' as const,

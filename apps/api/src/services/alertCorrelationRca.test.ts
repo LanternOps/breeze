@@ -3,6 +3,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { dbMock, state, tables } = vi.hoisted(() => {
   const tables = {
     devices: { id: 'devices.id', orgId: 'devices.orgId', hostname: 'devices.hostname', osType: 'devices.osType' },
+    alertRules: {
+      id: 'alertRules.ruleId',
+      orgId: 'alertRules.orgId',
+      templateId: 'alertRules.templateId',
+      name: 'alertRules.ruleName',
+      targetType: 'alertRules.ruleTargetType',
+      targetId: 'alertRules.ruleTargetId',
+      isActive: 'alertRules.ruleIsActive',
+    },
+    alertTemplates: {
+      id: 'alertTemplates.templateIdValue',
+      name: 'alertTemplates.templateName',
+      category: 'alertTemplates.templateCategory',
+      severity: 'alertTemplates.templateSeverity',
+      isBuiltIn: 'alertTemplates.templateIsBuiltIn',
+      cooldownMinutes: 'alertTemplates.templateCooldownMinutes',
+    },
     alertCorrelations: {
       id: 'alert_correlations.id',
       parentAlertId: 'alert_correlations.parentAlertId',
@@ -61,6 +78,24 @@ const { dbMock, state, tables } = vi.hoisted(() => {
       avgValue: 'metricRollups.avgValue',
       maxValue: 'metricRollups.maxValue',
     },
+    configPolicyAlertRules: {
+      id: 'configPolicyAlertRules.configPolicyAlertRuleId',
+      featureLinkId: 'configPolicyAlertRules.featureLinkId',
+      name: 'configPolicyAlertRules.configPolicyAlertRuleName',
+      severity: 'configPolicyAlertRules.configPolicyAlertSeverity',
+      cooldownMinutes: 'configPolicyAlertRules.configPolicyAlertCooldownMinutes',
+    },
+    configPolicyFeatureLinks: {
+      id: 'configPolicyFeatureLinks.featureLinkId',
+      configPolicyId: 'configPolicyFeatureLinks.configurationPolicyId',
+      featureType: 'configPolicyFeatureLinks.featureType',
+    },
+    configurationPolicies: {
+      id: 'configurationPolicies.configurationPolicyId',
+      orgId: 'configurationPolicies.orgId',
+      name: 'configurationPolicies.configurationPolicyName',
+      status: 'configurationPolicies.configurationPolicyStatus',
+    },
   };
 
   type Predicate = { op: string; col?: unknown; val?: unknown; vals?: unknown[]; args?: Predicate[] } | undefined;
@@ -80,7 +115,9 @@ const { dbMock, state, tables } = vi.hoisted(() => {
 
   const state = {
     devices: [] as Array<Record<string, any>>,
+    alertRuleSources: [] as Array<Record<string, any>>,
     correlations: [] as Array<Record<string, any>>,
+    configPolicySources: [] as Array<Record<string, any>>,
     context: [] as Array<Record<string, any>>,
     changes: [] as Array<Record<string, any>>,
     eventLogs: [] as Array<Record<string, any>>,
@@ -92,6 +129,8 @@ const { dbMock, state, tables } = vi.hoisted(() => {
     private predicate: Predicate;
     constructor(private table: unknown, private projection?: Record<string, unknown>) {}
     where(predicate: Predicate) { this.predicate = predicate; return this; }
+    leftJoin() { return this; }
+    innerJoin() { return this; }
     orderBy() { return this; }
     limit(limit: number) { return Promise.resolve(this.rows().slice(0, limit)); }
     then(resolve: (value: unknown[]) => void, reject?: (reason: unknown) => void) {
@@ -100,17 +139,21 @@ const { dbMock, state, tables } = vi.hoisted(() => {
     private rows() {
       const source = this.table === tables.devices
         ? state.devices
-        : this.table === tables.alertCorrelations
-          ? state.correlations
-          : this.table === tables.brainDeviceContext
-            ? state.context
-            : this.table === tables.deviceChangeLog
-              ? state.changes
-              : this.table === tables.deviceEventLogs
-                ? state.eventLogs
-                : this.table === tables.agentLogs
-                  ? state.agentLogs
-                  : state.metricRollups;
+        : this.table === tables.alertRules
+          ? state.alertRuleSources
+          : this.table === tables.alertCorrelations
+            ? state.correlations
+            : this.table === tables.configPolicyAlertRules
+              ? state.configPolicySources
+              : this.table === tables.brainDeviceContext
+                ? state.context
+                : this.table === tables.deviceChangeLog
+                  ? state.changes
+                  : this.table === tables.deviceEventLogs
+                    ? state.eventLogs
+                    : this.table === tables.agentLogs
+                      ? state.agentLogs
+                      : state.metricRollups;
       const filtered = source.filter((row) => evalPredicate(row, this.predicate));
       if (!this.projection) return filtered;
       return filtered.map((row) => {
@@ -147,7 +190,12 @@ vi.mock('../db', () => ({ db: dbMock }));
 vi.mock('../db/schema', () => ({
   agentLogs: tables.agentLogs,
   alertCorrelations: tables.alertCorrelations,
+  alertRules: tables.alertRules,
+  alertTemplates: tables.alertTemplates,
   brainDeviceContext: tables.brainDeviceContext,
+  configPolicyAlertRules: tables.configPolicyAlertRules,
+  configPolicyFeatureLinks: tables.configPolicyFeatureLinks,
+  configurationPolicies: tables.configurationPolicies,
   deviceChangeLog: tables.deviceChangeLog,
   deviceEventLogs: tables.deviceEventLogs,
   devices: tables.devices,
@@ -165,6 +213,21 @@ describe('alert correlation RCA evidence builder', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.devices = [{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'server-1', osType: 'windows' }];
+    state.alertRuleSources = [{
+      orgId: ORG_ID,
+      ruleId: 'rule-1',
+      templateId: 'template-1',
+      ruleName: 'CPU threshold',
+      ruleTargetType: 'device',
+      ruleTargetId: DEVICE_ID,
+      ruleIsActive: true,
+      templateIdValue: 'template-1',
+      templateName: 'Resource saturation',
+      templateCategory: 'performance',
+      templateSeverity: 'critical',
+      templateIsBuiltIn: false,
+      templateCooldownMinutes: 10,
+    }];
     state.correlations = [{
       id: 'correlation-1',
       parentAlertId: ALERT_1,
@@ -186,6 +249,18 @@ describe('alert correlation RCA evidence builder', () => {
         flappingDeviceIds: [DEVICE_ID],
       },
       createdAt: new Date('2026-06-18T12:03:00Z'),
+    }];
+    state.configPolicySources = [{
+      orgId: ORG_ID,
+      configPolicyAlertRuleId: 'cpar-1',
+      configPolicyAlertRuleName: 'Memory threshold',
+      configPolicyAlertSeverity: 'high',
+      configPolicyAlertCooldownMinutes: 15,
+      featureLinkId: 'feature-link-1',
+      featureType: 'alerts',
+      configurationPolicyId: 'policy-1',
+      configurationPolicyName: 'Server monitoring baseline',
+      configurationPolicyStatus: 'active',
     }];
     state.context = [{
       id: 'ctx-1',
@@ -246,8 +321,8 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:00:00Z') },
-        { id: ALERT_2, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-2', configPolicyId: null, configItemName: null, status: 'active', severity: 'high', title: 'Memory high', message: 'RAM over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:02:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:02:00Z') },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: { threshold: 90, observed: 96 }, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:00:00Z') },
+        { id: ALERT_2, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: null, configPolicyId: 'cpar-1', configItemName: 'ram_percent', status: 'active', severity: 'high', title: 'Memory high', message: 'RAM over 90%', context: { threshold: 90, observed: 94 }, triggeredAt: new Date('2026-06-18T12:02:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:02:00Z') },
       ],
     });
 
@@ -284,6 +359,43 @@ describe('alert correlation RCA evidence builder', () => {
       flappingDetected: true,
       flappingRuleIds: ['rule-1'],
       flappingDeviceIds: [DEVICE_ID],
+    });
+    const legacyAlertEvidence = result.timeline.find((item) => item.id === `alert:${ALERT_1}`);
+    expect(legacyAlertEvidence?.summary).toContain('via rule "CPU threshold"');
+    expect(legacyAlertEvidence?.metadata).toMatchObject({
+      contextSummary: '{"threshold":90,"observed":96}',
+      rule: {
+        id: 'rule-1',
+        name: 'CPU threshold',
+        targetType: 'device',
+        targetId: DEVICE_ID,
+        isActive: true,
+      },
+      template: {
+        id: 'template-1',
+        name: 'Resource saturation',
+        category: 'performance',
+        severity: 'critical',
+        isBuiltIn: false,
+        cooldownMinutes: 10,
+      },
+    });
+    const configAlertEvidence = result.timeline.find((item) => item.id === `alert:${ALERT_2}`);
+    expect(configAlertEvidence?.summary).toContain('via config policy rule "Memory threshold"');
+    expect(configAlertEvidence?.metadata).toMatchObject({
+      contextSummary: '{"threshold":90,"observed":94}',
+      configSource: {
+        configPolicyAlertRuleId: 'cpar-1',
+        configPolicyAlertRuleName: 'Memory threshold',
+        severity: 'high',
+        cooldownMinutes: 15,
+        featureLinkId: 'feature-link-1',
+        featureType: 'alerts',
+        configurationPolicyId: 'policy-1',
+        configurationPolicyName: 'Server monitoring baseline',
+        configurationPolicyStatus: 'active',
+        itemName: 'ram_percent',
+      },
     });
     expect(result.rootCauseCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ confidence: 0.91 }),
