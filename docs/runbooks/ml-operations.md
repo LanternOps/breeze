@@ -74,6 +74,7 @@ Current flags:
 | `ml.anomalies.create_alerts` | off | Alert promotion from anomalies |
 | `ml.remediation_suggestions.enabled` | off | Suggested remediation rows |
 | `ml.ticket_triage.enabled` | off | Ticket triage suggestions |
+| `ml.device_reliability.enabled` | on | Device reliability score computation |
 | `ml.user_risk_v0.enabled` | on | Rules-v0 user-risk scoring and signals |
 | `ml.user_risk_v1.enabled` | off | Future learned baseline |
 
@@ -83,7 +84,10 @@ Use these before tuning or replacing a heuristic:
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
-  "https://<host>/api/alerts/correlations"
+  "https://<host>/api/alerts/correlations/evaluation?labelWindowDays=30"
+
+curl -H "Authorization: Bearer <token>" \
+  "https://<host>/api/analytics/anomalies/evaluation?range=30d"
 
 curl -H "Authorization: Bearer <token>" \
   "https://<host>/api/reliability/evaluation?orgId=<org-id>"
