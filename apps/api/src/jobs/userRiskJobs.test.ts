@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, closeMock, workerProcessors } = vi.hoisted(() => ({
+const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
+  addBulkMock: vi.fn(),
   closeMock: vi.fn(),
+  selectMock: vi.fn(),
+  fromMock: vi.fn(),
+  whereMock: vi.fn(),
+  groupByMock: vi.fn(),
   workerProcessors: [] as Array<(job: { data: unknown }) => Promise<unknown>>,
 }));
 
@@ -11,6 +16,7 @@ vi.mock('bullmq', () => ({
   Queue: class {
     getJob = getJobMock;
     add = addMock;
+    addBulk = addBulkMock;
     close = closeMock;
   },
   Worker: class {
@@ -30,7 +36,9 @@ vi.mock('../services/redis', () => ({
 }));
 
 vi.mock('../db', () => ({
-  db: {},
+  db: {
+    select: selectMock,
+  },
 
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -38,7 +46,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  organizationUsers: {},
+  organizationUsers: { orgId: 'organizationUsers.orgId' },
 }));
 
 vi.mock('../services/userRiskScoring', () => ({
@@ -78,9 +86,19 @@ describe('triggerUserRiskRecompute', () => {
     vi.setSystemTime(new Date('2026-03-31T12:00:00.000Z'));
     getJobMock.mockReset();
     addMock.mockReset();
+    addBulkMock.mockReset();
     closeMock.mockReset();
+    selectMock.mockReset();
+    fromMock.mockReset();
+    whereMock.mockReset();
+    groupByMock.mockReset();
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queue-job-1' });
+    addBulkMock.mockResolvedValue([]);
+    selectMock.mockReturnValue({ from: fromMock });
+    fromMock.mockReturnValue({ where: whereMock });
+    whereMock.mockReturnValue({ groupBy: groupByMock });
+    groupByMock.mockResolvedValue([{ orgId: 'org-1' }]);
     workerProcessors.length = 0;
     vi.mocked(shouldProduceMlOutput).mockReset();
     vi.mocked(shouldProduceMlOutput).mockResolvedValue(true);
@@ -219,6 +237,34 @@ describe('triggerUserRiskRecompute', () => {
 
     expect(jobId).toBe('existing-signal-job');
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('uses worker execution time when scheduled scans fan out org recompute jobs', async () => {
+    vi.setSystemTime(new Date('2026-03-31T12:00:00.000Z'));
+    createUserRiskWorker();
+
+    vi.setSystemTime(new Date('2026-03-31T18:30:00.000Z'));
+    const result = await workerProcessors[0]!({
+      data: {
+        type: 'scan-orgs',
+        queuedAt: '2026-03-31T12:00:00.000Z',
+      },
+    });
+
+    expect(result).toEqual({ queued: 1 });
+    expect(addBulkMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        name: 'compute-org',
+        data: expect.objectContaining({
+          type: 'compute-org',
+          orgId: 'org-1',
+          queuedAt: '2026-03-31T18:30:00.000Z',
+        }),
+        opts: expect.objectContaining({
+          jobId: 'user-risk-org-1-2026-03-31T18',
+        }),
+      }),
+    ]);
   });
 
   it('skips scheduled org recompute output when user-risk v0 is disabled', async () => {

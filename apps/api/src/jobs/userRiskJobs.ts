@@ -43,7 +43,7 @@ const USER_RISK_DETAILS_MAX_BYTES = 8 * 1024;
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
-  queuedAt: string;
+  queuedAt?: string;
 };
 
 type ComputeOrgJobData = {
@@ -144,14 +144,16 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   }
 
   const queue = getUserRiskQueue();
-  const slotKey = data.queuedAt.slice(0, 13);
+  const scannedAt = new Date();
+  const queuedAt = scannedAt.toISOString();
+  const slotKey = queuedAt.slice(0, 13);
   await queue.addBulk(
     orgRows.map((row) => ({
       name: 'compute-org',
       data: {
         type: 'compute-org' as const,
         orgId: row.orgId,
-        queuedAt: data.queuedAt
+        queuedAt
       },
       opts: {
         jobId: `user-risk-${row.orgId}-${slotKey}`,
@@ -303,7 +305,6 @@ async function scheduleUserRiskScan(): Promise<void> {
     'scan-orgs',
     {
       type: 'scan-orgs',
-      queuedAt: new Date().toISOString()
     },
     {
       repeat: { every: SCAN_INTERVAL_MS },
