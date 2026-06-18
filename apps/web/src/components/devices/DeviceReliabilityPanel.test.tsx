@@ -117,7 +117,10 @@ describe('DeviceReliabilityPanel', () => {
         '/reliability/dev-1/feedback',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ outcome: 'false_alarm' }),
+          body: JSON.stringify({
+            outcome: 'false_alarm',
+            snapshotComputedAt: '2026-06-18T12:00:00.000Z',
+          }),
         }),
       );
     });

@@ -50,6 +50,7 @@ const feedbackBodySchema = z.object({
   outcome: z.enum(['failure_confirmed', 'replaced', 'false_alarm']),
   occurredAt: z.coerce.date().optional(),
   sourceEventId: z.string().uuid().optional(),
+  snapshotComputedAt: z.string().datetime().optional(),
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
 
@@ -66,6 +67,17 @@ function parseScoreRange(value: string | undefined): ReliabilityScoreRange | und
   if (normalized === '71-85') return 'fair';
   if (normalized === '86-100') return 'good';
   return undefined;
+}
+
+function reliabilityFeedbackDedupeKey(options: {
+  outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
+  sourceEventId?: string;
+  snapshotComputedAt?: string;
+}): string {
+  if (options.sourceEventId) {
+    return `source:${options.sourceEventId}:${options.outcome}`;
+  }
+  return `snapshot:${options.snapshotComputedAt ?? 'unknown'}:${options.outcome}`;
 }
 
 export const reliabilityRoutes = new Hono();
@@ -268,7 +280,11 @@ reliabilityRoutes.post(
       orgId: device.orgId,
       deviceId,
       eventType,
-      dedupeKey: body.sourceEventId ? `source:${body.sourceEventId}:${body.outcome}` : `outcome:${body.outcome}`,
+      dedupeKey: reliabilityFeedbackDedupeKey({
+        outcome: body.outcome,
+        sourceEventId: body.sourceEventId,
+        snapshotComputedAt: body.snapshotComputedAt ?? snapshot.computedAt,
+      }),
       outcome: body.outcome,
       actorUserId: auth.user?.id,
       occurredAt: body.occurredAt,

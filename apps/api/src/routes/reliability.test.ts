@@ -322,7 +322,7 @@ describe('public reliability routes', () => {
         orgId: ORG_ID,
         deviceId: DEVICE_ID,
         eventType: 'device.false_alarm',
-        dedupeKey: 'outcome:false_alarm',
+        dedupeKey: 'snapshot:2026-06-18T12:00:00.000Z:false_alarm',
         outcome: 'false_alarm',
         actorUserId: 'user-1',
         metadata: expect.objectContaining({

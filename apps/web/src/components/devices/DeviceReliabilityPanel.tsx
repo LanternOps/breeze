@@ -128,7 +128,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         request: () => fetchWithAuth(`/reliability/${deviceId}/feedback`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ outcome }),
+          body: JSON.stringify({ outcome, snapshotComputedAt: snapshot?.computedAt }),
         }),
         errorFallback: 'Could not save reliability feedback',
         successMessage: outcome === 'false_alarm'
