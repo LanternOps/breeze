@@ -239,9 +239,16 @@ describe('CorrelatedAlertGroups', () => {
     render(<CorrelatedAlertGroups />);
 
     await screen.findAllByText('High CPU on SRV-01');
-    const disabledButton = await screen.findByRole('button', { name: /RCA disabled/i });
-    expect(disabledButton).toBeDisabled();
-    fireEvent.click(disabledButton);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /RCA disabled/i })).toHaveLength(2));
+    for (const button of screen.getAllByRole('button', { name: /RCA disabled/i })) {
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+    }
+
+    const rcaPanel = screen.getByText('Evidence is gathered on demand.').closest('.rounded-md') as HTMLElement;
+    const emptyStateButton = within(rcaPanel).getByRole('button', { name: /RCA disabled/i });
+    expect(emptyStateButton).toBeDisabled();
+    fireEvent.click(emptyStateButton);
 
     expect(fetchMock).not.toHaveBeenCalledWith(
       `/alerts/correlations/${GROUP_ID}/explain`,

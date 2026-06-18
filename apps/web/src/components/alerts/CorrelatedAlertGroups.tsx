@@ -225,6 +225,8 @@ export default function CorrelatedAlertGroups() {
   };
 
   const handleExplainGroup = async (group: AlertGroup) => {
+    if (rcaDisabled) return;
+
     setLoadingRcaGroupId(group.id);
     try {
       const result = await runAction<{ data?: RcaResult; rca?: RcaResult }>({
@@ -515,11 +517,12 @@ export default function CorrelatedAlertGroups() {
                               <button
                                 type="button"
                                 onClick={() => void handleExplainGroup(group)}
-                                disabled={isExplaining}
+                                disabled={isExplaining || rcaDisabled}
+                                title={rcaDisabled ? 'RCA is disabled for this organization' : undefined}
                                 className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                               >
                                 {isExplaining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
-                                Explain incident
+                                {rcaDisabled ? 'RCA disabled' : 'Explain incident'}
                               </button>
                             </div>
                           ) : (
