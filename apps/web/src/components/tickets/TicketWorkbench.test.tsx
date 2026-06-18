@@ -359,7 +359,7 @@ describe('TicketWorkbench ML triage suggestions', () => {
             priority: 'high',
             categoryId: 'cat-hardware',
             categoryName: 'Hardware',
-            reasons: ['matched Hardware'],
+            reasons: ['high-impact keywords', 'matched Hardware'],
           },
         });
       }
@@ -377,6 +377,9 @@ describe('TicketWorkbench ML triage suggestions', () => {
     await screen.findByTestId('ticket-triage-suggestion');
     expect(screen.getByText(/Priority: High/i)).toBeInTheDocument();
     expect(screen.getByText(/Category: Hardware/i)).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-triage-reasons')).toBeInTheDocument();
+    expect(screen.getByText('high-impact keywords')).toBeInTheDocument();
+    expect(screen.getByText('matched Hardware')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('ticket-triage-apply'));
 

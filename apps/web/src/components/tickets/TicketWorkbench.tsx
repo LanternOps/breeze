@@ -383,6 +383,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const suggestedCategoryName = triageSuggestion?.categoryId
     ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? 'Suggested category')
     : null;
+  const triageReasons = triageSuggestion?.reasons.filter((reason) => reason.trim().length > 0) ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading || undefined}>
@@ -542,11 +543,25 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 {triageLoading ? (
                   <p className="mt-1 text-xs text-muted-foreground">Checking ticket signals…</p>
                 ) : triageSuggestion ? (
-                  <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-                    {triageSuggestion.priority && <span>Priority: {priorityLabel(config, triageSuggestion.priority)}</span>}
-                    {suggestedCategoryName && <span>Category: {suggestedCategoryName}</span>}
-                    <span>{Math.round(triageSuggestion.confidence * 100)}% confidence</span>
-                  </div>
+                  <>
+                    <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                      {triageSuggestion.priority && <span>Priority: {priorityLabel(config, triageSuggestion.priority)}</span>}
+                      {suggestedCategoryName && <span>Category: {suggestedCategoryName}</span>}
+                      <span>{Math.round(triageSuggestion.confidence * 100)}% confidence</span>
+                    </div>
+                    {triageReasons.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5" data-testid="ticket-triage-reasons">
+                        {triageReasons.map((reason) => (
+                          <span
+                            key={reason}
+                            className="rounded border bg-background px-1.5 py-0.5 text-xs text-muted-foreground"
+                          >
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 ) : null}
               </div>
               {triageSuggestion && (
