@@ -13,13 +13,23 @@
 --
 -- Invariants (match assertDecisionConsistent):
 --   * decided_assurance_level, when set, is 1..4.
+--   * decided_via and decided_assurance_level are co-present (both set, or both
+--       NULL) — a recorded factor with no level, or a level with no factor, is
+--       a contradictory forensic row even though the app never writes one. This
+--       also closes the three-valued-logic gap the biconditionals below leave
+--       open: `(a) = (b)` evaluates to NULL (→ satisfied) whenever a component
+--       is NULL, so without co-presence a half-recorded decision would slip in.
 --   * session_tap  <=>  no authenticator device  (an L2+ factor records one).
 --   * session_tap  <=>  level 1                   (a proof factor is never L1).
 --   * pin_verified implies level >= 3             (legacy approver-PIN gate).
 --
 -- Every undecided / pending row (decided_via, decided_assurance_level,
--- authenticator_device_id all NULL) passes: each predicate short-circuits to
--- NULL — and a NULL CHECK result is treated as satisfied.
+-- authenticator_device_id all NULL) passes: the four factor/level predicates
+-- each evaluate to NULL or TRUE — both treated as satisfied — and the pin
+-- predicate is TRUE because pin_verified is NOT NULL DEFAULT false, so
+-- `NOT pin_verified` is TRUE. (A residual, benign looseness remains: an orphan
+-- authenticator_device_id with decided_via/level both NULL is accepted — that
+-- is incomplete, not self-contradictory, and unreachable from the app.)
 --
 -- Idempotent: each ADD CONSTRAINT is pg_constraint-guarded. No inner
 -- BEGIN/COMMIT (autoMigrate wraps each file in its own transaction). The tables
@@ -34,6 +44,11 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'approval_requests_decided_level_range_chk') THEN
     ALTER TABLE approval_requests ADD CONSTRAINT approval_requests_decided_level_range_chk
       CHECK (decided_assurance_level IS NULL OR decided_assurance_level BETWEEN 1 AND 4);
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'approval_requests_decision_copresence_chk') THEN
+    ALTER TABLE approval_requests ADD CONSTRAINT approval_requests_decision_copresence_chk
+      CHECK ((decided_via IS NULL) = (decided_assurance_level IS NULL));
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'approval_requests_factor_device_chk') THEN
@@ -53,6 +68,11 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'elevation_requests_decided_level_range_chk') THEN
     ALTER TABLE elevation_requests ADD CONSTRAINT elevation_requests_decided_level_range_chk
       CHECK (decided_assurance_level IS NULL OR decided_assurance_level BETWEEN 1 AND 4);
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'elevation_requests_decision_copresence_chk') THEN
+    ALTER TABLE elevation_requests ADD CONSTRAINT elevation_requests_decision_copresence_chk
+      CHECK ((decided_via IS NULL) = (decided_assurance_level IS NULL));
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'elevation_requests_factor_device_chk') THEN

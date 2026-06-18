@@ -69,6 +69,36 @@ function insertApproval(fields: {
   `);
 }
 
+/** Forge an approval_requests row that also sets the transitional pin_verified flag. */
+function insertApprovalWithPin(fields: {
+  decidedVia: string;
+  level: number;
+  deviceId: string | null;
+  pinVerified: boolean;
+}) {
+  const tdb = getTestDb();
+  return tdb.execute(sql`
+    INSERT INTO approval_requests
+      (user_id, requesting_client_label, action_label, action_tool_name,
+       risk_tier, risk_summary, expires_at,
+       decided_via, decided_assurance_level, authenticator_device_id, pin_verified)
+    VALUES
+      (${userId}, 'chk-test', 'chk.action', 'chk.tool',
+       'low', 'check-constraint test', now() + interval '5 minutes',
+       ${fields.decidedVia}::approval_factor, ${fields.level}::smallint,
+       ${fields.deviceId}::uuid, ${fields.pinVerified})
+  `);
+}
+
+/** pin_verified is removed by PR #1433; its constraint + tests gate on this. */
+async function pinColumnPresent(): Promise<boolean> {
+  const rows = (await getTestDb().execute(sql`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'approval_requests' AND column_name = 'pin_verified'
+  `)) as unknown as unknown[];
+  return rows.length > 0;
+}
+
 describe('#1372 — assurance CHECK constraints accept every legitimate row', () => {
   it('accepts a pending (undecided) row where all factor fields are NULL', async () => {
     await expect(insertApproval({})).resolves.toBeDefined();
@@ -85,19 +115,28 @@ describe('#1372 — assurance CHECK constraints accept every legitimate row', ()
       insertApproval({ decidedVia: 'webauthn_platform', level: 2, deviceId }),
     ).resolves.toBeDefined();
   });
+
+  it('accepts a proof factor at L4 (the valid upper bound)', async () => {
+    await expect(
+      insertApproval({ decidedVia: 'webauthn_platform', level: 4, deviceId }),
+    ).resolves.toBeDefined();
+  });
 });
 
 describe('#1372 — assurance CHECK constraints reject self-contradictory rows', () => {
-  it('rejects an out-of-range assurance level (> 4)', async () => {
-    await expect(insertApproval({ level: 7 })).rejects.toMatchObject({
-      cause: { code: CHECK_VIOLATION },
-    });
+  // Range cases use a coherent proof tuple (factor + device) so the ONLY
+  // violation is the range check — otherwise co-presence (a level with a NULL
+  // factor) would fire first and the test would pass for the wrong reason.
+  it('rejects level 5 (one past the valid upper bound)', async () => {
+    await expect(
+      insertApproval({ decidedVia: 'webauthn_platform', level: 5, deviceId }),
+    ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
   });
 
   it('rejects an out-of-range assurance level (0)', async () => {
-    await expect(insertApproval({ level: 0 })).rejects.toMatchObject({
-      cause: { code: CHECK_VIOLATION },
-    });
+    await expect(
+      insertApproval({ decidedVia: 'webauthn_platform', level: 0, deviceId }),
+    ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
   });
 
   it('rejects session_tap carrying an authenticator device', async () => {
@@ -125,32 +164,46 @@ describe('#1372 — assurance CHECK constraints reject self-contradictory rows',
   });
 });
 
-describe('#1372 — pin_verified gate (only while the transitional column exists)', () => {
-  it('rejects pin_verified=true below L3 (or self-skips once the column is dropped)', async () => {
-    const tdb = getTestDb();
-    const present = (await tdb.execute(sql`
-      SELECT 1 FROM information_schema.columns
-      WHERE table_name = 'approval_requests' AND column_name = 'pin_verified'
-    `)) as unknown as unknown[];
-
-    if (present.length === 0) {
-      // pin_verified removed by #1433 — the dependent CHECK is gone too; nothing
-      // to assert. Kept as a passing no-op so the suite survives that merge.
-      return;
-    }
-
+describe('#1372 — co-presence: a half-recorded decision is rejected', () => {
+  // These are the three-valued-logic holes the biconditionals alone leave open
+  // (`(a) = (b)` is NULL → satisfied when a component is NULL). The app never
+  // writes them, but the storage boundary must still reject them.
+  it('rejects a recorded factor with a NULL level', async () => {
     await expect(
-      tdb.execute(sql`
-        INSERT INTO approval_requests
-          (user_id, requesting_client_label, action_label, action_tool_name,
-           risk_tier, risk_summary, expires_at,
-           decided_via, decided_assurance_level, pin_verified)
-        VALUES
-          (${userId}, 'chk-test', 'chk.action', 'chk.tool',
-           'low', 'check-constraint test', now() + interval '5 minutes',
-           'session_tap'::approval_factor, 1::smallint, true)
-      `),
+      insertApproval({ decidedVia: 'webauthn_platform', level: null, deviceId }),
     ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
+  });
+
+  it('rejects a recorded level with a NULL factor', async () => {
+    await expect(
+      insertApproval({ decidedVia: null, level: 2, deviceId: null }),
+    ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
+  });
+});
+
+describe('#1372 — pin_verified gate (only while the transitional column exists)', () => {
+  // authenticator_device_id carries no FK (see approvals.ts) — the device seeded
+  // in beforeEach is only a realistic UUID, so each rejection below provably
+  // trips the CHECK (23514), never an FK trigger.
+  it('rejects pin_verified=true at L1', async (ctx) => {
+    if (!(await pinColumnPresent())) return ctx.skip();
+    await expect(
+      insertApprovalWithPin({ decidedVia: 'session_tap', level: 1, deviceId: null, pinVerified: true }),
+    ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
+  });
+
+  it('rejects pin_verified=true at L2 (boundary — gate is level >= 3)', async (ctx) => {
+    if (!(await pinColumnPresent())) return ctx.skip();
+    await expect(
+      insertApprovalWithPin({ decidedVia: 'webauthn_platform', level: 2, deviceId, pinVerified: true }),
+    ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
+  });
+
+  it('accepts pin_verified=true at L3 (boundary — first valid level)', async (ctx) => {
+    if (!(await pinColumnPresent())) return ctx.skip();
+    await expect(
+      insertApprovalWithPin({ decidedVia: 'webauthn_platform', level: 3, deviceId, pinVerified: true }),
+    ).resolves.toBeDefined();
   });
 });
 
@@ -158,23 +211,50 @@ describe('#1372 — elevation_requests carries the identical constraints', () =>
   it('mirrors every stable assurance CHECK predicate onto elevation_requests', async () => {
     const tdb = getTestDb();
     const rows = (await tdb.execute(sql`
-      SELECT conrelid::regclass::text AS tbl, conname, pg_get_constraintdef(oid) AS def
+      SELECT conname, pg_get_constraintdef(oid) AS def, convalidated
       FROM pg_constraint
       WHERE contype = 'c'
         AND conrelid IN ('approval_requests'::regclass, 'elevation_requests'::regclass)
-        AND conname LIKE '%_chk'
-    `)) as unknown as Array<{ tbl: string; conname: string; def: string }>;
+        AND conname LIKE '%\_chk'
+    `)) as unknown as Array<{ conname: string; def: string; convalidated: boolean }>;
 
-    const byName = new Map(rows.map((r) => [r.conname, r.def]));
+    const byName = new Map(rows.map((r) => [r.conname, r]));
 
-    for (const suffix of ['decided_level_range_chk', 'factor_device_chk', 'factor_level_chk']) {
-      const approvalDef = byName.get(`approval_requests_${suffix}`);
-      const elevationDef = byName.get(`elevation_requests_${suffix}`);
-      expect(approvalDef, `approval_requests_${suffix} missing`).toBeDefined();
-      expect(elevationDef, `elevation_requests_${suffix} missing`).toBeDefined();
+    const stable = [
+      'decided_level_range_chk',
+      'decision_copresence_chk',
+      'factor_device_chk',
+      'factor_level_chk',
+    ];
+    for (const suffix of stable) {
+      const approval = byName.get(`approval_requests_${suffix}`);
+      const elevation = byName.get(`elevation_requests_${suffix}`);
+      expect(approval, `approval_requests_${suffix} missing`).toBeDefined();
+      expect(elevation, `elevation_requests_${suffix} missing`).toBeDefined();
       // pg_get_constraintdef omits the table name, so identical invariants yield
       // byte-identical defs.
-      expect(elevationDef).toBe(approvalDef);
+      expect(elevation!.def).toBe(approval!.def);
+      // Guard against a future copy-paste shipping the constraint NOT VALID,
+      // which would advertise an invariant the DB does not actually enforce.
+      expect(approval!.convalidated, `${suffix} on approval not validated`).toBe(true);
+      expect(elevation!.convalidated, `${suffix} on elevation not validated`).toBe(true);
     }
+  });
+
+  it('mirrors the transitional pin_verified gate while the column exists', async () => {
+    if (!(await pinColumnPresent())) return; // dropped by #1433 — nothing to mirror
+    const tdb = getTestDb();
+    const rows = (await tdb.execute(sql`
+      SELECT conname, pg_get_constraintdef(oid) AS def
+      FROM pg_constraint
+      WHERE contype = 'c'
+        AND conrelid IN ('approval_requests'::regclass, 'elevation_requests'::regclass)
+        AND conname LIKE '%pin_level_chk'
+    `)) as unknown as Array<{ conname: string; def: string }>;
+    const byName = new Map(rows.map((r) => [r.conname, r.def]));
+    expect(byName.get('approval_requests_pin_level_chk')).toBeDefined();
+    expect(byName.get('elevation_requests_pin_level_chk')).toBe(
+      byName.get('approval_requests_pin_level_chk'),
+    );
   });
 });
