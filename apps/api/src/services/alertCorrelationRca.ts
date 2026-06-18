@@ -153,7 +153,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
   const windowHours = Math.min(Math.max(options.windowHours ?? 6, 1), 24);
   const maxEvidenceItems = Math.min(Math.max(options.maxEvidenceItems ?? 30, 5), 100);
   const windowStart = new Date(firstAlertAt.getTime() - windowHours * 60 * 60 * 1000);
-  const windowEnd = new Date(Math.max(Date.now(), lastAlertAt.getTime() + 60 * 60 * 1000));
+  const windowEnd = new Date(lastAlertAt.getTime() + 60 * 60 * 1000);
   const gaps: string[] = [];
 
   if (alertRows.length === 0) {

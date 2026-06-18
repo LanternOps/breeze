@@ -254,4 +254,50 @@ describe('alert correlation RCA evidence builder', () => {
     ]));
     expect(result.gaps).toEqual([]);
   });
+
+  it('caps RCA evidence windows relative to old incident time instead of now', async () => {
+    state.eventLogs = [
+      {
+        id: 'event-in-window',
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        timestamp: new Date('2026-01-15T12:15:00Z'),
+        level: 'error',
+        category: 'system',
+        source: 'Service Control Manager',
+        eventId: '7031',
+        message: 'Incident-window service failure',
+      },
+      {
+        id: 'event-today',
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        timestamp: new Date('2026-06-18T12:15:00Z'),
+        level: 'error',
+        category: 'system',
+        source: 'Service Control Manager',
+        eventId: '7031',
+        message: 'Unrelated recent failure',
+      },
+    ];
+
+    const result = await buildAlertCorrelationRca({
+      orgId: ORG_ID,
+      groupId: 'old-group',
+      windowHours: 4,
+      maxEvidenceItems: 20,
+      alerts: [
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-01-15T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-01-15T12:00:00Z') },
+      ],
+    });
+
+    expect(result.scope.windowStart).toBe('2026-01-15T08:00:00.000Z');
+    expect(result.scope.windowEnd).toBe('2026-01-15T13:00:00.000Z');
+    expect(result.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'event_log:event-in-window' }),
+    ]));
+    expect(result.timeline).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'event_log:event-today' }),
+    ]));
+  });
 });
