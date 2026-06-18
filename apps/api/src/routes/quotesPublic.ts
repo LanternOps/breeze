@@ -12,8 +12,10 @@ import { markQuoteViewed } from '../services/quoteLifecycle';
 import { acceptQuote } from '../services/quoteAcceptService';
 import { readQuoteImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
+import { InvoiceServiceError } from '../services/invoiceTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
 import { createQuotePayLink } from '../services/quotePay';
+import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 /**
@@ -81,22 +83,32 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
       acceptanceTokenJti: claims.jti, actorUserId: null,
     })));
     // Post-commit (atom-2): consume the single-use token so the link can't be replayed.
-    try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
+    // A failed revoke leaves the accept link replayable (security-relevant) → capture.
+    try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
     // Phase 3 accept→pay: mint a Stripe checkout link for the just-issued invoice and
-    // return it so the public page can offer "Pay now" — the accept token is now
-    // revoked, so the URL has to come back in THIS response. Best-effort and in its
-    // own context AFTER the accept committed: a $0 quote, unconnected Stripe, or a
-    // Stripe hiccup must never fail (or roll back) the accept — the page just won't
-    // show Pay now.
+    // return it (the accept token is now revoked, so the URL must come back in THIS
+    // response). Runs in its own context AFTER the accept committed — it must never
+    // fail (or roll back) the accept. Distinguish EXPECTED no-pay outcomes (a $0 quote
+    // → NOTHING_TO_PAY/NOT_PAYABLE, or the partner hasn't connected Stripe) — surfaced
+    // quietly as payUrl:null — from an UNEXPECTED failure (Stripe outage, DB), which we
+    // flag as payDeferred + capture so a silently-lost payment CTA is observable rather
+    // than looking identical to "nothing to pay".
     let payUrl: string | null = null;
+    let payDeferred = false;
     try {
       const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
         createQuotePayLink(claims.quoteId, { userId: null, partnerId: null, accessibleOrgIds: [claims.orgId] })));
       payUrl = link.url;
     } catch (err) {
-      if (!(err instanceof QuoteServiceError)) console.error('[quotesPublic] pay-link mint failed', err);
+      const benign = err instanceof InvoiceServiceError
+        && (err.code === 'NOT_PAYABLE' || err.code === 'NOTHING_TO_PAY' || err.code === 'STRIPE_NOT_CONNECTED');
+      if (!benign) {
+        payDeferred = true;
+        console.error('[quotesPublic] pay-link mint failed after accept', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
     }
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl } });
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });
 
@@ -117,6 +129,7 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
   if (result === 'expired') return c.json({ error: 'This quote has expired', code: 'QUOTE_EXPIRED' }, 410);
   if (result !== 'ok') return c.json({ error: 'This quote can no longer be declined' }, 409);
   // Consume the single-use token post-commit so a declined link can't be replayed.
-  try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
+  // A failed revoke leaves the link replayable (security-relevant) → capture.
+  try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
   return c.json({ data: { status: 'declined' } });
 });

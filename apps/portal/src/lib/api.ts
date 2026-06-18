@@ -670,8 +670,8 @@ export const portalApi = {
     token: string,
     signerName: string,
     signerEmail?: string
-  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null } }>> => {
-    return apiPost<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null } }>(
+  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null; payDeferred?: boolean } }>> => {
+    return apiPost<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null; payDeferred?: boolean } }>(
       `/quotes/public/${encodeURIComponent(token)}/accept`,
       { signerName, signerEmail },
       { redirectOnUnauthorized: false }

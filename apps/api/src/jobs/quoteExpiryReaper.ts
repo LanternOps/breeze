@@ -49,9 +49,11 @@ function getQueue(): Queue<ReaperJobData> {
 /**
  * Single pass: flip sent/viewed quotes past their expiry_date to `expired`, and
  * write an audit row per transition. Bounded to MAX_REAP_PER_RUN via a CTE so a
- * backlog spike can't lock the table for too long. `expiry_date < CURRENT_DATE`
- * matches isQuoteExpired's UTC day-boundary definition (a quote is valid THROUGH
- * its expiry_date). Returns the number of quotes transitioned.
+ * backlog spike can't lock the table for too long. We compare against the UTC
+ * calendar day — `(now() AT TIME ZONE 'UTC')::date`, NOT `CURRENT_DATE` (which is
+ * the session timezone) — so the sweep matches isQuoteExpired's UTC day boundary
+ * regardless of the DB server's timezone (a quote is valid THROUGH its expiry_date).
+ * Returns the number of quotes transitioned.
  */
 export async function expireQuotes(): Promise<number> {
   const transitioned = await db.execute<{
@@ -65,7 +67,7 @@ export async function expireQuotes(): Promise<number> {
       FROM ${quotes}
       WHERE ${quotes.status} IN ('sent', 'viewed')
         AND ${quotes.expiryDate} IS NOT NULL
-        AND ${quotes.expiryDate} < CURRENT_DATE
+        AND ${quotes.expiryDate} < (now() AT TIME ZONE 'UTC')::date
       ORDER BY ${quotes.expiryDate} ASC
       LIMIT ${MAX_REAP_PER_RUN}
       FOR UPDATE SKIP LOCKED

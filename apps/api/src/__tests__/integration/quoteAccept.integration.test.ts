@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { quotes, quoteAcceptances } from '../../db/schema/quotes';
 import { invoices, invoiceLines } from '../../db/schema/invoices';
+import { organizations } from '../../db/schema/orgs';
 import { createPartner, createOrganization } from './db-utils';
 import { createQuote, addManualLine } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
@@ -61,6 +62,47 @@ describe('quote accept → convert', () => {
     expect(inv!.balance).toBe('250.00');
     expect(inv!.issueDate).toBeTruthy();
     expect(inv!.dueDate).toBeTruthy();
+  });
+
+  // The whole point of "lock the quote total" (Phase 3 decision): the auto-issued
+  // invoice keeps the quote's snapshotted tax rate — it must NOT re-resolve the org's
+  // current rate like issueInvoice does, or the customer would be charged differently
+  // than the proposal they signed.
+  runDb('auto-issued invoice uses the quote tax snapshot, not the current org rate', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Taxable item', quantity: 1, unitPrice: 100, taxable: true, customerVisible: true, recurrence: 'one_time' } as any, actor));
+    // Quote snapshot = 10%; org's live rate = 25% (deliberately different).
+    await withSystemDbAccessContext(() => db.update(quotes).set({ taxRate: '0.100' }).where(eq(quotes.id, created.id)));
+    await withSystemDbAccessContext(() => db.update(organizations).set({ taxRate: '0.250' }).where(eq(organizations.id, org.id)));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+
+    const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }));
+    const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
+    expect(inv!.taxTotal).toBe('10.00');  // 100 × 0.10 (quote snapshot) — NOT 25.00 (org rate)
+    expect(inv!.total).toBe('110.00');
+  });
+
+  // Auto-issue allocates a gapless invoice number. Two accepts for the same
+  // partner/year must get consecutive numbers (no gap, no reuse) — accounting integrity.
+  runDb('two accepted quotes for the same partner get sequential invoice numbers', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const acceptOne = async () => {
+      const q = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+      await withDbAccessContext(ctx, () => addManualLine(q.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 50, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+      await withDbAccessContext(ctx, () => sendQuote(q.id, actor));
+      return withDbAccessContext(ctx, () => acceptQuote({ quoteId: q.id, signerName: 'Jane' }));
+    };
+    const a = await acceptOne();
+    const b = await acceptOne();
+    const [invA] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, a.invoiceId)));
+    const [invB] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, b.invoiceId)));
+    const numA = Number(invA!.invoiceNumber!.split('-')[2]);
+    const numB = Number(invB!.invoiceNumber!.split('-')[2]);
+    expect(Number.isFinite(numA)).toBe(true);
+    expect(numB).toBe(numA + 1);
   });
 
   runDb('a recurring-only quote still converts but yields a $0 invoice (Phase 2 degenerate edge)', async () => {

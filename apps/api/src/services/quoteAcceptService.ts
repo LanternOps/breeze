@@ -150,7 +150,10 @@ export async function acceptQuote(
   // inlined (no runOutsideDbContext) to stay atomic inside the caller's accept
   // transaction; the quote row lock above already serializes concurrent accepts, so
   // there's no double-allocation.
-  const issueFields: Record<string, unknown> = {
+  // Partial<$inferInsert> (not Record<string, unknown>) so a typo'd column or a
+  // wrong value type (e.g. money-string vs number) is a compile error, not a silent
+  // no-op on the update.
+  const issueFields: Partial<typeof invoices.$inferInsert> = {
     subtotal: totals.subtotal,
     taxTotal: totals.taxTotal,
     total: totals.total,

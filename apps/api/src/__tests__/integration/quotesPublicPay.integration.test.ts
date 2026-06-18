@@ -62,17 +62,33 @@ describe('public accept → pay', () => {
     expect(sessionsCreateMock.mock.calls[0]![0].line_items[0].price_data.unit_amount).toBe(25000);
   });
 
-  runDb('accept still succeeds (payUrl null) when Stripe is not connected', async () => {
+  runDb('accept still succeeds (payUrl null, NOT deferred) when Stripe is not connected', async () => {
     getConnectionMock.mockResolvedValue(null);
     const { quoteId, token } = await seedSentQuote();
     const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
     expect(res.status).toBe(200);
-    const body = await res.json() as { data: { status: string; payUrl: string | null } };
+    const body = await res.json() as { data: { status: string; payUrl: string | null; payDeferred?: boolean } };
     expect(body.data.status).toBe('converted');
     expect(body.data.payUrl).toBeNull();
+    expect(body.data.payDeferred).toBeFalsy(); // STRIPE_NOT_CONNECTED is an EXPECTED no-pay outcome, not a deferral
     expect(sessionsCreateMock).not.toHaveBeenCalled();
-    // The accept still committed: the quote converted.
     const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
     expect(q!.status).toBe('converted');
+  });
+
+  // An UNEXPECTED Stripe failure after the accept committed must not roll back the
+  // accept, and must be distinguishable (payDeferred) from "nothing to pay" so the
+  // customer isn't silently left with no payment path.
+  runDb('accept still succeeds (payUrl null, payDeferred true) when Stripe throws after commit', async () => {
+    sessionsCreateMock.mockRejectedValue(new Error('stripe outage'));
+    const { quoteId, token } = await seedSentQuote();
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: { status: string; payUrl: string | null; payDeferred?: boolean } };
+    expect(body.data.status).toBe('converted');
+    expect(body.data.payUrl).toBeNull();
+    expect(body.data.payDeferred).toBe(true);
+    const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q!.status).toBe('converted'); // accept committed despite the Stripe failure
   });
 });

@@ -77,10 +77,17 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
   const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   try {
-    const res = await acceptQuote({
+    // Run in a system sub-context: acceptQuote now auto-issues the converted
+    // invoice, which writes the partner-axis partner_invoice_sequences counter.
+    // This portal context is org-scoped with NO partner access (auth.ts:
+    // accessiblePartnerIds: []), so a bare call would hit an RLS WITH CHECK
+    // violation on that insert (#1375 class) and roll the whole accept back.
+    // Org ownership is already verified by the org-scoped lookup above. The
+    // public path (quotesPublic.ts) wraps acceptQuote the same way.
+    const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
       quoteId: id, signerName: auth.user.name || auth.user.email, signerEmail: auth.user.email,
       ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null, actorUserId: null,
-    });
+    })));
     return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });

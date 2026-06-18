@@ -56,10 +56,16 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       return;
     }
     setStatus('converted');
-    setMsg('Thank you — your acceptance has been recorded.');
-    // Phase 3: the accept response carries a one-shot Stripe checkout URL (the
-    // accept token is now spent, so it can't be re-minted). Surface "Pay now".
+    // Phase 3: the accept response carries a one-shot Stripe checkout URL (the accept
+    // token is now spent, so it can't be re-minted). payDeferred means a link was
+    // expected but couldn't be minted right now (e.g. a transient Stripe error) — tell
+    // the customer a link is coming rather than silently dropping the payment CTA.
     setPayUrl(res.data?.data?.payUrl ?? null);
+    setMsg(
+      res.data?.data?.payDeferred
+        ? 'Thank you — your acceptance has been recorded. We’ll email you a payment link shortly.'
+        : 'Thank you — your acceptance has been recorded.'
+    );
   };
 
   const decline = async () => {
