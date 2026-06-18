@@ -837,6 +837,7 @@ alertsRoutes.post(
   zValidator('param', alertIdParamSchema),
   zValidator('json', z.object({
     subject: z.string().min(1).max(255).optional(),
+    description: z.string().max(5000).optional(),
     categoryId: z.string().uuid().optional(),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
     assigneeId: z.string().uuid().optional()

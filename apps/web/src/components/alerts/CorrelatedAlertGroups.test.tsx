@@ -189,6 +189,12 @@ function mockGroupsResponse(options: { rcaEnabled?: boolean } = {}) {
     if (url === `/alerts/correlations/${GROUP_ID}/feedback` && method === 'POST') {
       return Promise.resolve(makeJsonResponse({ success: true }));
     }
+    if (url === '/ticket-categories' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({ data: [] }));
+    }
+    if (url === `/alerts/${groupPayload.rootCause.id}/create-ticket` && method === 'POST') {
+      return Promise.resolve(makeJsonResponse({ data: { id: 'ticket-1', internalNumber: 'T-2026-0101' } }, true, 201));
+    }
     return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
   });
 }
@@ -288,6 +294,32 @@ describe('CorrelatedAlertGroups', () => {
         gapCount: 1
       })
     }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Create ticket from RCA/i }));
+    const description = await screen.findByTestId('alert-ticket-description') as HTMLTextAreaElement;
+    expect(description.value).toContain('RCA draft for correlated alert group');
+    expect(description.value).toContain('A recent service restart lines up with the alert burst.');
+    expect(description.value).toContain('Review recent changes');
+    fireEvent.click(screen.getByTestId('alert-ticket-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/${groupPayload.rootCause.id}/create-ticket`,
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('RCA draft for correlated alert group')
+        })
+      );
+    });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/correlations/${GROUP_ID}/rca-feedback`,
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('rca.used_in_ticket')
+        })
+      );
+    });
   });
 
   it('records correlation correction feedback from group controls', async () => {

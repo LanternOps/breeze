@@ -1264,15 +1264,26 @@ describe('alert routes', () => {
       const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject: 'Custom subject', priority: 'urgent' })
+        body: JSON.stringify({ subject: 'Custom subject', description: 'RCA note draft', priority: 'urgent' })
       });
 
       expect(res.status).toBe(201);
       expect(createTicketFromAlertMock).toHaveBeenCalledWith(
         ALERT_ID,
         expect.objectContaining({ userId: 'user-123' }),
-        expect.objectContaining({ subject: 'Custom subject', priority: 'urgent' })
+        expect.objectContaining({ subject: 'Custom subject', description: 'RCA note draft', priority: 'urgent' })
       );
+    });
+
+    it('rejects overlong ticket descriptions', async () => {
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'x'.repeat(5001) })
+      });
+
+      expect(res.status).toBe(400);
+      expect(createTicketFromAlertMock).not.toHaveBeenCalled();
     });
 
     it('returns 404 for out-of-site alert devices (site-restricted caller)', async () => {

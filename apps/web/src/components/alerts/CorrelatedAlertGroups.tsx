@@ -21,6 +21,7 @@ import type { AlertSeverity, AlertStatus } from './AlertList';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
+import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 
 type AlertItem = {
   id: string;
@@ -155,7 +156,9 @@ function metadataNumber(record: Record<string, unknown>, key: string): number | 
 }
 
 function compactDetail(value: string, maxLength = 140): string {
-  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
+  if (value.length <= maxLength) return value;
+  if (maxLength <= 3) return value.slice(0, maxLength);
+  return `${value.slice(0, maxLength - 3)}...`;
 }
 
 function appendDetail(details: Array<{ label: string; value: string }>, label: string, value: string | null | undefined) {
@@ -286,11 +289,52 @@ function EvidenceLinks({ evidenceIds, timeline }: { evidenceIds: string[]; timel
   );
 }
 
+function buildRcaTicketNote(group: AlertGroup, rca: RcaResult) {
+  const lines = [
+    `RCA draft for correlated alert group ${group.id}`,
+    `Root alert: ${group.rootCause.title}`,
+    `Device: ${group.rootCause.device}`,
+    `Window: ${formatDateTime(rca.scope.windowStart)} - ${formatDateTime(rca.scope.windowEnd)}`,
+    '',
+    'Likely causes:',
+  ];
+
+  if (rca.rootCauseCandidates.length === 0) {
+    lines.push('- No likely cause candidates were found.');
+  } else {
+    for (const candidate of rca.rootCauseCandidates.slice(0, 3)) {
+      lines.push(`- ${candidate.summary} (${formatPercent(candidate.confidence * 100)} confidence)`);
+    }
+  }
+
+  if (rca.suggestedNextSteps && rca.suggestedNextSteps.length > 0) {
+    lines.push('', 'Suggested next steps:');
+    for (const step of rca.suggestedNextSteps.slice(0, 4)) {
+      lines.push(`- ${step.title}: ${step.rationale} (${step.riskTier} risk)`);
+    }
+  }
+
+  if (rca.timeline.length > 0) {
+    lines.push('', 'Evidence summary:');
+    for (const item of rca.timeline.slice(0, 6)) {
+      lines.push(`- ${item.title}: ${item.summary}`);
+    }
+  }
+
+  if (rca.gaps.length > 0) {
+    lines.push('', 'Evidence gaps:');
+    for (const gap of rca.gaps.slice(0, 3)) lines.push(`- ${gap}`);
+  }
+
+  return compactDetail(lines.join('\n'), 5000);
+}
+
 export default function CorrelatedAlertGroups() {
   const mlFlags = useMlFeatureFlags();
   const [groups, setGroups] = useState<AlertGroup[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [rcaByGroup, setRcaByGroup] = useState<Record<string, RcaResult | undefined>>({});
+  const [ticketGroup, setTicketGroup] = useState<AlertGroup | null>(null);
   const [loadingRcaGroupId, setLoadingRcaGroupId] = useState<string | null>(null);
   const [busyGroupId, setBusyGroupId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -500,6 +544,8 @@ export default function CorrelatedAlertGroups() {
       </div>
     );
   }
+
+  const ticketGroupRca = ticketGroup ? rcaByGroup[ticketGroup.id] : undefined;
 
   return (
     <div className="space-y-5">
@@ -826,11 +872,11 @@ export default function CorrelatedAlertGroups() {
 
                               <button
                                 type="button"
-                                onClick={() => void sendRcaFeedback(group, 'rca.used_in_ticket')}
+                                onClick={() => setTicketGroup(group)}
                                 className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
                               >
                                 <FileText className="h-4 w-4" />
-                                Used in ticket
+                                Create ticket from RCA
                               </button>
                               <button
                                 type="button"
@@ -852,6 +898,21 @@ export default function CorrelatedAlertGroups() {
           )}
         </div>
       </div>
+      {ticketGroup && ticketGroupRca && (
+        <CreateTicketFromAlertDialog
+          alertId={ticketGroup.rootCause.id}
+          alertTitle={ticketGroup.rootCause.title}
+          alertSeverity={ticketGroup.rootCause.severity}
+          initialDescription={buildRcaTicketNote(ticketGroup, ticketGroupRca)}
+          openTicketNumber={null}
+          onClose={() => setTicketGroup(null)}
+          onCreated={() => {
+            const createdFromGroup = ticketGroup;
+            setTicketGroup(null);
+            void sendRcaFeedback(createdFromGroup, 'rca.used_in_ticket');
+          }}
+        />
+      )}
     </div>
   );
 }
