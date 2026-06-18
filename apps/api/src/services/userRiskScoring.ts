@@ -951,9 +951,13 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
   }
   if (filter.siteId) {
     conditions.push(sql`${organizationUsers.siteIds} @> ARRAY[${filter.siteId}]::uuid[]`);
-  } else if (filter.siteIds && filter.siteIds.length > 0) {
-    const allowedSiteIds = sql.join(filter.siteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
-    conditions.push(sql`${organizationUsers.siteIds} && ARRAY[${allowedSiteIds}]`);
+  } else if (filter.siteIds) {
+    if (filter.siteIds.length === 0) {
+      conditions.push(sql`false`);
+    } else {
+      const allowedSiteIds = sql.join(filter.siteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
+      conditions.push(sql`${organizationUsers.siteIds} && ARRAY[${allowedSiteIds}]`);
+    }
   }
 
   const whereClause = and(...conditions);

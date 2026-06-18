@@ -39,12 +39,14 @@ import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './devices/help
 const ORG_ID = '00000000-0000-0000-0000-000000000001';
 const ORG_ID_2 = '00000000-0000-0000-0000-000000000002';
 const DEVICE_ID = '00000000-0000-0000-0000-000000000010';
+const SITE_ID = '00000000-0000-0000-0000-000000000020';
 
 type AuthOverrides = {
   scope?: 'organization' | 'partner' | 'system';
   orgId?: string | null;
   accessibleOrgIds?: string[] | null;
   canAccessOrg?: (id: string) => boolean;
+  allowedSiteIds?: string[];
 };
 
 function buildApp(overrides: AuthOverrides = {}): Hono {
@@ -58,7 +60,7 @@ function buildApp(overrides: AuthOverrides = {}): Hono {
       accessibleOrgIds: 'accessibleOrgIds' in overrides ? overrides.accessibleOrgIds : [ORG_ID],
       canAccessOrg: overrides.canAccessOrg ?? ((id: string) => id === ORG_ID),
     });
-    c.set('permissions', { allowedSiteIds: undefined });
+    c.set('permissions', { allowedSiteIds: overrides.allowedSiteIds });
     await next();
   };
   const app = new Hono();
@@ -181,6 +183,37 @@ describe('public reliability routes', () => {
       const body = await res.json();
       expect(body.summary).toEqual(summary);
       expect(body.worstDevices).toEqual([]);
+    });
+
+    it('scopes summary and worst devices to allowed sites for site-restricted users', async () => {
+      const summary = {
+        orgId: ORG_ID,
+        devices: 1,
+        averageScore: 48,
+        criticalDevices: 1,
+        poorDevices: 0,
+        fairDevices: 0,
+        goodDevices: 0,
+        degradingDevices: 1,
+        topIssues: [{ type: 'crashes' as const, count: 2 }],
+      };
+      vi.mocked(getOrgReliabilitySummary).mockResolvedValue(summary);
+      vi.mocked(listReliabilityDevices).mockResolvedValue({ total: 1, rows: [{ deviceId: DEVICE_ID }] as any });
+
+      const app = buildApp({ allowedSiteIds: [SITE_ID] });
+      const res = await app.request(`/reliability/org/${ORG_ID}/summary`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.summary).toEqual(summary);
+      expect(body.worstDevices).toEqual([{ deviceId: DEVICE_ID }]);
+      expect(vi.mocked(getOrgReliabilitySummary)).toHaveBeenCalledWith(ORG_ID, { siteIds: [SITE_ID] });
+      expect(vi.mocked(listReliabilityDevices)).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        siteIds: [SITE_ID],
+        limit: 10,
+        offset: 0,
+      });
     });
   });
 

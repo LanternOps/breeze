@@ -206,9 +206,11 @@ reliabilityRoutes.get(
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const siteIds = permissions?.allowedSiteIds;
     const [summary, worstDevices] = await Promise.all([
-      getOrgReliabilitySummary(orgId),
-      listReliabilityDevices({ orgId, limit: 10, offset: 0 }),
+      getOrgReliabilitySummary(orgId, { siteIds }),
+      listReliabilityDevices({ orgId, siteIds, limit: 10, offset: 0 }),
     ]);
 
     return c.json({

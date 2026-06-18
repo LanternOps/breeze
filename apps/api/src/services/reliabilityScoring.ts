@@ -1039,8 +1039,8 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
   }
   if (filter.siteId) {
     conditions.push(eq(devices.siteId, filter.siteId));
-  } else if (filter.siteIds && filter.siteIds.length > 0) {
-    conditions.push(inArray(devices.siteId, filter.siteIds));
+  } else if (filter.siteIds) {
+    conditions.push(filter.siteIds.length > 0 ? inArray(devices.siteId, filter.siteIds) : sql`false`);
   }
 
   const [rangeMin, rangeMax] = filter.scoreRange ? scoreRangeBounds(filter.scoreRange) : [undefined, undefined];
@@ -1324,7 +1324,7 @@ export async function getDeviceReliabilityHistory(deviceId: string, days: number
     });
 }
 
-export async function getOrgReliabilitySummary(orgId: string): Promise<{
+export async function getOrgReliabilitySummary(orgId: string, options: { siteIds?: string[] } = {}): Promise<{
   orgId: string;
   devices: number;
   averageScore: number;
@@ -1335,6 +1335,11 @@ export async function getOrgReliabilitySummary(orgId: string): Promise<{
   degradingDevices: number;
   topIssues: Array<{ type: ReliabilityTopIssue['type']; count: number }>;
 }> {
+  const conditions: SQL[] = [eq(deviceReliability.orgId, orgId)];
+  if (options.siteIds) {
+    conditions.push(options.siteIds.length > 0 ? inArray(devices.siteId, options.siteIds) : sql`false`);
+  }
+
   const rows = await db
     .select({
       reliabilityScore: deviceReliability.reliabilityScore,
@@ -1346,7 +1351,8 @@ export async function getOrgReliabilitySummary(orgId: string): Promise<{
       uptime30d: deviceReliability.uptime30d,
     })
     .from(deviceReliability)
-    .where(eq(deviceReliability.orgId, orgId));
+    .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
+    .where(and(...conditions));
 
   const total = rows.length;
   const averageScore = total > 0
