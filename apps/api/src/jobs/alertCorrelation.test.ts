@@ -38,6 +38,10 @@ vi.mock('../services/alertCorrelationGroups', () => ({
   persistAlertCorrelationGroupsForAlerts: persistGroupsMock,
 }));
 
+vi.mock('../services/alertCooldown', () => ({
+  isFlapping: vi.fn(),
+}));
+
 vi.mock('./workerObservability', () => ({
   attachWorkerObservability: attachWorkerObservabilityMock,
 }));
@@ -56,6 +60,7 @@ import {
   buildAlertCorrelationEvidence,
   buildAlertCorrelationJobId,
   enqueueAlertCorrelation,
+  findAlertPairFlappingEvidence,
   findAlertPairLogEvidence,
   initializeAlertCorrelationWorker,
   runAlertCorrelationForDevice,
@@ -298,6 +303,37 @@ describe('alert correlation queue helpers', () => {
       evidenceType: 'related_log_correlation',
       logCorrelationIds: ['log-correlation-1'],
       logDeviceIds: ['device-2'],
+    });
+  });
+
+  it('adds flapping evidence from existing rule/device transition tracking', () => {
+    const older = alertAt({ id: 'older', deviceId: 'device-1', ruleId: 'rule-1', siteId: 'site-1' });
+    const newer = alertAt({ id: 'newer', deviceId: 'device-1', ruleId: 'rule-1', siteId: 'site-1' });
+    const flappingEvidence = findAlertPairFlappingEvidence({
+      older,
+      newer,
+      flappingKeys: new Set(['rule:rule-1:device-1']),
+    });
+
+    const evidence = buildAlertCorrelationEvidence({
+      older,
+      newer,
+      deviceId: 'device-1',
+      timeDiffMs: 8 * 60 * 1000,
+      maxWindowMs: 30 * 60 * 1000,
+      flappingEvidence,
+    });
+
+    expect(evidence).toMatchObject({
+      correlationType: 'flapping_temporal',
+      confidence: 0.99,
+      metadata: {
+        flappingDetected: true,
+        flappingKeys: ['rule:rule-1:device-1'],
+        flappingDeviceIds: ['device-1'],
+        flappingRuleIds: ['rule-1'],
+        evidence: ['same_device', 'time_window', 'same_rule', 'flapping_suppression'],
+      },
     });
   });
 });

@@ -13,6 +13,7 @@ import {
   type LogCorrelationSampleLog,
 } from '../db/schema';
 import { persistAlertCorrelationGroupsForAlerts } from '../services/alertCorrelationGroups';
+import { isFlapping } from '../services/alertCooldown';
 import { isReusableState } from '../services/bullmqUtils';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 import { getBullMQConnection } from '../services/redis';
@@ -40,6 +41,7 @@ type AlertCorrelationEvidenceType =
   | 'same_rule_temporal'
   | 'same_template_temporal'
   | 'same_config_policy_item_temporal'
+  | 'flapping_temporal'
   | 'same_site_temporal'
   | 'same_device_temporal';
 
@@ -65,6 +67,14 @@ type AlertCorrelationLogEvidence = {
   logSeverity: string;
   logSampleLogIds: string[];
   logDeviceIds: string[];
+};
+
+type AlertCorrelationFlappingEvidence = {
+  evidenceType: 'flapping_suppression';
+  flappingKeys: string[];
+  flappingDeviceIds: string[];
+  flappingRuleIds: string[];
+  flappingConfigPolicyIds: string[];
 };
 
 export type AlertCorrelationJobData = {
@@ -98,6 +108,7 @@ export function buildAlertCorrelationEvidence(options: {
   timeDiffMs: number;
   maxWindowMs: number;
   logEvidence?: AlertCorrelationLogEvidence | null;
+  flappingEvidence?: AlertCorrelationFlappingEvidence | null;
 }): {
   correlationType: AlertCorrelationEvidenceType;
   confidence: number;
@@ -136,6 +147,12 @@ export function buildAlertCorrelationEvidence(options: {
     evidence.push(options.logEvidence.evidenceType);
   }
 
+  if (options.flappingEvidence) {
+    correlationType = 'flapping_temporal';
+    confidence = Math.min(0.99, Math.round((confidence + 0.12) * 100) / 100);
+    evidence.push(options.flappingEvidence.evidenceType);
+  }
+
   const metadata: Record<string, unknown> = {
     timeDiffMinutes: Math.round(options.timeDiffMs / 60000),
     deviceId: options.deviceId,
@@ -162,11 +179,87 @@ export function buildAlertCorrelationEvidence(options: {
     });
   }
 
+  if (options.flappingEvidence) {
+    Object.assign(metadata, {
+      flappingDetected: true,
+      flappingKeys: options.flappingEvidence.flappingKeys,
+      flappingDeviceIds: options.flappingEvidence.flappingDeviceIds,
+      flappingRuleIds: options.flappingEvidence.flappingRuleIds,
+      flappingConfigPolicyIds: options.flappingEvidence.flappingConfigPolicyIds,
+    });
+  }
+
   return {
     correlationType,
     confidence,
     metadata,
   };
+}
+
+function flappingSource(alert: CorrelatableAlert): { sourceType: 'rule' | 'config_policy'; sourceId: string } | null {
+  if (alert.ruleId) {
+    return { sourceType: 'rule', sourceId: alert.ruleId };
+  }
+  if (alert.configPolicyId) {
+    return { sourceType: 'config_policy', sourceId: alert.configPolicyId };
+  }
+  return null;
+}
+
+function flappingKeyForAlert(alert: CorrelatableAlert): string | null {
+  const source = flappingSource(alert);
+  if (!source) return null;
+  return `${source.sourceType}:${source.sourceId}:${alert.deviceId}`;
+}
+
+export function findAlertPairFlappingEvidence(options: {
+  older: CorrelatableAlert;
+  newer: CorrelatableAlert;
+  flappingKeys: ReadonlySet<string>;
+}): AlertCorrelationFlappingEvidence | null {
+  const matchedKeys: string[] = [];
+  const flappingDeviceIds: string[] = [];
+  const flappingRuleIds: string[] = [];
+  const flappingConfigPolicyIds: string[] = [];
+
+  for (const alert of [options.older, options.newer]) {
+    const key = flappingKeyForAlert(alert);
+    if (!key || !options.flappingKeys.has(key)) continue;
+    addLimited(matchedKeys, key);
+    addLimited(flappingDeviceIds, alert.deviceId);
+    if (alert.ruleId) addLimited(flappingRuleIds, alert.ruleId);
+    if (alert.configPolicyId) addLimited(flappingConfigPolicyIds, alert.configPolicyId);
+  }
+
+  if (matchedKeys.length === 0) return null;
+
+  return {
+    evidenceType: 'flapping_suppression',
+    flappingKeys: matchedKeys,
+    flappingDeviceIds,
+    flappingRuleIds,
+    flappingConfigPolicyIds,
+  };
+}
+
+async function findFlappingKeysForAlerts(alertRows: CorrelatableAlert[]): Promise<Set<string>> {
+  const sourceByKey = new Map<string, { sourceId: string; deviceId: string }>();
+  for (const alert of alertRows) {
+    const source = flappingSource(alert);
+    const key = flappingKeyForAlert(alert);
+    if (!source || !key) continue;
+    sourceByKey.set(key, { sourceId: source.sourceId, deviceId: alert.deviceId });
+  }
+
+  const flappingKeys = new Set<string>();
+  await Promise.all(
+    [...sourceByKey.entries()].map(async ([key, source]) => {
+      if (await isFlapping(source.sourceId, source.deviceId)) {
+        flappingKeys.add(key);
+      }
+    })
+  );
+  return flappingKeys;
 }
 
 const severityRank: Record<string, number> = {
@@ -383,6 +476,7 @@ export async function runAlertCorrelationForDevice(options: {
     )
     .orderBy(desc(logCorrelations.lastSeen))
     .limit(MAX_LOG_CORRELATIONS_PER_PASS);
+  const flappingKeys = await findFlappingKeysForAlerts(recentAlerts);
 
   let created = 0;
   const maxWindowMs = windowMinutes * 60 * 1000;
@@ -401,6 +495,7 @@ export async function runAlertCorrelationForDevice(options: {
         timeDiffMs,
         maxWindowMs,
         logEvidence: findAlertPairLogEvidence({ older, newer, logCorrelations: recentLogCorrelations }),
+        flappingEvidence: findAlertPairFlappingEvidence({ older, newer, flappingKeys }),
       });
       const confidence = evidence.confidence;
       if (confidence < 0.3) continue;
