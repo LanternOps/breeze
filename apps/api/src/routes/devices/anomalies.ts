@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, ne } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { metricAnomalies } from '../../db/schema';
@@ -133,6 +133,7 @@ anomaliesRoutes.patch(
         eventType: 'anomaly.promoted',
         outcome: 'promoted',
         actorUserId: auth.user.id,
+        occurredAt: result.anomaly.updatedAt,
         metadata: {
           route: 'devices.anomalies.status',
           metricName: result.anomaly.metricName,
@@ -158,11 +159,24 @@ anomaliesRoutes.patch(
         eq(metricAnomalies.id, anomalyId),
         eq(metricAnomalies.orgId, device.orgId),
         eq(metricAnomalies.deviceId, deviceId),
+        ne(metricAnomalies.status, input.status),
       ))
       .returning();
 
     if (!updated) {
-      return c.json({ error: 'Anomaly not found' }, 404);
+      const [existing] = await db
+        .select()
+        .from(metricAnomalies)
+        .where(and(
+          eq(metricAnomalies.id, anomalyId),
+          eq(metricAnomalies.orgId, device.orgId),
+          eq(metricAnomalies.deviceId, deviceId),
+        ))
+        .limit(1);
+      if (!existing) {
+        return c.json({ error: 'Anomaly not found' }, 404);
+      }
+      return c.json({ data: serializeAnomaly(existing) });
     }
 
     await emitAnomalyFeedback({
@@ -171,6 +185,7 @@ anomaliesRoutes.patch(
       eventType: `anomaly.${input.status}`,
       outcome: input.status,
       actorUserId: auth.user.id,
+      occurredAt: updated.updatedAt,
       metadata: {
         route: 'devices.anomalies.status',
         metricName: updated.metricName,

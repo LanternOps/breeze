@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const {
+  selectMock,
   updateMock,
   emitAnomalyFeedbackMock,
   promoteMetricAnomalyToAlertMock,
   getDeviceWithOrgAndSiteCheckMock,
 } = vi.hoisted(() => ({
+  selectMock: vi.fn(),
   updateMock: vi.fn(),
   emitAnomalyFeedbackMock: vi.fn(),
   promoteMetricAnomalyToAlertMock: vi.fn(),
@@ -17,11 +19,12 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
   desc: (column: unknown) => ({ type: 'desc', column }),
   eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
+  ne: (left: unknown, right: unknown) => ({ type: 'ne', left, right }),
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(),
+    select: selectMock,
     update: updateMock,
   },
 }));
@@ -114,6 +117,16 @@ function updateChain(result: unknown) {
   };
 }
 
+function selectChain(result: unknown) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(result),
+      }),
+    }),
+  };
+}
+
 describe('device anomaly routes', () => {
   let app: Hono;
 
@@ -151,6 +164,7 @@ describe('device anomaly routes', () => {
     expect(emitAnomalyFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
       eventType: 'anomaly.promoted',
       outcome: 'promoted',
+      occurredAt: anomaly.updatedAt,
       metadata: expect.objectContaining({
         linkedAlertId: '44444444-4444-4444-8444-444444444444',
         createdAlert: true,
@@ -178,7 +192,8 @@ describe('device anomaly routes', () => {
   });
 
   it('keeps dismissed status updates on the existing direct update path', async () => {
-    updateMock.mockReturnValueOnce(updateChain([{ ...anomaly, status: 'dismissed', updatedAt: new Date('2026-06-18T12:10:00.000Z') }]));
+    const transitionAt = new Date('2026-06-18T12:10:00.000Z');
+    updateMock.mockReturnValueOnce(updateChain([{ ...anomaly, status: 'dismissed', updatedAt: transitionAt }]));
 
     const res = await app.request(`/devices/${device.id}/anomalies/${anomaly.id}/status`, {
       method: 'PATCH',
@@ -192,6 +207,29 @@ describe('device anomaly routes', () => {
     expect(emitAnomalyFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
       eventType: 'anomaly.dismissed',
       outcome: 'dismissed',
+      occurredAt: transitionAt,
     }));
+  });
+
+  it('returns an existing same-status anomaly without emitting duplicate feedback', async () => {
+    const existingDismissed = {
+      ...anomaly,
+      status: 'dismissed',
+      updatedAt: new Date('2026-06-18T12:10:00.000Z'),
+    };
+    updateMock.mockReturnValueOnce(updateChain([]));
+    selectMock.mockReturnValueOnce(selectChain([existingDismissed]));
+
+    const res = await app.request(`/devices/${device.id}/anomalies/${anomaly.id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'dismissed' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(emitAnomalyFeedbackMock).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.data.status).toBe('dismissed');
+    expect(body.data.updatedAt).toBe('2026-06-18T12:10:00.000Z');
   });
 });
