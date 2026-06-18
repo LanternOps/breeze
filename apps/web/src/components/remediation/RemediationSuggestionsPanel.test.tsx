@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RemediationSuggestionsPanel from './RemediationSuggestionsPanel';
@@ -246,7 +246,14 @@ describe('RemediationSuggestionsPanel', () => {
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /execute/i }));
+    const preview = (await screen.findByText('Execution preview')).closest('div') as HTMLElement;
+    expect(within(preview).getByText('Script: script 11111111-1111-4111-8111-111111111111')).toBeTruthy();
+    expect(within(preview).getByText('device 22222222-2222-4222-8222-222222222222')).toBeTruthy();
+    expect(within(preview).getByText('Matched disk cleanup terms.')).toBeTruthy();
+    expect(within(preview).getByText('Run script "Disk Cleanup" through the existing script execution flow.')).toBeTruthy();
+    expect(within(preview).getByText(/"dryRun": false/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /execute/i }));
 
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(

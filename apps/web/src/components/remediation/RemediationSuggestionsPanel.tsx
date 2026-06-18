@@ -51,6 +51,32 @@ function targetLabel(suggestion: RemediationSuggestion): string {
   return 'Diagnostic';
 }
 
+function targetIdentifier(suggestion: RemediationSuggestion): string {
+  if (suggestion.targetType === 'script') return suggestion.scriptId ? `script ${suggestion.scriptId}` : 'script without a script ID';
+  if (suggestion.targetType === 'script_template') {
+    return suggestion.scriptTemplateId ? `template ${suggestion.scriptTemplateId}` : 'template without a template ID';
+  }
+  if (suggestion.targetType === 'playbook') return suggestion.playbookId ? `playbook ${suggestion.playbookId}` : 'playbook without a playbook ID';
+  return 'diagnostic action';
+}
+
+function targetDeviceLabel(suggestion: RemediationSuggestion): string {
+  const ids = suggestion.targetDeviceIds.length > 0
+    ? suggestion.targetDeviceIds
+    : suggestion.deviceId
+      ? [suggestion.deviceId]
+      : [];
+
+  if (ids.length === 0) return 'No target device in this suggestion';
+  if (ids.length === 1) return `device ${ids[0]}`;
+  return `${ids.length} devices: ${ids.join(', ')}`;
+}
+
+function parametersPreview(suggestion: RemediationSuggestion): string | null {
+  if (!suggestion.parameters || Object.keys(suggestion.parameters).length === 0) return null;
+  return JSON.stringify(suggestion.parameters, null, 2);
+}
+
 function singleTargetDeviceId(suggestion: RemediationSuggestion): string | null {
   if (suggestion.targetDeviceIds.length === 1) return suggestion.targetDeviceIds[0] ?? null;
   if (suggestion.targetDeviceIds.length === 0) return suggestion.deviceId;
@@ -317,6 +343,8 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
             const approvalStatus = approvalStatuses[suggestion.id];
             const approvalPending = requiresExecutionApproval(suggestion) && suggestion.elevationRequestId && approvalStatus === 'pending';
             const editing = editingId === suggestion.id && editDraft;
+            const executionPreview = suggestion.status === 'accepted' || suggestion.status === 'edited';
+            const parameterJson = parametersPreview(suggestion);
             return (
               <div key={suggestion.id} className="rounded-md border p-3">
                 {editing ? (
@@ -400,6 +428,43 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                       <p className="mt-2 text-sm">{suggestion.expectedAction}</p>
                       {suggestion.status !== 'suggested' && (
                         <p className="mt-2 text-xs font-medium text-muted-foreground">Status: {suggestion.status}</p>
+                      )}
+                      {executionPreview && (
+                        <div className="mt-3 rounded-md border bg-muted/30 p-3">
+                          <p className="text-xs font-semibold text-foreground">Execution preview</p>
+                          <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                            <div className="min-w-0">
+                              <dt className="font-medium text-muted-foreground">Will run</dt>
+                              <dd className="break-words text-foreground">{targetLabel(suggestion)}: {targetIdentifier(suggestion)}</dd>
+                            </div>
+                            <div className="min-w-0">
+                              <dt className="font-medium text-muted-foreground">Where</dt>
+                              <dd className="break-words text-foreground">{targetDeviceLabel(suggestion)}</dd>
+                            </div>
+                            <div className="min-w-0">
+                              <dt className="font-medium text-muted-foreground">Source</dt>
+                              <dd className="break-words text-foreground">{suggestion.sourceType} {suggestion.sourceId}</dd>
+                            </div>
+                            <div className="min-w-0">
+                              <dt className="font-medium text-muted-foreground">Risk</dt>
+                              <dd className="break-words text-foreground">{suggestion.riskTier}</dd>
+                            </div>
+                            <div className="min-w-0 sm:col-span-2">
+                              <dt className="font-medium text-muted-foreground">Why</dt>
+                              <dd className="break-words text-foreground">{suggestion.rationale}</dd>
+                            </div>
+                            <div className="min-w-0 sm:col-span-2">
+                              <dt className="font-medium text-muted-foreground">Expected action</dt>
+                              <dd className="break-words text-foreground">{suggestion.expectedAction}</dd>
+                            </div>
+                          </dl>
+                          {parameterJson && (
+                            <div className="mt-2">
+                              <p className="text-xs font-medium text-muted-foreground">Parameters</p>
+                              <pre className="mt-1 max-h-36 overflow-auto rounded-md border bg-background p-2 text-xs text-foreground">{parameterJson}</pre>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">

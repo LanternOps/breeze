@@ -68,6 +68,7 @@ type AlertListProps = {
   onBulkAction?: (action: string, alerts: Alert[]) => void;
   submittingId?: string | null;
   pageSize?: number;
+  alertCorrelationDisabled?: boolean;
 };
 
 export default function AlertList({
@@ -79,7 +80,8 @@ export default function AlertList({
   onSuppress,
   onBulkAction,
   submittingId,
-  pageSize = 25
+  pageSize = 25,
+  alertCorrelationDisabled = false
 }: AlertListProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -445,7 +447,19 @@ export default function AlertList({
                         <p className="text-xs text-muted-foreground truncate max-w-xs">
                           {alert.message}
                         </p>
-                        {hasCorrelationSummary && (
+                        {hasCorrelationSummary && alertCorrelationDisabled && (
+                          <span
+                            className="mt-1 inline-flex max-w-full cursor-not-allowed items-center gap-1 rounded-md border border-muted-foreground/30 bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                            title="Alert correlation is disabled for this organization"
+                            aria-disabled="true"
+                          >
+                            <GitBranch className="h-3 w-3 shrink-0" />
+                            <span className="truncate">
+                              Grouped incident unavailable: alert correlation disabled
+                            </span>
+                          </span>
+                        )}
+                        {hasCorrelationSummary && !alertCorrelationDisabled && (
                           <a
                             href="/alerts/correlations"
                             onClick={e => e.stopPropagation()}

@@ -352,6 +352,7 @@ export default function CorrelatedAlertGroups() {
     return { incidentCount, memberCount, suppressedAlerts, avgReduction };
   }, [groups]);
   const rcaDisabled = mlFlags.isDisabled('ml.rca.enabled');
+  const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
 
   const fetchGroups = useCallback(async () => {
     setIsLoading(true);
@@ -385,8 +386,16 @@ export default function CorrelatedAlertGroups() {
   }, []);
 
   useEffect(() => {
+    if (!mlFlags.loaded) return;
+    if (alertCorrelationDisabled) {
+      setGroups([]);
+      setExpandedGroups(new Set());
+      setError(null);
+      setIsLoading(false);
+      return;
+    }
     void fetchGroups();
-  }, [fetchGroups]);
+  }, [alertCorrelationDisabled, fetchGroups, mlFlags.loaded]);
 
   const toggleGroup = (groupId: string) => {
     setExpandedGroups(prev => {
@@ -524,6 +533,20 @@ export default function CorrelatedAlertGroups() {
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="flex h-48 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
+
+  if (alertCorrelationDisabled) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+          <Brain className="h-8 w-8" />
+          <h2 className="text-base font-semibold text-foreground">Alert correlation disabled</h2>
+          <p className="max-w-md text-sm">
+            Correlated alert groups are hidden because alert correlation is disabled for this organization.
+          </p>
         </div>
       </div>
     );

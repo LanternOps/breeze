@@ -744,13 +744,14 @@ jobs:
   # without mocks). BLOCKING on PRs and main — it lived inside the
   # non-blocking smoke-test job until 2026-06, which let two breakages
   # (#1042's RBAC gate, #1092's org-scope lockout) merge "green" and keep
-  # main red for 8 days. ~2-3 min: no Docker image builds, just the
-  # docker-compose.test.yml stack (postgres + redis pulls).
+  # main red for 8 days. No Docker image builds, but the real-DB suite plus
+  # RLS coverage regularly needs more than 15 minutes as the migration/test
+  # surface grows.
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: [lint, typecheck]
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout

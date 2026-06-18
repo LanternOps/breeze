@@ -13,6 +13,7 @@ import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 import { runAction, ActionError } from '../../lib/runAction';
 import { normalizeMetricAnomalyContext } from './alertMlContext';
+import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type Device = { id: string; name: string };
 
@@ -34,6 +35,7 @@ function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
 }
 
 export default function AlertsPage() {
+  const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,6 +57,7 @@ export default function AlertsPage() {
   // null (global route); this just makes the page refetch instead of showing
   // the previous scope.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
 
   const fetchAlerts = useCallback(async () => {
     try {
@@ -441,6 +444,7 @@ export default function AlertsPage() {
           onSuppress={handleSuppress}
           onBulkAction={handleBulkAction}
           submittingId={submittingId}
+          alertCorrelationDisabled={alertCorrelationDisabled}
         />
       )}
 

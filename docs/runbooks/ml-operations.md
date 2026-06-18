@@ -114,6 +114,22 @@ Key metrics:
 | Ticket triage | Override rate for category/priority/assignee |
 | User risk | True-positive rate, training completion, repeat signal rate |
 
+## V1 Promotion Baselines
+
+Before enabling a learned v1 model, compare it to the active v0 rule/heuristic
+over the same org cohort and evaluation window. The v1 candidate must beat the
+v0 metric below before rollout:
+
+| Future v1 surface | v0 metric to beat |
+| --- | --- |
+| Alert correlation | Lower correction rate from `feedback.totalCorrections` while preserving `compressionRatio` |
+| RCA | Higher helpful rate from `rcaFeedback.helpful` versus `rcaFeedback.notHelpful` and `rcaFeedback.edited` |
+| Anomalies | Lower `rates.dismissRate`; use `rates.promoteRate` and `rates.resolveRate` as guardrails |
+| Remediation | Higher `rates.acceptRate` with no worse `rates.failureRate` |
+| Reliability | Higher `precision` from `/api/reliability/evaluation` |
+| Ticket triage | Lower `overrideRate` from `/api/tickets/triage-evaluation` |
+| User risk | Higher `precision` from `/api/user-risk/evaluation` |
+
 ## Feedback Labels
 
 Canonical labels live in `ml_feedback_events`. They are append-only and deduped

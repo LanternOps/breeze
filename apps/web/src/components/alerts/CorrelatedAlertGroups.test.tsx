@@ -154,8 +154,14 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
-const mlFlags = (rcaEnabled: boolean) => ({
+const mlFlags = (rcaEnabled: boolean, alertCorrelationEnabled = true) => ({
   mlFeatureFlags: {
+    'ml.alert_correlation.enabled': {
+      flag: 'ml.alert_correlation.enabled',
+      enabled: alertCorrelationEnabled,
+      defaultEnabled: false,
+      source: 'org_settings',
+    },
     'ml.rca.enabled': {
       flag: 'ml.rca.enabled',
       enabled: rcaEnabled,
@@ -171,13 +177,14 @@ const mlFlags = (rcaEnabled: boolean) => ({
   },
 });
 
-function mockGroupsResponse(options: { rcaEnabled?: boolean } = {}) {
+function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEnabled?: boolean } = {}) {
   const rcaEnabled = options.rcaEnabled ?? true;
+  const alertCorrelationEnabled = options.alertCorrelationEnabled ?? true;
   fetchMock.mockImplementation((input, init) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
     if (url === '/config/ml-feature-flags' && method === 'GET') {
-      return Promise.resolve(makeJsonResponse(mlFlags(rcaEnabled)));
+      return Promise.resolve(makeJsonResponse(mlFlags(rcaEnabled, alertCorrelationEnabled)));
     }
     if (url === '/alerts/correlations' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({ groups: [groupPayload] }));
@@ -464,11 +471,39 @@ describe('CorrelatedAlertGroups', () => {
     );
   });
 
+  it('shows a disabled correlation state without fetching groups when alert correlation is disabled', async () => {
+    mockGroupsResponse({ alertCorrelationEnabled: false });
+
+    render(<CorrelatedAlertGroups />);
+
+    expect(await screen.findByText('Alert correlation disabled')).toBeInTheDocument();
+    expect(screen.getByText('Correlated alert groups are hidden because alert correlation is disabled for this organization.')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith('/alerts/correlations');
+    expect(screen.queryByText('High CPU on SRV-01')).toBeNull();
+  });
+
   it('marks the correlations tab active on the correlations route', () => {
     window.history.pushState({}, '', '/alerts/correlations');
 
     render(<AlertsTabStrip />);
 
     expect(screen.getByRole('link', { name: 'Correlations' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('labels the correlations tab as disabled when alert correlation is disabled', async () => {
+    window.history.pushState({}, '', '/alerts');
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(mlFlags(true, false)));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsTabStrip />);
+
+    expect(await screen.findByText('Correlations disabled')).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.queryByRole('link', { name: 'Correlations' })).toBeNull();
   });
 });
