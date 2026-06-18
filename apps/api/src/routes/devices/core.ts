@@ -109,9 +109,9 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'elevation_requests',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
-  'metric_rollups',
+  'metric_anomalies', 'metric_rollups',
   'peripheral_events', 'playbook_executions', 'provision_credential_handles',
-  'recovery_readiness', 'recovery_tokens', 'remote_sessions', 'restore_jobs',
+  'recovery_readiness', 'recovery_tokens', 'remediation_suggestions', 'remote_sessions', 'restore_jobs',
   's1_actions', 's1_agents', 's1_threats',
   'script_executions',
   'security_posture_snapshots', 'security_scans', 'security_status',
@@ -202,7 +202,7 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
-  'device_process_samples', 'metric_rollups',
+  'device_process_samples', 'remediation_suggestions', 'metric_anomalies', 'metric_rollups',
   // Portal & integrations (tickets are detached, not deleted —
   // see DEVICE_DETACH_DEVICE_ID_TABLES)
   'psa_ticket_mappings', 'asset_checkouts',
