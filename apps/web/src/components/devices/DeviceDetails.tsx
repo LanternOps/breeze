@@ -55,6 +55,7 @@ import { OverflowTabs } from '../shared/OverflowTabs';
 import DeviceBackupTab from '../backup/DeviceBackupTab';
 import DeviceTicketsTab from '../tickets/DeviceTicketsTab';
 import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
+import DeviceReliabilityPanel from './DeviceReliabilityPanel';
 
 type Tab =
   | 'overview'
@@ -279,6 +280,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                 </div>
               </div>
             </div>
+
+            <DeviceReliabilityPanel deviceId={device.id} />
 
             <DevicePerformanceGraphs deviceId={device.id} compact />
 

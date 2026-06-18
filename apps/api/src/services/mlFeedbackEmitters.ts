@@ -119,3 +119,24 @@ export async function emitRemediationSuggestionFeedback(options: {
     occurredAt: options.occurredAt ?? new Date(),
   }, options.eventType);
 }
+
+export async function emitDeviceReliabilityFeedback(options: {
+  orgId: string;
+  deviceId: string;
+  eventType: 'device.failure_confirmed' | 'device.replaced' | 'device.false_alarm';
+  outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
+  actorUserId?: string | null;
+  occurredAt?: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await emitMlFeedbackEvent({
+    orgId: options.orgId,
+    sourceType: 'device',
+    sourceId: options.deviceId,
+    eventType: options.eventType,
+    outcome: options.outcome,
+    actorUserId: actorUserIdOrNull(options.actorUserId),
+    metadata: options.metadata ?? {},
+    occurredAt: options.occurredAt ?? new Date(),
+  });
+}

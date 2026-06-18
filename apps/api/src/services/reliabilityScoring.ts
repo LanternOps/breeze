@@ -5,6 +5,7 @@ import {
   deviceReliability,
   deviceReliabilityHistory,
   devices,
+  mlFeedbackEvents,
   type ReliabilityTopIssue,
 } from '../db/schema';
 
@@ -84,6 +85,7 @@ export interface ReliabilityListItem {
   mtbfHours: number | null;
   topIssues: ReliabilityTopIssue[];
   computedAt: string;
+  drivers?: ReliabilityFactorDriver[];
 }
 
 export interface DeviceReliabilityHistoryPoint {
@@ -95,6 +97,57 @@ export interface DeviceReliabilityHistoryPoint {
   serviceFailureCount: number;
   hardwareErrorCount: number;
   reliabilityEstimate: number;
+}
+
+export type ReliabilityFactorName = 'uptime' | 'crashes' | 'hangs' | 'serviceFailures' | 'hardwareErrors';
+
+export interface ReliabilityFactorDriver {
+  factor: ReliabilityFactorName;
+  label: string;
+  score: number;
+  weight: number;
+  lostPoints: number;
+  evidence: Record<string, number>;
+}
+
+export interface ReliabilityEvaluationInput {
+  orgId?: string;
+  orgIds?: string[];
+  siteId?: string;
+  siteIds?: string[];
+  atRiskMaxScore?: number;
+  labelWindowDays?: number;
+}
+
+export interface ReliabilityEvaluationDevice {
+  deviceId: string;
+  orgId: string;
+  siteId: string | null;
+  hostname: string;
+  reliabilityScore: number;
+  computedAt: Date;
+}
+
+export interface ReliabilityEvaluationLabel {
+  deviceId: string;
+  outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
+  occurredAt: Date;
+}
+
+export interface ReliabilityEvaluationSummary {
+  atRiskMaxScore: number;
+  labelWindowDays: number;
+  evaluatedDevices: number;
+  atRiskDevices: number;
+  labeledAtRiskDevices: number;
+  truePositiveDevices: number;
+  falsePositiveDevices: number;
+  missedFailureDevices: number;
+  unlabeledAtRiskDevices: number;
+  confirmedFailureLabels: number;
+  replacementLabels: number;
+  falseAlarmLabels: number;
+  precision: number | null;
 }
 
 function clampScore(value: number): number {
@@ -224,6 +277,24 @@ function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function coerceFiniteNumber(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return value;
+}
+
+function coerceDriverEvidence(value: unknown): Record<string, number> {
+  const obj = asObject(value);
+  if (!obj) return {};
+  const evidence: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(obj)) {
+    if (key === 'score' || key === 'weight') continue;
+    const numeric = coerceFiniteNumber(raw);
+    if (numeric === null) continue;
+    evidence[key] = round2(numeric);
+  }
+  return evidence;
 }
 
 function sanitizeTimestamp(value: unknown): string | undefined {
@@ -554,6 +625,100 @@ function computeTopIssues(input: {
       return b.count - a.count;
     })
     .slice(0, 5);
+}
+
+function buildReliabilityDrivers(details: unknown): ReliabilityFactorDriver[] {
+  const root = asObject(details);
+  const factors = asObject(root?.factors);
+  if (!factors) return [];
+
+  const configs: Array<{ factor: ReliabilityFactorName; label: string }> = [
+    { factor: 'uptime', label: 'Uptime' },
+    { factor: 'crashes', label: 'Crashes' },
+    { factor: 'hangs', label: 'Application hangs' },
+    { factor: 'serviceFailures', label: 'Service failures' },
+    { factor: 'hardwareErrors', label: 'Hardware errors' },
+  ];
+
+  return configs
+    .map(({ factor, label }) => {
+      const raw = asObject(factors[factor]);
+      if (!raw) return null;
+      const score = coerceFiniteNumber(raw.score);
+      const weight = coerceFiniteNumber(raw.weight);
+      if (score === null || weight === null) return null;
+      return {
+        factor,
+        label,
+        score: clampScore(score),
+        weight: round2(weight),
+        lostPoints: round2(((100 - clampScore(score)) * weight) / 100),
+        evidence: coerceDriverEvidence(raw),
+      };
+    })
+    .filter((driver): driver is ReliabilityFactorDriver => driver !== null)
+    .sort((left, right) => right.lostPoints - left.lostPoints);
+}
+
+function latestLabelsByDevice(labels: ReliabilityEvaluationLabel[]): Map<string, ReliabilityEvaluationLabel> {
+  const latest = new Map<string, ReliabilityEvaluationLabel>();
+  for (const label of labels) {
+    const existing = latest.get(label.deviceId);
+    if (!existing || label.occurredAt.getTime() > existing.occurredAt.getTime()) {
+      latest.set(label.deviceId, label);
+    }
+  }
+  return latest;
+}
+
+export function computeReliabilityEvaluationSummary(
+  devicesForEvaluation: ReliabilityEvaluationDevice[],
+  labels: ReliabilityEvaluationLabel[],
+  options: { atRiskMaxScore: number; labelWindowDays: number }
+): ReliabilityEvaluationSummary {
+  const latestLabels = latestLabelsByDevice(labels);
+  const atRisk = devicesForEvaluation.filter((device) => device.reliabilityScore <= options.atRiskMaxScore);
+  const atRiskIds = new Set(atRisk.map((device) => device.deviceId));
+
+  let truePositiveDevices = 0;
+  let falsePositiveDevices = 0;
+  let missedFailureDevices = 0;
+  let labeledAtRiskDevices = 0;
+
+  for (const device of devicesForEvaluation) {
+    const label = latestLabels.get(device.deviceId);
+    if (!label) continue;
+    const positive = label.outcome === 'failure_confirmed' || label.outcome === 'replaced';
+    const isAtRisk = atRiskIds.has(device.deviceId);
+
+    if (isAtRisk) {
+      labeledAtRiskDevices += 1;
+      if (positive) {
+        truePositiveDevices += 1;
+      } else {
+        falsePositiveDevices += 1;
+      }
+    } else if (positive) {
+      missedFailureDevices += 1;
+    }
+  }
+
+  const denominator = truePositiveDevices + falsePositiveDevices;
+  return {
+    atRiskMaxScore: options.atRiskMaxScore,
+    labelWindowDays: options.labelWindowDays,
+    evaluatedDevices: devicesForEvaluation.length,
+    atRiskDevices: atRisk.length,
+    labeledAtRiskDevices,
+    truePositiveDevices,
+    falsePositiveDevices,
+    missedFailureDevices,
+    unlabeledAtRiskDevices: Math.max(0, atRisk.length - labeledAtRiskDevices),
+    confirmedFailureLabels: labels.filter((label) => label.outcome === 'failure_confirmed').length,
+    replacementLabels: labels.filter((label) => label.outcome === 'replaced').length,
+    falseAlarmLabels: labels.filter((label) => label.outcome === 'false_alarm').length,
+    precision: denominator > 0 ? round2(truePositiveDevices / denominator) : null,
+  };
 }
 
 async function getHistoryForDevice(deviceId: string, days: number): Promise<HistoryRow[]> {
@@ -974,6 +1139,7 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
       hardwareErrorCount30d: deviceReliability.hardwareErrorCount30d,
       mtbfHours: deviceReliability.mtbfHours,
       topIssues: deviceReliability.topIssues,
+      details: deviceReliability.details,
       computedAt: deviceReliability.computedAt,
     })
     .from(deviceReliability)
@@ -1000,7 +1166,73 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
     mtbfHours: row.mtbfHours,
     topIssues: Array.isArray(row.topIssues) ? row.topIssues : [],
     computedAt: row.computedAt.toISOString(),
+    drivers: buildReliabilityDrivers(row.details),
   };
+}
+
+export async function evaluateReliabilityScores(input: ReliabilityEvaluationInput = {}): Promise<ReliabilityEvaluationSummary> {
+  const atRiskMaxScore = Math.min(Math.max(Number(input.atRiskMaxScore ?? 70), 0), 100);
+  const labelWindowDays = Math.min(Math.max(Number(input.labelWindowDays ?? 90), 1), 365);
+  const since = getSince(labelWindowDays);
+
+  const conditions: SQL[] = [];
+  if (input.orgId) {
+    conditions.push(eq(deviceReliability.orgId, input.orgId));
+  } else if (input.orgIds && input.orgIds.length > 0) {
+    conditions.push(inArray(deviceReliability.orgId, input.orgIds));
+  }
+  if (input.siteId) {
+    conditions.push(eq(devices.siteId, input.siteId));
+  } else if (input.siteIds && input.siteIds.length > 0) {
+    conditions.push(inArray(devices.siteId, input.siteIds));
+  }
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const deviceRows = await db
+    .select({
+      deviceId: deviceReliability.deviceId,
+      orgId: deviceReliability.orgId,
+      siteId: devices.siteId,
+      hostname: devices.hostname,
+      reliabilityScore: deviceReliability.reliabilityScore,
+      computedAt: deviceReliability.computedAt,
+    })
+    .from(deviceReliability)
+    .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
+    .where(where);
+
+  const orgIds = Array.from(new Set(deviceRows.map((row) => row.orgId)));
+  if (orgIds.length === 0) {
+    return computeReliabilityEvaluationSummary([], [], { atRiskMaxScore, labelWindowDays });
+  }
+
+  const labelRows = await db
+    .select({
+      deviceId: mlFeedbackEvents.sourceId,
+      outcome: mlFeedbackEvents.outcome,
+      occurredAt: mlFeedbackEvents.occurredAt,
+    })
+    .from(mlFeedbackEvents)
+    .where(and(
+      inArray(mlFeedbackEvents.orgId, orgIds),
+      eq(mlFeedbackEvents.sourceType, 'device'),
+      inArray(mlFeedbackEvents.eventType, ['device.failure_confirmed', 'device.replaced', 'device.false_alarm']),
+      gte(mlFeedbackEvents.occurredAt, since),
+    ));
+
+  const deviceIds = new Set(deviceRows.map((row) => row.deviceId));
+  const labels = labelRows
+    .filter((row): row is typeof row & { outcome: 'failure_confirmed' | 'replaced' | 'false_alarm' } => (
+      deviceIds.has(row.deviceId)
+      && (row.outcome === 'failure_confirmed' || row.outcome === 'replaced' || row.outcome === 'false_alarm')
+    ))
+    .map((row) => ({
+      deviceId: row.deviceId,
+      outcome: row.outcome,
+      occurredAt: row.occurredAt,
+    }));
+
+  return computeReliabilityEvaluationSummary(deviceRows, labels, { atRiskMaxScore, labelWindowDays });
 }
 
 export async function getDeviceReliabilityHistory(deviceId: string, days: number): Promise<DeviceReliabilityHistoryPoint[]> {
@@ -1162,4 +1394,6 @@ export const reliabilityScoringInternals = {
   scoreHardwareErrors,
   scoreBand,
   computeTopIssues,
+  buildReliabilityDrivers,
+  computeReliabilityEvaluationSummary,
 };

@@ -8,10 +8,12 @@ import {
   getDeviceReliability,
   getDeviceReliabilityHistory,
   getOrgReliabilitySummary,
+  evaluateReliabilityScores,
   listReliabilityDevices,
   type ReliabilityScoreRange,
 } from '../services/reliabilityScoring';
-import { getDeviceWithOrgCheck } from './devices/helpers';
+import { emitDeviceReliabilityFeedback } from '../services/mlFeedbackEmitters';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './devices/helpers';
 
 const listQuerySchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -35,6 +37,19 @@ const orgIdParamSchema = z.object({
 
 const historyQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(365).default(90),
+});
+
+const evaluationQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  siteId: z.string().uuid().optional(),
+  atRiskMaxScore: z.coerce.number().int().min(0).max(100).default(70),
+  labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
+});
+
+const feedbackBodySchema = z.object({
+  outcome: z.enum(['failure_confirmed', 'replaced', 'false_alarm']),
+  occurredAt: z.coerce.date().optional(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
 });
 
 function parseScoreRange(value: string | undefined): ReliabilityScoreRange | undefined {
@@ -127,6 +142,45 @@ reliabilityRoutes.get(
 );
 
 reliabilityRoutes.get(
+  '/evaluation',
+  requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
+  zValidator('query', evaluationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+    if (permissions?.allowedSiteIds && query.siteId && !canAccessSite(permissions, query.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const orgIds = query.orgId
+      ? [query.orgId]
+      : auth.orgId
+        ? [auth.orgId]
+        : (auth.accessibleOrgIds?.length ? auth.accessibleOrgIds : undefined);
+
+    if (!orgIds && auth.scope !== 'system') {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+
+    const summary = await evaluateReliabilityScores({
+      orgIds,
+      siteId: query.siteId,
+      siteIds: query.siteId ? undefined : permissions?.allowedSiteIds,
+      atRiskMaxScore: query.atRiskMaxScore,
+      labelWindowDays: query.labelWindowDays,
+    });
+
+    return c.json({ summary });
+  }
+);
+
+reliabilityRoutes.get(
   '/org/:orgId/summary',
   requireScope('organization', 'partner', 'system'),
   requireReliabilityRead,
@@ -162,12 +216,12 @@ reliabilityRoutes.get(
     const { deviceId } = c.req.valid('param');
     const { days } = c.req.valid('query');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
-    }
-    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const points = await getDeviceReliabilityHistory(deviceId, days);
@@ -175,6 +229,62 @@ reliabilityRoutes.get(
       deviceId,
       days,
       points,
+    });
+  }
+);
+
+reliabilityRoutes.post(
+  '/:deviceId/feedback',
+  requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', feedbackBodySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceId } = c.req.valid('param');
+    const body = c.req.valid('json');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const snapshot = await getDeviceReliability(deviceId);
+    if (!snapshot) {
+      return c.json({ error: 'No reliability snapshot available for this device yet' }, 404);
+    }
+
+    const eventType = body.outcome === 'failure_confirmed'
+      ? 'device.failure_confirmed'
+      : body.outcome === 'replaced'
+        ? 'device.replaced'
+        : 'device.false_alarm';
+
+    await emitDeviceReliabilityFeedback({
+      orgId: device.orgId,
+      deviceId,
+      eventType,
+      outcome: body.outcome,
+      actorUserId: auth.user?.id,
+      occurredAt: body.occurredAt,
+      metadata: {
+        ...body.metadata,
+        reliabilityScore: snapshot.reliabilityScore,
+        topIssues: snapshot.topIssues,
+        computedAt: snapshot.computedAt,
+      },
+    });
+
+    return c.json({
+      success: true,
+      feedback: {
+        deviceId,
+        eventType,
+        outcome: body.outcome,
+      },
     });
   }
 );
@@ -188,12 +298,12 @@ reliabilityRoutes.get(
     const auth = c.get('auth');
     const { deviceId } = c.req.valid('param');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
-    }
-    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const [snapshot, history] = await Promise.all([
