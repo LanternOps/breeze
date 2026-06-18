@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { devices, deviceMetrics, metricRollups } from '../../db/schema';
+import { devices, deviceMetrics, deviceProcessSamples, metricRollups } from '../../db/schema';
 import { rollupDeviceMetricsRange } from '../../services/metricRollups';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -68,6 +68,31 @@ async function insertMetric(options: {
   });
 }
 
+async function insertProcessSample(options: {
+  orgId: string;
+  deviceId: string;
+  timestamp: Date;
+  cpu: number;
+  ramMb: number;
+  diskBps?: number;
+  netBps?: number;
+}): Promise<void> {
+  await getTestDb().insert(deviceProcessSamples).values({
+    orgId: options.orgId,
+    deviceId: options.deviceId,
+    timestamp: options.timestamp,
+    agentTimestamp: options.timestamp,
+    topProcesses: [{
+      name: 'test-process',
+      pid: 42,
+      cpu: options.cpu,
+      ramMb: options.ramMb,
+      diskBps: options.diskBps,
+      netBps: options.netBps,
+    }],
+  });
+}
+
 async function runRollup(orgId: string, from: Date, to: Date): Promise<void> {
   await withSystemDbAccessContext(() =>
     rollupDeviceMetricsRange({
@@ -88,6 +113,20 @@ async function selectCpuRollups(orgId: string, deviceId: string) {
       eq(metricRollups.deviceId, deviceId),
       eq(metricRollups.sourceTable, 'device_metrics'),
       eq(metricRollups.metricName, 'cpu_percent'),
+      eq(metricRollups.bucketSeconds, 300)
+    ))
+    .orderBy(metricRollups.bucketStart);
+}
+
+async function selectProcessRollups(orgId: string, deviceId: string, metricName: string) {
+  return getTestDb()
+    .select()
+    .from(metricRollups)
+    .where(and(
+      eq(metricRollups.orgId, orgId),
+      eq(metricRollups.deviceId, deviceId),
+      eq(metricRollups.sourceTable, 'device_process_samples'),
+      eq(metricRollups.metricName, metricName),
       eq(metricRollups.bucketSeconds, 300)
     ))
     .orderBy(metricRollups.bucketStart);
@@ -148,6 +187,70 @@ describe('metric rollups integration', () => {
     if (!updatedGapBucket) throw new Error('expected replay to preserve the middle bucket');
     expect(updatedGapBucket).toEqual(expect.objectContaining({
       avgValue: 30,
+      sampleCount: 1,
+      gapSeconds: 240,
+    }));
+    expect((updatedGapBucket.metadata as Record<string, unknown>).isGap).toBe(false);
+  });
+
+  it('materializes process sample buckets and replay-updates late process samples', async () => {
+    const device = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'process-sample-device' });
+    await insertProcessSample({
+      orgId: orgA,
+      deviceId: device,
+      timestamp: new Date('2026-06-18T12:00:00.000Z'),
+      cpu: 12,
+      ramMb: 512,
+      diskBps: 1000,
+      netBps: 2000,
+    });
+    await insertProcessSample({
+      orgId: orgA,
+      deviceId: device,
+      timestamp: new Date('2026-06-18T12:10:00.000Z'),
+      cpu: 24,
+      ramMb: 768,
+      diskBps: 3000,
+      netBps: 4000,
+    });
+
+    const from = new Date('2026-06-18T12:00:00.000Z');
+    const to = new Date('2026-06-18T12:15:00.000Z');
+    await runRollup(orgA, from, to);
+
+    const cpuSumRollups = await selectProcessRollups(orgA, device, 'top_process_cpu_percent_sum');
+    expect(cpuSumRollups.map((row) => ({
+      bucketStart: row.bucketStart.toISOString(),
+      avgValue: row.avgValue,
+      sampleCount: row.sampleCount,
+      gapSeconds: row.gapSeconds,
+      isGap: (row.metadata as Record<string, unknown>).isGap,
+    }))).toEqual([
+      { bucketStart: '2026-06-18T12:00:00.000Z', avgValue: 12, sampleCount: 1, gapSeconds: 240, isGap: false },
+      { bucketStart: '2026-06-18T12:05:00.000Z', avgValue: null, sampleCount: 0, gapSeconds: 300, isGap: true },
+      { bucketStart: '2026-06-18T12:10:00.000Z', avgValue: 24, sampleCount: 1, gapSeconds: 240, isGap: false },
+    ]);
+
+    const ramMaxRollups = await selectProcessRollups(orgA, device, 'top_process_ram_mb_max');
+    expect(ramMaxRollups.map((row) => row.avgValue)).toEqual([512, null, 768]);
+
+    await insertProcessSample({
+      orgId: orgA,
+      deviceId: device,
+      timestamp: new Date('2026-06-18T12:06:00.000Z'),
+      cpu: 90,
+      ramMb: 2048,
+      diskBps: 5000,
+      netBps: 6000,
+    });
+    await runRollup(orgA, from, to);
+
+    const replayedCpuRollups = await selectProcessRollups(orgA, device, 'top_process_cpu_percent_sum');
+    expect(replayedCpuRollups).toHaveLength(3);
+    const updatedGapBucket = replayedCpuRollups[1];
+    if (!updatedGapBucket) throw new Error('expected replay to preserve the middle process bucket');
+    expect(updatedGapBucket).toEqual(expect.objectContaining({
+      avgValue: 90,
       sampleCount: 1,
       gapSeconds: 240,
     }));
