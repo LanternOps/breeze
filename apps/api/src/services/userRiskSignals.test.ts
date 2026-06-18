@@ -89,6 +89,7 @@ describe('userRiskSignals', () => {
       ])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
     const result = await evaluateUserRiskSignalsForOrg(ORG_ID, { lookbackHours: 24 });
@@ -102,6 +103,7 @@ describe('userRiskSignals', () => {
         offHoursMassScripts: 1,
         remoteSessionBursts: 1,
         privilegeElevationBursts: 1,
+        newGeographyLogins: 0,
       },
     });
     expect(mocks.appendUserRiskSignalEventMock).toHaveBeenCalledTimes(3);
@@ -139,6 +141,7 @@ describe('userRiskSignals', () => {
       ])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: 'existing-event' }]);
 
     const result = await evaluateUserRiskSignalsForOrg(ORG_ID);
@@ -146,5 +149,42 @@ describe('userRiskSignals', () => {
     expect(result.appended).toBe(0);
     expect(result.deduped).toBe(1);
     expect(mocks.appendUserRiskSignalEventMock).not.toHaveBeenCalled();
+  });
+
+  it('appends a new-geography login signal when Cloudflare Access country changes', async () => {
+    mocks.executeMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          user_id: USER_ID,
+          country: 'CA',
+          login_count: 1,
+          latest_at: new Date('2026-06-18T09:00:00.000Z'),
+          previous_countries: ['US'],
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const result = await evaluateUserRiskSignalsForOrg(ORG_ID);
+
+    expect(result).toMatchObject({
+      appended: 1,
+      candidates: expect.objectContaining({
+        newGeographyLogins: 1,
+      }),
+    });
+    expect(mocks.appendUserRiskSignalEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'auth.login.new_geography',
+      severity: 'medium',
+      userId: USER_ID,
+      description: 'Cloudflare Access login from new country CA',
+      details: expect.objectContaining({
+        country: 'CA',
+        previousCountries: ['US'],
+        method: 'cf_access_jwt',
+      }),
+    }));
   });
 });

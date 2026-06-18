@@ -30,6 +30,14 @@ type ElevationBurstRow = {
   latest_at: Date | string;
 };
 
+type NewGeographyLoginRow = {
+  user_id: string;
+  country: string;
+  login_count: number | string;
+  latest_at: Date | string;
+  previous_countries: string[] | string | null;
+};
+
 export type UserRiskSignalEvaluationResult = {
   orgId: string;
   skipped: boolean;
@@ -39,6 +47,7 @@ export type UserRiskSignalEvaluationResult = {
     offHoursMassScripts: number;
     remoteSessionBursts: number;
     privilegeElevationBursts: number;
+    newGeographyLogins: number;
   };
 };
 
@@ -130,6 +139,7 @@ export async function evaluateUserRiskSignalsForOrg(
         offHoursMassScripts: 0,
         remoteSessionBursts: 0,
         privilegeElevationBursts: 0,
+        newGeographyLogins: 0,
       },
     };
   }
@@ -139,7 +149,7 @@ export async function evaluateUserRiskSignalsForOrg(
   const since = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
   const sinceIso = since.toISOString();
 
-  const [scriptRows, remoteRows, elevationRows] = await Promise.all([
+  const [scriptRows, remoteRows, elevationRows, newGeographyRows] = await Promise.all([
     db.execute(sql`
       SELECT id AS batch_id, triggered_by AS user_id, script_id, devices_targeted, created_at
       FROM script_execution_batches
@@ -170,6 +180,47 @@ export async function evaluateUserRiskSignalsForOrg(
       GROUP BY subject_user_id
       HAVING count(*) >= ${ELEVATION_BURST_COUNT}
     `) as Promise<ElevationBurstRow[]>,
+    db.execute(sql`
+      WITH recent AS (
+        SELECT actor_id AS user_id,
+          upper(details->>'cfAccessCountry') AS country,
+          timestamp
+        FROM audit_logs
+        WHERE org_id = ${orgId}
+          AND actor_type = 'user'
+          AND action = 'user.login'
+          AND result = 'success'
+          AND details->>'method' = 'cf_access_jwt'
+          AND details->>'cfAccessCountry' IS NOT NULL
+          AND timestamp >= ${sinceIso}::timestamptz
+      ),
+      history AS (
+        SELECT actor_id AS user_id,
+          upper(details->>'cfAccessCountry') AS country
+        FROM audit_logs
+        WHERE org_id = ${orgId}
+          AND actor_type = 'user'
+          AND action = 'user.login'
+          AND result = 'success'
+          AND details->>'method' = 'cf_access_jwt'
+          AND details->>'cfAccessCountry' IS NOT NULL
+          AND timestamp < ${sinceIso}::timestamptz
+      )
+      SELECT recent.user_id,
+        recent.country,
+        count(*)::int AS login_count,
+        max(recent.timestamp) AS latest_at,
+        array_agg(DISTINCT history.country) AS previous_countries
+      FROM recent
+      JOIN history ON history.user_id = recent.user_id
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM history same_country
+        WHERE same_country.user_id = recent.user_id
+          AND same_country.country = recent.country
+      )
+      GROUP BY recent.user_id, recent.country
+    `) as Promise<NewGeographyLoginRow[]>,
   ]);
 
   let appended = 0;
@@ -248,6 +299,36 @@ export async function evaluateUserRiskSignalsForOrg(
     }));
   }
 
+  for (const row of newGeographyRows) {
+    const loginCount = toInt(row.login_count);
+    const latestAt = toDate(row.latest_at);
+    const key = windowKey(latestAt, lookbackHours);
+    const previousCountries = Array.isArray(row.previous_countries)
+      ? row.previous_countries
+      : typeof row.previous_countries === 'string'
+        ? row.previous_countries.replace(/[{}"]/g, '').split(',').filter(Boolean)
+        : [];
+    await record(await appendDedupedSignal({
+      orgId,
+      userId: row.user_id,
+      eventType: 'auth.login.new_geography',
+      severity: previousCountries.length >= 2 ? 'high' : 'medium',
+      scoreImpact: Math.min(24, 10 + previousCountries.length * 3 + loginCount),
+      description: `Cloudflare Access login from new country ${row.country}`,
+      details: {
+        fingerprint: `cf-access-new-country:${orgId}:${row.user_id}:${row.country}:${key}`,
+        source: 'audit_logs',
+        method: 'cf_access_jwt',
+        country: row.country,
+        previousCountries,
+        loginCount,
+        lookbackHours,
+      },
+      occurredAt: latestAt,
+      sinceIso,
+    }));
+  }
+
   return {
     orgId,
     skipped: false,
@@ -257,6 +338,7 @@ export async function evaluateUserRiskSignalsForOrg(
       offHoursMassScripts: scriptRows.length,
       remoteSessionBursts: remoteRows.length,
       privilegeElevationBursts: elevationRows.length,
+      newGeographyLogins: newGeographyRows.length,
     },
   };
 }
