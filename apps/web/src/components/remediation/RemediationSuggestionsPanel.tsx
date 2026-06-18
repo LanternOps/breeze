@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle, RefreshCw, Sparkles, XCircle } from 'lucide-react';
+import { CheckCircle, PlayCircle, RefreshCw, Sparkles, XCircle } from 'lucide-react';
 
 import { handleActionError, runAction } from '../../lib/runAction';
+import { executeScript } from '../../services/deviceActions';
 import { fetchWithAuth } from '../../stores/auth';
 
 type SuggestionStatus = 'suggested' | 'accepted' | 'edited' | 'rejected' | 'executed' | 'failed';
@@ -10,6 +11,7 @@ type RemediationSuggestion = {
   id: string;
   sourceType: string;
   sourceId: string;
+  deviceId: string | null;
   targetType: 'script' | 'script_template' | 'playbook' | 'diagnostic';
   scriptId: string | null;
   scriptTemplateId: string | null;
@@ -20,6 +22,9 @@ type RemediationSuggestion = {
   riskTier: 'low' | 'medium' | 'high' | 'critical';
   status: SuggestionStatus;
   confidence: number | null;
+  parameters: Record<string, unknown>;
+  targetDeviceIds: string[];
+  scriptExecutionId: string | null;
 };
 
 type RemediationSuggestionsPanelProps = {
@@ -41,11 +46,28 @@ function targetLabel(suggestion: RemediationSuggestion): string {
   return 'Diagnostic';
 }
 
+function singleTargetDeviceId(suggestion: RemediationSuggestion): string | null {
+  if (suggestion.targetDeviceIds.length === 1) return suggestion.targetDeviceIds[0] ?? null;
+  if (suggestion.targetDeviceIds.length === 0) return suggestion.deviceId;
+  return null;
+}
+
+function canExecuteScriptSuggestion(suggestion: RemediationSuggestion): boolean {
+  return (
+    suggestion.targetType === 'script' &&
+    Boolean(suggestion.scriptId) &&
+    Boolean(singleTargetDeviceId(suggestion)) &&
+    (suggestion.status === 'accepted' || suggestion.status === 'edited') &&
+    !suggestion.scriptExecutionId
+  );
+}
+
 export default function RemediationSuggestionsPanel({ sourceType, sourceId }: RemediationSuggestionsPanelProps) {
   const [suggestions, setSuggestions] = useState<RemediationSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [executingId, setExecutingId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
 
   const fetchSuggestions = useCallback(async () => {
@@ -107,6 +129,38 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
       handleActionError(err, 'Could not update suggested fix');
     } finally {
       setUpdatingId(null);
+    }
+  }
+
+  async function executeSuggestion(suggestion: RemediationSuggestion) {
+    const scriptId = suggestion.scriptId;
+    const deviceId = singleTargetDeviceId(suggestion);
+    if (!scriptId || !deviceId) return;
+
+    setExecutingId(suggestion.id);
+    try {
+      const execution = await executeScript(scriptId, [deviceId], suggestion.parameters);
+      const scriptExecutionId = execution.executions[0]?.executionId;
+      if (!scriptExecutionId) {
+        throw new Error('Script execution did not return an execution ID');
+      }
+
+      const result = await runAction<{ data?: RemediationSuggestion }>({
+        request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'executed', scriptExecutionId }),
+        }),
+        errorFallback: 'Script queued, but the suggested fix could not be updated',
+        successMessage: 'Script queued and suggested fix updated',
+      });
+      if (result.data) {
+        setSuggestions((current) => current.map((item) => item.id === suggestion.id ? result.data! : item));
+      }
+    } catch (err) {
+      handleActionError(err, 'Could not execute suggested fix');
+    } finally {
+      setExecutingId(null);
     }
   }
 
@@ -176,7 +230,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    disabled={updatingId === suggestion.id || suggestion.status === 'accepted'}
+                    disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'accepted'}
                     onClick={() => void updateSuggestion(suggestion, 'accepted')}
                     className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -185,13 +239,24 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
                   </button>
                   <button
                     type="button"
-                    disabled={updatingId === suggestion.id || suggestion.status === 'rejected'}
+                    disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'rejected'}
                     onClick={() => void updateSuggestion(suggestion, 'rejected')}
                     className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <XCircle className="h-4 w-4" />
                     Reject
                   </button>
+                  {canExecuteScriptSuggestion(suggestion) && (
+                    <button
+                      type="button"
+                      disabled={executingId === suggestion.id}
+                      onClick={() => void executeSuggestion(suggestion)}
+                      className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <PlayCircle className="h-4 w-4" />
+                      Execute
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
