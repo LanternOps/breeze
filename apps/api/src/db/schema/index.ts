@@ -92,3 +92,4 @@ export * from './quotes';
 export * from './clientAi';
 export * from './mlFeedback';
 export * from './remediationSuggestions';
+export * from './pax8';

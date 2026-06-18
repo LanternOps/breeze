@@ -42,6 +42,7 @@ export const catalogItems = pgTable('catalog_items', {
 }, (t) => [
   index('catalog_items_partner_type_idx').on(t.partnerId, t.itemType),
   index('catalog_items_partner_active_idx').on(t.partnerId, t.isActive),
+  uniqueIndex('catalog_items_id_partner_uq').on(t.id, t.partnerId),
   // partial: only enforce uniqueness when sku is present
   // (the real partial unique index is created in the SQL migration; drizzle-kit
   // only needs the predicate for drift detection)
