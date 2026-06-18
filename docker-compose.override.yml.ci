@@ -25,6 +25,16 @@ services:
     ports:
       - '4321:4321'
 
+  portal:
+    build:
+      context: .
+      dockerfile: apps/portal/Dockerfile
+      args:
+        PORTAL_BASE_PATH: /portal
+        PUBLIC_API_URL: ""
+    ports:
+      - '4322:4322'
+
   # Expose DB and Redis to host for integration tests
   postgres:
     ports:

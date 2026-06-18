@@ -67,6 +67,8 @@ All configuration is done through environment variables, defined in your `.env.p
 | `IP_ALLOWLIST_ENFORCEMENT_MODE` | `enforce` | | Partner dashboard IP allowlist mode. Use `off` only as a break-glass switch if an allowlist locks everyone out. The allowlist only enforces when a partner has entries configured and proxy trust is working through `TRUST_PROXY_HEADERS` plus `TRUSTED_PROXY_CIDRS`. |
 | `DASHBOARD_URL` | — | | URL for links in emails |
 | `PUBLIC_APP_URL` | — | | Public-facing app URL |
+| `PUBLIC_PORTAL_URL` | `https://${BREEZE_DOMAIN}/portal` (bundled compose only) | | Public origin for customer-portal links in outbound email (e.g. invoice emails). Falls back to `PUBLIC_APP_URL` if unset. The portal is served under `/portal` on the main domain. |
+| `PORTAL_BASE_PATH` | `/portal` | | Base path the customer portal is served under. Baked into the portal image at build time — changing it requires rebuilding the portal image and keeping the Caddy `/portal` route in sync. |
 
 ## Email
 

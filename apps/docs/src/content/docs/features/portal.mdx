@@ -11,6 +11,14 @@ Each organization gets its own portal instance with customizable branding, a ded
 
 ---
 
+## Accessing the Portal
+
+The portal is served under the `/portal` path on your Breeze domain — for example, if your dashboard is at `https://breeze.example.com`, portal users sign in at **`https://breeze.example.com/portal/login`**. No separate hostname or DNS record is required. Share this link (or the per-quote/invoice links Breeze emails, which already point at `/portal`) with your end-users.
+
+<Aside type="note" title="Custom portal domains">
+You can configure a per-organization custom domain in branding (`customDomain`, e.g. `support.acme.com`), but **serving the portal on a custom domain is not available yet** — for now all organizations reach the portal at `https://<your-breeze-domain>/portal`. The branding for an organization still applies once a user signs in.
+</Aside>
+
 ## Key Concepts
 
 ### Portal Feature Toggles
@@ -87,7 +95,7 @@ The portal applies per-IP and per-account rate limiting to authentication endpoi
 
 ## Branding
 
-Each organization can customize the portal appearance and contact information. Branding is resolved by custom domain -- when a portal user visits their organization's custom domain, Breeze serves the matching branding configuration.
+Each organization can customize the portal appearance and contact information. Branding is resolved by domain — when a portal user visits a configured custom domain, Breeze serves that organization's matching branding. Because [custom-domain serving is not enabled yet](#accessing-the-portal), the shared `/portal` portal currently shows the default branding at the login screen; configured branding still applies to the organization elsewhere.
 
 ### Branding Fields
 

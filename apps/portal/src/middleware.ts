@@ -1,5 +1,6 @@
 import { defineMiddleware } from 'astro:middleware';
 import { hasPortalSessionCookie } from './lib/session';
+import { isOutsideBase, stripBase, withBase } from './lib/basePath';
 
 const protectedPrefixes = ['/devices', '/tickets', '/assets', '/profile'];
 const authOnlyPaths = new Set(['/login', '/forgot-password']);
@@ -50,19 +51,32 @@ const fallbackCspDirectives = [
 ].join('; ');
 
 export const onRequest = defineMiddleware(async (context, next) => {
-  const pathname = context.url.pathname;
+  // Defense-in-depth: the portal is mounted under BASE_PATH in prod — Caddy only
+  // reverse-proxies `/portal` and `/portal/*` here (handle, not handle_path), so a
+  // request outside the base never legitimately reaches us (web owns the root).
+  // Astro's node server is base-optional in routing and would otherwise serve pages
+  // at un-based paths (e.g. /login → the portal login page); return 404 instead so
+  // the portal answers strictly within its base.
+  const rawPathname = context.url.pathname;
+  if (isOutsideBase(rawPathname)) {
+    return new Response('Not Found', { status: 404 });
+  }
+
+  // context.url.pathname includes the configured base (e.g. /portal/login); strip it
+  // so the route checks below stay base-agnostic, and re-apply withBase on redirect.
+  const pathname = stripBase(rawPathname);
   const hasSession = hasPortalSessionCookie(context.request);
 
   if (pathname === '/') {
-    return context.redirect(hasSession ? '/devices' : '/login', 302);
+    return context.redirect(withBase(hasSession ? '/devices' : '/login'), 302);
   }
 
   if (isProtectedPath(pathname) && !hasSession) {
-    return context.redirect('/login', 302);
+    return context.redirect(withBase('/login'), 302);
   }
 
   if (hasSession && authOnlyPaths.has(pathname)) {
-    return context.redirect('/devices', 302);
+    return context.redirect(withBase('/devices'), 302);
   }
 
   const response = await next();

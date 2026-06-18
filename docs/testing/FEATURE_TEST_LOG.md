@@ -4,6 +4,30 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Customer Portal deploy under `/portal` (PR #1474) — local Docker + Playwright — 2026-06-17
+
+**Branch:** `feat/portal-deploy-c-prefix`
+**Stack:** full local Docker (`-p breeze`, dev override + prod portal image) behind Caddy on `http://localhost`; API reachable via Caddy `/api/*` → `api:3001`.
+**Tested by:** Claude
+**Result:** PASS (after fixing one blocker found during testing)
+
+### What was tested (Playwright MCP, http://localhost)
+- [x] `/portal/login` renders through Caddy (200), prod assets under `/portal/_astro/*`, favicon `/portal/favicon.svg`.
+- [x] React island hydrates — login form interactive; "Forgot your password?" → `/portal/forgot-password` (`withBase` correct in-browser).
+- [x] Clean console on fresh prod load (0 errors/0 warnings); prod CSP header carries Astro script/style hashes.
+- [x] Login submit → **same-origin** `POST http://localhost/api/v1/portal/auth/login` → `401` for bad creds (no CSP block, no `localhost:3001`); UI shows "Invalid email or password".
+- [x] Unauth deep-link `/portal/devices` → middleware redirects to `/portal/login` (base-aware redirect in-browser).
+- [x] Web dashboard `/` unaffected (200); `/login` (un-based) served by web, not portal.
+- [x] SSR reaches the API over the internal network (`INTERNAL_API_URL=http://api:3001`) — verified separately via a stub-API container (authed `/portal/devices` → 200, API hit on `api:3001`).
+
+### Issues found & fixed during testing
+- **BLOCKER (fixed):** client API base resolved to `http://localhost:3001` when `PUBLIC_API_URL` empty — the `|| 'http://localhost:3001'` default plus a loopback rewrite that can't fix a port mismatch. Login was CSP-blocked. Fixed in `apps/portal/src/lib/api.ts`: empty `PUBLIC_API_URL` → **same-origin relative** (`/api/v1/...`) on the client; SSR uses `INTERNAL_API_URL`. Added `api.test.ts` regression guard.
+- **False alarm:** initial run showed inline-CSP + `/node_modules/.vite` errors — these were dev-server contamination in the browser session from earlier timed-out astro-dev navigations, not the prod portal (confirmed clean on a fresh load).
+
+### Notes
+- astro **dev** server + Caddy hung Playwright on `domcontentloaded` (on-demand vite compile). Swapped to the **prod** portal image behind Caddy for reliable, representative E2E.
+- Full authenticated portal session → live SSR data pages not exercised in-browser (no seeded `portal_users` row; web admin UI to create one is blocked by an unrelated pre-existing web dev-container `zod` resolution error). SSR-reaches-API is covered by the stub-container test.
+
 ## Script AI assistant — editor insertion fix (PR #1453) — 2026-06-16
 
 **Branch:** `fix/script-ai-editor-insert` @ `1702e315`

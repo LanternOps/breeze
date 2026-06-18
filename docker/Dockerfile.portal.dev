@@ -1,0 +1,33 @@
+# Development Dockerfile for the Customer Portal with hot-reloading
+FROM node:24-alpine
+
+# Install pnpm (pinned to match prod / packageManager field)
+RUN npm install -g pnpm@10.33.4
+
+# Set working directory
+WORKDIR /app
+
+# Copy workspace configuration
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY turbo.json tsconfig.json ./
+
+# Copy package.json for dependency installation (portal has no workspace deps)
+COPY apps/portal/package.json ./apps/portal/
+
+# Install all dependencies (including devDependencies for development)
+RUN pnpm install
+
+# Copy source code (will be overridden by volume mounts in dev)
+COPY apps/portal ./apps/portal
+
+# Set working directory to portal
+WORKDIR /app/apps/portal
+
+# Base path the dev server serves under (matches the Caddy carve-out).
+ENV PORTAL_BASE_PATH=/portal
+
+# Expose port
+EXPOSE 4322
+
+# Sync dependencies on container start so package.json changes don't break hot-reload.
+CMD ["sh", "-lc", "pnpm install --prefer-offline --no-frozen-lockfile && pnpm dev --host 0.0.0.0"]

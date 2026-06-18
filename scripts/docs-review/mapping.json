@@ -1018,6 +1018,18 @@
       ]
     },
     {
+      "pattern": "apps/portal/**",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/portal/Dockerfile",
+      "docs": [
+        "deploy/production.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/routes/clientAi/**",
       "docs": [
         "features/ai-for-office.mdx"

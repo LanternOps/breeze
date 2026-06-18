@@ -119,6 +119,17 @@
     reverse_proxy billing:3002
   }
 
+  # --- Customer portal (Astro SSR) under /portal ---
+  # Served on the main domain under a base path so it needs no dedicated
+  # hostname/cert. The portal app emits /portal-prefixed URLs (Astro `base`), so we
+  # keep the prefix (handle, not handle_path). Must come BEFORE the web catch-all.
+  # API calls stay on the /api/* block above (same-origin → no CORS).
+  @portal path /portal /portal/*
+  handle @portal {
+    encode zstd gzip
+    reverse_proxy portal:4322
+  }
+
   # --- Web frontend (catch-all, with compression) ---
   handle {
     encode zstd gzip

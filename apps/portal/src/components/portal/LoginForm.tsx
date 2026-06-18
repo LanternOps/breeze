@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -118,7 +119,7 @@ export function LoginForm() {
 
         <div className="text-sm">
           <a
-            href="/forgot-password"
+            href={withBase("/forgot-password")}
             className="font-medium text-primary hover:text-primary/80"
           >
             Forgot your password?

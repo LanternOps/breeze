@@ -122,4 +122,5 @@ export const softwareInventory = pgTable('software_inventory', {
   catalogIdx: index('software_inventory_catalog_id_idx').on(table.catalogId),
   nameIdx: index('software_inventory_name_idx').on(table.name),
   nameVendorIdx: index('software_inventory_name_vendor_idx').on(table.name, table.vendor),
+  nameTrgmIdx: index('software_inventory_name_trgm_idx').using('gin', sql`name gin_trgm_ops`),
 }));

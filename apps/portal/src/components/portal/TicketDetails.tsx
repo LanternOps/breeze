@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import React from 'react';
 import { ArrowLeft, AlertCircle, Clock, Tag } from 'lucide-react';
 import { type TicketDetails as TicketDetailsType, type TicketPriority, type TicketStatus } from '@/lib/api';
@@ -58,7 +59,7 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
           {error || 'The ticket you are looking for does not exist.'}
         </p>
         <a
-          href="/tickets"
+          href={withBase("/tickets")}
           className="mt-4 inline-flex items-center gap-2 text-sm text-primary hover:text-primary/80"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -72,7 +73,7 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
     <div className="mx-auto max-w-3xl">
       <div className="mb-6">
         <a
-          href="/tickets"
+          href={withBase("/tickets")}
           className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />

@@ -41,6 +41,10 @@ export interface FilterValueEditorProps {
   softwareOptions?: string[];
   // Optional per-name device counts to surface in the picker list.
   softwareOptionCounts?: Record<string, number>;
+  // #1459 — called (debounced by the parent) as the user types in the
+  // software picker, so the parent can refetch matching names from the
+  // server-side distinct-name endpoint.
+  onSoftwareSearch?: (q: string) => void;
 }
 
 function defaultValueForOp(field: FilterFieldDefinition, op: FilterOperator): FilterValue {
@@ -60,7 +64,7 @@ function isOrgField(key: string): boolean { return key === 'orgId'; }
 function isSiteField(key: string): boolean { return key === 'siteId'; }
 
 export function FilterValueEditor({
-  field, condition, onChange, orgs, sites, softwareOptions, softwareOptionCounts
+  field, condition, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch
 }: FilterValueEditorProps) {
   const op = condition.operator;
 
@@ -116,6 +120,7 @@ export function FilterValueEditor({
         onChange={onChange}
         options={softwareOptions}
         optionCounts={softwareOptionCounts}
+        onSearch={onSoftwareSearch}
       />
     );
   }
@@ -236,8 +241,9 @@ interface SoftwareMultiSelectProps {
   onChange: (c: FilterCondition) => void;
   options?: string[];
   optionCounts?: Record<string, number>;
+  onSearch?: (q: string) => void;
 }
-function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts }: SoftwareMultiSelectProps) {
+function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts, onSearch }: SoftwareMultiSelectProps) {
   const [q, setQ] = useState('');
   const selected: string[] = Array.isArray(condition.value)
     ? (condition.value as string[])
@@ -316,7 +322,7 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
             <input
               type="text"
               value={q}
-              onChange={e => setQ(e.target.value)}
+              onChange={e => { setQ(e.target.value); onSearch?.(e.target.value); }}
               placeholder="Search software…"
               data-testid="filter-software-search"
               className="flex-1 bg-transparent text-xs outline-none"

@@ -105,6 +105,34 @@ services:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       start_period: 60s
 
+  portal:
+    image: breeze-portal:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.portal.dev
+    ports:
+      - '4322:4322'
+    volumes:
+      # Mount source code for hot-reloading
+      - ./apps/portal/src:/app/apps/portal/src:cached
+      - ./apps/portal/public:/app/apps/portal/public:cached
+      # Mount config files
+      - ./apps/portal/package.json:/app/apps/portal/package.json:ro
+      - ./apps/portal/tsconfig.json:/app/apps/portal/tsconfig.json:ro
+      - ./apps/portal/astro.config.mjs:/app/apps/portal/astro.config.mjs:ro
+      - ./apps/portal/tailwind.config.mjs:/app/apps/portal/tailwind.config.mjs:ro
+      # Exclude node_modules (use container's)
+      - /app/node_modules
+      - /app/apps/portal/node_modules
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 4322
+      PORTAL_BASE_PATH: /portal
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4322/portal/login']
+      start_period: 60s
+
   coturn:
     image: coturn/coturn:4-alpine
     container_name: breeze-coturn-dev

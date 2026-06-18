@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useBranding } from './BrandingProvider';
 import { cn } from '@/lib/utils';
+import { stripBase, withBase } from '@/lib/basePath';
 
 interface NavItem {
   name: string;
@@ -28,8 +29,9 @@ export function PortalSidebar() {
   const { branding } = useBranding();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Get current path for active state
-  const currentPath = typeof window !== 'undefined' ? window.location.pathname : '';
+  // Get current path for active state (de-based so comparisons stay base-agnostic).
+  const currentPath =
+    typeof window !== 'undefined' ? stripBase(window.location.pathname) : '';
 
   const isActive = (href: string) => {
     if (href === '/') return currentPath === '/';
@@ -45,7 +47,7 @@ export function PortalSidebar() {
         return (
           <a
             key={item.name}
-            href={item.href}
+            href={withBase(item.href)}
             className={cn(
               'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
               active

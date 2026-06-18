@@ -33,6 +33,9 @@ export interface FilterChipBarProps {
   // undefined the editor falls back to comma-separated text input.
   softwareOptions?: string[];
   softwareOptionCounts?: Record<string, number>;
+  // #1459 — debounced by the parent; fired as the user types in the software
+  // picker so the parent can refetch matching names from the server.
+  onSoftwareSearch?: (q: string) => void;
   // Spec 4.12 — `Ctrl+S` invokes save. Parent owns saved-filter state, so
   // this callback is fired with the current group (parent prompts for name).
   onSaveRequested?: (group: FilterConditionGroup) => void;
@@ -51,7 +54,7 @@ function defaultConditionForField(field: FilterFieldDefinition): FilterCondition
 }
 
 export function FilterChipBar({
-  value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSaveRequested
+  value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
 }: FilterChipBarProps) {
   const group = value ?? EMPTY_GROUP;
   const chips: FilterCondition[] = group.conditions.filter(
@@ -213,6 +216,7 @@ export function FilterChipBar({
               sites={sites}
               softwareOptions={softwareOptions}
               softwareOptionCounts={softwareOptionCounts}
+              onSoftwareSearch={onSoftwareSearch}
               btnRef={el => { chipBtnRefs.current[i] = el; }}
               onKeyDown={(e) => onChipKeyDown(e, i)}
               focused={focusedChipIdx === i}
@@ -238,6 +242,7 @@ export function FilterChipBar({
           sites={sites}
           softwareOptions={softwareOptions}
           softwareOptionCounts={softwareOptionCounts}
+          onSoftwareSearch={onSoftwareSearch}
           onSaveRequested={onSaveRequested}
         />
       )}
@@ -255,12 +260,13 @@ interface ChipProps {
   sites?: NamedRef[];
   softwareOptions?: string[];
   softwareOptionCounts?: Record<string, number>;
+  onSoftwareSearch?: (q: string) => void;
   btnRef?: (el: HTMLButtonElement | null) => void;
   onKeyDown?: (e: React.KeyboardEvent) => void;
   focused?: boolean;
 }
 
-function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, btnRef, onKeyDown, focused }: ChipProps) {
+function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, btnRef, onKeyDown, focused }: ChipProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const field = getFieldDef(condition.field)
@@ -319,6 +325,7 @@ function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, sof
             sites={sites}
             softwareOptions={softwareOptions}
             softwareOptionCounts={softwareOptionCounts}
+            onSoftwareSearch={onSoftwareSearch}
           />
           <div className="mt-3 flex items-center justify-between gap-2">
             <FilterPreviewFooter group={previewGroup} />
