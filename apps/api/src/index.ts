@@ -215,6 +215,7 @@ import {
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
+import { initializeQuoteExpiryReaper, shutdownQuoteExpiryReaper } from './jobs/quoteExpiryReaper';
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
@@ -1112,6 +1113,7 @@ async function initializeWorkers(): Promise<void> {
     ['staleCommandReaper', initializeStaleCommandReaper],
     ['pamJobs', initializePamJobs],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
+    ['quoteExpiryReaper', initializeQuoteExpiryReaper],
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
@@ -1272,6 +1274,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownStaleCommandReaper,
     shutdownPamJobs,
     shutdownApprovalExpiryReaper,
+    shutdownQuoteExpiryReaper,
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,

@@ -22,12 +22,13 @@ export type QuoteServiceErrorCode =
   | 'IMAGE_NOT_FOUND'
   | 'INVALID_IMAGE'
   | 'CATALOG_ITEM_NOT_FOUND'
-  | 'INVALID_STATE';
+  | 'INVALID_STATE'
+  | 'QUOTE_EXPIRED';
 
 export class QuoteServiceError extends Error {
   constructor(
     message: string,
-    public status: 400 | 403 | 404 | 409 | 500 = 400,
+    public status: 400 | 403 | 404 | 409 | 410 | 500 = 400,
     public code?: QuoteServiceErrorCode
   ) {
     super(message);

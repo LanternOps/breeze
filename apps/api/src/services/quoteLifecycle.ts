@@ -10,6 +10,7 @@ import { createQuoteAcceptToken } from './quoteAcceptToken';
 import { buildQuoteTemplate } from './quoteEmail';
 import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
+import { isQuoteExpired } from './quoteExpiry';
 
 type QuoteRow = typeof quotes.$inferSelect;
 
@@ -133,6 +134,11 @@ export async function declineQuoteByActor(id: string, reason: string | undefined
   const { quote } = await getQuote(id, actor);
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot decline a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+  // Read-time expiry guard (Phase 3): an expired quote is terminal — no decline
+  // (nor accept) even before the sweep flips its status. Mirrors acceptQuote.
+  if (isQuoteExpired(quote.expiryDate)) {
+    throw new QuoteServiceError('This quote has expired', 410, 'QUOTE_EXPIRED');
   }
   const now = new Date();
   await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));

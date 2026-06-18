@@ -55,6 +55,29 @@ describe('quote accept → convert', () => {
     expect(q!.status).toBe('converted');
   });
 
+  // Phase 3 read-time expiry guard: a quote whose expiry_date has passed must be
+  // rejected at accept time even if the BullMQ sweep hasn't flipped it to 'expired'
+  // yet (status still 'sent'/'viewed'). Closes the gap between expiry and the sweep.
+  runDb('rejects accepting a quote whose expiry_date has passed (even before the sweep runs)', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 100, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    // Back-date the expiry so it's in the past while status is still 'sent'.
+    await withSystemDbAccessContext(() => db.update(quotes).set({ expiryDate: '2000-01-01' }).where(eq(quotes.id, created.id)));
+
+    await expect(
+      withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Late Larry' }))
+    ).rejects.toMatchObject({ status: 410, code: 'QUOTE_EXPIRED' });
+
+    // No invoice or acceptance was created by the rejected accept.
+    const invs = await withSystemDbAccessContext(() => db.select({ id: invoices.id }).from(invoices).where(eq(invoices.orgId, org.id)));
+    expect(invs).toHaveLength(0);
+    const accs = await withSystemDbAccessContext(() => db.select({ id: quoteAcceptances.id }).from(quoteAcceptances).where(eq(quoteAcceptances.quoteId, created.id)));
+    expect(accs).toHaveLength(0);
+  });
+
   runDb('rejects accepting a quote that is not sent/viewed', async () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);

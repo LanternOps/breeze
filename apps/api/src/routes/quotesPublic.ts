@@ -12,6 +12,7 @@ import { markQuoteViewed } from '../services/quoteLifecycle';
 import { acceptQuote } from '../services/quoteAcceptService';
 import { readQuoteImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
+import { isQuoteExpired } from '../services/quoteExpiry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 /**
@@ -88,14 +89,18 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
 quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zValidator('json', declineQuoteSchema), async (c) => {
   const claims = await resolve(c); const { reason } = c.req.valid('json');
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
-  const ok = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const result = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
-    if (!quote || (quote.status !== 'sent' && quote.status !== 'viewed')) return false;
+    if (!quote || (quote.status !== 'sent' && quote.status !== 'viewed')) return 'bad_state' as const;
+    // Read-time expiry guard (Phase 3): an expired quote is terminal — mirror the
+    // acceptQuote / declineQuoteByActor 410 so the sub-sweep window is covered here too.
+    if (isQuoteExpired(quote.expiryDate)) return 'expired' as const;
     const now = new Date();
     await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, quote.id));
-    return true;
+    return 'ok' as const;
   }));
-  if (!ok) return c.json({ error: 'This quote can no longer be declined' }, 409);
+  if (result === 'expired') return c.json({ error: 'This quote has expired', code: 'QUOTE_EXPIRED' }, 410);
+  if (result !== 'ok') return c.json({ error: 'This quote can no longer be declined' }, 409);
   // Consume the single-use token post-commit so a declined link can't be replayed.
   try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
   return c.json({ data: { status: 'declined' } });

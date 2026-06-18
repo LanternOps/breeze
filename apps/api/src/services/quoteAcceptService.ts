@@ -6,6 +6,7 @@ import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
 import { computeLineTotal, computeInvoiceTotals } from './invoiceMath';
+import { isQuoteExpired } from './quoteExpiry';
 
 export interface AcceptQuoteParams {
   quoteId: string;
@@ -46,6 +47,12 @@ export async function acceptQuote(
   if (!quote) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+  // Read-time expiry guard (Phase 3): a quote past its expiry_date can't be accepted
+  // even if the sweep hasn't flipped it to 'expired' yet — closes the gap between
+  // expiry and the next sweep tick. Shares the date-only definition with the sweep.
+  if (isQuoteExpired(quote.expiryDate)) {
+    throw new QuoteServiceError('This quote has expired and can no longer be accepted', 410, 'QUOTE_EXPIRED');
   }
 
   const blocks = await db
