@@ -310,6 +310,7 @@ describe('GET /cf-access-login', () => {
         iss: `https://${envState.teamDomain}`,
         exp: 999,
         iat: 1,
+        country: 'CA',
       },
     };
     dbState.userRow = { ...activeUser };
@@ -319,7 +320,10 @@ describe('GET /cf-access-login', () => {
     expect(cookieState.set).toBe('refresh-tok');
     expect(auditState.audits[0]).toMatchObject({
       action: 'user.login',
-      details: expect.objectContaining({ method: 'cf_access_jwt_redirect' }),
+      details: expect.objectContaining({
+        method: 'cf_access_jwt_redirect',
+        cfAccessCountry: 'CA',
+      }),
     });
   });
 
