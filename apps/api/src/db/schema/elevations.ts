@@ -19,6 +19,7 @@ import { devices } from './devices';
 import { approvalRequests, approvalFactorEnum } from './approvals';
 import { softwarePolicies } from './softwarePolicies';
 import { aiToolExecutions } from './ai';
+import type { AssuranceLevel } from '@breeze/shared';
 
 // PAM Track 1: privileged access management.
 //
@@ -140,7 +141,10 @@ export const elevationRequests = pgTable(
     actionDigest: varchar('action_digest', { length: 64 }),
     riskTier: smallint('risk_tier'),
 
-    decidedAssuranceLevel: smallint('decided_assurance_level'),
+    // Level satisfied by the decision (1..4); DB-capped by
+    // elevation_requests_decided_level_range_chk. `.$type` aligns the inferred
+    // read type with that invariant (issue #1372).
+    decidedAssuranceLevel: smallint('decided_assurance_level').$type<AssuranceLevel>(),
     decidedVia: approvalFactorEnum('decided_via'),
     authenticatorDeviceId: uuid('authenticator_device_id'),
     pinVerified: boolean('pin_verified').notNull().default(false),
