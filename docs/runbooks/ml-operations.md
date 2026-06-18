@@ -139,8 +139,10 @@ Expected queue names include:
 | Queue | Purpose |
 | --- | --- |
 | `metric-rollups` | Metric rollup computation |
+| `metric-rollup-maintenance` | Rollup partition upkeep and rollup retention |
 | `alert-correlation` | Alert grouping and clustering |
 | `metric-anomalies` | Anomaly detection |
+| `ml-output-retention` | Bounded pruning for metric anomalies and remediation suggestions |
 | `reliability-scoring` | Device reliability score computation |
 | `user-risk-scoring` | User-risk scoring and signal ingestion |
 
@@ -150,6 +152,23 @@ idempotent for that queue.
 
 Remediation suggestions are generated on demand through the remediation
 suggestion route/service. They do not currently have a dedicated BullMQ queue.
+
+## Retention
+
+Feedback labels in `ml_feedback_events` are long-lived evaluation assets and
+are not pruned by the ML output retention worker. Model output rows are bounded:
+
+| Data | Default | Environment knobs |
+| --- | --- | --- |
+| `metric_anomalies` | 365 days by `detected_at` | `ML_OUTPUT_RETENTION_DAYS`, `ML_OUTPUT_RETENTION_BATCH_SIZE`, `ML_OUTPUT_RETENTION_MAX_BATCHES` |
+| `remediation_suggestions` | 365 days by `created_at` | same as above |
+| `metric_rollups` | tier-specific in rollup maintenance | `METRIC_ROLLUP_RETENTION_*` / maintenance settings |
+| user-risk score snapshots | compacted after 90 days | `USER_RISK_RETENTION_*` |
+
+The ML output worker deletes in bounded `ctid` batches and reports whether more
+rows remain after the configured batch cap. If it repeatedly reports `hasMore`,
+increase `ML_OUTPUT_RETENTION_MAX_BATCHES` temporarily or run the queue more
+often rather than issuing an unbounded manual `DELETE`.
 
 ## Debugging By Surface
 

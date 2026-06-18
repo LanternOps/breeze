@@ -157,6 +157,7 @@ import {
   shutdownMetricRollupMaintenanceWorker,
 } from './jobs/metricRollupMaintenance';
 import { initializeMetricAnomaliesWorker, shutdownMetricAnomaliesWorker } from './jobs/metricAnomalies';
+import { initializeMlOutputRetention, shutdownMlOutputRetention } from './jobs/mlOutputRetention';
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
@@ -1054,6 +1055,7 @@ async function initializeWorkers(): Promise<void> {
     ['metricRollupsWorker', initializeMetricRollupsWorker],
     ['metricRollupMaintenance', initializeMetricRollupMaintenanceWorker],
     ['metricAnomaliesWorker', initializeMetricAnomaliesWorker],
+    ['mlOutputRetention', initializeMlOutputRetention],
     ['offlineDetector', initializeOfflineDetector],
     ['notificationDispatcher', initializeNotificationDispatcher],
     ['webhookDelivery', initializeWebhookDeliveryWorker],
@@ -1247,6 +1249,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownLogCorrelationWorker,
     shutdownAgentLogRetention,
     shutdownIPHistoryRetention,
+    shutdownMlOutputRetention,
     shutdownReliabilityRetention,
     shutdownProcessSampleRetention,
     shutdownChangeLogRetention,
