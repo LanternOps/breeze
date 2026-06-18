@@ -243,6 +243,72 @@ describe('userRiskRoutes', () => {
     expect(emitUserRiskFeedback).not.toHaveBeenCalled();
   });
 
+  it('POST /users/:userId/training-completed records a completion label', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/training-completed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        moduleId: 'security-awareness-baseline',
+        assignmentEventId: '00000000-0000-0000-0000-000000000020',
+        completedAt: '2026-06-18T12:00:00.000Z'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, eventType: 'training.completed' });
+    expect(emitUserRiskFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID,
+      userId: USER_ID,
+      eventType: 'training.completed',
+      outcome: 'completed',
+      actorUserId: '00000000-0000-0000-0000-000000000099',
+      metadata: expect.objectContaining({
+        source: 'user_risk_training_completion',
+        moduleId: 'security-awareness-baseline',
+        assignmentEventId: '00000000-0000-0000-0000-000000000020',
+        completedAt: '2026-06-18T12:00:00.000Z'
+      })
+    }));
+  });
+
+  it('POST /users/:userId/training-completed returns 404 for a user outside the org', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(false);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/training-completed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'User not found in this organization' });
+    expect(emitUserRiskFeedback).not.toHaveBeenCalled();
+  });
+
+  it('POST /users/:userId/training-completed rejects inaccessible orgs before membership lookup', async () => {
+    const app = buildApp({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (id) => id === ORG_ID
+    });
+    const res = await app.request(`/user-risk/users/${USER_ID}/training-completed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID_2 })
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access denied to this organization' });
+    expect(getUserRiskOrgMembership).not.toHaveBeenCalled();
+    expect(emitUserRiskFeedback).not.toHaveBeenCalled();
+  });
+
   it('PUT /policy updates policy', async () => {
     vi.mocked(updateUserRiskPolicy).mockResolvedValue({
       orgId: ORG_ID,

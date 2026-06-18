@@ -65,6 +65,14 @@ const assignTrainingSchema = z.object({
   reason: z.string().min(1).max(500).optional()
 });
 
+const completeTrainingSchema = z.object({
+  orgId: z.string().uuid().optional(),
+  moduleId: z.string().min(1).max(120).optional(),
+  assignmentEventId: z.string().uuid().optional(),
+  completedAt: z.string().datetime().optional(),
+  note: z.string().trim().max(1000).optional()
+});
+
 const feedbackPayloadSchema = z.object({
   orgId: z.string().uuid().optional(),
   outcome: z.enum(['true_positive', 'false_positive']),
@@ -296,6 +304,56 @@ userRiskRoutes.get(
     });
 
     return c.json({ data: evaluation });
+  }
+);
+
+userRiskRoutes.post(
+  '/users/:userId/training-completed',
+  requirePermission('users', 'write'),
+  zValidator('param', detailParamSchema),
+  zValidator('json', completeTrainingSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { userId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const resolved = resolveWriteOrgId(auth, payload.orgId);
+    if (!resolved.orgId) {
+      return c.json({ error: resolved.error ?? 'Organization resolution failed' }, resolved.status ?? 400);
+    }
+
+    const isMember = await getUserRiskOrgMembership(userId, resolved.orgId);
+    if (!isMember) {
+      return c.json({ error: 'User not found in this organization' }, 404);
+    }
+
+    await emitUserRiskFeedback({
+      orgId: resolved.orgId,
+      userId,
+      eventType: 'training.completed',
+      outcome: 'completed',
+      actorUserId: auth.user.id,
+      metadata: {
+        source: 'user_risk_training_completion',
+        moduleId: payload.moduleId ?? null,
+        assignmentEventId: payload.assignmentEventId ?? null,
+        completedAt: payload.completedAt ?? new Date().toISOString(),
+        note: payload.note ?? null
+      }
+    });
+
+    writeRouteAudit(c, {
+      orgId: resolved.orgId,
+      action: 'user_risk.training.complete',
+      resourceType: 'user',
+      resourceId: userId,
+      details: {
+        moduleId: payload.moduleId ?? null,
+        assignmentEventId: payload.assignmentEventId ?? null
+      }
+    });
+
+    return c.json({ success: true, eventType: 'training.completed' });
   }
 );
 
