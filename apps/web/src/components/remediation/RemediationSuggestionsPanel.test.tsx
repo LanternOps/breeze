@@ -216,30 +216,54 @@ describe('RemediationSuggestionsPanel', () => {
     expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
   });
 
-  it('labels high-risk executable suggestions that still need approval', async () => {
-    fetchWithAuthMock.mockImplementation((input) => {
+  it('requests approval for high-risk executable suggestions before execution', async () => {
+    const accepted = {
+      ...suggestion,
+      status: 'accepted',
+      riskTier: 'high',
+      elevationRequestId: null,
+    };
+    const withApproval = {
+      ...accepted,
+      elevationRequestId: '44444444-4444-4444-8444-444444444444',
+    };
+    fetchWithAuthMock.mockImplementation((input, init) => {
       const url = String(input);
+      const method = init?.method ?? 'GET';
       if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
       if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
         return Promise.resolve(makeJsonResponse({
-          data: [{
-            ...suggestion,
-            status: 'accepted',
-            riskTier: 'high',
-            elevationRequestId: null,
-          }],
+          data: [accepted],
         }));
       }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+      if (url === '/remediation-suggestions/suggestion-1/elevation-request' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({
+          data: withApproval,
+          elevationRequest: {
+            id: withApproval.elevationRequestId,
+            status: 'pending',
+            expiresAt: null,
+          },
+        }, true, 201));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
     });
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
-    const approval = await screen.findByRole('button', { name: /approval required/i });
-    expect(approval).toBeDisabled();
+    const approval = await screen.findByRole('button', { name: /request approval/i });
     expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
     fireEvent.click(approval);
-    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/remediation-suggestions/suggestion-1/execute', expect.anything());
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/suggestion-1/elevation-request',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Approval requested' }));
+    expect(await screen.findByRole('button', { name: /approval pending/i })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
   });
 
   it('labels and disables generation when suggested fixes are disabled', async () => {

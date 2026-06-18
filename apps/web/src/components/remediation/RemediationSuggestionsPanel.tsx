@@ -78,6 +78,8 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
   const [generating, setGenerating] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [executingId, setExecutingId] = useState<string | null>(null);
+  const [requestingApprovalId, setRequestingApprovalId] = useState<string | null>(null);
+  const [approvalStatuses, setApprovalStatuses] = useState<Record<string, string>>({});
   const [error, setError] = useState<string>();
 
   const fetchSuggestions = useCallback(async () => {
@@ -172,6 +174,38 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
     }
   }
 
+  async function requestApproval(suggestion: RemediationSuggestion) {
+    if (!canQueueScriptSuggestion(suggestion) || !requiresExecutionApproval(suggestion) || suggestion.elevationRequestId) return;
+
+    setRequestingApprovalId(suggestion.id);
+    try {
+      const result = await runAction<{
+        data?: RemediationSuggestion;
+        elevationRequest?: { id: string; status: string; expiresAt: string | null };
+      }>({
+        request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}/elevation-request`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }),
+        errorFallback: 'Could not request approval',
+        successMessage: 'Approval requested',
+      });
+      if (result.data) {
+        setSuggestions((current) => current.map((item) => item.id === suggestion.id ? result.data! : item));
+      }
+      if (result.elevationRequest?.status) {
+        setApprovalStatuses((current) => ({
+          ...current,
+          [suggestion.id]: result.elevationRequest!.status,
+        }));
+      }
+    } catch (err) {
+      handleActionError(err, 'Could not request approval');
+    } finally {
+      setRequestingApprovalId(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="mt-4 rounded-md border border-dashed p-4">
@@ -216,87 +250,103 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
         <p className="mt-3 text-sm text-muted-foreground">No suggested fixes yet.</p>
       ) : (
         <div className="mt-3 space-y-3">
-          {suggestions.map((suggestion) => (
-            <div key={suggestion.id} className="rounded-md border p-3">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold">{suggestion.title}</span>
-                    <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{targetLabel(suggestion)}</span>
-                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${riskClasses[suggestion.riskTier]}`}>
-                      {suggestion.riskTier}
-                    </span>
-                    {suggestion.confidence != null && (
-                      <span className="text-xs text-muted-foreground">{Math.round(suggestion.confidence * 100)}%</span>
+          {suggestions.map((suggestion) => {
+            const approvalStatus = approvalStatuses[suggestion.id];
+            const approvalPending = requiresExecutionApproval(suggestion) && suggestion.elevationRequestId && approvalStatus === 'pending';
+            return (
+              <div key={suggestion.id} className="rounded-md border p-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold">{suggestion.title}</span>
+                      <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{targetLabel(suggestion)}</span>
+                      <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${riskClasses[suggestion.riskTier]}`}>
+                        {suggestion.riskTier}
+                      </span>
+                      {suggestion.confidence != null && (
+                        <span className="text-xs text-muted-foreground">{Math.round(suggestion.confidence * 100)}%</span>
+                      )}
+                    </div>
+                    <p className="mt-2 text-sm text-muted-foreground">{suggestion.rationale}</p>
+                    <p className="mt-2 text-sm">{suggestion.expectedAction}</p>
+                    {suggestion.status !== 'suggested' && (
+                      <p className="mt-2 text-xs font-medium text-muted-foreground">Status: {suggestion.status}</p>
                     )}
                   </div>
-                  <p className="mt-2 text-sm text-muted-foreground">{suggestion.rationale}</p>
-                  <p className="mt-2 text-sm">{suggestion.expectedAction}</p>
-                  {suggestion.status !== 'suggested' && (
-                    <p className="mt-2 text-xs font-medium text-muted-foreground">Status: {suggestion.status}</p>
-                  )}
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'accepted'}
-                    onClick={() => void updateSuggestion(suggestion, 'accepted')}
-                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <CheckCircle className="h-4 w-4" />
-                    Accept
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      updatingId === suggestion.id ||
-                      executingId === suggestion.id ||
-                      suggestion.status === 'edited' ||
-                      suggestion.status === 'rejected' ||
-                      suggestion.status === 'executed' ||
-                      suggestion.status === 'failed'
-                    }
-                    onClick={() => void updateSuggestion(suggestion, 'edited')}
-                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <PencilLine className="h-4 w-4" />
-                    Mark edited
-                  </button>
-                  <button
-                    type="button"
-                    disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'rejected'}
-                    onClick={() => void updateSuggestion(suggestion, 'rejected')}
-                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <XCircle className="h-4 w-4" />
-                    Reject
-                  </button>
-                  {canExecuteScriptSuggestion(suggestion) && (
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      disabled={executingId === suggestion.id}
-                      onClick={() => void executeSuggestion(suggestion)}
-                      className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'accepted'}
+                      onClick={() => void updateSuggestion(suggestion, 'accepted')}
+                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <PlayCircle className="h-4 w-4" />
-                      Execute
+                      <CheckCircle className="h-4 w-4" />
+                      Accept
                     </button>
-                  )}
-                  {canQueueScriptSuggestion(suggestion) && requiresExecutionApproval(suggestion) && !suggestion.elevationRequestId && (
                     <button
                       type="button"
-                      disabled
-                      title="Approved elevation request required before execution"
-                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground disabled:cursor-not-allowed disabled:opacity-70"
+                      disabled={
+                        updatingId === suggestion.id ||
+                        executingId === suggestion.id ||
+                        suggestion.status === 'edited' ||
+                        suggestion.status === 'rejected' ||
+                        suggestion.status === 'executed' ||
+                        suggestion.status === 'failed'
+                      }
+                      onClick={() => void updateSuggestion(suggestion, 'edited')}
+                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <ShieldAlert className="h-4 w-4" />
-                      Approval required
+                      <PencilLine className="h-4 w-4" />
+                      Mark edited
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'rejected'}
+                      onClick={() => void updateSuggestion(suggestion, 'rejected')}
+                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <XCircle className="h-4 w-4" />
+                      Reject
+                    </button>
+                    {canExecuteScriptSuggestion(suggestion) && !approvalPending && (
+                      <button
+                        type="button"
+                        disabled={executingId === suggestion.id || requestingApprovalId === suggestion.id}
+                        onClick={() => void executeSuggestion(suggestion)}
+                        className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <PlayCircle className="h-4 w-4" />
+                        Execute
+                      </button>
+                    )}
+                    {canQueueScriptSuggestion(suggestion) && requiresExecutionApproval(suggestion) && !suggestion.elevationRequestId && (
+                      <button
+                        type="button"
+                        disabled={requestingApprovalId === suggestion.id || updatingId === suggestion.id || executingId === suggestion.id}
+                        onClick={() => void requestApproval(suggestion)}
+                        title="Request PAM approval before execution"
+                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <ShieldAlert className="h-4 w-4" />
+                        {requestingApprovalId === suggestion.id ? 'Requesting...' : 'Request approval'}
+                      </button>
+                    )}
+                    {approvalPending && (
+                      <button
+                        type="button"
+                        disabled
+                        title="Waiting for PAM approval"
+                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        <ShieldAlert className="h-4 w-4" />
+                        Approval pending
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

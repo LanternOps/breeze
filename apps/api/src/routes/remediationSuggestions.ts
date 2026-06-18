@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
-import { devices, elevationRequests, mlFeedbackEvents, remediationSuggestions, scriptExecutions } from '../db/schema';
+import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions, scriptExecutions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
@@ -82,6 +82,55 @@ function requiresExecutionApproval(riskTier: string | null | undefined): boolean
   return riskTier === 'high' || riskTier === 'critical';
 }
 
+function remediationApprovalRiskTier(riskTier: string | null | undefined): number | null {
+  if (riskTier === 'high') return 3;
+  if (riskTier === 'critical') return 4;
+  return null;
+}
+
+function reusableElevationStatus(status: string): boolean {
+  return status === 'pending' || status === 'approved' || status === 'auto_approved' || status === 'actuating';
+}
+
+async function loadReusableElevationRequest(options: {
+  elevationRequestId: string;
+  orgId: string;
+  deviceId: string;
+}): Promise<{ id: string; status: string; expiresAt: Date | null } | string> {
+  const [elevation] = await db
+    .select({
+      id: elevationRequests.id,
+      deviceId: elevationRequests.deviceId,
+      status: elevationRequests.status,
+      expiresAt: elevationRequests.expiresAt,
+    })
+    .from(elevationRequests)
+    .where(and(
+      eq(elevationRequests.id, options.elevationRequestId),
+      eq(elevationRequests.orgId, options.orgId),
+    ))
+    .limit(1);
+
+  if (!elevation) {
+    return 'Elevation request not found or access denied';
+  }
+  if (elevation.deviceId !== options.deviceId) {
+    return 'Elevation request must target the suggested device';
+  }
+  if (!reusableElevationStatus(elevation.status)) {
+    return 'Elevation request is no longer reusable';
+  }
+  if (elevation.expiresAt && elevation.expiresAt.getTime() < Date.now()) {
+    return 'Elevation request has expired';
+  }
+
+  return {
+    id: elevation.id,
+    status: elevation.status,
+    expiresAt: elevation.expiresAt,
+  };
+}
+
 async function validateRemediationExecutionApproval(
   existing: typeof remediationSuggestions.$inferSelect,
   deviceId: string,
@@ -126,6 +175,30 @@ async function validateRemediationExecutionApproval(
   }
 
   return null;
+}
+
+async function loadTargetDeviceForSuggestion(
+  existing: typeof remediationSuggestions.$inferSelect,
+  deviceId: string,
+  perms: UserPermissions | undefined,
+): Promise<{ id: string; orgId: string; siteId: string } | string> {
+  const [device] = await db
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(and(
+      eq(devices.id, deviceId),
+      eq(devices.orgId, existing.orgId),
+    ))
+    .limit(1);
+
+  if (!device) {
+    return 'Target device not found or access denied';
+  }
+  if (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId)) {
+    return 'Target device not found or access denied';
+  }
+
+  return device;
 }
 
 async function validateLinkedScriptExecution(
@@ -622,6 +695,159 @@ remediationSuggestionRoutes.post(
       skipped: result.skipped,
       data: visible.map(serializeSuggestion),
     }, result.skipped ? 200 : 201);
+  }
+);
+
+remediationSuggestionRoutes.post(
+  '/:id/elevation-request',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const id = c.req.param('id') ?? '';
+
+    const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
+    const orgCond = auth.orgCondition(remediationSuggestions.orgId);
+    if (orgCond) conditions.push(orgCond);
+
+    const [existing] = await db
+      .select()
+      .from(remediationSuggestions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!existing) {
+      return c.json({ error: 'Suggestion not found' }, 404);
+    }
+    if (existing.status !== 'accepted' && existing.status !== 'edited') {
+      return c.json({ error: 'Suggestion must be accepted or edited before requesting approval' }, 400);
+    }
+    if (!requiresExecutionApproval(existing.riskTier)) {
+      return c.json({ error: 'Only high-risk remediation suggestions require elevation approval' }, 400);
+    }
+    if (existing.targetType !== 'script' || !existing.scriptId) {
+      return c.json({ error: 'Only script remediation suggestions can request elevation approval' }, 400);
+    }
+
+    const deviceId = singleTargetDeviceId(existing);
+    if (!deviceId) {
+      return c.json({ error: 'Remediation approval requires exactly one target device' }, 400);
+    }
+
+    const device = await loadTargetDeviceForSuggestion(existing, deviceId, perms);
+    if (typeof device === 'string') {
+      return c.json({ error: device }, 403);
+    }
+
+    if (existing.elevationRequestId) {
+      const elevation = await loadReusableElevationRequest({
+        elevationRequestId: existing.elevationRequestId,
+        orgId: existing.orgId,
+        deviceId,
+      });
+      if (typeof elevation === 'string') {
+        return c.json({ error: elevation }, 409);
+      }
+      return c.json({
+        data: serializeSuggestion(existing),
+        elevationRequest: {
+          id: elevation.id,
+          status: elevation.status,
+          expiresAt: elevation.expiresAt?.toISOString() ?? null,
+        },
+      });
+    }
+
+    const now = new Date();
+    const riskTier = remediationApprovalRiskTier(existing.riskTier);
+    const [elevation] = await db
+      .insert(elevationRequests)
+      .values({
+        orgId: existing.orgId,
+        siteId: device.siteId,
+        partnerId: null,
+        deviceId,
+        flowType: 'tech_jit_admin',
+        subjectUserId: auth.user.id,
+        subjectUsername: auth.user.email ?? auth.user.name ?? auth.user.id,
+        reason: `Remediation suggestion "${existing.title}" requires approval before script execution`,
+        status: 'pending',
+        requestedAt: now,
+        riskTier,
+        metadata: {
+          triggerSource: 'remediation_suggestion',
+          remediationSuggestionId: existing.id,
+          sourceType: existing.sourceType,
+          sourceId: existing.sourceId,
+          scriptId: existing.scriptId,
+          riskTier: existing.riskTier,
+        },
+      })
+      .returning({
+        id: elevationRequests.id,
+        status: elevationRequests.status,
+        expiresAt: elevationRequests.expiresAt,
+      });
+
+    if (!elevation) {
+      return c.json({ error: 'Failed to create elevation request' }, 500);
+    }
+
+    await db.insert(elevationAudit).values({
+      orgId: existing.orgId,
+      elevationRequestId: elevation.id,
+      eventType: 'requested',
+      actor: 'technician',
+      actorUserId: auth.user.id,
+      details: {
+        triggerSource: 'remediation_suggestion',
+        remediationSuggestionId: existing.id,
+        sourceType: existing.sourceType,
+        sourceId: existing.sourceId,
+        scriptId: existing.scriptId,
+      },
+      occurredAt: now,
+    });
+
+    const [updated] = await db
+      .update(remediationSuggestions)
+      .set({
+        elevationRequestId: elevation.id,
+        updatedAt: now,
+      })
+      .where(eq(remediationSuggestions.id, existing.id))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Failed to link elevation request' }, 500);
+    }
+
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'ml.remediation_suggestion.request_elevation',
+      resourceType: 'remediation_suggestion',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: {
+        sourceType: updated.sourceType,
+        sourceId: updated.sourceId,
+        targetType: updated.targetType,
+        scriptId: updated.scriptId,
+        elevationRequestId: updated.elevationRequestId,
+        riskTier: updated.riskTier,
+      },
+    });
+
+    return c.json({
+      data: serializeSuggestion(updated),
+      elevationRequest: {
+        id: elevation.id,
+        status: elevation.status,
+        expiresAt: elevation.expiresAt?.toISOString() ?? null,
+      },
+    }, 201);
   }
 );
 

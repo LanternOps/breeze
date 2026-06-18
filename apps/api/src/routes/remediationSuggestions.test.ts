@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 
 const dbMocks = vi.hoisted(() => ({
   selectMock: vi.fn(),
+  insertMock: vi.fn(),
   updateMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   generateMock: vi.fn(),
@@ -15,6 +16,7 @@ let currentPermissions: { allowedSiteIds?: string[] } | undefined;
 vi.mock('../db', () => ({
   db: {
     select: dbMocks.selectMock,
+    insert: dbMocks.insertMock,
     update: dbMocks.updateMock,
   },
 }));
@@ -40,6 +42,9 @@ vi.mock('../db/schema', () => ({
     requestedAt: 'elevationRequests.requestedAt',
     approvedAt: 'elevationRequests.approvedAt',
     expiresAt: 'elevationRequests.expiresAt',
+  },
+  elevationAudit: {
+    id: 'elevationAudit.id',
   },
   remediationSuggestions: {
     id: 'remediationSuggestions.id',
@@ -177,6 +182,33 @@ function mockElevationLoad(elevation: Record<string, unknown> | undefined) {
   });
 }
 
+function mockDeviceLoad(device: Record<string, unknown> | undefined = {
+  id: baseSuggestion.deviceId,
+  orgId: baseSuggestion.orgId,
+  siteId: '99999999-9999-4999-8999-999999999999',
+}) {
+  dbMocks.selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(device ? [device] : []),
+      }),
+    }),
+  });
+}
+
+function mockInsertReturning(row: Record<string, unknown> | undefined) {
+  const returning = vi.fn().mockResolvedValue(row ? [row] : []);
+  const values = vi.fn().mockReturnValue({ returning });
+  dbMocks.insertMock.mockReturnValueOnce({ values });
+  return { values, returning };
+}
+
+function mockInsertValuesOnly() {
+  const values = vi.fn().mockResolvedValue(undefined);
+  dbMocks.insertMock.mockReturnValueOnce({ values });
+  return { values };
+}
+
 describe('remediation suggestion routes', () => {
   let app: Hono;
 
@@ -241,6 +273,208 @@ describe('remediation suggestion routes', () => {
     }));
     const body = await res.json();
     expect(body.data.status).toBe('accepted');
+  });
+
+  it('creates and links a pending elevation request for accepted high-risk script suggestions', async () => {
+    const accepted = {
+      ...baseSuggestion,
+      status: 'accepted',
+      riskTier: 'high',
+    };
+    const elevationRequestId = '88888888-8888-4888-8888-888888888888';
+    mockSuggestionLoad(accepted);
+    mockDeviceLoad();
+    const elevationInsert = mockInsertReturning({
+      id: elevationRequestId,
+      status: 'pending',
+      expiresAt: null,
+    });
+    const auditInsert = mockInsertValuesOnly();
+    dbMocks.updateMock.mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            ...accepted,
+            elevationRequestId,
+            updatedAt: new Date('2026-06-18T12:05:00.000Z'),
+          }]),
+        }),
+      }),
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/elevation-request`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(201);
+    expect(elevationInsert.values).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: baseSuggestion.orgId,
+      siteId: '99999999-9999-4999-8999-999999999999',
+      deviceId: baseSuggestion.deviceId,
+      flowType: 'tech_jit_admin',
+      subjectUserId: 'user-1',
+      subjectUsername: 'test@example.com',
+      status: 'pending',
+      riskTier: 3,
+      metadata: expect.objectContaining({
+        triggerSource: 'remediation_suggestion',
+        remediationSuggestionId: baseSuggestion.id,
+        scriptId: baseSuggestion.scriptId,
+      }),
+    }));
+    expect(auditInsert.values).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: baseSuggestion.orgId,
+      elevationRequestId,
+      eventType: 'requested',
+      actor: 'technician',
+      actorUserId: 'user-1',
+    }));
+    expect(dbMocks.writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ml.remediation_suggestion.request_elevation',
+      resourceId: baseSuggestion.id,
+    }));
+    const body = await res.json();
+    expect(body.data.elevationRequestId).toBe(elevationRequestId);
+    expect(body.elevationRequest).toEqual({
+      id: elevationRequestId,
+      status: 'pending',
+      expiresAt: null,
+    });
+  });
+
+  it('returns an existing pending linked elevation request idempotently', async () => {
+    const elevationRequestId = '88888888-8888-4888-8888-888888888888';
+    const accepted = {
+      ...baseSuggestion,
+      status: 'accepted',
+      riskTier: 'critical',
+      elevationRequestId,
+    };
+    mockSuggestionLoad(accepted);
+    mockDeviceLoad();
+    mockElevationLoad({
+      id: elevationRequestId,
+      orgId: baseSuggestion.orgId,
+      deviceId: baseSuggestion.deviceId,
+      status: 'pending',
+      expiresAt: null,
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/elevation-request`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.data.elevationRequestId).toBe(elevationRequestId);
+    expect(body.elevationRequest).toEqual({
+      id: elevationRequestId,
+      status: 'pending',
+      expiresAt: null,
+    });
+  });
+
+  it('rejects elevation requests for medium-risk suggestions', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted', riskTier: 'medium' });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/elevation-request`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Only high-risk remediation suggestions require elevation approval',
+    });
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects elevation requests before acceptance', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, riskTier: 'high' });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/elevation-request`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Suggestion must be accepted or edited before requesting approval',
+    });
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects elevation requests for multi-device script suggestions', async () => {
+    mockSuggestionLoad({
+      ...baseSuggestion,
+      status: 'accepted',
+      riskTier: 'high',
+      targetDeviceIds: [
+        '44444444-4444-4444-8444-444444444444',
+        '77777777-7777-4777-8777-777777777777',
+      ],
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/elevation-request`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Remediation approval requires exactly one target device',
+    });
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects elevation requests when the target device is outside site scope', async () => {
+    currentPermissions = { allowedSiteIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'] };
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted', riskTier: 'high' });
+    mockDeviceLoad({
+      id: baseSuggestion.deviceId,
+      orgId: baseSuggestion.orgId,
+      siteId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/elevation-request`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Target device not found or access denied' });
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects existing linked elevation requests for another target device', async () => {
+    const elevationRequestId = '88888888-8888-4888-8888-888888888888';
+    mockSuggestionLoad({
+      ...baseSuggestion,
+      status: 'accepted',
+      riskTier: 'high',
+      elevationRequestId,
+    });
+    mockDeviceLoad();
+    mockElevationLoad({
+      id: elevationRequestId,
+      orgId: baseSuggestion.orgId,
+      deviceId: '77777777-7777-4777-8777-777777777777',
+      status: 'pending',
+      expiresAt: null,
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/elevation-request`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Elevation request must target the suggested device' });
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
   });
 
   it('rejects execution status without a linked execution rail', async () => {
