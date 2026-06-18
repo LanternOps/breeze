@@ -349,7 +349,11 @@ export async function enqueueAlertCorrelation(options: {
   orgId: string;
   deviceId: string;
   windowMinutes?: number;
-}): Promise<string> {
+}): Promise<string | null> {
+  if (!(await shouldProduceMlOutput(options.orgId, 'ml.alert_correlation.enabled'))) {
+    return null;
+  }
+
   const queue = getAlertCorrelationQueue();
   const jobId = buildAlertCorrelationJobId(options.orgId, options.deviceId);
 

@@ -103,9 +103,11 @@ describe('alert correlation queue helpers', () => {
   it('uses a stable BullMQ job id per org/device debounce slot', async () => {
     const jobId = buildAlertCorrelationJobId('org-1', 'device-1');
 
-    await enqueueAlertCorrelation({ orgId: 'org-1', deviceId: 'device-1' });
+    const queuedJobId = await enqueueAlertCorrelation({ orgId: 'org-1', deviceId: 'device-1' });
 
     expect(jobId).toMatch(/^alert-correlation-org-1-device-1-[a-z0-9]+$/);
+    expect(queuedJobId).toBe('queued-correlation-job');
+    expect(shouldProduceMlOutputMock).toHaveBeenCalledWith('org-1', 'ml.alert_correlation.enabled');
     expect(addMock).toHaveBeenCalledWith(
       'correlate-device-alerts',
       expect.objectContaining({ orgId: 'org-1', deviceId: 'device-1' }),
@@ -122,6 +124,17 @@ describe('alert correlation queue helpers', () => {
     const jobId = await enqueueAlertCorrelation({ orgId: 'org-1', deviceId: 'device-1' });
 
     expect(jobId).toBe('existing-correlation-job');
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses enqueue work when alert correlation is disabled for the org', async () => {
+    shouldProduceMlOutputMock.mockResolvedValue(false);
+
+    const jobId = await enqueueAlertCorrelation({ orgId: 'org-1', deviceId: 'device-1' });
+
+    expect(jobId).toBeNull();
+    expect(shouldProduceMlOutputMock).toHaveBeenCalledWith('org-1', 'ml.alert_correlation.enabled');
+    expect(getJobMock).not.toHaveBeenCalled();
     expect(addMock).not.toHaveBeenCalled();
   });
 
