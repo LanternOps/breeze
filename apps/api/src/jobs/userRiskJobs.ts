@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 
 import * as dbModule from '../db';
 import { organizationUsers } from '../db/schema';
@@ -98,6 +99,28 @@ function sanitizeUserRiskSignalEventInput(
     description: truncateUserRiskString(input.description, USER_RISK_DESCRIPTION_MAX_LEN),
     details: sanitizeUserRiskDetails(input.details),
   };
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function buildUserRiskSignalEventJobId(input: Omit<ProcessSignalEventJobData, 'type' | 'queuedAt'>): string {
+  const sanitized = sanitizeUserRiskSignalEventInput(input);
+  const fingerprint = createHash('sha256')
+    .update(stableJson(sanitized))
+    .digest('hex')
+    .slice(0, 24);
+  return `user-risk-signal:${sanitized.orgId}:${sanitized.userId}:${fingerprint}`;
 }
 
 export function getUserRiskQueue(): Queue<UserRiskJobData> {
@@ -349,6 +372,18 @@ export async function triggerUserRiskRecompute(orgId: string): Promise<string> {
 export async function enqueueUserRiskSignalEvent(input: Omit<ProcessSignalEventJobData, 'type' | 'queuedAt'>): Promise<string> {
   const queue = getUserRiskQueue();
   const sanitized = sanitizeUserRiskSignalEventInput(input);
+  const jobId = buildUserRiskSignalEventJobId(sanitized);
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[UserRiskJobs] Failed to remove stale signal-event job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'process-signal-event',
     {
@@ -357,6 +392,7 @@ export async function enqueueUserRiskSignalEvent(input: Omit<ProcessSignalEventJ
       queuedAt: new Date().toISOString()
     },
     {
+      jobId,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 200 }
     }

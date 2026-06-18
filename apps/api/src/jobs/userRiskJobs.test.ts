@@ -57,6 +57,7 @@ vi.mock('../services/mlFeatureFlags', () => ({
 }));
 
 import {
+  buildUserRiskSignalEventJobId,
   createUserRiskWorker,
   enqueueUserRiskSignalEvent,
   shutdownUserRiskJobs,
@@ -163,6 +164,61 @@ describe('triggerUserRiskRecompute', () => {
     expect(queued.eventType).toHaveLength(128);
     expect(queued.description).toHaveLength(1024);
     expect(queued.details).toBeUndefined();
+    expect(addMock.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+      jobId: expect.stringMatching(/^user-risk-signal:org-1:user-1:[a-f0-9]{24}$/),
+    }));
+  });
+
+  it('uses a stable BullMQ job id for signal-event ingestion', async () => {
+    const input = {
+      orgId: 'org-1',
+      userId: 'user-1',
+      eventType: 'suspicious_login',
+      severity: 'high' as const,
+      scoreImpact: 12,
+      description: 'Suspicious login',
+      details: { ip: '203.0.113.10', signals: ['new_geo', 'off_hours'] },
+      occurredAt: '2026-03-31T12:00:00.000Z',
+    };
+
+    const first = buildUserRiskSignalEventJobId(input);
+    const second = buildUserRiskSignalEventJobId({
+      ...input,
+      details: { signals: ['new_geo', 'off_hours'], ip: '203.0.113.10' },
+    });
+
+    expect(first).toBe(second);
+    await enqueueUserRiskSignalEvent(input);
+
+    expect(getJobMock).toHaveBeenCalledWith(first);
+    expect(addMock).toHaveBeenCalledWith(
+      'process-signal-event',
+      expect.objectContaining({
+        type: 'process-signal-event',
+        orgId: 'org-1',
+        userId: 'user-1',
+        eventType: 'suspicious_login',
+      }),
+      expect.objectContaining({ jobId: first }),
+    );
+  });
+
+  it('reuses an active signal-event job with the same fingerprint', async () => {
+    getJobMock.mockResolvedValue({
+      id: 'existing-signal-job',
+      getState: vi.fn().mockResolvedValue('active'),
+    });
+
+    const jobId = await enqueueUserRiskSignalEvent({
+      orgId: 'org-1',
+      userId: 'user-1',
+      eventType: 'suspicious_login',
+      description: 'Suspicious login',
+      occurredAt: '2026-03-31T12:00:00.000Z',
+    });
+
+    expect(jobId).toBe('existing-signal-job');
+    expect(addMock).not.toHaveBeenCalled();
   });
 
   it('skips scheduled org recompute output when user-risk v0 is disabled', async () => {
