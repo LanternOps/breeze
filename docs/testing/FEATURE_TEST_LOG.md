@@ -4,6 +4,33 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Quotes/Proposals Phase 3 (expiry + accept→pay) — PR #1483 — local Docker + Playwright — 2026-06-18
+
+**Branch:** `feat/quotes-proposals-phase3` (merged onto main w/ #1474 portal-deploy)
+**Stack:** full local Docker (`-p breeze-phase3`, dev override) behind Caddy on `http://localhost`; **portal rebuilt in PRODUCTION mode** (`breeze-portal:prodlocal`, `astro build` + node) and run on the breeze network — the dev portal (`astro dev`) can't be browser-tested because its hardened CSP `script-src 'self'` blocks Astro's dev un-hashed inline hydration scripts and on-demand Vite deps 504 through Caddy (same dev-only limitation noted for #1474).
+**Tested by:** Claude
+**Result:** PASS for everything exercisable locally. The live "Pay now" → Stripe Checkout redirect is **NOT testable here** — the platform's Stripe test account is not Connect-enabled (`stripe_connect_accounts` connected = 0; `accounts.create` → "you can only create new accounts if you've signed up for Connect"). Pay wiring verified by integration tests + the graceful no-Stripe path below.
+
+### What was tested (Playwright MCP, http://localhost)
+- [x] **Public proposal renders** (prod portal, SSR + hydrated): `/portal/quote/<token>` → Proposal Q-2026-0003, "Onboarding setup" line, One-time/Total $500.00, typed-signature accept form. 0 console errors on the prod build.
+- [x] **Accept → convert → auto-issue** (the headline Phase 3 flow): typed "Casey Customer", clicked **Accept & sign** → "Thank you — your acceptance has been recorded." DB: quote → `converted` + `accepted_at`; converted invoice **auto-issued** `status=sent`, **INV-2026-0001**, total/balance $500.00; acceptance row signer "Casey Customer" + 64-char `quote_sha256` + jti.
+- [x] **Graceful no-Stripe degradation**: with no connected account the accept returns `payUrl:null` + `payDeferred:false`, so the portal shows the plain thank-you and **no "Pay now" button** (correct — STRIPE_NOT_CONNECTED is the benign path, not a deferral).
+- [x] **Read-time expiry guard (browser)**: a quote back-dated to `expiry_date=2020-01-01`, clicked Accept → **"This quote has expired and can no longer be accepted"** (410 QUOTE_EXPIRED); DB confirms it stayed un-converted, 0 acceptances, 0 invoices.
+- [x] **BullMQ expiry sweep (live)**: the back-dated quote auto-transitioned `sent → expired` in the running stack (the `quote-expiry-reaper` job is registered and ran), independent of the read-time guard.
+- [x] **MSP dashboard (web)**: `/billing/quotes` lists all statuses correctly — Q-0004 **Expired** $300, Q-0003 **Converted** $500, Q-0002/0001 **Sent**, 2 Drafts; status filter offers Expired + Converted.
+- [x] **Loop closed on MSP side**: `/billing/invoices` shows the auto-issued **INV-2026-0001** — Issued 6/18, Due 7/18 (30-day terms), $500.00 balance, status **Issued**, "$500.00 Outstanding / 1 open".
+
+### Evidence
+- Screenshot: `phase3-quotes-list.png` (dashboard quotes list with Expired/Converted/Sent/Draft).
+- DB: quote 363a1f97 `converted` → INV-2026-0001 (`sent`, $500); quote 333a2969 `expired`, no invoice.
+
+### Issues Found
+- **None in the feature.** The only non-exercisable path is the live Stripe Checkout redirect, blocked by the environment (Stripe account lacks Connect), not by the code. The pay wiring (`createQuotePayLink` → `createInvoicePayLink`, STRIPE_NOT_CONNECTED guard, public `payUrl`/`payDeferred`) is covered by the 31 integration tests (Stripe mocked).
+
+### Notes
+- Portal must be a **production** build for browser E2E (dev-mode CSP/Vite limitation). The compose dev portal was swapped for `breeze-portal:prodlocal` (manual `docker run` on the `breeze` network, alias `portal`).
+- The original `breeze` dev stack (another session's `fix/1459` checkout) was stopped, not destroyed — its volumes persist; `docker compose up -d` from `/Users/toddhebebrand/breeze` restores it. The Phase 3 stack runs as project `breeze-phase3` with its own volumes.
+
 ## Customer Portal deploy under `/portal` (PR #1474) — local Docker + Playwright — 2026-06-17
 
 **Branch:** `feat/portal-deploy-c-prefix`
