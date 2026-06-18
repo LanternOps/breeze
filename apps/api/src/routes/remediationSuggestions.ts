@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
-import { devices, mlFeedbackEvents, remediationSuggestions, scriptExecutions } from '../db/schema';
+import { devices, elevationRequests, mlFeedbackEvents, remediationSuggestions, scriptExecutions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
@@ -75,6 +75,56 @@ function normalizeSuggestionParameters(value: unknown): Record<string, unknown> 
 function singleTargetDeviceId(row: Pick<typeof remediationSuggestions.$inferSelect, 'deviceId' | 'targetDeviceIds'>): string | null {
   if (row.targetDeviceIds.length === 1) return row.targetDeviceIds[0] ?? null;
   if (row.targetDeviceIds.length === 0) return row.deviceId;
+  return null;
+}
+
+function requiresExecutionApproval(riskTier: string | null | undefined): boolean {
+  return riskTier === 'high' || riskTier === 'critical';
+}
+
+async function validateRemediationExecutionApproval(
+  existing: typeof remediationSuggestions.$inferSelect,
+  deviceId: string,
+): Promise<string | null> {
+  if (!requiresExecutionApproval(existing.riskTier)) {
+    return null;
+  }
+
+  if (!existing.elevationRequestId) {
+    return 'High-risk remediation execution requires an approved elevation request';
+  }
+
+  const [elevation] = await db
+    .select({
+      id: elevationRequests.id,
+      orgId: elevationRequests.orgId,
+      deviceId: elevationRequests.deviceId,
+      status: elevationRequests.status,
+      expiresAt: elevationRequests.expiresAt,
+    })
+    .from(elevationRequests)
+    .where(and(
+      eq(elevationRequests.id, existing.elevationRequestId),
+      eq(elevationRequests.orgId, existing.orgId),
+    ))
+    .limit(1);
+
+  if (!elevation) {
+    return 'Elevation request not found or access denied';
+  }
+
+  if (elevation.deviceId !== deviceId) {
+    return 'Elevation request must target the suggested device';
+  }
+
+  if (!['approved', 'auto_approved', 'actuating'].includes(elevation.status)) {
+    return 'Elevation request must be approved before execution';
+  }
+
+  if (elevation.expiresAt && elevation.expiresAt.getTime() < Date.now()) {
+    return 'Elevation request has expired';
+  }
+
   return null;
 }
 
@@ -547,6 +597,11 @@ remediationSuggestionRoutes.post(
       return c.json({ error: 'Remediation script execution requires exactly one target device' }, 400);
     }
 
+    const approvalError = await validateRemediationExecutionApproval(existing, deviceId);
+    if (approvalError) {
+      return c.json({ error: approvalError }, 403);
+    }
+
     const execution = await executeScriptOnDevices({
       scriptId: existing.scriptId,
       deviceIds: [deviceId],
@@ -598,6 +653,8 @@ remediationSuggestionRoutes.post(
         targetType: updated.targetType,
         scriptId: updated.scriptId,
         scriptExecutionId: updated.scriptExecutionId,
+        elevationRequestId: updated.elevationRequestId,
+        riskTier: updated.riskTier,
       },
     });
 
@@ -613,6 +670,8 @@ remediationSuggestionRoutes.post(
         targetType: updated.targetType,
         scriptId: updated.scriptId,
         scriptExecutionId,
+        elevationRequestId: updated.elevationRequestId,
+        riskTier: updated.riskTier,
       },
     });
 

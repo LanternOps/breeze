@@ -32,6 +32,13 @@ vi.mock('../db/schema', () => ({
     eventType: 'mlFeedbackEvents.eventType',
     occurredAt: 'mlFeedbackEvents.occurredAt',
   },
+  elevationRequests: {
+    id: 'elevationRequests.id',
+    orgId: 'elevationRequests.orgId',
+    deviceId: 'elevationRequests.deviceId',
+    status: 'elevationRequests.status',
+    expiresAt: 'elevationRequests.expiresAt',
+  },
   remediationSuggestions: {
     id: 'remediationSuggestions.id',
     orgId: 'remediationSuggestions.orgId',
@@ -150,6 +157,16 @@ function mockScriptExecutionLoad(execution: Record<string, unknown> | undefined)
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(execution ? [execution] : []),
+      }),
+    }),
+  });
+}
+
+function mockElevationLoad(elevation: Record<string, unknown> | undefined) {
+  dbMocks.selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(elevation ? [elevation] : []),
       }),
     }),
   });
@@ -440,6 +457,116 @@ describe('remediation suggestion routes', () => {
     expect(body.data.status).toBe('executed');
     expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
     expect(body.execution.executions[0].executionId).toBe(scriptExecutionId);
+  });
+
+  it('blocks high-risk server-side execution without an approved elevation request', async () => {
+    mockSuggestionLoad({
+      ...baseSuggestion,
+      status: 'accepted',
+      riskTier: 'high',
+      elevationRequestId: null,
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: 'High-risk remediation execution requires an approved elevation request',
+    });
+    expect(dbMocks.executeScriptOnDevicesMock).not.toHaveBeenCalled();
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks high-risk server-side execution when the linked elevation is not visible in the same org', async () => {
+    mockSuggestionLoad({
+      ...baseSuggestion,
+      status: 'accepted',
+      riskTier: 'critical',
+      elevationRequestId: '88888888-8888-4888-8888-888888888888',
+    });
+    mockElevationLoad(undefined);
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Elevation request not found or access denied' });
+    expect(dbMocks.executeScriptOnDevicesMock).not.toHaveBeenCalled();
+  });
+
+  it('executes high-risk script suggestions only with an approved same-device elevation request', async () => {
+    const elevationRequestId = '88888888-8888-4888-8888-888888888888';
+    const accepted = {
+      ...baseSuggestion,
+      status: 'accepted',
+      riskTier: 'high',
+      elevationRequestId,
+    };
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+
+    mockSuggestionLoad(accepted);
+    mockElevationLoad({
+      id: elevationRequestId,
+      orgId: baseSuggestion.orgId,
+      deviceId: baseSuggestion.deviceId,
+      status: 'approved',
+      expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+    });
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
+      ok: true,
+      batchId: null,
+      scriptId: baseSuggestion.scriptId,
+      script: { id: baseSuggestion.scriptId, name: 'Disk Cleanup' },
+      devicesTargeted: 1,
+      maintenanceSuppressedDeviceIds: [],
+      executions: [{
+        executionId: scriptExecutionId,
+        deviceId: baseSuggestion.deviceId,
+        commandId: '77777777-7777-4777-8777-777777777777',
+      }],
+      status: 'queued',
+      triggerType: 'manual',
+      runAs: 'system',
+      auditOrgId: baseSuggestion.orgId,
+    });
+    dbMocks.updateMock.mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            ...accepted,
+            status: 'executed',
+            scriptExecutionId,
+            executedBy: 'user-1',
+            executedAt: new Date('2026-06-18T12:10:00.000Z'),
+          }]),
+        }),
+      }),
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.executeScriptOnDevicesMock).toHaveBeenCalledWith(expect.objectContaining({
+      scriptId: baseSuggestion.scriptId,
+      deviceIds: [baseSuggestion.deviceId],
+    }));
+    expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'suggestion.executed',
+      metadata: expect.objectContaining({
+        route: 'remediation_suggestions.execute',
+        elevationRequestId,
+        riskTier: 'high',
+        scriptExecutionId,
+      }),
+    }));
   });
 
   it('rejects server-side execution before acceptance', async () => {
