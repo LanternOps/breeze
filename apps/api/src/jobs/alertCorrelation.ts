@@ -2,7 +2,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../db';
-import { alertCorrelations, alerts } from '../db/schema';
+import { alertCorrelations, alertRules, alerts, devices } from '../db/schema';
 import { persistAlertCorrelationGroupsForAlerts } from '../services/alertCorrelationGroups';
 import { isReusableState } from '../services/bullmqUtils';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
@@ -14,6 +14,22 @@ const DEDUPE_WINDOW_MS = 30 * 1000;
 const DEFAULT_DELAY_MS = 5 * 1000;
 const DEFAULT_WINDOW_MINUTES = 30;
 const MAX_ALERTS_PER_DEVICE_PASS = 50;
+
+type CorrelatableAlert = {
+  id: string;
+  triggeredAt: Date;
+  ruleId: string | null;
+  templateId: string | null;
+  configPolicyId: string | null;
+  configItemName: string | null;
+  siteId: string | null;
+};
+
+type AlertCorrelationEvidenceType =
+  | 'same_rule_temporal'
+  | 'same_template_temporal'
+  | 'same_config_policy_item_temporal'
+  | 'same_device_temporal';
 
 export type AlertCorrelationJobData = {
   orgId: string;
@@ -37,6 +53,57 @@ export function getAlertCorrelationQueue(): Queue<AlertCorrelationJobData> {
 export function buildAlertCorrelationJobId(orgId: string, deviceId: string, now = Date.now()): string {
   const slot = Math.floor(now / DEDUPE_WINDOW_MS).toString(36);
   return ['alert-correlation', orgId, deviceId, slot].join('-');
+}
+
+export function buildAlertCorrelationEvidence(options: {
+  older: CorrelatableAlert;
+  newer: CorrelatableAlert;
+  deviceId: string;
+  timeDiffMs: number;
+  maxWindowMs: number;
+}): {
+  correlationType: AlertCorrelationEvidenceType;
+  confidence: number;
+  metadata: Record<string, unknown>;
+} {
+  const baseConfidence = Math.round((1 - options.timeDiffMs / options.maxWindowMs) * 100) / 100;
+  let correlationType: AlertCorrelationEvidenceType = 'same_device_temporal';
+  let confidence = baseConfidence;
+  const evidence: string[] = ['same_device', 'time_window'];
+
+  if (options.older.ruleId && options.older.ruleId === options.newer.ruleId) {
+    correlationType = 'same_rule_temporal';
+    confidence = Math.min(0.99, Math.round((confidence + 0.15) * 100) / 100);
+    evidence.push('same_rule');
+  } else if (options.older.templateId && options.older.templateId === options.newer.templateId) {
+    correlationType = 'same_template_temporal';
+    confidence = Math.min(0.99, Math.round((confidence + 0.1) * 100) / 100);
+    evidence.push('same_template');
+  } else if (
+    options.older.configPolicyId &&
+    options.older.configPolicyId === options.newer.configPolicyId &&
+    options.older.configItemName &&
+    options.older.configItemName === options.newer.configItemName
+  ) {
+    correlationType = 'same_config_policy_item_temporal';
+    confidence = Math.min(0.99, Math.round((confidence + 0.1) * 100) / 100);
+    evidence.push('same_config_policy_item');
+  }
+
+  return {
+    correlationType,
+    confidence,
+    metadata: {
+      timeDiffMinutes: Math.round(options.timeDiffMs / 60000),
+      deviceId: options.deviceId,
+      siteId: options.newer.siteId ?? options.older.siteId,
+      ruleId: options.newer.ruleId ?? options.older.ruleId,
+      templateId: options.newer.templateId ?? options.older.templateId,
+      configPolicyId: options.newer.configPolicyId ?? options.older.configPolicyId,
+      configItemName: options.newer.configItemName ?? options.older.configItemName,
+      evidence,
+    },
+  };
 }
 
 export async function enqueueAlertCorrelation(options: {
@@ -90,8 +157,18 @@ export async function runAlertCorrelationForDevice(options: {
   const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
 
   const recentAlerts = await db
-    .select({ id: alerts.id, triggeredAt: alerts.triggeredAt })
+    .select({
+      id: alerts.id,
+      triggeredAt: alerts.triggeredAt,
+      ruleId: alerts.ruleId,
+      templateId: alertRules.templateId,
+      configPolicyId: alerts.configPolicyId,
+      configItemName: alerts.configItemName,
+      siteId: devices.siteId,
+    })
     .from(alerts)
+    .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
+    .innerJoin(devices, eq(alerts.deviceId, devices.id))
     .where(
       and(
         eq(alerts.deviceId, options.deviceId),
@@ -135,7 +212,14 @@ export async function runAlertCorrelationForDevice(options: {
       if (linkedPairs.has(pairKey)) continue;
 
       const timeDiffMs = Math.abs(newer.triggeredAt.getTime() - older.triggeredAt.getTime());
-      const confidence = Math.round((1 - timeDiffMs / maxWindowMs) * 100) / 100;
+      const evidence = buildAlertCorrelationEvidence({
+        older,
+        newer,
+        deviceId: options.deviceId,
+        timeDiffMs,
+        maxWindowMs,
+      });
+      const confidence = evidence.confidence;
       if (confidence < 0.3) continue;
 
       await db
@@ -143,12 +227,9 @@ export async function runAlertCorrelationForDevice(options: {
         .values({
           parentAlertId: older.id,
           childAlertId: newer.id,
-          correlationType: 'same_device_temporal',
+          correlationType: evidence.correlationType,
           confidence: String(confidence),
-          metadata: {
-            timeDiffMinutes: Math.round(timeDiffMs / 60000),
-            deviceId: options.deviceId,
-          },
+          metadata: evidence.metadata,
         });
 
       linkedPairs.add(pairKey);

@@ -53,12 +53,24 @@ vi.mock('../db/schema', () => ({
 }));
 
 import {
+  buildAlertCorrelationEvidence,
   buildAlertCorrelationJobId,
   enqueueAlertCorrelation,
   initializeAlertCorrelationWorker,
   runAlertCorrelationForDevice,
   shutdownAlertCorrelationWorker,
 } from './alertCorrelation';
+
+const alertAt = (overrides: Partial<Parameters<typeof buildAlertCorrelationEvidence>[0]['newer']>) => ({
+  id: 'alert-1',
+  triggeredAt: new Date('2026-06-18T12:00:00.000Z'),
+  ruleId: null,
+  templateId: null,
+  configPolicyId: null,
+  configItemName: null,
+  siteId: 'site-1',
+  ...overrides,
+});
 
 describe('alert correlation queue helpers', () => {
   beforeEach(async () => {
@@ -119,5 +131,66 @@ describe('alert correlation queue helpers', () => {
     await initializeAlertCorrelationWorker();
 
     expect(attachWorkerObservabilityMock).toHaveBeenCalledWith(expect.anything(), 'alertCorrelationWorker');
+  });
+
+  it('builds stronger evidence for alerts from the same rule', () => {
+    const evidence = buildAlertCorrelationEvidence({
+      older: alertAt({ id: 'older', ruleId: 'rule-1', templateId: 'template-1' }),
+      newer: alertAt({ id: 'newer', ruleId: 'rule-1', templateId: 'template-1' }),
+      deviceId: 'device-1',
+      timeDiffMs: 5 * 60 * 1000,
+      maxWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(evidence).toMatchObject({
+      correlationType: 'same_rule_temporal',
+      confidence: 0.98,
+      metadata: {
+        deviceId: 'device-1',
+        siteId: 'site-1',
+        ruleId: 'rule-1',
+        templateId: 'template-1',
+        evidence: ['same_device', 'time_window', 'same_rule'],
+      },
+    });
+  });
+
+  it('falls back to same-template evidence when rule ids differ', () => {
+    const evidence = buildAlertCorrelationEvidence({
+      older: alertAt({ id: 'older', ruleId: 'rule-1', templateId: 'template-1' }),
+      newer: alertAt({ id: 'newer', ruleId: 'rule-2', templateId: 'template-1' }),
+      deviceId: 'device-1',
+      timeDiffMs: 6 * 60 * 1000,
+      maxWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(evidence).toMatchObject({
+      correlationType: 'same_template_temporal',
+      confidence: 0.9,
+      metadata: {
+        templateId: 'template-1',
+        evidence: ['same_device', 'time_window', 'same_template'],
+      },
+    });
+  });
+
+  it('captures config-policy item evidence for policy alerts', () => {
+    const evidence = buildAlertCorrelationEvidence({
+      older: alertAt({ id: 'older', configPolicyId: 'policy-1', configItemName: 'disk-low' }),
+      newer: alertAt({ id: 'newer', configPolicyId: 'policy-1', configItemName: 'disk-low' }),
+      deviceId: 'device-1',
+      timeDiffMs: 9 * 60 * 1000,
+      maxWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(evidence).toMatchObject({
+      correlationType: 'same_config_policy_item_temporal',
+      confidence: 0.8,
+      metadata: {
+        configPolicyId: 'policy-1',
+        configItemName: 'disk-low',
+        evidence: ['same_device', 'time_window', 'same_config_policy_item'],
+      },
+    });
   });
 });
