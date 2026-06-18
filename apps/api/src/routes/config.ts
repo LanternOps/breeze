@@ -1,8 +1,16 @@
 import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { cfAccessTrustEnabled } from '../config/env';
 import { envFlag } from '../utils/envFlag';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { resolveAllMlFeatureFlagsForOrg } from '../services/mlFeatureFlags';
 
 export const configRoutes = new Hono();
+
+const mlFeatureFlagsQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+});
 
 // GET /api/v1/config — returns feature flags for the UI. No auth required;
 // flags are derived purely from server env, not user state, so self-hosted
@@ -28,3 +36,25 @@ configRoutes.get('/', (c) => {
     },
   });
 });
+
+configRoutes.get(
+  '/ml-feature-flags',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', mlFeatureFlagsQuerySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const query = c.req.valid('query');
+    const orgId = query.orgId ?? auth.orgId;
+
+    if (!orgId) {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Organization not found or access denied' }, 403);
+    }
+
+    const flags = await resolveAllMlFeatureFlagsForOrg(orgId);
+    return c.json({ orgId, mlFeatureFlags: flags, data: flags });
+  }
+);

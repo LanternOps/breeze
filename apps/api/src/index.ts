@@ -667,7 +667,7 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 api.use('*', async (c, next) => {
   const path = c.req.path;
   if (path.startsWith('/api/v1/auth')) return next();
-  if (path === '/api/v1/config' || path.startsWith('/api/v1/config/')) return next();
+  if (path === '/api/v1/config' || path === '/api/v1/config/') return next();
   if (path.startsWith('/api/v1/users/me')) return next();
   if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return next();
   if (path.startsWith('/api/v1/agents/')) return next();

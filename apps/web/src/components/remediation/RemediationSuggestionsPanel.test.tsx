@@ -24,6 +24,17 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
+const remediationFlags = (enabled: boolean) => ({
+  mlFeatureFlags: {
+    'ml.remediation_suggestions.enabled': {
+      flag: 'ml.remediation_suggestions.enabled',
+      enabled,
+      defaultEnabled: false,
+      source: 'org_settings',
+    },
+  },
+});
+
 const suggestion = {
   id: 'suggestion-1',
   sourceType: 'anomaly',
@@ -51,7 +62,14 @@ describe('RemediationSuggestionsPanel', () => {
   });
 
   it('lists suggested fixes for a source', async () => {
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [suggestion] }));
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [suggestion] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
@@ -62,10 +80,21 @@ describe('RemediationSuggestionsPanel', () => {
   });
 
   it('generates suggestions and accepts a suggestion through runAction', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(makeJsonResponse({ data: [] }))
-      .mockResolvedValueOnce(makeJsonResponse({ data: [suggestion] }, true, 201))
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...suggestion, status: 'accepted' } }));
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/remediation-suggestions/generate' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ data: [suggestion] }, true, 201));
+      }
+      if (url === '/remediation-suggestions/suggestion-1' && method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({ data: { ...suggestion, status: 'accepted' } }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
@@ -102,9 +131,18 @@ describe('RemediationSuggestionsPanel', () => {
       status: 'executed',
       scriptExecutionId: '33333333-3333-4333-8333-333333333333',
     };
-    fetchWithAuthMock
-      .mockResolvedValueOnce(makeJsonResponse({ data: [accepted] }))
-      .mockResolvedValueOnce(makeJsonResponse({ data: executed }));
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [accepted] }));
+      }
+      if (url === '/remediation-suggestions/suggestion-1/execute' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ data: executed }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
@@ -123,20 +161,45 @@ describe('RemediationSuggestionsPanel', () => {
   });
 
   it('does not show execute for multi-device script suggestions', async () => {
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({
-      data: [{
-        ...suggestion,
-        status: 'accepted',
-        targetDeviceIds: [
-          '22222222-2222-4222-8222-222222222222',
-          '33333333-3333-4333-8333-333333333333',
-        ],
-      }],
-    }));
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({
+          data: [{
+            ...suggestion,
+            status: 'accepted',
+            targetDeviceIds: [
+              '22222222-2222-4222-8222-222222222222',
+              '33333333-3333-4333-8333-333333333333',
+            ],
+          }],
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
     await screen.findByText('Disk Cleanup');
     expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
+  });
+
+  it('labels and disables generation when suggested fixes are disabled', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(false)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    const disabledButton = await screen.findByRole('button', { name: /suggestions disabled/i });
+    expect(disabledButton).toBeDisabled();
+    fireEvent.click(disabledButton);
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/remediation-suggestions/generate', expect.anything());
   });
 });

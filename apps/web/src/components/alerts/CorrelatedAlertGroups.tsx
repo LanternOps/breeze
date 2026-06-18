@@ -19,6 +19,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import type { AlertSeverity, AlertStatus } from './AlertList';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
+import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type AlertItem = {
   id: string;
@@ -121,6 +122,7 @@ function evidenceLabel(source: string) {
 }
 
 export default function CorrelatedAlertGroups() {
+  const mlFlags = useMlFeatureFlags();
   const [groups, setGroups] = useState<AlertGroup[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [rcaByGroup, setRcaByGroup] = useState<Record<string, RcaResult | undefined>>({});
@@ -138,6 +140,7 @@ export default function CorrelatedAlertGroups() {
       : groups.reduce((sum, group) => sum + (group.noiseReductionPercent ?? 0), 0) / groups.length;
     return { incidentCount, memberCount, suppressedAlerts, avgReduction };
   }, [groups]);
+  const rcaDisabled = mlFlags.isDisabled('ml.rca.enabled');
 
   const fetchGroups = useCallback(async () => {
     setIsLoading(true);
@@ -388,11 +391,12 @@ export default function CorrelatedAlertGroups() {
                       <button
                         type="button"
                         onClick={() => void handleExplainGroup(group)}
-                        disabled={isBusy || isExplaining}
+                        disabled={isBusy || isExplaining || rcaDisabled}
+                        title={rcaDisabled ? 'RCA is disabled for this organization' : undefined}
                         className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
                       >
                         {isExplaining ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Brain className="h-3.5 w-3.5" />}
-                        Explain incident
+                        {rcaDisabled ? 'RCA disabled' : 'Explain incident'}
                       </button>
                       <button
                         type="button"

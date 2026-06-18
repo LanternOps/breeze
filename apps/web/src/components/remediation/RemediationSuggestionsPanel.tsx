@@ -3,6 +3,7 @@ import { CheckCircle, PlayCircle, RefreshCw, Sparkles, XCircle } from 'lucide-re
 
 import { handleActionError, runAction } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
+import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type SuggestionStatus = 'suggested' | 'accepted' | 'edited' | 'rejected' | 'executed' | 'failed';
 
@@ -62,6 +63,7 @@ function canExecuteScriptSuggestion(suggestion: RemediationSuggestion): boolean 
 }
 
 export default function RemediationSuggestionsPanel({ sourceType, sourceId }: RemediationSuggestionsPanelProps) {
+  const mlFlags = useMlFeatureFlags();
   const [suggestions, setSuggestions] = useState<RemediationSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -89,7 +91,10 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
     void fetchSuggestions();
   }, [fetchSuggestions]);
 
+  const remediationSuggestionsDisabled = mlFlags.isDisabled('ml.remediation_suggestions.enabled');
+
   async function generateSuggestions() {
+    if (remediationSuggestionsDisabled) return;
     setGenerating(true);
     try {
       const result = await runAction<{ data?: RemediationSuggestion[]; skipped?: boolean }>({
@@ -181,12 +186,13 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
           </button>
           <button
             type="button"
-            disabled={generating}
+            disabled={generating || remediationSuggestionsDisabled}
             onClick={() => void generateSuggestions()}
+            title={remediationSuggestionsDisabled ? 'Suggested fixes are disabled for this organization' : undefined}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Sparkles className="h-4 w-4" />
-            Generate
+            {remediationSuggestionsDisabled ? 'Suggestions disabled' : 'Generate'}
           </button>
         </div>
       </div>

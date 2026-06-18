@@ -108,10 +108,25 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
-function mockGroupsResponse() {
+const mlFlags = (rcaEnabled: boolean) => ({
+  mlFeatureFlags: {
+    'ml.rca.enabled': {
+      flag: 'ml.rca.enabled',
+      enabled: rcaEnabled,
+      defaultEnabled: false,
+      source: 'org_settings',
+    },
+  },
+});
+
+function mockGroupsResponse(options: { rcaEnabled?: boolean } = {}) {
+  const rcaEnabled = options.rcaEnabled ?? true;
   fetchMock.mockImplementation((input, init) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
+    if (url === '/config/ml-feature-flags' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse(mlFlags(rcaEnabled)));
+    }
     if (url === '/alerts/correlations' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({ groups: [groupPayload] }));
     }
@@ -190,6 +205,22 @@ describe('CorrelatedAlertGroups', () => {
         })
       );
     });
+  });
+
+  it('labels and disables RCA when the feature is disabled', async () => {
+    mockGroupsResponse({ rcaEnabled: false });
+
+    render(<CorrelatedAlertGroups />);
+
+    await screen.findAllByText('High CPU on SRV-01');
+    const disabledButton = await screen.findByRole('button', { name: /RCA disabled/i });
+    expect(disabledButton).toBeDisabled();
+    fireEvent.click(disabledButton);
+
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      `/alerts/correlations/${GROUP_ID}/explain`,
+      expect.anything(),
+    );
   });
 
   it('marks the correlations tab active on the correlations route', () => {
