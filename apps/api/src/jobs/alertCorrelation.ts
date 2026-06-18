@@ -1,8 +1,17 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../db';
-import { alertCorrelations, alertRules, alerts, devices } from '../db/schema';
+import {
+  alertCorrelations,
+  alertRules,
+  alerts,
+  devices,
+  logCorrelationRules,
+  logCorrelations,
+  type LogCorrelationAffectedDevice,
+  type LogCorrelationSampleLog,
+} from '../db/schema';
 import { persistAlertCorrelationGroupsForAlerts } from '../services/alertCorrelationGroups';
 import { isReusableState } from '../services/bullmqUtils';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
@@ -14,6 +23,7 @@ const DEDUPE_WINDOW_MS = 30 * 1000;
 const DEFAULT_DELAY_MS = 5 * 1000;
 const DEFAULT_WINDOW_MINUTES = 30;
 const MAX_ALERTS_PER_SITE_PASS = 50;
+const MAX_LOG_CORRELATIONS_PER_PASS = 25;
 
 type CorrelatableAlert = {
   id: string;
@@ -32,6 +42,30 @@ type AlertCorrelationEvidenceType =
   | 'same_config_policy_item_temporal'
   | 'same_site_temporal'
   | 'same_device_temporal';
+
+type RecentLogCorrelation = {
+  id: string;
+  ruleId: string;
+  ruleName: string;
+  severity: string;
+  pattern: string;
+  lastSeen: Date;
+  occurrences: number;
+  affectedDevices: LogCorrelationAffectedDevice[];
+  sampleLogs: LogCorrelationSampleLog[] | null;
+};
+
+type AlertCorrelationLogEvidence = {
+  evidenceType: 'shared_log_correlation' | 'related_log_correlation';
+  logCorrelationIds: string[];
+  logCorrelationRuleIds: string[];
+  logCorrelationRuleNames: string[];
+  logPatterns: string[];
+  logOccurrences: number;
+  logSeverity: string;
+  logSampleLogIds: string[];
+  logDeviceIds: string[];
+};
 
 export type AlertCorrelationJobData = {
   orgId: string;
@@ -63,6 +97,7 @@ export function buildAlertCorrelationEvidence(options: {
   deviceId: string;
   timeDiffMs: number;
   maxWindowMs: number;
+  logEvidence?: AlertCorrelationLogEvidence | null;
 }): {
   correlationType: AlertCorrelationEvidenceType;
   confidence: number;
@@ -93,21 +128,127 @@ export function buildAlertCorrelationEvidence(options: {
     evidence.push('same_config_policy_item');
   }
 
+  if (options.logEvidence) {
+    confidence = Math.min(
+      0.99,
+      Math.round((confidence + (options.logEvidence.evidenceType === 'shared_log_correlation' ? 0.1 : 0.05)) * 100) / 100
+    );
+    evidence.push(options.logEvidence.evidenceType);
+  }
+
+  const metadata: Record<string, unknown> = {
+    timeDiffMinutes: Math.round(options.timeDiffMs / 60000),
+    deviceId: options.deviceId,
+    parentDeviceId: options.older.deviceId,
+    childDeviceId: options.newer.deviceId,
+    siteId: options.newer.siteId ?? options.older.siteId,
+    ruleId: options.newer.ruleId ?? options.older.ruleId,
+    templateId: options.newer.templateId ?? options.older.templateId,
+    configPolicyId: options.newer.configPolicyId ?? options.older.configPolicyId,
+    configItemName: options.newer.configItemName ?? options.older.configItemName,
+    evidence,
+  };
+
+  if (options.logEvidence) {
+    Object.assign(metadata, {
+      logCorrelationIds: options.logEvidence.logCorrelationIds,
+      logCorrelationRuleIds: options.logEvidence.logCorrelationRuleIds,
+      logCorrelationRuleNames: options.logEvidence.logCorrelationRuleNames,
+      logPatterns: options.logEvidence.logPatterns,
+      logOccurrences: options.logEvidence.logOccurrences,
+      logSeverity: options.logEvidence.logSeverity,
+      logSampleLogIds: options.logEvidence.logSampleLogIds,
+      logDeviceIds: options.logEvidence.logDeviceIds,
+    });
+  }
+
   return {
     correlationType,
     confidence,
-    metadata: {
-      timeDiffMinutes: Math.round(options.timeDiffMs / 60000),
-      deviceId: options.deviceId,
-      parentDeviceId: options.older.deviceId,
-      childDeviceId: options.newer.deviceId,
-      siteId: options.newer.siteId ?? options.older.siteId,
-      ruleId: options.newer.ruleId ?? options.older.ruleId,
-      templateId: options.newer.templateId ?? options.older.templateId,
-      configPolicyId: options.newer.configPolicyId ?? options.older.configPolicyId,
-      configItemName: options.newer.configItemName ?? options.older.configItemName,
-      evidence,
-    },
+    metadata,
+  };
+}
+
+const severityRank: Record<string, number> = {
+  info: 1,
+  warning: 2,
+  error: 3,
+  critical: 4,
+};
+
+function addLimited(target: string[], value: string | null | undefined, max = 5): void {
+  if (!value || target.includes(value) || target.length >= max) return;
+  target.push(value);
+}
+
+function logCorrelationDeviceIds(correlation: RecentLogCorrelation): Set<string> {
+  const deviceIds = new Set<string>();
+  for (const device of Array.isArray(correlation.affectedDevices) ? correlation.affectedDevices : []) {
+    if (device.deviceId) deviceIds.add(device.deviceId);
+  }
+  for (const log of Array.isArray(correlation.sampleLogs) ? correlation.sampleLogs : []) {
+    if (log.deviceId) deviceIds.add(log.deviceId);
+  }
+  return deviceIds;
+}
+
+export function findAlertPairLogEvidence(options: {
+  older: CorrelatableAlert;
+  newer: CorrelatableAlert;
+  logCorrelations: RecentLogCorrelation[];
+}): AlertCorrelationLogEvidence | null {
+  const logCorrelationIds: string[] = [];
+  const logCorrelationRuleIds: string[] = [];
+  const logCorrelationRuleNames: string[] = [];
+  const logPatterns: string[] = [];
+  const logSampleLogIds: string[] = [];
+  const logDeviceIds: string[] = [];
+  let logOccurrences = 0;
+  let logSeverity = 'info';
+  let hasSharedCorrelation = false;
+
+  for (const correlation of options.logCorrelations) {
+    const deviceIds = logCorrelationDeviceIds(correlation);
+    const hasOlderDevice = deviceIds.has(options.older.deviceId);
+    const hasNewerDevice = deviceIds.has(options.newer.deviceId);
+    if (!hasOlderDevice && !hasNewerDevice) continue;
+
+    addLimited(logCorrelationIds, correlation.id);
+    addLimited(logCorrelationRuleIds, correlation.ruleId);
+    addLimited(logCorrelationRuleNames, correlation.ruleName);
+    addLimited(logPatterns, correlation.pattern);
+    logOccurrences += correlation.occurrences;
+    if ((severityRank[correlation.severity] ?? 0) > (severityRank[logSeverity] ?? 0)) {
+      logSeverity = correlation.severity;
+    }
+    for (const deviceId of deviceIds) {
+      if (deviceId === options.older.deviceId || deviceId === options.newer.deviceId) {
+        addLimited(logDeviceIds, deviceId);
+      }
+    }
+    for (const log of Array.isArray(correlation.sampleLogs) ? correlation.sampleLogs : []) {
+      if (log.deviceId === options.older.deviceId || log.deviceId === options.newer.deviceId) {
+        addLimited(logSampleLogIds, log.id);
+      }
+    }
+
+    if (options.older.deviceId !== options.newer.deviceId && hasOlderDevice && hasNewerDevice) {
+      hasSharedCorrelation = true;
+    }
+  }
+
+  if (logCorrelationIds.length === 0) return null;
+
+  return {
+    evidenceType: hasSharedCorrelation ? 'shared_log_correlation' : 'related_log_correlation',
+    logCorrelationIds,
+    logCorrelationRuleIds,
+    logCorrelationRuleNames,
+    logPatterns,
+    logOccurrences,
+    logSeverity,
+    logSampleLogIds,
+    logDeviceIds,
   };
 }
 
@@ -159,7 +300,8 @@ export async function runAlertCorrelationForDevice(options: {
   }
 
   const windowMinutes = options.windowMinutes ?? DEFAULT_WINDOW_MINUTES;
-  const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - windowMinutes * 60 * 1000);
   const [targetDevice] = await db
     .select({ siteId: devices.siteId })
     .from(devices)
@@ -217,6 +359,31 @@ export async function runAlertCorrelationForDevice(options: {
     existingLinks.map((link) => [link.parentAlertId, link.childAlertId].sort().join('|'))
   );
 
+  const recentLogCorrelations = await db
+    .select({
+      id: logCorrelations.id,
+      ruleId: logCorrelations.ruleId,
+      ruleName: logCorrelationRules.name,
+      severity: logCorrelationRules.severity,
+      pattern: logCorrelations.pattern,
+      lastSeen: logCorrelations.lastSeen,
+      occurrences: logCorrelations.occurrences,
+      affectedDevices: logCorrelations.affectedDevices,
+      sampleLogs: logCorrelations.sampleLogs,
+    })
+    .from(logCorrelations)
+    .innerJoin(logCorrelationRules, eq(logCorrelations.ruleId, logCorrelationRules.id))
+    .where(
+      and(
+        eq(logCorrelations.orgId, options.orgId),
+        eq(logCorrelations.status, 'active'),
+        gte(logCorrelations.lastSeen, windowStart),
+        lte(logCorrelations.firstSeen, windowEnd)
+      )
+    )
+    .orderBy(desc(logCorrelations.lastSeen))
+    .limit(MAX_LOG_CORRELATIONS_PER_PASS);
+
   let created = 0;
   const maxWindowMs = windowMinutes * 60 * 1000;
   for (let i = 0; i < recentAlerts.length; i += 1) {
@@ -233,6 +400,7 @@ export async function runAlertCorrelationForDevice(options: {
         deviceId: options.deviceId,
         timeDiffMs,
         maxWindowMs,
+        logEvidence: findAlertPairLogEvidence({ older, newer, logCorrelations: recentLogCorrelations }),
       });
       const confidence = evidence.confidence;
       if (confidence < 0.3) continue;

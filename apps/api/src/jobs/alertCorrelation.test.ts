@@ -56,6 +56,7 @@ import {
   buildAlertCorrelationEvidence,
   buildAlertCorrelationJobId,
   enqueueAlertCorrelation,
+  findAlertPairLogEvidence,
   initializeAlertCorrelationWorker,
   runAlertCorrelationForDevice,
   shutdownAlertCorrelationWorker,
@@ -216,6 +217,87 @@ describe('alert correlation queue helpers', () => {
         siteId: 'site-1',
         evidence: ['same_site', 'time_window'],
       },
+    });
+  });
+
+  it('adds shared log-correlation evidence for alert pairs on affected devices', () => {
+    const older = alertAt({ id: 'older', deviceId: 'device-1', siteId: 'site-1' });
+    const newer = alertAt({ id: 'newer', deviceId: 'device-2', siteId: 'site-1' });
+    const logEvidence = findAlertPairLogEvidence({
+      older,
+      newer,
+      logCorrelations: [{
+        id: 'log-correlation-1',
+        ruleId: 'log-rule-1',
+        ruleName: 'Service crash burst',
+        severity: 'critical',
+        pattern: 'service crashed',
+        lastSeen: new Date('2026-06-18T12:00:00.000Z'),
+        occurrences: 7,
+        affectedDevices: [
+          { deviceId: 'device-1', hostname: 'host-1', count: 3 },
+          { deviceId: 'device-2', hostname: 'host-2', count: 4 },
+        ],
+        sampleLogs: [
+          {
+            id: 'sample-log-1',
+            deviceId: 'device-1',
+            timestamp: '2026-06-18T11:58:00.000Z',
+            level: 'error',
+            source: 'system',
+            message: 'service crashed',
+          },
+        ],
+      }],
+    });
+
+    const evidence = buildAlertCorrelationEvidence({
+      older,
+      newer,
+      deviceId: 'device-2',
+      timeDiffMs: 12 * 60 * 1000,
+      maxWindowMs: 30 * 60 * 1000,
+      logEvidence,
+    });
+
+    expect(evidence).toMatchObject({
+      correlationType: 'same_site_temporal',
+      confidence: 0.7,
+      metadata: {
+        evidence: ['same_site', 'time_window', 'shared_log_correlation'],
+        logCorrelationIds: ['log-correlation-1'],
+        logCorrelationRuleIds: ['log-rule-1'],
+        logCorrelationRuleNames: ['Service crash burst'],
+        logPatterns: ['service crashed'],
+        logOccurrences: 7,
+        logSeverity: 'critical',
+        logSampleLogIds: ['sample-log-1'],
+        logDeviceIds: ['device-1', 'device-2'],
+      },
+    });
+  });
+
+  it('distinguishes related log-correlation evidence from shared evidence', () => {
+    const logEvidence = findAlertPairLogEvidence({
+      older: alertAt({ id: 'older', deviceId: 'device-1', siteId: 'site-1' }),
+      newer: alertAt({ id: 'newer', deviceId: 'device-2', siteId: 'site-1' }),
+      logCorrelations: [{
+        id: 'log-correlation-1',
+        ruleId: 'log-rule-1',
+        ruleName: 'Repeated auth failures',
+        severity: 'warning',
+        pattern: 'auth failed',
+        lastSeen: new Date('2026-06-18T12:00:00.000Z'),
+        occurrences: 4,
+        affectedDevices: [{ deviceId: 'device-2', hostname: 'host-2', count: 4 }],
+        sampleLogs: null,
+      }],
+    });
+
+    expect(logEvidence).toMatchObject({
+      evidenceType: 'related_log_correlation',
+      logCorrelationIds: ['log-correlation-1'],
+      logDeviceIds: ['device-2'],
     });
   });
 });
