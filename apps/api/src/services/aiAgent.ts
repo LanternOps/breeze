@@ -247,9 +247,11 @@ export async function getSessionMessages(sessionId: string, auth: AuthContext) {
  * Polls the DB with exponential backoff.
  *
  * Each query is wrapped in `withSystemDbAccessContext`. The AI Agent SDK runs
- * its session OUTSIDE the request's AsyncLocalStorage DB context (see
- * aiAgentSdk.ts — runOutsideDbContext), so a bare `db` query here resolves to
- * the unprivileged `breeze_app` role with no RLS GUCs. `ai_tool_executions`
+ * its session OUTSIDE the request's AsyncLocalStorage DB context (the SDK
+ * query() is wrapped in runOutsideDbContext in streamingSessionManager.ts;
+ * aiAgentSdk.ts documents the same constraint), so a bare `db` query here
+ * resolves to the unprivileged `breeze_app` role with no RLS GUCs.
+ * `ai_tool_executions`
  * has forced RLS, so that read matched 0 rows and the poll returned `false`
  * on the first iteration — every approval-gated tool reported "rejected or
  * timed out" even after the user approved it. System scope lets the internal
