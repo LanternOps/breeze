@@ -42,6 +42,27 @@ describe('quote accept → convert', () => {
     expect(inv!.total).toBe('250.00');
   });
 
+  // Phase 3 (auto-issue on accept): the converted invoice is ISSUED (status=sent,
+  // invoice number, balance = quote one-time total) so the customer can pay it
+  // immediately via the existing pay-link — using the accepted quote's locked
+  // total (no tax re-resolve).
+  runDb('issues the converted invoice (sent + number + balance) so it is immediately payable', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Onboarding', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+
+    const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane Buyer' }));
+    const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
+    expect(inv!.status).toBe('sent'); // issued → payable (PAYABLE set in invoiceCheckout)
+    expect(inv!.invoiceNumber).toMatch(/^INV-\d{4}-\d{4}$/);
+    expect(inv!.total).toBe('250.00');
+    expect(inv!.balance).toBe('250.00');
+    expect(inv!.issueDate).toBeTruthy();
+    expect(inv!.dueDate).toBeTruthy();
+  });
+
   runDb('a recurring-only quote still converts but yields a $0 invoice (Phase 2 degenerate edge)', async () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);

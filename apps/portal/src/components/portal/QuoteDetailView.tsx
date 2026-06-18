@@ -100,6 +100,21 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
     setMsg('Proposal declined.');
   };
 
+  const pay = async () => {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    setMsgError(false);
+    const res = await portalApi.payQuote(quote.id);
+    setBusy(false);
+    if (res.error || !res.data?.data?.url) {
+      setMsg(res.error ?? 'Online payment is not available for this proposal.');
+      setMsgError(true);
+      return;
+    }
+    window.location.href = res.data.data.url;
+  };
+
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
 
@@ -216,6 +231,18 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
             Decline
           </button>
         </div>
+      )}
+
+      {status === 'converted' && (
+        <button
+          type="button"
+          data-testid="quote-pay"
+          disabled={busy}
+          onClick={() => void pay()}
+          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {busy ? 'Working…' : 'Pay now'}
+        </button>
       )}
     </div>
   );

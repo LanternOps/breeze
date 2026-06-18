@@ -2,15 +2,17 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq, ne } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { quotes, quoteBlocks, quoteLines } from '../../db/schema/quotes';
 import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { markQuoteViewed } from '../../services/quoteLifecycle';
 import { acceptQuote } from '../../services/quoteAcceptService';
+import { createQuotePayLink } from '../../services/quotePay';
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
+import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
@@ -92,4 +94,25 @@ quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator
   const now = new Date();
   await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));
   return c.json({ data: { status: 'declined' } });
+});
+
+// POST /quotes/:id/pay — mint a Stripe checkout link for an accepted (converted)
+// quote's invoice. Runs in a system sub-context: createQuotePayLink →
+// createInvoicePayLink reads the partner-axis stripe connection, which this org
+// scope would RLS-filter to 0 rows (#1375). Org access stays enforced by the
+// org-scoped quote lookup below + the actor's accessibleOrgIds.
+quoteRoutes.post('/quotes/:id/pay', zValidator('param', idParam), async (c) => {
+  const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
+  const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
+  if (!quote) return c.json({ error: 'Quote not found' }, 404);
+  try {
+    const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      createQuotePayLink(id, { userId: null, partnerId: null, accessibleOrgIds: [auth.user.orgId] })));
+    return c.json({ data: { url: link.url } });
+  } catch (err) {
+    if (err instanceof QuoteServiceError || err instanceof InvoiceServiceError) {
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
+    throw err;
+  }
 });

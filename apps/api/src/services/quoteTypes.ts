@@ -23,7 +23,8 @@ export type QuoteServiceErrorCode =
   | 'INVALID_IMAGE'
   | 'CATALOG_ITEM_NOT_FOUND'
   | 'INVALID_STATE'
-  | 'QUOTE_EXPIRED';
+  | 'QUOTE_EXPIRED'
+  | 'NOT_CONVERTED';
 
 export class QuoteServiceError extends Error {
   constructor(

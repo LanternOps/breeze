@@ -1,11 +1,13 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../db/schema/quotes';
 import { invoices, invoiceLines } from '../db/schema/invoices';
+import { partners } from '../db/schema/orgs';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
 import { computeLineTotal, computeInvoiceTotals } from './invoiceMath';
+import { formatInvoiceNumber } from './invoiceNumbers';
 import { isQuoteExpired } from './quoteExpiry';
 
 export interface AcceptQuoteParams {
@@ -137,16 +139,51 @@ export async function acceptQuote(
     totalsLines.push({ lineTotal, taxable: l.taxable, customerVisible: true });
   }
   const totals = computeInvoiceTotals(totalsLines, quote.taxRate ?? null);
-  await db
-    .update(invoices)
-    .set({
-      subtotal: totals.subtotal,
-      taxTotal: totals.taxTotal,
-      total: totals.total,
-      balance: totals.total,
-      updatedAt: now,
-    })
-    .where(eq(invoices.id, invoice!.id));
+
+  // Auto-issue on accept (Phase 3): if the converted invoice has payable (one-time)
+  // lines, ISSUE it now — allocate a gapless invoice number and flip to 'sent' — so
+  // the customer can pay immediately via createInvoicePayLink (PAYABLE excludes
+  // 'draft'). We deliberately KEEP the quote's snapshotted totals/taxRate (computed
+  // above) rather than re-resolving org/partner tax like issueInvoice does: the
+  // charge must equal the accepted quote. A degenerate recurring-only quote ($0, no
+  // one-time lines) stays draft — there's nothing to collect. The counter upsert is
+  // inlined (no runOutsideDbContext) to stay atomic inside the caller's accept
+  // transaction; the quote row lock above already serializes concurrent accepts, so
+  // there's no double-allocation.
+  const issueFields: Record<string, unknown> = {
+    subtotal: totals.subtotal,
+    taxTotal: totals.taxTotal,
+    total: totals.total,
+    balance: totals.total,
+    updatedAt: now,
+  };
+  if (oneTime.length > 0) {
+    const [partner] = await db
+      .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays })
+      .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+    const year = now.getUTCFullYear();
+    const counterRows = await db.execute(sql`
+      INSERT INTO partner_invoice_sequences (partner_id, year, counter)
+      VALUES (${quote.partnerId}, ${year}, 1)
+      ON CONFLICT (partner_id, year)
+      DO UPDATE SET counter = partner_invoice_sequences.counter + 1
+      RETURNING counter
+    `);
+    const counter = Number((counterRows as unknown as Array<{ counter: number }>)[0]?.counter
+      ?? (counterRows as unknown as { rows?: Array<{ counter: number }> }).rows?.[0]?.counter);
+    if (!Number.isFinite(counter) || counter < 1) {
+      throw new QuoteServiceError('Failed to allocate invoice number', 500, 'INVALID_STATE');
+    }
+    const dueDate = new Date(now.getTime() + (partner?.termsDays ?? 30) * 86400000);
+    issueFields.status = 'sent';
+    issueFields.invoiceNumber = formatInvoiceNumber(partner?.prefix ?? 'INV', year, counter);
+    issueFields.issueDate = now.toISOString().slice(0, 10);
+    issueFields.dueDate = dueDate.toISOString().slice(0, 10);
+    issueFields.billToName = quote.billToName ?? null;
+    issueFields.billToAddress = quote.billToAddress ?? null;
+    issueFields.billToTaxId = quote.billToTaxId ?? null;
+  }
+  await db.update(invoices).set(issueFields).where(eq(invoices.id, invoice!.id));
 
   // 3. Transition the quote to converted.
   await db

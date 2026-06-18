@@ -646,6 +646,14 @@ export const portalApi = {
     );
   },
 
+  // Mint a Stripe checkout link for an accepted (converted) quote's invoice.
+  payQuote: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { url: string } }>> => {
+    return apiPost<{ data: { url: string } }>(`/portal/quotes/${id}/pay`, undefined, config);
+  },
+
   // Public, token-gated proposal access for prospects without a portal account.
   // These hit /quotes/public/* (NOT /portal/*) — no auth cookie required.
   getPublicQuote: async (
@@ -662,8 +670,8 @@ export const portalApi = {
     token: string,
     signerName: string,
     signerEmail?: string
-  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null } }>> => {
-    return apiPost<{ data: { status: string; invoiceNumber: string | null } }>(
+  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null } }>> => {
+    return apiPost<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null } }>(
       `/quotes/public/${encodeURIComponent(token)}/accept`,
       { signerName, signerEmail },
       { redirectOnUnauthorized: false }

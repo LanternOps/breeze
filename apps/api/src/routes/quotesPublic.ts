@@ -13,6 +13,7 @@ import { acceptQuote } from '../services/quoteAcceptService';
 import { readQuoteImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
+import { createQuotePayLink } from '../services/quotePay';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 /**
@@ -81,7 +82,21 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     })));
     // Post-commit (atom-2): consume the single-use token so the link can't be replayed.
     try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null } });
+    // Phase 3 accept→pay: mint a Stripe checkout link for the just-issued invoice and
+    // return it so the public page can offer "Pay now" — the accept token is now
+    // revoked, so the URL has to come back in THIS response. Best-effort and in its
+    // own context AFTER the accept committed: a $0 quote, unconnected Stripe, or a
+    // Stripe hiccup must never fail (or roll back) the accept — the page just won't
+    // show Pay now.
+    let payUrl: string | null = null;
+    try {
+      const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        createQuotePayLink(claims.quoteId, { userId: null, partnerId: null, accessibleOrgIds: [claims.orgId] })));
+      payUrl = link.url;
+    } catch (err) {
+      if (!(err instanceof QuoteServiceError)) console.error('[quotesPublic] pay-link mint failed', err);
+    }
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });
 
