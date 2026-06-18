@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle, ExternalLink, RefreshCw, TrendingUp, XCircl
 
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
+import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 
 type AnomalyStatus = 'open' | 'dismissed' | 'promoted' | 'resolved';
 
@@ -256,6 +257,9 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
                   </button>
                 </div>
               </div>
+              {!compact && (
+                <RemediationSuggestionsPanel sourceType="anomaly" sourceId={anomaly.id} />
+              )}
             </div>
           ))}
         </div>

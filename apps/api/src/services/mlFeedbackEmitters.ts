@@ -98,3 +98,24 @@ export async function emitRcaFeedback(options: {
     occurredAt: options.occurredAt ?? new Date(),
   }, options.eventType);
 }
+
+export async function emitRemediationSuggestionFeedback(options: {
+  orgId: string;
+  suggestionId: string;
+  eventType: 'suggestion.accepted' | 'suggestion.edited' | 'suggestion.rejected' | 'suggestion.executed' | 'suggestion.failed';
+  outcome: 'accepted' | 'edited' | 'rejected' | 'executed' | 'failed';
+  actorUserId?: string | null;
+  occurredAt?: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await emitFeedbackBestEffort({
+    orgId: options.orgId,
+    sourceType: 'remediation',
+    sourceId: options.suggestionId,
+    eventType: options.eventType,
+    outcome: options.outcome,
+    actorUserId: actorUserIdOrNull(options.actorUserId),
+    metadata: options.metadata ?? {},
+    occurredAt: options.occurredAt ?? new Date(),
+  }, options.eventType);
+}
