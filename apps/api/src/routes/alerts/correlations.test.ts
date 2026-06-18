@@ -34,6 +34,11 @@ const {
       alertId: 'alert_correlation_members.alertId', role: 'alert_correlation_members.role',
       confidence: 'alert_correlation_members.confidence', createdAt: 'alert_correlation_members.createdAt',
     },
+    mlFeedbackEvents: {
+      id: 'ml_feedback_events.id', orgId: 'ml_feedback_events.orgId', sourceType: 'ml_feedback_events.sourceType',
+      sourceId: 'ml_feedback_events.sourceId', eventType: 'ml_feedback_events.eventType',
+      outcome: 'ml_feedback_events.outcome', occurredAt: 'ml_feedback_events.occurredAt',
+    },
     devices: { id: 'devices.id', hostname: 'devices.hostname' },
   };
 
@@ -42,6 +47,7 @@ const {
   const evalPredicate = (row: Record<string, unknown>, predicate: Predicate): boolean => {
     if (!predicate) return true;
     if (predicate.op === 'eq') return row[columnKey(predicate.col)] === predicate.val;
+    if (predicate.op === 'gte') return Number(row[columnKey(predicate.col)]) >= Number(predicate.val);
     if (predicate.op === 'inArray') return (predicate.vals ?? []).includes(row[columnKey(predicate.col)]);
     if (predicate.op === 'and') return (predicate.args ?? []).every((arg) => evalPredicate(row, arg));
     if (predicate.op === 'or') return (predicate.args ?? []).some((arg) => evalPredicate(row, arg));
@@ -53,6 +59,7 @@ const {
     correlations: [] as Array<Record<string, any>>,
     groups: [] as Array<Record<string, any>>,
     members: [] as Array<Record<string, any>>,
+    feedback: [] as Array<Record<string, any>>,
     devices: [] as Array<Record<string, any>>,
   };
 
@@ -74,7 +81,9 @@ const {
             ? state.groups
             : this.table === tables.alertCorrelationMembers
               ? state.members
-              : state.devices;
+              : this.table === tables.mlFeedbackEvents
+                ? state.feedback
+                : state.devices;
       const filtered = source.filter((row) => evalPredicate(row, this.predicate));
       if (!this.projection) return filtered;
       return filtered.map((row) => {
@@ -128,6 +137,7 @@ const {
 
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
+  gte: (col: unknown, val: unknown) => ({ op: 'gte', col, val }),
   and: (...args: unknown[]) => ({ op: 'and', args }),
   or: (...args: unknown[]) => ({ op: 'or', args }),
   inArray: (col: unknown, vals: unknown[]) => ({ op: 'inArray', col, vals }),
@@ -153,6 +163,7 @@ vi.mock('../../db/schema', () => ({
   alertCorrelationMembers: tables.alertCorrelationMembers,
   alertCorrelations: tables.alertCorrelations,
   devices: tables.devices,
+  mlFeedbackEvents: tables.mlFeedbackEvents,
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/alertCorrelationRca', () => ({
@@ -203,6 +214,7 @@ function seed() {
   ];
   state.groups = [];
   state.members = [];
+  state.feedback = [];
   state.devices = [{ id: DEVICE_1, hostname: 'server-1' }];
 }
 
@@ -303,6 +315,95 @@ describe('/alerts correlation routes', () => {
       status: 'open',
     }));
     expect(body.groups[0].rootCause.id).toBe(ALERT_1);
+  });
+
+  it('returns scoped alert correlation evaluation metrics and recent feedback labels', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-18T13:00:00Z'));
+    seedPersistedGroup();
+    state.feedback = [
+      {
+        id: '11111111-ffff-4fff-8fff-111111111111',
+        orgId: ORG_1,
+        sourceType: 'correlation',
+        sourceId: GROUP_1,
+        eventType: 'correlation.accepted',
+        outcome: 'accepted',
+        occurredAt: new Date('2026-06-18T12:10:00Z'),
+      },
+      {
+        id: '22222222-ffff-4fff-8fff-222222222222',
+        orgId: ORG_1,
+        sourceType: 'correlation',
+        sourceId: GROUP_1,
+        eventType: 'correlation.split',
+        outcome: 'split',
+        occurredAt: new Date('2026-06-18T12:11:00Z'),
+      },
+      {
+        id: '33333333-ffff-4fff-8fff-333333333333',
+        orgId: ORG_1,
+        sourceType: 'correlation',
+        sourceId: GROUP_1,
+        eventType: 'correlation.merged',
+        outcome: 'merged',
+        occurredAt: new Date('2026-06-18T12:12:00Z'),
+      },
+      {
+        id: '44444444-ffff-4fff-8fff-444444444444',
+        orgId: ORG_1,
+        sourceType: 'correlation',
+        sourceId: GROUP_1,
+        eventType: 'correlation.dismissed',
+        outcome: 'dismissed',
+        occurredAt: new Date('2026-04-01T12:00:00Z'),
+      },
+      {
+        id: '55555555-ffff-4fff-8fff-555555555555',
+        orgId: ORG_2,
+        sourceType: 'correlation',
+        sourceId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        eventType: 'correlation.dismissed',
+        outcome: 'dismissed',
+        occurredAt: new Date('2026-06-18T12:13:00Z'),
+      },
+      {
+        id: '66666666-ffff-4fff-8fff-666666666666',
+        orgId: ORG_1,
+        sourceType: 'ticket',
+        sourceId: 'ticket-1',
+        eventType: 'correlation.dismissed',
+        outcome: 'dismissed',
+        occurredAt: new Date('2026-06-18T12:14:00Z'),
+      },
+    ];
+
+    try {
+      const res = await makeApp().request('/alerts/correlations/evaluation?labelWindowDays=30');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.evaluation).toEqual({
+        labelWindowDays: 30,
+        labelWindowStart: '2026-05-19T13:00:00.000Z',
+        groupsCreated: 1,
+        totalGroupedAlerts: 2,
+        estimatedSuppressedAlerts: 1,
+        compressionRatio: 0.5,
+        averageCorrelationScore: 0.91,
+        averageNoiseReductionPercent: 50,
+        feedback: {
+          accepted: 1,
+          split: 1,
+          merged: 1,
+          dismissed: 0,
+          totalCorrections: 2,
+        },
+      });
+      expect(body.data).toEqual(body.evaluation);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns persisted correlation group detail without leaking cross-org groups', async () => {

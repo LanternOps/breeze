@@ -1,10 +1,10 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, or, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db';
-import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices } from '../../db/schema';
+import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices, mlFeedbackEvents } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { buildAlertCorrelationRca } from '../../services/alertCorrelationRca';
@@ -17,6 +17,9 @@ export const alertCorrelationRoutes = new Hono();
 
 const alertIdParamSchema = z.object({ alertId: z.string().uuid() });
 const groupIdParamSchema = z.object({ groupId: z.string().uuid() });
+const evaluationQuerySchema = z.object({
+  labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
+});
 const explainGroupSchema = z.object({
   windowHours: z.number().int().min(1).max(24).optional(),
   maxEvidenceItems: z.number().int().min(5).max(100).optional(),
@@ -87,6 +90,19 @@ function groupOrgConditionsForAuth(auth: AuthContext): SQL[] | null {
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     return orgIds.length > 0 ? [inArray(alertCorrelationGroups.orgId, orgIds)] : null;
+  }
+
+  return [];
+}
+
+function feedbackOrgConditionsForAuth(auth: AuthContext): SQL[] | null {
+  if (auth.scope === 'organization') {
+    return auth.orgId ? [eq(mlFeedbackEvents.orgId, auth.orgId)] : null;
+  }
+
+  if (auth.scope === 'partner') {
+    const orgIds = auth.accessibleOrgIds ?? [];
+    return orgIds.length > 0 ? [inArray(mlFeedbackEvents.orgId, orgIds)] : null;
   }
 
   return [];
@@ -326,6 +342,96 @@ async function buildPersistedCorrelationGroups(auth: AuthContext, groupId?: stri
   }).filter((group) => group.rootCause !== null);
 }
 
+function roundMetric(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 1000) / 1000;
+}
+
+async function getCorrelationFeedbackCounts(auth: AuthContext, since: Date) {
+  const feedbackOrgConditions = feedbackOrgConditionsForAuth(auth);
+  if (feedbackOrgConditions === null) {
+    return {
+      accepted: 0,
+      split: 0,
+      merged: 0,
+      dismissed: 0,
+      totalCorrections: 0,
+    };
+  }
+
+  const rows = await db
+    .select({ eventType: mlFeedbackEvents.eventType })
+    .from(mlFeedbackEvents)
+    .where(and(
+      eq(mlFeedbackEvents.sourceType, 'correlation'),
+      gte(mlFeedbackEvents.occurredAt, since),
+      ...(feedbackOrgConditions.length > 0 ? feedbackOrgConditions : [])
+    ));
+
+  const counts = {
+    accepted: 0,
+    split: 0,
+    merged: 0,
+    dismissed: 0,
+  };
+  for (const row of rows) {
+    if (row.eventType === 'correlation.accepted') counts.accepted += 1;
+    else if (row.eventType === 'correlation.split') counts.split += 1;
+    else if (row.eventType === 'correlation.merged') counts.merged += 1;
+    else if (row.eventType === 'correlation.dismissed') counts.dismissed += 1;
+  }
+
+  return {
+    ...counts,
+    totalCorrections: counts.split + counts.merged + counts.dismissed,
+  };
+}
+
+async function buildCorrelationEvaluation(auth: AuthContext, labelWindowDays: number) {
+  const persistedGroups = await buildPersistedCorrelationGroups(auth);
+  const groups = persistedGroups.length > 0 ? persistedGroups : await buildCorrelationGroups(auth);
+  const groupedAlertIds = new Set<string>();
+  let estimatedSuppressedAlerts = 0;
+  let scoreTotal = 0;
+  let scoredGroups = 0;
+  let noiseReductionTotal = 0;
+  let noiseReductionGroups = 0;
+
+  for (const group of groups) {
+    for (const alert of group.alerts) {
+      groupedAlertIds.add(alert.id);
+    }
+    estimatedSuppressedAlerts += Math.max(group.alerts.length - 1, 0);
+    if (Number.isFinite(group.correlationScore)) {
+      scoreTotal += group.correlationScore;
+      scoredGroups += 1;
+    }
+    const noiseReduction = typeof group.noiseReductionPercent === 'number'
+      ? group.noiseReductionPercent
+      : group.alerts.length > 0
+        ? (Math.max(group.alerts.length - 1, 0) / group.alerts.length) * 100
+        : 0;
+    noiseReductionTotal += noiseReduction;
+    noiseReductionGroups += 1;
+  }
+
+  const totalGroupedAlerts = groupedAlertIds.size;
+  const labelWindowStart = new Date(Date.now() - labelWindowDays * 24 * 60 * 60 * 1000);
+  const feedback = await getCorrelationFeedbackCounts(auth, labelWindowStart);
+
+  return {
+    labelWindowDays,
+    labelWindowStart: labelWindowStart.toISOString(),
+    groupsCreated: groups.length,
+    totalGroupedAlerts,
+    estimatedSuppressedAlerts,
+    compressionRatio: totalGroupedAlerts > 0 ? roundMetric(estimatedSuppressedAlerts / totalGroupedAlerts) : 0,
+    averageCorrelationScore: scoredGroups > 0 ? roundMetric(scoreTotal / scoredGroups) : 0,
+    averageNoiseReductionPercent: noiseReductionGroups > 0 ? roundMetric(noiseReductionTotal / noiseReductionGroups) : 0,
+    feedback,
+  };
+}
+
 async function getPersistedGroupAlerts(groupId: string, auth: AuthContext): Promise<AlertRow[] | null> {
   const group = await getAccessiblePersistedGroup(groupId, auth);
   if (!group) return null;
@@ -407,6 +513,19 @@ alertCorrelationRoutes.get(
     const persistedGroups = await buildPersistedCorrelationGroups(auth);
     const groups = persistedGroups.length > 0 ? persistedGroups : await buildCorrelationGroups(auth);
     return c.json({ groups, data: groups });
+  }
+);
+
+alertCorrelationRoutes.get(
+  '/correlations/evaluation',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
+  zValidator('query', evaluationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { labelWindowDays } = c.req.valid('query');
+    const evaluation = await buildCorrelationEvaluation(auth, labelWindowDays);
+    return c.json({ evaluation, data: evaluation });
   }
 );
 
