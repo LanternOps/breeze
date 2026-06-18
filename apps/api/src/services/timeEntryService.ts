@@ -538,6 +538,7 @@ export async function addTicketPart(ticketId: string, input: TicketPartInput, ac
       description: input.description,
       partNumber: input.partNumber ?? null,
       vendor: input.vendor ?? null,
+      catalogItemId: input.catalogItemId ?? null,
       quantity: input.quantity.toFixed(2),
       unitPrice: (input.unitPrice ?? 0).toFixed(2),
       costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
@@ -567,6 +568,7 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
   if (input.description !== undefined) set.description = input.description;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;
   if (input.vendor !== undefined) set.vendor = input.vendor;
+  if (input.catalogItemId !== undefined) set.catalogItemId = input.catalogItemId;
   if (input.quantity !== undefined) set.quantity = input.quantity.toFixed(2);
   if (input.unitPrice !== undefined) set.unitPrice = input.unitPrice.toFixed(2);
   if (input.costBasis !== undefined) set.costBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;

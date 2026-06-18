@@ -15,6 +15,11 @@ describe('isGlobalScopeRoute', () => {
   it('treats alert templates as global', () => {
     expect(isGlobalScopeRoute('/alert-templates')).toBe(true);
   });
+  it('treats the settings alert-template catalog (list/new/edit) as global (#1425)', () => {
+    expect(isGlobalScopeRoute('/settings/alert-templates')).toBe(true);
+    expect(isGlobalScopeRoute('/settings/alert-templates/new')).toBe(true);
+    expect(isGlobalScopeRoute('/settings/alert-templates/abc-123')).toBe(true);
+  });
   it('treats script execution history as org-scoped (exception)', () => {
     // Execution history lives at /scripts/:id/executions (not /scripts/executions)
     expect(isGlobalScopeRoute('/scripts/abc-123/executions')).toBe(false);

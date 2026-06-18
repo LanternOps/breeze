@@ -76,4 +76,73 @@ describe('UpdateRingForm — ring auto-approve (#1317)', () => {
     expect(screen.getByTestId('ring-auto-approve-enabled')).toBeChecked();
     expect(screen.getByTestId('ring-auto-approve-deferral')).toHaveValue(3);
   });
+
+  // The top-level "Deferral" field was removed from the UI; the ring's fallback
+  // `deferralDays` is now derived from the default rule on submit.
+  it('syncs top-level deferralDays to the default rule hold on submit', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-severity-critical'));
+    fireEvent.change(screen.getByTestId('ring-auto-approve-deferral'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
+    expect(values.deferralDays).toBe(5);
+    expect(values.autoApprove.deferralDays).toBe(5);
+  });
+
+  it('zeroes the fallback hold when the default rule is manual', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <UpdateRingForm
+        onSubmit={onSubmit}
+        defaultValues={{ name: 'Manual', deferralDays: 9, autoApprove: { enabled: false, severities: [], deferralDays: 9 } }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
+    expect(values.deferralDays).toBe(0);
+    expect(values.autoApprove.deferralDays).toBe(0);
+  });
+
+  it('adds an override pre-filled from the default rule and submits it in categoryRules', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-severity-critical'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-severity-important'));
+    fireEvent.change(screen.getByTestId('ring-auto-approve-deferral'), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: /add override/i }));
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
+    expect(values.categoryRules).toHaveLength(1);
+    expect(values.categoryRules?.[0]).toMatchObject({
+      category: 'security',
+      autoApprove: true,
+      autoApproveSeverities: ['critical', 'important'],
+      deferralDaysOverride: 7,
+    });
+  });
+
+  it('submits deadlineDays as null when left blank', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect((onSubmit.mock.calls[0][0] as UpdateRingFormValues).deadlineDays).toBeNull();
+  });
 });

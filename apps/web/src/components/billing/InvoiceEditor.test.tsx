@@ -142,6 +142,28 @@ describe('InvoiceEditor', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Invoice issued and sent' }));
   });
 
+  it('shows an "Issuing…" label on the Issue button while the mutation is in flight (#1418)', async () => {
+    let resolveIssue: (r: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') {
+        return new Promise<Response>((res) => { resolveIssue = res; });
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+
+    // In flight: button is disabled AND relabelled so it never reads as a stuck "Issue".
+    await waitFor(() => expect(screen.getByTestId('invoice-issue')).toHaveTextContent('Issuing…'));
+    expect(screen.getByTestId('invoice-issue')).toBeDisabled();
+
+    resolveIssue(json({ data: { id: 'inv-1', status: 'sent' } }));
+    await waitFor(() => expect(screen.getByTestId('invoice-issue')).toHaveTextContent('Issue'));
+  });
+
   it('Issue & Send shows a WARNING toast (not error) when nothing was emailed (emailed:false)', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {

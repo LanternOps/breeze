@@ -111,8 +111,15 @@ export default function AiChatSidebar() {
     <>
       {/* Sidebar panel */}
       <div
+        data-testid="ai-chat-sidebar"
+        // Collapsed, the panel slides off-screen via transform but stays
+        // mounted (transition:persist). `inert` + pointer-events-none make the
+        // off-canvas shell truly non-interactive so it can't intercept clicks
+        // meant for page content on wide layouts, and its (off-viewport) Close
+        // control drops out of the focus/hit-test order (#1419).
+        inert={!isOpen}
         className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card shadow-2xl transition-transform duration-300 ${
-          isOpen ? 'translate-x-0' : 'translate-x-full'
+          isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
         }`}
       >
         {/* Header */}

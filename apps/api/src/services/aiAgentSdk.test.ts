@@ -791,6 +791,111 @@ describe('createSessionPostToolUse', () => {
     expect(JSON.stringify(insertedPayloads)).not.toContain('raw-secret');
   });
 
+  // Pull every persisted insert payload (the same `values` mock backs every
+  // db.insert() call, so its calls list holds both the aiMessages row and the
+  // aiToolExecutions row).
+  function persistedInsertPayloads(): any[] {
+    const valuesMock = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    return (valuesMock?.mock.calls ?? []).map((c: unknown[]) => c[0]);
+  }
+
+  // The single tool_result SSE event published to the client.
+  function publishedToolResult(session: any): any {
+    return vi.mocked(session.eventBus.publish).mock.calls
+      .map((c: unknown[]) => c[0] as any)
+      .find((e: any) => e?.type === 'tool_result');
+  }
+
+  it('re-attaches the raw apply payload to the SSE tool_result for apply_script_code (editor insert), but keeps it out of the LLM-context chat row', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+    const code = 'Write-Host "hello from breeze"';
+
+    // makeApplyHandler hands postToolUse the raw args as `input` and a
+    // code-less compacted string as `output` (see scriptBuilderTools.ts).
+    await callback('apply_script_code', { code, language: 'powershell' }, JSON.stringify({
+      applied: true,
+      toolName: 'apply_script_code',
+      language: 'powershell',
+      codeOmitted: true,
+      codeChars: code.length,
+    }), false, 5);
+
+    // The editor reads `output.code` from this event to insert the script.
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tool_result',
+      output: expect.objectContaining({ code, language: 'powershell' }),
+    }));
+
+    // The aiMessages "tool_result" row is what gets replayed into the LLM
+    // context, so it must stay compacted (#568) — the re-attached code lives on
+    // the SSE/editor channel only, never the persisted chat row. (The raw body
+    // still lives in aiToolExecutions.toolInput for audit; that row is never
+    // fed back to the model, so it is out of scope for #568.)
+    const chatRow = persistedInsertPayloads().find((p) => p?.role === 'tool_result');
+    expect(chatRow, 'aiMessages tool_result row should be persisted').toBeDefined();
+    expect(JSON.stringify(chatRow.toolOutput)).not.toContain('hello from breeze');
+    expect(chatRow.toolOutput).toMatchObject({ codeOmitted: true });
+  });
+
+  it('re-attaches the raw apply payload to the SSE tool_result for apply_script_metadata', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('apply_script_metadata', { name: 'Disk Cleanup', category: 'Maintenance' }, JSON.stringify({
+      applied: true,
+      toolName: 'apply_script_metadata',
+    }), false, 5);
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tool_result',
+      output: expect.objectContaining({ name: 'Disk Cleanup', category: 'Maintenance' }),
+    }));
+  });
+
+  it('resolves MCP-prefixed apply tool names when re-attaching the payload', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+    const code = 'Get-Process | Sort-Object CPU';
+
+    await callback('mcp__script_builder__apply_script_code', { code, language: 'powershell' }, JSON.stringify({
+      applied: true,
+      codeOmitted: true,
+      codeChars: code.length,
+    }), false, 5);
+
+    expect(publishedToolResult(session)?.output).toMatchObject({ code });
+  });
+
+  it('does NOT re-attach the payload when an apply tool result is an error', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+    const code = 'irreversible-destructive-command';
+
+    await callback('apply_script_code', { code, language: 'bash' }, JSON.stringify({
+      error: 'apply failed',
+    }), true, 5);
+
+    // A failed apply must not push code into the editor.
+    expect(JSON.stringify(publishedToolResult(session)?.output)).not.toContain(code);
+  });
+
+  it('does NOT re-attach input for non-apply tools (the guard is apply-only)', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('query_devices', { marker: 'NON_APPLY_INPUT_MARKER' }, JSON.stringify({
+      status: 'completed',
+      total: 0,
+    }), false, 5);
+
+    // Raw tool input must never bleed into a non-apply tool's SSE output —
+    // only the compacted parsedOutput is published.
+    const output = publishedToolResult(session)?.output;
+    expect(JSON.stringify(output)).not.toContain('NON_APPLY_INPUT_MARKER');
+    expect(output).toMatchObject({ status: 'completed' });
+  });
+
   it('persists delegantToolCallId on the inserted execution row (tier < 2)', async () => {
     const session = makeActiveSession();
     const values = mockInsertValues();

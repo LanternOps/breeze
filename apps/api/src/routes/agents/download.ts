@@ -553,18 +553,24 @@ if ! command -v curl &>/dev/null; then
   fatal "curl is required but not installed. Install it and try again."
 fi
 
-# ----- Pre-flight: verify this machine can actually reach the Breeze server -----
+# ----- Pre-flight: verify this machine can actually reach the Breeze API -----
 # Catches split-connectivity setups (guest VLANs, no NAT hairpinning, web
 # filters) up front, instead of letting a later step fail with a cryptic
 # OS-level error after downloading garbage.
+#
+# Probe the version-metadata endpoint — an /api/* path the install genuinely
+# depends on (it is re-fetched below for the checksum) — NOT the apex /health.
+# A reverse proxy that forwards /api/* to the API but not bare /health is a
+# common self-hosted setup; probing /health there returns the web app's 404 and
+# aborts an install that would otherwise succeed (issue #1470).
 info "Checking connectivity to \$BREEZE_SERVER..."
-HEALTH_FILE="$(mktemp)"
-trap 'rm -f "\$HEALTH_FILE"' EXIT
+PREFLIGHT_FILE="$(mktemp)"
+trap 'rm -f "\$PREFLIGHT_FILE"' EXIT
 CURL_RC=0
-HEALTH_CODE="$(curl -fsSL -m 20 -w '%{http_code}' -o "\$HEALTH_FILE" "\$BREEZE_SERVER/health" 2>/dev/null)" || CURL_RC=\$?
-HEALTH_CODE="\${HEALTH_CODE:-000}"
+PREFLIGHT_CODE="$(curl -fsSL -m 20 -w '%{http_code}' -o "\$PREFLIGHT_FILE" "\$VERSION_METADATA_URL" 2>/dev/null)" || CURL_RC=\$?
+PREFLIGHT_CODE="\${PREFLIGHT_CODE:-000}"
 
-if [[ "\$HEALTH_CODE" != "200" ]]; then
+if [[ "\$PREFLIGHT_CODE" != "200" ]]; then
   # curl's exit code names the transport failure precisely — branch on the
   # ones whose remediation differs from generic "check your network".
   case "\$CURL_RC" in
@@ -573,20 +579,35 @@ if [[ "\$HEALTH_CODE" != "200" ]]; then
     28)
       fatal "Connection to \$BREEZE_SERVER timed out. Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions." ;;
   esac
-  if [[ "\$HEALTH_CODE" == "000" ]]; then
-    fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions."
+  if [[ "\$PREFLIGHT_CODE" == "000" ]]; then
+    # No HTTP status line came back. Distinguish "connected, but the server gave
+    # an empty/garbled reply" (API down/crashing behind a working proxy) from a
+    # true network-layer failure — the remediation points at different layers.
+    case "\$CURL_RC" in
+      52|56|18|55)
+        fatal "\$BREEZE_SERVER accepted the connection but returned no valid HTTP response (curl error \$CURL_RC). The API may be down or crashing behind your reverse proxy — check the API service logs." ;;
+      *)
+        fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (no response, curl error \$CURL_RC). Verify this machine has network access to the server — check DNS, firewall rules, and VLAN restrictions." ;;
+    esac
   fi
-  fatal "Cannot reach the Breeze server at \$BREEZE_SERVER (HTTP \$HEALTH_CODE). Verify the server URL is correct and this machine has network access to it."
+  fatal "Cannot reach the Breeze API at \$BREEZE_SERVER (HTTP \$PREFLIGHT_CODE). Verify the server URL is correct, the API is running, and your reverse proxy forwards /api/* to it (not just the web app)."
 fi
 
-# NOTE: stays in lockstep with GET /health in apps/api/src/index.ts — the
-# body must contain "status":"ok". If that payload changes, healthy installs
-# would start failing with the (misleading) interception message below.
-if ! grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "\$HEALTH_FILE"; then
-  fatal "Got an unexpected response from \$BREEZE_SERVER/health — something other than the Breeze server answered. A captive portal, router, or web filter may be intercepting traffic on this network."
+# A 200 whose body is HTML means a middlebox answered for the API endpoint
+# instead of the Breeze server. Same interception guard as the metadata download
+# below (the .pkg path checks xar magic bytes instead).
+if grep -qiE '<html|<!doctype' "\$PREFLIGHT_FILE"; then
+  fatal "Got a web page instead of an API response from \$BREEZE_SERVER — a captive portal, router, or web filter may be intercepting traffic on this network."
 fi
 
-rm -f "\$HEALTH_FILE"
+# Positively confirm the Breeze API answered — not merely "not HTML". The
+# agent-versions metadata always carries a "version" field; a 200 without it is
+# a wrong responder (proxy stub, auth gateway), so don't claim "reachable".
+if ! grep -q '"version"[[:space:]]*:' "\$PREFLIGHT_FILE"; then
+  fatal "Reached \$BREEZE_SERVER but the agent-versions API returned an unexpected response — something other than the Breeze server may be answering on this network."
+fi
+
+rm -f "\$PREFLIGHT_FILE"
 trap - EXIT
 success "Breeze server is reachable"
 
@@ -640,7 +661,7 @@ if [[ "\$OS" == "darwin" ]]; then
 
   success "Downloaded installer package ($(wc -c < "\$TMPPKG" | tr -d ' ') bytes)"
 
-  # A path-selective middlebox can pass the /health pre-flight and still
+  # A path-selective middlebox can pass the connectivity pre-flight and still
   # intercept the download path. macOS .pkg files are xar archives — anything
   # else (typically a portal's HTML) must be blamed on the network, not on
   # Gatekeeper below.

@@ -138,4 +138,50 @@ describe('PatchTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
   });
+
+  describe('inline ring editor', () => {
+    it('creates a ring inline, refetches, and auto-selects it', async () => {
+      fetchMock.mockImplementation((_url: any, opts: any) => {
+        if (opts?.method === 'POST') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: vi.fn().mockResolvedValue({ data: { id: 'ring-9' } }),
+          } as unknown as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            data: [{ id: 'ring-9', name: 'Broad', enabled: true, ringOrder: 0, deferralDays: 0, gracePeriodHours: 4 }],
+          }),
+        } as unknown as Response);
+      });
+
+      render(<PatchTab {...baseProps} />);
+      fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
+      fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Broad' } });
+      fireEvent.click(screen.getByRole('button', { name: /create ring/i }));
+
+      await waitFor(() => expect(screen.getByTestId('approval-ring-select')).toHaveValue('ring-9'));
+      const postCall = fetchMock.mock.calls.find(([, o]: any) => o?.method === 'POST');
+      expect(postCall?.[0]).toBe('/update-rings');
+    });
+
+    it('surfaces an error when inline ring create fails', async () => {
+      fetchMock.mockImplementation((_url: any, opts: any) => {
+        if (opts?.method === 'POST') {
+          return Promise.resolve({ ok: false, status: 500, json: vi.fn().mockResolvedValue({}) } as unknown as Response);
+        }
+        return Promise.resolve({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: [] }) } as unknown as Response);
+      });
+
+      render(<PatchTab {...baseProps} />);
+      fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
+      fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Broad' } });
+      fireEvent.click(screen.getByRole('button', { name: /create ring/i }));
+
+      expect(await screen.findByText('Failed to create update ring')).toBeInTheDocument();
+    });
+  });
 });

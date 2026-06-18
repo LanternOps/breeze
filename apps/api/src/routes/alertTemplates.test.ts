@@ -125,6 +125,8 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null,
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      canAccessOrg: (id: string) => id === '11111111-1111-1111-1111-111111111111',
       user: { id: 'user-123', email: 'test@example.com' },
     });
     return next();
@@ -175,6 +177,8 @@ describe('alert template routes', () => {
         scope: 'organization',
         orgId: ORG_ID,
         partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (id: string) => id === ORG_ID,
         user: { id: 'user-123', email: 'test@example.com' },
       });
       return next();
