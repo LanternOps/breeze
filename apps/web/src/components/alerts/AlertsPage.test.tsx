@@ -49,6 +49,17 @@ const activeAlert = {
   triggeredAt: new Date().toISOString()
 };
 
+const remediationFlags = (enabled: boolean) => ({
+  mlFeatureFlags: {
+    'ml.remediation_suggestions.enabled': {
+      flag: 'ml.remediation_suggestions.enabled',
+      enabled,
+      defaultEnabled: false,
+      source: 'org_settings',
+    },
+  },
+});
+
 /** A promise we can resolve from the test body to simulate a slow ack. */
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -126,6 +137,12 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
         // Detail-panel fetch (status/notification history).
         return Promise.resolve(makeJsonResponse({ statusHistory: [], notificationHistory: [] }));
       }
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      }
+      if (url === `/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
       if (url === `/alerts/${ALERT_ID}/acknowledge` && method === 'POST') {
         return ackDeferred.promise;
       }
@@ -152,6 +169,52 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     ackDeferred.resolve(makeJsonResponse({ success: true }));
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+  });
+
+  it('loads and generates suggested fixes from the selected alert', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === `/alerts/${ALERT_ID}` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ statusHistory: [], notificationHistory: [] }));
+      }
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      }
+      if (url === `/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/remediation-suggestions/generate' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    fireEvent.click(await screen.findByText('High CPU on SRV-01'));
+
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('Suggested Fixes');
+    expect(fetchMock).toHaveBeenCalledWith(`/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5`);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Generate$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/generate',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ sourceType: 'alert', sourceId: ALERT_ID, limit: 3 }),
+        }),
+      );
     });
   });
 

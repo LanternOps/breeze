@@ -14,6 +14,7 @@ import {
 } from './alertConfig';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
+import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 
 type Alert = {
   id: string;
@@ -285,6 +286,8 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         <h3 className="text-sm font-semibold text-muted-foreground mb-2">Message</h3>
         <p className="text-sm">{alert.message}</p>
       </div>
+
+      <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} />
 
       {/* Linked Tickets */}
       {(linkedTickets.length > 0 || linkedError) && (

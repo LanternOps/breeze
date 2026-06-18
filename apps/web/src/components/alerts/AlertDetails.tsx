@@ -25,6 +25,7 @@ import {
   type AlertStatus,
 } from './alertConfig';
 import type { Alert } from './AlertList';
+import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 
 export type NotificationHistory = {
   id: string;
@@ -171,6 +172,8 @@ export default function AlertDetails({
           <div className="rounded-md border bg-muted/20 p-4">
             <p className="text-sm">{alert.message}</p>
           </div>
+
+          <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} />
 
           {/* Device Info */}
           <div className="rounded-md border p-4">
