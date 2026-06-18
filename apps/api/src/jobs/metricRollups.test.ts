@@ -13,6 +13,8 @@ const {
   whereMock,
   groupByMock,
   workerProcessorMock,
+  runOutsideDbContextMock,
+  withSystemDbAccessContextMock,
 } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
@@ -26,6 +28,8 @@ const {
   whereMock: vi.fn(),
   groupByMock: vi.fn(),
   workerProcessorMock: vi.fn(),
+  runOutsideDbContextMock: vi.fn(<T>(fn: () => T) => fn()),
+  withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('bullmq', () => ({
@@ -58,7 +62,8 @@ vi.mock('../services/bullmqUtils', () => ({
 
 vi.mock('../db', () => ({
   db: { select: selectMock },
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: runOutsideDbContextMock,
+  withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
 
 vi.mock('../db/schema', () => ({
@@ -96,6 +101,10 @@ describe('metric rollups queue helpers', () => {
     whereMock.mockReset();
     groupByMock.mockReset();
     workerProcessorMock.mockReset();
+    runOutsideDbContextMock.mockClear();
+    withSystemDbAccessContextMock.mockClear();
+    runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queued-rollup-job' });
     addBulkMock.mockResolvedValue([]);
@@ -187,6 +196,40 @@ describe('metric rollups queue helpers', () => {
           jobId: 'metric-rollups-org-1-20260618T121000000Z-20260618T122500000Z',
         }),
       }),
+    ]);
+  });
+
+  it('does not hold system DB context while scan fan-out enqueues BullMQ jobs', async () => {
+    const callOrder: string[] = [];
+    runOutsideDbContextMock.mockImplementation(<T>(fn: () => T): T => {
+      callOrder.push('runOutsideDbContext');
+      return fn();
+    });
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => {
+      callOrder.push('withSystemDbAccessContext:start');
+      const result = await fn();
+      callOrder.push('withSystemDbAccessContext:end');
+      return result;
+    });
+    addBulkMock.mockImplementation(async () => {
+      callOrder.push('addBulk');
+      return [];
+    });
+
+    await initializeMetricRollupsWorker();
+    addBulkMock.mockClear();
+    await workerProcessorMock({
+      data: {
+        type: 'scan-orgs',
+        lookbackMinutes: 15,
+      },
+    });
+
+    expect(callOrder).toEqual([
+      'runOutsideDbContext',
+      'withSystemDbAccessContext:start',
+      'withSystemDbAccessContext:end',
+      'addBulk',
     ]);
   });
 });
