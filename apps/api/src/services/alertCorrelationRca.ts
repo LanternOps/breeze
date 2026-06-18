@@ -14,6 +14,8 @@ import {
   deviceChangeLog,
   deviceEventLogs,
   devices,
+  logCorrelationRules,
+  logCorrelations,
   metricRollups,
 } from '../db/schema';
 
@@ -45,6 +47,21 @@ type ConfigPolicyAlertSource = {
   configurationPolicyId: string;
   configurationPolicyName: string;
   configurationPolicyStatus: string;
+};
+
+type LinkedLogCorrelation = {
+  alertId: string | null;
+  logCorrelationId: string;
+  ruleId: string;
+  ruleName: string;
+  ruleSeverity: string;
+  rulePattern: string;
+  detectedPattern: string;
+  firstSeen: Date;
+  lastSeen: Date;
+  occurrences: number;
+  affectedDevices: unknown;
+  sampleLogs: unknown;
 };
 
 export interface RcaEvidenceItem {
@@ -135,6 +152,28 @@ function metadataString(metadata: Record<string, unknown>, key: string): string 
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function compactAffectedDevices(value: unknown): Array<{ deviceId: string; hostname: string | null; count: number | null }> {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 5).flatMap((item) => {
+    const record = metadataRecord(item);
+    const deviceId = metadataString(record, 'deviceId');
+    if (!deviceId) return [];
+    return [{
+      deviceId,
+      hostname: metadataString(record, 'hostname'),
+      count: typeof record.count === 'number' ? record.count : null,
+    }];
+  });
+}
+
+function compactSampleLogIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => metadataString(metadataRecord(item), 'id'))
+    .filter((id): id is string => Boolean(id))
+    .slice(0, 5);
+}
+
 function buildCorrelationSummary(link: CorrelationRow): string {
   const metadata = metadataRecord(link.metadata);
   const details: string[] = [];
@@ -205,6 +244,7 @@ function buildAlertMetadata(
   alert: AlertRow,
   ruleSource: AlertRuleSource | undefined,
   configSource: ConfigPolicyAlertSource | undefined,
+  linkedLogCorrelations: LinkedLogCorrelation[],
 ): Record<string, unknown> {
   return {
     alertId: alert.id,
@@ -243,6 +283,19 @@ function buildAlertMetadata(
       configPolicyAlertRuleId: alert.configPolicyId,
       itemName: alert.configItemName,
     } : null,
+    linkedLogCorrelations: linkedLogCorrelations.slice(0, 3).map((correlation) => ({
+      id: correlation.logCorrelationId,
+      ruleId: correlation.ruleId,
+      ruleName: correlation.ruleName,
+      ruleSeverity: correlation.ruleSeverity,
+      rulePattern: correlation.rulePattern,
+      detectedPattern: correlation.detectedPattern,
+      firstSeen: toIso(asDate(correlation.firstSeen)),
+      lastSeen: toIso(asDate(correlation.lastSeen)),
+      occurrences: correlation.occurrences,
+      affectedDevices: compactAffectedDevices(correlation.affectedDevices),
+      sampleLogIds: compactSampleLogIds(correlation.sampleLogs),
+    })),
   };
 }
 
@@ -269,11 +322,13 @@ function buildAlertEvidence(
   deviceNames: Map<string, DeviceRow>,
   ruleSources: Map<string, AlertRuleSource>,
   configSources: Map<string, ConfigPolicyAlertSource>,
+  linkedLogCorrelations: Map<string, LinkedLogCorrelation[]>,
 ): RcaEvidenceItem[] {
   return alertRows.map((alert) => {
     const device = deviceNames.get(alert.deviceId);
     const ruleSource = alert.ruleId ? ruleSources.get(alert.ruleId) : undefined;
     const configSource = alert.configPolicyId ? configSources.get(alert.configPolicyId) : undefined;
+    const alertLinkedLogCorrelations = linkedLogCorrelations.get(alert.id) ?? [];
     const sourceSummary = ruleSource?.ruleName
       ? ` via rule "${ruleSource.ruleName}"`
       : configSource?.configPolicyAlertRuleName
@@ -281,6 +336,9 @@ function buildAlertEvidence(
         : alert.configPolicyId
           ? ` via config policy item "${alert.configItemName ?? alert.configPolicyId}"`
         : '';
+    const linkedLogSummary = alertLinkedLogCorrelations[0]?.ruleName
+      ? ` with linked log correlation "${alertLinkedLogCorrelations[0].ruleName}"`
+      : '';
     return {
       id: `alert:${alert.id}`,
       source: 'alert',
@@ -290,8 +348,8 @@ function buildAlertEvidence(
       alertId: alert.id,
       severity: alert.severity,
       title: alert.title,
-      summary: `${alert.severity.toUpperCase()} alert on ${device?.hostname ?? alert.deviceId}${sourceSummary}: ${alert.message ?? alert.title}`,
-      metadata: buildAlertMetadata(alert, ruleSource, configSource),
+      summary: `${alert.severity.toUpperCase()} alert on ${device?.hostname ?? alert.deviceId}${sourceSummary}${linkedLogSummary}: ${alert.message ?? alert.title}`,
+      metadata: buildAlertMetadata(alert, ruleSource, configSource, alertLinkedLogCorrelations),
     };
   });
 }
@@ -482,6 +540,36 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
         ))
     : [];
   const configSources = new Map(configSourceRows.map((row) => [row.configPolicyAlertRuleId, row]));
+  const linkedLogCorrelationRows: LinkedLogCorrelation[] = alertIds.length > 0
+    ? await db
+        .select({
+          alertId: logCorrelations.alertId,
+          logCorrelationId: logCorrelations.id,
+          ruleId: logCorrelations.ruleId,
+          ruleName: logCorrelationRules.name,
+          ruleSeverity: logCorrelationRules.severity,
+          rulePattern: logCorrelationRules.pattern,
+          detectedPattern: logCorrelations.pattern,
+          firstSeen: logCorrelations.firstSeen,
+          lastSeen: logCorrelations.lastSeen,
+          occurrences: logCorrelations.occurrences,
+          affectedDevices: logCorrelations.affectedDevices,
+          sampleLogs: logCorrelations.sampleLogs,
+        })
+        .from(logCorrelations)
+        .innerJoin(logCorrelationRules, eq(logCorrelations.ruleId, logCorrelationRules.id))
+        .where(and(eq(logCorrelations.orgId, options.orgId), inArray(logCorrelations.alertId, alertIds)))
+        .orderBy(desc(logCorrelations.lastSeen))
+        .limit(Math.min(alertIds.length * 3, 15))
+    : [];
+  const linkedLogCorrelationsByAlertId = new Map<string, LinkedLogCorrelation[]>();
+  for (const correlation of linkedLogCorrelationRows) {
+    if (!correlation.alertId) continue;
+    const rows = linkedLogCorrelationsByAlertId.get(correlation.alertId) ?? [];
+    if (rows.length >= 3) continue;
+    rows.push(correlation);
+    linkedLogCorrelationsByAlertId.set(correlation.alertId, rows);
+  }
 
   const correlationRows = alertIds.length > 1
     ? await db
@@ -560,7 +648,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
   if (metricRows.length === 0) gaps.push('No 5-minute metric rollups were available in the incident window.');
 
   const evidence: RcaEvidenceItem[] = [
-    ...buildAlertEvidence(alertRows, deviceNames, ruleSources, configSources),
+    ...buildAlertEvidence(alertRows, deviceNames, ruleSources, configSources, linkedLogCorrelationsByAlertId),
     ...correlationRows.map((link) => ({
       id: `correlation:${link.parentAlertId}:${link.childAlertId}`,
       source: 'correlation' as const,

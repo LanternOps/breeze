@@ -78,6 +78,24 @@ const { dbMock, state, tables } = vi.hoisted(() => {
       avgValue: 'metricRollups.avgValue',
       maxValue: 'metricRollups.maxValue',
     },
+    logCorrelationRules: {
+      id: 'logCorrelationRules.logRuleId',
+      name: 'logCorrelationRules.logRuleName',
+      pattern: 'logCorrelationRules.logRulePattern',
+      severity: 'logCorrelationRules.logRuleSeverity',
+    },
+    logCorrelations: {
+      id: 'logCorrelations.logCorrelationId',
+      orgId: 'logCorrelations.orgId',
+      ruleId: 'logCorrelations.logRuleId',
+      pattern: 'logCorrelations.detectedPattern',
+      firstSeen: 'logCorrelations.firstSeen',
+      lastSeen: 'logCorrelations.lastSeen',
+      occurrences: 'logCorrelations.occurrences',
+      affectedDevices: 'logCorrelations.affectedDevices',
+      sampleLogs: 'logCorrelations.sampleLogs',
+      alertId: 'logCorrelations.alertId',
+    },
     configPolicyAlertRules: {
       id: 'configPolicyAlertRules.configPolicyAlertRuleId',
       featureLinkId: 'configPolicyAlertRules.featureLinkId',
@@ -123,6 +141,7 @@ const { dbMock, state, tables } = vi.hoisted(() => {
     eventLogs: [] as Array<Record<string, any>>,
     agentLogs: [] as Array<Record<string, any>>,
     metricRollups: [] as Array<Record<string, any>>,
+    linkedLogCorrelations: [] as Array<Record<string, any>>,
   };
 
   class SelectQuery {
@@ -147,13 +166,15 @@ const { dbMock, state, tables } = vi.hoisted(() => {
               ? state.configPolicySources
               : this.table === tables.brainDeviceContext
                 ? state.context
-                : this.table === tables.deviceChangeLog
-                  ? state.changes
-                  : this.table === tables.deviceEventLogs
-                    ? state.eventLogs
-                    : this.table === tables.agentLogs
-                      ? state.agentLogs
-                      : state.metricRollups;
+                : this.table === tables.logCorrelations
+                  ? state.linkedLogCorrelations
+                  : this.table === tables.deviceChangeLog
+                    ? state.changes
+                    : this.table === tables.deviceEventLogs
+                      ? state.eventLogs
+                      : this.table === tables.agentLogs
+                        ? state.agentLogs
+                        : state.metricRollups;
       const filtered = source.filter((row) => evalPredicate(row, this.predicate));
       if (!this.projection) return filtered;
       return filtered.map((row) => {
@@ -199,6 +220,8 @@ vi.mock('../db/schema', () => ({
   deviceChangeLog: tables.deviceChangeLog,
   deviceEventLogs: tables.deviceEventLogs,
   devices: tables.devices,
+  logCorrelationRules: tables.logCorrelationRules,
+  logCorrelations: tables.logCorrelations,
   metricRollups: tables.metricRollups,
 }));
 
@@ -261,6 +284,23 @@ describe('alert correlation RCA evidence builder', () => {
       configurationPolicyId: 'policy-1',
       configurationPolicyName: 'Server monitoring baseline',
       configurationPolicyStatus: 'active',
+    }];
+    state.linkedLogCorrelations = [{
+      orgId: ORG_ID,
+      alertId: ALERT_2,
+      logCorrelationId: 'log-correlation-linked-1',
+      logRuleId: 'log-rule-linked-1',
+      logRuleName: 'Repeated memory service faults',
+      logRulePattern: 'memory service fault',
+      logRuleSeverity: 'error',
+      detectedPattern: 'MemoryService crashed',
+      firstSeen: new Date('2026-06-18T11:58:00Z'),
+      lastSeen: new Date('2026-06-18T12:02:30Z'),
+      occurrences: 5,
+      affectedDevices: [{ deviceId: DEVICE_ID, hostname: 'server-1', count: 5 }],
+      sampleLogs: [
+        { id: 'sample-log-1', deviceId: DEVICE_ID, timestamp: '2026-06-18T12:00:00Z', level: 'error', source: 'system', message: 'MemoryService crashed' },
+      ],
     }];
     state.context = [{
       id: 'ctx-1',
@@ -382,6 +422,7 @@ describe('alert correlation RCA evidence builder', () => {
     });
     const configAlertEvidence = result.timeline.find((item) => item.id === `alert:${ALERT_2}`);
     expect(configAlertEvidence?.summary).toContain('via config policy rule "Memory threshold"');
+    expect(configAlertEvidence?.summary).toContain('linked log correlation "Repeated memory service faults"');
     expect(configAlertEvidence?.metadata).toMatchObject({
       contextSummary: '{"threshold":90,"observed":94}',
       configSource: {
@@ -396,6 +437,19 @@ describe('alert correlation RCA evidence builder', () => {
         configurationPolicyStatus: 'active',
         itemName: 'ram_percent',
       },
+      linkedLogCorrelations: [{
+        id: 'log-correlation-linked-1',
+        ruleId: 'log-rule-linked-1',
+        ruleName: 'Repeated memory service faults',
+        ruleSeverity: 'error',
+        rulePattern: 'memory service fault',
+        detectedPattern: 'MemoryService crashed',
+        firstSeen: '2026-06-18T11:58:00.000Z',
+        lastSeen: '2026-06-18T12:02:30.000Z',
+        occurrences: 5,
+        affectedDevices: [{ deviceId: DEVICE_ID, hostname: 'server-1', count: 5 }],
+        sampleLogIds: ['sample-log-1'],
+      }],
     });
     expect(result.rootCauseCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ confidence: 0.91 }),
