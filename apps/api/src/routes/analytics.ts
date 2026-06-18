@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, gte, lte, ne, inArray, isNull, or, desc } from 'drizzle-orm';
+import { and, eq, sql, gte, lte, ne, inArray, isNull, or, desc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   analyticsDashboards,
@@ -9,6 +9,8 @@ import {
   capacityPredictions,
   capacityThresholds,
   deviceMetrics,
+  mlFeedbackEvents,
+  metricAnomalies,
   metricRollups,
   devices,
   slaDefinitions as slaDefinitionsTable,
@@ -199,10 +201,58 @@ const capacityQuerySchema = z.object({
   range: z.string().optional().default('30d')
 });
 
+const anomalyEvaluationQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  deviceId: z.string().uuid().optional(),
+  range: z.enum(['7d', '30d', '90d']).optional().default('30d')
+});
+
 function capacityRollupMetricName(metricType: string): string {
   if (metricType === 'cpu') return 'cpu_percent';
   if (metricType === 'memory') return 'ram_percent';
   return 'disk_percent';
+}
+
+function rangeDays(range: string): number {
+  if (range === '7d') return 7;
+  if (range === '90d') return 90;
+  return 30;
+}
+
+function zeroAnomalyEvaluationResponse(options: {
+  since: Date;
+  until: Date;
+  range: string;
+  orgId?: string;
+  deviceId?: string;
+}) {
+  return {
+    window: {
+      range: options.range,
+      since: options.since.toISOString(),
+      until: options.until.toISOString(),
+    },
+    orgId: options.orgId,
+    deviceId: options.deviceId,
+    total: 0,
+    status: {
+      open: 0,
+      dismissed: 0,
+      promoted: 0,
+      resolved: 0,
+    },
+    rates: {
+      dismissRate: 0,
+      promoteRate: 0,
+      resolveRate: 0,
+    },
+    feedback: {
+      total: 0,
+      dismissed: 0,
+      promoted: 0,
+      resolved: 0,
+    },
+  };
 }
 
 const listSlaSchema = z.object({
@@ -883,6 +933,144 @@ analyticsRoutes.delete(
 // ============================================
 // CAPACITY & SLA
 // ============================================
+
+analyticsRoutes.get(
+  '/anomalies/evaluation',
+  requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
+  zValidator('query', anomalyEvaluationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const query = c.req.valid('query');
+
+    if (query.orgId && !(await ensureOrgAccess(query.orgId, auth))) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    const effectiveOrgId = query.orgId ?? auth.orgId;
+    const until = new Date();
+    const since = new Date(until.getTime() - rangeDays(query.range) * 24 * 60 * 60 * 1000);
+
+    let allowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && effectiveOrgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(effectiveOrgId, perms);
+      if (query.deviceId && !(allowedDeviceIds ?? []).includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!query.deviceId && (allowedDeviceIds ?? []).length === 0) {
+        return c.json(zeroAnomalyEvaluationResponse({
+          since,
+          until,
+          range: query.range,
+          orgId: effectiveOrgId,
+        }));
+      }
+    }
+
+    const anomalyOrgCondition =
+      query.orgId
+        ? eq(metricAnomalies.orgId, query.orgId)
+        : typeof auth?.orgCondition === 'function'
+          ? auth.orgCondition(metricAnomalies.orgId)
+          : auth?.orgId
+            ? eq(metricAnomalies.orgId, auth.orgId)
+            : undefined;
+
+    const feedbackOrgCondition =
+      query.orgId
+        ? eq(mlFeedbackEvents.orgId, query.orgId)
+        : typeof auth?.orgCondition === 'function'
+          ? auth.orgCondition(mlFeedbackEvents.orgId)
+          : auth?.orgId
+            ? eq(mlFeedbackEvents.orgId, auth.orgId)
+            : undefined;
+
+    const anomalyConditions: SQL[] = [
+      gte(metricAnomalies.detectedAt, since),
+      ...(anomalyOrgCondition ? [anomalyOrgCondition] : []),
+      ...(query.deviceId ? [eq(metricAnomalies.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(metricAnomalies.deviceId, allowedDeviceIds)]
+        : []),
+    ];
+
+    const feedbackAnomalyConditions: SQL[] = [
+      gte(metricAnomalies.detectedAt, since),
+      ...(query.deviceId ? [eq(metricAnomalies.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(metricAnomalies.deviceId, allowedDeviceIds)]
+        : []),
+    ];
+
+    const statusRows = await db
+      .select({
+        status: metricAnomalies.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(metricAnomalies)
+      .where(and(...anomalyConditions))
+      .groupBy(metricAnomalies.status);
+
+    const feedbackRows = await db
+      .select({
+        eventType: mlFeedbackEvents.eventType,
+        count: sql<number>`count(*)`,
+      })
+      .from(mlFeedbackEvents)
+      .innerJoin(
+        metricAnomalies,
+        and(
+          sql`${mlFeedbackEvents.sourceId} = ${metricAnomalies.id}::text`,
+          eq(metricAnomalies.orgId, mlFeedbackEvents.orgId),
+        ),
+      )
+      .where(and(
+        eq(mlFeedbackEvents.sourceType, 'anomaly'),
+        inArray(mlFeedbackEvents.eventType, ['anomaly.dismissed', 'anomaly.promoted', 'anomaly.resolved']),
+        gte(mlFeedbackEvents.occurredAt, since),
+        ...(feedbackOrgCondition ? [feedbackOrgCondition] : []),
+        ...feedbackAnomalyConditions,
+      ))
+      .groupBy(mlFeedbackEvents.eventType);
+
+    const status = { open: 0, dismissed: 0, promoted: 0, resolved: 0 };
+    for (const row of statusRows) {
+      const key = String(row.status);
+      if (key === 'open' || key === 'dismissed' || key === 'promoted' || key === 'resolved') {
+        status[key] = Number(row.count) || 0;
+      }
+    }
+
+    const total = status.open + status.dismissed + status.promoted + status.resolved;
+    const feedback = { total: 0, dismissed: 0, promoted: 0, resolved: 0 };
+    for (const row of feedbackRows) {
+      const count = Number(row.count) || 0;
+      if (row.eventType === 'anomaly.dismissed') feedback.dismissed += count;
+      if (row.eventType === 'anomaly.promoted') feedback.promoted += count;
+      if (row.eventType === 'anomaly.resolved') feedback.resolved += count;
+    }
+    feedback.total = feedback.dismissed + feedback.promoted + feedback.resolved;
+
+    return c.json({
+      window: {
+        range: query.range,
+        since: since.toISOString(),
+        until: until.toISOString(),
+      },
+      orgId: effectiveOrgId,
+      deviceId: query.deviceId,
+      total,
+      status,
+      rates: {
+        dismissRate: total > 0 ? status.dismissed / total : 0,
+        promoteRate: total > 0 ? status.promoted / total : 0,
+        resolveRate: total > 0 ? status.resolved / total : 0,
+      },
+      feedback,
+    });
+  }
+);
 
 analyticsRoutes.get(
   '/capacity',

@@ -171,6 +171,20 @@ vi.mock('../db/schema', () => ({
     avgValue: 'metricRollups.avgValue',
     sampleCount: 'metricRollups.sampleCount'
   },
+  metricAnomalies: {
+    id: 'metricAnomalies.id',
+    orgId: 'metricAnomalies.orgId',
+    deviceId: 'metricAnomalies.deviceId',
+    status: 'metricAnomalies.status',
+    detectedAt: 'metricAnomalies.detectedAt'
+  },
+  mlFeedbackEvents: {
+    orgId: 'mlFeedbackEvents.orgId',
+    sourceType: 'mlFeedbackEvents.sourceType',
+    sourceId: 'mlFeedbackEvents.sourceId',
+    eventType: 'mlFeedbackEvents.eventType',
+    occurredAt: 'mlFeedbackEvents.occurredAt'
+  },
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
@@ -386,6 +400,52 @@ describe('analytics routes', () => {
         value: 10,
       });
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('GET /analytics/anomalies/evaluation', () => {
+    it('returns anomaly status rates and lifecycle feedback counts', async () => {
+      mockSelectOnce([
+        { status: 'open', count: 4 },
+        { status: 'dismissed', count: 3 },
+        { status: 'promoted', count: 2 },
+        { status: 'resolved', count: 1 },
+      ]);
+      mockSelectOnce([
+        { eventType: 'anomaly.dismissed', count: 2 },
+        { eventType: 'anomaly.promoted', count: 1 },
+        { eventType: 'anomaly.resolved', count: 1 },
+      ]);
+
+      const res = await app.request('/analytics/anomalies/evaluation?range=30d', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(10);
+      expect(body.status).toEqual({ open: 4, dismissed: 3, promoted: 2, resolved: 1 });
+      expect(body.rates).toEqual({ dismissRate: 0.3, promoteRate: 0.2, resolveRate: 0.1 });
+      expect(body.feedback).toEqual({ total: 4, dismissed: 2, promoted: 1, resolved: 1 });
+      expect(body.window.range).toBe('30d');
+      expect(body.orgId).toBe(ORG_ID);
+    });
+
+    it('returns zero rates when no anomalies match', async () => {
+      mockSelectOnce([]);
+      mockSelectOnce([]);
+
+      const res = await app.request('/analytics/anomalies/evaluation?range=7d', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(0);
+      expect(body.rates).toEqual({ dismissRate: 0, promoteRate: 0, resolveRate: 0 });
+      expect(body.feedback.total).toBe(0);
     });
   });
 
@@ -794,6 +854,63 @@ describe('analytics routes', () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.currentValue).toBe(72);
+      });
+    });
+
+    describe('GET /analytics/anomalies/evaluation', () => {
+      it('returns 403 when a site-restricted caller drills into an out-of-scope deviceId', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
+
+        const res = await app.request(
+          `/analytics/anomalies/evaluation?deviceId=${DEVICE_OUT_OF_SCOPE}`,
+          { method: 'GET', headers: { Authorization: 'Bearer token' } }
+        );
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Device not found or access denied');
+      });
+
+      it('narrows org-wide anomaly evaluation to in-scope devices for a site-restricted caller', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
+        mockSelectOnce([
+          { status: 'open', count: 1 },
+          { status: 'dismissed', count: 1 },
+        ]); // anomaly status counts
+        mockSelectOnce([
+          { eventType: 'anomaly.dismissed', count: 1 },
+        ]); // feedback counts
+
+        const res = await app.request('/analytics/anomalies/evaluation?range=90d', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.total).toBe(2);
+        expect(body.status.dismissed).toBe(1);
+        expect(body.rates.dismissRate).toBe(0.5);
+        expect(body.feedback.dismissed).toBe(1);
+        expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+      });
+
+      it('short-circuits anomaly evaluation when a site-restricted caller has no in-scope devices', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce([{ id: DEVICE_OUT_OF_SCOPE, siteId: SITE_DENIED }]); // device resolution
+
+        const res = await app.request('/analytics/anomalies/evaluation', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.total).toBe(0);
+        expect(body.status).toEqual({ open: 0, dismissed: 0, promoted: 0, resolved: 0 });
+        expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
       });
     });
 
