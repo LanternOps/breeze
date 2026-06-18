@@ -21,7 +21,7 @@ const ON_DEMAND_RELIABILITY_DEDUPE_WINDOW_MS = 30 * 1000;
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
-  queuedAt: string;
+  queuedAt?: string;
 };
 
 type ComputeOrgJobData = {
@@ -62,14 +62,16 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   }
 
   const queue = getReliabilityQueue();
-  const slotKey = data.queuedAt.slice(0, 13);
+  const scannedAt = new Date();
+  const queuedAt = scannedAt.toISOString();
+  const slotKey = queuedAt.slice(0, 13);
   await queue.addBulk(
     orgRows.map((row) => ({
       name: 'compute-org',
       data: {
         type: 'compute-org' as const,
         orgId: row.orgId,
-        queuedAt: data.queuedAt,
+        queuedAt,
       },
       opts: {
         jobId: `reliability-${row.orgId}-${slotKey}`,
@@ -128,7 +130,6 @@ async function scheduleReliabilityScan(): Promise<void> {
     'scan-orgs',
     {
       type: 'scan-orgs',
-      queuedAt: new Date().toISOString(),
     },
     {
       jobId: 'reliability-scan-orgs',
