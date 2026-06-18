@@ -83,11 +83,8 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
       a.download = `${quote.quoteNumber ?? `quote-${quote.id}`}.pdf`;
       document.body.appendChild(a);
       a.click();
-      // Defer cleanup: removing the anchor / revoking the blob URL synchronously
-      // after click() races Chrome's download capture and can drop the `download`
-      // filename — the file then saves as the blob's UUID with no extension. Clean
-      // up on a later tick so the browser has captured name + bytes first.
-      setTimeout(() => { a.remove(); window.URL.revokeObjectURL(url); }, 1000);
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
     } catch (err) {
       handleActionError(err, 'Could not download the quote PDF.');
     } finally {

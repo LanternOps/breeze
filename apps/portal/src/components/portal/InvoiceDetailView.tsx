@@ -117,11 +117,8 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
       a.download = `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`;
       document.body.appendChild(a);
       a.click();
-      // Defer cleanup: removing the anchor / revoking the blob URL synchronously
-      // after click() races Chrome's download capture and can drop the `download`
-      // filename — the file then saves as the blob's UUID with no extension. Clean
-      // up on a later tick so the browser has captured name + bytes first.
-      setTimeout(() => { a.remove(); window.URL.revokeObjectURL(url); }, 1000);
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
     } catch {
       setDownloadError('Could not download the invoice PDF.');
     } finally {
