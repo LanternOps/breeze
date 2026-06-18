@@ -278,6 +278,37 @@ export default function CorrelatedAlertGroups() {
     }
   };
 
+  const sendCorrelationFeedback = async (group: AlertGroup, eventType: 'correlation.split' | 'correlation.dismissed') => {
+    const outcome = eventType.replace('correlation.', '') as 'split' | 'dismissed';
+    const isSplit = eventType === 'correlation.split';
+    setBusyGroupId(group.id);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/alerts/correlations/${group.id}/feedback`, {
+          method: 'POST',
+          body: JSON.stringify({
+            eventType,
+            outcome,
+            alertIds: isSplit ? group.alerts.map((alert) => alert.id) : [],
+            metadata: {
+              source: 'correlated_alert_groups_ui',
+              memberCount: group.memberCount ?? group.alerts.length,
+              correlationScore: group.correlationScore,
+              noiseReductionPercent: group.noiseReductionPercent ?? null,
+            }
+          })
+        }),
+        errorFallback: 'Failed to record correlation feedback',
+        successMessage: isSplit ? 'Marked group as incorrect' : 'Dismissed correlation group',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
+      });
+    } catch (err) {
+      handleActionError(err, 'Failed to record correlation feedback');
+    } finally {
+      setBusyGroupId(null);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -424,6 +455,24 @@ export default function CorrelatedAlertGroups() {
                       >
                         {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
                         Resolve group
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void sendCorrelationFeedback(group, 'correlation.split')}
+                        disabled={isBusy || isExplaining}
+                        className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                      >
+                        {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ThumbsDown className="h-3.5 w-3.5" />}
+                        Mark wrong group
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void sendCorrelationFeedback(group, 'correlation.dismissed')}
+                        disabled={isBusy || isExplaining}
+                        className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                      >
+                        {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
+                        Dismiss grouping
                       </button>
                     </div>
                   </div>

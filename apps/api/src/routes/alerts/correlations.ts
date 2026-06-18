@@ -38,6 +38,30 @@ const rcaFeedbackSchema = z.object({
     });
   }
 });
+const correlationFeedbackSchema = z.object({
+  eventType: z.enum(['correlation.split', 'correlation.merged', 'correlation.dismissed']),
+  outcome: z.enum(['split', 'merged', 'dismissed']),
+  alertIds: z.array(z.string().uuid()).max(100).optional().default([]),
+  targetGroupId: z.string().uuid().optional(),
+  note: z.string().trim().max(1000).optional(),
+  metadata: z.record(z.unknown()).optional().default({}),
+}).superRefine((value, ctx) => {
+  const expectedOutcome = value.eventType.replace('correlation.', '') as typeof value.outcome;
+  if (value.outcome !== expectedOutcome) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'outcome must match eventType',
+      path: ['outcome'],
+    });
+  }
+  if (value.eventType === 'correlation.merged' && !value.targetGroupId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'targetGroupId is required for merge feedback',
+      path: ['targetGroupId'],
+    });
+  }
+});
 
 async function parseOptionalExplainBody(c: Context) {
   const contentType = c.req.header('content-type') ?? '';
@@ -355,6 +379,13 @@ function rcaFeedbackDedupeKey(
   return typeof metadata.editId === 'string' ? `edit:${metadata.editId}` : undefined;
 }
 
+function correlationFeedbackDedupeKey(body: z.infer<typeof correlationFeedbackSchema>): string {
+  if (body.eventType === 'correlation.dismissed') return 'correction:dismissed';
+  if (body.eventType === 'correlation.merged') return `merge:${body.targetGroupId}`;
+  const alertIds = [...body.alertIds].sort();
+  return alertIds.length > 0 ? `split:${alertIds.join(',')}` : 'split';
+}
+
 async function getCorrelationFeedbackCounts(auth: AuthContext, since: Date) {
   const feedbackOrgConditions = feedbackOrgConditionsForAuth(auth);
   if (feedbackOrgConditions === null) {
@@ -648,6 +679,55 @@ alertCorrelationRoutes.post(
     });
 
     return c.json({ rca, data: rca });
+  }
+);
+
+alertCorrelationRoutes.post(
+  '/correlations/:groupId/feedback',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
+  zValidator('param', groupIdParamSchema),
+  zValidator('json', correlationFeedbackSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { groupId } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const group = await getAccessiblePersistedGroup(groupId, auth);
+    if (!group) {
+      return c.json({ error: 'Correlation group not found' }, 404);
+    }
+
+    await emitCorrelationFeedback({
+      orgId: group.orgId,
+      correlationId: group.id,
+      eventType: body.eventType,
+      dedupeKey: correlationFeedbackDedupeKey(body),
+      outcome: body.outcome,
+      actorUserId: auth.user.id,
+      metadata: {
+        ...body.metadata,
+        groupId: group.id,
+        rootAlertId: group.rootAlertId,
+        alertIds: body.alertIds,
+        targetGroupId: body.targetGroupId ?? null,
+        note: body.note ?? null,
+      },
+    });
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'alert_correlation.feedback',
+      resourceType: 'alert_correlation',
+      resourceId: group.id,
+      details: {
+        eventType: body.eventType,
+        outcome: body.outcome,
+        alertIds: body.alertIds,
+        targetGroupId: body.targetGroupId ?? null,
+      },
+    });
+
+    return c.json({ success: true });
   }
 );
 

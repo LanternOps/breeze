@@ -596,6 +596,125 @@ describe('/alerts correlation routes', () => {
     }));
   });
 
+  it('records split correction feedback for a visible persisted correlation group', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'correlation.split',
+        outcome: 'split',
+        alertIds: [ALERT_2, ALERT_1],
+        note: 'These alerts are unrelated.',
+        metadata: { surface: 'test' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(emitCorrelationFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_1,
+      correlationId: GROUP_1,
+      eventType: 'correlation.split',
+      dedupeKey: `split:${[ALERT_1, ALERT_2].sort().join(',')}`,
+      outcome: 'split',
+      actorUserId: '99999999-9999-4999-8999-999999999999',
+      metadata: expect.objectContaining({
+        groupId: GROUP_1,
+        rootAlertId: ALERT_1,
+        alertIds: [ALERT_2, ALERT_1],
+        note: 'These alerts are unrelated.',
+        surface: 'test',
+      }),
+    }));
+  });
+
+  it('records dismissed and merged correction feedback with stable replay keys', async () => {
+    seedPersistedGroup();
+    const targetGroupId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+
+    const dismissed = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'correlation.dismissed',
+        outcome: 'dismissed',
+      }),
+    });
+    expect(dismissed.status).toBe(200);
+
+    const merged = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'correlation.merged',
+        outcome: 'merged',
+        targetGroupId,
+      }),
+    });
+    expect(merged.status).toBe(200);
+
+    expect(emitCorrelationFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'correlation.dismissed',
+      dedupeKey: 'correction:dismissed',
+      outcome: 'dismissed',
+    }));
+    expect(emitCorrelationFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'correlation.merged',
+      dedupeKey: `merge:${targetGroupId}`,
+      outcome: 'merged',
+      metadata: expect.objectContaining({ targetGroupId }),
+    }));
+  });
+
+  it('rejects invalid correlation correction feedback', async () => {
+    seedPersistedGroup();
+
+    const badOutcome = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'correlation.split',
+        outcome: 'dismissed',
+      }),
+    });
+    expect(badOutcome.status).toBe(400);
+
+    const missingMergeTarget = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'correlation.merged',
+        outcome: 'merged',
+      }),
+    });
+    expect(missingMergeTarget.status).toBe(400);
+
+    expect(emitCorrelationFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('does not record correction feedback for an inaccessible correlation group', async () => {
+    seedPersistedGroup();
+    authRef.current = {
+      ...authRef.current,
+      orgId: ORG_2,
+      canAccessOrg: (orgId: string) => orgId === ORG_2,
+    };
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'correlation.dismissed',
+        outcome: 'dismissed',
+      }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(emitCorrelationFeedbackMock).not.toHaveBeenCalled();
+  });
+
   it('rejects inconsistent RCA feedback event/outcome pairs', async () => {
     seedPersistedGroup();
 

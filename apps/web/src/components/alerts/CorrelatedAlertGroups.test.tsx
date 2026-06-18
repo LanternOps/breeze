@@ -142,6 +142,9 @@ function mockGroupsResponse(options: { rcaEnabled?: boolean } = {}) {
     if (url === `/alerts/correlations/${GROUP_ID}/rca-feedback` && method === 'POST') {
       return Promise.resolve(makeJsonResponse({ success: true }));
     }
+    if (url === `/alerts/correlations/${GROUP_ID}/feedback` && method === 'POST') {
+      return Promise.resolve(makeJsonResponse({ success: true }));
+    }
     return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
   });
 }
@@ -229,6 +232,70 @@ describe('CorrelatedAlertGroups', () => {
         candidateCount: 1,
         evidenceCount: 1,
         gapCount: 1
+      })
+    }));
+  });
+
+  it('records correlation correction feedback from group controls', async () => {
+    mockGroupsResponse();
+
+    render(<CorrelatedAlertGroups />);
+
+    const groupTitle = (await screen.findAllByText('High CPU on SRV-01'))[0];
+    const section = groupTitle.closest('section')!;
+
+    fireEvent.click(within(section).getByRole('button', { name: /Mark wrong group/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/correlations/${GROUP_ID}/feedback`,
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('correlation.split')
+        })
+      );
+    });
+    const splitRequest = fetchMock.mock.calls.find(([url, init]) =>
+      url === `/alerts/correlations/${GROUP_ID}/feedback` &&
+      String(init?.body ?? '').includes('correlation.split')
+    );
+    expect(JSON.parse(String(splitRequest?.[1]?.body))).toEqual(expect.objectContaining({
+      eventType: 'correlation.split',
+      outcome: 'split',
+      alertIds: groupPayload.alerts.map((alert) => alert.id),
+      metadata: expect.objectContaining({
+        source: 'correlated_alert_groups_ui',
+        memberCount: 3,
+        correlationScore: 0.88,
+        noiseReductionPercent: 67
+      })
+    }));
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Marked group as incorrect' }));
+    });
+
+    fireEvent.click(within(section).getByRole('button', { name: /Dismiss grouping/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/correlations/${GROUP_ID}/feedback`,
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('correlation.dismissed')
+        })
+      );
+    });
+    const dismissedRequest = fetchMock.mock.calls.find(([url, init]) =>
+      url === `/alerts/correlations/${GROUP_ID}/feedback` &&
+      String(init?.body ?? '').includes('correlation.dismissed')
+    );
+    expect(JSON.parse(String(dismissedRequest?.[1]?.body))).toEqual(expect.objectContaining({
+      eventType: 'correlation.dismissed',
+      outcome: 'dismissed',
+      alertIds: [],
+      metadata: expect.objectContaining({
+        source: 'correlated_alert_groups_ui',
+        memberCount: 3
       })
     }));
   });
