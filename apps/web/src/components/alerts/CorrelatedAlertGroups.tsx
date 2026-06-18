@@ -22,6 +22,7 @@ import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
+import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 
 type AlertItem = {
   id: string;
@@ -76,6 +77,7 @@ type RcaResult = {
   suggestedNextSteps?: RcaSuggestedNextStep[];
   gaps: string[];
   scope: {
+    orgId: string;
     deviceIds: string[];
     alertIds: string[];
     windowStart: string;
@@ -869,6 +871,13 @@ export default function CorrelatedAlertGroups() {
                                   </ul>
                                 </div>
                               )}
+
+                              <RemediationSuggestionsPanel
+                                sourceType="rca"
+                                sourceId={groupRca.groupId}
+                                orgId={groupRca.scope.orgId}
+                                deviceId={groupRca.scope.deviceIds[0]}
+                              />
 
                               <button
                                 type="button"

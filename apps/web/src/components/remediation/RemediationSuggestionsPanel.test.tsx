@@ -125,6 +125,55 @@ describe('RemediationSuggestionsPanel', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Suggested fix accepted' }));
   });
 
+  it('includes RCA generation context when provided', async () => {
+    const rcaSuggestion = {
+      ...suggestion,
+      sourceType: 'rca',
+      sourceId: 'rca-1',
+      deviceId: '22222222-2222-4222-8222-222222222222',
+    };
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=rca&sourceId=rca-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/remediation-suggestions/generate' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ data: [rcaSuggestion] }, true, 201));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(
+      <RemediationSuggestionsPanel
+        sourceType="rca"
+        sourceId="rca-1"
+        orgId="11111111-1111-4111-8111-111111111111"
+        deviceId="22222222-2222-4222-8222-222222222222"
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /generate/i }));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/generate',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: 'rca',
+            sourceId: 'rca-1',
+            limit: 3,
+            orgId: '11111111-1111-4111-8111-111111111111',
+            deviceId: '22222222-2222-4222-8222-222222222222',
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText('Disk Cleanup')).toBeTruthy();
+  });
+
   it('saves revised suggested fix details through runAction', async () => {
     const edited = {
       ...suggestion,

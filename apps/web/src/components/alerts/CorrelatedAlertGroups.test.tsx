@@ -17,6 +17,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigat
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
+const ORG_ID = '55555555-5555-4555-8555-555555555555';
 const GROUP_ID = '11111111-1111-4111-8111-111111111111';
 
 const groupPayload = {
@@ -67,6 +68,7 @@ const groupPayload = {
 const rcaPayload = {
   groupId: GROUP_ID,
   scope: {
+    orgId: ORG_ID,
     deviceIds: ['device-1'],
     alertIds: groupPayload.alerts.map((alert) => alert.id),
     windowStart: '2026-06-18T06:00:00.000Z',
@@ -160,6 +162,12 @@ const mlFlags = (rcaEnabled: boolean) => ({
       defaultEnabled: false,
       source: 'org_settings',
     },
+    'ml.remediation_suggestions.enabled': {
+      flag: 'ml.remediation_suggestions.enabled',
+      enabled: true,
+      defaultEnabled: false,
+      source: 'org_settings',
+    },
   },
 });
 
@@ -188,6 +196,33 @@ function mockGroupsResponse(options: { rcaEnabled?: boolean } = {}) {
     }
     if (url === `/alerts/correlations/${GROUP_ID}/feedback` && method === 'POST') {
       return Promise.resolve(makeJsonResponse({ success: true }));
+    }
+    if (url === `/remediation-suggestions?sourceType=rca&sourceId=${GROUP_ID}&limit=5` && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({ data: [] }));
+    }
+    if (url === '/remediation-suggestions/generate' && method === 'POST') {
+      return Promise.resolve(makeJsonResponse({
+        data: [{
+          id: 'suggestion-1',
+          sourceType: 'rca',
+          sourceId: GROUP_ID,
+          deviceId: 'device-1',
+          targetType: 'diagnostic',
+          scriptId: null,
+          scriptTemplateId: null,
+          playbookId: null,
+          title: 'Collect service diagnostics',
+          rationale: 'Matched service restart evidence from the RCA.',
+          expectedAction: 'Run a safe diagnostic collection before changing service state.',
+          riskTier: 'low',
+          status: 'suggested',
+          confidence: 0.8,
+          parameters: {},
+          targetDeviceIds: ['device-1'],
+          elevationRequestId: null,
+          scriptExecutionId: null,
+        }],
+      }, true, 201));
     }
     if (url === '/ticket-categories' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({ data: [] }));
@@ -256,6 +291,26 @@ describe('CorrelatedAlertGroups', () => {
     expect(screen.getByText('Repeated memory service faults 5 occurrences')).toBeInTheDocument();
     expect(screen.getByText('related, 91% confidence')).toBeInTheDocument();
     expect(screen.getByText('No warning/error logs were found in the incident window.')).toBeInTheDocument();
+    expect(await screen.findByText('Suggested Fixes')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/generate',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: 'rca',
+            sourceId: GROUP_ID,
+            limit: 3,
+            orgId: ORG_ID,
+            deviceId: 'device-1',
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText('Collect service diagnostics')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Mark RCA helpful/i }));
 

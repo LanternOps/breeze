@@ -31,6 +31,8 @@ type RemediationSuggestion = {
 type RemediationSuggestionsPanelProps = {
   sourceType: 'alert' | 'anomaly' | 'correlation' | 'rca';
   sourceId: string;
+  orgId?: string;
+  deviceId?: string;
 };
 
 type EditDraft = Pick<RemediationSuggestion, 'title' | 'rationale' | 'expectedAction' | 'riskTier'>;
@@ -73,7 +75,7 @@ function canExecuteScriptSuggestion(suggestion: RemediationSuggestion): boolean 
   return canQueueScriptSuggestion(suggestion) && (!requiresExecutionApproval(suggestion) || Boolean(suggestion.elevationRequestId));
 }
 
-export default function RemediationSuggestionsPanel({ sourceType, sourceId }: RemediationSuggestionsPanelProps) {
+export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgId, deviceId }: RemediationSuggestionsPanelProps) {
   const mlFlags = useMlFeatureFlags();
   const [suggestions, setSuggestions] = useState<RemediationSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,11 +114,18 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
     if (remediationSuggestionsDisabled) return;
     setGenerating(true);
     try {
+      const body = {
+        sourceType,
+        sourceId,
+        limit: 3,
+        ...(orgId ? { orgId } : {}),
+        ...(deviceId ? { deviceId } : {}),
+      };
       const result = await runAction<{ data?: RemediationSuggestion[]; skipped?: boolean }>({
         request: () => fetchWithAuth('/remediation-suggestions/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sourceType, sourceId, limit: 3 }),
+          body: JSON.stringify(body),
         }),
         errorFallback: 'Could not generate suggested fixes',
         successMessage: (data) => data.skipped ? 'Suggested fixes are disabled' : 'Suggested fixes generated',
