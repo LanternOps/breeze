@@ -58,6 +58,7 @@ describe('mlFeedback service', () => {
       orgId: validEvent.orgId,
       sourceType: 'alert',
       eventType: 'alert.acknowledged',
+      dedupeKey: null,
       actorUserId: validEvent.actorUserId,
       confidence: 0.9,
       metadata: { route: 'alerts.acknowledge' },
@@ -73,6 +74,25 @@ describe('mlFeedback service', () => {
 
     expect(result).toEqual({ id: null, inserted: false });
     expect(dbMocks.onConflictDoNothingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a semantic dedupe key when the emitter provides one', async () => {
+    dbMocks.returningMock.mockResolvedValue([]);
+
+    const result = await emitMlFeedbackEvent({
+      ...validEvent,
+      dedupeKey: 'ack:user-action-123',
+      occurredAt: new Date('2026-06-18T12:01:00.000Z'),
+    });
+
+    expect(result).toEqual({ id: null, inserted: false });
+    expect(dbMocks.valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      dedupeKey: 'ack:user-action-123',
+      occurredAt: new Date('2026-06-18T12:01:00.000Z'),
+    }));
+    const conflictConfig = dbMocks.onConflictDoNothingMock.mock.calls[0]?.[0];
+    expect(conflictConfig?.target).toHaveLength(5);
+    expect(conflictConfig?.where).toBeDefined();
   });
 
   it('rejects oversized metadata before issuing a database write', async () => {

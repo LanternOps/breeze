@@ -225,7 +225,29 @@ describe('userRiskRoutes', () => {
       userId: USER_ID,
       eventType: 'user_risk.true_positive',
       outcome: 'true_positive',
+      dedupeKey: undefined,
       actorUserId: '00000000-0000-0000-0000-000000000099'
+    }));
+  });
+
+  it('POST /users/:userId/feedback uses source event id as a replay key', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        outcome: 'false_positive',
+        sourceEventId: '00000000-0000-0000-0000-000000000030'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    expect(emitUserRiskFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'user_risk.false_positive',
+      dedupeKey: 'review:00000000-0000-0000-0000-000000000030:false_positive'
     }));
   });
 
@@ -264,8 +286,10 @@ describe('userRiskRoutes', () => {
       orgId: ORG_ID,
       userId: USER_ID,
       eventType: 'training.completed',
+      dedupeKey: 'assignment:00000000-0000-0000-0000-000000000020',
       outcome: 'completed',
       actorUserId: '00000000-0000-0000-0000-000000000099',
+      occurredAt: new Date('2026-06-18T12:00:00.000Z'),
       metadata: expect.objectContaining({
         source: 'user_risk_training_completion',
         moduleId: 'security-awareness-baseline',

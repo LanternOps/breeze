@@ -82,6 +82,12 @@ const feedbackPayloadSchema = z.object({
   reason: z.string().trim().max(120).optional()
 });
 
+function trainingCompletionDedupeKey(payload: z.infer<typeof completeTrainingSchema>, completedAt: Date): string {
+  if (payload.assignmentEventId) return `assignment:${payload.assignmentEventId}`;
+  if (payload.moduleId) return `module:${payload.moduleId}`;
+  return `completed:${completedAt.toISOString()}`;
+}
+
 function resolveWriteOrgId(
   auth: {
     scope: 'system' | 'partner' | 'organization';
@@ -327,17 +333,21 @@ userRiskRoutes.post(
       return c.json({ error: 'User not found in this organization' }, 404);
     }
 
+    const completedAt = payload.completedAt ? new Date(payload.completedAt) : new Date();
+
     await emitUserRiskFeedback({
       orgId: resolved.orgId,
       userId,
       eventType: 'training.completed',
+      dedupeKey: trainingCompletionDedupeKey(payload, completedAt),
       outcome: 'completed',
       actorUserId: auth.user.id,
+      occurredAt: completedAt,
       metadata: {
         source: 'user_risk_training_completion',
         moduleId: payload.moduleId ?? null,
         assignmentEventId: payload.assignmentEventId ?? null,
-        completedAt: payload.completedAt ?? new Date().toISOString(),
+        completedAt: completedAt.toISOString(),
         note: payload.note ?? null
       }
     });
@@ -385,6 +395,7 @@ userRiskRoutes.post(
       orgId: resolved.orgId,
       userId,
       eventType,
+      dedupeKey: payload.sourceEventId ? `review:${payload.sourceEventId}:${payload.outcome}` : undefined,
       outcome: payload.outcome,
       actorUserId: auth.user.id,
       metadata: {

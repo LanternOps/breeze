@@ -705,6 +705,7 @@ describe('ticket triage suggestion routes', () => {
       orgId: STUB_TICKET.orgId,
       ticketId: TICKET_ID,
       eventType: 'ticket.triage_rejected',
+      dedupeKey: 'reject:ticket-triage-rules-v0:high:00000000-0000-4000-8000-000000000123',
       outcome: 'rejected',
       actorUserId: 'u-1',
       metadata: expect.objectContaining({

@@ -21,6 +21,7 @@ export async function emitAlertStateFeedback(options: {
   eventType: 'alert.acknowledged' | 'alert.resolved' | 'alert.suppressed' | 'alert.dismissed' | 'alert.reopened';
   outcome: 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed' | 'reopened';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -29,6 +30,7 @@ export async function emitAlertStateFeedback(options: {
     sourceType: 'alert',
     sourceId: options.alertId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},
@@ -42,6 +44,7 @@ export async function emitCorrelationFeedback(options: {
   eventType: 'correlation.accepted' | 'correlation.split' | 'correlation.merged' | 'correlation.dismissed';
   outcome: 'accepted' | 'split' | 'merged' | 'dismissed';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -50,6 +53,7 @@ export async function emitCorrelationFeedback(options: {
     sourceType: 'correlation',
     sourceId: options.correlationId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},
@@ -63,6 +67,7 @@ export async function emitAnomalyFeedback(options: {
   eventType: 'anomaly.dismissed' | 'anomaly.promoted' | 'anomaly.resolved';
   outcome: 'dismissed' | 'promoted' | 'resolved';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -71,6 +76,7 @@ export async function emitAnomalyFeedback(options: {
     sourceType: 'anomaly',
     sourceId: options.anomalyId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},
@@ -84,6 +90,7 @@ export async function emitRcaFeedback(options: {
   eventType: 'rca.helpful' | 'rca.not_helpful' | 'rca.edited' | 'rca.used_in_ticket';
   outcome: 'helpful' | 'not_helpful' | 'edited' | 'used_in_ticket';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -92,6 +99,7 @@ export async function emitRcaFeedback(options: {
     sourceType: 'rca',
     sourceId: options.rcaId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},
@@ -105,6 +113,7 @@ export async function emitRemediationSuggestionFeedback(options: {
   eventType: 'suggestion.accepted' | 'suggestion.edited' | 'suggestion.rejected' | 'suggestion.executed' | 'suggestion.failed';
   outcome: 'accepted' | 'edited' | 'rejected' | 'executed' | 'failed';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -113,6 +122,7 @@ export async function emitRemediationSuggestionFeedback(options: {
     sourceType: 'remediation',
     sourceId: options.suggestionId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},
@@ -126,6 +136,7 @@ export async function emitDeviceReliabilityFeedback(options: {
   eventType: 'device.failure_confirmed' | 'device.replaced' | 'device.false_alarm';
   outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -134,6 +145,7 @@ export async function emitDeviceReliabilityFeedback(options: {
     sourceType: 'device',
     sourceId: options.deviceId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},
@@ -147,6 +159,7 @@ export async function emitTicketTriageFeedback(options: {
   eventType: 'ticket.category_changed' | 'ticket.priority_changed' | 'ticket.assignee_changed' | 'ticket.triage_rejected' | 'ticket.resolved' | 'ticket.reopened';
   outcome: 'category_changed' | 'priority_changed' | 'assignee_changed' | 'rejected' | 'resolved' | 'reopened';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -155,6 +168,7 @@ export async function emitTicketTriageFeedback(options: {
     sourceType: 'ticket',
     sourceId: options.ticketId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},
@@ -168,6 +182,7 @@ export async function emitUserRiskFeedback(options: {
   eventType: 'user_risk.true_positive' | 'user_risk.false_positive' | 'training.assigned' | 'training.completed';
   outcome: 'true_positive' | 'false_positive' | 'assigned' | 'completed';
   actorUserId?: string | null;
+  dedupeKey?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
@@ -176,6 +191,7 @@ export async function emitUserRiskFeedback(options: {
     sourceType: 'user_risk',
     sourceId: options.userId,
     eventType: options.eventType,
+    dedupeKey: options.dedupeKey ?? undefined,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
     metadata: options.metadata ?? {},

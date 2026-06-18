@@ -1,4 +1,7 @@
 import {
+  sql,
+} from 'drizzle-orm';
+import {
   index,
   jsonb,
   pgTable,
@@ -22,6 +25,7 @@ export const mlFeedbackEvents = pgTable('ml_feedback_events', {
   sourceType: varchar('source_type', { length: 40 }).$type<MlFeedbackEventSourceType>().notNull(),
   sourceId: varchar('source_id', { length: 255 }).notNull(),
   eventType: varchar('event_type', { length: 80 }).$type<MlFeedbackEventType>().notNull(),
+  dedupeKey: varchar('dedupe_key', { length: 255 }),
   actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
   outcome: varchar('outcome', { length: 60 }).$type<MlFeedbackEventOutcome>().notNull(),
   confidence: real('confidence'),
@@ -35,6 +39,9 @@ export const mlFeedbackEvents = pgTable('ml_feedback_events', {
     table.eventType,
     table.occurredAt,
   ),
+  semanticDedupeIdx: uniqueIndex('ml_feedback_events_semantic_dedupe_uq')
+    .on(table.orgId, table.sourceType, table.sourceId, table.eventType, table.dedupeKey)
+    .where(sql`${table.dedupeKey} IS NOT NULL`),
   orgOccurredIdx: index('ml_feedback_events_org_occurred_idx').on(table.orgId, table.occurredAt),
   orgEventIdx: index('ml_feedback_events_org_event_idx').on(table.orgId, table.eventType, table.occurredAt),
   sourceIdx: index('ml_feedback_events_source_idx').on(table.sourceType, table.sourceId, table.occurredAt),

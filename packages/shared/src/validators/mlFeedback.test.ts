@@ -56,11 +56,17 @@ describe('mlFeedbackEventSchema', () => {
       sourceId: 'ticket-1',
       eventType: 'ticket.triage_rejected',
       outcome: 'rejected',
+      dedupeKey: 'suggestion:ticket-triage-rules-v0:high:hardware',
       metadata: { modelVersion: 'ticket-triage-rules-v0' },
     });
 
     expect(parsed.sourceType).toBe('ticket');
     expect(parsed.eventType).toBe('ticket.triage_rejected');
+    expect(parsed.dedupeKey).toBe('suggestion:ticket-triage-rules-v0:high:hardware');
+  });
+
+  it('rejects empty semantic dedupe keys', () => {
+    expect(() => mlFeedbackEventSchema.parse({ ...validEvent, dedupeKey: '' })).toThrow();
   });
 
   it('rejects metadata over the byte cap', () => {

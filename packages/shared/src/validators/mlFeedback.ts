@@ -99,6 +99,7 @@ export const mlFeedbackEventSchema = z.object({
   sourceType: z.enum(ML_FEEDBACK_SOURCE_TYPES),
   sourceId: z.string().min(1).max(255),
   eventType: z.enum(ML_FEEDBACK_EVENT_TYPES),
+  dedupeKey: z.string().trim().min(1).max(255).nullable().optional(),
   actorUserId: z.string().uuid().nullable().optional(),
   outcome: z.enum(ML_FEEDBACK_OUTCOMES),
   confidence: z.number().min(0).max(1).nullable().optional(),

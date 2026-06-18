@@ -1,4 +1,7 @@
 import {
+  sql,
+} from 'drizzle-orm';
+import {
   ML_FEEDBACK_METADATA_MAX_BYTES,
   getJsonByteLength,
   mlFeedbackEventSchema,
@@ -27,6 +30,25 @@ export async function emitMlFeedbackEvent(
 ): Promise<EmitMlFeedbackResult> {
   const event = mlFeedbackEventSchema.parse(input);
   assertMlFeedbackMetadataWithinLimit(event.metadata);
+  const conflictConfig = event.dedupeKey
+    ? {
+        target: [
+          mlFeedbackEvents.orgId,
+          mlFeedbackEvents.sourceType,
+          mlFeedbackEvents.sourceId,
+          mlFeedbackEvents.eventType,
+          mlFeedbackEvents.dedupeKey,
+        ],
+        where: sql`${mlFeedbackEvents.dedupeKey} IS NOT NULL`,
+      }
+    : {
+        target: [
+          mlFeedbackEvents.sourceType,
+          mlFeedbackEvents.sourceId,
+          mlFeedbackEvents.eventType,
+          mlFeedbackEvents.occurredAt,
+        ],
+      };
 
   const rows = await database
     .insert(mlFeedbackEvents)
@@ -35,20 +57,14 @@ export async function emitMlFeedbackEvent(
       sourceType: event.sourceType,
       sourceId: event.sourceId,
       eventType: event.eventType,
+      dedupeKey: event.dedupeKey ?? null,
       actorUserId: event.actorUserId ?? null,
       outcome: event.outcome,
       confidence: event.confidence ?? null,
       metadata: event.metadata,
       occurredAt: event.occurredAt,
     })
-    .onConflictDoNothing({
-      target: [
-        mlFeedbackEvents.sourceType,
-        mlFeedbackEvents.sourceId,
-        mlFeedbackEvents.eventType,
-        mlFeedbackEvents.occurredAt,
-      ],
-    })
+    .onConflictDoNothing(conflictConfig)
     .returning({ id: mlFeedbackEvents.id });
 
   const row = rows[0];

@@ -42,6 +42,16 @@ const rejectTriageSuggestionSchema = z.object({
   note: z.string().trim().max(500).optional(),
 });
 
+function triageSuggestionDedupeKey(suggestion: Awaited<ReturnType<typeof getTicketTriageSuggestion>>['suggestion']): string | undefined {
+  if (!suggestion) return undefined;
+  return [
+    'reject',
+    suggestion.modelVersion,
+    suggestion.priority ?? 'none',
+    suggestion.categoryId ?? 'none',
+  ].join(':');
+}
+
 const OPEN_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
 const CLOSED_STATUSES = ['resolved', 'closed'] as const;
 
@@ -537,6 +547,7 @@ ticketsRoutes.post(
       orgId: ticket.orgId,
       ticketId: id,
       eventType: 'ticket.triage_rejected',
+      dedupeKey: triageSuggestionDedupeKey(suggestion.suggestion),
       outcome: 'rejected',
       actorUserId: auth.user.id,
       metadata: {
