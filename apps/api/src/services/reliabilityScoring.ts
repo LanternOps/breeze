@@ -8,6 +8,7 @@ import {
   mlFeedbackEvents,
   type ReliabilityTopIssue,
 } from '../db/schema';
+import { shouldProduceMlOutput } from './mlFeatureFlags';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RELIABILITY_FACTOR_WEIGHTS = {
@@ -797,6 +798,9 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     .limit(1);
 
   if (!device) return false;
+  if (!(await shouldProduceMlOutput(device.orgId, 'ml.device_reliability.enabled'))) {
+    return false;
+  }
 
   const now = new Date();
   const lookbackStart = getSince(90);
@@ -1005,6 +1009,10 @@ async function runConcurrently<T>(
 }
 
 export async function computeAndPersistOrgReliability(orgId: string): Promise<{ orgId: string; devicesComputed: number }> {
+  if (!(await shouldProduceMlOutput(orgId, 'ml.device_reliability.enabled'))) {
+    return { orgId, devicesComputed: 0 };
+  }
+
   const orgDevices = await db
     .select({ id: devices.id })
     .from(devices)

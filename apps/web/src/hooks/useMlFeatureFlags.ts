@@ -9,6 +9,7 @@ export type MlFeatureFlagName =
   | 'ml.anomalies.create_alerts'
   | 'ml.remediation_suggestions.enabled'
   | 'ml.ticket_triage.enabled'
+  | 'ml.device_reliability.enabled'
   | 'ml.user_risk_v0.enabled'
   | 'ml.user_risk_v1.enabled';
 

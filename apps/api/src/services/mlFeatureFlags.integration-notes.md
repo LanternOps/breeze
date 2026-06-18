@@ -22,6 +22,7 @@ Future producers should gate the write-producing step, not just UI reads:
 - RCA generation: `ml.rca.enabled`
 - Remediation suggestions: `ml.remediation_suggestions.enabled`
 - Ticket triage suggestions: `ml.ticket_triage.enabled`
+- Device reliability scoring: `ml.device_reliability.enabled`
 - Existing user-risk rules: `ml.user_risk_v0.enabled`
 - Learned user-risk baseline: `ml.user_risk_v1.enabled`
 

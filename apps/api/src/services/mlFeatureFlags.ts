@@ -11,6 +11,7 @@ export const ML_FEATURE_FLAGS = [
   'ml.anomalies.create_alerts',
   'ml.remediation_suggestions.enabled',
   'ml.ticket_triage.enabled',
+  'ml.device_reliability.enabled',
   'ml.user_risk_v0.enabled',
   'ml.user_risk_v1.enabled',
 ] as const;
@@ -101,7 +102,11 @@ export function defaultMlFeatureFlagValue(
 ): boolean {
   assertMlFeatureFlagName(flag);
 
-  if (flag === 'ml.metric_rollups.enabled' || flag === 'ml.user_risk_v0.enabled') {
+  if (
+    flag === 'ml.metric_rollups.enabled'
+    || flag === 'ml.device_reliability.enabled'
+    || flag === 'ml.user_risk_v0.enabled'
+  ) {
     return true;
   }
 

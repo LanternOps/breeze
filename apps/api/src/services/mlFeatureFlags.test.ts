@@ -60,6 +60,7 @@ describe('mlFeatureFlags', () => {
     delete process.env.ML_DISABLED_FLAGS;
     delete process.env.ML_RCA_DISABLED;
     delete process.env.ML_ALERT_CORRELATION_DISABLED;
+    delete process.env.ML_DEVICE_RELIABILITY_DISABLED;
   });
 
   afterEach(() => {
@@ -83,6 +84,7 @@ describe('mlFeatureFlags', () => {
       partnerType: 'internal',
     })).toBe(true);
     expect(defaultMlFeatureFlagValue('ml.metric_rollups.enabled', { nodeEnv: 'production' })).toBe(true);
+    expect(defaultMlFeatureFlagValue('ml.device_reliability.enabled', { nodeEnv: 'production' })).toBe(true);
     expect(defaultMlFeatureFlagValue('ml.user_risk_v0.enabled', { nodeEnv: 'production' })).toBe(true);
     expect(defaultMlFeatureFlagValue('ml.rca.enabled', { nodeEnv: 'production' })).toBe(false);
   });
@@ -160,6 +162,14 @@ describe('mlFeatureFlags', () => {
       orgSettings: { mlFeatureFlags: { 'ml.anomalies.enabled': true } },
     })).toMatchObject({
       enabled: false,
+      source: 'global_kill_switch',
+    });
+
+    process.env.ML_DISABLED_FLAGS = '';
+    process.env.ML_DEVICE_RELIABILITY_DISABLED = 'true';
+    expect(resolveMlFeatureFlag('ml.device_reliability.enabled')).toMatchObject({
+      enabled: false,
+      defaultEnabled: true,
       source: 'global_kill_switch',
     });
   });
