@@ -1,0 +1,77 @@
+---
+// Site-wide CTA banner. Overrides Starlight's default <Banner/> component so it
+// renders on every docs page. Analytics (PostHog) show docs is the #2 traffic
+// destination but rarely funnels readers back to the product to convert, so this
+// strip points self-hosting readers at the managed Cloud beta and pricing.
+---
+
+<aside class="breeze-cta-banner" aria-label="Breeze Cloud">
+  <p class="breeze-cta-banner__text">
+    <strong>Rather not self-host?</strong> Breeze Cloud runs the full platform for you — public beta, US &amp; EU.
+  </p>
+  <div class="breeze-cta-banner__actions">
+    <a class="breeze-cta-banner__btn breeze-cta-banner__btn--primary" href="https://breezermm.com/#cloud-signup">Start Cloud free</a>
+    <a class="breeze-cta-banner__btn" href="https://breezermm.com/pricing/">See pricing</a>
+  </div>
+</aside>
+
+<style>
+  .breeze-cta-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem 1.25rem;
+    margin-bottom: 1.5rem;
+    padding: 0.7rem 0.9rem;
+    border: 1px solid var(--sl-color-hairline);
+    border-radius: 0.5rem;
+    background:
+      linear-gradient(
+        0deg,
+        color-mix(in srgb, var(--sl-color-accent) 8%, transparent),
+        color-mix(in srgb, var(--sl-color-accent) 8%, transparent)
+      ),
+      var(--sl-color-bg-nav);
+  }
+  .breeze-cta-banner__text {
+    margin: 0;
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-text);
+  }
+  .breeze-cta-banner__text strong {
+    color: var(--sl-color-white);
+  }
+  .breeze-cta-banner__actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+  .breeze-cta-banner__btn {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+    line-height: 1;
+    padding: 0.5rem 0.85rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--sl-color-hairline);
+    color: var(--sl-color-text);
+    text-decoration: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .breeze-cta-banner__btn:hover {
+    border-color: var(--sl-color-accent);
+  }
+  .breeze-cta-banner__btn--primary {
+    background: var(--sl-color-accent);
+    border-color: var(--sl-color-accent);
+    color: #0b0e12;
+  }
+  .breeze-cta-banner__btn--primary:hover {
+    background: var(--sl-color-accent-high);
+    border-color: var(--sl-color-accent-high);
+    color: #0b0e12;
+  }
+</style>
