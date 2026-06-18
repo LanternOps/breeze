@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { PackageCheck, Loader2 } from 'lucide-react';
+import { PackageCheck, Loader2, Plus, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
@@ -7,6 +7,10 @@ import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 import { fetchWithAuth } from '../../../stores/auth';
 import PatchAppRulesSection, { type PolicyAppRule } from './PatchAppRulesSection';
+import { Dialog } from '../../shared/Dialog';
+import UpdateRingForm, { type UpdateRingFormValues } from '../../patches/UpdateRingForm';
+import type { UpdateRingItem as UpdateRing } from '../../patches/UpdateRingList';
+import { normalizeRing } from '../../patches/patchHelpers';
 
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
@@ -24,16 +28,6 @@ type PatchDeploymentSettings = {
   scheduleDayOfWeek: string;
   scheduleDayOfMonth: number;
   rebootPolicy: RebootPolicy;
-};
-
-type UpdateRing = {
-  id: string;
-  name: string;
-  description?: string | null;
-  ringOrder: number;
-  deferralDays: number;
-  deadlineDays?: number | null;
-  gracePeriodHours: number;
 };
 
 const defaults: PatchDeploymentSettings = {
@@ -93,6 +87,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   );
   const [rings, setRings] = useState<UpdateRing[]>([]);
   const [ringsLoading, setRingsLoading] = useState(false);
+  const [ringsError, setRingsError] = useState<string>();
 
   const [settings, setSettings] = useState<PatchDeploymentSettings>(() => {
     const inline = effectiveLink?.inlineSettings as Partial<PatchDeploymentSettings> | undefined;
@@ -100,16 +95,30 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   });
   const [validationError, setValidationError] = useState<string>();
 
+  // Inline ring create/edit — the same editor as /patches, so an admin never
+  // has to leave the policy to author the ring it links to.
+  const [ringEditorOpen, setRingEditorOpen] = useState(false);
+  const [ringEditorMode, setRingEditorMode] = useState<'create' | 'edit'>('create');
+  const [ringSubmitting, setRingSubmitting] = useState(false);
+  const [ringEditorError, setRingEditorError] = useState<string>();
+
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
+    setRingsError(undefined);
     try {
       const response = await fetchWithAuth('/update-rings');
-      if (response.ok) {
-        const payload = await response.json();
-        setRings(Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : []);
-      }
-    } catch {
-      // Silently fail
+      // fetchWithAuth doesn't throw on 4xx/5xx — without this the picker would
+      // silently show an empty list (indistinguishable from "no rings") and a
+      // linked ring would blank out.
+      if (!response.ok) throw new Error('Failed to load update rings');
+      const payload = await response.json();
+      const raw = Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : [];
+      // Normalize so the form hydrates with typed defaults (a ring whose
+      // auto_approve JSONB is `{}` — the DB default / pre-#1317 rows — would
+      // otherwise fail the editor's zod validation and silently refuse to save).
+      setRings(raw.map((r: Record<string, unknown>) => normalizeRing(r)));
+    } catch (err) {
+      setRingsError(err instanceof Error ? err.message : 'Failed to load update rings');
     } finally {
       setRingsLoading(false);
     }
@@ -183,6 +192,59 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   const selectedRing = rings.find((r) => r.id === selectedRingId);
   const meta = FEATURE_META.patch;
 
+  const openCreateRing = () => {
+    setRingEditorError(undefined);
+    setRingEditorMode('create');
+    setRingEditorOpen(true);
+  };
+
+  const openEditRing = () => {
+    if (!selectedRing) return;
+    setRingEditorError(undefined);
+    setRingEditorMode('edit');
+    setRingEditorOpen(true);
+  };
+
+  const handleRingEditorSubmit = async (values: UpdateRingFormValues) => {
+    const editing = ringEditorMode === 'edit' && !!selectedRing;
+    setRingSubmitting(true);
+    setRingEditorError(undefined);
+    try {
+      const url = editing ? `/update-rings/${selectedRing!.id}` : '/update-rings';
+      // runaction-exempt: inline ringEditorError UI (banner in the ring editor dialog)
+      const response = await fetchWithAuth(url, {
+        method: editing ? 'PATCH' : 'POST',
+        body: JSON.stringify({
+          name: values.name,
+          description: values.description,
+          ringOrder: values.ringOrder,
+          deferralDays: values.deferralDays,
+          deadlineDays: values.deadlineDays,
+          gracePeriodHours: values.gracePeriodHours,
+          autoApprove: values.autoApprove,
+          categoryRules: values.categoryRules,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(editing ? 'Failed to update ring' : 'Failed to create update ring');
+      }
+      let createdId: string | undefined;
+      try {
+        const payload = await response.json();
+        createdId = payload?.data?.id ?? payload?.id;
+      } catch {
+        // response body is optional for our purposes
+      }
+      await fetchRings();
+      if (!editing && createdId) setSelectedRingId(createdId);
+      setRingEditorOpen(false);
+    } catch (err) {
+      setRingEditorError(err instanceof Error ? err.message : 'Failed to save ring');
+    } finally {
+      setRingSubmitting(false);
+    }
+  };
+
   return (
     <FeatureTabShell
       title={meta.label}
@@ -209,26 +271,47 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
             Loading rings...
           </div>
         ) : (
-          <select
-            data-testid="approval-ring-select"
-            value={selectedRingId}
-            onChange={(e) => setSelectedRingId(e.target.value)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="">No ring (manual approvals only)</option>
-            {rings.map((ring) => (
-              <option key={ring.id} value={ring.id}>
-                [{ring.ringOrder}] {ring.name}
-                {ring.deferralDays > 0 ? ` (${ring.deferralDays}d deferral)` : ''}
-              </option>
-            ))}
-          </select>
+          <div className="mt-2 flex items-center gap-2">
+            <select
+              data-testid="approval-ring-select"
+              value={selectedRingId}
+              onChange={(e) => setSelectedRingId(e.target.value)}
+              className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">No ring (manual approvals only)</option>
+              {rings.map((ring) => (
+                <option key={ring.id} value={ring.id}>
+                  [{ring.ringOrder}] {ring.name}
+                  {ring.deferralDays > 0 ? ` (${ring.deferralDays}d hold)` : ''}
+                </option>
+              ))}
+            </select>
+            {selectedRing && (
+              <button
+                type="button"
+                onClick={openEditRing}
+                className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Edit
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={openCreateRing}
+              className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              New ring
+            </button>
+          </div>
         )}
+        {ringsError && <p className="mt-2 text-xs text-destructive">{ringsError}</p>}
         {selectedRing && (
           <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
-            <span>Deferral: {selectedRing.deferralDays === 0 ? 'None' : `${selectedRing.deferralDays}d`}</span>
+            <span>Hold: {selectedRing.deferralDays === 0 ? 'None' : `${selectedRing.deferralDays}d`}</span>
             <span>Deadline: {selectedRing.deadlineDays == null ? 'None' : `${selectedRing.deadlineDays}d`}</span>
-            <span>Grace: {selectedRing.gracePeriodHours}h</span>
+            <span>Reboot grace: {selectedRing.gracePeriodHours}h</span>
           </div>
         )}
       </div>
@@ -321,6 +404,59 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
           ))}
         </div>
       </div>
+
+      {/* Inline ring editor */}
+      <Dialog
+        open={ringEditorOpen}
+        onClose={() => setRingEditorOpen(false)}
+        title={ringEditorMode === 'edit' ? 'Edit update ring' : 'Create update ring'}
+        maxWidth="2xl"
+        alignTop
+        className="flex max-h-[90vh] flex-col"
+      >
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <h2 className="text-lg font-semibold">
+            {ringEditorMode === 'edit' ? 'Edit update ring' : 'Create update ring'}
+          </h2>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => setRingEditorOpen(false)}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            &times;
+          </button>
+        </div>
+        <div className="overflow-y-auto px-6 py-5">
+          {ringEditorError && (
+            <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {ringEditorError}
+            </div>
+          )}
+          <UpdateRingForm
+            key={ringEditorMode === 'edit' ? selectedRing?.id ?? 'edit' : 'new'}
+            onSubmit={handleRingEditorSubmit}
+            onCancel={() => setRingEditorOpen(false)}
+            loading={ringSubmitting}
+            submitLabel={ringEditorMode === 'edit' ? 'Save Changes' : 'Create Ring'}
+            usage={ringEditorMode === 'edit' && selectedRing ? { deviceCount: selectedRing.deviceCount } : undefined}
+            defaultValues={
+              ringEditorMode === 'edit' && selectedRing
+                ? {
+                    name: selectedRing.name,
+                    description: selectedRing.description ?? undefined,
+                    ringOrder: selectedRing.ringOrder,
+                    deferralDays: selectedRing.deferralDays,
+                    deadlineDays: selectedRing.deadlineDays,
+                    gracePeriodHours: selectedRing.gracePeriodHours,
+                    autoApprove: selectedRing.autoApprove ?? { enabled: false, severities: [], deferralDays: 0 },
+                    categoryRules: selectedRing.categoryRules,
+                  }
+                : undefined
+            }
+          />
+        </div>
+      </Dialog>
     </FeatureTabShell>
   );
 }

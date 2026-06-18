@@ -331,6 +331,74 @@ export interface InvoiceDetail {
   lines: InvoiceLine[];
 }
 
+export type QuoteStatus =
+  | 'draft'
+  | 'sent'
+  | 'viewed'
+  | 'accepted'
+  | 'declined'
+  | 'expired'
+  | 'converted';
+
+export interface QuoteSummary {
+  id: string;
+  quoteNumber: string | null;
+  status: string;
+  currencyCode: string;
+  issueDate: string | null;
+  expiryDate: string | null;
+  total: string;
+}
+
+export interface QuoteBlock {
+  id: string;
+  blockType: string;
+  content: Record<string, unknown> | null;
+  sortOrder: number;
+}
+
+export interface QuoteLine {
+  id: string;
+  blockId?: string | null;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  lineTotal: string;
+  recurrence: string;
+  customerVisible: boolean;
+  sortOrder: number;
+}
+
+export interface QuoteHeader extends QuoteSummary {
+  introNotes?: string | null;
+  terms?: string | null;
+  subtotal?: string;
+  taxTotal?: string;
+  oneTimeTotal?: string;
+  monthlyRecurringTotal?: string;
+  annualRecurringTotal?: string;
+  billToName?: string | null;
+}
+
+export interface QuoteDetail {
+  quote: QuoteHeader;
+  blocks: QuoteBlock[];
+  lines: QuoteLine[];
+}
+
+export interface QuoteBranding {
+  partnerName: string;
+  logoUrl: string | null;
+  primaryColor: string | null;
+}
+
+export interface PublicQuoteDetail {
+  quote: QuoteHeader;
+  blocks: QuoteBlock[];
+  lines: QuoteLine[];
+  branding: QuoteBranding;
+}
+
 export interface Profile {
   id: string;
   orgId: string;
@@ -552,5 +620,82 @@ export const portalApi = {
       statusCode: response.statusCode,
       headers: response.headers
     };
+  },
+
+  getQuotes: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<PaginatedResult<QuoteSummary>> => {
+    const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 200 });
+    const response = await apiGet<{ data: QuoteSummary[]; pagination: Pagination }>(
+      `/portal/quotes${query}`,
+      config
+    );
+    return mapPaginatedData(response);
+  },
+
+  getQuote: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: QuoteDetail }>> => {
+    return apiGet<{ data: QuoteDetail }>(`/portal/quotes/${id}`, config);
+  },
+
+  acceptQuote: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { invoiceId: string; status: string } }>> => {
+    return apiPost<{ data: { invoiceId: string; status: string } }>(
+      `/portal/quotes/${id}/accept`,
+      {},
+      config
+    );
+  },
+
+  declineQuote: async (
+    id: string,
+    reason: string | undefined,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { status: string } }>> => {
+    return apiPost<{ data: { status: string } }>(
+      `/portal/quotes/${id}/decline`,
+      { reason },
+      config
+    );
+  },
+
+  // Public, token-gated proposal access for prospects without a portal account.
+  // These hit /quotes/public/* (NOT /portal/*) — no auth cookie required.
+  getPublicQuote: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicQuoteDetail }>> => {
+    return apiGet<{ data: PublicQuoteDetail }>(
+      `/quotes/public/${encodeURIComponent(token)}`,
+      config
+    );
+  },
+
+  acceptPublicQuote: async (
+    token: string,
+    signerName: string,
+    signerEmail?: string
+  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null } }>> => {
+    return apiPost<{ data: { status: string; invoiceNumber: string | null } }>(
+      `/quotes/public/${encodeURIComponent(token)}/accept`,
+      { signerName, signerEmail },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  declinePublicQuote: async (
+    token: string,
+    reason?: string
+  ): Promise<ApiResponse<{ data: { status: string } }>> => {
+    return apiPost<{ data: { status: string } }>(
+      `/quotes/public/${encodeURIComponent(token)}/decline`,
+      { reason },
+      { redirectOnUnauthorized: false }
+    );
   }
 };

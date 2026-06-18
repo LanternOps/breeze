@@ -1,0 +1,17 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import QuoteDetailView from '../../components/portal/QuoteDetailView';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const { id } = Astro.params;
+const response = await portalApi.getQuote(id!, buildServerApiConfig(Astro.request));
+
+if (response.statusCode === 401) {
+  return Astro.redirect('/login');
+}
+---
+
+<PortalLayout title="Proposal">
+  <QuoteDetailView detail={response.data?.data ?? null} error={response.error} client:load />
+</PortalLayout>

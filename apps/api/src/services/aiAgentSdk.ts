@@ -632,6 +632,18 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 // ============================================
 
 /**
+ * Script-builder "apply" tools push their payload to the editor through the
+ * SSE tool_result event (see createSessionPostToolUse). Keep in sync with
+ * scriptBuilderTools.ts and the frontend scriptAiStore APPLY_TOOL_NAMES.
+ */
+const SCRIPT_APPLY_TOOL_NAMES = new Set(['apply_script_code', 'apply_script_metadata']);
+function isScriptApplyTool(toolName: string): boolean {
+  // Tool name may arrive bare or as "mcp__script_builder__apply_script_code".
+  const bare = toolName.includes('__') ? toolName.split('__').pop()! : toolName;
+  return SCRIPT_APPLY_TOOL_NAMES.has(bare);
+}
+
+/**
  * Creates a postToolUse callback that reads auth/auditSnapshot from the active
  * session and publishes tool_result events to the session's event bus.
  */
@@ -647,12 +659,24 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     const orgId = session.auth.orgId ?? undefined;
     const guardrailCheck = checkGuardrails(toolName, input);
 
+    // Script-builder "apply" tools deliver their payload (code / metadata) to
+    // the editor via this SSE tool_result event, NOT the chat transcript.
+    // compactToolResultForChat strips the script body for LLM-context/security
+    // reasons (#568), which also emptied the event the editor reads — so the
+    // assistant could no longer insert into the page. Re-attach the raw `input`
+    // for the UI only; `parsedOutput` (persisted row + LLM content) stays
+    // compacted. The editor reads these fields in scriptAiStore.
+    const uiOutput =
+      !isError && isScriptApplyTool(toolName) && input && typeof input === 'object'
+        ? { ...(parsedOutput as Record<string, unknown>), ...(input as Record<string, unknown>) }
+        : parsedOutput;
+
     // 1. Emit SSE events FIRST — these are synchronous and must not be blocked by DB writes.
     //    This ensures the UI always receives tool results even if persistence fails.
     session.eventBus.publish({
       type: 'tool_result',
       toolUseId: toolUseId ?? '',
-      output: parsedOutput,
+      output: uiOutput,
       isError,
     });
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   createQuoteSchema, quoteLineInputSchema, quoteBlockInputSchema, listQuotesQuerySchema,
+  acceptQuoteSchema, declineQuoteSchema,
 } from './quotes';
 
 describe('quote validators', () => {
@@ -24,5 +25,24 @@ describe('quote validators', () => {
 
   it('defaults list limit to 50', () => {
     expect(listQuotesQuerySchema.parse({}).limit).toBe(50);
+  });
+});
+
+describe('acceptQuoteSchema', () => {
+  it('requires a non-empty signer name', () => {
+    expect(acceptQuoteSchema.safeParse({ signerName: '' }).success).toBe(false);
+    expect(acceptQuoteSchema.safeParse({ signerName: 'Jane Buyer' }).success).toBe(true);
+  });
+  it('accepts an optional email and rejects a malformed one', () => {
+    expect(acceptQuoteSchema.safeParse({ signerName: 'Jane', signerEmail: 'jane@x.com' }).success).toBe(true);
+    expect(acceptQuoteSchema.safeParse({ signerName: 'Jane', signerEmail: 'not-an-email' }).success).toBe(false);
+  });
+});
+
+describe('declineQuoteSchema', () => {
+  it('allows an optional bounded reason', () => {
+    expect(declineQuoteSchema.safeParse({}).success).toBe(true);
+    expect(declineQuoteSchema.safeParse({ reason: 'Too expensive' }).success).toBe(true);
+    expect(declineQuoteSchema.safeParse({ reason: 'x'.repeat(5001) }).success).toBe(false);
   });
 });

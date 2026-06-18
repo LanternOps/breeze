@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useForm, useFieldArray } from 'react-hook-form';
+import { useForm, useFieldArray, type UseFormRegisterReturn } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2 } from 'lucide-react';
@@ -30,10 +30,13 @@ const ringSchema = z.object({
   name: z.string().min(1, 'Ring name is required'),
   description: z.string().optional(),
   ringOrder: z.coerce.number().int().min(0).max(100),
+  // Fallback hold for category overrides that don't set their own. Kept in sync
+  // with the default rule's hold on submit (see onSubmit transform below) so it
+  // never surfaces as an orphaned "deferral" field in the UI.
   deferralDays: z.coerce.number().int().min(0).max(365),
   deadlineDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
   gracePeriodHours: z.coerce.number().int().min(0).max(168),
-  // Ring-owned approval gate (#1317): the WHAT-installs auto-approval.
+  // Ring-owned approval gate (#1317): the default rule of the approval policy.
   autoApprove: ringAutoApproveFormSchema,
   categoryRules: z.array(categoryRuleSchema).optional(),
 });
@@ -46,23 +49,121 @@ type UpdateRingFormProps = {
   defaultValues?: Partial<UpdateRingFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  /** When editing, surfaces the blast radius of a change. */
+  usage?: { deviceCount?: number };
 };
+
+type Severity = 'critical' | 'important' | 'moderate' | 'low';
 
 const categoryOptions = [
   { value: 'security', label: 'Security Updates' },
   { value: 'feature', label: 'Feature Updates' },
-  { value: 'driver', label: 'Drivers' },
   { value: 'firmware', label: 'Firmware' },
+  { value: 'driver', label: 'Drivers' },
   { value: 'third_party_app', label: 'Third-Party Apps' },
   { value: 'definition', label: 'Definition Updates' },
 ];
 
-const severityOptions = [
-  { value: 'critical' as const, label: 'Critical', color: 'border-red-500/40 bg-red-500/10 text-red-700' },
-  { value: 'important' as const, label: 'Important', color: 'border-orange-500/40 bg-orange-500/10 text-orange-700' },
-  { value: 'moderate' as const, label: 'Moderate', color: 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700' },
-  { value: 'low' as const, label: 'Low', color: 'border-blue-500/40 bg-blue-500/10 text-blue-700' },
+// Severity is a domain-ordered scale (Critical > Important > Moderate > Low),
+// distinct from the success/warning/error *status* tokens. Each step uses a
+// tinted fill with a -700/-800 foreground that clears 4.5:1 in light mode, plus
+// a -300 dark-mode foreground — the previous `text-yellow-700 on yellow/10`
+// chip failed contrast and had no dark variant.
+const severityOptions: { value: Severity; label: string; active: string }[] = [
+  { value: 'critical', label: 'Critical', active: 'border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-300' },
+  { value: 'important', label: 'Important', active: 'border-orange-500/40 bg-orange-500/15 text-orange-700 dark:text-orange-300' },
+  { value: 'moderate', label: 'Moderate', active: 'border-yellow-500/50 bg-yellow-500/15 text-yellow-800 dark:text-yellow-300' },
+  { value: 'low', label: 'Low', active: 'border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300' },
 ];
+
+const inputClass =
+  'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+const labelClass = 'text-xs font-medium text-muted-foreground';
+
+/** A switch styled toggle that is a real checkbox underneath (keeps `toBeChecked`
+ *  semantics and reuses the app's primary-fill selected-state vocabulary). */
+function ApproveToggle({
+  checked,
+  field,
+  testId,
+}: {
+  checked: boolean;
+  field: UseFormRegisterReturn;
+  testId?: string;
+}) {
+  return (
+    <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
+      <span className="relative inline-flex h-5 w-9 shrink-0 items-center">
+        <input
+          type="checkbox"
+          {...field}
+          data-testid={testId}
+          aria-label="Auto-approve patches"
+          className="peer sr-only"
+        />
+        <span className="absolute inset-0 rounded-full bg-muted transition-colors peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-1" />
+        <span className="pointer-events-none absolute left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-4" />
+      </span>
+      <span className={cn('font-medium', checked ? 'text-foreground' : 'text-muted-foreground')}>
+        {checked ? 'Auto-approve' : 'Manual'}
+      </span>
+    </label>
+  );
+}
+
+function SeverityChips({
+  selected,
+  onToggle,
+  testIdPrefix,
+}: {
+  selected: Severity[];
+  onToggle: (s: Severity) => void;
+  testIdPrefix?: string;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {severityOptions.map((sev) => {
+        const active = selected.includes(sev.value);
+        return (
+          <button
+            key={sev.value}
+            type="button"
+            aria-pressed={active}
+            data-testid={testIdPrefix ? `${testIdPrefix}-${sev.value}` : undefined}
+            onClick={() => onToggle(sev.value)}
+            className={cn(
+              'rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+              active
+                ? sev.active
+                : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+            )}
+          >
+            {sev.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function HoldField({ field, testId }: { field: UseFormRegisterReturn; testId?: string }) {
+  return (
+    <div className="shrink-0">
+      <label className={labelClass}>Hold after release</label>
+      <div className="mt-1.5 flex items-center gap-2">
+        <input
+          type="number"
+          min={0}
+          max={365}
+          {...field}
+          data-testid={testId}
+          className="h-10 w-20 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <span className="text-xs text-muted-foreground">days</span>
+      </div>
+    </div>
+  );
+}
 
 export default function UpdateRingForm({
   onSubmit,
@@ -70,17 +171,15 @@ export default function UpdateRingForm({
   defaultValues,
   submitLabel = 'Save Ring',
   loading,
+  usage,
 }: UpdateRingFormProps) {
-  const {
-    register,
-    handleSubmit,
-    watch,
-    setValue,
-    control,
-    formState: { errors, isSubmitting },
-  } = useForm<z.input<typeof ringSchema>, unknown, z.output<typeof ringSchema>>({
-    resolver: zodResolver(ringSchema),
-    defaultValues: {
+  // Normalize incoming defaults: legacy category rules can carry a null
+  // `deferralDaysOverride` (meaning "inherit the ring hold"). We resolve that to
+  // the current inherited number up front so every override row shows a real
+  // value instead of a blank field. Note: this pins a previously-inheriting
+  // override to a concrete hold, so re-saving converts inherit -> explicit.
+  const initialValues = useMemo<Partial<z.input<typeof ringSchema>>>(() => {
+    const merged = {
       name: '',
       description: '',
       ringOrder: 0,
@@ -90,23 +189,42 @@ export default function UpdateRingForm({
       autoApprove: { enabled: false, severities: [], deferralDays: 0 },
       categoryRules: [],
       ...defaultValues,
-    },
+    } satisfies Partial<UpdateRingFormValues>;
+    const inheritedHold = merged.autoApprove?.deferralDays ?? merged.deferralDays ?? 0;
+    return {
+      ...merged,
+      categoryRules: (merged.categoryRules ?? []).map((r) => ({
+        ...r,
+        autoApproveSeverities: r.autoApproveSeverities ?? [],
+        deferralDaysOverride: r.deferralDaysOverride ?? inheritedHold,
+      })),
+    };
+    // defaultValues is only read on mount by react-hook-form, so the empty
+    // dependency array is intentional.
+  }, []);
+
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    control,
+    formState: { errors, isSubmitting },
+  } = useForm<z.input<typeof ringSchema>, unknown, z.output<typeof ringSchema>>({
+    resolver: zodResolver(ringSchema),
+    defaultValues: initialValues,
   });
 
-  const { fields, append, remove } = useFieldArray({
-    control,
-    name: 'categoryRules',
-  });
+  const { fields, append, remove } = useFieldArray({ control, name: 'categoryRules' });
 
   const watchCategoryRules = watch('categoryRules') ?? [];
   const usedCategories = watchCategoryRules.map((r) => r.category);
   const availableCategories = categoryOptions.filter((c) => !usedCategories.includes(c.value));
 
   const autoApprove = watch('autoApprove');
+  const isLoading = loading ?? isSubmitting;
 
-  const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
-
-  const toggleAutoApproveSeverity = (severity: 'critical' | 'important' | 'moderate' | 'low') => {
+  const toggleDefaultSeverity = (severity: Severity) => {
     const current = autoApprove?.severities ?? [];
     const next = current.includes(severity)
       ? current.filter((s) => s !== severity)
@@ -114,269 +232,233 @@ export default function UpdateRingForm({
     setValue('autoApprove.severities', next, { shouldDirty: true });
   };
 
-  const toggleSeverity = (ruleIndex: number, severity: string) => {
+  const toggleOverrideSeverity = (ruleIndex: number, severity: Severity) => {
     const current = watchCategoryRules[ruleIndex]?.autoApproveSeverities ?? [];
-    const next = current.includes(severity as 'critical' | 'important' | 'moderate' | 'low')
+    const next = current.includes(severity)
       ? current.filter((s) => s !== severity)
-      : [...current, severity as 'critical' | 'important' | 'moderate' | 'low'];
+      : [...current, severity];
     setValue(`categoryRules.${ruleIndex}.autoApproveSeverities`, next, { shouldDirty: true });
   };
 
+  const addOverride = () => {
+    if (availableCategories.length === 0) return;
+    append({
+      category: availableCategories[0].value,
+      autoApprove: true,
+      autoApproveSeverities: autoApprove?.severities ?? [],
+      // Pre-fill from the default rule's hold so the override is explicit and
+      // never blank — the old `—` placeholder read as broken.
+      deferralDaysOverride: autoApprove?.deferralDays ?? 0,
+    });
+  };
+
   return (
-    <form onSubmit={handleSubmit((values) => onSubmit?.(values))} className="space-y-4">
-      {/* Ring Details + Timing — single row */}
-      <div className="grid gap-3 sm:grid-cols-6">
+    <form
+      onSubmit={handleSubmit((values) => {
+        // The default rule's hold doubles as the ring's legacy fallback
+        // `deferralDays` (the orphaned top-level field is gone from the UI). A
+        // disabled default rule is "manual", so it must not persist a stale hold.
+        const hold = values.autoApprove.enabled ? values.autoApprove.deferralDays : 0;
+        return onSubmit?.({
+          ...values,
+          deferralDays: hold,
+          autoApprove: { ...values.autoApprove, deferralDays: hold },
+        });
+      })}
+      className="space-y-6"
+    >
+      {/* Zone A — Identity */}
+      <div className="grid gap-4 sm:grid-cols-3">
         <div className="sm:col-span-2">
-          <label className="text-xs font-medium">Name</label>
-          <input
-            {...register('name')}
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            placeholder="e.g. Pilot, Broad"
-          />
-          {errors.name && <p className="mt-0.5 text-xs text-destructive">{errors.name.message}</p>}
+          <label className={labelClass}>Name</label>
+          <input {...register('name')} className={cn(inputClass, 'mt-1.5')} placeholder="e.g. Pilot, Broad" />
+          {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name.message}</p>}
         </div>
         <div>
-          <label className="text-xs font-medium">Order</label>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            {...register('ringOrder')}
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-medium">Deferral (days)</label>
-          <input
-            type="number"
-            min={0}
-            max={365}
-            {...register('deferralDays')}
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-medium">Deadline (days)</label>
-          <input
-            type="number"
-            min={0}
-            max={365}
-            {...register('deadlineDays')}
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            placeholder="None"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-medium">Grace (hours)</label>
-          <input
-            type="number"
-            min={0}
-            max={168}
-            {...register('gracePeriodHours')}
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
+          <label className={labelClass}>Rollout order</label>
+          <input type="number" min={0} max={100} {...register('ringOrder')} className={cn(inputClass, 'mt-1.5')} />
+          <p className="mt-1 text-xs text-muted-foreground">Lower numbers roll out first.</p>
         </div>
       </div>
 
-      {/* Description — compact */}
       <div>
-        <label className="text-xs font-medium">Description</label>
+        <label className={labelClass}>Description</label>
         <input
           {...register('description')}
-          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          placeholder="Optional description"
+          className={cn(inputClass, 'mt-1.5')}
+          placeholder="Optional — what this ring is for"
         />
       </div>
 
-      {/* Ring-level Auto-Approve (#1317) — the ring owns approval rules */}
-      <div className="rounded-md border p-3" data-testid="ring-auto-approve-section">
-        <label className="flex items-center gap-2 text-sm font-semibold">
-          <input
-            type="checkbox"
-            {...register('autoApprove.enabled')}
-            data-testid="ring-auto-approve-enabled"
-            className="h-4 w-4 rounded border-muted"
-          />
-          Auto-approve patches
-        </label>
+      {/* Zone A — Install enforcement */}
+      <div>
+        <h3 className="text-sm font-semibold">Install enforcement</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          When off, every patch in this ring requires manual approval. When on, patches matching the
-          selected severities auto-approve after the deferral window below.
+          How long devices have to install approved patches, and how long a user can defer the reboot.
+          Reboot behavior itself is set per policy on the Patch tab.
         </p>
-
-        {autoApprove?.enabled && (
-          <div className="mt-3 space-y-3">
-            <div>
-              <span className="text-xs font-medium">Auto-approve severities</span>
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {severityOptions.map((sev) => (
-                  <button
-                    key={sev.value}
-                    type="button"
-                    data-testid={`ring-auto-approve-severity-${sev.value}`}
-                    onClick={() => toggleAutoApproveSeverity(sev.value)}
-                    className={cn(
-                      'rounded-full border px-2.5 py-1 text-xs font-medium transition',
-                      (autoApprove.severities ?? []).includes(sev.value)
-                        ? sev.color
-                        : 'border-muted text-muted-foreground hover:text-foreground'
-                    )}
-                  >
-                    {sev.label}
-                  </button>
-                ))}
-              </div>
-              {errors.autoApprove?.severities && (
-                <p className="mt-1 text-xs text-destructive">
-                  {errors.autoApprove.severities.message}
-                </p>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium">Deferral (days after release)</label>
-              <input
-                type="number"
-                min={0}
-                max={365}
-                data-testid="ring-auto-approve-deferral"
-                {...register('autoApprove.deferralDays')}
-                className="h-8 w-20 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className={labelClass}>Deadline (days)</label>
+            <input
+              type="number"
+              min={0}
+              max={365}
+              {...register('deadlineDays', {
+                setValueAs: (v) => (v === '' || v == null ? null : Number(v)),
+              })}
+              className={cn(inputClass, 'mt-1.5')}
+              placeholder="No deadline"
+            />
           </div>
-        )}
+          <div>
+            <label className={labelClass}>Reboot grace (hours)</label>
+            <input type="number" min={0} max={168} {...register('gracePeriodHours')} className={cn(inputClass, 'mt-1.5')} />
+          </div>
+        </div>
       </div>
 
-      {/* Category Rules */}
+      {/* Zone B — Approval policy */}
       <div>
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Category Rules</h3>
-          {availableCategories.length > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                append({
-                  category: availableCategories[0].value,
-                  autoApprove: false,
-                  autoApproveSeverities: [],
-                  deferralDaysOverride: null,
-                })
-              }
-              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted transition"
-            >
-              <Plus className="h-3 w-3" />
-              Add
-            </button>
-          )}
+          <h3 className="text-sm font-semibold">Approval policy</h3>
+          <button
+            type="button"
+            onClick={addOverride}
+            disabled={availableCategories.length === 0}
+            className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add override
+          </button>
         </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          What auto-approves in this ring, and how long to hold a patch after its vendor release. The
+          default applies to every category; add an override to treat one differently.
+        </p>
 
-        {fields.length === 0 ? (
-          <div className="mt-2 rounded-md border border-dashed px-4 py-3 text-center">
-            <p className="text-xs text-muted-foreground">No rules — all patches require manual approval.</p>
-            {availableCategories.length > 0 && (
-              <button
-                type="button"
-                onClick={() =>
-                  append({
-                    category: availableCategories[0].value,
-                    autoApprove: false,
-                    autoApproveSeverities: [],
-                    deferralDaysOverride: null,
-                  })
-                }
-                className="mt-2 inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 transition"
-              >
-                <Plus className="h-3 w-3" />
-                Add Category Rule
-              </button>
+        <div className="mt-3 space-y-2">
+          {/* Default rule (= ring-level auto-approve) */}
+          <div className="rounded-md border bg-muted/30 p-4" data-testid="ring-auto-approve-section">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">All categories</span>
+                <span className="rounded-full border bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Default
+                </span>
+              </div>
+              <ApproveToggle
+                checked={!!autoApprove?.enabled}
+                field={register('autoApprove.enabled')}
+                testId="ring-auto-approve-enabled"
+              />
+            </div>
+
+            {autoApprove?.enabled ? (
+              <div className="mt-4 flex flex-wrap items-end justify-between gap-4 border-t pt-4">
+                <div>
+                  <label className={labelClass}>Auto-approve severities</label>
+                  <div className="mt-1.5">
+                    <SeverityChips
+                      selected={(autoApprove.severities ?? []) as Severity[]}
+                      onToggle={toggleDefaultSeverity}
+                      testIdPrefix="ring-auto-approve-severity"
+                    />
+                  </div>
+                  {errors.autoApprove?.severities && (
+                    <p className="mt-1.5 text-xs text-destructive">{errors.autoApprove.severities.message}</p>
+                  )}
+                </div>
+                <HoldField field={register('autoApprove.deferralDays')} testId="ring-auto-approve-deferral" />
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Every patch in this ring needs manual approval.
+              </p>
             )}
           </div>
-        ) : (
-          <div className="mt-2 space-y-2">
-            {fields.map((field, index) => {
-              const rule = watchCategoryRules[index];
-              return (
-                <div key={field.id} className="flex items-center gap-2 rounded-md border px-3 py-2">
-                  {/* Category */}
+
+          {/* Category overrides */}
+          {fields.map((field, index) => {
+            const rule = watchCategoryRules[index];
+            return (
+              <div key={field.id} className="rounded-md border bg-card p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <select
                     {...register(`categoryRules.${index}.category`)}
-                    className="h-8 w-36 shrink-0 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                    aria-label="Category"
+                    className="h-10 w-48 shrink-0 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   >
                     {categoryOptions
                       .filter((c) => c.value === rule?.category || !usedCategories.includes(c.value))
                       .map((c) => (
-                        <option key={c.value} value={c.value}>{c.label}</option>
+                        <option key={c.value} value={c.value}>
+                          {c.label}
+                        </option>
                       ))}
                   </select>
-
-                  {/* Auto-approve toggle */}
-                  <label className="flex items-center gap-1.5 text-xs shrink-0">
-                    <input
-                      type="checkbox"
-                      {...register(`categoryRules.${index}.autoApprove`)}
-                      className="h-3.5 w-3.5 rounded border-muted"
+                  <div className="flex items-center gap-3">
+                    <ApproveToggle
+                      checked={!!rule?.autoApprove}
+                      field={register(`categoryRules.${index}.autoApprove`)}
                     />
-                    Auto-approve
-                  </label>
-
-                  {/* Severity chips (inline, shown when auto-approve) */}
-                  {rule?.autoApprove && (
-                    <div className="flex gap-1">
-                      {severityOptions.map((sev) => (
-                        <button
-                          key={sev.value}
-                          type="button"
-                          onClick={() => toggleSeverity(index, sev.value)}
-                          className={cn(
-                            'rounded-full border px-2 py-0.5 text-[10px] font-medium transition',
-                            (rule.autoApproveSeverities ?? []).includes(sev.value)
-                              ? sev.color
-                              : 'border-muted text-muted-foreground hover:text-foreground'
-                          )}
-                        >
-                          {sev.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Deferral override */}
-                  <div className="ml-auto flex items-center gap-1 shrink-0">
-                    <span className="text-[10px] text-muted-foreground">Deferral</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={365}
-                      {...register(`categoryRules.${index}.deferralDaysOverride`)}
-                      className="h-8 w-14 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                      placeholder="—"
-                    />
+                    <button
+                      type="button"
+                      aria-label="Remove override"
+                      onClick={() => remove(index)}
+                      className="rounded-md p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
-
-                  {/* Delete */}
-                  <button
-                    type="button"
-                    onClick={() => remove(index)}
-                    className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
                 </div>
-              );
-            })}
-          </div>
-        )}
+
+                {rule?.autoApprove ? (
+                  <div className="mt-4 flex flex-wrap items-end justify-between gap-4 border-t pt-4">
+                    <div>
+                      <label className={labelClass}>Auto-approve severities</label>
+                      <div className="mt-1.5">
+                        <SeverityChips
+                          selected={(rule.autoApproveSeverities ?? []) as Severity[]}
+                          onToggle={(s) => toggleOverrideSeverity(index, s)}
+                        />
+                      </div>
+                    </div>
+                    <HoldField field={register(`categoryRules.${index}.deferralDaysOverride`)} />
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Patches in this category need manual approval.
+                  </p>
+                )}
+              </div>
+            );
+          })}
+
+          {fields.length === 0 && (
+            <p className="px-1 text-xs text-muted-foreground">
+              All categories follow the default. Add an override to treat one differently.
+            </p>
+          )}
+        </div>
       </div>
 
+      {/* Blast-radius note (edit only) */}
+      {usage?.deviceCount != null && usage.deviceCount > 0 && (
+        <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          This ring applies to <span className="font-medium text-foreground">{usage.deviceCount}</span>{' '}
+          {usage.deviceCount === 1 ? 'device' : 'devices'}. Changes take effect on their next check-in.
+        </p>
+      )}
+
       {/* Actions */}
-      <div className="flex items-center justify-end gap-3 pt-2">
+      <div className="flex items-center justify-end gap-3 border-t pt-4">
         {onCancel && (
           <button
             type="button"
             onClick={onCancel}
-            className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             disabled={isLoading}
+            className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:opacity-50"
           >
             Cancel
           </button>
@@ -384,7 +466,7 @@ export default function UpdateRingForm({
         <button
           type="submit"
           disabled={isLoading}
-          className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+          className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
           {isLoading ? 'Saving...' : submitLabel}
         </button>

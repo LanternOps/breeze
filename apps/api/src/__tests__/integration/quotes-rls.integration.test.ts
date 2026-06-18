@@ -343,4 +343,19 @@ describe('quotes RLS isolation (breeze_app)', () => {
     );
     expect(visibleToA).toHaveLength(0);
   });
+
+  // (10) Service-layer accept forge. acceptQuote loads the quote by id; under an
+  // orgA breeze_app context, orgB's quote is invisible (RLS), so acceptQuote
+  // must 404 rather than convert a foreign tenant's quote. This guards the
+  // accept *write path* (the contract test alone misses write-path/axis gaps):
+  // a leak here would let one tenant accept-and-convert another tenant's quote
+  // into an invoice. quoteB is seeded `draft`, but the orgA caller can't see it
+  // at all, so the org-scoped SELECT yields no row → QUOTE_NOT_FOUND (404).
+  runDb('acceptQuote cannot accept another org quote (RLS hides it → 404)', async () => {
+    const fx = await seedFixture();
+    const { acceptQuote } = await import('../../services/quoteAcceptService');
+    await expect(
+      withDbAccessContext(fx.orgAContext, () => acceptQuote({ quoteId: fx.quoteB.id, signerName: 'Mallory' }))
+    ).rejects.toMatchObject({ status: 404 });
+  });
 });

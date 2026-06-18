@@ -214,7 +214,17 @@ complianceRoutes.get(
         osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
         thirdPartyMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('third_party', 'custom'))`,
         lastInstalledAt: sql<string | null>`max(case when ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null then ${devicePatches.installedAt}::timestamptz::text end)`,
-        pendingReboot: sql<boolean>`bool_or(${patches.requiresReboot} and ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null)`,
+        // Live OS reboot signal persisted from the agent heartbeat
+        // (devices.pending_reboot), NOT a patch-history derivation. The old
+        // bool_or(requiresReboot AND installed) stayed true for the life of the
+        // installed device_patches row, so the flag never cleared after the
+        // machine actually rebooted (#1472). The heartbeat writes this column
+        // unconditionally (heartbeat.ts), so it clears on the first post-reboot
+        // heartbeat that reports false, and it also covers non-patch reboot
+        // sources (CBS, pending file renames). bool_or (not a bare column ref)
+        // because the GROUP BY keys on devicePatches.deviceId, not the devices
+        // PK, so Postgres requires the per-device value to be aggregated.
+        pendingReboot: sql<boolean>`bool_or(${devices.pendingReboot})`,
         lastScannedAt: sql<string | null>`max(${devicePatches.lastCheckedAt})::timestamptz::text`
       })
       .from(devicePatches)

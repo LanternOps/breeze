@@ -34,6 +34,7 @@ import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { quoteRoutes } from './routes/quotes';
+import { quotesPublicRoutes } from './routes/quotesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
@@ -318,10 +319,11 @@ app.use(
 
 const startedAt = Date.now();
 
-// Health check — basic liveness with version and uptime
-// NOTE: the agent install.sh connectivity pre-flight greps this body for
-// "status":"ok" (see routes/agents/download.ts) — keep that contract if
-// changing the payload, or healthy installs will report a captive portal.
+// Health check — basic liveness with version and uptime.
+// Consumed by Caddy/k8s probes and monitoring. (The agent install.sh pre-flight
+// used to grep this for "status":"ok"; it now probes /api/v1/agent-versions
+// instead — see routes/agents/download.ts #1470 — so this payload is no longer
+// coupled to the installer.)
 app.get('/health', (c) => {
   const uptimeSeconds = Math.floor((Date.now() - startedAt) / 1000);
   return c.json({
@@ -739,6 +741,12 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
 api.route('/invoices', invoiceRoutes);
+// Public, token-gated quote acceptance (no auth) — MUST precede the auth-gated
+// /quotes router so the unauthenticated /quotes/public/* sub-path isn't swallowed
+// by quoteRoutes' authMiddleware (which it applies internally). partnerGuard
+// (the only global api.use) returns next() when there's no Authorization header,
+// so this surface stays unauthenticated.
+api.route('/quotes/public', quotesPublicRoutes);
 api.route('/quotes', quoteRoutes);
 api.route('/partner/stripe-connect', stripeConnectRoutes);
 api.route('/contracts', contractRoutes);

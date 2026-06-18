@@ -132,3 +132,27 @@ export function removeLine(id: string, lineId: string): Promise<Response> {
 export function quotePdfUrl(id: string): string {
   return `/api/v1/quotes/${id}/pdf`;
 }
+
+// ---- Phase 2 lifecycle / image upload -------------------------------------
+
+/** Issue + send a draft quote (POST /quotes/:id/send). Gated server-side on
+ *  quotes:send. Responds with the updated quote in a `{ data }` envelope. */
+export function sendQuote(id: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/send`, { method: 'POST' });
+}
+
+/** Upload an image for a quote (POST /quotes/:id/images). The body is multipart
+ *  FormData — `fetchWithAuth` deliberately does NOT set a JSON Content-Type for
+ *  FormData so the browser appends the multipart boundary itself. Responds with
+ *  `{ data: { imageId, mime, byteSize } }`. Gated server-side on quotes:write. */
+export function uploadQuoteImage(id: string, file: File): Promise<Response> {
+  const form = new FormData();
+  form.append('file', file);
+  return fetchWithAuth(`/quotes/${id}/images`, { method: 'POST', body: form });
+}
+
+/** Absolute API path for a quote image (`GET /api/v1/quotes/:id/images/:imageId`).
+ *  The route serves the raw bytes; used as an `<img src>` for the editor preview. */
+export function quoteImageUrl(id: string, imageId: string): string {
+  return `/api/v1/quotes/${id}/images/${imageId}`;
+}

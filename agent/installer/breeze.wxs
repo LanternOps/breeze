@@ -97,12 +97,32 @@
       Return="ignore" />
 
     <SetProperty Id="BREEZE_ACL_CMD" Value="[System64Folder]cmd.exe" Before="HardenProgramDataAcl" Sequence="execute" />
+    <!-- MUST be deferred + non-impersonated so it runs as LocalSystem.
+         #609/#613 fixed the "folders don't exist yet" facet (added the mkdir
+         guards) but left this Execute="immediate". Immediate CAs impersonate
+         the installing user, and on an interactive double-click + UAC-consent
+         install that token is the *filtered* one (Administrators is DENY_ONLY).
+         icacls /inheritance:r needs WRITE_DAC, which the filtered token lacks,
+         so the action returned ACCESS_DENIED (5) -> 1722 -> rollback -> 1603.
+         Deferred + Impersonate="no" runs as LocalSystem (full rights). It is
+         sequenced After CreateFolders below, which now (unlike the immediate
+         case) actually runs first in the in-script, so the dirs already exist
+         and the mkdir guards are belt-and-suspenders. Return="ignore" mirrors
+         ConfigureBreezeFailureActions: ACL hardening that is blocked by an
+         external control (Controlled Folder Access / ASR / EDR / GPO) must
+         never roll back an otherwise-good install — the folders are still
+         created by CreateFolders with default ProgramData ACLs, and the agent
+         re-applies PROTECTED DACLs to the config dir and (fail-closed) to
+         secrets.yaml at runtime on first config write (see
+         agent/internal/config/permissions_windows.go), so a skipped/blocked
+         icacls here self-heals and never leaves tokens world-readable. -->
     <CustomAction
       Id="HardenProgramDataAcl"
       Property="BREEZE_ACL_CMD"
       ExeCommand="/c (if not exist &quot;[ProgramDataBreezeDir].&quot; mkdir &quot;[ProgramDataBreezeDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeDataDir].&quot; mkdir &quot;[ProgramDataBreezeDataDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeLogsDir].&quot; mkdir &quot;[ProgramDataBreezeLogsDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
-      Execute="immediate"
-      Return="check" />
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
 
     <!-- Set SCM failure-action recovery on both services after they're
          installed. Mirrors agent/cmd/breeze-agent/service_cmd_windows.go:72-79
