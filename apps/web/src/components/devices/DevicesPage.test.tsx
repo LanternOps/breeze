@@ -348,6 +348,12 @@ describe('DevicesPage — multi-select run script keeps its target devices', () 
     fireEvent.click(screen.getByTestId('bulk-run-script'));
     // Selecting a script fires onSelect + onClose, then the confirm dialog shows.
     fireEvent.click(await screen.findByTestId('pick-script'));
+
+    // The scope-confirm message is computed from pendingScriptRun.devices too —
+    // a regression back to the wiped scriptTargetDevices would render
+    // "0 devices". Assert the real count is shown before confirming.
+    expect(await screen.findByText(/on 3 devices/i)).toBeTruthy();
+
     // Confirm the scope-gated run.
     fireEvent.click(await screen.findByTestId('confirm-fleet-action'));
 
