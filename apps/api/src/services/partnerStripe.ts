@@ -1,0 +1,131 @@
+import Stripe from 'stripe';
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { stripeConnectAccounts } from '../db/schema/stripePayments';
+import { encryptSecret, decryptSecret } from './secretCrypto';
+
+// Pinned API version — do not rely on the SDK default (it moves on upgrade).
+const API_VERSION = '2026-03-25.dahlia';
+
+export type PartnerStripeErrorCode = 'NO_STRIPE_KEY' | 'INVALID_STRIPE_KEY';
+
+export class PartnerStripeError extends Error {
+  constructor(message: string, public code: PartnerStripeErrorCode, public status: 400 | 409 = 400) {
+    super(message);
+    this.name = 'PartnerStripeError';
+  }
+}
+
+export interface PartnerStripeStatus {
+  connected: boolean;
+  stripeAccountId: string | null;
+  last4: string | null;
+  livemode: boolean;
+}
+
+/**
+ * Per-partner Stripe API-key model (replaces Connect OAuth). The partner pastes
+ * their OWN Stripe secret/restricted key; we validate it by retrieving the account
+ * it belongs to, then store it ENCRYPTED (secretCrypto) — charges later run directly
+ * on the partner's account with this key (no platform, no Connect, no Stripe-Account
+ * header). One row per partner (partner-axis RLS; unique on partner_id).
+ */
+export async function savePartnerStripeKey(input: {
+  partnerId: string;
+  apiKey: string;
+  userId: string | null;
+}): Promise<{ stripeAccountId: string; last4: string; livemode: boolean }> {
+  const apiKey = input.apiKey.trim();
+
+  // Validate by retrieving the account the key belongs to. Any rejection (bad key,
+  // revoked, insufficient scope) → INVALID_STRIPE_KEY rather than a 500.
+  let accountId: string;
+  try {
+    const probe = new Stripe(apiKey, { apiVersion: API_VERSION });
+    // No-arg accounts.retrieve() hits GET /v1/account — the account the KEY belongs
+    // to (the partner's own account). The SDK's typed overload requires an id (for
+    // Connect), so cast to the documented no-arg form.
+    const account = await (probe.accounts.retrieve as unknown as () => Promise<Stripe.Account>)();
+    accountId = account.id;
+  } catch {
+    throw new PartnerStripeError('That Stripe key was rejected — double-check it and try again.', 'INVALID_STRIPE_KEY', 400);
+  }
+
+  const last4 = apiKey.slice(-4);
+  const livemode = apiKey.startsWith('sk_live') || apiKey.startsWith('rk_live');
+  const encrypted = encryptSecret(apiKey);
+  const now = new Date();
+
+  await db
+    .insert(stripeConnectAccounts)
+    .values({
+      partnerId: input.partnerId,
+      stripeAccountId: accountId,
+      apiKey: encrypted,
+      keyLast4: last4,
+      livemode,
+      status: 'connected',
+      connectedBy: input.userId,
+      connectedAt: now,
+      disconnectedAt: null,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: stripeConnectAccounts.partnerId,
+      set: {
+        stripeAccountId: accountId,
+        apiKey: encrypted,
+        keyLast4: last4,
+        livemode,
+        status: 'connected',
+        connectedBy: input.userId,
+        connectedAt: now,
+        disconnectedAt: null,
+        updatedAt: now,
+      },
+    });
+
+  return { stripeAccountId: accountId, last4, livemode };
+}
+
+/** Build a Stripe client bound to the partner's own key. Throws NO_STRIPE_KEY if unconfigured. */
+export async function getPartnerStripe(partnerId: string): Promise<Stripe> {
+  const [row] = await db
+    .select({ apiKey: stripeConnectAccounts.apiKey, status: stripeConnectAccounts.status })
+    .from(stripeConnectAccounts)
+    .where(eq(stripeConnectAccounts.partnerId, partnerId))
+    .limit(1);
+  if (!row || row.status !== 'connected' || !row.apiKey) {
+    throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY', 409);
+  }
+  const key = decryptSecret(row.apiKey);
+  if (!key) {
+    throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY', 409);
+  }
+  return new Stripe(key, { apiVersion: API_VERSION });
+}
+
+/** Display status for the settings UI (never returns the key itself). */
+export async function getPartnerStripeStatus(partnerId: string): Promise<PartnerStripeStatus> {
+  const [row] = await db
+    .select()
+    .from(stripeConnectAccounts)
+    .where(eq(stripeConnectAccounts.partnerId, partnerId))
+    .limit(1);
+  const connected = Boolean(row && row.status === 'connected' && row.apiKey);
+  return {
+    connected,
+    stripeAccountId: row?.stripeAccountId ?? null,
+    last4: row?.keyLast4 ?? null,
+    livemode: row?.livemode ?? false,
+  };
+}
+
+/** Disconnect: wipe the stored secret + last4 and mark disconnected. */
+export async function disconnectPartnerStripe(partnerId: string): Promise<void> {
+  const now = new Date();
+  await db
+    .update(stripeConnectAccounts)
+    .set({ status: 'disconnected', apiKey: null, keyLast4: null, disconnectedAt: now, updatedAt: now })
+    .where(eq(stripeConnectAccounts.partnerId, partnerId));
+}

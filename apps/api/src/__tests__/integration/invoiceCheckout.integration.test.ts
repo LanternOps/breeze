@@ -17,15 +17,17 @@ import { partners, organizations, users, invoices, invoiceStripePayments } from 
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
-const { sessionsCreateMock, getConnectionMock } = vi.hoisted(() => ({
+const { sessionsCreateMock, getStatusMock } = vi.hoisted(() => ({
   sessionsCreateMock: vi.fn(),
-  getConnectionMock: vi.fn(),
+  getStatusMock: vi.fn(),
 }));
-vi.mock('../../services/stripeClient', () => ({
-  getStripe: () => ({ checkout: { sessions: { create: sessionsCreateMock } } }),
-  getConnectedStripeOptions: (acct: string) => ({ stripeAccount: acct }),
+// Per-partner API-key model: createInvoicePayLink charges with the partner's own
+// key. Mock partnerStripe so we don't need a real key, while the invoice reads,
+// payability guards, and the invoice_stripe_payments insert run against Postgres.
+vi.mock('../../services/partnerStripe', () => ({
+  getPartnerStripe: async () => ({ checkout: { sessions: { create: sessionsCreateMock } } }),
+  getPartnerStripeStatus: getStatusMock,
 }));
-vi.mock('../../services/stripeConnectService', () => ({ getConnection: getConnectionMock }));
 
 import * as svc from '../../services/invoiceService';
 import { createInvoicePayLink } from '../../services/invoiceCheckout';
@@ -63,7 +65,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 describe('createInvoicePayLink (breeze_app, real DB)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getConnectionMock.mockResolvedValue({ partnerId: 'p', stripeAccountId: 'acct_test', status: 'connected' });
+    getStatusMock.mockResolvedValue({ connected: true, stripeAccountId: 'acct_test', last4: '4242', livemode: false });
     sessionsCreateMock.mockResolvedValue({ id: 'cs_test_123', url: 'https://checkout.stripe.com/c/pay/abc', payment_intent: null });
   });
 
@@ -95,7 +97,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const f = await seedFixture();
     const actor: InvoiceActor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
     const inv = await seedIssuedInvoice(f, actor);
-    getConnectionMock.mockResolvedValue(null);
+    getStatusMock.mockResolvedValue({ connected: false, stripeAccountId: null, last4: null, livemode: false });
 
     await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
       .rejects.toMatchObject({ status: 409, code: 'STRIPE_NOT_CONNECTED' });

@@ -1,8 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
-import { getConnection } from './stripeConnectService';
-import { getStripe, getConnectedStripeOptions } from './stripeClient';
+import { getPartnerStripe, getPartnerStripeStatus } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess } from './invoiceService';
@@ -34,14 +33,23 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   const balanceMinor = toMinorUnits(inv.balance, inv.currencyCode);
   if (balanceMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
 
-  const conn = await getConnection(inv.partnerId).catch(() => null);
-  if (!conn || conn.status !== 'connected') {
+  // The partner charges on their OWN Stripe account using their stored key (no
+  // platform/Connect). Resolve the account id (for the mapping row) + a client
+  // built from their key; either being absent means Stripe isn't configured.
+  const status = await getPartnerStripeStatus(inv.partnerId);
+  if (!status.connected || !status.stripeAccountId) {
+    throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
+  }
+  let stripe;
+  try {
+    stripe = await getPartnerStripe(inv.partnerId);
+  } catch {
     throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
   }
 
   const portalBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');
 
-  const session = await getStripe().checkout.sessions.create({
+  const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     payment_method_types: ['card'],
     line_items: [{
@@ -61,7 +69,6 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
       invoice_balance_cents: String(balanceMinor),
     },
   }, {
-    ...getConnectedStripeOptions(conn.stripeAccountId),
     // Identical (invoice, balance) reuses the session instead of creating a
     // second pending mapping — safe for repeated "send link" clicks.
     idempotencyKey: `inv_${inv.id}_${balanceMinor}`,
@@ -72,7 +79,7 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   await db.insert(invoiceStripePayments).values({
     orgId: inv.orgId,
     invoiceId: inv.id,
-    stripeAccountId: conn.stripeAccountId,
+    stripeAccountId: status.stripeAccountId,
     stripeObjectType: 'checkout_session',
     stripeObjectId: session.id,
     stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
