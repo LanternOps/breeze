@@ -49,6 +49,7 @@ const evaluationQuerySchema = z.object({
 const feedbackBodySchema = z.object({
   outcome: z.enum(['failure_confirmed', 'replaced', 'false_alarm']),
   occurredAt: z.coerce.date().optional(),
+  sourceEventId: z.string().uuid().optional(),
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
 
@@ -267,6 +268,7 @@ reliabilityRoutes.post(
       orgId: device.orgId,
       deviceId,
       eventType,
+      dedupeKey: body.sourceEventId ? `source:${body.sourceEventId}:${body.outcome}` : `outcome:${body.outcome}`,
       outcome: body.outcome,
       actorUserId: auth.user?.id,
       occurredAt: body.occurredAt,

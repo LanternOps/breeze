@@ -322,12 +322,50 @@ describe('public reliability routes', () => {
         orgId: ORG_ID,
         deviceId: DEVICE_ID,
         eventType: 'device.false_alarm',
+        dedupeKey: 'outcome:false_alarm',
         outcome: 'false_alarm',
         actorUserId: 'user-1',
         metadata: expect.objectContaining({
           note: 'Known maintenance window',
           reliabilityScore: 42,
         }),
+      }));
+    });
+
+    it('uses sourceEventId as the reliability feedback replay key when provided', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        id: DEVICE_ID,
+        orgId: ORG_ID,
+        siteId: 'site-1',
+      } as any);
+      vi.mocked(getDeviceReliability).mockResolvedValue({
+        deviceId: DEVICE_ID,
+        orgId: ORG_ID,
+        reliabilityScore: 42,
+        trendDirection: 'degrading',
+        trendConfidence: 0.8,
+        uptime30d: 96,
+        crashCount30d: 3,
+        hangCount30d: 0,
+        serviceFailureCount30d: 0,
+        hardwareErrorCount30d: 1,
+        mtbfHours: 120,
+        topIssues: [],
+        computedAt: '2026-06-18T12:00:00.000Z',
+      } as any);
+
+      const sourceEventId = '00000000-0000-0000-0000-000000000030';
+      const app = buildApp();
+      const res = await app.request(`/reliability/${DEVICE_ID}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outcome: 'failure_confirmed', sourceEventId }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(emitDeviceReliabilityFeedback)).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'device.failure_confirmed',
+        dedupeKey: `source:${sourceEventId}:failure_confirmed`,
       }));
     });
 

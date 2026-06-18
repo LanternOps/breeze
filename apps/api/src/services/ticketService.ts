@@ -537,6 +537,10 @@ function ticketTriageFeedbackMetadata(actor: TicketActor, extra: Record<string, 
   };
 }
 
+function ticketTriageDedupeKey(field: string, oldValue: unknown, newValue: unknown): string {
+  return `${field}:${JSON.stringify(oldValue ?? null)}:${JSON.stringify(newValue ?? null)}`;
+}
+
 export async function updateTicketFields(
   ticketId: string,
   fields: UpdateTicketFieldsInput,
@@ -622,6 +626,7 @@ export async function updateTicketFields(
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.category_changed',
+      dedupeKey: ticketTriageDedupeKey('categoryId', ticket.categoryId ?? null, updated[0]?.categoryId ?? null),
       outcome: 'category_changed',
       actorUserId: actor.userId,
       metadata: ticketTriageFeedbackMetadata(actor, {
@@ -635,6 +640,7 @@ export async function updateTicketFields(
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.priority_changed',
+      dedupeKey: ticketTriageDedupeKey('priority', ticket.priority, updated[0]?.priority ?? null),
       outcome: 'priority_changed',
       actorUserId: actor.userId,
       metadata: ticketTriageFeedbackMetadata(actor, {
@@ -704,6 +710,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     orgId: ticket.orgId,
     ticketId,
     eventType: 'ticket.assignee_changed',
+    dedupeKey: ticketTriageDedupeKey('assignedTo', prevAssignedTo ?? null, assigneeId),
     outcome: 'assignee_changed',
     actorUserId: actor.userId,
     metadata: ticketTriageFeedbackMetadata(actor, {
