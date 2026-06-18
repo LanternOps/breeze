@@ -15,6 +15,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src",
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
+    "metric-rollups:backfill": "tsx scripts/metric-rollup-backfill.ts",
     "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
