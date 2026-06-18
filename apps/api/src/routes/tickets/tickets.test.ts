@@ -556,6 +556,40 @@ describe('ticket triage suggestion routes', () => {
     }));
   });
 
+  it('GET /tickets/triage-evaluation can scope evaluation to one accessible org', async () => {
+    vi.mocked(evaluateTicketTriage).mockResolvedValue({
+      labelWindowDays: 30,
+      totalLabels: 1,
+      acceptedSuggestionLabels: 1,
+      manualOverrideLabels: 0,
+      rejectedSuggestionLabels: 0,
+      categoryLabels: 0,
+      priorityLabels: 1,
+      assigneeLabels: 0,
+      overrideRate: 0,
+    });
+
+    const res = await makeApp().request(`/tickets/triage-evaluation?labelWindowDays=30&orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenCalledWith({
+      orgIds: [ORG_ID],
+      labelWindowDays: 30,
+    });
+  });
+
+  it('GET /tickets/triage-evaluation rejects inaccessible explicit org scope', async () => {
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      canAccessOrg: () => false,
+    };
+
+    const res = await makeApp().request(`/tickets/triage-evaluation?orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(evaluateTicketTriage)).not.toHaveBeenCalled();
+  });
+
   it('GET /tickets/:id/triage-suggestion returns a scoped suggestion', async () => {
     dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
     vi.mocked(getTicketTriageSuggestion).mockResolvedValue({
@@ -604,7 +638,18 @@ describe('ticket triage suggestion routes', () => {
     expect(serviceMocks.updateTicketFields).toHaveBeenCalledWith(
       TICKET_ID,
       { priority: 'high' },
-      expect.objectContaining({ userId: 'u-1', triageFeedbackSource: 'suggestion' }),
+      expect.objectContaining({
+        userId: 'u-1',
+        triageFeedbackSource: 'suggestion',
+        triageFeedbackMetadata: {
+          modelVersion: 'ticket-triage-rules-v0',
+          suggestedPriority: 'high',
+          suggestedCategoryId: null,
+          suggestedCategoryName: null,
+          confidence: 0.72,
+          reasons: ['high-impact keywords'],
+        },
+      }),
     );
   });
 

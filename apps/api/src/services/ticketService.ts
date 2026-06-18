@@ -56,6 +56,7 @@ export interface TicketActor {
   name?: string;
   email?: string;
   triageFeedbackSource?: 'manual' | 'suggestion';
+  triageFeedbackMetadata?: Record<string, unknown>;
 }
 
 // Legacy display identifier (NOT NULL UNIQUE), retry loop dropped when creation
@@ -531,6 +532,7 @@ function ticketTriageFeedbackMetadata(actor: TicketActor, extra: Record<string, 
   return {
     source: acceptedSuggestion ? 'ticket_triage_v0' : 'manual_update',
     acceptedSuggestion,
+    ...(acceptedSuggestion ? actor.triageFeedbackMetadata ?? {} : {}),
     ...extra,
   };
 }

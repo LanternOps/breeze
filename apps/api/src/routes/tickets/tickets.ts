@@ -30,6 +30,7 @@ export const ticketsRoutes = new Hono();
 const idParam = z.object({ id: z.string().uuid() });
 const triageEvaluationQuerySchema = z.object({
   labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
+  orgId: z.string().uuid().optional(),
 });
 const applyTriageSuggestionSchema = z.object({
   categoryId: z.string().uuid().nullable().optional(),
@@ -221,9 +222,15 @@ ticketsRoutes.get(
       return c.json({ error: 'Partner context required' }, 403);
     }
 
-    const orgIds = auth.scope === 'organization'
-      ? [auth.orgId as string]
-      : auth.accessibleOrgIds?.length ? auth.accessibleOrgIds : undefined;
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Organization not found or access denied' }, 403);
+    }
+
+    const orgIds = query.orgId
+      ? [query.orgId]
+      : auth.scope === 'organization'
+        ? [auth.orgId as string]
+        : auth.accessibleOrgIds?.length ? auth.accessibleOrgIds : undefined;
 
     const summary = await evaluateTicketTriage({
       orgIds,
@@ -485,6 +492,14 @@ ticketsRoutes.post(
       const ticket = await updateTicketFields(id, body, {
         ...actorFrom(c),
         triageFeedbackSource: 'suggestion',
+        triageFeedbackMetadata: {
+          modelVersion: suggestion.suggestion.modelVersion,
+          suggestedPriority: suggestion.suggestion.priority,
+          suggestedCategoryId: suggestion.suggestion.categoryId,
+          suggestedCategoryName: suggestion.suggestion.categoryName,
+          confidence: suggestion.suggestion.confidence,
+          reasons: suggestion.suggestion.reasons,
+        },
       });
       return c.json({ data: ticket, suggestion: suggestion.suggestion });
     } catch (err) {
