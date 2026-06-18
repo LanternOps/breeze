@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle, PencilLine, PlayCircle, RefreshCw, Sparkles, XCircle } from 'lucide-react';
+import { CheckCircle, PencilLine, PlayCircle, RefreshCw, ShieldAlert, Sparkles, XCircle } from 'lucide-react';
 
 import { handleActionError, runAction } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -24,6 +24,7 @@ type RemediationSuggestion = {
   confidence: number | null;
   parameters: Record<string, unknown>;
   targetDeviceIds: string[];
+  elevationRequestId: string | null;
   scriptExecutionId: string | null;
 };
 
@@ -52,7 +53,7 @@ function singleTargetDeviceId(suggestion: RemediationSuggestion): string | null 
   return null;
 }
 
-function canExecuteScriptSuggestion(suggestion: RemediationSuggestion): boolean {
+function canQueueScriptSuggestion(suggestion: RemediationSuggestion): boolean {
   return (
     suggestion.targetType === 'script' &&
     Boolean(suggestion.scriptId) &&
@@ -60,6 +61,14 @@ function canExecuteScriptSuggestion(suggestion: RemediationSuggestion): boolean 
     (suggestion.status === 'accepted' || suggestion.status === 'edited') &&
     !suggestion.scriptExecutionId
   );
+}
+
+function requiresExecutionApproval(suggestion: RemediationSuggestion): boolean {
+  return suggestion.riskTier === 'high' || suggestion.riskTier === 'critical';
+}
+
+function canExecuteScriptSuggestion(suggestion: RemediationSuggestion): boolean {
+  return canQueueScriptSuggestion(suggestion) && (!requiresExecutionApproval(suggestion) || Boolean(suggestion.elevationRequestId));
 }
 
 export default function RemediationSuggestionsPanel({ sourceType, sourceId }: RemediationSuggestionsPanelProps) {
@@ -271,6 +280,17 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
                     >
                       <PlayCircle className="h-4 w-4" />
                       Execute
+                    </button>
+                  )}
+                  {canQueueScriptSuggestion(suggestion) && requiresExecutionApproval(suggestion) && !suggestion.elevationRequestId && (
+                    <button
+                      type="button"
+                      disabled
+                      title="Approved elevation request required before execution"
+                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      <ShieldAlert className="h-4 w-4" />
+                      Approval required
                     </button>
                   )}
                 </div>

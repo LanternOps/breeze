@@ -52,6 +52,7 @@ const suggestion = {
   confidence: 0.82,
   parameters: { dryRun: false },
   targetDeviceIds: ['22222222-2222-4222-8222-222222222222'],
+  elevationRequestId: null,
   scriptExecutionId: null,
 };
 
@@ -213,6 +214,32 @@ describe('RemediationSuggestionsPanel', () => {
 
     await screen.findByText('Disk Cleanup');
     expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
+  });
+
+  it('labels high-risk executable suggestions that still need approval', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({
+          data: [{
+            ...suggestion,
+            status: 'accepted',
+            riskTier: 'high',
+            elevationRequestId: null,
+          }],
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    const approval = await screen.findByRole('button', { name: /approval required/i });
+    expect(approval).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
+    fireEvent.click(approval);
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/remediation-suggestions/suggestion-1/execute', expect.anything());
   });
 
   it('labels and disables generation when suggested fixes are disabled', async () => {
