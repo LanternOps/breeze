@@ -30,6 +30,12 @@ type DeviceAnomaliesPanelProps = {
   compact?: boolean;
 };
 
+type PromotedAlert = {
+  alertId: string;
+  metricName: string;
+  anomalyType: string;
+};
+
 const metricLabels: Record<string, string> = {
   cpu_percent: 'CPU',
   ram_percent: 'RAM',
@@ -99,6 +105,7 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [promotedAlert, setPromotedAlert] = useState<PromotedAlert | null>(null);
   const anomaliesDisabled = mlFlags.isDisabled('ml.anomalies.enabled');
 
   const fetchAnomalies = useCallback(async () => {
@@ -135,7 +142,7 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
   async function updateStatus(anomaly: MetricAnomaly, status: Exclude<AnomalyStatus, 'open'>) {
     setUpdatingId(anomaly.id);
     try {
-      await runAction({
+      const result = await runAction<{ data?: MetricAnomaly }>({
         request: () => fetchWithAuth(`/devices/${deviceId}/anomalies/${anomaly.id}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -148,6 +155,13 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
             ? 'Anomaly promoted'
             : 'Anomaly resolved',
       });
+      if (status === 'promoted' && result.data?.linkedAlertId) {
+        setPromotedAlert({
+          alertId: result.data.linkedAlertId,
+          metricName: anomaly.metricName,
+          anomalyType: anomaly.anomalyType,
+        });
+      }
       setAnomalies((current) => current.filter((item) => item.id !== anomaly.id));
     } catch (err) {
       handleActionError(err, 'Could not update anomaly');
@@ -228,11 +242,30 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
       </div>
 
       {sorted.length === 0 ? (
-        <div className="mt-5 rounded-md border border-dashed p-6 text-center">
-          <CheckCircle className="mx-auto h-8 w-8 text-success" />
-          <p className="mt-2 text-sm font-medium">No open anomalies</p>
-          {!compact && <p className="text-sm text-muted-foreground">Recent metric rollups are within baseline.</p>}
-        </div>
+        <>
+          {promotedAlert && (
+            <div className="mt-5 flex flex-col gap-3 rounded-md border border-success/30 bg-success/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">Anomaly promoted to alert</p>
+                <p className="text-xs text-muted-foreground">
+                  {labelForAnomaly(promotedAlert.anomalyType)} on {labelForMetric(promotedAlert.metricName)}
+                </p>
+              </div>
+              <a
+                href={`/alerts/${promotedAlert.alertId}`}
+                className="inline-flex items-center justify-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Open alert
+              </a>
+            </div>
+          )}
+          <div className="mt-5 rounded-md border border-dashed p-6 text-center">
+            <CheckCircle className="mx-auto h-8 w-8 text-success" />
+            <p className="mt-2 text-sm font-medium">No open anomalies</p>
+            {!compact && <p className="text-sm text-muted-foreground">Recent metric rollups are within baseline.</p>}
+          </div>
+        </>
       ) : (
         <div className="mt-5 space-y-3">
           {sorted.map((anomaly) => (

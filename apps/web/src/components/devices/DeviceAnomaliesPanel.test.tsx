@@ -132,6 +132,67 @@ describe('DeviceAnomaliesPanel', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Anomaly dismissed' }));
   });
 
+  it('keeps a link to the alert created from a promoted anomaly', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
+        return Promise.resolve(makeJsonResponse({
+          data: [
+            {
+              id: 'anomaly-1',
+              metricType: 'system',
+              metricName: 'cpu_percent',
+              anomalyType: 'spike',
+              status: 'open',
+              windowStart: '2026-06-18T12:00:00.000Z',
+              windowEnd: '2026-06-18T12:05:00.000Z',
+              observedValue: 96.4,
+              baselineValue: 42.2,
+              score: 8.1,
+              confidence: 0.91,
+              sampleCount: 5,
+              linkedAlertId: null,
+              detectedAt: '2026-06-18T12:05:00.000Z',
+            },
+          ],
+        }));
+      }
+      if (url === '/devices/dev-1/anomalies/anomaly-1/status' && method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({
+          data: {
+            id: 'anomaly-1',
+            metricType: 'system',
+            metricName: 'cpu_percent',
+            anomalyType: 'spike',
+            status: 'promoted',
+            windowStart: '2026-06-18T12:00:00.000Z',
+            windowEnd: '2026-06-18T12:05:00.000Z',
+            observedValue: 96.4,
+            baselineValue: 42.2,
+            score: 8.1,
+            confidence: 0.91,
+            sampleCount: 5,
+            linkedAlertId: 'alert-1',
+            detectedAt: '2026-06-18T12:05:00.000Z',
+          },
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
+
+    const promote = await screen.findByRole('button', { name: /promote/i });
+    fireEvent.click(promote);
+
+    expect(await screen.findByText('Anomaly promoted to alert')).toBeTruthy();
+    expect(screen.getByText('Spike on CPU')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /open alert/i })).toHaveAttribute('href', '/alerts/alert-1');
+    expect(screen.queryByText('96.4%')).toBeNull();
+  });
+
   it('renders process-sample anomaly metric labels', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
