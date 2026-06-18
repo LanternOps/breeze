@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
-import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions, scriptExecutions } from '../db/schema';
+import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
@@ -58,14 +58,6 @@ const updateBodySchema = z.object({
 });
 
 type UpdateRemediationSuggestionInput = z.infer<typeof updateBodySchema>;
-
-function hasExecutionLink(input: {
-  toolExecutionId: string | null;
-  scriptExecutionId: string | null;
-  playbookExecutionId: string | null;
-}): boolean {
-  return Boolean(input.toolExecutionId || input.scriptExecutionId || input.playbookExecutionId);
-}
 
 function remediationFeedbackDedupeKey(input: {
   status: UpdateRemediationSuggestionInput['status'];
@@ -213,68 +205,9 @@ async function loadTargetDeviceForSuggestion(
   return device;
 }
 
-async function validateLinkedScriptExecution(
-  existing: typeof remediationSuggestions.$inferSelect,
-  scriptExecutionId: string | null | undefined,
-): Promise<string | null> {
-  if (!scriptExecutionId) return null;
-
-  const [execution] = await db
-    .select({
-      orgId: scriptExecutions.orgId,
-      scriptId: scriptExecutions.scriptId,
-      deviceId: scriptExecutions.deviceId,
-    })
-    .from(scriptExecutions)
-    .where(eq(scriptExecutions.id, scriptExecutionId))
-    .limit(1);
-
-  if (!execution) {
-    return 'Linked script execution not found';
-  }
-  if (execution.orgId !== existing.orgId) {
-    return 'Linked script execution must belong to the same organization';
-  }
-  if (existing.scriptId && execution.scriptId !== existing.scriptId) {
-    return 'Linked script execution must run the suggested script';
-  }
-
-  const targetDeviceIds = existing.targetDeviceIds.length > 0
-    ? existing.targetDeviceIds
-    : existing.deviceId
-      ? [existing.deviceId]
-      : [];
-  if (targetDeviceIds.length > 0 && !targetDeviceIds.includes(execution.deviceId)) {
-    return 'Linked script execution must target the suggested device';
-  }
-
-  return null;
-}
-
-function validateSuggestionLifecycleUpdate(
-  existing: typeof remediationSuggestions.$inferSelect,
-  input: UpdateRemediationSuggestionInput,
-): string | null {
-  if (input.status !== 'executed' && input.status !== 'failed') {
-    return null;
-  }
-
-  if (existing.status !== 'accepted' && existing.status !== 'edited') {
-    return 'Suggestion must be accepted or edited before it can be marked executed or failed';
-  }
-
-  const executionLinks = {
-    toolExecutionId: input.toolExecutionId === undefined ? existing.toolExecutionId : input.toolExecutionId,
-    scriptExecutionId: input.scriptExecutionId === undefined ? existing.scriptExecutionId : input.scriptExecutionId,
-    playbookExecutionId: input.playbookExecutionId === undefined ? existing.playbookExecutionId : input.playbookExecutionId,
-  };
-  if (!hasExecutionLink(executionLinks)) {
-    return 'Executed or failed suggestions must link to a tool, script, or playbook execution';
-  }
-
-  const failureMessage = input.failureMessage === undefined ? existing.failureMessage : input.failureMessage;
-  if (input.status === 'failed' && !failureMessage?.trim()) {
-    return 'Failed suggestions must include a failureMessage';
+function validateSuggestionLifecycleUpdate(input: UpdateRemediationSuggestionInput): string | null {
+  if (input.status === 'executed' || input.status === 'failed') {
+    return 'Execution statuses must be set through the dedicated remediation execution rail';
   }
 
   return null;
@@ -1032,16 +965,9 @@ remediationSuggestionRoutes.patch(
       return c.json({ error: 'Suggestion not found or access denied' }, 403);
     }
 
-    const validationError = validateSuggestionLifecycleUpdate(existing, input);
+    const validationError = validateSuggestionLifecycleUpdate(input);
     if (validationError) {
       return c.json({ error: validationError }, 400);
-    }
-    if (input.status === 'executed' || input.status === 'failed') {
-      const scriptExecutionId = input.scriptExecutionId === undefined ? existing.scriptExecutionId : input.scriptExecutionId;
-      const linkedExecutionError = await validateLinkedScriptExecution(existing, scriptExecutionId);
-      if (linkedExecutionError) {
-        return c.json({ error: linkedExecutionError }, 400);
-      }
     }
 
     const now = new Date();

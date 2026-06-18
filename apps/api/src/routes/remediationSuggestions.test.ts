@@ -58,12 +58,6 @@ vi.mock('../db/schema', () => ({
     executedAt: 'remediationSuggestions.executedAt',
     elevationRequestId: 'remediationSuggestions.elevationRequestId',
   },
-  scriptExecutions: {
-    id: 'scriptExecutions.id',
-    orgId: 'scriptExecutions.orgId',
-    scriptId: 'scriptExecutions.scriptId',
-    deviceId: 'scriptExecutions.deviceId',
-  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -157,16 +151,6 @@ function mockSuggestionLoad(suggestion: Record<string, unknown>) {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue([suggestion]),
-      }),
-    }),
-  });
-}
-
-function mockScriptExecutionLoad(execution: Record<string, unknown> | undefined) {
-  dbMocks.selectMock.mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(execution ? [execution] : []),
       }),
     }),
   });
@@ -478,165 +462,72 @@ describe('remediation suggestion routes', () => {
     expect(dbMocks.insertMock).not.toHaveBeenCalled();
   });
 
-  it('rejects execution status without a linked execution rail', async () => {
+  it('rejects script execution status updates through the generic patch route', async () => {
     mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
 
     const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ status: 'executed' }),
+      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
     });
 
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toBe('Executed or failed suggestions must link to a tool, script, or playbook execution');
+    expect(body.error).toBe('Execution statuses must be set through the dedicated remediation execution rail');
     expect(dbMocks.updateMock).not.toHaveBeenCalled();
     expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+    expect(dbMocks.executeScriptOnDevicesMock).not.toHaveBeenCalled();
   });
 
-  it('rejects direct execution from suggested status', async () => {
-    mockSuggestionLoad(baseSuggestion);
+  it('rejects tool execution status updates through the generic patch route', async () => {
+    const toolExecutionId = '77777777-7777-4777-8777-777777777777';
+    mockSuggestionLoad({
+      ...baseSuggestion,
+      status: 'accepted',
+      targetType: 'tool',
+      scriptId: null,
+      toolExecutionId,
+    });
 
     const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify({
         status: 'executed',
-        scriptExecutionId: '66666666-6666-4666-8666-666666666666',
+        toolExecutionId,
       }),
     });
 
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toBe('Suggestion must be accepted or edited before it can be marked executed or failed');
+    expect(body.error).toBe('Execution statuses must be set through the dedicated remediation execution rail');
     expect(dbMocks.updateMock).not.toHaveBeenCalled();
     expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
   });
 
-  it('requires failure details when marking a linked execution failed', async () => {
+  it('rejects playbook failure status updates through the generic patch route', async () => {
+    const playbookExecutionId = '88888888-8888-4888-8888-888888888888';
     mockSuggestionLoad({
       ...baseSuggestion,
       status: 'accepted',
-      scriptExecutionId: '66666666-6666-4666-8666-666666666666',
+      targetType: 'playbook',
+      scriptId: null,
+      playbookId: '99999999-9999-4999-8999-999999999999',
+      playbookExecutionId,
     });
 
     const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ status: 'failed' }),
+      body: JSON.stringify({ status: 'failed', playbookExecutionId, failureMessage: 'Playbook failed' }),
     });
 
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toBe('Failed suggestions must include a failureMessage');
+    expect(body.error).toBe('Execution statuses must be set through the dedicated remediation execution rail');
     expect(dbMocks.updateMock).not.toHaveBeenCalled();
     expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
-  });
-
-  it('marks accepted suggestions executed when a script execution is linked', async () => {
-    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
-    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
-    mockScriptExecutionLoad({
-      orgId: baseSuggestion.orgId,
-      scriptId: baseSuggestion.scriptId,
-      deviceId: baseSuggestion.deviceId,
-    });
-    dbMocks.updateMock.mockReturnValueOnce({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            ...baseSuggestion,
-            status: 'executed',
-            scriptExecutionId,
-            executedBy: 'user-1',
-            executedAt: new Date('2026-06-18T12:10:00.000Z'),
-          }]),
-        }),
-      }),
-    });
-
-    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
-    });
-
-    expect(res.status).toBe(200);
-    expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
-      orgId: baseSuggestion.orgId,
-      suggestionId: baseSuggestion.id,
-      eventType: 'suggestion.executed',
-      dedupeKey: `executed:script:${scriptExecutionId}`,
-      outcome: 'executed',
-      actorUserId: 'user-1',
-      metadata: expect.objectContaining({ scriptExecutionId }),
-    }));
-    const body = await res.json();
-    expect(body.data.status).toBe('executed');
-    expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
-  });
-
-  it('rejects linked script executions from another organization', async () => {
-    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
-    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
-    mockScriptExecutionLoad({
-      orgId: '77777777-7777-4777-8777-777777777777',
-      scriptId: baseSuggestion.scriptId,
-      deviceId: baseSuggestion.deviceId,
-    });
-
-    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
-    });
-
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toBe('Linked script execution must belong to the same organization');
-    expect(dbMocks.updateMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects linked script executions for another script', async () => {
-    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
-    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
-    mockScriptExecutionLoad({
-      orgId: baseSuggestion.orgId,
-      scriptId: '77777777-7777-4777-8777-777777777777',
-      deviceId: baseSuggestion.deviceId,
-    });
-
-    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
-    });
-
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toBe('Linked script execution must run the suggested script');
-    expect(dbMocks.updateMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects linked script executions for another target device', async () => {
-    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
-    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
-    mockScriptExecutionLoad({
-      orgId: baseSuggestion.orgId,
-      scriptId: baseSuggestion.scriptId,
-      deviceId: '77777777-7777-4777-8777-777777777777',
-    });
-
-    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
-    });
-
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toBe('Linked script execution must target the suggested device');
-    expect(dbMocks.updateMock).not.toHaveBeenCalled();
   });
 
   it('executes accepted script suggestions through the server-side script rail', async () => {
