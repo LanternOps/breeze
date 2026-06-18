@@ -145,6 +145,7 @@ describe('device anomaly routes', () => {
       deviceId: device.id,
       anomalyId: anomaly.id,
       actorUserId: 'user-1',
+      requireCreateAlertsFlag: false,
     });
     expect(updateMock).not.toHaveBeenCalled();
     expect(emitAnomalyFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({

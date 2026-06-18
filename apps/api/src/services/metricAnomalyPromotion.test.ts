@@ -171,4 +171,29 @@ describe('metric anomaly promotion service', () => {
     expect(updateMock).not.toHaveBeenCalled();
     expect(publishEventMock).not.toHaveBeenCalled();
   });
+
+  it('allows explicit manual promotion even when automatic anomaly alert creation is disabled', async () => {
+    selectMock.mockReturnValueOnce(chain([anomaly]));
+    shouldProduceMlOutputMock.mockResolvedValue(false);
+    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
+
+    const result = await promoteMetricAnomalyToAlert({
+      orgId: anomaly.orgId,
+      deviceId: anomaly.deviceId,
+      anomalyId: anomaly.id,
+      actorUserId: 'user-1',
+      requireCreateAlertsFlag: false,
+    });
+
+    expect(result).toMatchObject({
+      status: 'promoted',
+      alertId: '44444444-4444-4444-8444-444444444444',
+      created: true,
+    });
+    expect(shouldProduceMlOutputMock).not.toHaveBeenCalled();
+    expect(insertMock).toHaveBeenCalledWith(expect.anything());
+    expect(updateMock).toHaveBeenCalledWith(expect.anything());
+    expect(publishEventMock).toHaveBeenCalled();
+  });
 });

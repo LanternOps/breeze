@@ -117,6 +117,7 @@ anomaliesRoutes.patch(
         deviceId,
         anomalyId,
         actorUserId: auth.user.id,
+        requireCreateAlertsFlag: false,
       });
 
       if (result.status === 'not_found') {

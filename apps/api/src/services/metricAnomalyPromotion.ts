@@ -28,6 +28,7 @@ export type PromoteMetricAnomalyToAlertOptions = {
   deviceId: string;
   anomalyId: string;
   actorUserId?: string | null;
+  requireCreateAlertsFlag?: boolean;
 };
 
 function titleForAnomaly(anomaly: MetricAnomalyRow): string {
@@ -106,7 +107,10 @@ export async function promoteMetricAnomalyToAlert(
     };
   }
 
-  if (!(await shouldProduceMlOutput(anomaly.orgId, 'ml.anomalies.create_alerts'))) {
+  if (
+    options.requireCreateAlertsFlag !== false
+    && !(await shouldProduceMlOutput(anomaly.orgId, 'ml.anomalies.create_alerts'))
+  ) {
     return { status: 'disabled', anomaly };
   }
 
