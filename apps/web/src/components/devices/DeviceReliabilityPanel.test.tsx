@@ -5,9 +5,14 @@ import DeviceReliabilityPanel from './DeviceReliabilityPanel';
 import { fetchWithAuth } from '../../stores/auth';
 
 const showToast = vi.fn();
+const useMlFeatureFlagsMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+}));
+
+vi.mock('../../hooks/useMlFeatureFlags', () => ({
+  useMlFeatureFlags: useMlFeatureFlagsMock,
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -28,6 +33,13 @@ describe('DeviceReliabilityPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     showToast.mockReset();
+    useMlFeatureFlagsMock.mockReturnValue({
+      flags: {},
+      loaded: true,
+      error: null,
+      isDisabled: () => false,
+      reload: vi.fn(),
+    });
   });
 
   it('renders reliability score drivers for a device', async () => {
@@ -121,5 +133,28 @@ describe('DeviceReliabilityPanel', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
     await screen.findByText('No reliability snapshot available yet.');
+  });
+
+  it('shows a disabled state without fetching reliability when the feature flag is off', async () => {
+    useMlFeatureFlagsMock.mockReturnValue({
+      flags: {
+        'ml.device_reliability.enabled': {
+          flag: 'ml.device_reliability.enabled',
+          enabled: false,
+          defaultEnabled: true,
+          source: 'org_settings',
+        },
+      },
+      loaded: true,
+      error: null,
+      isDisabled: (flag: string) => flag === 'ml.device_reliability.enabled',
+      reload: vi.fn(),
+    });
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+
+    expect(await screen.findByText('Reliability scoring is disabled for this organization.')).toBeTruthy();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/reliability/dev-1');
+    expect(screen.queryByRole('button', { name: /false alarm/i })).toBeNull();
   });
 });

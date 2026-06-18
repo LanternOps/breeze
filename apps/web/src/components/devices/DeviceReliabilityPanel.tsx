@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle, RefreshCw, ShieldCheck, Wrench, XCircle } f
 
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
+import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type ReliabilityTopIssue = {
   type: 'crashes' | 'hangs' | 'services' | 'hardware' | 'uptime';
@@ -81,10 +82,12 @@ function formatEvidenceValue(key: string, value: number): string {
 }
 
 export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPanelProps) {
+  const mlFlags = useMlFeatureFlags();
   const [snapshot, setSnapshot] = useState<ReliabilitySnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [labeling, setLabeling] = useState<string | null>(null);
+  const reliabilityDisabled = mlFlags.isDisabled('ml.device_reliability.enabled');
 
   const fetchReliability = useCallback(async () => {
     setLoading(true);
@@ -106,8 +109,15 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   }, [deviceId]);
 
   useEffect(() => {
+    if (!mlFlags.loaded) return;
+    if (reliabilityDisabled) {
+      setSnapshot(null);
+      setError(undefined);
+      setLoading(false);
+      return;
+    }
     void fetchReliability();
-  }, [fetchReliability]);
+  }, [fetchReliability, mlFlags.loaded, reliabilityDisabled]);
 
   const drivers = useMemo(() => (snapshot?.drivers ?? []).slice(0, 3), [snapshot?.drivers]);
 
@@ -157,6 +167,20 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             <RefreshCw className="h-4 w-4" />
             Retry
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (reliabilityDisabled) {
+    return (
+      <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="flex items-center gap-3">
+          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
+          <div>
+            <h3 className="text-base font-semibold">Reliability</h3>
+            <p className="text-sm text-muted-foreground">Reliability scoring is disabled for this organization.</p>
+          </div>
         </div>
       </div>
     );
