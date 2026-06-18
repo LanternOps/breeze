@@ -11,6 +11,7 @@ import {
   ExternalLink,
   Calendar,
   GitBranch,
+  Activity,
   SlidersHorizontal,
   X,
   Loader2
@@ -23,6 +24,11 @@ import {
   type AlertSeverity,
   type AlertStatus,
 } from './alertConfig';
+import {
+  formatAnomalyConfidence,
+  formatAnomalyType,
+  type MetricAnomalyAlertContext,
+} from './alertMlContext';
 
 export type { AlertSeverity, AlertStatus };
 
@@ -41,7 +47,9 @@ export type Alert = {
   acknowledgedBy?: string;
   resolvedAt?: string;
   resolvedBy?: string;
+  context?: Record<string, unknown>;
   contextData?: Record<string, unknown>;
+  anomalyContext?: MetricAnomalyAlertContext | null;
   correlationGroupId?: string | null;
   correlationRole?: string | null;
   correlationGroupStatus?: string | null;
@@ -452,6 +460,17 @@ export default function AlertList({
                                 : ''}
                             </span>
                           </a>
+                        )}
+                        {alert.anomalyContext && (
+                          <span
+                            className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[11px] font-medium text-sky-700"
+                            title="Promoted metric anomaly"
+                          >
+                            <Activity className="h-3 w-3 shrink-0" />
+                            <span className="truncate">
+                              ML anomaly: {alert.anomalyContext.metricName ?? 'metric'} · {formatAnomalyType(alert.anomalyContext.anomalyType)} · {formatAnomalyConfidence(alert.anomalyContext.confidence)}
+                            </span>
+                          </span>
                         )}
                       </div>
                     </td>

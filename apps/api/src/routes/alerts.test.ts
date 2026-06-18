@@ -232,6 +232,18 @@ describe('alert routes', () => {
                           severity: 'high',
                           title: 'CPU usage high',
                           message: 'CPU over threshold',
+                          context: {
+                            source: 'metric_anomaly',
+                            anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                            metricName: 'cpu.usage',
+                            metricType: 'gauge',
+                            anomalyType: 'spike',
+                            observedValue: 97.3,
+                            baselineValue: 42.1,
+                            confidence: 0.92,
+                            score: 8.4,
+                            modelVersion: 'rollup-v0',
+                          },
                           deviceHostname: 'device-1',
                           ruleName: 'CPU Alert'
                         }
@@ -267,6 +279,18 @@ describe('alert routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.data[0].severity).toBe('high');
+      expect(body.data[0].contextData).toEqual(expect.objectContaining({
+        source: 'metric_anomaly',
+        anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        metricName: 'cpu.usage',
+      }));
+      expect(body.data[0].anomalyContext).toEqual(expect.objectContaining({
+        source: 'metric_anomaly',
+        anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        metricName: 'cpu.usage',
+        anomalyType: 'spike',
+        confidence: 0.92,
+      }));
       expect(body.data[0]).toEqual(expect.objectContaining({
         correlationGroupId: 'group-1',
         correlationChildCount: 2,

@@ -274,4 +274,58 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     expect(await screen.findByText('Grouped incident: 3 related · 75% noise cut')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /SRV-01/i })).toHaveAttribute('href', '/devices/device-1');
   });
+
+  it('renders promoted metric anomaly context in the alert list and details panel', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({
+          data: [{
+            ...activeAlert,
+            context: {
+              source: 'metric_anomaly',
+              anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              metricName: 'cpu.usage',
+              metricType: 'gauge',
+              anomalyType: 'spike',
+              observedValue: 97.3,
+              baselineValue: 42.1,
+              confidence: 0.92,
+              score: 8.4,
+              modelVersion: 'rollup-v0',
+            },
+          }]
+        }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === `/alerts/${ALERT_ID}` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ statusHistory: [], notificationHistory: [] }));
+      }
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      }
+      if (url === `/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    expect(await screen.findByText('ML anomaly: cpu.usage · spike · 92%')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('High CPU on SRV-01'));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByText('ML Anomaly Evidence')).toBeInTheDocument();
+    expect(within(dialog).getByText('cpu.usage')).toBeInTheDocument();
+    expect(within(dialog).getByText('spike')).toBeInTheDocument();
+    expect(within(dialog).getByText('97.30')).toBeInTheDocument();
+    expect(within(dialog).getByText('42.10')).toBeInTheDocument();
+    expect(within(dialog).getByText('92%')).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: /Open device anomalies/i })).toHaveAttribute('href', '/devices/device-1#anomalies');
+  });
 });

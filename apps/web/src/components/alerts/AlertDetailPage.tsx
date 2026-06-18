@@ -15,6 +15,13 @@ import {
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import {
+  formatAnomalyConfidence,
+  formatAnomalyType,
+  formatAnomalyValue,
+  normalizeMetricAnomalyContext,
+  type MetricAnomalyAlertContext,
+} from './alertMlContext';
 
 type Alert = {
   id: string;
@@ -31,7 +38,9 @@ type Alert = {
   acknowledgedBy?: string;
   resolvedAt?: string;
   resolvedBy?: string;
+  context?: Record<string, unknown>;
   contextData?: Record<string, unknown>;
+  anomalyContext?: MetricAnomalyAlertContext | null;
 };
 
 type LinkedTicket = {
@@ -87,6 +96,8 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         deviceName: data.device?.hostname || data.deviceName || 'Unknown Device',
         ruleName: data.rule?.name || data.ruleName,
         ruleId: data.rule?.id || data.ruleId,
+        contextData: data.contextData ?? data.context,
+        anomalyContext: data.anomalyContext ?? normalizeMetricAnomalyContext(data.contextData ?? data.context),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch alert');
@@ -288,6 +299,47 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       </div>
 
       <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} />
+
+      {alert.anomalyContext && (
+        <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-muted-foreground mb-4">ML Anomaly Evidence</h3>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <p className="text-xs text-muted-foreground">Metric</p>
+              <p className="text-sm font-medium">{alert.anomalyContext.metricName ?? 'Unknown metric'}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Type</p>
+              <p className="text-sm font-medium capitalize">{formatAnomalyType(alert.anomalyContext.anomalyType)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Confidence</p>
+              <p className="text-sm font-medium tabular-nums">{formatAnomalyConfidence(alert.anomalyContext.confidence)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Observed</p>
+              <p className="text-sm font-medium tabular-nums">{formatAnomalyValue(alert.anomalyContext.observedValue)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Baseline</p>
+              <p className="text-sm font-medium tabular-nums">{formatAnomalyValue(alert.anomalyContext.baselineValue)}</p>
+            </div>
+            {alert.anomalyContext.modelVersion && (
+              <div>
+                <p className="text-xs text-muted-foreground">Model</p>
+                <p className="text-sm font-medium">{alert.anomalyContext.modelVersion}</p>
+              </div>
+            )}
+          </div>
+          <a
+            href={`/devices/${alert.deviceId}#anomalies`}
+            className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:underline"
+          >
+            Open device anomalies
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
+      )}
 
       {/* Linked Tickets */}
       {(linkedTickets.length > 0 || linkedError) && (

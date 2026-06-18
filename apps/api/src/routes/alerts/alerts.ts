@@ -48,7 +48,36 @@ type AlertCorrelationSummaryRow = {
   noiseReductionPercent: number | string | null;
 };
 
-export function attachAlertCorrelationSummaries<T extends { id: string }>(
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function normalizeMetricAnomalyContext(context: unknown) {
+  const record = asRecord(context);
+  if (record.source !== 'metric_anomaly') return null;
+  return {
+    source: 'metric_anomaly',
+    anomalyId: typeof record.anomalyId === 'string' ? record.anomalyId : null,
+    metricName: typeof record.metricName === 'string' ? record.metricName : null,
+    metricType: typeof record.metricType === 'string' ? record.metricType : null,
+    anomalyType: typeof record.anomalyType === 'string' ? record.anomalyType : null,
+    observedValue: typeof record.observedValue === 'number' ? record.observedValue : null,
+    baselineValue: typeof record.baselineValue === 'number' ? record.baselineValue : null,
+    confidence: typeof record.confidence === 'number' ? record.confidence : null,
+    score: typeof record.score === 'number' ? record.score : null,
+    modelVersion: typeof record.modelVersion === 'string' ? record.modelVersion : null,
+  };
+}
+
+function withMlAlertContext<T extends { context?: unknown }>(alert: T) {
+  return {
+    ...alert,
+    contextData: alert.context ?? null,
+    anomalyContext: normalizeMetricAnomalyContext(alert.context),
+  };
+}
+
+export function attachAlertCorrelationSummaries<T extends { id: string; context?: unknown }>(
   alertRows: T[],
   correlationRows: AlertCorrelationSummaryRow[]
 ) {
@@ -64,7 +93,7 @@ export function attachAlertCorrelationSummaries<T extends { id: string }>(
   return alertRows.map((alert) => {
     const correlation = correlationByAlertId.get(alert.id);
     if (!correlation) {
-      return {
+      return withMlAlertContext({
         ...alert,
         correlationGroupId: null,
         correlationRole: null,
@@ -72,13 +101,13 @@ export function attachAlertCorrelationSummaries<T extends { id: string }>(
         correlationMemberCount: 0,
         correlationChildCount: 0,
         noiseReductionPercent: null,
-      };
+      });
     }
 
     const memberCount = Number(correlation.memberCount ?? 0);
     const noiseReductionPercent = Number(correlation.noiseReductionPercent ?? 0);
 
-    return {
+    return withMlAlertContext({
       ...alert,
       correlationGroupId: correlation.groupId,
       correlationRole: correlation.role,
@@ -86,7 +115,7 @@ export function attachAlertCorrelationSummaries<T extends { id: string }>(
       correlationMemberCount: Number.isFinite(memberCount) ? memberCount : 0,
       correlationChildCount: Math.max((Number.isFinite(memberCount) ? memberCount : 0) - 1, 0),
       noiseReductionPercent: Number.isFinite(noiseReductionPercent) ? noiseReductionPercent : null,
-    };
+    });
   });
 }
 
@@ -779,7 +808,7 @@ alertsRoutes.get(
       .where(eq(alertNotifications.alertId, alertId))
       .orderBy(desc(alertNotifications.createdAt));
 
-    return c.json({
+    return c.json(withMlAlertContext({
       ...alert,
       device: device ? {
         id: device.id,
@@ -796,7 +825,7 @@ alertsRoutes.get(
         isActive: rule.isActive
       } : null,
       notifications
-    });
+    }));
   }
 );
 
