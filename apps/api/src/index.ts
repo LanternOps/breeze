@@ -152,6 +152,10 @@ import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/a
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
 import { initializeAlertCorrelationWorker, shutdownAlertCorrelationWorker } from './jobs/alertCorrelation';
 import { initializeMetricRollupsWorker, shutdownMetricRollupsWorker } from './jobs/metricRollups';
+import {
+  initializeMetricRollupMaintenanceWorker,
+  shutdownMetricRollupMaintenanceWorker,
+} from './jobs/metricRollupMaintenance';
 import { initializeMetricAnomaliesWorker, shutdownMetricAnomaliesWorker } from './jobs/metricAnomalies';
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
@@ -1048,6 +1052,7 @@ async function initializeWorkers(): Promise<void> {
     ['alertWorkers', initializeAlertWorkers],
     ['alertCorrelationWorker', initializeAlertCorrelationWorker],
     ['metricRollupsWorker', initializeMetricRollupsWorker],
+    ['metricRollupMaintenance', initializeMetricRollupMaintenanceWorker],
     ['metricAnomaliesWorker', initializeMetricAnomaliesWorker],
     ['offlineDetector', initializeOfflineDetector],
     ['notificationDispatcher', initializeNotificationDispatcher],
@@ -1264,6 +1269,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
     shutdownMetricAnomaliesWorker,
+    shutdownMetricRollupMaintenanceWorker,
     shutdownMetricRollupsWorker,
     shutdownAlertCorrelationWorker,
     shutdownAlertWorkers,
