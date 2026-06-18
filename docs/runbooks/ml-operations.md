@@ -186,6 +186,8 @@ Metric rollups:
 Anomalies:
 - Keep `ml.anomalies.create_alerts` off until dismiss/promote rates are acceptable.
 - Review anomaly status counts before increasing sensitivity.
+- For a bounded manual replay after rollups are present, run:
+  `pnpm --filter @breeze/api metric-anomalies:backfill -- --org-id <org-id> --from <iso> --to <iso>`.
 
 Remediation suggestions:
 - Suggestions should reference existing scripts/templates where possible.
