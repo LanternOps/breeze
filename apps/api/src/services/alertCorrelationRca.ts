@@ -26,6 +26,7 @@ export interface RcaEvidenceItem {
   severity?: string;
   title: string;
   summary: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface RcaRootCauseCandidate {
@@ -83,6 +84,90 @@ function summarizeJson(value: unknown, maxLength = 180): string {
   if (value == null) return '';
   const raw = typeof value === 'string' ? value : JSON.stringify(value);
   return raw.length > maxLength ? `${raw.slice(0, maxLength)}...` : raw;
+}
+
+function metadataRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function metadataStringArray(metadata: Record<string, unknown>, key: string, maxItems = 5): string[] {
+  const value = metadata[key];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string' && item.length > 0)
+    .slice(0, maxItems);
+}
+
+function metadataString(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function buildCorrelationSummary(link: CorrelationRow): string {
+  const metadata = metadataRecord(link.metadata);
+  const details: string[] = [];
+  const evidence = metadataStringArray(metadata, 'evidence');
+  const sourceIds = [
+    metadataString(metadata, 'ruleId') ? `rule ${metadataString(metadata, 'ruleId')}` : null,
+    metadataString(metadata, 'templateId') ? `template ${metadataString(metadata, 'templateId')}` : null,
+    metadataString(metadata, 'configPolicyId') && metadataString(metadata, 'configItemName')
+      ? `config item ${metadataString(metadata, 'configPolicyId')}/${metadataString(metadata, 'configItemName')}`
+      : null,
+  ].filter((item): item is string => Boolean(item));
+  const logRuleNames = metadataStringArray(metadata, 'logCorrelationRuleNames');
+  const logPatterns = metadataStringArray(metadata, 'logPatterns', 3);
+  const logOccurrences = typeof metadata.logOccurrences === 'number' ? metadata.logOccurrences : null;
+  const logSeverity = metadataString(metadata, 'logSeverity');
+  const flappingRuleIds = metadataStringArray(metadata, 'flappingRuleIds');
+  const flappingDeviceIds = metadataStringArray(metadata, 'flappingDeviceIds');
+
+  if (evidence.length > 0) details.push(`Evidence: ${evidence.join(', ')}`);
+  if (sourceIds.length > 0) details.push(`Sources: ${sourceIds.join(', ')}`);
+  if (logRuleNames.length > 0 || logPatterns.length > 0) {
+    const logDetails = [
+      logRuleNames.length > 0 ? `rules ${logRuleNames.join(', ')}` : null,
+      logPatterns.length > 0 ? `patterns ${logPatterns.join(', ')}` : null,
+      logOccurrences != null ? `${logOccurrences} occurrence${logOccurrences === 1 ? '' : 's'}` : null,
+      logSeverity ? `severity ${logSeverity}` : null,
+    ].filter((item): item is string => Boolean(item));
+    details.push(`Log correlation: ${logDetails.join('; ')}`);
+  }
+  if (metadata.flappingDetected === true) {
+    const flappingDetails = [
+      flappingRuleIds.length > 0 ? `rules ${flappingRuleIds.join(', ')}` : null,
+      flappingDeviceIds.length > 0 ? `devices ${flappingDeviceIds.join(', ')}` : null,
+    ].filter((item): item is string => Boolean(item));
+    details.push(`Flapping detected${flappingDetails.length > 0 ? ` on ${flappingDetails.join('; ')}` : ''}`);
+  }
+
+  const base = `Alert ${link.parentAlertId} is correlated with ${link.childAlertId} at confidence ${Number(link.confidence ?? 0).toFixed(2)}.`;
+  return details.length > 0 ? `${base} ${details.join('. ')}.` : base;
+}
+
+function buildCorrelationMetadata(link: CorrelationRow): Record<string, unknown> {
+  const metadata = metadataRecord(link.metadata);
+  return {
+    correlationId: link.id,
+    parentAlertId: link.parentAlertId,
+    childAlertId: link.childAlertId,
+    confidence: Number(link.confidence ?? 0),
+    evidence: metadataStringArray(metadata, 'evidence'),
+    ruleId: metadataString(metadata, 'ruleId'),
+    templateId: metadataString(metadata, 'templateId'),
+    configPolicyId: metadataString(metadata, 'configPolicyId'),
+    configItemName: metadataString(metadata, 'configItemName'),
+    logCorrelationIds: metadataStringArray(metadata, 'logCorrelationIds'),
+    logCorrelationRuleIds: metadataStringArray(metadata, 'logCorrelationRuleIds'),
+    logCorrelationRuleNames: metadataStringArray(metadata, 'logCorrelationRuleNames'),
+    logPatterns: metadataStringArray(metadata, 'logPatterns', 3),
+    logOccurrences: typeof metadata.logOccurrences === 'number' ? metadata.logOccurrences : null,
+    logSeverity: metadataString(metadata, 'logSeverity'),
+    flappingDetected: metadata.flappingDetected === true,
+    flappingRuleIds: metadataStringArray(metadata, 'flappingRuleIds'),
+    flappingDeviceIds: metadataStringArray(metadata, 'flappingDeviceIds'),
+    flappingConfigPolicyIds: metadataStringArray(metadata, 'flappingConfigPolicyIds'),
+  };
 }
 
 function rankEvidence(items: RcaEvidenceItem[]): RcaEvidenceItem[] {
@@ -346,7 +431,8 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
       timestamp: toIso(asDate(link.createdAt)),
       alertId: link.parentAlertId,
       title: `Correlation: ${link.correlationType}`,
-      summary: `Alert ${link.parentAlertId} is correlated with ${link.childAlertId} at confidence ${Number(link.confidence ?? 0).toFixed(2)}.`,
+      summary: buildCorrelationSummary(link),
+      metadata: buildCorrelationMetadata(link),
     })),
     ...contextRows.map((row) => ({
       id: `device_context:${row.id}`,

@@ -4,10 +4,12 @@ const { dbMock, state, tables } = vi.hoisted(() => {
   const tables = {
     devices: { id: 'devices.id', orgId: 'devices.orgId', hostname: 'devices.hostname', osType: 'devices.osType' },
     alertCorrelations: {
+      id: 'alert_correlations.id',
       parentAlertId: 'alert_correlations.parentAlertId',
       childAlertId: 'alert_correlations.childAlertId',
       correlationType: 'alert_correlations.correlationType',
       confidence: 'alert_correlations.confidence',
+      metadata: 'alert_correlations.metadata',
       createdAt: 'alert_correlations.createdAt',
     },
     brainDeviceContext: {
@@ -164,10 +166,25 @@ describe('alert correlation RCA evidence builder', () => {
     vi.clearAllMocks();
     state.devices = [{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'server-1', osType: 'windows' }];
     state.correlations = [{
+      id: 'correlation-1',
       parentAlertId: ALERT_1,
       childAlertId: ALERT_2,
       correlationType: 'same_device_temporal',
       confidence: '0.91',
+      metadata: {
+        evidence: ['same_device', 'time_window', 'same_rule', 'shared_log_correlation', 'flapping_suppression'],
+        ruleId: 'rule-1',
+        templateId: 'template-1',
+        logCorrelationIds: ['log-correlation-1'],
+        logCorrelationRuleIds: ['log-rule-1'],
+        logCorrelationRuleNames: ['Service crash burst'],
+        logPatterns: ['service crashed'],
+        logOccurrences: 7,
+        logSeverity: 'critical',
+        flappingDetected: true,
+        flappingRuleIds: ['rule-1'],
+        flappingDeviceIds: [DEVICE_ID],
+      },
       createdAt: new Date('2026-06-18T12:03:00Z'),
     }];
     state.context = [{
@@ -247,6 +264,27 @@ describe('alert correlation RCA evidence builder', () => {
       'agent_log',
       'metric_rollup',
     ]));
+    const correlationEvidence = result.timeline.find((item) => item.source === 'correlation');
+    expect(correlationEvidence?.summary).toContain('shared_log_correlation');
+    expect(correlationEvidence?.summary).toContain('Service crash burst');
+    expect(correlationEvidence?.summary).toContain('service crashed');
+    expect(correlationEvidence?.summary).toContain('Flapping detected');
+    expect(correlationEvidence?.metadata).toMatchObject({
+      correlationId: 'correlation-1',
+      parentAlertId: ALERT_1,
+      childAlertId: ALERT_2,
+      confidence: 0.91,
+      evidence: ['same_device', 'time_window', 'same_rule', 'shared_log_correlation', 'flapping_suppression'],
+      ruleId: 'rule-1',
+      templateId: 'template-1',
+      logCorrelationIds: ['log-correlation-1'],
+      logCorrelationRuleNames: ['Service crash burst'],
+      logPatterns: ['service crashed'],
+      logOccurrences: 7,
+      flappingDetected: true,
+      flappingRuleIds: ['rule-1'],
+      flappingDeviceIds: [DEVICE_ID],
+    });
     expect(result.rootCauseCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ confidence: 0.91 }),
       expect.objectContaining({ confidence: 0.58 }),
