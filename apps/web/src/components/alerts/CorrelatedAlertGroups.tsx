@@ -52,6 +52,7 @@ type RcaEvidenceItem = {
   title: string;
   summary: string;
   severity?: string;
+  metadata?: Record<string, unknown>;
 };
 
 type RcaCandidate = {
@@ -120,6 +121,169 @@ function formatDateTime(value: string | undefined) {
 
 function evidenceLabel(source: string) {
   return source.replace(/_/g, ' ');
+}
+
+function evidenceDomId(evidenceId: string) {
+  return `rca-evidence-${evidenceId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+function metadataRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function metadataRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(metadataRecord).filter((item): item is Record<string, unknown> => Boolean(item));
+}
+
+function metadataString(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function metadataStringArray(record: Record<string, unknown>, key: string, maxItems = 4): string[] {
+  const value = record[key];
+  if (!Array.isArray(value)) return [];
+  return value.map(metadataString).filter((item): item is string => Boolean(item)).slice(0, maxItems);
+}
+
+function metadataNumber(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function compactDetail(value: string, maxLength = 140): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
+}
+
+function appendDetail(details: Array<{ label: string; value: string }>, label: string, value: string | null | undefined) {
+  if (!value) return;
+  details.push({ label, value: compactDetail(value) });
+}
+
+function formatEvidenceList(values: string[]) {
+  return values.map(evidenceLabel).join(', ');
+}
+
+function formatMetadataConfidence(value: number | null) {
+  return value == null ? null : `${formatPercent(value * 100)} confidence`;
+}
+
+function buildCorrelationMetadataDetails(metadata: Record<string, unknown>) {
+  const details: Array<{ label: string; value: string }> = [];
+  const evidence = metadataStringArray(metadata, 'evidence', 5);
+  const logRuleNames = metadataStringArray(metadata, 'logCorrelationRuleNames', 3);
+  const logPatterns = metadataStringArray(metadata, 'logPatterns', 2);
+  const logOccurrences = metadataNumber(metadata, 'logOccurrences');
+  const logSeverity = metadataString(metadata.logSeverity);
+  const flappingRuleIds = metadataStringArray(metadata, 'flappingRuleIds', 3);
+  const flappingDeviceIds = metadataStringArray(metadata, 'flappingDeviceIds', 3);
+  const sourceParts = [
+    metadataString(metadata.ruleId) ? `rule ${metadataString(metadata.ruleId)}` : null,
+    metadataString(metadata.templateId) ? `template ${metadataString(metadata.templateId)}` : null,
+    metadataString(metadata.configPolicyId) && metadataString(metadata.configItemName)
+      ? `config ${metadataString(metadata.configPolicyId)} / ${metadataString(metadata.configItemName)}`
+      : null,
+  ].filter((item): item is string => Boolean(item));
+
+  appendDetail(details, 'Shared evidence', evidence.length > 0 ? formatEvidenceList(evidence) : null);
+  appendDetail(details, 'Source match', sourceParts.length > 0 ? sourceParts.join(', ') : null);
+
+  const logParts = [
+    logRuleNames.length > 0 ? `rules ${logRuleNames.join(', ')}` : null,
+    logPatterns.length > 0 ? `patterns ${logPatterns.join(', ')}` : null,
+    logOccurrences != null ? `${logOccurrences} occurrence${logOccurrences === 1 ? '' : 's'}` : null,
+    logSeverity ? `severity ${logSeverity}` : null,
+  ].filter((item): item is string => Boolean(item));
+  appendDetail(details, 'Log correlation', logParts.length > 0 ? logParts.join('; ') : null);
+
+  if (metadata.flappingDetected === true) {
+    const flappingParts = [
+      flappingRuleIds.length > 0 ? `rules ${flappingRuleIds.join(', ')}` : null,
+      flappingDeviceIds.length > 0 ? `devices ${flappingDeviceIds.join(', ')}` : null,
+    ].filter((item): item is string => Boolean(item));
+    appendDetail(details, 'Flapping', flappingParts.length > 0 ? flappingParts.join('; ') : 'detected');
+  }
+
+  return details;
+}
+
+function buildAlertMetadataDetails(metadata: Record<string, unknown>) {
+  const details: Array<{ label: string; value: string }> = [];
+  const rule = metadataRecord(metadata.rule);
+  const template = metadataRecord(metadata.template);
+  const configSource = metadataRecord(metadata.configSource);
+  const correlationMember = metadataRecord(metadata.correlationMember);
+  const linkedLogCorrelations = metadataRecordArray(metadata.linkedLogCorrelations);
+
+  appendDetail(details, 'Alert rule', metadataString(rule?.name));
+  appendDetail(details, 'Template', metadataString(template?.name));
+
+  if (configSource) {
+    const configParts = [
+      metadataString(configSource.configPolicyAlertRuleName),
+      metadataString(configSource.configurationPolicyName),
+      metadataString(configSource.itemName),
+    ].filter((item): item is string => Boolean(item));
+    appendDetail(details, 'Config source', configParts.length > 0 ? configParts.join(' / ') : metadataString(configSource.configPolicyAlertRuleId));
+  }
+
+  if (linkedLogCorrelations.length > 0) {
+    const logDetails = linkedLogCorrelations.slice(0, 2).map((correlation) => {
+      const name = metadataString(correlation.ruleName) ?? metadataString(correlation.detectedPattern) ?? metadataString(correlation.rulePattern);
+      const occurrences = metadataNumber(correlation, 'occurrences');
+      return [name, occurrences != null ? `${occurrences} occurrence${occurrences === 1 ? '' : 's'}` : null]
+        .filter((item): item is string => Boolean(item))
+        .join(' ');
+    }).filter(Boolean);
+    appendDetail(details, 'Linked logs', logDetails.length > 0 ? logDetails.join('; ') : null);
+  }
+
+  if (correlationMember) {
+    const memberParts = [
+      metadataString(correlationMember.role),
+      formatMetadataConfidence(metadataNumber(correlationMember, 'confidence')),
+    ].filter((item): item is string => Boolean(item));
+    appendDetail(details, 'Group member', memberParts.length > 0 ? memberParts.join(', ') : null);
+  }
+
+  appendDetail(details, 'Alert context', metadataString(metadata.contextSummary));
+  return details;
+}
+
+function evidenceMetadataDetails(item: RcaEvidenceItem) {
+  const metadata = metadataRecord(item.metadata);
+  if (!metadata) return [];
+  if (item.source === 'correlation') return buildCorrelationMetadataDetails(metadata).slice(0, 5);
+  if (item.source === 'alert') return buildAlertMetadataDetails(metadata).slice(0, 5);
+  return [];
+}
+
+function EvidenceLinks({ evidenceIds, timeline }: { evidenceIds: string[]; timeline: RcaEvidenceItem[] }) {
+  const linkedItems = evidenceIds
+    .map((id) => timeline.find((item) => item.id === id))
+    .filter((item): item is RcaEvidenceItem => Boolean(item));
+
+  if (linkedItems.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-muted-foreground">Evidence</span>
+      {linkedItems.map((item) => (
+        <a
+          key={item.id}
+          href={`#${evidenceDomId(item.id)}`}
+          className="inline-flex max-w-full items-center gap-1 rounded-md border bg-background px-2 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label={`Open evidence ${item.title}`}
+        >
+          <FileText className="h-3 w-3 shrink-0" />
+          <span className="truncate">{item.title}</span>
+        </a>
+      ))}
+    </div>
+  );
 }
 
 export default function CorrelatedAlertGroups() {
@@ -589,6 +753,7 @@ export default function CorrelatedAlertGroups() {
                                         </span>
                                       </div>
                                       <p className="mt-1 text-sm text-muted-foreground">{candidate.summary}</p>
+                                      <EvidenceLinks evidenceIds={candidate.supportingEvidenceIds} timeline={groupRca.timeline} />
                                     </div>
                                   ))
                                 )}
@@ -610,6 +775,7 @@ export default function CorrelatedAlertGroups() {
                                           </span>
                                         </div>
                                         <p className="mt-1 text-xs text-muted-foreground">{step.rationale}</p>
+                                        <EvidenceLinks evidenceIds={step.evidenceIds} timeline={groupRca.timeline} />
                                       </div>
                                     ))}
                                   </div>
@@ -622,17 +788,30 @@ export default function CorrelatedAlertGroups() {
                                   Evidence timeline
                                 </div>
                                 <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-                                  {groupRca.timeline.map((item) => (
-                                    <div key={item.id} className="rounded-md border px-3 py-2">
-                                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                        <span>{formatDateTime(item.timestamp)}</span>
-                                        <span className="rounded-full border bg-muted px-2 py-0.5">{evidenceLabel(item.source)}</span>
-                                        <span>{item.type}</span>
+                                  {groupRca.timeline.map((item) => {
+                                    const metadataDetails = evidenceMetadataDetails(item);
+                                    return (
+                                      <div key={item.id} id={evidenceDomId(item.id)} className="scroll-mt-4 rounded-md border px-3 py-2">
+                                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                          <span>{formatDateTime(item.timestamp)}</span>
+                                          <span className="rounded-full border bg-muted px-2 py-0.5">{evidenceLabel(item.source)}</span>
+                                          <span>{item.type}</span>
+                                        </div>
+                                        <p className="mt-1 text-sm font-medium">{item.title}</p>
+                                        <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                                        {metadataDetails.length > 0 && (
+                                          <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-2">
+                                            {metadataDetails.map((detail) => (
+                                              <div key={`${item.id}:${detail.label}`} className="min-w-0">
+                                                <dt className="font-medium text-foreground">{detail.label}</dt>
+                                                <dd className="truncate text-muted-foreground" title={detail.value}>{detail.value}</dd>
+                                              </div>
+                                            ))}
+                                          </dl>
+                                        )}
                                       </div>
-                                      <p className="mt-1 text-sm font-medium">{item.title}</p>
-                                      <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
-                                    </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               </div>
 

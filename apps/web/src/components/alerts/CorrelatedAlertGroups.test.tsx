@@ -84,7 +84,7 @@ const rcaPayload = {
       title: 'Review recent changes',
       rationale: 'A service change overlaps the incident window.',
       riskTier: 'low',
-      evidenceIds: ['device_change:1']
+      evidenceIds: ['device_change:1', 'correlation:1']
     }
   ],
   timeline: [
@@ -95,6 +95,50 @@ const rcaPayload = {
       timestamp: '2026-06-18T11:55:00.000Z',
       title: 'Service restart',
       summary: 'Restarted API service before the incident.'
+    },
+    {
+      id: 'correlation:1',
+      source: 'correlation',
+      type: 'flapping_temporal',
+      timestamp: '2026-06-18T12:01:00.000Z',
+      title: 'Correlation: flapping temporal',
+      summary: 'Alerts share flapping and log correlation evidence.',
+      metadata: {
+        evidence: ['same_device', 'shared_log_correlation', 'flapping_suppression'],
+        ruleId: 'rule-1',
+        templateId: 'template-1',
+        logCorrelationRuleNames: ['Service crash burst'],
+        logPatterns: ['service crashed'],
+        logOccurrences: 7,
+        logSeverity: 'error',
+        flappingDetected: true,
+        flappingRuleIds: ['rule-1'],
+        flappingDeviceIds: ['device-1']
+      }
+    },
+    {
+      id: 'alert:1',
+      source: 'alert',
+      type: 'config_policy_alert',
+      timestamp: '2026-06-18T12:05:00.000Z',
+      title: 'Service timeout on SRV-01',
+      summary: 'Triggered via config policy rule "Memory threshold".',
+      metadata: {
+        configSource: {
+          configPolicyAlertRuleName: 'Memory threshold',
+          configurationPolicyName: 'Server monitoring baseline',
+          itemName: 'ram_percent'
+        },
+        linkedLogCorrelations: [{
+          ruleName: 'Repeated memory service faults',
+          occurrences: 5
+        }],
+        correlationMember: {
+          role: 'related',
+          confidence: 0.91
+        },
+        contextSummary: '{"threshold":90,"observed":94}'
+      }
     }
   ],
   gaps: ['No warning/error logs were found in the incident window.']
@@ -195,6 +239,16 @@ describe('CorrelatedAlertGroups', () => {
     expect(screen.getByText('Review recent changes')).toBeInTheDocument();
     expect(screen.getByText('A service change overlaps the incident window.')).toBeInTheDocument();
     expect(screen.getByText('Restarted API service before the incident.')).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /Open evidence Service restart/i })[0]).toHaveAttribute('href', '#rca-evidence-device_change-1');
+    expect(screen.getByRole('link', { name: /Open evidence Correlation: flapping temporal/i })).toHaveAttribute('href', '#rca-evidence-correlation-1');
+    expect(screen.getByText('Shared evidence')).toBeInTheDocument();
+    expect(screen.getByText('same device, shared log correlation, flapping suppression')).toBeInTheDocument();
+    expect(screen.getByText('rules Service crash burst; patterns service crashed; 7 occurrences; severity error')).toBeInTheDocument();
+    expect(screen.getByText('rules rule-1; devices device-1')).toBeInTheDocument();
+    expect(screen.getByText('Config source')).toBeInTheDocument();
+    expect(screen.getByText('Memory threshold / Server monitoring baseline / ram_percent')).toBeInTheDocument();
+    expect(screen.getByText('Repeated memory service faults 5 occurrences')).toBeInTheDocument();
+    expect(screen.getByText('related, 91% confidence')).toBeInTheDocument();
     expect(screen.getByText('No warning/error logs were found in the incident window.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Mark RCA helpful/i }));
@@ -230,7 +284,7 @@ describe('CorrelatedAlertGroups', () => {
       metadata: expect.objectContaining({
         source: 'correlated_alert_groups_ui',
         candidateCount: 1,
-        evidenceCount: 1,
+        evidenceCount: 3,
         gapCount: 1
       })
     }));
