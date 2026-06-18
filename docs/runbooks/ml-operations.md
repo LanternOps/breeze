@@ -93,6 +93,9 @@ curl -H "Authorization: Bearer <token>" \
 
 curl -H "Authorization: Bearer <token>" \
   "https://<host>/api/user-risk/evaluation?orgId=<org-id>&days=30"
+
+curl -H "Authorization: Bearer <token>" \
+  "https://<host>/api/remediation-suggestions/evaluation?orgId=<org-id>&days=30"
 ```
 
 Key metrics:
@@ -102,7 +105,7 @@ Key metrics:
 | Alert correlation | Group compression fields plus split/merge/dismiss feedback labels |
 | RCA | Helpful/not-helpful and usage labels |
 | Anomalies | Dismiss/promote/resolve rates |
-| Remediation | Accepted, rejected, executed, failed |
+| Remediation | Accepted, edited, rejected, executed, failed, approval latency |
 | Reliability | Precision against failure/replacement labels |
 | Ticket triage | Override rate for category/priority/assignee |
 | User risk | True-positive rate, training completion, repeat signal rate |
@@ -167,8 +170,13 @@ Anomalies:
 
 Remediation suggestions:
 - Suggestions should reference existing scripts/templates where possible.
-- Execution must go through existing script/approval paths. There is no separate
-  ML approval bypass.
+- Check `/api/remediation-suggestions/evaluation?days=30` before changing match
+  rules. Watch accept/edit/reject rates before treating suggestions as useful.
+- Approval latency comes from linked elevation requests. If high-risk
+  suggestions fail execution, confirm `elevationRequestId` points to an
+  approved, same-org, same-device elevation request that has not expired.
+- Execution must go through existing script/approval paths. There is no
+  separate ML approval bypass.
 
 Device reliability:
 - Check `/api/reliability/evaluation` before changing thresholds.
