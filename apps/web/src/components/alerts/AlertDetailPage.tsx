@@ -332,7 +332,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             )}
           </div>
           <a
-            href={`/devices/${alert.deviceId}#anomalies`}
+            href={`/devices/${alert.deviceId}#anomalies${alert.anomalyContext.anomalyId ? `/${alert.anomalyContext.anomalyId}` : ''}`}
             className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:underline"
           >
             Open device anomalies

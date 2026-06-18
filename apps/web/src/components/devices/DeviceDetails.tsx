@@ -134,16 +134,26 @@ const VALID_TABS: Tab[] = [
 
 function getTabFromHash(): Tab {
   if (typeof window === 'undefined') return 'overview';
-  const hash = window.location.hash.replace('#', '');
+  const hash = window.location.hash.replace('#', '').split('/')[0] ?? '';
   if (VALID_TABS.includes(hash as Tab)) return hash as Tab;
   return 'overview';
 }
 
+function getAnomalyIdFromHash(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const [tab, anomalyId] = window.location.hash.replace('#', '').split('/');
+  return tab === 'anomalies' && anomalyId ? anomalyId : undefined;
+}
+
 export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
   const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
+  const [focusedAnomalyId, setFocusedAnomalyId] = useState<string | undefined>(getAnomalyIdFromHash);
 
   useEffect(() => {
-    const onHashChange = () => setActiveTab(getTabFromHash());
+    const onHashChange = () => {
+      setActiveTab(getTabFromHash());
+      setFocusedAnomalyId(getAnomalyIdFromHash());
+    };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
@@ -151,6 +161,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
   const switchTab = (tab: Tab) => {
     window.location.hash = tab;
     setActiveTab(tab);
+    setFocusedAnomalyId(undefined);
   };
 
   // Use provided timezone or browser default
@@ -343,7 +354,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       )}
 
       {activeTab === 'anomalies' && (
-        <DeviceAnomaliesPanel deviceId={device.id} />
+        <DeviceAnomaliesPanel deviceId={device.id} focusedAnomalyId={focusedAnomalyId} />
       )}
 
       {activeTab === 'tickets' && (

@@ -28,6 +28,7 @@ type MetricAnomaly = {
 type DeviceAnomaliesPanelProps = {
   deviceId: string;
   compact?: boolean;
+  focusedAnomalyId?: string;
 };
 
 type PromotedAlert = {
@@ -66,6 +67,13 @@ const anomalyLabels: Record<string, string> = {
   disk_growth: 'Disk growth',
 };
 
+const statusLabels: Record<AnomalyStatus, string> = {
+  open: 'Open',
+  dismissed: 'Dismissed',
+  promoted: 'Promoted',
+  resolved: 'Resolved',
+};
+
 function formatMetricValue(metricName: string, value: number): string {
   if (!Number.isFinite(value)) return '0';
   if (metricName.endsWith('_percent')) return `${value.toFixed(1)}%`;
@@ -99,7 +107,7 @@ function labelForAnomaly(type: string): string {
   return anomalyLabels[type] ?? type.replace(/_/g, ' ');
 }
 
-export default function DeviceAnomaliesPanel({ deviceId, compact = false }: DeviceAnomaliesPanelProps) {
+export default function DeviceAnomaliesPanel({ deviceId, compact = false, focusedAnomalyId }: DeviceAnomaliesPanelProps) {
   const mlFlags = useMlFeatureFlags();
   const [anomalies, setAnomalies] = useState<MetricAnomaly[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,7 +120,9 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/anomalies?status=open&limit=${compact ? 5 : 25}`);
+      const status = focusedAnomalyId ? 'all' : 'open';
+      const limit = focusedAnomalyId ? 100 : compact ? 5 : 25;
+      const response = await fetchWithAuth(`/devices/${deviceId}/anomalies?status=${status}&limit=${limit}`);
       if (!response.ok) throw new Error('Failed to load metric anomalies');
       const json = await response.json();
       setAnomalies(Array.isArray(json?.data) ? json.data : []);
@@ -121,7 +131,7 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
     } finally {
       setLoading(false);
     }
-  }, [compact, deviceId]);
+  }, [compact, deviceId, focusedAnomalyId]);
 
   useEffect(() => {
     if (!mlFlags.loaded) return;
@@ -226,7 +236,9 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
           <div>
             <h3 className="text-lg font-semibold">Metric Anomalies</h3>
             {!compact && (
-              <p className="text-sm text-muted-foreground">Open signals detected from metric rollups</p>
+              <p className="text-sm text-muted-foreground">
+                {focusedAnomalyId ? 'Showing the linked anomaly and recent anomaly history' : 'Open signals detected from metric rollups'}
+              </p>
             )}
           </div>
         </div>
@@ -262,76 +274,103 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
           )}
           <div className="mt-5 rounded-md border border-dashed p-6 text-center">
             <CheckCircle className="mx-auto h-8 w-8 text-success" />
-            <p className="mt-2 text-sm font-medium">No open anomalies</p>
+            <p className="mt-2 text-sm font-medium">{focusedAnomalyId ? 'Linked anomaly not found' : 'No open anomalies'}</p>
             {!compact && <p className="text-sm text-muted-foreground">Recent metric rollups are within baseline.</p>}
           </div>
         </>
       ) : (
         <div className="mt-5 space-y-3">
-          {sorted.map((anomaly) => (
-            <div key={anomaly.id} className="rounded-md border p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      {labelForAnomaly(anomaly.anomalyType)}
-                    </span>
-                    <span className="text-sm font-semibold">{labelForMetric(anomaly.metricName)}</span>
-                    <span className="text-xs text-muted-foreground">{formatDate(anomaly.windowStart)}</span>
-                  </div>
-                  <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
-                    <div>
-                      <div className="text-xs text-muted-foreground">Observed</div>
-                      <div className="font-semibold tabular-nums">{formatMetricValue(anomaly.metricName, anomaly.observedValue)}</div>
+          {sorted.map((anomaly) => {
+            const isFocused = anomaly.id === focusedAnomalyId;
+            return (
+              <div
+                key={anomaly.id}
+                data-testid={`metric-anomaly-${anomaly.id}`}
+                className={`rounded-md border p-4 ${isFocused ? 'border-primary/60 bg-primary/5 ring-2 ring-primary/20' : ''}`}
+              >
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        {labelForAnomaly(anomaly.anomalyType)}
+                      </span>
+                      {anomaly.status !== 'open' && (
+                        <span className="inline-flex rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                          {statusLabels[anomaly.status]}
+                        </span>
+                      )}
+                      {isFocused && (
+                        <span className="inline-flex rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                          Linked from alert
+                        </span>
+                      )}
+                      <span className="text-sm font-semibold">{labelForMetric(anomaly.metricName)}</span>
+                      <span className="text-xs text-muted-foreground">{formatDate(anomaly.windowStart)}</span>
                     </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Baseline</div>
-                      <div className="font-semibold tabular-nums">
-                        {anomaly.baselineValue == null ? '—' : formatMetricValue(anomaly.metricName, anomaly.baselineValue)}
+                    <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
+                      <div>
+                        <div className="text-xs text-muted-foreground">Observed</div>
+                        <div className="font-semibold tabular-nums">{formatMetricValue(anomaly.metricName, anomaly.observedValue)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">Baseline</div>
+                        <div className="font-semibold tabular-nums">
+                          {anomaly.baselineValue == null ? '—' : formatMetricValue(anomaly.metricName, anomaly.baselineValue)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">Confidence</div>
+                        <div className="font-semibold tabular-nums">{Math.round(anomaly.confidence * 100)}%</div>
                       </div>
                     </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Confidence</div>
-                      <div className="font-semibold tabular-nums">{Math.round(anomaly.confidence * 100)}%</div>
-                    </div>
                   </div>
+                  {anomaly.status === 'open' ? (
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={updatingId === anomaly.id}
+                        onClick={() => void updateStatus(anomaly, 'dismissed')}
+                        className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        Dismiss
+                      </button>
+                      <button
+                        type="button"
+                        disabled={updatingId === anomaly.id}
+                        onClick={() => void updateStatus(anomaly, 'resolved')}
+                        className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <CheckCircle className="h-4 w-4" />
+                        Resolve
+                      </button>
+                      <button
+                        type="button"
+                        disabled={updatingId === anomaly.id}
+                        onClick={() => void updateStatus(anomaly, 'promoted')}
+                        className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Promote
+                      </button>
+                    </div>
+                  ) : anomaly.linkedAlertId ? (
+                    <a
+                      href={`/alerts/${anomaly.linkedAlertId}`}
+                      className="inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      Open alert
+                    </a>
+                  ) : null}
                 </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={updatingId === anomaly.id}
-                    onClick={() => void updateStatus(anomaly, 'dismissed')}
-                    className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <XCircle className="h-4 w-4" />
-                    Dismiss
-                  </button>
-                  <button
-                    type="button"
-                    disabled={updatingId === anomaly.id}
-                    onClick={() => void updateStatus(anomaly, 'resolved')}
-                    className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <CheckCircle className="h-4 w-4" />
-                    Resolve
-                  </button>
-                  <button
-                    type="button"
-                    disabled={updatingId === anomaly.id}
-                    onClick={() => void updateStatus(anomaly, 'promoted')}
-                    className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                    Promote
-                  </button>
-                </div>
+                {!compact && anomaly.status === 'open' && (
+                  <RemediationSuggestionsPanel sourceType="anomaly" sourceId={anomaly.id} />
+                )}
               </div>
-              {!compact && (
-                <RemediationSuggestionsPanel sourceType="anomaly" sourceId={anomaly.id} />
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

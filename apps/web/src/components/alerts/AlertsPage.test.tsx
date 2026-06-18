@@ -326,6 +326,9 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     expect(within(dialog).getByText('97.30')).toBeInTheDocument();
     expect(within(dialog).getByText('42.10')).toBeInTheDocument();
     expect(within(dialog).getByText('92%')).toBeInTheDocument();
-    expect(within(dialog).getByRole('link', { name: /Open device anomalies/i })).toHaveAttribute('href', '/devices/device-1#anomalies');
+    expect(within(dialog).getByRole('link', { name: /Open device anomalies/i })).toHaveAttribute(
+      'href',
+      '/devices/device-1#anomalies/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    );
   });
 });
