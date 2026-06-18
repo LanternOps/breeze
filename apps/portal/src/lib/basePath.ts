@@ -54,6 +54,15 @@ export function withBaseFor(base: string, path: string): string {
   return `${base}${clean}`;
 }
 
+/**
+ * True when a raw request pathname falls outside the given base. Always false at
+ * root deploy (empty base owns everything). See `isOutsideBase`.
+ */
+export function isOutsideBaseFor(base: string, pathname: string): boolean {
+  if (!base) return false;
+  return pathname !== base && !pathname.startsWith(`${base}/`);
+}
+
 /** Strip an explicit base from a raw pathname. See `stripBase`. */
 export function stripBaseFor(base: string, pathname: string): string {
   if (!base) return pathname;
@@ -79,4 +88,13 @@ export function withBase(path: string): string {
  */
 export function stripBase(pathname: string): string {
   return stripBaseFor(BASE_PATH, pathname);
+}
+
+/**
+ * True when a raw request pathname is outside the build-time base path. Used by the
+ * middleware to 404 requests the portal should never serve (the portal is mounted
+ * under BASE_PATH in prod; the root belongs to the web app). No-op at root deploy.
+ */
+export function isOutsideBase(pathname: string): boolean {
+  return isOutsideBaseFor(BASE_PATH, pathname);
 }

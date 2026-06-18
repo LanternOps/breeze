@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeBase, withBaseFor, stripBaseFor, withBase, stripBase, BASE_PATH } from './basePath';
+import { normalizeBase, withBaseFor, stripBaseFor, isOutsideBaseFor, withBase, stripBase, isOutsideBase, BASE_PATH } from './basePath';
 
 describe('normalizeBase', () => {
   it.each([
@@ -83,6 +83,33 @@ describe('stripBaseFor (base = "" / root deploy)', () => {
   });
 });
 
+describe('isOutsideBaseFor (base = /portal)', () => {
+  const base = '/portal';
+
+  it.each([
+    ['/portal', false], // the bare base is in-base
+    ['/portal/', false],
+    ['/portal/login', false],
+    ['/portal/quotes/123', false],
+    ['/portal/_astro/app.js', false],
+    ['/login', true], // web owns the un-based root — portal must 404 it
+    ['/', true],
+    ['/quotes', true],
+    ['/api/v1/portal/auth/login', true], // API is same-origin via Caddy, never the portal
+    ['/portalish', true], // boundary: shared prefix is NOT the base
+  ])('%j → outside=%s', (pathname, expected) => {
+    expect(isOutsideBaseFor(base, pathname as string)).toBe(expected);
+  });
+});
+
+describe('isOutsideBaseFor (base = "" / root deploy)', () => {
+  it('is never outside the base when the portal owns the root', () => {
+    for (const p of ['/', '/login', '/anything']) {
+      expect(isOutsideBaseFor('', p)).toBe(false);
+    }
+  });
+});
+
 describe('round-trip', () => {
   it('stripBaseFor ∘ withBaseFor === identity for app paths', () => {
     const base = '/portal';
@@ -99,5 +126,6 @@ describe('bound exports honor the build-time BASE_PATH', () => {
     expect(stripBase('/login')).toBe(stripBaseFor(BASE_PATH, '/login'));
     // Round-trips regardless of the configured base.
     expect(stripBase(withBase('/devices'))).toBe('/devices');
+    expect(isOutsideBase('/login')).toBe(isOutsideBaseFor(BASE_PATH, '/login'));
   });
 });
