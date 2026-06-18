@@ -387,6 +387,46 @@ async function getCorrelationFeedbackCounts(auth: AuthContext, since: Date) {
   };
 }
 
+async function getRcaFeedbackCounts(auth: AuthContext, since: Date) {
+  const feedbackOrgConditions = feedbackOrgConditionsForAuth(auth);
+  if (feedbackOrgConditions === null) {
+    return {
+      helpful: 0,
+      notHelpful: 0,
+      edited: 0,
+      usedInTicket: 0,
+      total: 0,
+    };
+  }
+
+  const rows = await db
+    .select({ eventType: mlFeedbackEvents.eventType })
+    .from(mlFeedbackEvents)
+    .where(and(
+      eq(mlFeedbackEvents.sourceType, 'rca'),
+      gte(mlFeedbackEvents.occurredAt, since),
+      ...(feedbackOrgConditions.length > 0 ? feedbackOrgConditions : [])
+    ));
+
+  const counts = {
+    helpful: 0,
+    notHelpful: 0,
+    edited: 0,
+    usedInTicket: 0,
+  };
+  for (const row of rows) {
+    if (row.eventType === 'rca.helpful') counts.helpful += 1;
+    else if (row.eventType === 'rca.not_helpful') counts.notHelpful += 1;
+    else if (row.eventType === 'rca.edited') counts.edited += 1;
+    else if (row.eventType === 'rca.used_in_ticket') counts.usedInTicket += 1;
+  }
+
+  return {
+    ...counts,
+    total: counts.helpful + counts.notHelpful + counts.edited + counts.usedInTicket,
+  };
+}
+
 async function buildCorrelationEvaluation(auth: AuthContext, labelWindowDays: number) {
   const persistedGroups = await buildPersistedCorrelationGroups(auth);
   const groups = persistedGroups.length > 0 ? persistedGroups : await buildCorrelationGroups(auth);
@@ -417,7 +457,10 @@ async function buildCorrelationEvaluation(auth: AuthContext, labelWindowDays: nu
 
   const totalGroupedAlerts = groupedAlertIds.size;
   const labelWindowStart = new Date(Date.now() - labelWindowDays * 24 * 60 * 60 * 1000);
-  const feedback = await getCorrelationFeedbackCounts(auth, labelWindowStart);
+  const [feedback, rcaFeedback] = await Promise.all([
+    getCorrelationFeedbackCounts(auth, labelWindowStart),
+    getRcaFeedbackCounts(auth, labelWindowStart),
+  ]);
 
   return {
     labelWindowDays,
@@ -429,6 +472,7 @@ async function buildCorrelationEvaluation(auth: AuthContext, labelWindowDays: nu
     averageCorrelationScore: scoredGroups > 0 ? roundMetric(scoreTotal / scoredGroups) : 0,
     averageNoiseReductionPercent: noiseReductionGroups > 0 ? roundMetric(noiseReductionTotal / noiseReductionGroups) : 0,
     feedback,
+    rcaFeedback,
   };
 }
 
