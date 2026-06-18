@@ -163,6 +163,7 @@ describe('device anomaly routes', () => {
     expect(updateMock).not.toHaveBeenCalled();
     expect(emitAnomalyFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
       eventType: 'anomaly.promoted',
+      dedupeKey: 'promoted:alert:44444444-4444-4444-8444-444444444444',
       outcome: 'promoted',
       occurredAt: anomaly.updatedAt,
       metadata: expect.objectContaining({

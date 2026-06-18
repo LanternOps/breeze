@@ -589,6 +589,7 @@ describe('/alerts correlation routes', () => {
       orgId: ORG_1,
       rcaId: GROUP_1,
       eventType: 'rca.helpful',
+      dedupeKey: 'rca.helpful',
       outcome: 'helpful',
       actorUserId: '99999999-9999-4999-8999-999999999999',
       metadata: expect.objectContaining({ groupId: GROUP_1, rootAlertId: ALERT_1, surface: 'test' }),
@@ -626,6 +627,7 @@ describe('/alerts correlation routes', () => {
       orgId: ORG_1,
       correlationId: GROUP_1,
       eventType: 'correlation.accepted',
+      dedupeKey: 'group:acknowledge',
       outcome: 'accepted',
       actorUserId: '99999999-9999-4999-8999-999999999999',
     }));

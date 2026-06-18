@@ -268,6 +268,7 @@ describe('remediation suggestion routes', () => {
       orgId: baseSuggestion.orgId,
       suggestionId: baseSuggestion.id,
       eventType: 'suggestion.accepted',
+      dedupeKey: 'status:accepted',
       outcome: 'accepted',
       actorUserId: 'user-1',
     }));
@@ -565,6 +566,7 @@ describe('remediation suggestion routes', () => {
       orgId: baseSuggestion.orgId,
       suggestionId: baseSuggestion.id,
       eventType: 'suggestion.executed',
+      dedupeKey: `executed:script:${scriptExecutionId}`,
       outcome: 'executed',
       actorUserId: 'user-1',
       metadata: expect.objectContaining({ scriptExecutionId }),
@@ -686,6 +688,7 @@ describe('remediation suggestion routes', () => {
     }));
     expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
       eventType: 'suggestion.executed',
+      dedupeKey: `executed:script:${scriptExecutionId}`,
       outcome: 'executed',
       metadata: expect.objectContaining({
         route: 'remediation_suggestions.execute',

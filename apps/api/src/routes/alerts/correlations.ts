@@ -347,6 +347,14 @@ function roundMetric(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
+function rcaFeedbackDedupeKey(
+  eventType: z.infer<typeof rcaFeedbackSchema>['eventType'],
+  metadata: Record<string, unknown>,
+): string | undefined {
+  if (eventType !== 'rca.edited') return eventType;
+  return typeof metadata.editId === 'string' ? `edit:${metadata.editId}` : undefined;
+}
+
 async function getCorrelationFeedbackCounts(auth: AuthContext, since: Date) {
   const feedbackOrgConditions = feedbackOrgConditionsForAuth(auth);
   if (feedbackOrgConditions === null) {
@@ -662,6 +670,7 @@ alertCorrelationRoutes.post(
       orgId: group.orgId,
       rcaId: group.id,
       eventType: body.eventType,
+      dedupeKey: rcaFeedbackDedupeKey(body.eventType, body.metadata),
       outcome: body.outcome,
       actorUserId: auth.user.id,
       metadata: {
@@ -721,6 +730,7 @@ alertCorrelationRoutes.post(
         orgId: groupAlerts[0].orgId,
         correlationId: groupId,
         eventType: 'correlation.accepted',
+        dedupeKey: 'group:acknowledge',
         outcome: 'accepted',
         actorUserId: auth.user.id,
         metadata: {
@@ -771,6 +781,7 @@ alertCorrelationRoutes.post(
         orgId: groupAlerts[0].orgId,
         correlationId: groupId,
         eventType: 'correlation.accepted',
+        dedupeKey: 'group:resolve',
         outcome: 'accepted',
         actorUserId: auth.user.id,
         metadata: {
@@ -896,6 +907,7 @@ alertCorrelationRoutes.post(
       orgId: alert.orgId,
       correlationId: alert.id,
       eventType: 'correlation.accepted',
+      dedupeKey: 'alert:acknowledge_related',
       outcome: 'accepted',
       actorUserId: auth.user.id,
       metadata: {

@@ -67,6 +67,18 @@ function hasExecutionLink(input: {
   return Boolean(input.toolExecutionId || input.scriptExecutionId || input.playbookExecutionId);
 }
 
+function remediationFeedbackDedupeKey(input: {
+  status: UpdateRemediationSuggestionInput['status'];
+  toolExecutionId?: string | null;
+  scriptExecutionId?: string | null;
+  playbookExecutionId?: string | null;
+}): string {
+  if (input.scriptExecutionId) return `${input.status}:script:${input.scriptExecutionId}`;
+  if (input.playbookExecutionId) return `${input.status}:playbook:${input.playbookExecutionId}`;
+  if (input.toolExecutionId) return `${input.status}:tool:${input.toolExecutionId}`;
+  return `status:${input.status}`;
+}
+
 function normalizeSuggestionParameters(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -939,6 +951,12 @@ remediationSuggestionRoutes.post(
       orgId: updated.orgId,
       suggestionId: updated.id,
       eventType: 'suggestion.executed',
+      dedupeKey: remediationFeedbackDedupeKey({
+        status: 'executed',
+        scriptExecutionId: updated.scriptExecutionId,
+        playbookExecutionId: updated.playbookExecutionId,
+        toolExecutionId: updated.toolExecutionId,
+      }),
       outcome: 'executed',
       actorUserId: auth.user.id,
       metadata: {
@@ -1061,6 +1079,12 @@ remediationSuggestionRoutes.patch(
       orgId: updated.orgId,
       suggestionId: updated.id,
       eventType: `suggestion.${input.status}`,
+      dedupeKey: remediationFeedbackDedupeKey({
+        status: input.status,
+        scriptExecutionId: updated.scriptExecutionId,
+        playbookExecutionId: updated.playbookExecutionId,
+        toolExecutionId: updated.toolExecutionId,
+      }),
       outcome: input.status,
       actorUserId: auth.user.id,
       metadata: {

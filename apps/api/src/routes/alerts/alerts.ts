@@ -702,6 +702,7 @@ alertsRoutes.post(
       orgId: alert.orgId,
       alertId: updated.id,
       eventType: 'alert.suppressed',
+      dedupeKey: `suppress:${suppressedUntil.toISOString()}`,
       outcome: 'suppressed',
       actorUserId: auth.user.id,
       occurredAt: new Date(),
