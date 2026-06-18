@@ -205,6 +205,32 @@ describe('CorrelatedAlertGroups', () => {
         })
       );
     });
+
+    fireEvent.click(screen.getByRole('button', { name: /Mark edited/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/correlations/${GROUP_ID}/rca-feedback`,
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('rca.edited')
+        })
+      );
+    });
+    const editedRequest = fetchMock.mock.calls.find(([url, init]) =>
+      url === `/alerts/correlations/${GROUP_ID}/rca-feedback` &&
+      String(init?.body ?? '').includes('rca.edited')
+    );
+    expect(JSON.parse(String(editedRequest?.[1]?.body))).toEqual(expect.objectContaining({
+      eventType: 'rca.edited',
+      outcome: 'edited',
+      metadata: expect.objectContaining({
+        source: 'correlated_alert_groups_ui',
+        candidateCount: 1,
+        evidenceCount: 1,
+        gapCount: 1
+      })
+    }));
   });
 
   it('labels and disables RCA when the feature is disabled', async () => {

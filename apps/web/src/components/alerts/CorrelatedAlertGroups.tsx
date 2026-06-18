@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FileText,
   Loader2,
+  Pencil,
   RefreshCw,
   ThumbsDown,
   ThumbsUp,
@@ -248,16 +249,22 @@ export default function CorrelatedAlertGroups() {
     }
   };
 
-  const sendRcaFeedback = async (group: AlertGroup, eventType: 'rca.helpful' | 'rca.not_helpful' | 'rca.used_in_ticket') => {
-    const outcome = eventType.replace('rca.', '') as 'helpful' | 'not_helpful' | 'used_in_ticket';
+  const sendRcaFeedback = async (group: AlertGroup, eventType: 'rca.helpful' | 'rca.not_helpful' | 'rca.edited' | 'rca.used_in_ticket') => {
+    const outcome = eventType.replace('rca.', '') as 'helpful' | 'not_helpful' | 'edited' | 'used_in_ticket';
     try {
+      const rca = rcaByGroup[group.id];
       await runAction({
         request: () => fetchWithAuth(`/alerts/correlations/${group.id}/rca-feedback`, {
           method: 'POST',
           body: JSON.stringify({
             eventType,
             outcome,
-            metadata: { source: 'correlated_alert_groups_ui' }
+            metadata: {
+              source: 'correlated_alert_groups_ui',
+              candidateCount: rca?.rootCauseCandidates.length ?? null,
+              evidenceCount: rca?.timeline.length ?? null,
+              gapCount: rca?.gaps.length ?? null,
+            }
           })
         }),
         errorFallback: 'Failed to record RCA feedback',
@@ -593,6 +600,14 @@ export default function CorrelatedAlertGroups() {
                               >
                                 <FileText className="h-4 w-4" />
                                 Used in ticket
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void sendRcaFeedback(group, 'rca.edited')}
+                                className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+                              >
+                                <Pencil className="h-4 w-4" />
+                                Mark edited
                               </button>
                             </div>
                           )}
