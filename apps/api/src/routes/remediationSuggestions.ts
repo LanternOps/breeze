@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
-import { devices, remediationSuggestions } from '../db/schema';
+import { devices, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
@@ -24,6 +24,14 @@ const listQuerySchema = z.object({
   deviceId: z.string().uuid().optional(),
   status: statusSchema.or(z.literal('all')).optional().default('all'),
   limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+});
+
+const evaluationQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  sourceType: sourceTypeSchema.optional(),
+  sourceId: z.string().min(1).max(255).optional(),
+  deviceId: z.string().uuid().optional(),
+  days: z.coerce.number().int().min(1).max(365).optional().default(30),
 });
 
 const generateBodySchema = z.object({
@@ -85,6 +93,51 @@ function serializeSuggestion(row: typeof remediationSuggestions.$inferSelect) {
   };
 }
 
+function zeroEvaluationResponse(options: {
+  since: Date;
+  until: Date;
+  days: number;
+  orgId?: string;
+  deviceId?: string;
+  sourceType?: string;
+  sourceId?: string;
+}) {
+  return {
+    window: {
+      days: options.days,
+      since: options.since.toISOString(),
+      until: options.until.toISOString(),
+    },
+    orgId: options.orgId,
+    deviceId: options.deviceId,
+    sourceType: options.sourceType,
+    sourceId: options.sourceId,
+    total: 0,
+    status: {
+      suggested: 0,
+      accepted: 0,
+      edited: 0,
+      rejected: 0,
+      executed: 0,
+      failed: 0,
+    },
+    rates: {
+      acceptRate: 0,
+      rejectRate: 0,
+      executeRate: 0,
+      failureRate: 0,
+    },
+    feedback: {
+      total: 0,
+      accepted: 0,
+      edited: 0,
+      rejected: 0,
+      executed: 0,
+      failed: 0,
+    },
+  };
+}
+
 async function siteAllowedForSuggestion(
   row: Pick<typeof remediationSuggestions.$inferSelect, 'deviceId'>,
   perms: UserPermissions | undefined,
@@ -96,6 +149,20 @@ async function siteAllowedForSuggestion(
     .where(eq(devices.id, row.deviceId))
     .limit(1);
   return Boolean(device && typeof device.siteId === 'string' && canAccessSite(perms, device.siteId));
+}
+
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  perms: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((device) => typeof device.siteId === 'string' && canAccessSite(perms, device.siteId))
+    .map((device) => device.id);
 }
 
 async function filterSiteAllowedSuggestions<T extends typeof remediationSuggestions.$inferSelect>(
@@ -144,6 +211,166 @@ remediationSuggestionRoutes.get(
 
     const visible = await filterSiteAllowedSuggestions(rows, perms);
     return c.json({ data: visible.map(serializeSuggestion) });
+  }
+);
+
+remediationSuggestionRoutes.get(
+  '/evaluation',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', evaluationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const query = c.req.valid('query');
+
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Organization not found or access denied' }, 403);
+    }
+
+    const effectiveOrgId = query.orgId ?? auth.orgId;
+    const until = new Date();
+    const since = new Date(until.getTime() - query.days * 24 * 60 * 60 * 1000);
+
+    let allowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && effectiveOrgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(effectiveOrgId, perms);
+      if (query.deviceId && !(allowedDeviceIds ?? []).includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!query.deviceId && (allowedDeviceIds ?? []).length === 0) {
+        return c.json(zeroEvaluationResponse({
+          since,
+          until,
+          days: query.days,
+          orgId: effectiveOrgId,
+          sourceType: query.sourceType,
+          sourceId: query.sourceId,
+        }));
+      }
+    }
+
+    const suggestionOrgCondition =
+      query.orgId
+        ? eq(remediationSuggestions.orgId, query.orgId)
+        : auth.orgCondition(remediationSuggestions.orgId);
+    const feedbackOrgCondition =
+      query.orgId
+        ? eq(mlFeedbackEvents.orgId, query.orgId)
+        : auth.orgCondition(mlFeedbackEvents.orgId);
+
+    const suggestionFilters: SQL[] = [
+      gte(remediationSuggestions.createdAt, since),
+      ...(suggestionOrgCondition ? [suggestionOrgCondition] : []),
+      ...(query.sourceType ? [eq(remediationSuggestions.sourceType, query.sourceType)] : []),
+      ...(query.sourceId ? [eq(remediationSuggestions.sourceId, query.sourceId)] : []),
+      ...(query.deviceId ? [eq(remediationSuggestions.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(remediationSuggestions.deviceId, allowedDeviceIds)]
+        : []),
+    ];
+
+    const feedbackSuggestionFilters: SQL[] = [
+      gte(remediationSuggestions.createdAt, since),
+      ...(query.sourceType ? [eq(remediationSuggestions.sourceType, query.sourceType)] : []),
+      ...(query.sourceId ? [eq(remediationSuggestions.sourceId, query.sourceId)] : []),
+      ...(query.deviceId ? [eq(remediationSuggestions.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(remediationSuggestions.deviceId, allowedDeviceIds)]
+        : []),
+    ];
+
+    const statusRows = await db
+      .select({
+        status: remediationSuggestions.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(remediationSuggestions)
+      .where(and(...suggestionFilters))
+      .groupBy(remediationSuggestions.status);
+
+    const feedbackRows = await db
+      .select({
+        eventType: mlFeedbackEvents.eventType,
+        count: sql<number>`count(*)`,
+      })
+      .from(mlFeedbackEvents)
+      .innerJoin(
+        remediationSuggestions,
+        and(
+          sql`${mlFeedbackEvents.sourceId} = ${remediationSuggestions.id}::text`,
+          eq(remediationSuggestions.orgId, mlFeedbackEvents.orgId),
+        ),
+      )
+      .where(and(
+        eq(mlFeedbackEvents.sourceType, 'remediation'),
+        inArray(mlFeedbackEvents.eventType, [
+          'suggestion.accepted',
+          'suggestion.edited',
+          'suggestion.rejected',
+          'suggestion.executed',
+          'suggestion.failed',
+        ]),
+        gte(mlFeedbackEvents.occurredAt, since),
+        ...(feedbackOrgCondition ? [feedbackOrgCondition] : []),
+        ...feedbackSuggestionFilters,
+      ))
+      .groupBy(mlFeedbackEvents.eventType);
+
+    const status = {
+      suggested: 0,
+      accepted: 0,
+      edited: 0,
+      rejected: 0,
+      executed: 0,
+      failed: 0,
+    };
+    for (const row of statusRows) {
+      const key = String(row.status);
+      if (key === 'suggested' || key === 'accepted' || key === 'edited' || key === 'rejected' || key === 'executed' || key === 'failed') {
+        status[key] = Number(row.count) || 0;
+      }
+    }
+
+    const total = status.suggested + status.accepted + status.edited + status.rejected + status.executed + status.failed;
+    const feedback = {
+      total: 0,
+      accepted: 0,
+      edited: 0,
+      rejected: 0,
+      executed: 0,
+      failed: 0,
+    };
+    for (const row of feedbackRows) {
+      const count = Number(row.count) || 0;
+      if (row.eventType === 'suggestion.accepted') feedback.accepted += count;
+      if (row.eventType === 'suggestion.edited') feedback.edited += count;
+      if (row.eventType === 'suggestion.rejected') feedback.rejected += count;
+      if (row.eventType === 'suggestion.executed') feedback.executed += count;
+      if (row.eventType === 'suggestion.failed') feedback.failed += count;
+    }
+    feedback.total = feedback.accepted + feedback.edited + feedback.rejected + feedback.executed + feedback.failed;
+
+    return c.json({
+      window: {
+        days: query.days,
+        since: since.toISOString(),
+        until: until.toISOString(),
+      },
+      orgId: effectiveOrgId,
+      deviceId: query.deviceId,
+      sourceType: query.sourceType,
+      sourceId: query.sourceId,
+      total,
+      status,
+      rates: {
+        acceptRate: total > 0 ? status.accepted / total : 0,
+        rejectRate: total > 0 ? status.rejected / total : 0,
+        executeRate: total > 0 ? status.executed / total : 0,
+        failureRate: total > 0 ? status.failed / total : 0,
+      },
+      feedback,
+    });
   }
 );
 

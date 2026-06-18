@@ -9,6 +9,8 @@ const dbMocks = vi.hoisted(() => ({
   emitFeedbackMock: vi.fn(),
 }));
 
+let currentPermissions: { allowedSiteIds?: string[] } | undefined;
+
 vi.mock('../db', () => ({
   db: {
     select: dbMocks.selectMock,
@@ -19,7 +21,15 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
+    orgId: 'devices.orgId',
     siteId: 'devices.siteId',
+  },
+  mlFeedbackEvents: {
+    orgId: 'mlFeedbackEvents.orgId',
+    sourceType: 'mlFeedbackEvents.sourceType',
+    sourceId: 'mlFeedbackEvents.sourceId',
+    eventType: 'mlFeedbackEvents.eventType',
+    occurredAt: 'mlFeedbackEvents.occurredAt',
   },
   remediationSuggestions: {
     id: 'remediationSuggestions.id',
@@ -43,7 +53,7 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
     });
-    c.set('permissions', {});
+    c.set('permissions', currentPermissions ?? {});
     return next();
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
@@ -99,11 +109,26 @@ const baseSuggestion = {
   executedAt: null,
 };
 
+function createSelectChain(result: unknown = []) {
+  const chain: Record<string, any> = {};
+  for (const method of ['from', 'where', 'innerJoin', 'groupBy', 'orderBy', 'limit']) {
+    chain[method] = vi.fn(() => chain);
+  }
+  chain.then = (onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
+    Promise.resolve(result).then(onFulfilled, onRejected);
+  return chain;
+}
+
+function mockSelectOnce(result: unknown) {
+  dbMocks.selectMock.mockReturnValueOnce(createSelectChain(result));
+}
+
 describe('remediation suggestion routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    currentPermissions = undefined;
     app = new Hono();
     app.route('/remediation-suggestions', remediationSuggestionRoutes);
   });
@@ -168,5 +193,111 @@ describe('remediation suggestion routes', () => {
     }));
     const body = await res.json();
     expect(body.data.status).toBe('accepted');
+  });
+
+  it('returns remediation status rates and lifecycle feedback counts', async () => {
+    mockSelectOnce([
+      { status: 'suggested', count: 4 },
+      { status: 'accepted', count: 3 },
+      { status: 'rejected', count: 2 },
+      { status: 'executed', count: 1 },
+      { status: 'failed', count: 1 },
+    ]);
+    mockSelectOnce([
+      { eventType: 'suggestion.accepted', count: 3 },
+      { eventType: 'suggestion.rejected', count: 2 },
+      { eventType: 'suggestion.executed', count: 1 },
+      { eventType: 'suggestion.failed', count: 1 },
+    ]);
+
+    const res = await app.request('/remediation-suggestions/evaluation?days=30', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(11);
+    expect(body.status).toMatchObject({
+      suggested: 4,
+      accepted: 3,
+      rejected: 2,
+      executed: 1,
+      failed: 1,
+    });
+    expect(body.rates).toEqual({
+      acceptRate: 3 / 11,
+      rejectRate: 2 / 11,
+      executeRate: 1 / 11,
+      failureRate: 1 / 11,
+    });
+    expect(body.feedback).toEqual({
+      total: 7,
+      accepted: 3,
+      edited: 0,
+      rejected: 2,
+      executed: 1,
+      failed: 1,
+    });
+    expect(body.window.days).toBe(30);
+  });
+
+  it('returns 403 for an inaccessible org filter', async () => {
+    const res = await app.request('/remediation-suggestions/evaluation?orgId=99999999-9999-4999-8999-999999999999', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(dbMocks.selectMock).not.toHaveBeenCalled();
+  });
+
+  it('returns zero rates when no suggestions match', async () => {
+    mockSelectOnce([]);
+    mockSelectOnce([]);
+
+    const res = await app.request('/remediation-suggestions/evaluation?days=7', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(0);
+    expect(body.rates).toEqual({ acceptRate: 0, rejectRate: 0, executeRate: 0, failureRate: 0 });
+    expect(body.feedback.total).toBe(0);
+  });
+
+  it('returns 403 when a site-restricted caller drills into an out-of-scope deviceId', async () => {
+    currentPermissions = { allowedSiteIds: ['22222222-2222-4222-8222-222222222222'] };
+    mockSelectOnce([{ id: baseSuggestion.deviceId, siteId: '33333333-3333-4333-8333-333333333333' }]);
+
+    const res = await app.request(`/remediation-suggestions/evaluation?deviceId=${baseSuggestion.deviceId}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Device not found or access denied');
+  });
+
+  it('narrows remediation evaluation to in-scope devices for a site-restricted caller', async () => {
+    currentPermissions = { allowedSiteIds: ['22222222-2222-4222-8222-222222222222'] };
+    mockSelectOnce([{ id: baseSuggestion.deviceId, siteId: '22222222-2222-4222-8222-222222222222' }]);
+    mockSelectOnce([{ status: 'accepted', count: 1 }]);
+    mockSelectOnce([{ eventType: 'suggestion.accepted', count: 1 }]);
+
+    const res = await app.request('/remediation-suggestions/evaluation?days=90', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(1);
+    expect(body.status.accepted).toBe(1);
+    expect(body.rates.acceptRate).toBe(1);
+    expect(body.feedback.accepted).toBe(1);
   });
 });
