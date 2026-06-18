@@ -517,11 +517,12 @@ describe('alert correlation RCA evidence builder', () => {
         evidenceIds: ['device_change:change-1'],
       }),
       expect.objectContaining({
-        title: 'Inspect aligned error logs',
+        title: 'Review flapping suppression',
+        riskTier: 'low',
+        evidenceIds: [`correlation:${ALERT_1}:${ALERT_2}`],
       }),
       expect.objectContaining({
-        title: 'Verify resource pressure',
-        riskTier: 'medium',
+        title: 'Inspect aligned error logs',
       }),
     ]));
     expect(result.gaps).toEqual([]);

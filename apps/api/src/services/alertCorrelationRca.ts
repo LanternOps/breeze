@@ -469,6 +469,25 @@ function buildSuggestedNextSteps(
     });
   }
 
+  const correlationEvidence = evidence.find((item) => item.source === 'correlation' && item.metadata);
+  const correlationMetadata = metadataRecord(correlationEvidence?.metadata);
+  const logCorrelationRuleNames = metadataStringArray(correlationMetadata, 'logCorrelationRuleNames', 3);
+  if (correlationMetadata.flappingDetected === true && correlationEvidence) {
+    steps.push({
+      title: 'Review flapping suppression',
+      rationale: 'Correlation evidence indicates repeated alert state changes; verify whether the underlying rule should be tuned or the device state is oscillating.',
+      riskTier: 'low',
+      evidenceIds: [correlationEvidence.id],
+    });
+  } else if (logCorrelationRuleNames.length > 0 && correlationEvidence) {
+    steps.push({
+      title: 'Inspect correlated log pattern',
+      rationale: `Log-correlation evidence matched ${logCorrelationRuleNames.slice(0, 2).join(', ')} during the alert burst.`,
+      riskTier: 'low',
+      evidenceIds: [correlationEvidence.id],
+    });
+  }
+
   const logEvidence = evidence.find((item) => item.source === 'event_log' || item.source === 'agent_log');
   if (logEvidence) {
     steps.push({
