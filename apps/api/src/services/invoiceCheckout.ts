@@ -62,7 +62,10 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
       },
       quantity: 1,
     }],
-    success_url: `${portalBase}/portal/invoices/${inv.id}?paid=1`,
+    // {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect — the portal
+    // verify-on-return handler reads it to settle server-side (the API-key model
+    // has no inbound webhook).
+    success_url: `${portalBase}/portal/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${portalBase}/portal/invoices/${inv.id}`,
     metadata: {
       invoice_id: inv.id,
