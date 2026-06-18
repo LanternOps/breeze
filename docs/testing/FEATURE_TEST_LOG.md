@@ -19,6 +19,11 @@ Use the `feature-testing` skill to run structured verification and record result
 - [x] **BullMQ expiry sweep (live)**: the back-dated quote auto-transitioned `sent → expired` in the running stack (the `quote-expiry-reaper` job is registered and ran), independent of the read-time guard.
 - [x] **MSP dashboard (web)**: `/billing/quotes` lists all statuses correctly — Q-0004 **Expired** $300, Q-0003 **Converted** $500, Q-0002/0001 **Sent**, 2 Drafts; status filter offers Expired + Converted.
 - [x] **Loop closed on MSP side**: `/billing/invoices` shows the auto-issued **INV-2026-0001** — Issued 6/18, Due 7/18 (30-day terms), $500.00 balance, status **Issued**, "$500.00 Outstanding / 1 open".
+- [x] **Download PDF — quote**: quote detail (Detail tab) → "Download PDF" → downloaded `Q-2026-0003.pdf` (2008 bytes, `%PDF-1.3`); endpoint `GET /api/v1/quotes/:id/pdf` → 200 `application/pdf`. No console errors.
+- [x] **Download PDF — invoice**: invoice detail → "Download PDF" → downloaded `INV-2026-0001.pdf` (1999 bytes, `%PDF`); endpoint `GET /api/v1/invoices/:id/pdf` → 200 `application/pdf`.
+
+### Stripe Connect (live pay redirect)
+Re-confirmed NOT exercisable locally even with a supplied test key. Two distinct Stripe test accounts were tried (`acct_…TJgsVFWDCBQKxbN` from `.env`, and the supplied `acct_1JIJA1IZbeGKm3pE` which is itself charges_enabled/activated) — **neither has Connect enabled** (`POST /v1/accounts` → "you can only create new accounts if you've signed up for Connect"). The connected-account checkout the pay flow requires therefore can't be created. Enabling Connect is a one-time toggle at dashboard.stripe.com/connect; once on, the `createInvoicePayLink` → hosted-checkout redirect can be clicked through. Until then the invoice detail correctly shows "Connect Stripe to accept online card payments".
 
 ### Evidence
 - Screenshot: `phase3-quotes-list.png` (dashboard quotes list with Expired/Converted/Sent/Draft).
