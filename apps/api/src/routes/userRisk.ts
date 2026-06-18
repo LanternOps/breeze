@@ -47,7 +47,7 @@ const eventsQuerySchema = z.object({
 });
 
 const evaluationQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   days: z.coerce.number().int().min(1).max(365).default(30)
 });
 
@@ -66,18 +66,18 @@ const assignTrainingSchema = z.object({
 });
 
 const completeTrainingSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   moduleId: z.string().min(1).max(120).optional(),
-  assignmentEventId: z.string().uuid().optional(),
+  assignmentEventId: z.string().guid().optional(),
   completedAt: z.string().datetime().optional(),
   note: z.string().trim().max(1000).optional()
 });
 
 const feedbackPayloadSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   outcome: z.enum(['true_positive', 'false_positive']),
   note: z.string().trim().max(1000).optional(),
-  sourceEventId: z.string().uuid().optional(),
+  sourceEventId: z.string().guid().optional(),
   score: z.number().int().min(0).max(100).optional(),
   reason: z.string().trim().max(120).optional()
 });

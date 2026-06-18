@@ -237,8 +237,8 @@ const capacityQuerySchema = z.object({
 });
 
 const anomalyEvaluationQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  deviceId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
   range: z.enum(['7d', '30d', '90d']).optional().default('30d')
 });
 

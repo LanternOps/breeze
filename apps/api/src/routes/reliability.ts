@@ -40,8 +40,8 @@ const historyQuerySchema = z.object({
 });
 
 const evaluationQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   atRiskMaxScore: z.coerce.number().int().min(0).max(100).default(70),
   labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
 });
@@ -49,7 +49,7 @@ const evaluationQuerySchema = z.object({
 const feedbackBodySchema = z.object({
   outcome: z.enum(['failure_confirmed', 'replaced', 'false_alarm']),
   occurredAt: z.coerce.date().optional(),
-  sourceEventId: z.string().uuid().optional(),
+  sourceEventId: z.string().guid().optional(),
   snapshotComputedAt: z.string().datetime().optional(),
   metadata: z.record(z.string(), z.unknown()).default({}),
 });

@@ -52,8 +52,9 @@ RUN pnpm build
 FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS runner
 WORKDIR /app
 
-# Install wget for healthcheck
-RUN apk add --no-cache wget
+# Install security updates and wget for healthcheck.
+RUN apk upgrade --no-cache libcrypto3 libssl3 && \
+    apk add --no-cache wget
 
 # Default base path used by the healthcheck (overridable at runtime).
 ENV NODE_ENV=production
