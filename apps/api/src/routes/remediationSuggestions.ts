@@ -274,6 +274,47 @@ function zeroEvaluationResponse(options: {
       executed: 0,
       failed: 0,
     },
+    latency: {
+      approval: emptyLatencySummary(),
+      execution: emptyLatencySummary(),
+    },
+  };
+}
+
+function emptyLatencySummary() {
+  return {
+    sampleSize: 0,
+    averageMinutes: null,
+    p95Minutes: null,
+  };
+}
+
+function dateValue(value: Date | string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function latencyMinutes(later: Date | string | null | undefined, earlier: Date | string | null | undefined): number | null {
+  const laterMs = dateValue(later);
+  const earlierMs = dateValue(earlier);
+  if (laterMs === null || earlierMs === null || laterMs < earlierMs) return null;
+  return (laterMs - earlierMs) / 60_000;
+}
+
+function roundLatency(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function summarizeLatencyMinutes(values: number[]) {
+  if (values.length === 0) return emptyLatencySummary();
+  const sorted = [...values].sort((a, b) => a - b);
+  const total = sorted.reduce((sum, value) => sum + value, 0);
+  const p95Index = Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1);
+  return {
+    sampleSize: sorted.length,
+    averageMinutes: roundLatency(total / sorted.length),
+    p95Minutes: roundLatency(sorted[p95Index] ?? sorted[sorted.length - 1] ?? 0),
   };
 }
 
@@ -456,6 +497,23 @@ remediationSuggestionRoutes.get(
       ))
       .groupBy(mlFeedbackEvents.eventType);
 
+    const latencyRows = await db
+      .select({
+        acceptedAt: remediationSuggestions.acceptedAt,
+        executedAt: remediationSuggestions.executedAt,
+        elevationRequestedAt: elevationRequests.requestedAt,
+        elevationApprovedAt: elevationRequests.approvedAt,
+      })
+      .from(remediationSuggestions)
+      .innerJoin(
+        elevationRequests,
+        and(
+          eq(elevationRequests.id, remediationSuggestions.elevationRequestId),
+          eq(elevationRequests.orgId, remediationSuggestions.orgId),
+        ),
+      )
+      .where(and(...suggestionFilters));
+
     const status = {
       suggested: 0,
       accepted: 0,
@@ -490,6 +548,13 @@ remediationSuggestionRoutes.get(
     }
     feedback.total = feedback.accepted + feedback.edited + feedback.rejected + feedback.executed + feedback.failed;
 
+    const approvalLatencies = latencyRows
+      .map((row) => latencyMinutes(row.elevationApprovedAt, row.elevationRequestedAt))
+      .filter((value): value is number => value !== null);
+    const executionLatencies = latencyRows
+      .map((row) => latencyMinutes(row.executedAt, row.acceptedAt))
+      .filter((value): value is number => value !== null);
+
     return c.json({
       window: {
         days: query.days,
@@ -509,6 +574,10 @@ remediationSuggestionRoutes.get(
         failureRate: total > 0 ? status.failed / total : 0,
       },
       feedback,
+      latency: {
+        approval: summarizeLatencyMinutes(approvalLatencies),
+        execution: summarizeLatencyMinutes(executionLatencies),
+      },
     });
   }
 );

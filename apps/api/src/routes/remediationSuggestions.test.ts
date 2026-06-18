@@ -37,6 +37,8 @@ vi.mock('../db/schema', () => ({
     orgId: 'elevationRequests.orgId',
     deviceId: 'elevationRequests.deviceId',
     status: 'elevationRequests.status',
+    requestedAt: 'elevationRequests.requestedAt',
+    approvedAt: 'elevationRequests.approvedAt',
     expiresAt: 'elevationRequests.expiresAt',
   },
   remediationSuggestions: {
@@ -47,6 +49,9 @@ vi.mock('../db/schema', () => ({
     deviceId: 'remediationSuggestions.deviceId',
     status: 'remediationSuggestions.status',
     createdAt: 'remediationSuggestions.createdAt',
+    acceptedAt: 'remediationSuggestions.acceptedAt',
+    executedAt: 'remediationSuggestions.executedAt',
+    elevationRequestId: 'remediationSuggestions.elevationRequestId',
   },
   scriptExecutions: {
     id: 'scriptExecutions.id',
@@ -597,6 +602,20 @@ describe('remediation suggestion routes', () => {
       { eventType: 'suggestion.executed', count: 1 },
       { eventType: 'suggestion.failed', count: 1 },
     ]);
+    mockSelectOnce([
+      {
+        acceptedAt: new Date('2026-06-18T12:05:00.000Z'),
+        executedAt: new Date('2026-06-18T12:20:00.000Z'),
+        elevationRequestedAt: new Date('2026-06-18T12:00:00.000Z'),
+        elevationApprovedAt: new Date('2026-06-18T12:10:00.000Z'),
+      },
+      {
+        acceptedAt: new Date('2026-06-18T12:30:00.000Z'),
+        executedAt: new Date('2026-06-18T13:10:00.000Z'),
+        elevationRequestedAt: new Date('2026-06-18T12:00:00.000Z'),
+        elevationApprovedAt: new Date('2026-06-18T12:45:00.000Z'),
+      },
+    ]);
 
     const res = await app.request('/remediation-suggestions/evaluation?days=30', {
       method: 'GET',
@@ -627,6 +646,18 @@ describe('remediation suggestion routes', () => {
       executed: 1,
       failed: 1,
     });
+    expect(body.latency).toEqual({
+      approval: {
+        sampleSize: 2,
+        averageMinutes: 27.5,
+        p95Minutes: 45,
+      },
+      execution: {
+        sampleSize: 2,
+        averageMinutes: 27.5,
+        p95Minutes: 40,
+      },
+    });
     expect(body.window.days).toBe(30);
   });
 
@@ -643,6 +674,7 @@ describe('remediation suggestion routes', () => {
   it('returns zero rates when no suggestions match', async () => {
     mockSelectOnce([]);
     mockSelectOnce([]);
+    mockSelectOnce([]);
 
     const res = await app.request('/remediation-suggestions/evaluation?days=7', {
       method: 'GET',
@@ -654,6 +686,8 @@ describe('remediation suggestion routes', () => {
     expect(body.total).toBe(0);
     expect(body.rates).toEqual({ acceptRate: 0, rejectRate: 0, executeRate: 0, failureRate: 0 });
     expect(body.feedback.total).toBe(0);
+    expect(body.latency.approval).toEqual({ sampleSize: 0, averageMinutes: null, p95Minutes: null });
+    expect(body.latency.execution).toEqual({ sampleSize: 0, averageMinutes: null, p95Minutes: null });
   });
 
   it('returns 403 when a site-restricted caller drills into an out-of-scope deviceId', async () => {
@@ -675,6 +709,7 @@ describe('remediation suggestion routes', () => {
     mockSelectOnce([{ id: baseSuggestion.deviceId, siteId: '22222222-2222-4222-8222-222222222222' }]);
     mockSelectOnce([{ status: 'accepted', count: 1 }]);
     mockSelectOnce([{ eventType: 'suggestion.accepted', count: 1 }]);
+    mockSelectOnce([]);
 
     const res = await app.request('/remediation-suggestions/evaluation?days=90', {
       method: 'GET',
