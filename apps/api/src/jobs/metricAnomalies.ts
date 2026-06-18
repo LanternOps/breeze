@@ -6,6 +6,7 @@ import { devices } from '../db/schema';
 import { isReusableState } from '../services/bullmqUtils';
 import { detectMetricAnomaliesRange, type MetricAnomalyResult } from '../services/metricAnomalies';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const METRIC_ANOMALIES_QUEUE = 'metric-anomalies';
 const DEFAULT_LOOKBACK_MINUTES = 30;
@@ -143,6 +144,7 @@ async function scheduleMetricAnomaliesScan(): Promise<void> {
 
 export async function initializeMetricAnomaliesWorker(): Promise<void> {
   metricAnomaliesWorker = createMetricAnomaliesWorker();
+  attachWorkerObservability(metricAnomaliesWorker, 'metricAnomaliesWorker');
   metricAnomaliesWorker.on('error', (error) => {
     console.error('[MetricAnomaliesWorker] Worker error:', error);
   });

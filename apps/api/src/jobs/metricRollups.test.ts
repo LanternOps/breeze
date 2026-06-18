@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, closeMock } = vi.hoisted(() => ({
+const { getJobMock, addMock, closeMock, getRepeatableJobsMock, removeRepeatableByKeyMock, attachWorkerObservabilityMock } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   closeMock: vi.fn(),
+  getRepeatableJobsMock: vi.fn(),
+  removeRepeatableByKeyMock: vi.fn(),
+  attachWorkerObservabilityMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
   Queue: class {
     getJob = getJobMock;
     add = addMock;
+    getRepeatableJobs = getRepeatableJobsMock;
+    removeRepeatableByKey = removeRepeatableByKeyMock;
     close = closeMock;
   },
   Worker: class {
@@ -40,9 +45,14 @@ vi.mock('../services/metricRollups', () => ({
   rollupDeviceMetricsRange: vi.fn(),
 }));
 
+vi.mock('./workerObservability', () => ({
+  attachWorkerObservability: attachWorkerObservabilityMock,
+}));
+
 import {
   buildMetricRollupJobId,
   enqueueMetricRollupBackfill,
+  initializeMetricRollupsWorker,
   shutdownMetricRollupsWorker,
 } from './metricRollups';
 
@@ -53,8 +63,12 @@ describe('metric rollups queue helpers', () => {
     getJobMock.mockReset();
     addMock.mockReset();
     closeMock.mockReset();
+    getRepeatableJobsMock.mockReset();
+    removeRepeatableByKeyMock.mockReset();
+    attachWorkerObservabilityMock.mockReset();
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queued-rollup-job' });
+    getRepeatableJobsMock.mockResolvedValue([]);
     await shutdownMetricRollupsWorker();
   });
 
@@ -96,5 +110,16 @@ describe('metric rollups queue helpers', () => {
 
     expect(jobId).toBe('existing-rollup-job');
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('attaches worker observability during initialization', async () => {
+    await initializeMetricRollupsWorker();
+
+    expect(attachWorkerObservabilityMock).toHaveBeenCalledWith(expect.anything(), 'metricRollupsWorker');
+    expect(addMock).toHaveBeenCalledWith(
+      'scan-orgs',
+      expect.objectContaining({ type: 'scan-orgs' }),
+      expect.objectContaining({ jobId: 'metric-rollups-scan-orgs' }),
+    );
   });
 });

@@ -6,6 +6,7 @@ import { devices } from '../db/schema';
 import { isReusableState } from '../services/bullmqUtils';
 import { rollupDeviceMetricsRange, type MetricRollupResult } from '../services/metricRollups';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const METRIC_ROLLUPS_QUEUE = 'metric-rollups';
 const DEFAULT_LOOKBACK_MINUTES = 15;
@@ -143,6 +144,7 @@ async function scheduleMetricRollupsScan(): Promise<void> {
 
 export async function initializeMetricRollupsWorker(): Promise<void> {
   metricRollupsWorker = createMetricRollupsWorker();
+  attachWorkerObservability(metricRollupsWorker, 'metricRollupsWorker');
   metricRollupsWorker.on('error', (error) => {
     console.error('[MetricRollupsWorker] Worker error:', error);
   });

@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, closeMock } = vi.hoisted(() => ({
+const { getJobMock, addMock, closeMock, getRepeatableJobsMock, removeRepeatableByKeyMock, attachWorkerObservabilityMock } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   closeMock: vi.fn(),
+  getRepeatableJobsMock: vi.fn(),
+  removeRepeatableByKeyMock: vi.fn(),
+  attachWorkerObservabilityMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
   Queue: class {
     getJob = getJobMock;
     add = addMock;
+    getRepeatableJobs = getRepeatableJobsMock;
+    removeRepeatableByKey = removeRepeatableByKeyMock;
     close = closeMock;
   },
   Worker: class {
@@ -40,9 +45,14 @@ vi.mock('../services/metricAnomalies', () => ({
   detectMetricAnomaliesRange: vi.fn(),
 }));
 
+vi.mock('./workerObservability', () => ({
+  attachWorkerObservability: attachWorkerObservabilityMock,
+}));
+
 import {
   buildMetricAnomalyJobId,
   enqueueMetricAnomalyBackfill,
+  initializeMetricAnomaliesWorker,
   shutdownMetricAnomaliesWorker,
 } from './metricAnomalies';
 
@@ -53,8 +63,12 @@ describe('metric anomalies queue helpers', () => {
     getJobMock.mockReset();
     addMock.mockReset();
     closeMock.mockReset();
+    getRepeatableJobsMock.mockReset();
+    removeRepeatableByKeyMock.mockReset();
+    attachWorkerObservabilityMock.mockReset();
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queued-anomaly-job' });
+    getRepeatableJobsMock.mockResolvedValue([]);
     await shutdownMetricAnomaliesWorker();
   });
 
@@ -96,5 +110,16 @@ describe('metric anomalies queue helpers', () => {
 
     expect(jobId).toBe('existing-anomaly-job');
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('attaches worker observability during initialization', async () => {
+    await initializeMetricAnomaliesWorker();
+
+    expect(attachWorkerObservabilityMock).toHaveBeenCalledWith(expect.anything(), 'metricAnomaliesWorker');
+    expect(addMock).toHaveBeenCalledWith(
+      'scan-orgs',
+      expect.objectContaining({ type: 'scan-orgs' }),
+      expect.objectContaining({ jobId: 'metric-anomalies-scan-orgs' }),
+    );
   });
 });
