@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { isReusableState } from '../services/bullmqUtils';
 import { detectMetricAnomaliesRange, type MetricAnomalyResult } from '../services/metricAnomalies';
@@ -55,12 +55,18 @@ function recentWindow(now = new Date(), lookbackMinutes = DEFAULT_LOOKBACK_MINUT
   return { from, to };
 }
 
-async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
-  const orgRows = await db
+async function findAnomalyOrgRows(): Promise<Array<{ orgId: string }>> {
+  return db
     .select({ orgId: devices.orgId })
     .from(devices)
     .where(sql`${devices.status} <> 'decommissioned'`)
     .groupBy(devices.orgId);
+}
+
+async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
+  const orgRows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => findAnomalyOrgRows())
+  );
 
   if (orgRows.length === 0) {
     return { queued: 0 };
@@ -102,13 +108,15 @@ async function processDetectOrgRange(data: DetectOrgRangeJobData): Promise<Metri
 export function createMetricAnomaliesWorker(): Worker<MetricAnomalyJobData> {
   return new Worker<MetricAnomalyJobData>(
     METRIC_ANOMALIES_QUEUE,
-    async (job: Job<MetricAnomalyJobData>) =>
-      withSystemDbAccessContext(async () => {
-        if (job.data.type === 'scan-orgs') {
-          return processScanOrgs(job.data);
-        }
-        return processDetectOrgRange(job.data);
-      }),
+    async (job: Job<MetricAnomalyJobData>) => {
+      if (job.data.type === 'scan-orgs') {
+        return processScanOrgs(job.data);
+      }
+      const data = job.data;
+      return runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => processDetectOrgRange(data))
+      );
+    },
     {
       connection: getBullMQConnection(),
       concurrency: 2,

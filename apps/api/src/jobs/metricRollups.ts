@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { isReusableState } from '../services/bullmqUtils';
 import { rollupDeviceMetricsRange, type MetricRollupResult } from '../services/metricRollups';
@@ -55,12 +55,18 @@ function recentWindow(now = new Date(), lookbackMinutes = DEFAULT_LOOKBACK_MINUT
   return { from, to };
 }
 
-async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
-  const orgRows = await db
+async function findRollupOrgRows(): Promise<Array<{ orgId: string }>> {
+  return db
     .select({ orgId: devices.orgId })
     .from(devices)
     .where(sql`${devices.status} <> 'decommissioned'`)
     .groupBy(devices.orgId);
+}
+
+async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
+  const orgRows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => findRollupOrgRows())
+  );
 
   if (orgRows.length === 0) {
     return { queued: 0 };
@@ -102,13 +108,15 @@ async function processRollupOrgRange(data: RollupOrgRangeJobData): Promise<Metri
 export function createMetricRollupsWorker(): Worker<MetricRollupJobData> {
   return new Worker<MetricRollupJobData>(
     METRIC_ROLLUPS_QUEUE,
-    async (job: Job<MetricRollupJobData>) =>
-      withSystemDbAccessContext(async () => {
-        if (job.data.type === 'scan-orgs') {
-          return processScanOrgs(job.data);
-        }
-        return processRollupOrgRange(job.data);
-      }),
+    async (job: Job<MetricRollupJobData>) => {
+      if (job.data.type === 'scan-orgs') {
+        return processScanOrgs(job.data);
+      }
+      const data = job.data;
+      return runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => processRollupOrgRange(data))
+      );
+    },
     {
       connection: getBullMQConnection(),
       concurrency: 2,
