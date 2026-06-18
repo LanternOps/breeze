@@ -48,21 +48,30 @@ describe('metric anomalies service', () => {
     expect(executeMock).not.toHaveBeenCalled();
   });
 
-  it('upserts baseline deviations and growth trends idempotently', async () => {
+  it('upserts baseline deviations, growth trends, and process sample runaways idempotently', async () => {
     const result = await detectMetricAnomaliesRange({
       orgId: '11111111-1111-1111-1111-111111111111',
       from: new Date('2026-06-18T12:00:00.000Z'),
       to: new Date('2026-06-18T12:30:00.000Z'),
     });
 
-    expect(result).toMatchObject({ statements: 2, skipped: false });
-    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ statements: 3, skipped: false });
+    expect(executeMock).toHaveBeenCalledTimes(3);
     const executedSql = JSON.stringify(executeMock.mock.calls);
     expect(executedSql).toContain('INSERT INTO metric_anomalies');
     expect(executedSql).toContain('ON CONFLICT');
     expect(executedSql).toContain("WHERE metric_anomalies.status = 'open'");
     expect(executedSql).toContain('network_egress');
     expect(executedSql).toContain('memory_growth');
+
+    const processStatementSql = JSON.stringify(executeMock.mock.calls[2]);
+    expect(processStatementSql).toContain("mr.source_table = 'device_process_samples'");
+    expect(processStatementSql).toContain('top_process_cpu_percent_sum');
+    expect(processStatementSql).toContain('top_process_cpu_percent_max');
+    expect(processStatementSql).toContain('top_process_ram_mb_sum');
+    expect(processStatementSql).toContain('top_process_ram_mb_max');
+    expect(processStatementSql).toContain('process_sample_runaway');
+    expect(processStatementSql).toContain('process_runaway');
   });
 
   it('rejects invalid ranges before executing writes', async () => {

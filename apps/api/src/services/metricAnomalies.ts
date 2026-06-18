@@ -316,6 +316,167 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
   `);
 }
 
+async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise<void> {
+  const { from, to } = normalizeRange(options.from, options.to);
+
+  await db.execute(sql`
+    WITH recent AS (
+      SELECT
+        mr.org_id,
+        mr.device_id,
+        mr.source_table,
+        mr.metric_type,
+        mr.metric_name,
+        mr.bucket_start,
+        mr.bucket_seconds,
+        mr.avg_value,
+        mr.max_value,
+        mr.sample_count
+      FROM metric_rollups mr
+      WHERE mr.org_id = ${options.orgId}
+        AND mr.source_table = 'device_process_samples'
+        AND mr.bucket_seconds = ${RAW_BUCKET_SECONDS}
+        AND mr.bucket_start >= ${from}
+        AND mr.bucket_start < ${to}
+        AND mr.metric_name IN (
+          'top_process_cpu_percent_sum',
+          'top_process_cpu_percent_max',
+          'top_process_ram_mb_sum',
+          'top_process_ram_mb_max'
+        )
+        AND mr.avg_value IS NOT NULL
+        AND mr.sample_count > 0
+    ),
+    baseline AS (
+      SELECT
+        r.org_id,
+        r.device_id,
+        r.source_table,
+        r.metric_type,
+        r.metric_name,
+        r.bucket_start,
+        r.bucket_seconds,
+        r.avg_value,
+        r.max_value,
+        r.sample_count,
+        avg(b.avg_value)::double precision AS baseline_value,
+        min(b.avg_value)::double precision AS baseline_min,
+        max(b.avg_value)::double precision AS baseline_max,
+        stddev_samp(b.avg_value)::double precision AS baseline_stddev,
+        count(*)::integer AS baseline_count
+      FROM recent r
+      JOIN metric_rollups b
+        ON b.org_id = r.org_id
+       AND b.device_id = r.device_id
+       AND b.source_table = r.source_table
+       AND b.metric_type = r.metric_type
+       AND b.metric_name = r.metric_name
+       AND b.bucket_seconds = r.bucket_seconds
+       AND b.avg_value IS NOT NULL
+       AND b.sample_count > 0
+       AND b.bucket_start >= r.bucket_start - (${BASELINE_LOOKBACK_HOURS} * interval '1 hour')
+       AND b.bucket_start < r.bucket_start - (${BASELINE_GAP_MINUTES} * interval '1 minute')
+      GROUP BY
+        r.org_id,
+        r.device_id,
+        r.source_table,
+        r.metric_type,
+        r.metric_name,
+        r.bucket_start,
+        r.bucket_seconds,
+        r.avg_value,
+        r.max_value,
+        r.sample_count
+    ),
+    scored AS (
+      SELECT
+        b.*,
+        (
+          abs(b.avg_value - coalesce(b.baseline_value, b.avg_value))
+          / greatest(coalesce(b.baseline_stddev, 0), 1)
+        )::double precision AS score
+      FROM baseline b
+      WHERE b.baseline_count >= ${MIN_BASELINE_BUCKETS}
+        AND (
+          (
+            b.metric_name IN ('top_process_cpu_percent_sum', 'top_process_cpu_percent_max')
+            AND b.avg_value >= greatest(
+              coalesce(b.baseline_value, 0) + (3 * greatest(coalesce(b.baseline_stddev, 0), 1)),
+              coalesce(b.baseline_value, 0) * 2,
+              80
+            )
+          )
+          OR (
+            b.metric_name IN ('top_process_ram_mb_sum', 'top_process_ram_mb_max')
+            AND b.avg_value >= greatest(
+              coalesce(b.baseline_value, 0) + (3 * greatest(coalesce(b.baseline_stddev, 0), 1)),
+              coalesce(b.baseline_value, 0) * 1.75,
+              1024
+            )
+          )
+        )
+    )
+    INSERT INTO metric_anomalies (
+      org_id,
+      device_id,
+      source_table,
+      metric_type,
+      metric_name,
+      anomaly_type,
+      status,
+      window_start,
+      window_end,
+      bucket_seconds,
+      observed_value,
+      baseline_value,
+      baseline_min,
+      baseline_max,
+      score,
+      confidence,
+      sample_count,
+      baseline_summary,
+      evidence
+    )
+    SELECT
+      s.org_id,
+      s.device_id,
+      s.source_table,
+      s.metric_type,
+      s.metric_name,
+      'process_runaway',
+      'open',
+      s.bucket_start,
+      s.bucket_start + (${RAW_BUCKET_SECONDS} * interval '1 second'),
+      s.bucket_seconds,
+      s.avg_value,
+      s.baseline_value,
+      s.baseline_min,
+      s.baseline_max,
+      greatest(s.score, 0),
+      least(0.99, greatest(0.55, 0.55 + (s.score / 10)))::double precision,
+      s.sample_count,
+      jsonb_build_object(
+        'modelVersion', ${METRIC_ANOMALY_VERSION},
+        'baselineHours', ${BASELINE_LOOKBACK_HOURS},
+        'baselineGapMinutes', ${BASELINE_GAP_MINUTES},
+        'baselineBuckets', s.baseline_count,
+        'baselineStddev', s.baseline_stddev,
+        'sourceTable', s.source_table
+      ),
+      jsonb_build_object(
+        'kind', 'process_sample_runaway',
+        'metricName', s.metric_name,
+        'observedValue', s.avg_value,
+        'baselineValue', s.baseline_value,
+        'baselineMax', s.baseline_max
+      )
+    FROM scored s
+    ON CONFLICT (org_id, device_id, metric_name, anomaly_type, bucket_seconds, window_start)
+    DO UPDATE SET ${anomalyUpsertAssignments()}
+    WHERE metric_anomalies.status = 'open'
+  `);
+}
+
 export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): Promise<MetricAnomalyResult> {
   const { from, to } = normalizeRange(options.from, options.to);
   if (!(await shouldProduceMlOutput(options.orgId, 'ml.anomalies.enabled'))) {
@@ -330,12 +491,13 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
 
   await detectBaselineDeviations(options);
   await detectGrowthTrends(options);
+  await detectProcessSampleRunaways(options);
 
   return {
     orgId: options.orgId,
     from: from.toISOString(),
     to: to.toISOString(),
-    statements: 2,
+    statements: 3,
     skipped: false,
   };
 }
