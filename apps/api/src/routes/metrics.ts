@@ -5,12 +5,12 @@
  */
 
 import { Hono } from 'hono';
-import { avg, and, eq, gte, sql } from 'drizzle-orm';
+import { avg, and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { Counter, Gauge, Histogram, Registry } from 'prom-client';
 import { createHash, timingSafeEqual } from 'crypto';
 
 import { db } from '../db';
-import { deviceMetrics, devices, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
+import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
@@ -733,6 +733,47 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
   try {
+    const rollupOrgCondition =
+      typeof auth?.orgCondition === 'function'
+        ? auth.orgCondition(metricRollups.orgId)
+        : auth?.orgId
+          ? eq(metricRollups.orgId, auth.orgId)
+          : undefined;
+    const rollupCondition = and(
+      eq(metricRollups.sourceTable, 'device_metrics'),
+      eq(metricRollups.bucketSeconds, 86400),
+      inArray(metricRollups.metricName, ['cpu_percent', 'ram_percent']),
+      gte(metricRollups.bucketStart, since),
+      sql`${metricRollups.sampleCount} > 0`,
+      sql`${metricRollups.avgValue} IS NOT NULL`,
+      ...(rollupOrgCondition ? [rollupOrgCondition] : [])
+    );
+    const rollupRows = await db
+      .select({
+        bucket: metricRollups.bucketStart,
+        metricName: metricRollups.metricName,
+        value: sql<number>`sum(${metricRollups.avgValue} * ${metricRollups.sampleCount}) / nullif(sum(${metricRollups.sampleCount}), 0)`
+      })
+      .from(metricRollups)
+      .where(rollupCondition)
+      .groupBy(metricRollups.bucketStart, metricRollups.metricName)
+      .orderBy(metricRollups.bucketStart);
+
+    if (rollupRows.length > 0) {
+      const byBucket = new Map<string, { timestamp: string; cpu: number; memory: number }>();
+      for (const row of rollupRows) {
+        const timestamp = row.bucket instanceof Date ? row.bucket.toISOString() : String(row.bucket);
+        const bucket = byBucket.get(timestamp) ?? { timestamp, cpu: 0, memory: 0 };
+        if (row.metricName === 'cpu_percent') {
+          bucket.cpu = Math.round(Number(row.value ?? 0));
+        } else if (row.metricName === 'ram_percent') {
+          bucket.memory = Math.round(Number(row.value ?? 0));
+        }
+        byBucket.set(timestamp, bucket);
+      }
+      return c.json(Array.from(byBucket.values()));
+    }
+
     const trendsCondition = orgCondition
       ? and(gte(deviceMetrics.timestamp, since), orgCondition)
       : gte(deviceMetrics.timestamp, since);
