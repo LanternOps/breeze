@@ -15,6 +15,19 @@ import { runAction, ActionError } from '../../lib/runAction';
 
 type Device = { id: string; name: string };
 
+function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
+  return rows.map((row) => {
+    const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? 'Unknown device';
+    return {
+      ...row,
+      deviceName: String(deviceName),
+      correlationMemberCount: Number(row.correlationMemberCount ?? 0),
+      correlationChildCount: Number(row.correlationChildCount ?? 0),
+      noiseReductionPercent: row.noiseReductionPercent == null ? null : Number(row.noiseReductionPercent),
+    } as Alert;
+  });
+}
+
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -51,7 +64,8 @@ export default function AlertsPage() {
         throw new Error('Failed to fetch alerts');
       }
       const data = await response.json();
-      setAlerts(data.data ?? data.alerts ?? (Array.isArray(data) ? data : []));
+      const raw: Record<string, unknown>[] = data.data ?? data.alerts ?? (Array.isArray(data) ? data : []);
+      setAlerts(normalizeAlertRows(raw));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

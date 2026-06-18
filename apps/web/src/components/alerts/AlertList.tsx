@@ -10,6 +10,7 @@ import {
   MoreHorizontal,
   ExternalLink,
   Calendar,
+  GitBranch,
   SlidersHorizontal,
   X,
   Loader2
@@ -41,6 +42,12 @@ export type Alert = {
   resolvedAt?: string;
   resolvedBy?: string;
   contextData?: Record<string, unknown>;
+  correlationGroupId?: string | null;
+  correlationRole?: string | null;
+  correlationGroupStatus?: string | null;
+  correlationMemberCount?: number;
+  correlationChildCount?: number;
+  noiseReductionPercent?: number | null;
 };
 
 type AlertListProps = {
@@ -391,6 +398,9 @@ export default function AlertList({
             ) : (
               paginatedAlerts.map(alert => {
                 const isSubmitting = submittingId === alert.id;
+                const correlationChildCount =
+                  alert.correlationChildCount ?? Math.max((alert.correlationMemberCount ?? 0) - 1, 0);
+                const hasCorrelationSummary = Boolean(alert.correlationGroupId && correlationChildCount > 0);
                 return (
                   <tr
                     key={alert.id}
@@ -427,6 +437,22 @@ export default function AlertList({
                         <p className="text-xs text-muted-foreground truncate max-w-xs">
                           {alert.message}
                         </p>
+                        {hasCorrelationSummary && (
+                          <a
+                            href="/alerts/correlations"
+                            onClick={e => e.stopPropagation()}
+                            className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/10"
+                            title={`Open incident group ${alert.correlationGroupId}`}
+                          >
+                            <GitBranch className="h-3 w-3 shrink-0" />
+                            <span className="truncate">
+                              Grouped incident: {correlationChildCount} related
+                              {alert.noiseReductionPercent != null
+                                ? ` · ${alert.noiseReductionPercent}% noise cut`
+                                : ''}
+                            </span>
+                          </a>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3">

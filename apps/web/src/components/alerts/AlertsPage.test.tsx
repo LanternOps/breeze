@@ -180,4 +180,35 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     });
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
+
+  it('shows grouped incident count and noise reduction in the alert list', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({
+          data: [{
+            ...activeAlert,
+            deviceName: undefined,
+            deviceHostname: 'SRV-01',
+            correlationGroupId: '6f5e4d3c-2222-4333-8444-555566667777',
+            correlationRole: 'root',
+            correlationGroupStatus: 'open',
+            correlationMemberCount: 4,
+            correlationChildCount: 3,
+            noiseReductionPercent: 75,
+          }]
+        }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: 'unexpected' }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    expect(await screen.findByText('Grouped incident: 3 related · 75% noise cut')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /SRV-01/i })).toHaveAttribute('href', '/devices/device-1');
+  });
 });

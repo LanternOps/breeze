@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { and, or, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
+  alertCorrelationGroups,
+  alertCorrelationMembers,
   alertRules,
   alertTemplates,
   alerts,
@@ -36,6 +38,57 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 const requireAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
 
 const alertIdParamSchema = z.object({ id: z.string().uuid() });
+
+type AlertCorrelationSummaryRow = {
+  alertId: string;
+  groupId: string;
+  role: string;
+  groupStatus: string;
+  memberCount: number | string | null;
+  noiseReductionPercent: number | string | null;
+};
+
+export function attachAlertCorrelationSummaries<T extends { id: string }>(
+  alertRows: T[],
+  correlationRows: AlertCorrelationSummaryRow[]
+) {
+  const correlationByAlertId = new Map<string, AlertCorrelationSummaryRow>();
+
+  for (const row of correlationRows) {
+    const existing = correlationByAlertId.get(row.alertId);
+    if (!existing || row.role === 'root') {
+      correlationByAlertId.set(row.alertId, row);
+    }
+  }
+
+  return alertRows.map((alert) => {
+    const correlation = correlationByAlertId.get(alert.id);
+    if (!correlation) {
+      return {
+        ...alert,
+        correlationGroupId: null,
+        correlationRole: null,
+        correlationGroupStatus: null,
+        correlationMemberCount: 0,
+        correlationChildCount: 0,
+        noiseReductionPercent: null,
+      };
+    }
+
+    const memberCount = Number(correlation.memberCount ?? 0);
+    const noiseReductionPercent = Number(correlation.noiseReductionPercent ?? 0);
+
+    return {
+      ...alert,
+      correlationGroupId: correlation.groupId,
+      correlationRole: correlation.role,
+      correlationGroupStatus: correlation.groupStatus,
+      correlationMemberCount: Number.isFinite(memberCount) ? memberCount : 0,
+      correlationChildCount: Math.max((Number.isFinite(memberCount) ? memberCount : 0) - 1, 0),
+      noiseReductionPercent: Number.isFinite(noiseReductionPercent) ? noiseReductionPercent : null,
+    };
+  });
+}
 
 // GET /alerts - List alerts with filters
 alertsRoutes.get(
@@ -170,8 +223,24 @@ alertsRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    const alertIds = alertsList.map((alert) => alert.id);
+    const correlationRows = alertIds.length > 0
+      ? await db
+        .select({
+          alertId: alertCorrelationMembers.alertId,
+          groupId: alertCorrelationMembers.groupId,
+          role: alertCorrelationMembers.role,
+          groupStatus: alertCorrelationGroups.status,
+          memberCount: alertCorrelationGroups.memberCount,
+          noiseReductionPercent: alertCorrelationGroups.noiseReductionPercent,
+        })
+        .from(alertCorrelationMembers)
+        .innerJoin(alertCorrelationGroups, eq(alertCorrelationMembers.groupId, alertCorrelationGroups.id))
+        .where(inArray(alertCorrelationMembers.alertId, alertIds))
+      : [];
+
     return c.json({
-      data: alertsList,
+      data: attachAlertCorrelationSummaries(alertsList, correlationRows),
       pagination: { page, limit, total }
     });
   }

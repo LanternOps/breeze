@@ -98,6 +98,17 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  alertCorrelationGroups: {
+    id: 'alertCorrelationGroups.id',
+    status: 'alertCorrelationGroups.status',
+    memberCount: 'alertCorrelationGroups.memberCount',
+    noiseReductionPercent: 'alertCorrelationGroups.noiseReductionPercent',
+  },
+  alertCorrelationMembers: {
+    alertId: 'alertCorrelationMembers.alertId',
+    groupId: 'alertCorrelationMembers.groupId',
+    role: 'alertCorrelationMembers.role',
+  },
   alertRules: {},
   alertTemplates: {},
   alerts: {},
@@ -231,6 +242,20 @@ describe('alert routes', () => {
               })
             })
           })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{
+                alertId: 'alert-1',
+                groupId: 'group-1',
+                role: 'root',
+                groupStatus: 'open',
+                memberCount: 3,
+                noiseReductionPercent: 67
+              }])
+            })
+          })
         } as any);
 
       const res = await app.request('/alerts', {
@@ -242,6 +267,11 @@ describe('alert routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.data[0].severity).toBe('high');
+      expect(body.data[0]).toEqual(expect.objectContaining({
+        correlationGroupId: 'group-1',
+        correlationChildCount: 2,
+        noiseReductionPercent: 67
+      }));
       expect(body.pagination.total).toBe(1);
     });
 
@@ -274,6 +304,13 @@ describe('alert routes', () => {
                   })
                 })
               })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
             })
           })
         } as any);

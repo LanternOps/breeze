@@ -39,6 +39,7 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../../db/schema', () => ({
+  alertCorrelationGroups: {}, alertCorrelationMembers: {},
   alertRules: {}, alertTemplates: {}, alerts: {}, notificationChannels: {},
   alertNotifications: {}, devices: {}, tickets: {}, ticketAlertLinks: {},
 }));
@@ -61,7 +62,7 @@ vi.mock('./helpers', () => ({
   getAlertWithOrgCheck: vi.fn(),
 }));
 
-import { alertsRoutes } from './alerts';
+import { alertsRoutes, attachAlertCorrelationSummaries } from './alerts';
 
 function makeApp() {
   const app = new Hono();
@@ -130,5 +131,43 @@ describe('alert state-change authz (Finding #6)', () => {
       body: JSON.stringify({}),
     });
     expect(res.status).not.toBe(403);
+  });
+});
+
+describe('attachAlertCorrelationSummaries', () => {
+  it('adds group child count and noise reduction fields to visible alert rows', () => {
+    const [alert] = attachAlertCorrelationSummaries(
+      [{ id: ALERT_ID, title: 'High CPU' }],
+      [{
+        alertId: ALERT_ID,
+        groupId: '6f5e4d3c-2222-4333-8444-555566667777',
+        role: 'root',
+        groupStatus: 'open',
+        memberCount: 4,
+        noiseReductionPercent: 75,
+      }]
+    );
+
+    expect(alert).toEqual(expect.objectContaining({
+      correlationGroupId: '6f5e4d3c-2222-4333-8444-555566667777',
+      correlationRole: 'root',
+      correlationGroupStatus: 'open',
+      correlationMemberCount: 4,
+      correlationChildCount: 3,
+      noiseReductionPercent: 75,
+    }));
+  });
+
+  it('returns explicit empty correlation fields when an alert is not grouped', () => {
+    const [alert] = attachAlertCorrelationSummaries([{ id: ALERT_ID, title: 'High CPU' }], []);
+
+    expect(alert).toEqual(expect.objectContaining({
+      correlationGroupId: null,
+      correlationRole: null,
+      correlationGroupStatus: null,
+      correlationMemberCount: 0,
+      correlationChildCount: 0,
+      noiseReductionPercent: null,
+    }));
   });
 });
