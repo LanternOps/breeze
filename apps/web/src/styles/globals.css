@@ -217,11 +217,13 @@ select {
   .slide-in-right,
   .stagger-1, .stagger-2, .stagger-3, .stagger-4,
   .dialog-backdrop,
-  .dialog-panel {
+  .dialog-panel,
+  .drawer-panel {
     animation: none !important;
     opacity: 1;
   }
-  .dialog-panel {
+  .dialog-panel,
+  .drawer-panel {
     transform: none;
   }
   .hover-lift {

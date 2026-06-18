@@ -11,7 +11,6 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 const flagState = vi.hoisted(() => ({
   ENABLE_NETWORK_DEVICES_IN_LIST: true,
   ENABLE_ENDPOINT_AV_FEATURES: false,
-  ENABLE_AI_FOR_OFFICE: false,
 }));
 vi.mock('@/lib/featureFlags', () => flagState);
 
@@ -98,13 +97,14 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string };
+type StubDevice = { id: string; deviceClass?: string; hostname?: string; watchdogVersion?: string | null };
 vi.mock('./DeviceList', () => ({
   default: ({ devices, serverFilterIds, onBulkAction }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
+      data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
       {['maintenance-on', 'maintenance-off', 'decommission', 'reboot'].map(action => (
         <button
@@ -200,6 +200,20 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
     });
     // Full device array still flows in; DeviceList combines it with the id set.
     expect(list.getAttribute('data-device-count')).toBe('3');
+  });
+
+  it('maps watchdogVersion from API rows into DeviceList', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), watchdogVersion: '0.70.1' },
+        { ...rawDevice(DEV_2, 'host-beta'), watchdogVersion: null },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-watchdog-versions')).toBe('0.70.1,');
   });
 
   it('grid view shows all devices when no advanced filter is active', async () => {

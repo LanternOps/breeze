@@ -4,7 +4,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import InvoicesPage from './InvoicesPage';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
+  // the admin wildcard so every gated control renders and these tests exercise
+  // full functionality.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 const showToast = vi.fn();
@@ -19,13 +29,13 @@ const ORGS = [{ id: 'org-1', name: 'Acme Corp' }, { id: 'org-2', name: 'Globex' 
 const INVOICES = [
   {
     id: 'inv-1', invoiceNumber: 'INV-0001', orgId: 'org-1', siteId: null, status: 'overdue',
-    currencyCode: 'USD', issueDate: '2026-05-01', dueDate: '2026-05-31', subtotal: '100.00',
+    currencyCode: 'USD', issueDate: '2026-05-01', dueDate: '2026-05-31', sentAt: null, subtotal: '100.00',
     taxRate: '0.000', taxTotal: '0.00', total: '100.00', amountPaid: '0.00', balance: '100.00',
     billToName: 'Acme', notes: null, createdAt: '2026-05-01T00:00:00Z',
   },
   {
     id: 'inv-2', invoiceNumber: null, orgId: 'org-2', siteId: null, status: 'draft',
-    currencyCode: 'USD', issueDate: null, dueDate: null, subtotal: '0.00',
+    currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '0.00',
     taxRate: null, taxTotal: '0.00', total: '0.00', amountPaid: '0.00', balance: '0.00',
     billToName: null, notes: null, createdAt: '2026-06-01T00:00:00Z',
   },
@@ -56,9 +66,10 @@ describe('InvoicesPage', () => {
     expect(within(row).getByText('Acme Corp')).toBeInTheDocument();
     // Total + balance both render $100.00 in this row.
     expect(within(row).getAllByText('$100.00')).toHaveLength(2);
-    // Overdue badge label + danger row background.
+    // Overdue badge label + restrained overdue cue (red dot indicator + due tone),
+    // replacing the old full-row red tint.
     expect(screen.getByTestId('invoices-status-inv-1')).toHaveTextContent('Overdue');
-    expect(row.className).toContain('bg-red-500/5');
+    expect(row.querySelector('.bg-red-500')).not.toBeNull();
   });
 
   it('writes filter selections to the URL hash', async () => {

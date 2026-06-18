@@ -20,11 +20,16 @@ The core stack (`docker-compose.yml`) includes:
 | **Caddy** | `caddy:2.8-alpine` | Reverse proxy, auto-TLS, security headers |
 | **API** | `ghcr.io/lanternops/breeze/api` | Hono API server |
 | **Web** | `ghcr.io/lanternops/breeze/web` | Astro SSR dashboard |
+| **Portal** | `ghcr.io/lanternops/breeze/portal` | Astro SSR customer portal, served under `/portal` (see [Customer Portal](/features/portal/)) |
 | **PostgreSQL** | `postgres:16-alpine` | Primary database |
 | **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
 | **Coturn** | `coturn/coturn:4-alpine` | TURN relay server for WebRTC remote desktop (opt-in via `--profile turn`) |
 
 An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail, exporters) is available as a separate overlay — see [Monitoring](#adding-monitoring).
+
+<Aside type="note" title="Customer portal lives at /portal">
+The customer portal is served under the `/portal` path on your main domain (for example `https://breeze.example.com/portal/login`) — no separate hostname or TLS certificate is required. It reaches the API on the same origin, so there is no extra CORS configuration. Set `PUBLIC_PORTAL_URL` (default `https://${BREEZE_DOMAIN}/portal`) so customer-facing links in emails resolve correctly. If you maintain a **custom Compose file**, a `BREEZE_VERSION` bump alone won't add the portal — make sure the `portal` service and the Caddy `/portal` route are present, then `docker compose up -d portal && docker compose restart caddy`.
+</Aside>
 
 ## Deploy Steps
 

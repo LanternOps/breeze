@@ -5,7 +5,17 @@ import InvoiceDetail from './InvoiceDetail';
 import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
+  // the admin wildcard so every gated control renders and these tests exercise
+  // full functionality.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
@@ -30,7 +40,7 @@ const lines: InvoiceDetailData['lines'] = [
 const issued: InvoiceDetailData = {
   invoice: {
     id: 'inv-1', invoiceNumber: 'INV-0007', orgId: 'org-1', siteId: null, status: 'sent',
-    currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30', subtotal: '120.00',
+    currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30', sentAt: null, subtotal: '120.00',
     taxRate: '0.000', taxTotal: '0.00', total: '120.00', amountPaid: '0.00', balance: '120.00',
     billToName: 'Acme', notes: null, createdAt: '2026-06-01T00:00:00Z',
   },
@@ -90,5 +100,41 @@ describe('InvoiceDetail', () => {
     expect(screen.getByTestId('invoice-void-submit')).toBeDisabled();
     fireEvent.change(screen.getByTestId('invoice-void-reason'), { target: { value: 'Duplicate' } });
     expect(screen.getByTestId('invoice-void-submit')).not.toBeDisabled();
+  });
+
+  it('shows "Send payment link" when Stripe is connected and POSTs pay-link', async () => {
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.endsWith('/pay-link') && opts?.method === 'POST') return json({ data: { url: 'https://checkout.stripe.com/x' } });
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    render(<InvoiceDetail detail={{ ...issued, stripeConnected: true }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-stripe-nudge')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('invoice-pay-link'));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/pay-link') && (c[1] as RequestInit)?.method === 'POST')).toBe(true);
+    });
+  });
+
+  it('shows a connect-Stripe nudge (no pay-link) when not connected', async () => {
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-stripe-nudge')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
+  });
+
+  it('badges Stripe payments as Online and hides manual void on them', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p1', invoiceId: 'inv-1', amount: '120.00', method: 'card', reference: 'pi_x', receivedAt: '2026-06-10', note: null, createdAt: '', source: 'stripe' },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={{ ...issued, stripeConnected: true }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p1')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-payment-online-p1')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
   });
 });

@@ -84,7 +84,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
-const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Record<string, { resource: string; action: string }>> = {
+export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Record<string, { resource: string; action: string }>> = {
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   analyze_metrics: { resource: 'devices', action: 'read' },
@@ -298,7 +298,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   search_documentation: { resource: 'general', action: 'read' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
+  list_scripts: { resource: 'scripts', action: 'read' },
   get_script_details: { resource: 'scripts', action: 'read' },
+  list_script_templates: { resource: 'scripts', action: 'read' },
+  get_script_execution_history: { resource: 'scripts', action: 'read' },
   // Backup & DR tools
   query_backups: { resource: 'devices', action: 'read' },
   get_backup_status: { resource: 'devices', action: 'read' },

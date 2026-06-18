@@ -21,6 +21,7 @@ export * from './catalog';
 export * from './invoices';
 export * from './contracts';
 export * from './mlFeedback';
+export * from './quotes';
 
 // ============================================
 // Device Roles
@@ -41,7 +42,7 @@ export const paginationSchema = z.object({
   limit: z.coerce.number().min(1).max(100).default(50)
 });
 
-export const uuidSchema = z.string().uuid();
+export const uuidSchema = z.string().guid();
 
 export const dateRangeSchema = z.object({
   from: z.coerce.date().optional(),
@@ -90,14 +91,14 @@ export const createOrgSchema = z.object({
   maxDevices: z.number().positive().optional(),
   contractStart: z.coerce.date().optional(),
   contractEnd: z.coerce.date().optional(),
-  billingContact: z.record(z.unknown()).optional()
+  billingContact: z.record(z.string(), z.unknown()).optional()
 });
 
 export const createSiteSchema = z.object({
   name: z.string().min(1).max(255),
-  address: z.record(z.unknown()).optional(),
+  address: z.record(z.string(), z.unknown()).optional(),
   timezone: z.string().default('UTC'),
-  contact: z.record(z.unknown()).optional()
+  contact: z.record(z.string(), z.unknown()).optional()
 });
 
 // ============================================
@@ -107,11 +108,11 @@ export const createSiteSchema = z.object({
 export const inviteUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1).max(255),
-  roleId: z.string().uuid(),
+  roleId: z.string().guid(),
   orgAccess: z.enum(['all', 'selected', 'none']).optional(),
-  orgIds: z.array(z.string().uuid()).optional(),
-  siteIds: z.array(z.string().uuid()).optional(),
-  deviceGroupIds: z.array(z.string().uuid()).optional()
+  orgIds: z.array(z.string().guid()).optional(),
+  siteIds: z.array(z.string().guid()).optional(),
+  deviceGroupIds: z.array(z.string().guid()).optional()
 });
 
 export const createRoleSchema = z.object({
@@ -130,23 +131,23 @@ export const updateDeviceSchema = z.object({
   // devices.display_name column is nullable. Keep in sync with the route
   // schema in apps/api/src/routes/devices/schemas.ts.
   displayName: z.string().max(255).nullable().optional(),
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   tags: z.array(z.string().max(50)).max(20).optional()
 });
 
 export const createDeviceGroupSchema = z.object({
   name: z.string().min(1).max(255),
-  siteId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
   type: z.enum(['static', 'dynamic']),
-  rules: z.record(z.unknown()).optional(),
-  parentId: z.string().uuid().optional()
+  rules: z.record(z.string(), z.unknown()).optional(),
+  parentId: z.string().guid().optional()
 });
 
 export const deviceQuerySchema = paginationSchema.extend({
   status: z.enum(DEVICE_STATUSES).optional(),
   osType: z.enum(OS_TYPES).optional(),
-  siteId: z.string().uuid().optional(),
-  groupId: z.string().uuid().optional(),
+  siteId: z.string().guid().optional(),
+  groupId: z.string().guid().optional(),
   search: z.string().optional()
 });
 
@@ -173,15 +174,15 @@ export const createScriptSchema = z.object({
   osTypes: z.array(z.enum(OS_TYPES)).min(1),
   language: z.enum(SCRIPT_LANGUAGES),
   content: z.string().min(1),
-  parameters: z.record(z.unknown()).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
   timeoutSeconds: z.number().min(1).max(3600).default(300),
   runAs: z.enum(SCRIPT_RUN_AS).default('system')
 });
 
 export const executeScriptSchema = z.object({
-  deviceIds: z.array(z.string().uuid()).optional(),
-  groupId: z.string().uuid().optional(),
-  parameters: z.record(z.unknown()).optional()
+  deviceIds: z.array(z.string().guid()).optional(),
+  groupId: z.string().guid().optional(),
+  parameters: z.record(z.string(), z.unknown()).optional()
 }).refine(
   (data) => data.deviceIds?.length || data.groupId,
   { message: 'Must provide either deviceIds or groupId' }
@@ -216,21 +217,21 @@ export const createAutomationSchema = z.object({
   description: z.string().max(2000).optional(),
   enabled: z.boolean().default(true),
   trigger: automationTriggerSchema,
-  conditions: z.record(z.unknown()).optional(),
-  actions: z.array(z.record(z.unknown())).min(1),
+  conditions: z.record(z.string(), z.unknown()).optional(),
+  actions: z.array(z.record(z.string(), z.unknown())).min(1),
   onFailure: z.enum(['stop', 'continue', 'notify']).default('stop'),
-  notificationTargets: z.record(z.unknown()).optional()
+  notificationTargets: z.record(z.string(), z.unknown()).optional()
 });
 
 export const createPolicySchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(2000).optional(),
   enabled: z.boolean().default(true),
-  targets: z.record(z.unknown()),
-  rules: z.array(z.record(z.unknown())).min(1),
+  targets: z.record(z.string(), z.unknown()),
+  rules: z.array(z.record(z.string(), z.unknown())).min(1),
   enforcement: z.enum(['monitor', 'warn', 'enforce']).default('monitor'),
   checkIntervalMinutes: z.number().min(5).max(1440).default(60),
-  remediationScriptId: z.string().uuid().optional()
+  remediationScriptId: z.string().guid().optional()
 });
 
 // ============================================
@@ -242,18 +243,18 @@ export const createAlertRuleSchema = z.object({
   description: z.string().max(2000).optional(),
   enabled: z.boolean().default(true),
   severity: z.enum(ALERT_SEVERITIES),
-  targets: z.record(z.unknown()),
-  conditions: z.record(z.unknown()),
+  targets: z.record(z.string(), z.unknown()),
+  conditions: z.record(z.string(), z.unknown()),
   cooldownMinutes: z.number().min(1).max(1440).default(15),
-  escalationPolicyId: z.string().uuid().optional(),
-  notificationChannels: z.array(z.record(z.unknown())).optional(),
+  escalationPolicyId: z.string().guid().optional(),
+  notificationChannels: z.array(z.record(z.string(), z.unknown())).optional(),
   autoResolve: z.boolean().default(true)
 });
 
 export const alertQuerySchema = paginationSchema.extend({
   status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
   severity: z.enum(ALERT_SEVERITIES).optional(),
-  deviceId: z.string().uuid().optional()
+  deviceId: z.string().guid().optional()
 });
 
 // ============================================
@@ -411,11 +412,11 @@ export * from './filters';
 // ============================================
 
 export const auditQuerySchema = paginationSchema.merge(dateRangeSchema).extend({
-  actorId: z.string().uuid().optional(),
+  actorId: z.string().guid().optional(),
   actorType: z.enum(['user', 'api_key', 'agent', 'system']).optional(),
   action: z.string().optional(),
   resourceType: z.string().optional(),
-  resourceId: z.string().uuid().optional(),
+  resourceId: z.string().guid().optional(),
   result: z.enum(['success', 'failure', 'denied']).optional()
 });
 
@@ -427,7 +428,7 @@ export const createConfigPolicySchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   status: z.enum(['active', 'inactive', 'archived']).optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 export const updateConfigPolicySchema = z.object({
@@ -438,8 +439,8 @@ export const updateConfigPolicySchema = z.object({
 
 export const addFeatureLinkSchema = z.object({
   featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam']),
-  featurePolicyId: z.string().uuid().optional(),
-  inlineSettings: z.record(z.unknown()).optional(),
+  featurePolicyId: z.string().guid().optional(),
+  inlineSettings: z.record(z.string(), z.unknown()).optional(),
 }).refine(
   (data) => data.featurePolicyId || data.inlineSettings,
   { message: 'At least one of featurePolicyId or inlineSettings is required' }
@@ -616,13 +617,13 @@ export const monitoringInlineSettingsSchema = z.object({
 });
 
 export const updateFeatureLinkSchema = z.object({
-  featurePolicyId: z.string().uuid().nullable().optional(),
-  inlineSettings: z.record(z.unknown()).nullable().optional(),
+  featurePolicyId: z.string().guid().nullable().optional(),
+  inlineSettings: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
 export const assignPolicySchema = z.object({
   level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
-  targetId: z.string().uuid(),
+  targetId: z.string().guid(),
   priority: z.number().int().min(0).max(1000).optional(),
   roleFilter: z.array(z.enum(DEVICE_ROLES)).optional(),
   osFilter: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
@@ -630,12 +631,12 @@ export const assignPolicySchema = z.object({
 
 export const diffSchema = z.object({
   add: z.array(z.object({
-    configPolicyId: z.string().uuid(),
+    configPolicyId: z.string().guid(),
     level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
-    targetId: z.string().uuid(),
+    targetId: z.string().guid(),
     priority: z.number().int().min(0).optional(),
   })).optional(),
-  remove: z.array(z.string().uuid()).optional(),
+  remove: z.array(z.string().guid()).optional(),
 });
 
 export const listConfigPoliciesSchema = z.object({
@@ -643,18 +644,18 @@ export const listConfigPoliciesSchema = z.object({
   limit: z.string().optional(),
   status: z.enum(['active', 'inactive', 'archived']).optional(),
   search: z.string().optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 export const targetQuerySchema = z.object({
   level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
-  targetId: z.string().uuid(),
+  targetId: z.string().guid(),
 });
 
-export const configPolicyIdParamSchema = z.object({ id: z.string().uuid() });
-export const configPolicyLinkIdParamSchema = z.object({ id: z.string().uuid(), linkId: z.string().uuid() });
-export const configPolicyAssignmentIdParamSchema = z.object({ id: z.string().uuid(), aid: z.string().uuid() });
-export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().uuid() });
+export const configPolicyIdParamSchema = z.object({ id: z.string().guid() });
+export const configPolicyLinkIdParamSchema = z.object({ id: z.string().guid(), linkId: z.string().guid() });
+export const configPolicyAssignmentIdParamSchema = z.object({ id: z.string().guid(), aid: z.string().guid() });
+export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().guid() });
 
 // ============================================
 // AI Validators

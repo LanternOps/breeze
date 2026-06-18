@@ -49,7 +49,7 @@ const updateBodySchema = z.object({
   rationale: z.string().min(1).max(10_000).optional(),
   expectedAction: z.string().min(1).max(10_000).optional(),
   riskTier: z.enum(['low', 'medium', 'high', 'critical']).optional(),
-  parameters: z.record(z.unknown()).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
   elevationRequestId: z.string().uuid().nullable().optional(),
   toolExecutionId: z.string().uuid().nullable().optional(),
   scriptExecutionId: z.string().uuid().nullable().optional(),

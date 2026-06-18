@@ -27,13 +27,13 @@ import type { AuthContext } from '../../middleware/auth';
 // requireScope/requirePermission below depend on c.get('auth') being populated there.
 export const ticketsRoutes = new Hono();
 
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: z.string().guid() });
 const triageEvaluationQuerySchema = z.object({
   labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
 });
 const applyTriageSuggestionSchema = z.object({
-  categoryId: z.string().uuid().nullable().optional(),
+  categoryId: z.string().guid().nullable().optional(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
 }).refine((value) => value.categoryId !== undefined || value.priority !== undefined, {
   message: 'At least one suggested field is required',
@@ -708,7 +708,7 @@ ticketsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
   zValidator('param', idParam),
-  zValidator('json', z.object({ alertId: z.string().uuid() })),
+  zValidator('json', z.object({ alertId: z.string().guid() })),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
@@ -750,7 +750,7 @@ ticketsRoutes.delete(
   '/:id/alerts/:alertId',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
-  zValidator('param', z.object({ id: z.string().uuid(), alertId: z.string().uuid() })),
+  zValidator('param', z.object({ id: z.string().guid(), alertId: z.string().guid() })),
   async (c) => {
     const auth = c.get('auth');
     const { id, alertId } = c.req.valid('param');

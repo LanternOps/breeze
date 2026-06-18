@@ -25,7 +25,11 @@ export type InvoiceServiceErrorCode =
   | 'INVALID_AMOUNT'
   | 'LINE_NOT_FOUND'
   | 'PAYMENT_NOT_FOUND'
-  | 'NUMBER_ALLOCATION_FAILED';
+  | 'NUMBER_ALLOCATION_FAILED'
+  | 'NOT_PAYABLE'
+  | 'NOTHING_TO_PAY'
+  | 'STRIPE_NOT_CONNECTED'
+  | 'STRIPE_NO_URL';
 
 export class InvoiceServiceError extends Error {
   constructor(

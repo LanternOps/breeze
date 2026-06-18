@@ -5,7 +5,12 @@
 
 import { navigateTo } from './navigation';
 
-const API_BASE = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+// Client API base. Empty (the default) → same-origin **relative** requests
+// (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
+// is the production + full-stack-dev path and needs no per-origin configuration.
+// Set PUBLIC_API_URL to an absolute origin only for a standalone portal dev server
+// without a proxy, or a genuinely cross-origin API.
+const PUBLIC_API_BASE = import.meta.env.PUBLIC_API_URL || '';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
 
@@ -35,16 +40,29 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 function resolveApiBase(): string {
-  if (!API_BASE) {
+  // Server-side (SSR): there is no window to derive same-origin from. The portal
+  // container reaches the API over the internal network (e.g. http://api:3001)
+  // via INTERNAL_API_URL. Fall back to PUBLIC_API_URL, then the dev default.
+  if (typeof window === 'undefined') {
+    const fromEnv =
+      (typeof process !== 'undefined' &&
+        process.env &&
+        (process.env.INTERNAL_API_URL || process.env.PUBLIC_API_URL)) ||
+      '';
+    return (fromEnv || PUBLIC_API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
+  }
+
+  // Client: empty base → same-origin relative requests (return ''). buildPortalApiUrl
+  // then produces `/api/v1/...`, which the reverse proxy routes to the API. This
+  // avoids the localhost:PORT trap (a loopback rewrite can't fix a port mismatch).
+  if (!PUBLIC_API_BASE) {
     return '';
   }
 
-  if (typeof window === 'undefined') {
-    return API_BASE;
-  }
-
+  // Explicit absolute base: normalize, rewriting a loopback host to the current
+  // origin for dev convenience.
   try {
-    const parsed = new URL(API_BASE, window.location.origin);
+    const parsed = new URL(PUBLIC_API_BASE, window.location.origin);
     const windowHostname = window.location.hostname;
 
     if (isLoopbackHostname(windowHostname) && parsed.hostname !== windowHostname) {
@@ -58,7 +76,7 @@ function resolveApiBase(): string {
 
     return parsed.origin;
   } catch {
-    return API_BASE;
+    return PUBLIC_API_BASE;
   }
 }
 
@@ -313,6 +331,74 @@ export interface InvoiceDetail {
   lines: InvoiceLine[];
 }
 
+export type QuoteStatus =
+  | 'draft'
+  | 'sent'
+  | 'viewed'
+  | 'accepted'
+  | 'declined'
+  | 'expired'
+  | 'converted';
+
+export interface QuoteSummary {
+  id: string;
+  quoteNumber: string | null;
+  status: string;
+  currencyCode: string;
+  issueDate: string | null;
+  expiryDate: string | null;
+  total: string;
+}
+
+export interface QuoteBlock {
+  id: string;
+  blockType: string;
+  content: Record<string, unknown> | null;
+  sortOrder: number;
+}
+
+export interface QuoteLine {
+  id: string;
+  blockId?: string | null;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  lineTotal: string;
+  recurrence: string;
+  customerVisible: boolean;
+  sortOrder: number;
+}
+
+export interface QuoteHeader extends QuoteSummary {
+  introNotes?: string | null;
+  terms?: string | null;
+  subtotal?: string;
+  taxTotal?: string;
+  oneTimeTotal?: string;
+  monthlyRecurringTotal?: string;
+  annualRecurringTotal?: string;
+  billToName?: string | null;
+}
+
+export interface QuoteDetail {
+  quote: QuoteHeader;
+  blocks: QuoteBlock[];
+  lines: QuoteLine[];
+}
+
+export interface QuoteBranding {
+  partnerName: string;
+  logoUrl: string | null;
+  primaryColor: string | null;
+}
+
+export interface PublicQuoteDetail {
+  quote: QuoteHeader;
+  blocks: QuoteBlock[];
+  lines: QuoteLine[];
+  branding: QuoteBranding;
+}
+
 export interface Profile {
   id: string;
   orgId: string;
@@ -534,5 +620,82 @@ export const portalApi = {
       statusCode: response.statusCode,
       headers: response.headers
     };
+  },
+
+  getQuotes: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<PaginatedResult<QuoteSummary>> => {
+    const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 200 });
+    const response = await apiGet<{ data: QuoteSummary[]; pagination: Pagination }>(
+      `/portal/quotes${query}`,
+      config
+    );
+    return mapPaginatedData(response);
+  },
+
+  getQuote: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: QuoteDetail }>> => {
+    return apiGet<{ data: QuoteDetail }>(`/portal/quotes/${id}`, config);
+  },
+
+  acceptQuote: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { invoiceId: string; status: string } }>> => {
+    return apiPost<{ data: { invoiceId: string; status: string } }>(
+      `/portal/quotes/${id}/accept`,
+      {},
+      config
+    );
+  },
+
+  declineQuote: async (
+    id: string,
+    reason: string | undefined,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { status: string } }>> => {
+    return apiPost<{ data: { status: string } }>(
+      `/portal/quotes/${id}/decline`,
+      { reason },
+      config
+    );
+  },
+
+  // Public, token-gated proposal access for prospects without a portal account.
+  // These hit /quotes/public/* (NOT /portal/*) — no auth cookie required.
+  getPublicQuote: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicQuoteDetail }>> => {
+    return apiGet<{ data: PublicQuoteDetail }>(
+      `/quotes/public/${encodeURIComponent(token)}`,
+      config
+    );
+  },
+
+  acceptPublicQuote: async (
+    token: string,
+    signerName: string,
+    signerEmail?: string
+  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null } }>> => {
+    return apiPost<{ data: { status: string; invoiceNumber: string | null } }>(
+      `/quotes/public/${encodeURIComponent(token)}/accept`,
+      { signerName, signerEmail },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  declinePublicQuote: async (
+    token: string,
+    reason?: string
+  ): Promise<ApiResponse<{ data: { status: string } }>> => {
+    return apiPost<{ data: { status: string } }>(
+      `/quotes/public/${encodeURIComponent(token)}/decline`,
+      { reason },
+      { redirectOnUnauthorized: false }
+    );
   }
 };

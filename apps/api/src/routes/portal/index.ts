@@ -6,6 +6,7 @@ import { ticketRoutes } from './tickets';
 import { assetRoutes } from './assets';
 import { profileRoutes } from './profile';
 import { invoiceRoutes as portalInvoiceRoutes } from './invoices';
+import { quoteRoutes as portalQuoteRoutes } from './quotes';
 
 export const portalRoutes = new Hono();
 
@@ -19,9 +20,11 @@ portalRoutes.use('/tickets/*', portalAuthMiddleware);
 portalRoutes.use('/assets/*', portalAuthMiddleware);
 portalRoutes.use('/profile/*', portalAuthMiddleware);
 portalRoutes.use('/invoices/*', portalAuthMiddleware);
+portalRoutes.use('/quotes/*', portalAuthMiddleware);
 
 portalRoutes.route('/', deviceRoutes);
 portalRoutes.route('/', ticketRoutes);
 portalRoutes.route('/', assetRoutes);
 portalRoutes.route('/', profileRoutes);
 portalRoutes.route('/', portalInvoiceRoutes);
+portalRoutes.route('/', portalQuoteRoutes);

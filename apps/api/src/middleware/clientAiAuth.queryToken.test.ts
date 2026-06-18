@@ -29,7 +29,7 @@ const TOKEN = 'tok_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK';
 
 const USER_ROW = {
   id: PORTAL_USER_ID, orgId: ORG_ID, email: 'finance.user@contoso.com',
-  name: 'Finance User', status: 'active',
+  name: 'Finance User', status: 'active', partnerAiForOfficeEnabled: true,
 };
 
 function buildApp() {
@@ -48,7 +48,11 @@ beforeEach(() => {
   );
   dbSelectMock.mockImplementation(() => ({
     from: vi.fn(() => ({
-      where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([USER_ROW])) })),
+      innerJoin: vi.fn(() => ({
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([USER_ROW])) })),
+        })),
+      })),
     })),
   }));
 });

@@ -89,7 +89,7 @@ async function resolveSiteAllowedDeviceIds(
 }
 
 const timeSeriesQuerySchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1),
+  deviceIds: z.array(z.string().guid()).min(1),
   metricTypes: z.array(z.string().min(1)).min(1),
   startTime: z.string().min(1),
   endTime: z.string().min(1),
@@ -166,14 +166,14 @@ function rollupAggregationSql(agg: string) {
 const listDashboardsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const createDashboardSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
-  layout: z.record(z.any()).refine(
+  layout: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional().default({})
@@ -182,7 +182,7 @@ const createDashboardSchema = z.object({
 const updateDashboardSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
-  layout: z.record(z.any()).refine(
+  layout: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional()
@@ -191,11 +191,11 @@ const updateDashboardSchema = z.object({
 const createWidgetSchema = z.object({
   name: z.string().min(1).max(255),
   type: z.string().min(1).max(100),
-  config: z.record(z.any()).refine(
+  config: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional().default({}),
-  layout: z.record(z.any()).refine(
+  layout: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional()
@@ -204,11 +204,11 @@ const createWidgetSchema = z.object({
 const updateWidgetSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   type: z.string().min(1).max(100).optional(),
-  config: z.record(z.any()).refine(
+  config: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional(),
-  layout: z.record(z.any()).refine(
+  layout: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional()
@@ -231,7 +231,7 @@ function mapWidgetToApi(widget: typeof dashboardWidgets.$inferSelect) {
 }
 
 const capacityQuerySchema = z.object({
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   metricType: z.string().min(1).optional().default('disk'),
   range: z.string().optional().default('30d')
 });
@@ -293,11 +293,11 @@ function zeroAnomalyEvaluationResponse(options: {
 const listSlaSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const createSlaSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   uptimeTarget: z.number().min(0).max(100).optional(),
@@ -305,7 +305,7 @@ const createSlaSchema = z.object({
   resolutionTimeTarget: z.number().optional(),
   measurementWindow: z.enum(['daily', 'weekly', 'monthly']).optional().default('monthly'),
   targetType: z.enum(['device', 'site', 'organization']).optional().default('organization'),
-  targetIds: z.array(z.string().uuid()).optional(),
+  targetIds: z.array(z.string().guid()).optional(),
   excludeMaintenanceWindows: z.boolean().optional().default(false),
   excludeWeekends: z.boolean().optional().default(false),
 });

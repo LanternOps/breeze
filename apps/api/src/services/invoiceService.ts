@@ -1,9 +1,10 @@
 import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
-  invoices, invoiceLines, invoicePayments, organizations, partners,
+  invoices, invoiceLines, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, timeEntries, ticketParts, tickets
 } from '../db/schema';
+import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
 import { resolvePrice, computeBundleEconomics } from './catalogService';
 // formatInvoiceNumber is shared with the standalone allocator; issueInvoice
@@ -258,7 +259,12 @@ export async function updateInvoice(
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireOrgAccess(actor, inv.orgId);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
-  return { invoice: inv, lines }; // accounting view (all lines)
+  // Whether this invoice's partner can collect online (gates the "Send payment
+  // link" UI). Partner-axis read under a partner/system request scope, so the
+  // actor's own connection row is RLS-visible. Best-effort: a lookup failure
+  // (e.g. Stripe unconfigured) just means "not connected".
+  const conn = await getConnection(inv.partnerId).catch(() => null);
+  return { invoice: inv, lines, stripeConnected: conn?.status === 'connected' }; // accounting view (all lines)
 }
 
 export async function getCustomerInvoice(invoiceId: string, orgId?: string) {
@@ -457,9 +463,13 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     };
 
     await db.update(invoices).set({
+      // status 'sent' is the lifecycle "issued/finalized" state. sentAt is left
+      // NULL here on purpose — it means "emailed to the customer" and is stamped
+      // only by sendInvoiceEmail. That lets the UI distinguish "Issued" (no email
+      // yet) from "Sent" (emailed) instead of mislabeling a plain Issue as Sent.
       status: 'sent', invoiceNumber: number, currencyCode: partner?.currencyCode ?? 'USD',
       issueDate: issueDate.toISOString().slice(0, 10), dueDate: dueDate.toISOString().slice(0, 10),
-      taxRate, subtotal, taxTotal, total, balance: total, sentAt: issueDate,
+      taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
       billToTaxExempt: org?.taxExempt ?? false, terms: partner?.invoiceFooter ?? null, updatedAt: issueDate
     }).where(eq(invoices.id, invoiceId));
@@ -536,7 +546,16 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
 export async function listPayments(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
   requireOrgAccess(actor, inv.orgId);
-  return db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId)).orderBy(invoicePayments.receivedAt);
+  const rows = await db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId)).orderBy(invoicePayments.receivedAt);
+  // Tag each payment's origin so the UI can badge online (Stripe) payments and
+  // hide manual-void on them (Stripe payments are refunded through Stripe, not
+  // voided by hand). A payment is Stripe-sourced when a succeeded mapping links it.
+  const linked = await db
+    .select({ invoicePaymentId: invoiceStripePayments.invoicePaymentId })
+    .from(invoiceStripePayments)
+    .where(and(eq(invoiceStripePayments.invoiceId, invoiceId), eq(invoiceStripePayments.status, 'succeeded')));
+  const stripeIds = new Set(linked.map((r) => r.invoicePaymentId).filter((x): x is string => !!x));
+  return rows.map((r) => ({ ...r, source: stripeIds.has(r.id) ? ('stripe' as const) : ('manual' as const) }));
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ export interface InvoiceSummary {
   currencyCode: string;
   issueDate: string | null;
   dueDate: string | null;
+  sentAt: string | null;
   subtotal: string;
   taxRate: string | null;
   taxTotal: string;
@@ -47,6 +48,9 @@ export interface InvoiceLine {
 export interface InvoiceDetail {
   invoice: InvoiceSummary;
   lines: InvoiceLine[];
+  /** Whether the partner has an active Stripe Connect account (gates "Send
+   *  payment link"). Absent on older API responses → treated as not connected. */
+  stripeConnected?: boolean;
 }
 
 export interface InvoicePayment {
@@ -58,6 +62,9 @@ export interface InvoicePayment {
   receivedAt: string;
   note: string | null;
   createdAt: string;
+  /** Origin of the payment: 'stripe' = collected via online checkout (refund
+   *  through Stripe, no manual void), 'manual' = recorded by an operator. */
+  source?: 'stripe' | 'manual';
 }
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
@@ -78,6 +85,14 @@ export const STATUS_COLORS: Record<InvoiceStatus, string> = {
   paid: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
   void: 'border-border bg-muted text-muted-foreground line-through',
 };
+
+/** Display label for an invoice's status. The 'sent' lifecycle status means
+ *  "issued"; it only reads as "Sent" once an email actually went out (sentAt).
+ *  This keeps a plain Issue from mislabeling itself as Sent. */
+export function statusLabel(invoice: { status: InvoiceStatus; sentAt: string | null }): string {
+  if (invoice.status === 'sent' && !invoice.sentAt) return 'Issued';
+  return STATUS_LABELS[invoice.status];
+}
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cash: 'Cash',

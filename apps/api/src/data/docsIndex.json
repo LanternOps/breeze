@@ -765,6 +765,21 @@
     "section": "features"
   },
   {
+    "path": "/features/ai-for-office/",
+    "title": "AI for Office",
+    "description": "A governed AI assistant delivered to your customers' end-users inside Excel, Word, PowerPoint, and Outlook -- with org policies, data-loss protection, budgets, and per-partner entitlement.",
+    "headings": [
+      "Enabling a Partner (Platform Operator)",
+      "Configuring an Organization (MSP Admin)",
+      "Mapping the Customer's Microsoft Tenant",
+      "How End-Users Sign In",
+      "Admin Visibility",
+      "Permissions",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/ai/",
     "title": "AI Features",
     "description": "AI Risk Engine, Fleet Orchestration Brain, AI Device Context Memory, Helper AI Chat, and cost tracking.",
@@ -1158,6 +1173,21 @@
     "section": "features"
   },
   {
+    "path": "/features/contracts/",
+    "title": "Recurring Contracts",
+    "description": "Managed-services agreements that generate invoices automatically on a schedule, with live per-device and per-seat counts so recurring revenue is always accurate.",
+    "headings": [
+      "How a Contract Bills",
+      "Contract Statuses",
+      "Contract Lines",
+      "Creating a Contract",
+      "Managing the Lifecycle",
+      "Permissions",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/custom-fields/",
     "title": "Custom Fields",
     "description": "Define custom metadata fields for devices to track organisation-specific information beyond built-in attributes.",
@@ -1524,6 +1554,24 @@
       "`psa_connections`",
       "`psa_ticket_mappings`",
       "Troubleshooting"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/invoices/",
+    "title": "Invoices",
+    "description": "Create invoices from your catalog, tracked time, and parts; issue and send them; record payments; void and reissue; and download a clean PDF -- all inside Breeze.",
+    "headings": [
+      "The Invoice List",
+      "Invoice Statuses",
+      "Creating an Invoice",
+      "Adding Line Items",
+      "Issuing and Sending",
+      "Recording Payments",
+      "Voiding and Reissuing",
+      "PDF and Accounting View",
+      "Permissions",
+      "Related"
     ],
     "section": "features"
   },
@@ -1903,6 +1951,21 @@
     "section": "features"
   },
   {
+    "path": "/features/online-payments/",
+    "title": "Online Payments",
+    "description": "Let your customers pay invoices by card online, settled directly into your own Stripe account -- Breeze takes no fee and never touches the funds.",
+    "headings": [
+      "How It Works",
+      "Connecting Stripe",
+      "Sending a Payment Link",
+      "Paying from the Customer Portal",
+      "Refunds",
+      "Permissions",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/pam/",
     "title": "Privileged Access Management",
     "description": "Eliminate standing admin rights with just-in-time elevation -- intercept Windows UAC prompts, route them to an approver, and grant temporary admin access that revokes itself.",
@@ -2130,6 +2193,8 @@
       "Creating a Ticket",
       "Ticket Comments",
       "External Ticket Integration",
+      "Invoices & Payments",
+      "Paying an Invoice",
       "Asset Checkout",
       "Checking Out an Asset",
       "Returning an Asset",
@@ -2143,6 +2208,7 @@
       "Branding",
       "Devices",
       "Tickets",
+      "Invoices",
       "Assets",
       "Profile",
       "Caching",
@@ -2153,6 +2219,21 @@
       "CSRF token errors on form submissions",
       "\"Service temporarily unavailable\" (503) on login",
       "Rate limited (429) responses"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/product-catalog/",
+    "title": "Product Catalog",
+    "description": "A reusable catalog of the products and services you sell, with per-customer pricing, bundles, and live margins -- the price list that invoices and contracts pull from.",
+    "headings": [
+      "Catalog Items",
+      "Fields",
+      "Per-Customer Pricing",
+      "Bundles",
+      "Archiving Items",
+      "Permissions",
+      "Related"
     ],
     "section": "features"
   },
@@ -2691,6 +2772,11 @@
       "Keyboard Shortcuts",
       "Bulk Actions",
       "Creating Tickets",
+      "Email-to-Ticket",
+      "Your inbound address",
+      "How emails become tickets",
+      "Autoresponder",
+      "Review queue",
       "Categories and SLAs",
       "Custom Statuses & SLA Configuration",
       "Custom ticket statuses",

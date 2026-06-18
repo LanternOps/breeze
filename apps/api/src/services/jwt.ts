@@ -123,8 +123,11 @@ function getLegacySecretKey(): Uint8Array | null {
 /**
  * Returns the key used to sign *new* tokens, and the `kid` that should be
  * emitted in the protected header (omitted in legacy single-secret mode).
+ *
+ * Exported so sibling token modules (e.g. quoteAcceptToken.ts) sign with the
+ * same keyring instead of duplicating key material.
  */
-function getSignKey(): { key: Uint8Array; kid?: string } {
+export function getSignKey(): { key: Uint8Array; kid?: string } {
   const activeKid = getActiveSigningKid();
   if (activeKid) {
     const keyring = getSigningKeyring();
@@ -152,7 +155,7 @@ function getSignKey(): { key: Uint8Array; kid?: string } {
  * who minted a token with a forged kid mustn't get a free pass through the
  * legacy path).
  */
-function getVerifyKey(header: JWTHeaderParameters): Uint8Array {
+export function getVerifyKey(header: JWTHeaderParameters): Uint8Array {
   const kid = header.kid;
   if (typeof kid === 'string' && kid.length > 0) {
     const keyring = getSigningKeyring();
@@ -208,7 +211,7 @@ export interface ViewerTokenPayload {
   iat?: number;
 }
 
-function buildHeader(kid?: string): { alg: 'HS256'; kid?: string } {
+export function buildHeader(kid?: string): { alg: 'HS256'; kid?: string } {
   return kid ? { alg: 'HS256', kid } : { alg: 'HS256' };
 }
 

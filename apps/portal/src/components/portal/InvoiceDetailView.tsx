@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import { useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
@@ -65,7 +66,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         <p className="mt-1 text-sm text-muted-foreground">
           {error || 'The invoice you are looking for does not exist.'}
         </p>
-        <a href="/invoices" className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+        <a href={withBase("/invoices")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
           <ArrowLeft className="h-4 w-4" />
           Back to invoices
         </a>
@@ -127,7 +128,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
 
   return (
     <div className="space-y-6">
-      <a href="/invoices" className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+      <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
         <ArrowLeft className="h-4 w-4" />
         Back to invoices
       </a>

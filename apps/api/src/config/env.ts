@@ -28,6 +28,18 @@ export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
 }
 
+// Recognizes an AFFIRMATIVE self-host declaration: IS_HOSTED explicitly set to
+// a recognized falsey signal ('false'/'0'/'no'/'off'). Unset / empty / garbage /
+// truthy all return false, so security-weakening, self-host-only features stay
+// CLOSED unless self-host is positively declared. This is the #570 hardening
+// lesson — an unmapped IS_HOSTED (value in .env but not threaded through compose)
+// must never silently weaken security. Pure (takes the raw value) so callers
+// reading a `source`/`data` object rather than process.env can reuse it.
+// Mirrors the fail-closed gate in services/dnsProviders/index.ts.
+export function isRecognizedSelfHostSignal(raw: string | undefined): boolean {
+  return new Set(['0', 'false', 'no', 'off']).has((raw ?? '').trim().toLowerCase());
+}
+
 // Public URL of the breeze-billing payment-setup landing page. Empty on
 // self-host. Consumed by the OAuth consent redirect (see Phase 2 Task 2.1
 // of docs/superpowers/plans/2026-04-29-mcp-bootstrap-cleanup.md) — the

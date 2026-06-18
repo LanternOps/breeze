@@ -22,6 +22,12 @@ export interface UserPreferences {
   font?: FontPreference;
 }
 
+/** A single permission grant ({ resource, action }), mirroring the API. */
+export interface Permission {
+  resource: string;
+  action: string;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -33,6 +39,10 @@ export interface User {
   // account-deletion-requests) so ordinary users don't trigger its 403 badge
   // fetch. Absent/false for partner & org users.
   isPlatformAdmin?: boolean;
+  // Effective permission grants from the user's role, surfaced by /users/me so
+  // the UI can hide nav/actions the user can't use. UX only — the server still
+  // enforces every route. Absent on sessions persisted before this field.
+  permissions?: Permission[];
   preferences?: UserPreferences;
 }
 
@@ -800,6 +810,11 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     // until the next re-login.
     if (typeof data.isPlatformAdmin === 'boolean') {
       useAuthStore.getState().updateUser({ isPlatformAdmin: data.isPlatformAdmin });
+    }
+    // Permissions ride along on the same refresh so sessions persisted before
+    // the field existed still pick up their grants without a re-login.
+    if (Array.isArray(data.permissions)) {
+      useAuthStore.getState().updateUser({ permissions: data.permissions });
     }
     if (data.preferences) {
       useAuthStore.getState().updateUser({ preferences: data.preferences });

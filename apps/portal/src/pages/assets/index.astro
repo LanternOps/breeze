@@ -1,5 +1,6 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
+import { withBase } from '../../lib/basePath';
 import AssetList from '../../components/portal/AssetList';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -10,7 +11,7 @@ const response = await portalApi.getAssets(
 );
 
 if (response.statusCode === 401) {
-  return Astro.redirect('/login');
+  return Astro.redirect(withBase('/login'));
 }
 ---
 

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { usePermissions } from '../../lib/permissions';
+import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import {
   type InvoiceDetail as InvoiceDetailData,
@@ -10,7 +12,7 @@ import {
   type PaymentMethod,
   PAYMENT_METHOD_LABELS,
   STATUS_COLORS,
-  STATUS_LABELS,
+  statusLabel,
   formatDate,
   formatMoney,
 } from './invoiceTypes';
@@ -23,8 +25,10 @@ interface Props {
 }
 
 export default function InvoiceDetail({ detail, onChanged }: Props) {
+  const { can } = usePermissions();
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
+  const stripeConnected = detail.stripeConnected === true;
 
   const [accountingView, setAccountingView] = useState(false);
   const [payments, setPayments] = useState<InvoicePayment[]>([]);
@@ -127,6 +131,37 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     }
   }, [busy, payAmount, payMethod, payRef, payDate, invoice.id, refresh]);
 
+  const sendPayLink = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await runAction<{ data: { url: string } }>({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/pay-link`, { method: 'POST' }),
+        errorFallback: 'Could not create a payment link.',
+        friendly: (code) => (code === 'STRIPE_NOT_CONNECTED' ? 'Connect Stripe to accept online payments.' : undefined),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      const url = result?.data?.url;
+      if (url) {
+        try {
+          await navigator.clipboard.writeText(url);
+          showToast({ type: 'success', message: 'Payment link copied to clipboard' });
+        } catch {
+          // Clipboard blocked (insecure context / permissions) — surface the URL.
+          window.prompt('Share this payment link with your customer:', url);
+        }
+      } else {
+        // 200 without a URL shouldn't happen (the API throws STRIPE_NO_URL), but
+        // never leave a money action with no feedback.
+        showToast({ type: 'error', message: 'No payment link was returned. Try again.' });
+      }
+    } catch (err) {
+      handleActionError(err, 'Could not create a payment link.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, invoice.id]);
+
   const voidPayment = useCallback(async (paymentId: string) => {
     if (busy) return;
     setBusy(true);
@@ -227,29 +262,40 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
               <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status">
-                {STATUS_LABELS[invoice.status]}
+                {statusLabel(invoice)}
               </span>
               <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
             </div>
-            <dl className="space-y-1 text-sm">
+            <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd>{formatMoney(invoice.subtotal, currency)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Tax</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
               <div className="flex justify-between font-semibold"><dt>Total</dt><dd>{formatMoney(invoice.total, currency)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Paid</dt><dd>{formatMoney(invoice.amountPaid, currency)}</dd></div>
-              <div className="flex justify-between border-t pt-1 font-semibold"><dt>Balance</dt><dd data-testid="invoice-detail-balance">{formatMoney(invoice.balance, currency)}</dd></div>
             </dl>
+            {/* Balance-due focal number */}
+            <div className="mt-3 flex items-end justify-between border-t pt-3">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Balance due</span>
+              <span
+                className={`text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
+                data-testid="invoice-detail-balance"
+              >
+                {formatMoney(invoice.balance, currency)}
+              </span>
+            </div>
           </div>
 
           {/* PDF + void */}
           <div className="space-y-2">
-            <button
-              type="button" onClick={() => void downloadPdf()} disabled={busy}
-              data-testid="invoice-download-pdf"
-              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              Download PDF
-            </button>
-            {canVoid && (
+            {can('invoices', 'export') && (
+              <button
+                type="button" onClick={() => void downloadPdf()} disabled={busy}
+                data-testid="invoice-download-pdf"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Download PDF
+              </button>
+            )}
+            {canVoid && can('invoices', 'send') && (
               <button
                 type="button" onClick={() => { setVoidReason(''); setVoidReissue(false); setVoidOpen(true); }}
                 data-testid="invoice-void-open"
@@ -273,23 +319,53 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
             ) : (
               <ul className="divide-y text-sm">
                 {payments.map((p) => (
-                  <li key={p.id} className="flex items-center justify-between py-2" data-testid={`invoice-payment-${p.id}`}>
-                    <span>
-                      {formatMoney(p.amount, currency)} · {PAYMENT_METHOD_LABELS[p.method]} · {formatDate(p.receivedAt)}
+                  <li key={p.id} className="flex items-center justify-between gap-2 py-2" data-testid={`invoice-payment-${p.id}`}>
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className="tabular-nums">{formatMoney(p.amount, currency)}</span>
+                      <span className="text-muted-foreground">· {PAYMENT_METHOD_LABELS[p.method]} · {formatDate(p.receivedAt)}</span>
+                      {p.source === 'stripe' && (
+                        <span
+                          className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                          data-testid={`invoice-payment-online-${p.id}`}
+                        >
+                          Online
+                        </span>
+                      )}
                     </span>
-                    <button
-                      type="button" onClick={() => void voidPayment(p.id)} disabled={busy || invoice.status === 'void'}
-                      data-testid={`invoice-payment-void-${p.id}`}
-                      className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                    >
-                      Void
-                    </button>
+                    {/* Stripe payments are refunded through Stripe, never hand-voided. */}
+                    {p.source === 'stripe' ? (
+                      <span className="whitespace-nowrap text-[11px] text-muted-foreground">via Stripe</span>
+                    ) : can('invoices', 'send') ? (
+                      <button
+                        type="button" onClick={() => void voidPayment(p.id)} disabled={busy || invoice.status === 'void'}
+                        data-testid={`invoice-payment-void-${p.id}`}
+                        className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                      >
+                        Void
+                      </button>
+                    ) : null}
                   </li>
                 ))}
               </ul>
             )}
 
-            {canRecordPayment && (
+            {canRecordPayment && stripeConnected && can('invoices', 'send') && (
+              <button
+                type="button" onClick={() => void sendPayLink()} disabled={busy}
+                data-testid="invoice-pay-link"
+                className="mt-3 inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Send payment link
+              </button>
+            )}
+            {canRecordPayment && !stripeConnected && (
+              <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-stripe-nudge">
+                Connect Stripe to accept online card payments.{' '}
+                <a href="/settings/billing" className="underline hover:text-foreground">Set up</a>
+              </p>
+            )}
+
+            {canRecordPayment && can('invoices', 'send') && (
               <div className="mt-3 space-y-2 border-t pt-3" data-testid="invoice-payment-form">
                 <div className="grid grid-cols-2 gap-2">
                   <input
@@ -355,13 +431,15 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           </label>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setVoidOpen(false)} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted">Cancel</button>
-            <button
-              type="button" onClick={() => void submitVoid()} disabled={busy || !voidReason.trim()}
-              data-testid="invoice-void-submit"
-              className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-            >
-              Void invoice
-            </button>
+            {can('invoices', 'send') && (
+              <button
+                type="button" onClick={() => void submitVoid()} disabled={busy || !voidReason.trim()}
+                data-testid="invoice-void-submit"
+                className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              >
+                Void invoice
+              </button>
+            )}
           </div>
         </div>
       </Dialog>

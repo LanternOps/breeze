@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import React from 'react';
 import { Ticket, Plus, AlertCircle } from 'lucide-react';
 import { type TicketSummary, type TicketPriority, type TicketStatus } from '@/lib/api';
@@ -63,7 +64,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Support Tickets</h2>
         <a
-          href="/tickets/new"
+          href={withBase("/tickets/new")}
           className={cn(
             'flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
             'hover:bg-primary/90'
@@ -82,7 +83,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
             You haven't submitted any support tickets yet.
           </p>
           <a
-            href="/tickets/new"
+            href={withBase("/tickets/new")}
             className={cn(
               'mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
               'hover:bg-primary/90'
@@ -119,7 +120,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
                 >
                   <td className="px-4 py-3">
                     <div>
-                      <a className="font-medium hover:underline" href={`/tickets/${ticket.id}`}>
+                      <a className="font-medium hover:underline" href={withBase(`/tickets/${ticket.id}`)}>
                         {ticket.subject}
                       </a>
                       <p className="text-sm text-muted-foreground">

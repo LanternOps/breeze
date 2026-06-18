@@ -15,6 +15,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
+import { escapeLike } from '../utils/sql';
 
 export const softwareInventoryRoutes = new Hono();
 const requireSoftwareInventoryRead = requirePermission(
@@ -57,6 +58,18 @@ const deviceDrilldownQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+const nameSearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(200),
+  limit: z.coerce.number().int().min(1).max(50).default(50),
+});
+
+// Bound the distinct-name search like the filter engine does: the picker fires
+// one query per keystroke against a table that grows to millions of rows, so a
+// transaction-local statement_timeout keeps a pathological match from pinning a
+// worker. db.transaction inside the request's RLS context becomes a SAVEPOINT
+// that inherits the tenant GUCs, so org-scoping (RLS) is preserved.
+const NAME_SEARCH_TIMEOUT_MS = 1000;
 
 // ============================================
 // Helpers
@@ -298,6 +311,34 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
   });
 
   return c.json({ data, pagination: { total, limit, offset } });
+});
+
+// ============================================
+// GET /names — Distinct software-name search (filter picker)
+// ============================================
+
+softwareInventoryRoutes.get('/names', requireSoftwareInventoryRead, zValidator('query', nameSearchQuerySchema), async (c) => {
+  const { q, limit } = c.req.valid('query');
+  const pattern = `%${escapeLike(q)}%`;
+
+  // No manual org filter: software_inventory has RLS enabled + forced
+  // (org_id, shape 1), and the request runs inside the auth-established
+  // withDbAccessContext, so the proxied db auto-scopes to the caller's orgs.
+  const rows = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select set_config('statement_timeout', ${`${NAME_SEARCH_TIMEOUT_MS}ms`}, true)`
+    );
+    return tx.execute(sql`
+      SELECT DISTINCT ${softwareInventory.name} AS name
+      FROM ${softwareInventory}
+      WHERE ${softwareInventory.name} ILIKE ${pattern}
+      ORDER BY ${softwareInventory.name}
+      LIMIT ${limit}
+    `);
+  });
+
+  const names = (rows as unknown as Array<{ name: string }>).map((row) => row.name);
+  return c.json({ data: names });
 });
 
 // ============================================

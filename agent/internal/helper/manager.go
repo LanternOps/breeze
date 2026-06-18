@@ -236,9 +236,38 @@ func (m *Manager) Apply(settings *Settings) {
 						log.Warn("failed to write legacy helper config fallback", "error", err.Error())
 					}
 				}
+				// The new config is on disk, but a helper that's already running
+				// only read its config at spawn — flag it for a restart so the
+				// updated tray settings actually take effect (#1382).
+				state.pendingConfigRestart = true
 			}
 
 			state.refreshPID()
+
+			// #1382: restart a running helper so it re-reads the changed config.
+			// Skip while a chat is active so we don't drop the user's
+			// conversation; the flag persists and the restart happens on a later
+			// heartbeat once the session is idle. ensureStoppedSession is a
+			// no-op when nothing is running (e.g. first spawn), so the
+			// ensureRunningSession call below just spawns fresh in that case.
+			// Runs after refreshPID so clearing the PID below isn't undone.
+			if state.pendingConfigRestart {
+				if IsIdle(state.configPath) {
+					m.stopSessionWatcher(state)
+					if err := m.ensureStoppedSession(state); err != nil {
+						log.Warn("failed to stop breeze assist for config reload", "session", si.Key, "error", err.Error())
+					} else {
+						// Clear the status-file PID too so ensureRunningSession's
+						// fallback checks don't treat the just-stopped helper as
+						// still running and skip the respawn.
+						state.pid = 0
+						state.pendingConfigRestart = false
+					}
+				} else {
+					log.Debug("deferring breeze assist config reload until idle; chat active", "session", si.Key)
+				}
+			}
+
 			if err := m.ensureRunningSession(state); err != nil {
 				log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
 			} else {

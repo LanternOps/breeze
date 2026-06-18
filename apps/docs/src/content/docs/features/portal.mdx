@@ -11,6 +11,14 @@ Each organization gets its own portal instance with customizable branding, a ded
 
 ---
 
+## Accessing the Portal
+
+The portal is served under the `/portal` path on your Breeze domain — for example, if your dashboard is at `https://breeze.example.com`, portal users sign in at **`https://breeze.example.com/portal/login`**. No separate hostname or DNS record is required. Share this link (or the per-quote/invoice links Breeze emails, which already point at `/portal`) with your end-users.
+
+<Aside type="note" title="Custom portal domains">
+You can configure a per-organization custom domain in branding (`customDomain`, e.g. `support.acme.com`), but **serving the portal on a custom domain is not available yet** — for now all organizations reach the portal at `https://<your-breeze-domain>/portal`. The branding for an organization still applies once a user signs in.
+</Aside>
+
 ## Key Concepts
 
 ### Portal Feature Toggles
@@ -87,7 +95,7 @@ The portal applies per-IP and per-account rate limiting to authentication endpoi
 
 ## Branding
 
-Each organization can customize the portal appearance and contact information. Branding is resolved by custom domain -- when a portal user visits their organization's custom domain, Breeze serves the matching branding configuration.
+Each organization can customize the portal appearance and contact information. Branding is resolved by domain — when a portal user visits a configured custom domain, Breeze serves that organization's matching branding. Because [custom-domain serving is not enabled yet](#accessing-the-portal), the shared `/portal` portal currently shows the default branding at the login screen; configured branding still applies to the organization elsewhere.
 
 ### Branding Fields
 
@@ -134,6 +142,27 @@ Both portal users and technicians can add comments to tickets. When a technician
 ### External Ticket Integration
 
 Tickets support linking to external ticketing systems through the `externalTicketId` and `externalTicketUrl` fields, enabling integration with tools like ConnectWise, Autotask, or Zendesk.
+
+---
+
+## Invoices & Payments
+
+Portal users can view their organization's issued invoices, download the PDF, and -- when you've connected Stripe -- pay any invoice with an outstanding balance by card online.
+
+### Paying an Invoice
+
+<Steps>
+1. Log in to the customer portal and open **Invoices**.
+2. Select an invoice to see its line items, total, and balance due.
+3. Click **Pay now** to open a secure Stripe Checkout page and pay by card.
+4. Once payment succeeds, the invoice's balance and status update automatically.
+</Steps>
+
+Only issued invoices appear in the portal -- drafts are never shown. The **Pay now** button appears only on invoices with a balance due, and only when the partner has connected Stripe. Payments collected here settle directly into the MSP's own Stripe account; see [Online Payments](/features/online-payments/) for how to connect Stripe and send payment links.
+
+<Aside>
+  Invoice line items shown in the portal are limited to customer-visible lines -- internal cost and margin information is never exposed to portal users.
+</Aside>
 
 ---
 
@@ -235,6 +264,15 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | `POST` | `/tickets` | Yes | Create a new support ticket |
 | `GET` | `/tickets/:id` | Yes | Get ticket details with public comments |
 | `POST` | `/tickets/:id/comments` | Yes | Add a comment to a ticket |
+
+### Invoices
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/invoices` | Yes | List the organization's issued invoices |
+| `GET` | `/invoices/:id` | Yes | Get invoice detail with customer-visible lines |
+| `GET` | `/invoices/:id/pdf` | Yes | Download the invoice PDF |
+| `POST` | `/invoices/:id/pay` | Yes | Start a Stripe Checkout session to pay the balance |
 
 ### Assets
 

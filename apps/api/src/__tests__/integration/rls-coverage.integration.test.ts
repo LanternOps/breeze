@@ -102,6 +102,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['ticket_categories', 'partner_id'],
   ['partner_ticket_sequences', 'partner_id'],
   ['partner_invoice_sequences', 'partner_id'],
+  ['partner_quote_sequences', 'partner_id'],
   ['ticket_statuses', 'partner_id'],
   ['ticket_priority_settings', 'partner_id'],
   ['time_entries', 'partner_id'],

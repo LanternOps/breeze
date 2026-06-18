@@ -23,10 +23,10 @@ import {
 export const networkChangeRoutes = new Hono();
 
 const listNetworkChangesSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
-  baselineId: z.string().uuid().optional(),
-  profileId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
+  baselineId: z.string().guid().optional(),
+  profileId: z.string().guid().optional(),
   eventType: z.enum(networkEventTypes).optional(),
   acknowledged: optionalQueryBooleanSchema,
   since: z.string().datetime().optional(),
@@ -39,11 +39,11 @@ const acknowledgeChangeSchema = z.object({
 });
 
 const linkDeviceSchema = z.object({
-  deviceId: z.string().uuid()
+  deviceId: z.string().guid()
 });
 
 const bulkAcknowledgeSchema = z.object({
-  eventIds: z.array(z.string().uuid()).min(1).max(200),
+  eventIds: z.array(z.string().guid()).min(1).max(200),
   notes: z.string().max(2000).optional()
 });
 

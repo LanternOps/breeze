@@ -38,6 +38,8 @@ services:
     depends_on:
       web:
         condition: service_healthy
+      portal:
+        condition: service_healthy
       api:
         condition: service_healthy
     healthcheck:
@@ -87,6 +89,9 @@ services:
       PUBLIC_APP_URL: https://${BREEZE_DOMAIN}
       DASHBOARD_URL: https://${BREEZE_DOMAIN}
       PUBLIC_API_URL: https://${BREEZE_DOMAIN}
+      # Customer-portal origin for emailed links (quotes, invoices). Portal is
+      # served under /portal on the main domain.
+      PUBLIC_PORTAL_URL: ${PUBLIC_PORTAL_URL:-https://${BREEZE_DOMAIN}/portal}
       API_URL: ${API_URL:-}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
@@ -177,6 +182,34 @@ services:
     healthcheck:
       <<: *healthcheck
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
+      start_period: 30s
+    networks:
+      - breeze
+
+  portal:
+    image: ghcr.io/lanternops/breeze/portal@${BREEZE_PORTAL_IMAGE_DIGEST:?Set BREEZE_PORTAL_IMAGE_DIGEST to the release image digest}
+    platform: linux/amd64
+    container_name: breeze-portal
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4322
+      PORTAL_BASE_PATH: ${PORTAL_BASE_PATH:-/portal}
+      # Browser calls the API same-origin via the /api/* Caddy route, so the
+      # public (client) base stays empty. SSR has no window to derive same-origin,
+      # so it reaches the API over the internal network.
+      PUBLIC_API_URL: ""
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:3001}
+      PUBLIC_SENTRY_DSN_WEB: ${PUBLIC_SENTRY_DSN_WEB:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider "http://127.0.0.1:4322${PORTAL_BASE_PATH:-/portal}/login"']
       start_period: 30s
     networks:
       - breeze

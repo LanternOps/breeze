@@ -1,0 +1,20 @@
+---
+import AuthLayout from '../../layouts/AuthLayout.astro';
+import PublicQuoteView from '../../components/portal/PublicQuoteView';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const { token } = Astro.params;
+const response = await portalApi.getPublicQuote(token!, buildServerApiConfig(Astro.request));
+
+// An invalid/expired/revoked token returns 401 from the API. This page is
+// public, so we must NOT redirect a prospect to the portal login — just render
+// PublicQuoteView's own "invalid or expired" fallback (no specific error text
+// for the generic 401, which would otherwise read "Session expired").
+const initial = response.data?.data ?? null;
+const error = response.statusCode === 401 ? undefined : response.error;
+---
+
+<AuthLayout title="Proposal">
+  <PublicQuoteView token={token!} initial={initial} error={error} client:load />
+</AuthLayout>

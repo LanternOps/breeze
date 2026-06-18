@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import { Receipt, AlertCircle } from 'lucide-react';
 import { type InvoiceSummary, type InvoiceStatus } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -88,7 +89,7 @@ export function InvoiceList({ invoices, error }: InvoiceListProps) {
               {invoices.map((inv) => (
                 <tr key={inv.id} className="hover:bg-muted/50">
                   <td className="px-4 py-3">
-                    <a className="font-medium hover:underline" href={`/invoices/${inv.id}`}>
+                    <a className="font-medium hover:underline" href={withBase(`/invoices/${inv.id}`)}>
                       {inv.invoiceNumber ?? inv.id.slice(0, 8)}
                     </a>
                   </td>

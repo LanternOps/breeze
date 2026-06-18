@@ -11,7 +11,7 @@ const THIRD_PARTY_SOURCES = ['third_party', 'custom'] as const;
 
 const appOptionsQuerySchema = z.object({
   search: z.string().max(255).optional(),
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 

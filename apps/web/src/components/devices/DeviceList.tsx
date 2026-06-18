@@ -67,6 +67,7 @@ export type Device = {
   siteId: string;
   siteName: string;
   agentVersion: string;
+  watchdogVersion?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -227,19 +228,21 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // Unified-list columns (#1322): sort by the same value the cell renders so
   // header sort stays consistent with every other column (#1284 invariant).
   class: d => ((d.deviceClass ?? 'agent') === 'network' ? 'Network' : 'Agent'),
+  // Type renders only for network rows now (#1386); agent rows show a dash, so
+  // they sort as blanks-last (null) to match the cell — the #1284 invariant.
   type: d =>
-    getDeviceRoleLabel(
-      (d.deviceClass ?? 'agent') === 'network'
-        ? (d.assetType ?? 'unknown')
-        : (d.deviceRole ?? 'unknown'),
-    ),
+    (d.deviceClass ?? 'agent') === 'network'
+      ? getDeviceRoleLabel(d.assetType ?? 'unknown')
+      : null,
   organization: d => d.orgName || null,
   site: d => d.siteName || null,
   os: d => osLabels[d.os],
   osVersion: d => formatDeviceOsVersion(d.os, d.osVersion) || null,
   osBuild: d => d.osBuild || null,
   architecture: d => d.architecture || null,
-  role: d => getDeviceRoleLabel(d.deviceRole ?? 'unknown'),
+  // Role renders only for agent rows now (#1386); network rows show a dash and
+  // sort blanks-last (null) to match the cell — the #1284 invariant.
+  role: d => ((d.deviceClass ?? 'agent') === 'network' ? null : getDeviceRoleLabel(d.deviceRole ?? 'unknown')),
   isHeadless: d => (typeof d.isHeadless === 'boolean' ? (d.isHeadless ? 1 : 0) : null),
   status: d => statusSortRank[d.status],
   // false/absent renders as a dash (see the cell), so it maps to null like
@@ -253,6 +256,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   diskTotal: d => (typeof d.hardware?.diskTotalGb === 'number' ? d.hardware.diskTotalGb : null),
   lastSeen: d => new Date(d.lastSeen).getTime() || null,
   agentVersion: d => d.agentVersion || null,
+  watchdogVersion: d => d.watchdogVersion?.trim() || null,
   tags: d => (d.tags && d.tags.length > 0 ? d.tags.join(', ') : null),
   lastUser: d => d.lastUser || null,
   uptime: d => (d.status === 'online' && d.uptimeSeconds != null ? d.uptimeSeconds : null),
@@ -594,6 +598,10 @@ export default function DeviceList({
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
   };
+  const fmtWatchdogVersion = (raw: string | null | undefined) => {
+    const version = raw?.trim();
+    return version ? version : 'N/A';
+  };
 
   // columnDefs is the single source of truth for each toggleable column's
   // header and per-row cell. The thead and tbody iterate `renderedColumns`
@@ -639,14 +647,19 @@ export default function DeviceList({
     type: {
       header: () => sortHeader('type', 'Type', 'Sort by type'),
       cell: (device) => {
-        // Network rows carry assetType; agent rows fall back to deviceRole.
-        const typeValue = (device.deviceClass ?? 'agent') === 'network'
-          ? (device.assetType ?? 'unknown')
-          : (device.deviceRole ?? 'unknown');
+        // Type is the asset_type of a *network-discovered* device (printer,
+        // switch, NAS…). For agent rows the equivalent question — what kind of
+        // endpoint is this — is answered by the Role column, so Type renders a
+        // dash rather than echoing deviceRole and duplicating Role side by
+        // side (#1386). Role and Type are complementary axes, one per class.
+        if ((device.deviceClass ?? 'agent') !== 'network') {
+          return <td key="type" className="px-3 py-3 text-sm whitespace-nowrap">{dash}</td>;
+        }
+        const typeValue = device.assetType ?? 'unknown';
         const TypeIcon = getDeviceRoleIcon(typeValue);
         const typeLabel = getDeviceRoleLabel(typeValue);
         return (
-          <td key="type" className="px-3 py-3 text-sm whitespace-nowrap">
+          <td key="type" className="px-3 py-3 text-sm whitespace-nowrap" data-testid={`device-${device.id}-type`}>
             <span className="inline-flex items-center gap-1.5 text-muted-foreground" title={typeLabel}>
               <TypeIcon className="h-3.5 w-3.5" />
               <span className="truncate">{typeLabel}</span>
@@ -706,18 +719,24 @@ export default function DeviceList({
     role: {
       header: () => sortHeader('role', 'Role', 'Sort by role'),
       cell: (device) => {
+        // Role is the function of an *agent-managed* endpoint and drives
+        // config-policy targeting; it's meaningless for a network-discovered
+        // asset (a printer has no agent role), so network rows render a dash —
+        // the inverse of the Type column above (#1386, #1322 dash convention).
         const role = device.deviceRole ?? 'unknown';
         const RoleIcon = getDeviceRoleIcon(role);
         const roleLabel = getDeviceRoleLabel(role);
         return (
-          <td key="role" className="px-3 py-3 text-sm">
-            <span
-              className="inline-flex items-center justify-center rounded-full border bg-muted/50 p-1.5"
-              title={roleLabel}
-              aria-label={roleLabel}
-            >
-              <RoleIcon className="h-3.5 w-3.5" />
-            </span>
+          <td key="role" className="px-3 py-3 text-sm" data-testid={`device-${device.id}-role`}>
+            {agentCell(device, (
+              <span
+                className="inline-flex items-center justify-center rounded-full border bg-muted/50 p-1.5"
+                title={roleLabel}
+                aria-label={roleLabel}
+              >
+                <RoleIcon className="h-3.5 w-3.5" />
+              </span>
+            ))}
           </td>
         );
       },
@@ -836,6 +855,14 @@ export default function DeviceList({
       cell: (device) => (
         <td key="agentVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {device.agentVersion || dash}
+        </td>
+      ),
+    },
+    watchdogVersion: {
+      header: () => sortHeader('watchdogVersion', 'Watchdog Version', 'Sort by watchdog version'),
+      cell: (device) => (
+        <td key="watchdogVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {agentCell(device, fmtWatchdogVersion(device.watchdogVersion))}
         </td>
       ),
     },

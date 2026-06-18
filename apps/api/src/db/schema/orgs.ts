@@ -38,6 +38,11 @@ export const partners = pgTable('partners', {
   invoiceNumberPrefix: varchar('invoice_number_prefix', { length: 12 }).notNull().default('INV'),
   invoiceTermsDays: integer('invoice_terms_days').notNull().default(30),
   invoiceFooter: text('invoice_footer'),
+  // AI for Office is a per-partner entitlement the platform operator grants
+  // (off by default). The session-minting exchange and the /client-ai/admin
+  // surface gate on this; it is NOT in settings JSONB because that is
+  // partner-writable and the partner must not be able to self-enable.
+  aiForOfficeEnabled: boolean('ai_for_office_enabled').notNull().default(false),
 });
 
 export const organizations = pgTable('organizations', {

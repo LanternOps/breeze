@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, varchar, timestamp, jsonb, pgEnum, index, foreignKey, boolean, smallint } from 'drizzle-orm/pg-core';
+import type { AssuranceLevel } from '@breeze/shared';
 import { users } from './users';
 import { oauthClients, oauthSessions } from './oauth';
 import { aiToolExecutions } from './ai';
@@ -61,8 +62,12 @@ export const approvalRequests = pgTable(
      */
     isRecursive: boolean('is_recursive').notNull().default(false),
 
-    /** Assurance level actually satisfied by the decision (1..4). */
-    decidedAssuranceLevel: smallint('decided_assurance_level'),
+    /**
+     * Assurance level actually satisfied by the decision (1..4). The DB caps
+     * the range via `approval_requests_decided_level_range_chk`; `.$type` keeps
+     * the inferred read type aligned with that invariant (issue #1372).
+     */
+    decidedAssuranceLevel: smallint('decided_assurance_level').$type<AssuranceLevel>(),
     /** Factor actually used to decide: session_tap (L1), webauthn_platform or mobile_hw_key (L2+). */
     decidedVia: approvalFactorEnum('decided_via'),
     /** The authenticator device that signed the decision (null for session_tap). */

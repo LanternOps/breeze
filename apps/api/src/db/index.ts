@@ -111,6 +111,30 @@ function serializeAccessibleIds(scope: DbAccessScope, accessibleIds: string[] | 
   return accessibleIds.join(',');
 }
 
+// #1105 — held-context duration tripwire. withDbAccessContext sets the RLS
+// GUCs with SET LOCAL, so it MUST hold an open transaction for the full
+// duration of `fn` — pinning one pooled connection the whole time. If `fn`
+// does slow NON-DB work (Redis/BullMQ enqueue, outbound HTTP, per-device
+// loops) the connection sits idle-in-transaction; under a mass agent reconnect
+// those connections are killed by idle_in_transaction_session_timeout and
+// cascade into a pool-poisoning connection-exhaustion outage.
+//
+// This is a COARSE heuristic: it measures total time `fn` held the context,
+// which it cannot distinguish from a legitimately slow DB query that keeps the
+// connection busy (not idle). Both are worth knowing about, but the precise
+// "slow non-DB work inside a context" signal comes from assertOutsideHeldDbContext
+// once it is wired into the slow primitives (Phase 2). The default threshold is
+// therefore set well above normal request latency to stay an outlier signal.
+// Warn-only (prod-safe, mirroring the contextless-write guard, #1375); tune or
+// disable via DB_CONTEXT_HELD_WARN_MS (0 disables).
+function getHeldContextWarnMs(): number {
+  const raw = Number.parseInt(process.env.DB_CONTEXT_HELD_WARN_MS ?? '', 10);
+  if (!Number.isFinite(raw) || raw < 0) {
+    return 2000;
+  }
+  return raw;
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
   fn: () => Promise<T>
@@ -131,7 +155,32 @@ export async function withDbAccessContext<T>(
     await tx.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
     await tx.execute(sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`);
 
-    return dbContextStorage.run(tx as unknown as typeof baseDb, fn);
+    const warnMs = getHeldContextWarnMs();
+    const startedAt = warnMs > 0 ? Date.now() : 0;
+    try {
+      return await dbContextStorage.run(tx as unknown as typeof baseDb, fn);
+    } finally {
+      // The whole point of this block is to SURFACE problems, so it must never
+      // BECOME one: any throw here (e.g. a Sentry transport hiccup) would, from
+      // a finally, mask fn's real return value or error. Swallow instrumentation
+      // failures so the transaction's true outcome always propagates unchanged.
+      try {
+        if (warnMs > 0) {
+          const heldMs = Date.now() - startedAt;
+          if (heldMs >= warnMs) {
+            const message =
+              `withDbAccessContext (scope=${context.scope}) held a pooled connection in an open `
+              + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
+              + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
+              + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
+            console.warn(message);
+            captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+          }
+        }
+      } catch {
+        // Detection instrumentation must never alter fn's real result/error.
+      }
+    }
   });
 }
 
@@ -164,39 +213,138 @@ export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T =>
   return dbContextStorage.exit(fn);
 };
 
-// Write methods that, when invoked on the bare pool (no active RLS access
-// context), silently match 0 rows under the forced-RLS `breeze_app` role
-// instead of erroring (#1375). We instrument these to surface the
+// Query-builder write methods that, when invoked on the bare pool (no active
+// RLS access context), silently match 0 rows under the forced-RLS `breeze_app`
+// role instead of erroring (#1375). We instrument these to surface the
 // missing-context bug to logs + Sentry.
 const CONTEXTLESS_WRITE_GUARD_METHODS = new Set<PropertyKey>(['insert', 'update', 'delete']);
 
+// Raw SQL writes go through `db.execute(sql`...`)`, which the builder-method set
+// above cannot see — so a contextless raw DELETE/UPDATE/INSERT would slip the
+// guard entirely (the exact style cascadeDeletePartner uses). This classifies
+// the leading verb of an execute() statement. A leading CTE (`WITH ...`) is
+// skipped so `WITH ... DELETE` still classifies as a write. SELECT and catalog
+// reads never match, so they're left alone.
+const RAW_WRITE_RE = /^\s*(?:with\b[\s\S]*)?\b(insert|update|delete)\b/i;
+
+// Dedup so a hot contextless path can't flood Sentry and bury the signal.
+// Keyed by the originating stack → each distinct call site reports once.
+// `console.warn` still fires every time (logs stay complete); only the Sentry
+// capture is throttled. The reset hook keeps the guard's own tests deterministic.
+const reportedContextlessSites = new Set<string>();
+export function __resetContextlessWriteGuardForTests(): void {
+  reportedContextlessSites.clear();
+}
+
+// Warn-only (no throw) on purpose: it's a conservative, prod-safe rollout.
+// There ARE intentional contextless writers we must not break — the agent-WS
+// `device_commands` path is system-scoped, and the separate audit-admin pool
+// (auditAdminPool.ts) bypasses this proxy entirely — so a hard throw would
+// cause false-positive crashes. The throw-in-CI escalation is deferred to a
+// follow-up PR in #1379.
+function reportContextlessWrite(label: string): void {
+  const stack = new Error().stack;
+  const message =
+    `DB write ${label} ran with no RLS access context — `
+    + `wrap in withDbAccessContext/withSystemDbAccessContext (#1375)`;
+  console.warn(message);
+  const key = stack ?? label;
+  if (reportedContextlessSites.has(key)) return;
+  reportedContextlessSites.add(key);
+  captureMessage(message, 'warning', { stack });
+}
+
+// Best-effort extraction of the leading SQL text from a drizzle `sql` object so
+// execute() can be classified read-vs-write. Defensive: any shape surprise just
+// yields '' (treated as a non-write — fail open, since this is observability,
+// not a security control).
+function rawSqlLeadingText(arg: unknown): string {
+  try {
+    const chunks = (arg as { queryChunks?: unknown[] })?.queryChunks;
+    if (!Array.isArray(chunks)) return '';
+    let text = '';
+    for (const ch of chunks) {
+      const v = (ch as { value?: unknown })?.value;
+      if (typeof v === 'string') text += v;
+      else if (Array.isArray(v)) text += (v as unknown[]).join('');
+      if (text.length >= 256) break; // enough to clear a short leading CTE
+    }
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+// Returns the leading write verb ('insert'|'update'|'delete') of a raw `sql`
+// statement, or null for reads. Exported so the guard's classification can be
+// unit-tested without opening a DB connection.
+export function classifyContextlessExecuteVerb(arg: unknown): string | null {
+  const m = rawSqlLeadingText(arg).match(RAW_WRITE_RE);
+  return m && m[1] ? m[1].toLowerCase() : null;
+}
+
+/**
+ * #1105 tripwire guard. Call at the top of a known-slow primitive — a
+ * Redis/BullMQ enqueue or an outbound HTTP request — to flag when it runs while
+ * a withDbAccessContext transaction is still held. That is the txn-around-slow-
+ * work pattern: the held transaction's pooled connection sits idle across the
+ * primitive's latency, and under a mass agent reconnect those connections are
+ * killed and cascade into a pool-poisoning connection-exhaustion outage.
+ *
+ * The fix at a call site is to do the slow work AFTER the context closes, or
+ * inside `runOutsideDbContext(...)` (which exits the context so this guard is a
+ * no-op). Warn-only by default — prod-safe, mirroring the contextless-write
+ * guard (#1375) — so it never breaks a running deploy. Set
+ * DB_CONTEXT_TRIPWIRE_STRICT (1/true/yes/on) to throw instead, so a
+ * newly-introduced violation fails the build rather than only surfacing in
+ * Sentry after an incident.
+ */
+const STRICT_TRIPWIRE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
+export function assertOutsideHeldDbContext(operation: string): void {
+  if (!hasDbAccessContext()) {
+    return;
+  }
+  const message =
+    `${operation} ran inside a held withDbAccessContext transaction — it pins a pooled `
+    + `connection idle-in-transaction across slow work (#1105). Move it after the context `
+    + `closes or wrap it in runOutsideDbContext().`;
+  if (STRICT_TRIPWIRE_VALUES.has((process.env.DB_CONTEXT_TRIPWIRE_STRICT ?? '').trim().toLowerCase())) {
+    throw new Error(message);
+  }
+  console.warn(message);
+  captureMessage(message, 'warning', { operation, stack: new Error().stack });
+}
+
 const proxiedDb = new Proxy(baseDb, {
   get(_target, prop) {
-    // Contextless-write guard (#1375 / #1379). A DB write issued from a path
-    // with no `withDbAccessContext`/`withSystemDbAccessContext` wrapper runs
-    // on the bare pool as `breeze_app` with no RLS GUCs set, so forced RLS
-    // matches 0 rows and the write silently no-ops — no error, no rows.
-    //
-    // This is warn-only (no throw) on purpose: it's a conservative,
-    // prod-safe rollout. There ARE intentional contextless writers we must
-    // not break — the agent-WS `device_commands` path is system-scoped, and
-    // the separate audit-admin pool (auditAdminPool.ts) bypasses this proxy
-    // entirely — so a hard throw would cause false-positive crashes. The
-    // throw-in-CI escalation is deferred to a follow-up PR in #1379.
-    if (CONTEXTLESS_WRITE_GUARD_METHODS.has(prop) && !hasDbAccessContext()) {
-      const message =
-        `DB write .${String(prop)}() ran with no RLS access context — `
-        + `wrap in withDbAccessContext/withSystemDbAccessContext (#1375)`;
-      console.warn(message);
-      captureMessage(message, 'warning', { stack: new Error().stack });
-    }
-
     const activeDb = getCurrentDb() as unknown as Record<PropertyKey, unknown>;
     const value = activeDb[prop];
-    if (typeof value === 'function') {
-      return (value as (...args: unknown[]) => unknown).bind(activeDb);
+    if (typeof value !== 'function') {
+      return value;
     }
-    return value;
+    const bound = (value as (...args: unknown[]) => unknown).bind(activeDb);
+
+    // Contextless-write guard (#1375 / #1379). The check fires at CALL time, not
+    // on getter access, so merely referencing `db.update` no longer warns.
+    if (CONTEXTLESS_WRITE_GUARD_METHODS.has(prop)) {
+      return (...args: unknown[]) => {
+        if (!hasDbAccessContext()) reportContextlessWrite(`.${String(prop)}()`);
+        return bound(...args);
+      };
+    }
+
+    if (prop === 'execute') {
+      return (...args: unknown[]) => {
+        if (!hasDbAccessContext()) {
+          const verb = classifyContextlessExecuteVerb(args[0]);
+          if (verb) reportContextlessWrite(`.execute(${verb})`);
+        }
+        return bound(...args);
+      };
+    }
+
+    return bound;
   }
 }) as typeof baseDb;
 

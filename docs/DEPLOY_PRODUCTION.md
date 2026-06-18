@@ -64,7 +64,7 @@ Set at least these values in `.env.prod`:
 ```bash
 # Replace 0.67.1 with the release you intend to deploy.
 TAG=0.67.1
-for img in api web binaries; do
+for img in api web portal binaries; do
   digest=$(docker buildx imagetools inspect "ghcr.io/lanternops/breeze/$img:$TAG" \
     --format '{{json .Manifest}}' | jq -r .digest)
   echo "BREEZE_${img^^}_IMAGE_DIGEST=$digest"
@@ -103,6 +103,7 @@ What the script does:
 
 - App: `https://<BREEZE_DOMAIN>/health`
 - API through edge: `https://<BREEZE_DOMAIN>/api/v1/alerts` (auth required)
+- Customer portal: `https://<BREEZE_DOMAIN>/portal/login` (renders the portal login)
 - Grafana (local bind): `http://127.0.0.1:${GRAFANA_PORT:-3000}`
 - Prometheus (local bind): `http://127.0.0.1:${PROMETHEUS_PORT:-9090}`
 
@@ -118,3 +119,17 @@ You can also run:
 - Public ingress is only through Caddy on `80/443`.
 - In Cloudflare Tunnel mode, Caddy trusts client-IP headers only from the configured `BREEZE_CLOUDFLARED_IP`, and the API trusts forwarded headers only from `BREEZE_CADDY_IP`. Keep `CADDY_TRUSTED_PROXIES` and `TRUSTED_PROXY_CIDRS` pinned to exact proxy hops, not broad private ranges.
 - Container resource limits, restart policies, and no-new-privileges are configured in prod compose.
+- **Customer portal (`apps/portal`)** runs as its own `portal` service and is served under the
+  `/portal` path prefix on the main domain — no dedicated hostname, DNS record, or TLS cert is required.
+  Caddy routes `/portal/*` to `portal:4322` (ahead of the web catch-all); the portal calls the API
+  same-origin via `/api/*`, so there is no CORS surface. The base path is baked into the portal
+  image at build time (`PORTAL_BASE_PATH`, default `/portal`) — changing it requires an image rebuild,
+  and the Caddyfile carve-out + `PUBLIC_PORTAL_URL` must stay in sync. `PUBLIC_PORTAL_URL`
+  (default `https://<BREEZE_DOMAIN>/portal`) is what the API uses to mint customer-facing links
+  (e.g. quote acceptance emails). Per-org custom portal domains are not served yet.
+- **Manual droplet rollout note:** a `BREEZE_VERSION` bump only swaps the `api`/`web` images. To
+  light up the portal on an existing droplet you must also: add `BREEZE_PORTAL_IMAGE_REF` (or
+  `BREEZE_PORTAL_IMAGE_DIGEST` for the digest-pinned prod compose) and `PUBLIC_PORTAL_URL` to
+  `/opt/breeze/.env`, ensure the `portal` service + the `/portal` carve-out are present in the deployed
+  `docker-compose.yml`/`Caddyfile.prod`, then `docker compose up -d portal && docker compose
+  restart caddy`.

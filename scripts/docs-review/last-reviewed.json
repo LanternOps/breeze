@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.70.0",
-  "reviewedAt": "2026-06-13",
-  "notes": "Bumped after v0.69.0..v0.70.0 release docs sweep (PAM, identity console, event-log forwarding new docs; security/sso/audit/patch/passkey/edr/config-policy updates)."
+  "lastReviewedRef": "v0.81.0",
+  "reviewedAt": "2026-06-16",
+  "notes": "Bumped after v0.70.0..v0.81.0 sweep (Tier 1): new billing docs (product-catalog, invoices, contracts, online-payments) + new ai-for-office; ticketing email-to-ticket section; portal invoices/payments. Deferred Tier 2 (Breeze Authenticator/risk-tiered approvals, unified network devices in Devices list, process drill-down, warranty collection)."
 }

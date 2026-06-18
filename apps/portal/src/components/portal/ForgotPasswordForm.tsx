@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -57,7 +58,7 @@ export function ForgotPasswordForm() {
         </div>
 
         <a
-          href="/login"
+          href={withBase("/login")}
           className="flex items-center justify-center gap-2 text-sm text-primary hover:text-primary/80"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -126,7 +127,7 @@ export function ForgotPasswordForm() {
       </button>
 
       <a
-        href="/login"
+        href={withBase("/login")}
         className="flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" />

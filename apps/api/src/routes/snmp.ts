@@ -53,13 +53,13 @@ function resolveOrgId(
 // --- Zod Schemas ---
 
 const listTemplatesSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   source: z.enum(['builtin', 'custom']).optional(),
   search: z.string().optional()
 });
 
 const dashboardQuerySchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 const oidSchema = z.object({
@@ -72,7 +72,7 @@ const oidSchema = z.object({
 });
 
 const createTemplateSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   name: z.string().min(1),
   description: z.string().optional(),
   vendor: z.string().optional(),

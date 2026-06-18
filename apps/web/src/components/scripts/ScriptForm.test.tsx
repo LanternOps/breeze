@@ -30,6 +30,27 @@ vi.mock('@/stores/scriptAiStore', () => ({
   useScriptAiStore: () => ({ panelOpen: false, togglePanel: vi.fn() })
 }));
 
+// Partner-scope gate (#1386 sibling): the availability picker keys off the JWT
+// scope claim, not `useOrgStore().partners`. Mock both so the gate is testable.
+const { getJwtClaimsMock, orgStoreMock } = vi.hoisted(() => ({
+  getJwtClaimsMock: vi.fn<() => { scope: 'system' | 'partner' | 'organization' | null; partnerId: string | null; orgId: string | null }>(
+    () => ({ scope: 'partner', partnerId: 'p-1', orgId: null })
+  ),
+  orgStoreMock: vi.fn<() => { organizations: Array<{ id: string; name: string }>; partners: unknown[]; sites: unknown[] }>(
+    () => ({ organizations: [], partners: [], sites: [] })
+  )
+}));
+
+vi.mock('@/lib/authScope', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/authScope')>('@/lib/authScope');
+  return { ...actual, getJwtClaims: getJwtClaimsMock };
+});
+
+vi.mock('@/stores/orgStore', async () => {
+  const actual = await vi.importActual<typeof import('@/stores/orgStore')>('@/stores/orgStore');
+  return { ...actual, useOrgStore: orgStoreMock };
+});
+
 import ScriptForm from './ScriptForm';
 
 describe('ScriptForm Monaco lifecycle (issue #1186)', () => {
@@ -96,5 +117,58 @@ describe('ScriptForm Monaco lifecycle (issue #1186)', () => {
   // catch someone "cleaning up an unused import" and silently regressing the fix.
   it('keeps the static Monaco editor.main.css import (headline #1186 cure)', () => {
     expect(scriptFormSource).toMatch(/import\s+['"]monaco-editor\/min\/vs\/editor\/editor\.main\.css['"]/);
+  });
+});
+
+describe('ScriptForm availability picker — partner-scope gate', () => {
+  beforeEach(() => {
+    editorInstances.length = 0;
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    orgStoreMock.mockReturnValue({
+      organizations: [{ id: 'o-1', name: 'Org One' }, { id: 'o-2', name: 'Org Two' }],
+      partners: [],
+      sites: []
+    });
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the "Available to" picker for a partner-scope user creating a new script with >1 org', async () => {
+    const { findByText } = render(<ScriptForm isNew />);
+    expect(await findByText('Available to')).toBeTruthy();
+  });
+
+  it('hides the picker for an org-scope user even with >1 org — must not gate on the (empty) partners list', async () => {
+    // A real partner user has partners=[] (the system-scope-only /orgs/partners 403s);
+    // the OLD `partners.length > 0` gate hid the picker from partner users and is the bug.
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
+    const { queryByText } = render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(queryByText('Available to')).toBeNull();
+  });
+
+  it('hides the picker for a partner-scope user with a null partnerId — guards the `&& !!partnerId` half of the gate', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: null, orgId: null });
+    const { queryByText } = render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(queryByText('Available to')).toBeNull();
+  });
+
+  it('hides the picker for a single-org partner user', async () => {
+    orgStoreMock.mockReturnValue({
+      organizations: [{ id: 'o-1', name: 'Org One' }],
+      partners: [],
+      sites: []
+    });
+    const { queryByText } = render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(queryByText('Available to')).toBeNull();
+  });
+
+  it('hides the picker when editing an existing script (not isNew)', async () => {
+    const { queryByText } = render(<ScriptForm />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(queryByText('Available to')).toBeNull();
   });
 });

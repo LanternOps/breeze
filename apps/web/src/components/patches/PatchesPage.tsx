@@ -18,6 +18,7 @@ import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { Dialog } from '../shared/Dialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
@@ -612,39 +613,46 @@ export default function PatchesPage() {
       />
 
       {/* Create / Edit Ring modal */}
-      {ringModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
-          <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">{editingRing ? 'Edit Update Ring' : 'Create Update Ring'}</h2>
-              <button
-                type="button"
-                onClick={() => { setRingModalOpen(false); setEditingRing(null); }}
-                className="h-8 w-8 rounded-md hover:bg-muted flex items-center justify-center"
-              >
-                &times;
-              </button>
-            </div>
-            <UpdateRingForm
-              key={editingRing?.id ?? 'new'}
-              onSubmit={handleRingSubmit}
-              onCancel={() => { setRingModalOpen(false); setEditingRing(null); }}
-              submitLabel={ringSubmitting ? (editingRing ? 'Saving...' : 'Creating...') : (editingRing ? 'Save Changes' : 'Create Ring')}
-              loading={ringSubmitting}
-              defaultValues={editingRing ? {
-                name: editingRing.name,
-                description: editingRing.description ?? undefined,
-                ringOrder: editingRing.ringOrder,
-                deferralDays: editingRing.deferralDays,
-                deadlineDays: editingRing.deadlineDays,
-                gracePeriodHours: editingRing.gracePeriodHours,
-                autoApprove: editingRing.autoApprove ?? { enabled: false, severities: [], deferralDays: 0 },
-                categoryRules: editingRing.categoryRules,
-              } : undefined}
-            />
-          </div>
+      <Dialog
+        open={ringModalOpen}
+        onClose={() => { setRingModalOpen(false); setEditingRing(null); }}
+        title={editingRing ? 'Edit update ring' : 'Create update ring'}
+        maxWidth="2xl"
+        alignTop
+        className="flex max-h-[90vh] flex-col"
+      >
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <h2 className="text-lg font-semibold">{editingRing ? 'Edit update ring' : 'Create update ring'}</h2>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => { setRingModalOpen(false); setEditingRing(null); }}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            &times;
+          </button>
         </div>
-      )}
+        <div className="overflow-y-auto px-6 py-5">
+          <UpdateRingForm
+            key={editingRing?.id ?? 'new'}
+            onSubmit={handleRingSubmit}
+            onCancel={() => { setRingModalOpen(false); setEditingRing(null); }}
+            submitLabel={ringSubmitting ? (editingRing ? 'Saving...' : 'Creating...') : (editingRing ? 'Save Changes' : 'Create Ring')}
+            loading={ringSubmitting}
+            usage={editingRing ? { deviceCount: editingRing.deviceCount } : undefined}
+            defaultValues={editingRing ? {
+              name: editingRing.name,
+              description: editingRing.description ?? undefined,
+              ringOrder: editingRing.ringOrder,
+              deferralDays: editingRing.deferralDays,
+              deadlineDays: editingRing.deadlineDays,
+              gracePeriodHours: editingRing.gracePeriodHours,
+              autoApprove: editingRing.autoApprove ?? { enabled: false, severities: [], deferralDays: 0 },
+              categoryRules: editingRing.categoryRules,
+            } : undefined}
+          />
+        </div>
+      </Dialog>
     </div>
   );
 }

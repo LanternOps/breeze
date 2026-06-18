@@ -3,6 +3,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatMoney } from '../../lib/timeFormat';
 import { broadcastBillingChanged } from '../../lib/timerActions';
+import CatalogItemPicker from '../catalog/CatalogItemPicker';
+import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 
 interface PartRow {
   id: string;
@@ -11,6 +13,7 @@ interface PartRow {
   unitPrice: string;
   costBasis: string | null;
   isBillable: boolean;
+  catalogItemId: string | null;
 }
 
 export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
@@ -24,6 +27,11 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
   const [billable, setBillable] = useState(true);
   const [busy, setBusy] = useState(false);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  // Optional catalog link (#1368): pick an item to prefill description/price/cost
+  // and record ticket_parts.catalog_item_id. Catalog + ticket parts share the
+  // partner/system scope gate, so anyone who can edit parts can read the catalog.
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [catalogItemId, setCatalogItemId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const res = await fetchWithAuth(`/tickets/${ticketId}/parts`)
@@ -36,6 +44,24 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
     void refresh();
   }, [refresh]);
 
+  // Load active catalog items for the picker once. A failure (e.g. nothing in
+  // the catalog) just leaves the picker empty — parts stay free-text.
+  useEffect(() => {
+    void listCatalog({ isActive: true, limit: 200 })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (body?.data) setCatalog(body.data as CatalogItem[]); })
+      .catch(() => { /* picker simply has no options */ });
+  }, []);
+
+  const linkedItem = catalogItemId ? catalog.find((c) => c.id === catalogItemId) ?? null : null;
+
+  const pickCatalogItem = (it: CatalogItem) => {
+    setCatalogItemId(it.id);
+    setDescription(it.name);
+    setUnitPrice(String(Number(it.unitPrice)));
+    setCostBasis(it.costBasis != null ? String(Number(it.costBasis)) : '');
+  };
+
   // Reset form and list state when ticketId changes (mirror TicketTimeBilling)
   useEffect(() => {
     setFormOpen(false);
@@ -46,6 +72,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
     setCostBasis('');
     setBillable(true);
     setConfirmingDeleteId(null);
+    setCatalogItemId(null);
   }, [ticketId]);
 
   const resetForm = () => {
@@ -56,6 +83,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
     setUnitPrice('');
     setCostBasis('');
     setBillable(true);
+    setCatalogItemId(null);
   };
 
   const openAdd = () => { resetForm(); setFormOpen(true); };
@@ -67,6 +95,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
     setUnitPrice(String(Number(part.unitPrice)));
     setCostBasis(part.costBasis != null ? String(Number(part.costBasis)) : '');
     setBillable(part.isBillable);
+    setCatalogItemId(part.catalogItemId ?? null);
     setFormOpen(true);
   };
 
@@ -82,6 +111,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
       quantity: qty,
       unitPrice: price,
       isBillable: billable,
+      catalogItemId,
     };
     const cb = costBasis.trim();
     if (cb !== '') {
@@ -246,6 +276,33 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
 
       {formOpen && (
         <div className="mt-2 space-y-1.5 rounded-md border bg-muted/30 p-2" data-testid="ticket-parts-form">
+          {/* Optional: pull a part from the catalog to prefill + link it (#1368). */}
+          {catalog.length > 0 && (
+            linkedItem ? (
+              <div className="flex items-center justify-between gap-2 rounded-md border bg-background px-2 py-1 text-xs" data-testid="ticket-parts-form-linked">
+                <span className="min-w-0 truncate">
+                  <span className="text-muted-foreground">From catalog: </span>
+                  <span className="font-medium">{linkedItem.name}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCatalogItemId(null)}
+                  className="shrink-0 rounded px-1 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  data-testid="ticket-parts-form-unlink"
+                >
+                  Unlink
+                </button>
+              </div>
+            ) : (
+              <CatalogItemPicker
+                items={catalog}
+                onSelect={pickCatalogItem}
+                includeBundles={false}
+                placeholder="Add from catalog (optional)"
+                testId="ticket-parts-catalog-picker"
+              />
+            )
+          )}
           <input
             type="text"
             value={description}

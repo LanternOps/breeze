@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
-  pgTable, uuid, text, varchar, boolean, numeric, jsonb, timestamp, pgEnum,
+  pgTable, uuid, text, varchar, boolean, numeric, integer, jsonb, timestamp, pgEnum,
   index, uniqueIndex
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
@@ -8,6 +8,7 @@ import { users } from './users';
 
 export const catalogItemTypeEnum = pgEnum('catalog_item_type', ['hardware', 'software', 'service']);
 export const catalogBillingTypeEnum = pgEnum('catalog_billing_type', ['one_time', 'recurring']);
+export const catalogBillingFrequencyEnum = pgEnum('catalog_billing_frequency', ['monthly', 'quarterly', 'annual']);
 
 // Drizzle partial-index predicate helper (kept local; drizzle-kit only needs it
 // for drift detection — the real index is created in the SQL migration).
@@ -24,6 +25,8 @@ export const catalogItems = pgTable('catalog_items', {
   sku: varchar('sku', { length: 100 }),
   description: text('description'),
   billingType: catalogBillingTypeEnum('billing_type').notNull().default('one_time'),
+  billingFrequency: catalogBillingFrequencyEnum('billing_frequency'),
+  commitmentTermMonths: integer('commitment_term_months'),
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
   costBasis: numeric('cost_basis', { precision: 12, scale: 2 }),
   markupPercent: numeric('markup_percent', { precision: 6, scale: 2 }),

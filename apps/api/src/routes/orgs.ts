@@ -67,6 +67,9 @@ function settingsAllowlistEntriesValid(settings: unknown): boolean {
 
 const updatePartnerSchema = createPartnerSchema.partial().extend({
   status: z.enum(['pending', 'active', 'suspended', 'churned']).optional(),
+  // Operator-only per-partner AI for Office entitlement. Settable here (system
+  // scope) but NOT on /partners/me (partner scope) — partners can't self-enable.
+  aiForOfficeEnabled: z.boolean().optional(),
   settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
   }),
@@ -98,7 +101,7 @@ function preserveIpAllowlistOnOmit(
 }
 
 const createOrganizationSchema = z.object({
-  partnerId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
@@ -114,8 +117,8 @@ const createOrganizationSchema = z.object({
 const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true });
 
 const listSitesSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  organizationId: z.string().uuid().optional(), // Alias for orgId (frontend compatibility)
+  orgId: z.string().guid().optional(),
+  organizationId: z.string().guid().optional(), // Alias for orgId (frontend compatibility)
   page: z.string().optional(),
   limit: z.string().optional()
 });
@@ -136,7 +139,7 @@ const siteContactSchema = z
   .passthrough();
 
 const siteBaseSchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().guid(),
   name: z.string().min(1),
   address: z.any().optional(),
   timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
@@ -390,7 +393,7 @@ const partnerSettingsSchema = z.object({
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
   }).optional(),
-  organizationOrder: z.array(z.string().uuid()).max(10_000).optional(),
+  organizationOrder: z.array(z.string().guid()).max(10_000).optional(),
   remoteAccessProviders: z.object({
     defaultProviderId: z.string().max(100).optional(),
     providers: z.array(z.object({
@@ -431,7 +434,7 @@ const partnerSettingsSchema = z.object({
     inbound: z.object({
       enabled: z.boolean().optional(),
       address: z.string().email().optional().or(z.literal('')),
-      defaultTriageOrgId: z.string().uuid().nullable().optional(),
+      defaultTriageOrgId: z.string().guid().nullable().optional(),
       autoresponderEnabled: z.boolean().optional(),
     }).optional(),
   }).optional(),
@@ -767,7 +770,7 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
 // --- Organizations (partner-scoped) ---
 
 const listOrganizationsSchema = z.object({
-  partnerId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
   page: z.string().optional(),
   limit: z.string().optional()
 });
@@ -903,7 +906,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
 // registration order. Using `/order` rather than `/reorder` avoids any
 // literal-vs-param ambiguity with a future hypothetical `/:action`.
 const reorderOrganizationsSchema = z.object({
-  orderedIds: z.array(z.string().uuid()).max(10_000),
+  orderedIds: z.array(z.string().guid()).max(10_000),
 });
 
 orgRoutes.patch(

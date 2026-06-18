@@ -27,7 +27,7 @@ const explainGroupSchema = z.object({
 const rcaFeedbackSchema = z.object({
   eventType: z.enum(['rca.helpful', 'rca.not_helpful', 'rca.edited', 'rca.used_in_ticket']),
   outcome: z.enum(['helpful', 'not_helpful', 'edited', 'used_in_ticket']),
-  metadata: z.record(z.unknown()).optional().default({}),
+  metadata: z.record(z.string(), z.unknown()).optional().default({}),
 }).superRefine((value, ctx) => {
   const expectedOutcome = value.eventType.replace('rca.', '') as typeof value.outcome;
   if (value.outcome !== expectedOutcome) {
@@ -44,7 +44,7 @@ const correlationFeedbackSchema = z.object({
   alertIds: z.array(z.string().uuid()).max(100).optional().default([]),
   targetGroupId: z.string().uuid().optional(),
   note: z.string().trim().max(1000).optional(),
-  metadata: z.record(z.unknown()).optional().default({}),
+  metadata: z.record(z.string(), z.unknown()).optional().default({}),
 }).superRefine((value, ctx) => {
   const expectedOutcome = value.eventType.replace('correlation.', '') as typeof value.outcome;
   if (value.outcome !== expectedOutcome) {

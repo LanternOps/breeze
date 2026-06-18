@@ -4,6 +4,53 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Customer Portal deploy under `/portal` (PR #1474) — local Docker + Playwright — 2026-06-17
+
+**Branch:** `feat/portal-deploy-c-prefix`
+**Stack:** full local Docker (`-p breeze`, dev override + prod portal image) behind Caddy on `http://localhost`; API reachable via Caddy `/api/*` → `api:3001`.
+**Tested by:** Claude
+**Result:** PASS (after fixing one blocker found during testing)
+
+### What was tested (Playwright MCP, http://localhost)
+- [x] `/portal/login` renders through Caddy (200), prod assets under `/portal/_astro/*`, favicon `/portal/favicon.svg`.
+- [x] React island hydrates — login form interactive; "Forgot your password?" → `/portal/forgot-password` (`withBase` correct in-browser).
+- [x] Clean console on fresh prod load (0 errors/0 warnings); prod CSP header carries Astro script/style hashes.
+- [x] Login submit → **same-origin** `POST http://localhost/api/v1/portal/auth/login` → `401` for bad creds (no CSP block, no `localhost:3001`); UI shows "Invalid email or password".
+- [x] Unauth deep-link `/portal/devices` → middleware redirects to `/portal/login` (base-aware redirect in-browser).
+- [x] Web dashboard `/` unaffected (200); `/login` (un-based) served by web, not portal.
+- [x] SSR reaches the API over the internal network (`INTERNAL_API_URL=http://api:3001`) — verified separately via a stub-API container (authed `/portal/devices` → 200, API hit on `api:3001`).
+
+### Issues found & fixed during testing
+- **BLOCKER (fixed):** client API base resolved to `http://localhost:3001` when `PUBLIC_API_URL` empty — the `|| 'http://localhost:3001'` default plus a loopback rewrite that can't fix a port mismatch. Login was CSP-blocked. Fixed in `apps/portal/src/lib/api.ts`: empty `PUBLIC_API_URL` → **same-origin relative** (`/api/v1/...`) on the client; SSR uses `INTERNAL_API_URL`. Added `api.test.ts` regression guard.
+- **False alarm:** initial run showed inline-CSP + `/node_modules/.vite` errors — these were dev-server contamination in the browser session from earlier timed-out astro-dev navigations, not the prod portal (confirmed clean on a fresh load).
+
+### Notes
+- astro **dev** server + Caddy hung Playwright on `domcontentloaded` (on-demand vite compile). Swapped to the **prod** portal image behind Caddy for reliable, representative E2E.
+- Full authenticated portal session → live SSR data pages not exercised in-browser (no seeded `portal_users` row; web admin UI to create one is blocked by an unrelated pre-existing web dev-container `zod` resolution error). SSR-reaches-API is covered by the stub-container test.
+
+## Script AI assistant — editor insertion fix (PR #1453) — 2026-06-16
+
+**Branch:** `fix/script-ai-editor-insert` @ `1702e315`
+**Tested by:** Claude
+**Result:** **PASS**
+
+### What was tested
+- [x] API/SSE (the layer changed): drove `POST /ai/script-builder/sessions/:id/messages` via curl, captured the SSE stream, inspected the `tool_result` event for `apply_script_code`.
+- [x] DB invariant: confirmed the persisted `ai_messages.tool_output` row stays compacted (no script body) so the #568 LLM-context goal is preserved.
+- [x] UI: logged into web app, opened `/scripts/new` → Script AI Assistant, prompted "Write a one-line PowerShell script that prints Hello Breeze and put it in the editor"; verified the Monaco editor populated.
+
+### Evidence
+- SSE `tool_result.output` now contains `code: 'Write-Host "Hello Breeze"'` + `language: 'powershell'` (alongside the compacted `codeOmitted/codeChars`). Before the fix the published event had no `code`.
+- DB row: `{"applied":true,"language":"powershell","toolName":"apply_script_code","codeChars":25,"codeOmitted":true}` → `LIKE '%Hello Breeze%'` = **compacted-ok** (no leak).
+- Browser: editor showed `Write-Host "Hello Breeze"`; both `apply_script_code` and `apply_script_metadata` tool calls completed; a "Revert" control appeared; assistant replied "I've added the script to the editor." Screenshot: `script-ai-insert-verified.png`.
+- Unit: 2 new `createSessionPostToolUse` tests (fail before / pass after); `aiAgentSdk.test.ts` 43/43; typecheck clean.
+
+### Issues Found
+- (none) — the one browser console error is a pre-existing, unrelated dev-only SSR hydration mismatch on the `⌘S`/`Ctrl+S` save hint, present on initial load before any AI interaction.
+
+### Notes
+- Tested against local Docker dev (`http://localhost`, code-mounted hot-reload); `2breeze.app` tunnel down per project notes. Local admin password is the dev seed `BreezeAdmin123!` (the `.env` `E2E_ADMIN_PASSWORD` is for the hosted tunnel, not the local DB).
+
 ## Breeze AI for Office (PR #1314) — Tier B in-Excel SSO + session loop — 2026-06-13
 
 **Branch:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
@@ -2130,3 +2177,51 @@ Loaded the branch into the local dev Docker stack (rebuilt `api` from the worktr
 ### Notes
 - **Dev DB test data seeded:** 2 billable time entries (1 unapproved) + 1 ticket part on "Default Organization"; re-activated 2 archived catalog items; set org + partner billing settings; created `INV-2026-0001` (number burned). All on the dev DB (5432).
 - **Stack state:** the dev stack is currently running the **`feat/invoice-engine`** code (swapped from `main`). To restore: `docker compose down` from the worktree, `docker compose up -d` from `/Users/toddhebebrand/breeze`, and remove the worktree `.env` symlink.
+
+## Quotes/Proposals Phase 2 — 2026-06-17
+
+**Branch:** `feat/quotes-proposals-phase2` (PR #1468)
+**Commit:** a4c2b719
+**Tested by:** Claude (ultracode)
+**Result:** PASS (logic + UI render), with the public Accept *button click* verified via API rather than the dev browser (env-blocked — see Notes)
+
+### What was tested
+- [x] API (real running branch on :3009): login → create quote → add lines → **send (quotes:send)** → status=sent, number assigned, emailed=true; **public GET (unauth)** → sent→viewed; **public accept (unauth typed signature)** → converted; **single-use token** → reuse 401. DB verified: converted invoice total $500.00 = one-time line ONLY ($80 monthly excluded), acceptance row has signer + 64-char content hash + jti.
+- [x] UI dashboard (Playwright, interactive): quotes list shows Phase 2 statuses + a Converted quote; opened a draft; Detail tab shows the real **"Send proposal"** button (not "coming soon"); clicked it → number Q-2026-0002 assigned, status→Sent, button correctly hidden (gated on status==='draft'). Editor offers the **Image** block.
+- [x] UI public page (Playwright, SSR): /quote/<token> renders branded proposal + intro + heading block + pricing table with **only the customer-visible line** (a customerVisible:false line was correctly filtered out) + typed-signature accept form.
+- [x] UI public **Accept button click** (verified on a PRODUCTION build, :4334 via `astro build` + node adapter): the React island hydrated, the typed-signature Accept fired, and the page transitioned to "Thank you — your acceptance has been recorded." DB confirmed quote→converted, invoice total $640.00 (one-time), acceptance "Casey Customer" + 64-char hash + jti.
+
+### Evidence
+- Converted invoice: status=draft, total=500.00 (one-time only); invoice_lines = ["Onboarding setup" $500.00].
+- quote_acceptances: signer "Pat Prospect", quote_sha256 len 64, jti present, ip_address empty (no proxy header on localhost — the C1-safe path).
+- Dashboard: heading "Draft quote" → "Q-2026-0002", status badge Draft → Sent after clicking Send.
+
+### Issues found
+- None in the feature. The public Accept button does not work under `astro dev` (dev-only): the portal's hardened CSP `script-src 'self'` blocks astro's dev-mode *un-hashed* inline hydration scripts, so the React island never hydrates. RESOLVED by testing a PRODUCTION build (`astro build`), where Astro emits **hashed** inline scripts (`script-src 'self' 'sha256-…'`) → the island hydrates and the Accept button works end-to-end (confirmed above). The accept fetch additionally needs the API origin in `connect-src` — production's `connect-src … https:` (apps/portal/astro.config.mjs:21) covers any HTTPS API; the only reason it failed locally is the test API was HTTP (`http://localhost:3009`). Verified by temporarily adding the local origin to connect-src (reverted after).
+
+### Notes
+- `apps/portal` is not deployed in prod (no compose service / caddy upstream) — pre-existing gap; the portal/public pages are dormant until a serving layer is added.
+
+## ANTHROPIC_BASE_URL self-hosted AI backend (#1412) — 2026-06-17
+
+**Branch:** `fix/1412-anthropic-base-url`
+**Commit:** `50719f55`
+**Tested by:** Claude
+**Result:** PASS
+
+### What was tested
+- [x] API (boot/config gate): ran the REAL `validateConfig()` boot path inside a throwaway container built from `breeze-api:dev` (linux), mounting the branch's `apps/api/src` over the image so MY code executed (`PROBE_HAS_HELPER=true` confirmed). API-only feature; no UI/agent layer.
+
+### Evidence — boot-gate matrix (in-container)
+- S1 `IS_HOSTED=false` + `http://litellm:4000/v1` → **PASS** + forensic log `host=litellm:4000` (host only, no token).
+- S2 `IS_HOSTED=true` + base URL → **REFUSED** ("self-hosted-only feature … refused unless self-host is affirmatively declared").
+- S3 `IS_HOSTED` **unset** + base URL → **REFUSED** (fail-closed; the #570 unmapped-IS_HOSTED case).
+- S4 `IS_HOSTED=false` + `ftp://bad/x` → **REFUSED** ("must be a well-formed http(s) URL").
+- S5 `IS_HOSTED=off` + `https://litellm.internal:8443/v1` → **PASS** + forensic log.
+- Fail-closed gate predicate (`isRecognizedSelfHostSignal`, shared by validator + subprocess strip) verified in-container: only `false/0/no/off` → self-host-confirmed; `true/1/maybe/""/undefined` → not.
+
+### Issues Found
+- (none in the feature) — the runtime subprocess-env probe (`buildClaudeSdkChildEnv`) could not import in-container because the **stale `breeze-api:dev` image** still ships Zod 3 while `main` is post the Zod 4 migration (`z.partialRecord is not a function` in an unrelated import-chain schema). Not a #1412 defect. The forwarding/strip wrapper is covered by the 161 green unit tests; its shared gate predicate was verified in-container directly.
+
+### Notes
+- 161 unit/config tests green + clean `tsc` on the branch. Boot gate proven end-to-end in the real container image. CI left to run the full suite (per request).

@@ -6,6 +6,9 @@ export type CatalogItemType = z.infer<typeof catalogItemTypeSchema>;
 export const catalogBillingTypeSchema = z.enum(['one_time', 'recurring']);
 export type CatalogBillingType = z.infer<typeof catalogBillingTypeSchema>;
 
+export const catalogBillingFrequencySchema = z.enum(['monthly', 'annual']);
+export type CatalogBillingFrequency = z.infer<typeof catalogBillingFrequencySchema>;
+
 // Bounded to numeric(12,2) (max 9,999,999,999.99) so out-of-range inputs fail
 // fast with a 400 rather than overflowing at insert (DB-layer 500).
 const money = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
@@ -25,6 +28,8 @@ export const createCatalogItemSchema = z.object({
   sku: z.string().max(100).nullable().optional(),
   description: z.string().max(10_000).nullable().optional(),
   billingType: catalogBillingTypeSchema.default('one_time'),
+  billingFrequency: catalogBillingFrequencySchema.nullable().optional(),
+  commitmentTermMonths: z.number().int().min(1).max(120).nullable().optional(),
   unitPrice: money,
   costBasis: money.nullable().optional(),
   markupPercent: markupPercent.nullable().optional(),
@@ -42,6 +47,8 @@ export const updateCatalogItemSchema = z.object({
   sku: z.string().max(100).nullable().optional(),
   description: z.string().max(10_000).nullable().optional(),
   billingType: catalogBillingTypeSchema.optional(),
+  billingFrequency: catalogBillingFrequencySchema.nullable().optional(),
+  commitmentTermMonths: z.number().int().min(1).max(120).nullable().optional(),
   unitPrice: money.optional(),
   costBasis: money.nullable().optional(),
   markupPercent: markupPercent.nullable().optional(),
@@ -58,7 +65,7 @@ export const orgPriceOverrideSchema = z.object({ unitPrice: money });
 export type OrgPriceOverrideInput = z.infer<typeof orgPriceOverrideSchema>;
 
 export const bundleComponentSchema = z.object({
-  componentItemId: z.string().uuid(),
+  componentItemId: z.string().guid(),
   quantity: bundleQuantity,
   showOnInvoice: z.boolean().default(false),
   revenueAllocation: money.nullable().optional()
@@ -80,6 +87,6 @@ export const listCatalogQuerySchema = z.object({
   isBundle: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   search: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
-  cursor: z.string().uuid().optional()
+  cursor: z.string().guid().optional()
 });
 export type ListCatalogQuery = z.infer<typeof listCatalogQuerySchema>;

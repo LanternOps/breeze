@@ -5,11 +5,14 @@ import { handleActionError } from '../../lib/runAction';
 import {
   listContracts,
   formatCadence,
+  monthlyValue,
   CONTRACT_STATUS_COLORS,
   CONTRACT_STATUS_LABELS,
   type ContractStatus,
   type ContractSummary,
 } from '../../lib/api/contracts';
+import { formatMoney } from '../billing/invoiceTypes';
+import { usePermissions } from '../../lib/permissions';
 
 interface Organization {
   id: string;
@@ -69,6 +72,7 @@ interface Props {
 }
 
 export default function ContractsList({ lockedOrgId }: Props = {}) {
+  const { can } = usePermissions();
   const [contracts, setContracts] = useState<ContractSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,6 +136,13 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
 
   const rows = useMemo(() => contracts, [contracts]);
 
+  // Estimated monthly recurring across active contracts (normalized by cadence).
+  const mrr = useMemo(() => {
+    const active = contracts.filter((c) => c.status === 'active');
+    const total = active.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
+    return { total, count: active.length, ccy: contracts[0]?.currencyCode || 'USD' };
+  }, [contracts]);
+
   return (
     <div className="space-y-6" data-testid="contracts-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -145,13 +156,15 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
             Recurring agreements that auto-generate draft invoices on a cadence.
           </p>
         </div>
-        <a
-          href={newContractHref}
-          data-testid="new-contract-btn"
-          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          New contract
-        </a>
+        {can('contracts', 'write') && (
+          <a
+            href={newContractHref}
+            data-testid="new-contract-btn"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            New contract
+          </a>
+        )}
       </div>
 
       {/* Filters */}
@@ -187,6 +200,15 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
         </label>
       </div>
 
+      {/* Estimated monthly recurring */}
+      {!loading && !error && rows.length > 0 && (
+        <div className="inline-flex flex-col rounded-lg border bg-card px-4 py-3" data-testid="contracts-mrr-strip">
+          <span className="text-xs text-muted-foreground">Est. monthly recurring</span>
+          <span className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(mrr.total, mrr.ccy)}</span>
+          <span className="text-xs text-muted-foreground">{mrr.count} active contract{mrr.count === 1 ? '' : 's'}</span>
+        </div>
+      )}
+
       {/* Table */}
       <div className="rounded-lg border bg-card shadow-sm">
         {loading ? (
@@ -220,6 +242,7 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
                   <th className="px-3 py-3 font-medium">Status</th>
                   <th className="px-3 py-3 font-medium">Cadence</th>
                   <th className="px-3 py-3 font-medium">Next bill</th>
+                  <th className="px-3 py-3 text-right font-medium">Est. / period</th>
                 </tr>
               </thead>
               <tbody>
@@ -242,6 +265,9 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
                     </td>
                     <td className="px-3 py-3">{formatCadence(ctr.intervalMonths)}</td>
                     <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>
+                      {ctr.estimatedPeriodValue != null ? formatMoney(ctr.estimatedPeriodValue, ctr.currencyCode) : '—'}
+                    </td>
                   </tr>
                 ))}
               </tbody>

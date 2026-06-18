@@ -2,6 +2,7 @@ import { db } from '../db';
 import { roles, permissions, rolePermissions, partnerUsers, organizationUsers } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
+import { PERMISSION_GRANTS } from '@breeze/shared';
 
 export interface Permission {
   resource: string;
@@ -237,93 +238,10 @@ export async function clearPermissionCache(userId?: string): Promise<void> {
   await bumpSharedPermissionCacheVersion(userId);
 }
 
-// Built-in system permissions
-export const PERMISSIONS = {
-  // Backup / recovery
-  BACKUP_READ: { resource: 'backup', action: 'read' },
-  BACKUP_WRITE: { resource: 'backup', action: 'write' },
-
-  // Devices
-  DEVICES_READ: { resource: 'devices', action: 'read' },
-  DEVICES_WRITE: { resource: 'devices', action: 'write' },
-  DEVICES_DELETE: { resource: 'devices', action: 'delete' },
-  DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
-
-  // Scripts
-  SCRIPTS_READ: { resource: 'scripts', action: 'read' },
-  SCRIPTS_WRITE: { resource: 'scripts', action: 'write' },
-  SCRIPTS_DELETE: { resource: 'scripts', action: 'delete' },
-  SCRIPTS_EXECUTE: { resource: 'scripts', action: 'execute' },
-
-  // Alerts
-  ALERTS_READ: { resource: 'alerts', action: 'read' },
-  ALERTS_WRITE: { resource: 'alerts', action: 'write' },
-  ALERTS_ACKNOWLEDGE: { resource: 'alerts', action: 'acknowledge' },
-
-  // Tickets
-  TICKETS_READ: { resource: 'tickets', action: 'read' },
-  TICKETS_WRITE: { resource: 'tickets', action: 'write' },
-
-  // Catalog (billing/invoicing program)
-  CATALOG_READ: { resource: 'catalog', action: 'read' },
-  CATALOG_WRITE: { resource: 'catalog', action: 'write' },
-  CATALOG_DELETE: { resource: 'catalog', action: 'delete' },
-
-  // Invoices (billing/invoicing program — sub-project 2)
-  INVOICES_READ: { resource: 'invoices', action: 'read' },
-  INVOICES_WRITE: { resource: 'invoices', action: 'write' },
-  INVOICES_SEND: { resource: 'invoices', action: 'send' },
-  INVOICES_EXPORT: { resource: 'invoices', action: 'export' },
-
-  // Contracts (recurring-contracts — sub-project 3)
-  CONTRACTS_READ: { resource: 'contracts', action: 'read' },
-  CONTRACTS_WRITE: { resource: 'contracts', action: 'write' },
-  CONTRACTS_MANAGE: { resource: 'contracts', action: 'manage' },
-
-  // Time entries (ticketing Phase 3)
-  TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
-  TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },
-
-  // Users
-  USERS_READ: { resource: 'users', action: 'read' },
-  USERS_WRITE: { resource: 'users', action: 'write' },
-  USERS_DELETE: { resource: 'users', action: 'delete' },
-  USERS_INVITE: { resource: 'users', action: 'invite' },
-
-  // Organizations
-  ORGS_READ: { resource: 'organizations', action: 'read' },
-  ORGS_WRITE: { resource: 'organizations', action: 'write' },
-  ORGS_DELETE: { resource: 'organizations', action: 'delete' },
-
-  // Sites
-  SITES_READ: { resource: 'sites', action: 'read' },
-  SITES_WRITE: { resource: 'sites', action: 'write' },
-  SITES_DELETE: { resource: 'sites', action: 'delete' },
-
-  // Automations
-  AUTOMATIONS_READ: { resource: 'automations', action: 'read' },
-  AUTOMATIONS_WRITE: { resource: 'automations', action: 'write' },
-  AUTOMATIONS_DELETE: { resource: 'automations', action: 'delete' },
-
-  // Remote access
-  REMOTE_ACCESS: { resource: 'remote', action: 'access' },
-
-  // Audit
-  AUDIT_READ: { resource: 'audit', action: 'read' },
-  AUDIT_EXPORT: { resource: 'audit', action: 'export' },
-
-  // Reports
-  REPORTS_READ: { resource: 'reports', action: 'read' },
-  REPORTS_WRITE: { resource: 'reports', action: 'write' },
-  REPORTS_DELETE: { resource: 'reports', action: 'delete' },
-  REPORTS_EXPORT: { resource: 'reports', action: 'export' },
-
-  // Billing
-  BILLING_MANAGE: { resource: 'billing', action: 'manage' },
-
-  // Admin
-  ADMIN_ALL: { resource: '*', action: '*' }
-} as const;
+// Built-in system permissions. The registry itself lives in @breeze/shared (as
+// PERMISSION_GRANTS) so the web UI can type its gate literals against the same
+// closed set; aliased here as PERMISSIONS so existing call sites are unchanged.
+export const PERMISSIONS = PERMISSION_GRANTS;
 
 export function permissionKey(permission: Permission): string {
   return `${permission.resource}:${permission.action}`;

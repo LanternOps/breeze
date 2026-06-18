@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, roles, organizations, permissions, rolePermissions } from '../db/schema';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
 import {
@@ -73,15 +73,15 @@ userRoutes.use('*', async (c, next) => {
 const inviteUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1).max(255),
-  roleId: z.string().uuid(),
+  roleId: z.string().guid(),
   orgAccess: z.enum(['all', 'selected', 'none']).optional(),
-  orgIds: z.array(z.string().uuid()).optional(),
-  siteIds: z.array(z.string().uuid()).optional(),
-  deviceGroupIds: z.array(z.string().uuid()).optional()
+  orgIds: z.array(z.string().guid()).optional(),
+  siteIds: z.array(z.string().guid()).optional(),
+  deviceGroupIds: z.array(z.string().guid()).optional()
 });
 
 const resendInviteSchema = z.object({
-  userId: z.string().uuid()
+  userId: z.string().guid()
 });
 
 // .strict() so unknown keys surface as 400, not silently dropped. Role is not
@@ -92,7 +92,7 @@ const updateUserSchema = z.object({
 }).strict();
 
 const assignRoleSchema = z.object({
-  roleId: z.string().uuid()
+  roleId: z.string().guid()
 });
 
 type ScopeContext =
@@ -441,11 +441,26 @@ userRoutes.get('/me', async (c) => {
 
   const requiresSetup = userRequiresSetup(user);
 
+  // Surface the user's effective permission grants so the web app can hide nav
+  // items and action buttons the user can't use. This is UX only — every route
+  // still enforces requirePermission server-side.
+  //
+  // Contract: getUserPermissions returns null ONLY for "no resolvable role"
+  // (no membership row / null roleId) — a genuine zero-grant user, for whom
+  // `?? []` is correct fail-closed behavior. It must NEVER swallow a transient
+  // cache/DB fault into null: those throw, so /me 500s and the client keeps its
+  // last-known grants rather than silently blanking every gated control.
+  const userPerms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined
+  });
+
   return c.json({
     ...user,
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,
+    permissions: userPerms?.permissions ?? [],
     requiresSetup
   });
 });
@@ -1069,35 +1084,32 @@ userRoutes.post(
 
       let user = existingUser;
 
-      if (!user) {
-        // Resolve the new user's primary tenancy from the caller's scope.
-        // Partner admins inviting → new user is partner-level staff
-        // (partner_id set, org_id NULL). Org admins inviting → new user is
-        // a member of that org (partner_id inherited from the org's owning
-        // partner, org_id set to the caller's org).
-        let newUserPartnerId: string;
-        let newUserOrgId: string | null;
+      // Resolve the invited user's primary tenancy from the caller's scope.
+      // Partner admins inviting → partner-level staff (partner_id set, org_id
+      // NULL). Org admins inviting → member of that org (partner_id inherited
+      // from the org's owning partner, org_id set to the caller's org).
+      const resolveInviteTenancy = async (): Promise<{ partnerId: string; orgId: string | null }> => {
         if (scopeContext.scope === 'partner') {
-          newUserPartnerId = scopeContext.partnerId;
-          newUserOrgId = null;
-        } else {
-          const [scopeOrg] = await tx
-            .select({ partnerId: organizations.partnerId })
-            .from(organizations)
-            .where(eq(organizations.id, scopeContext.orgId))
-            .limit(1);
-          if (!scopeOrg) {
-            throw new HTTPException(500, { message: 'Scope org not found' });
-          }
-          newUserPartnerId = scopeOrg.partnerId;
-          newUserOrgId = scopeContext.orgId;
+          return { partnerId: scopeContext.partnerId, orgId: null };
         }
+        const [scopeOrg] = await tx
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, scopeContext.orgId))
+          .limit(1);
+        if (!scopeOrg) {
+          throw new HTTPException(500, { message: 'Scope org not found' });
+        }
+        return { partnerId: scopeOrg.partnerId, orgId: scopeContext.orgId };
+      };
 
+      if (!user) {
+        const tenancy = await resolveInviteTenancy();
         const [created] = await tx
           .insert(users)
           .values({
-            partnerId: newUserPartnerId,
-            orgId: newUserOrgId,
+            partnerId: tenancy.partnerId,
+            orgId: tenancy.orgId,
             email: normalizedEmail,
             name: data.name,
             status: 'invited'
@@ -1105,6 +1117,34 @@ userRoutes.post(
           .returning();
 
         user = created;
+      } else if (user.status === 'disabled' && user.passwordHash === null) {
+        // Resurrect a neutralized tombstone (#1367): a prior delete (or the
+        // backfill migration) left this email as a disabled, password-less,
+        // membership-less row. Reset it to a clean invited state so the new
+        // invitee can set a password via the magic link (accept-invite requires
+        // status='invited'), and re-home it under the inviting scope. We touch
+        // ONLY tombstones (disabled + no password) — an active multi-membership
+        // user being added to another scope keeps their credentials untouched.
+        const tenancy = await resolveInviteTenancy();
+        const [reset] = await tx
+          .update(users)
+          .set({
+            name: data.name,
+            status: 'invited',
+            passwordHash: null,
+            partnerId: tenancy.partnerId,
+            orgId: tenancy.orgId,
+            disabledReason: null,
+            mfaEnabled: false,
+            mfaSecret: null,
+            mfaMethod: null,
+            mfaRecoveryCodes: null,
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, user.id))
+          .returning();
+
+        user = reset;
       }
 
       if (!user) {
@@ -1377,6 +1417,97 @@ userRoutes.patch(
   }
 );
 
+// A membership-only delete leaves the `users` row behind. If the user has no
+// membership left in EITHER axis, that row is an orphan, and left active it is
+// a problem two ways (#1367):
+//   1. SECURITY: the "deleted" user can still authenticate. login.ts only
+//      bounces on a null password_hash / non-active status, and
+//      resolveCurrentUserTokenContext returns a null-context system-scope token
+//      (instead of throwing) for a membership-less user — so a removed user who
+//      still knows their password logs straight back in.
+//   2. RESURRECTION: re-inviting the same email reuses the row with its stale
+//      active status + password, blocking the new invitee's magic link.
+// The row cannot be hard-deleted (dozens of created_by/approved_by FKs RESTRICT
+// it), so we neutralize it: disable + strip password and MFA secrets. A later
+// invite of this email resets it to a clean invited state (see /invite).
+//
+// MUST run under SYSTEM scope, not the caller's request scope: the orphan check
+// has to see the user's memberships across EVERY tenant. An org admin's RLS
+// view hides partner memberships and other orgs' rows, so a request-scoped
+// check would falsely report a still-active multi-org user as orphaned and
+// wrongly disable them. The caller is assumed to already be inside this file's
+// system-scoped removal transaction so the just-deleted membership is visible.
+async function neutralizeUserIfOrphaned(userId: string): Promise<void> {
+  const [partnerLink] = await db
+    .select({ id: partnerUsers.id })
+    .from(partnerUsers)
+    .where(eq(partnerUsers.userId, userId))
+    .limit(1);
+  if (partnerLink) return;
+
+  const [orgLink] = await db
+    .select({ id: organizationUsers.id })
+    .from(organizationUsers)
+    .where(eq(organizationUsers.userId, userId))
+    .limit(1);
+  if (orgLink) return;
+
+  await db
+    .update(users)
+    .set({
+      status: 'disabled',
+      disabledReason: 'removed',
+      passwordHash: null,
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      mfaRecoveryCodes: null,
+      updatedAt: new Date()
+    })
+    .where(eq(users.id, userId));
+}
+
+/**
+ * Remove a user's membership in the caller's tenant and, if it was their last
+ * membership anywhere, neutralize the orphaned `users` row — in one
+ * SYSTEM-scoped transaction.
+ *
+ * System scope (not the request scope) is required for the orphan check to see
+ * cross-tenant memberships, and so the neutralize UPDATE can target a `users`
+ * row whose org_id lies outside the caller's scope without RLS silently
+ * dropping it (the #1375 0-row trap). Tenant safety is preserved by the
+ * explicit membership-delete WHERE clause, scoped to the caller's own
+ * partner/org from their authenticated context — exactly as the request-scoped
+ * delete was before. Running delete + check + neutralize in one transaction is
+ * what makes the just-deleted membership visible to the orphan check.
+ */
+async function removeMembershipForScope(
+  scopeContext: ScopeContext,
+  userId: string
+): Promise<{ deleted: boolean }> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const deleted =
+        scopeContext.scope === 'partner'
+          ? await db
+              .delete(partnerUsers)
+              .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
+              .returning({ id: partnerUsers.id })
+          : await db
+              .delete(organizationUsers)
+              .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
+              .returning({ id: organizationUsers.id });
+
+      if (deleted.length === 0) {
+        return { deleted: false };
+      }
+
+      await neutralizeUserIfOrphaned(userId);
+      return { deleted: true };
+    })
+  );
+}
+
 userRoutes.delete(
   '/:id',
   requirePermission(PERMISSIONS.USERS_DELETE.resource, PERMISSIONS.USERS_DELETE.action),
@@ -1387,12 +1518,9 @@ userRoutes.delete(
     const userId = c.req.param('id')!;
 
     if (scopeContext.scope === 'partner') {
-      const deleted = await db
-        .delete(partnerUsers)
-        .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
-        .returning({ id: partnerUsers.id });
+      const { deleted } = await removeMembershipForScope(scopeContext, userId);
 
-      if (deleted.length === 0) {
+      if (!deleted) {
         return c.json({ error: 'User not found' }, 404);
       }
 
@@ -1419,12 +1547,9 @@ userRoutes.delete(
       return c.json({ success: true });
     }
 
-    const deleted = await db
-      .delete(organizationUsers)
-      .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
-      .returning({ id: organizationUsers.id });
+    const { deleted } = await removeMembershipForScope(scopeContext, userId);
 
-    if (deleted.length === 0) {
+    if (!deleted) {
       return c.json({ error: 'User not found' }, 404);
     }
 

@@ -78,6 +78,15 @@ export default defineConfig({
               ],
             },
             {
+              label: 'Billing & Invoicing',
+              items: [
+                { slug: 'features/product-catalog' },
+                { slug: 'features/invoices' },
+                { slug: 'features/contracts' },
+                { slug: 'features/online-payments' },
+              ],
+            },
+            {
               label: 'Backup & Recovery',
               items: [{ autogenerate: { directory: 'backup' } }],
             },
@@ -107,6 +116,7 @@ export default defineConfig({
               items: [
                 { slug: 'features/ai' },
                 { slug: 'features/ai-computer-control' },
+                { slug: 'features/ai-for-office' },
                 { slug: 'features/mcp-server' },
               ],
             },

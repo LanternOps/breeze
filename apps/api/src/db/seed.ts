@@ -96,7 +96,15 @@ export function resolveBootstrapAdminConfig(
 }
 
 // Default permissions
-const DEFAULT_PERMISSIONS = [
+//
+// Exported for the seed↔registry consistency test (seed.test.ts), which
+// asserts every resource:action referenced by SYSTEM_ROLES below exists here.
+// This is intentionally a subset of PERMISSION_GRANTS (the shared registry):
+// the registry may define permissions no system role grants yet (e.g.
+// time_entries:*, automations:*) without those needing a seeded row — only
+// permissions a system role actually references must be seeded, or seedRoles
+// silently drops the grant.
+export const DEFAULT_PERMISSIONS = [
   // Backup / recovery
   { resource: 'backup', action: 'read', description: 'View backup and recovery resources' },
   { resource: 'backup', action: 'write', description: 'Create and manage backup and recovery resources' },
@@ -126,6 +134,22 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'catalog', action: 'read', description: 'View product catalog items and pricing' },
   { resource: 'catalog', action: 'write', description: 'Create and update catalog items, pricing, and bundles' },
   { resource: 'catalog', action: 'delete', description: 'Archive/delete catalog items' },
+
+  // Invoices (billing/invoicing program)
+  { resource: 'invoices', action: 'read', description: 'View invoices and payment history' },
+  { resource: 'invoices', action: 'write', description: 'Create, edit, and delete draft invoices and lines' },
+  { resource: 'invoices', action: 'send', description: 'Issue, send, void invoices and record/remove payments' },
+  { resource: 'invoices', action: 'export', description: 'Export and download invoice PDFs' },
+
+  // Contracts (recurring billing program)
+  { resource: 'contracts', action: 'read', description: 'View contracts, lines, and billing-period history' },
+  { resource: 'contracts', action: 'write', description: 'Create/edit/delete draft contracts and lines' },
+  { resource: 'contracts', action: 'manage', description: 'Activate/pause/resume/cancel contracts and generate invoices' },
+
+  // Quotes / Proposals (billing program)
+  { resource: 'quotes', action: 'read', description: 'View quotes and proposals' },
+  { resource: 'quotes', action: 'write', description: 'Create/edit/delete draft quotes and proposal blocks' },
+  { resource: 'quotes', action: 'send', description: 'Send quotes/proposals and record acceptance' },
 
   // Users
   { resource: 'users', action: 'read', description: 'View users' },
@@ -164,7 +188,8 @@ const DEFAULT_PERMISSIONS = [
 ];
 
 // Default system roles
-const SYSTEM_ROLES = [
+// Exported for the seed↔registry consistency test (seed.test.ts).
+export const SYSTEM_ROLES = [
   {
     name: 'Partner Admin',
     scope: 'partner' as const,
@@ -181,7 +206,6 @@ const SYSTEM_ROLES = [
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
       'tickets:read',
-      'catalog:read', 'catalog:write',
       'reports:read', 'reports:write',
       'sites:read',
       'organizations:read'
@@ -196,10 +220,31 @@ const SYSTEM_ROLES = [
       'scripts:read',
       'alerts:read',
       'tickets:read',
-      'catalog:read',
       'reports:read',
       'sites:read',
       'organizations:read'
+    ]
+  },
+  {
+    name: 'Partner Billing',
+    scope: 'partner' as const,
+    description: 'Full access to product catalog, quotes, invoices, and contracts',
+    permissions: [
+      'catalog:read', 'catalog:write', 'catalog:delete',
+      'quotes:read', 'quotes:write', 'quotes:send',
+      'invoices:read', 'invoices:write', 'invoices:send', 'invoices:export',
+      'contracts:read', 'contracts:write', 'contracts:manage'
+    ]
+  },
+  {
+    name: 'Partner Billing Viewer',
+    scope: 'partner' as const,
+    description: 'Read-only access to product catalog, quotes, invoices, and contracts',
+    permissions: [
+      'catalog:read',
+      'quotes:read',
+      'invoices:read', 'invoices:export',
+      'contracts:read'
     ]
   },
   {
@@ -690,15 +735,20 @@ export async function seedPermissions() {
   console.log('Seeding permissions...');
 
   for (const perm of DEFAULT_PERMISSIONS) {
+    // Match on the full (resource, action) pair. The previous existence check
+    // filtered on resource alone with .limit(1), so for a resource with several
+    // actions (e.g. devices read/write/delete/execute) the single returned row
+    // frequently had the wrong action — the .find(action) missed and re-inserted
+    // a duplicate on every re-seed. permissions has no unique constraint to catch
+    // that, and the duplicate ids then let seedRoles slip extra role_permissions
+    // grants past the (role_id, permission_id) PK. Make the dedup exact.
     const existing = await db
       .select()
       .from(permissions)
-      .where(eq(permissions.resource, perm.resource))
+      .where(and(eq(permissions.resource, perm.resource), eq(permissions.action, perm.action)))
       .limit(1);
 
-    const match = existing.find(e => e.action === perm.action);
-
-    if (!match) {
+    if (existing.length === 0) {
       await db.insert(permissions).values(perm);
       console.log('  Created permission:', perm.resource + ':' + perm.action);
     }
@@ -755,20 +805,19 @@ export async function seedRoles() {
         console.warn(`  Role "${roleDef.name}" references unknown permission "${permKey}" — skipping`);
         continue;
       }
-      try {
-        await db.insert(rolePermissions).values({
-          roleId,
-          permissionId: permId
-        });
-      } catch (err) {
-        // 23505 = unique_violation. Permission already assigned — safe to
-        // ignore. Any other error (RLS, connection loss, FK) must surface
-        // so a broken seed doesn't silently leave partial role grants.
-        if ((err as { code?: string } | null)?.code === '23505') {
-          continue;
-        }
-        throw err;
-      }
+      // Permission may already be assigned (re-seed, or a duplicate key in
+      // roleDef.permissions). This PR added the (role_id, permission_id)
+      // composite PK and switched to onConflictDoNothing so the DB no-ops on a
+      // re-seed. A hand-rolled catch is the wrong tool here: it would have
+      // checked `err.code === '23505'`, but under Drizzle's DrizzleQueryError
+      // wrapper `err.code` is undefined (the pg `23505` lives on `err.cause`),
+      // so the catch would have re-thrown the conflict and broken re-seeding.
+      // onConflictDoNothing absorbs only the PK conflict — any genuine error
+      // (RLS, FK, connection loss) still surfaces.
+      await db
+        .insert(rolePermissions)
+        .values({ roleId, permissionId: permId })
+        .onConflictDoNothing();
     }
   }
 

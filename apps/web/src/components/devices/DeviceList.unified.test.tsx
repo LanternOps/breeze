@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
+import { DEFAULT_VISIBLE_COLUMNS, writeColumnVisibility } from './columnVisibility';
 
 // Unified Devices list (#1322): network-discovered devices render alongside
 // agent endpoints with a class badge, a type badge, an All/Agent/Network
@@ -109,5 +110,45 @@ describe('DeviceList — unified agent + network (#1322)', () => {
     // CPU/RAM are rendered as an em-dash placeholder (—) not a 0% bar; the
     // agent-only cells must not render a progressbar-style metric element.
     expect(within(row).queryByText('0%')).toBeNull();
+  });
+
+  // #1386: Role (agent function) and Type (network asset_type) used to collapse
+  // to the same deviceRole value+icon on agent rows, reading as a duplicate
+  // column. They're now complementary — each populated for exactly one class,
+  // a dash for the other — so they never show the same value side by side.
+  describe('Role and Type are complementary, never duplicated (#1386)', () => {
+    const agentWorkstation: Device = { ...agent, deviceRole: 'workstation' };
+
+    beforeEach(() => {
+      // Type is opt-in now (default-off); enable it so this view exercises both
+      // columns. writeColumnVisibility persists to localStorage, which the list
+      // reads at mount.
+      writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'type']);
+    });
+    afterEach(() => window.localStorage.clear());
+
+    it('agent row: Role shows the function, Type is a dash (not an echo of Role)', () => {
+      render(<DeviceList devices={[agentWorkstation]} pageSize={50} networkDevicesEnabled />);
+
+      // Role is populated for the agent.
+      const roleCell = screen.getByTestId(`device-${agentWorkstation.id}-role`);
+      expect(within(roleCell).getByLabelText('Workstation')).toBeTruthy();
+
+      // Type renders nothing meaningful for an agent — it has no populated
+      // (testid-bearing) cell, just a dash — so it can't duplicate Role.
+      expect(screen.queryByTestId(`device-${agentWorkstation.id}-type`)).toBeNull();
+    });
+
+    it('network row: Type shows the asset type, Role is a dash', () => {
+      render(<DeviceList devices={[networkPrinter]} pageSize={50} networkDevicesEnabled />);
+
+      const typeCell = screen.getByTestId(`device-${networkPrinter.id}-type`);
+      expect(typeCell.textContent).toMatch(/printer/i);
+
+      // Role is meaningless for a printer — rendered as a dash, no role badge.
+      const roleCell = screen.getByTestId(`device-${networkPrinter.id}-role`);
+      expect(roleCell.textContent).toMatch(/—/);
+      expect(within(roleCell).queryByLabelText(/workstation|server|printer/i)).toBeNull();
+    });
   });
 });

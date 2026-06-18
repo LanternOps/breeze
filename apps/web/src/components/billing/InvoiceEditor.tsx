@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import {
   type InvoiceDetail,
   type InvoiceLine,
   formatMoney,
 } from './invoiceTypes';
-
-interface CatalogItem { id: string; name: string; isBundle: boolean }
+import CatalogItemPicker from '../catalog/CatalogItemPicker';
+import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -18,37 +19,40 @@ interface Props {
   onChanged: () => void;
 }
 
-type AddMode = 'manual' | 'catalog' | 'bundle';
+type AddMode = 'catalog' | 'manual';
 
 export default function InvoiceEditor({ detail, onChanged }: Props) {
+  const { can } = usePermissions();
+  const canWrite = can('invoices', 'write');
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
 
   const [busy, setBusy] = useState(false);
+  // Distinct from `busy` (which any line edit sets) so the Issue buttons can show
+  // an unambiguous in-flight label. Without it the disabled-but-still-"Issue"
+  // button + still-"Draft" header during the POST reads as "done but stuck" (#1418).
+  const [issuing, setIssuing] = useState(false);
   const [notes, setNotes] = useState(invoice.notes ?? '');
   const [notesDirty, setNotesDirty] = useState(false);
 
   // Add-line form
-  const [addMode, setAddMode] = useState<AddMode>('manual');
+  const [addMode, setAddMode] = useState<AddMode>('catalog');
   const [manualDesc, setManualDesc] = useState('');
   const [manualQty, setManualQty] = useState('1');
   const [manualPrice, setManualPrice] = useState('0.00');
   const [manualTaxable, setManualTaxable] = useState(false);
-  const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
-  const [bundles, setBundles] = useState<CatalogItem[]>([]);
-  const [pickItemId, setPickItemId] = useState('');
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [picked, setPicked] = useState<CatalogItem | null>(null);
   const [pickQty, setPickQty] = useState('1');
 
   useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
 
   const loadCatalog = useCallback(async () => {
-    const res = await fetchWithAuth('/catalog?isActive=true');
+    const res = await listCatalog({ isActive: true, limit: 200 });
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load catalog.'); return; }
     const body = (await res.json()) as { data: CatalogItem[] };
-    const all = body.data ?? [];
-    setCatalogItems(all.filter((i) => !i.isBundle));
-    setBundles(all.filter((i) => i.isBundle));
+    setCatalog(body.data ?? []);
   }, []);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
@@ -90,20 +94,20 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         });
         setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
       } else {
-        if (!pickItemId) return;
-        const path = addMode === 'catalog'
-          ? `/invoices/${invoice.id}/lines/catalog`
-          : `/invoices/${invoice.id}/lines/bundle`;
-        const body = addMode === 'catalog'
-          ? { catalogItemId: pickItemId, quantity: Number(pickQty) }
-          : { bundleId: pickItemId, quantity: Number(pickQty) };
+        if (!picked) return;
+        const path = picked.isBundle
+          ? `/invoices/${invoice.id}/lines/bundle`
+          : `/invoices/${invoice.id}/lines/catalog`;
+        const body = picked.isBundle
+          ? { bundleId: picked.id, quantity: Number(pickQty) }
+          : { catalogItemId: picked.id, quantity: Number(pickQty) };
         await runAction({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
           errorFallback: 'Could not add line.',
           successMessage: 'Line added',
           onUnauthorized: UNAUTHORIZED,
         });
-        setPickItemId(''); setPickQty('1');
+        setPicked(null); setPickQty('1');
       }
       refresh();
     } catch (err) {
@@ -111,7 +115,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, addMode, manualDesc, manualQty, manualPrice, manualTaxable, pickItemId, pickQty, invoice.id, refresh]);
+  }, [busy, addMode, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh]);
 
   const patchLine = useCallback(async (lineId: string, patch: Record<string, unknown>) => {
     if (busy) return;
@@ -174,6 +178,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const issue = useCallback(async (alsoSend: boolean) => {
     if (busy) return;
     setBusy(true);
+    setIssuing(true);
     try {
       // Issue first; on success optionally send.
       await runAction({
@@ -204,6 +209,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       // Always refresh: if issue succeeded but send threw, we still need to leave
       // the draft editor so a second click doesn't re-issue and hit 409 NOT_A_DRAFT.
       refresh();
+      setIssuing(false);
       setBusy(false);
     }
   }, [busy, invoice.id, refresh]);
@@ -262,19 +268,20 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           </div>
 
           {/* Add line */}
+          {canWrite && (
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-add-line">
             <div className="mb-3 flex gap-2">
-              {(['manual', 'catalog', 'bundle'] as AddMode[]).map((m) => (
+              {(['catalog', 'manual'] as AddMode[]).map((m) => (
                 <button
                   key={m}
                   type="button"
                   onClick={() => setAddMode(m)}
                   data-testid={`invoice-add-mode-${m}`}
-                  className={`rounded-md border px-3 py-1.5 text-xs font-medium capitalize ${
+                  className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
                     addMode === m ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
                   }`}
                 >
-                  {m}
+                  {m === 'catalog' ? 'Catalog item' : 'Manual line'}
                 </button>
               ))}
             </div>
@@ -310,34 +317,44 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   Add
                 </button>
               </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_80px_auto]">
-                <select
-                  value={pickItemId} onChange={(e) => setPickItemId(e.target.value)}
-                  data-testid="invoice-pick-item"
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  <option value="">{addMode === 'catalog' ? 'Select an item…' : 'Select a bundle…'}</option>
-                  {(addMode === 'catalog' ? catalogItems : bundles).map((i) => (
-                    <option key={i.id} value={i.id}>{i.name}</option>
-                  ))}
-                </select>
+            ) : picked ? (
+              <div className="flex flex-wrap items-center gap-2" data-testid="invoice-catalog-picked">
+                <span className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2.5 py-1.5 text-sm">
+                  <span className="font-medium">{picked.name}</span>
+                  {picked.isBundle && (
+                    <span className="rounded border border-border bg-background px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Bundle</span>
+                  )}
+                  <button type="button" onClick={() => setPicked(null)} aria-label="Clear selection" className="ml-1 text-muted-foreground hover:text-foreground">×</button>
+                </span>
                 <input
-                  type="number" min="0" step="0.01" placeholder="Qty" value={pickQty}
-                  onChange={(e) => setPickQty(e.target.value)}
+                  type="number" min="0" step="0.01" value={pickQty}
+                  onChange={(e) => setPickQty(e.target.value)} aria-label="Quantity"
                   data-testid="invoice-pick-qty"
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
                 <button
-                  type="button" onClick={() => void addLine()} disabled={busy || !pickItemId}
-                  data-testid="invoice-add-line-submit"
+                  type="button" onClick={() => void addLine()} disabled={busy}
+                  data-testid="invoice-catalog-add"
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
                   Add
                 </button>
               </div>
+            ) : catalog.length === 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="invoice-catalog-empty">
+                No catalog items.{' '}
+                <a href="/settings/catalog" className="underline hover:text-foreground">Add some in Product Catalog</a>.
+              </p>
+            ) : (
+              <CatalogItemPicker
+                items={catalog}
+                onSelect={(it) => { setPicked(it); setPickQty('1'); }}
+                testId="invoice-catalog-picker"
+                placeholder="Search catalog by name or SKU"
+              />
             )}
           </div>
+          )}
         </div>
 
         {/* Summary + bill-to + notes + actions */}
@@ -361,33 +378,41 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             <textarea
               value={notes}
               onChange={(e) => { setNotes(e.target.value); setNotesDirty(true); }}
-              onBlur={() => void saveNotes()}
+              // Gate ENTRY, not save (disabled, like the qty/price inputs) — a
+              // readOnly field is still focusable, so if canWrite flipped false
+              // mid-edit the onBlur guard would silently drop the typed note.
+              onBlur={() => { if (canWrite) void saveNotes(); }}
+              disabled={!canWrite}
               data-testid="invoice-notes"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
               placeholder="Internal or customer notes…"
             />
           </div>
 
           <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => void issue(false)}
-              disabled={busy || !hasVisibleLines}
-              data-testid="invoice-issue"
-              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              Issue
-            </button>
-            <button
-              type="button"
-              onClick={() => void issue(true)}
-              disabled={busy || !hasVisibleLines}
-              data-testid="invoice-issue-send"
-              className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              Issue &amp; Send
-            </button>
+            {can('invoices', 'send') && (
+              <button
+                type="button"
+                onClick={() => void issue(false)}
+                disabled={busy || !hasVisibleLines}
+                data-testid="invoice-issue"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {issuing ? 'Issuing…' : 'Issue'}
+              </button>
+            )}
+            {can('invoices', 'send') && (
+              <button
+                type="button"
+                onClick={() => void issue(true)}
+                disabled={busy || !hasVisibleLines}
+                data-testid="invoice-issue-send"
+                className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {issuing ? 'Issuing…' : 'Issue & Send'}
+              </button>
+            )}
             {!hasVisibleLines && (
               <p className="text-center text-xs text-muted-foreground" data-testid="invoice-no-visible-hint">
                 Add at least one customer-visible line to issue.
@@ -410,6 +435,9 @@ function LineRow({
   onPatch: (lineId: string, patch: Record<string, unknown>) => void;
   onRemove: (lineId: string) => void;
 }) {
+  const { can } = usePermissions();
+  const canWrite = can('invoices', 'write');
+  const editDisabled = disabled || !canWrite;
   const [qty, setQty] = useState(line.quantity);
   const [price, setPrice] = useState(line.unitPrice);
   useEffect(() => { setQty(line.quantity); setPrice(line.unitPrice); }, [line.quantity, line.unitPrice]);
@@ -420,45 +448,47 @@ function LineRow({
         <td className="px-3 py-2">{line.description}</td>
         <td className="px-3 py-2 text-right">
           <input
-            type="number" min="0" step="0.01" value={qty} disabled={disabled}
+            type="number" min="0" step="0.01" value={qty} disabled={editDisabled}
             onChange={(e) => setQty(e.target.value)}
-            onBlur={() => { if (qty !== line.quantity) onPatch(line.id, { quantity: Number(qty) }); }}
+            onBlur={() => { if (canWrite && qty !== line.quantity) onPatch(line.id, { quantity: Number(qty) }); }}
             data-testid={`invoice-line-qty-${line.id}`}
             className="h-8 w-20 rounded-md border bg-background px-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </td>
         <td className="px-3 py-2 text-right">
           <input
-            type="number" min="0" step="0.01" value={price} disabled={disabled}
+            type="number" min="0" step="0.01" value={price} disabled={editDisabled}
             onChange={(e) => setPrice(e.target.value)}
-            onBlur={() => { if (price !== line.unitPrice) onPatch(line.id, { unitPrice: Number(price) }); }}
+            onBlur={() => { if (canWrite && price !== line.unitPrice) onPatch(line.id, { unitPrice: Number(price) }); }}
             data-testid={`invoice-line-price-${line.id}`}
             className="h-8 w-24 rounded-md border bg-background px-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </td>
         <td className="px-3 py-2 text-center">
           <input
-            type="checkbox" checked={line.taxable} disabled={disabled}
+            type="checkbox" checked={line.taxable} disabled={editDisabled}
             onChange={(e) => onPatch(line.id, { taxable: e.target.checked })}
             data-testid={`invoice-line-taxable-${line.id}`}
           />
         </td>
         <td className="px-3 py-2 text-center">
           <input
-            type="checkbox" checked={line.customerVisible} disabled={disabled}
+            type="checkbox" checked={line.customerVisible} disabled={editDisabled}
             onChange={(e) => onPatch(line.id, { customerVisible: e.target.checked })}
             data-testid={`invoice-line-visible-${line.id}`}
           />
         </td>
         <td className="px-3 py-2 text-right">{formatMoney(line.lineTotal, currency)}</td>
         <td className="px-3 py-2 text-right">
-          <button
-            type="button" onClick={() => onRemove(line.id)} disabled={disabled}
-            data-testid={`invoice-line-remove-${line.id}`}
-            className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-          >
-            Remove
-          </button>
+          {canWrite && (
+            <button
+              type="button" onClick={() => onRemove(line.id)} disabled={disabled}
+              data-testid={`invoice-line-remove-${line.id}`}
+              className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              Remove
+            </button>
+          )}
         </td>
       </tr>
       {children.map((ch) => (

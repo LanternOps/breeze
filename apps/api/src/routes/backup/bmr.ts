@@ -67,7 +67,7 @@ import {
 export const bmrRoutes = new Hono();
 export const bmrPublicRoutes = new Hono();
 
-const idParamSchema = z.object({ id: z.string().uuid() });
+const idParamSchema = z.object({ id: z.string().guid() });
 const signingKeyParamSchema = z.object({ id: z.string().min(1) });
 const BMR_AUTHENTICATE_TOKEN_LIMIT = 3;
 const BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS = 60 * 60;

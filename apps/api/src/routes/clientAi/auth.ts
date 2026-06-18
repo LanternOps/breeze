@@ -5,6 +5,7 @@ import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../../db';
 import { portalUsers } from '../../db/schema';
 import { clientAiTenantMappings } from '../../db/schema/clientAi';
+import { organizations, partners } from '../../db/schema/orgs';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { getTrustedClientIp } from '../../services/clientIp';
@@ -132,8 +133,13 @@ clientAiAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema), as
 
   const resolution = await withSystemDbAccessContext(async (): Promise<Denied | Resolved> => {
     const [mapping] = await db
-      .select()
+      .select({
+        orgId: clientAiTenantMappings.orgId,
+        partnerEnabled: partners.aiForOfficeEnabled,
+      })
       .from(clientAiTenantMappings)
+      .innerJoin(organizations, eq(organizations.id, clientAiTenantMappings.orgId))
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
       .where(eq(clientAiTenantMappings.entraTenantId, claims.tid))
       .limit(1);
 
@@ -144,6 +150,19 @@ clientAiAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema), as
           error: 'tenant_not_provisioned',
           orgId: null,
           details: { reason: 'tenant_not_provisioned', tid: claims.tid },
+        },
+      };
+    }
+
+    // Per-partner entitlement gate (the cost gate): no enabled partner ⇒ no
+    // session ⇒ no AI spend. Sits above the per-org policy.enabled check below.
+    if (!mapping.partnerEnabled) {
+      return {
+        denied: {
+          status: 403,
+          error: 'disabled',
+          orgId: mapping.orgId,
+          details: { reason: 'partner_not_enabled', tid: claims.tid, oid: claims.oid },
         },
       };
     }

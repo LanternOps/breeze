@@ -72,6 +72,7 @@ describe('columnVisibility', () => {
         expect(got.has(id)).toBe(true);
       }
       expect(got.size).toBe(DEFAULT_VISIBLE_COLUMNS.length);
+      expect(got.has('watchdogVersion')).toBe(false);
     });
 
     it('returns the stored visible flags', () => {
@@ -238,6 +239,7 @@ describe('columnVisibility', () => {
       expect(vis.has('hostname')).toBe(true);
       // a default-hidden catalog column missing from storage is appended hidden.
       expect(vis.has('tags')).toBe(false);
+      expect(vis.has('watchdogVersion')).toBe(false);
       // full catalog is represented.
       expect(new Set(order).size).toBe(COLUMN_IDS.length);
     });

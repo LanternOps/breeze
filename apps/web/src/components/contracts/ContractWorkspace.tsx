@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import ContractEditor from './ContractEditor';
 import ContractDetail from './ContractDetail';
+import { usePermissions } from '../../lib/permissions';
 import {
   getContract,
   CONTRACT_STATUS_COLORS,
@@ -25,6 +26,8 @@ function readPresetOrgId(): string | undefined {
 
 export default function ContractWorkspace({ contractId }: Props) {
   const isNew = contractId === 'new';
+  const { can } = usePermissions();
+  const canWrite = can('contracts', 'write');
 
   const [detail, setDetail] = useState<ContractDetailData | null>(null);
   const [loading, setLoading] = useState(!isNew);
@@ -89,7 +92,9 @@ export default function ContractWorkspace({ contractId }: Props) {
 
   const { contract } = detail;
   // Drafts always edit; active contracts read-mostly with an Edit toggle.
-  const showEditor = contract.status === 'draft' || editing;
+  // A read-only viewer (no contracts:write) never sees the editor, even for a
+  // draft — the server enforces it too, this just hides the write affordance.
+  const showEditor = canWrite && (contract.status === 'draft' || editing);
 
   return (
     <div className="space-y-4" data-testid="contract-workspace">
@@ -103,7 +108,7 @@ export default function ContractWorkspace({ contractId }: Props) {
             </span>
           </div>
         </div>
-        {contract.status === 'active' && (
+        {contract.status === 'active' && canWrite && (
           <button
             type="button"
             onClick={() => setEditing((v) => !v)}

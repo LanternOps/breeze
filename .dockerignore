@@ -71,12 +71,11 @@ docs
 # Claude/AI
 .claude
 
-# Apps not needed in Docker (API + web only)
+# Apps not needed in Docker (API + web + portal only)
 apps/helper
 apps/viewer
 apps/mobile
 apps/docs
-apps/portal
 apps/agent
 
 # Go agent (not needed in Docker)

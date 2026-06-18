@@ -63,7 +63,7 @@ const denySchema = z.object({
 const seedSchema = z.object({
   actionLabel: z.string().min(1).max(500),
   actionToolName: z.string().min(1).max(255),
-  actionArguments: z.record(z.unknown()).optional(),
+  actionArguments: z.record(z.string(), z.unknown()).optional(),
   riskTier: z.enum(['low', 'medium', 'high', 'critical']),
   riskSummary: z.string().min(1).max(500),
   requestingClientLabel: z.string().min(1).max(255).optional(),

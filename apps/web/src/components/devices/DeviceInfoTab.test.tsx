@@ -20,6 +20,15 @@ const showToastMock = vi.mocked(showToast);
 
 const deviceId = '11111111-1111-1111-1111-111111111111';
 
+const baseDeviceInfoPayload = {
+  hostname: 'TST-LAPTOP-01',
+  displayName: null,
+  osType: 'windows',
+  osVersion: '11',
+  tags: [],
+  status: 'online',
+};
+
 function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
   return {
     ok,
@@ -35,12 +44,8 @@ function mockInitialLoad(displayName: string | null) {
     const method = init?.method ?? 'GET';
     if (url === `/devices/${deviceId}` && method === 'GET') {
       return makeJsonResponse({
-        hostname: 'TST-LAPTOP-01',
+        ...baseDeviceInfoPayload,
         displayName,
-        osType: 'windows',
-        osVersion: '11',
-        tags: [],
-        status: 'online',
       });
     }
     if (url === '/custom-fields') {
@@ -249,6 +254,55 @@ describe('DeviceInfoTab — display name inline edit', () => {
   });
 });
 
+describe('DeviceInfoTab — watchdog version display', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the watchdog version when the watchdog has reported one', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          agentVersion: '0.70.0',
+          watchdogVersion: '0.70.1',
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Watchdog Version');
+    expect(screen.getByText('0.70.1')).toBeInTheDocument();
+    expect(screen.queryByText('Not Installed')).not.toBeInTheDocument();
+  });
+
+  it('shows Not Installed when no watchdog version has ever been reported', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          agentVersion: '0.70.0',
+          watchdogVersion: null,
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Watchdog Version');
+    expect(screen.getByText('Not Installed')).toBeInTheDocument();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // runAction adoption on the other two mutating handlers in this file.
 // ---------------------------------------------------------------------------
@@ -265,13 +319,10 @@ describe('DeviceInfoTab — role + custom-field mutations also use runAction', (
       const method = init?.method ?? 'GET';
       if (url === `/devices/${deviceId}` && method === 'GET') {
         return makeJsonResponse({
-          hostname: 'TST-LAPTOP-01',
+          ...baseDeviceInfoPayload,
           displayName: null,
-          osType: 'windows',
           deviceRole: 'workstation',
           deviceRoleSource: 'auto',
-          tags: [],
-          status: 'online',
         });
       }
       if (url === '/custom-fields') return makeJsonResponse({ data: [] });

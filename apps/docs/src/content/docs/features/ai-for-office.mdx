@@ -1,0 +1,76 @@
+---
+title: AI for Office
+description: A governed AI assistant delivered to your customers' end-users inside Excel, Word, PowerPoint, and Outlook -- with org policies, data-loss protection, budgets, and per-partner entitlement.
+sidebar:
+  label: "AI for Office"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+AI for Office puts a branded, policy-controlled AI assistant directly inside Microsoft Office for your customers' **end-users** -- in Excel, Word, PowerPoint, and Outlook. It's not a tool for your technicians; it's a co-pilot your clients use in their own documents, governed by the same policy and data-protection controls as the rest of Breeze.
+
+End-users open the add-in task pane, sign in with their existing Microsoft identity, and chat with the assistant without leaving their document. You decide which customers can use it, what it's allowed to do, and how much it can spend.
+
+## Enabling a Partner (Platform Operator)
+
+AI for Office is a **per-partner entitlement** controlled by the platform operator. It is **off by default** for every partner, so you're never billed for AI usage by partners you haven't explicitly enabled.
+
+The entitlement is granted by the operator, not self-served -- a partner cannot turn it on for themselves. When a partner is disabled, the feature is unavailable across all of their customer organizations, and disabling a partner cuts off **live** sessions immediately, not just new ones.
+
+## Configuring an Organization (MSP Admin)
+
+Once your partner is entitled, you configure AI for Office per customer organization through its **org policy**. The policy controls who can use the assistant and what it's allowed to do.
+
+| Setting | What it controls |
+|---------|------------------|
+| Enabled | Master on/off for this organization |
+| User access | Everyone in the customer's Microsoft tenant, or a selected list of users |
+| Write mode | Whether the assistant can edit documents (read/write) or only read and inspect (read-only) |
+| Write approval | Whether each edit must be approved by the user, or applies automatically |
+| Data-loss protection | Redaction rules that strip sensitive data (such as PII) before it leaves the document |
+| Budgets | Optional daily and monthly spend caps |
+| Rate limits | Per-user and per-organization message limits |
+| Retention | How long chat history is kept |
+| Branding | A display name and logo shown to end-users |
+
+### Mapping the Customer's Microsoft Tenant
+
+Each customer organization must be mapped to its **Microsoft Entra tenant** so sign-ins resolve to the right org. This mapping is the foundation of tenant isolation and is set once per organization. Creating or changing a tenant mapping requires multi-factor authentication.
+
+<Steps>
+1. Open the AI for Office admin area and select the customer organization.
+2. Enter the customer's Entra tenant ID (Breeze suggests it automatically if you already have a Microsoft 365 connection for that customer).
+3. Grant the required admin consent for the add-in on the customer's tenant.
+4. Enable the org policy and set access, write mode, DLP, and budgets.
+</Steps>
+
+## How End-Users Sign In
+
+<Steps>
+1. The end-user opens the Breeze add-in's task pane in Excel, Word, PowerPoint, or Outlook.
+2. The add-in uses their existing **Microsoft identity** -- no separate Breeze login.
+3. Breeze verifies the identity, maps the Microsoft tenant to the correct organization, and checks that the partner is entitled, the org policy is enabled, and the user is allowed.
+4. The user starts chatting. Edits and document actions follow the org's write-mode and approval settings, and responses pass through the org's data-loss protection rules.
+</Steps>
+
+## Admin Visibility
+
+The admin area gives you operational visibility for each customer organization:
+
+- **Onboarding status** -- a per-org checklist showing whether the tenant is mapped, consent is granted, and the policy is enabled.
+- **Sessions** -- which end-users are using the assistant, in which Office host, with message and token counts.
+- **Usage and cost** -- monthly usage per user with token counts and cost, exportable as CSV for resale and accounting.
+
+<Aside>
+  Every policy change, tenant-mapping change, and session is recorded in the [audit log](/reference/audit-logs/), and all queries run under strict per-organization isolation so customer data never crosses tenants.
+</Aside>
+
+## Permissions
+
+Viewing AI for Office configuration requires organization read access; changing org policies and templates requires organization write access. Tenant-mapping changes additionally require multi-factor authentication. The per-partner entitlement is operator-only.
+
+## Related
+
+- [AI Assistant](/features/ai/) -- the in-dashboard AI for your technicians
+- [Identity Console](/features/identity-console/) -- manage Microsoft 365 and Google Workspace identities
+- [Customer Portal](/features/portal/) -- other end-user-facing capabilities

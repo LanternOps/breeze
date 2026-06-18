@@ -50,7 +50,7 @@ jobs:
         run: bash scripts/check-guided-setup-compose-rewrites.sh
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -79,7 +79,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -107,7 +107,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -164,7 +164,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -188,7 +188,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -204,6 +204,30 @@ jobs:
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
 
+  test-portal:
+    name: Test Portal
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Portal tests
+        run: pnpm test --filter=@breeze/portal
+
   test-office-addin-core:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
@@ -212,7 +236,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -239,7 +263,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -263,7 +287,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -290,7 +314,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -326,7 +350,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -353,7 +377,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -402,7 +426,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -444,7 +468,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -465,6 +489,42 @@ jobs:
         with:
           name: web-dist
           path: apps/web/dist
+          retention-days: 7
+
+  build-portal:
+    name: Build Portal
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Build with the production base path so a broken /portal link or asset ref
+      # fails CI here rather than in prod.
+      - name: Build Portal
+        env:
+          PORTAL_BASE_PATH: /portal
+        run: pnpm build --filter=@breeze/portal
+
+      - name: Upload Portal artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: portal-dist
+          path: apps/portal/dist
           retention-days: 7
 
   build-agent:
@@ -697,7 +757,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -808,6 +868,7 @@ jobs:
           # here since this stack is ephemeral (torn down in Teardown step).
           BREEZE_API_IMAGE_REF=ghcr.io/lanternops/breeze/api:latest
           BREEZE_WEB_IMAGE_REF=ghcr.io/lanternops/breeze/web:latest
+          BREEZE_PORTAL_IMAGE_REF=ghcr.io/lanternops/breeze/portal:latest
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
           POSTGRES_IMAGE_REF=postgres:16-alpine
@@ -838,6 +899,19 @@ jobs:
           echo "Waiting for Web on :4321..."
           timeout 120 bash -c 'until curl -sf http://localhost:4321/ 2>/dev/null; do sleep 2; done'
           echo "Web is healthy."
+
+      - name: Wait for Portal health (/portal)
+        run: |
+          echo "Waiting for Portal on :4322/portal/login..."
+          timeout 120 bash -c 'until curl -sf http://localhost:4322/portal/login 2>/dev/null; do sleep 2; done'
+          echo "Portal is healthy."
+          # The portal must NOT answer outside its base path (web owns the root).
+          ROOT_LOGIN=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:4322/login || true)
+          echo "Portal GET /login (expect 404) -> ${ROOT_LOGIN}"
+          if [ "${ROOT_LOGIN}" != "404" ]; then
+            echo "ERROR: portal answered un-based path /login with ${ROOT_LOGIN} (expected 404)"
+            exit 1
+          fi
 
       - name: Login and export token
         id: login
@@ -985,7 +1059,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-web, build-agent, test-agent, integration-test, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-web, build-portal, build-agent, test-agent, integration-test, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -994,6 +1068,7 @@ jobs:
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
+          TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
           TEST_EXCEL_ADDIN_RESULT: ${{ needs.test-excel-addin.result }}
           TEST_WORD_ADDIN_RESULT: ${{ needs.test-word-addin.result }}
@@ -1002,6 +1077,7 @@ jobs:
           SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
           BUILD_API_RESULT: ${{ needs.build-api.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
+          BUILD_PORTAL_RESULT: ${{ needs.build-portal.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
           INTEGRATION_TEST_RESULT: ${{ needs.integration-test.result }}
@@ -1013,6 +1089,7 @@ jobs:
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
+             [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
              [[ "${TEST_EXCEL_ADDIN_RESULT}" != "success" ]] || \
              [[ "${TEST_WORD_ADDIN_RESULT}" != "success" ]] || \
@@ -1021,6 +1098,7 @@ jobs:
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
+             [[ "${BUILD_PORTAL_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \

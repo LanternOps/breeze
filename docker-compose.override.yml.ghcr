@@ -6,6 +6,9 @@ services:
   web:
     platform: linux/amd64
 
+  portal:
+    platform: linux/amd64
+
   api:
     environment:
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}

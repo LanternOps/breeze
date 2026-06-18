@@ -86,7 +86,10 @@ export const authenticatorPolicySchema = z.object({
   // raise-only invariant's value type is compile-checked, not runtime-only,
   // and downstream callers need no `as AssuranceFloorOverrides` cast.
   floorOverrides: z
-    .record(
+    // v4: z.record(enum, …) is exhaustive (all keys required at runtime); use
+    // z.partialRecord to keep the v3 Partial<Record<RiskTier, 1|2|3|4>> shape —
+    // an org may raise only some tiers, and the default is {} (no overrides).
+    .partialRecord(
       z.enum(['low', 'medium', 'high', 'critical']),
       z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
     )

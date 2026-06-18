@@ -1,7 +1,7 @@
 import type { Context, Next } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { portalUsers } from '../db/schema';
+import { portalUsers, organizations, partners } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { getOrgPolicy, isClientUserPermitted } from '../services/clientAiPolicy';
 import {
@@ -66,8 +66,11 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
         email: portalUsers.email,
         name: portalUsers.name,
         status: portalUsers.status,
+        partnerAiForOfficeEnabled: partners.aiForOfficeEnabled,
       })
       .from(portalUsers)
+      .innerJoin(organizations, eq(organizations.id, portalUsers.orgId))
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
       .where(and(eq(portalUsers.id, session.portalUserId), eq(portalUsers.orgId, session.orgId)))
       .limit(1)
   );
@@ -94,6 +97,7 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
     email: user.email,
     name: user.name,
     token,
+    partnerAiForOfficeEnabled: user.partnerAiForOfficeEnabled === true,
   });
 
   return withDbAccessContext(
@@ -119,6 +123,12 @@ export async function requireClientAiEnabledMiddleware(c: Context, next: Next) {
   const auth = c.get('clientAiAuth');
   if (!auth) {
     return c.json({ error: 'Not authenticated' }, 401);
+  }
+
+  // Per-partner entitlement, re-checked every request so disabling a partner
+  // cuts live sessions immediately (not just at next token mint).
+  if (!auth.partnerAiForOfficeEnabled) {
+    return c.json({ error: 'disabled' }, 403);
   }
 
   const policy = await getOrgPolicy(auth.orgId);

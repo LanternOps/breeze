@@ -152,8 +152,8 @@ const listQuerySchema = z.object({
     .enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating'])
     .optional(),
   flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
-  deviceId: z.string().uuid().optional(),
-  siteId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
   page: z.string().optional(),
@@ -333,7 +333,7 @@ pamRoutes.post(
     const auth = c.get('auth');
     const perms = c.get('permissions') as UserPermissions | undefined;
     const id = c.req.param('id');
-    if (!id || !z.string().uuid().safeParse(id).success) {
+    if (!id || !z.string().guid().safeParse(id).success) {
       return c.json({ error: 'Invalid elevation request id' }, 400);
     }
 
@@ -393,7 +393,7 @@ pamRoutes.post(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const id = c.req.param('id');
     const body = c.req.valid('json');
-    if (!z.string().uuid().safeParse(id).success) {
+    if (!z.string().guid().safeParse(id).success) {
       return c.json({ error: 'Invalid elevation request id' }, 400);
     }
 
@@ -643,7 +643,7 @@ pamRoutes.post(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const id = c.req.param('id');
     const body = c.req.valid('json');
-    if (!z.string().uuid().safeParse(id).success) {
+    if (!z.string().guid().safeParse(id).success) {
       return c.json({ error: 'Invalid elevation request id' }, 400);
     }
 
@@ -766,7 +766,7 @@ const timeWindowSchema = z.object({
 // Criteria fields shared verbatim between ruleBaseSchema and previewRuleSchema.
 // Spread into both z.object calls so any validator change applies to both.
 const ruleCriteriaValidators = {
-  siteId: z.string().uuid().nullable().optional(),
+  siteId: z.string().guid().nullable().optional(),
   matchSigner: z.string().min(1).max(255).nullable().optional(),
   matchHash: z
     .string()
@@ -783,7 +783,7 @@ const ruleCriteriaValidators = {
 };
 
 const ruleBaseSchema = z.object({
-  orgId: z.string().uuid().optional(),
+  orgId: z.string().guid().optional(),
   ...ruleCriteriaValidators,
   name: z.string().min(1).max(255),
   description: z.string().max(2000).nullable().optional(),
@@ -1074,7 +1074,7 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
   const auth = c.get('auth');
   const id = c.req.param('id');
   const payload = c.req.valid('json');
-  if (!z.string().uuid().safeParse(id).success) {
+  if (!z.string().guid().safeParse(id).success) {
     return c.json({ error: 'Invalid rule id' }, 400);
   }
 
@@ -1137,7 +1137,7 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
 pamRoutes.delete('/rules/:id', requirePamWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id');
-  if (!z.string().uuid().safeParse(id).success) {
+  if (!z.string().guid().safeParse(id).success) {
     return c.json({ error: 'Invalid rule id' }, 400);
   }
 

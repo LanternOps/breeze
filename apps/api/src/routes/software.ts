@@ -17,7 +17,10 @@ import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { uploadBinary, getPresignedUrl, isS3Configured } from '../services/s3Storage';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import { createHash } from 'node:crypto';
-import { writeFile, unlink, mkdir } from 'node:fs/promises';
+import { unlink, mkdir } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -280,7 +283,7 @@ const catalogSearchSchema = z.object({
   category: categorySchema.optional()
 });
 
-const catalogIdParamSchema = z.object({ id: z.string().uuid() });
+const catalogIdParamSchema = z.object({ id: z.string().guid() });
 
 const createCatalogSchema = z.object({
   name: z.string().min(1).max(200),
@@ -290,7 +293,7 @@ const createCatalogSchema = z.object({
   iconUrl: z.string().url().optional(),
   websiteUrl: z.string().url().optional(),
   isManaged: z.boolean().optional(),
-  orgId: z.string().uuid().optional()
+  orgId: z.string().guid().optional()
 });
 
 const updateCatalogSchema = z.object({
@@ -303,8 +306,8 @@ const updateCatalogSchema = z.object({
   isManaged: z.boolean().optional()
 });
 
-const versionParamSchema = z.object({ id: z.string().uuid() });
-const versionIdParamSchema = z.object({ id: z.string().uuid(), versionId: z.string().uuid() });
+const versionParamSchema = z.object({ id: z.string().guid() });
+const versionIdParamSchema = z.object({ id: z.string().guid(), versionId: z.string().guid() });
 
 const createVersionSchema = z.object({
   version: z.string().min(1).max(100),
@@ -327,19 +330,19 @@ const listDeploymentsSchema = z.object({
   limit: z.string().optional()
 });
 
-const deploymentIdParamSchema = z.object({ id: z.string().uuid() });
+const deploymentIdParamSchema = z.object({ id: z.string().guid() });
 
 const createDeploymentSchema = z.object({
   name: z.string().min(1).max(255),
-  softwareVersionId: z.string().uuid(),
+  softwareVersionId: z.string().guid(),
   deploymentType: z.enum(['install', 'uninstall', 'update']),
   targetType: z.enum(['devices', 'groups', 'sites', 'all', 'filter']),
-  targetIds: z.array(z.string().uuid()).optional(),
+  targetIds: z.array(z.string().guid()).optional(),
   targetFilter: z.unknown().optional(),
   scheduleType: z.enum(['immediate', 'scheduled', 'maintenance']),
   scheduledAt: z.string().datetime().optional(),
-  maintenanceWindowId: z.string().uuid().optional(),
-  options: z.record(z.unknown()).optional()
+  maintenanceWindowId: z.string().guid().optional(),
+  options: z.record(z.string(), z.unknown()).optional()
 });
 
 const cancelDeploymentSchema = z.object({
@@ -347,11 +350,11 @@ const cancelDeploymentSchema = z.object({
 });
 
 const listInventorySchema = z.object({
-  deviceId: z.string().uuid().optional(),
+  deviceId: z.string().guid().optional(),
   search: z.string().optional()
 });
 
-const inventoryParamSchema = z.object({ deviceId: z.string().uuid() });
+const inventoryParamSchema = z.object({ deviceId: z.string().guid() });
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -560,6 +563,26 @@ softwareRoutes.delete(
       .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
 
+    // A version that is still referenced by a deployment cannot be deleted —
+    // software_deployments.software_version_id is an ON DELETE RESTRICT FK, so
+    // deleting the versions below would throw an unhandled 500 (#1407).
+    // Pre-check and return a clean 409 so deployment history is preserved and
+    // the caller gets an actionable message instead of a server error.
+    const [deploymentRef] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(softwareDeployments)
+      .innerJoin(softwareVersions, eq(softwareDeployments.softwareVersionId, softwareVersions.id))
+      .where(eq(softwareVersions.catalogId, id));
+    const blockingCount = deploymentRef?.count ?? 0;
+    if (blockingCount > 0) {
+      return c.json(
+        {
+          error: `Cannot delete: ${blockingCount} deployment${blockingCount === 1 ? '' : 's'} still reference a version of this software. Remove those deployments first.`,
+        },
+        409
+      );
+    }
+
     // Delete versions first (FK constraint)
     await db.delete(softwareVersions).where(eq(softwareVersions.catalogId, id));
     await db.delete(softwareCatalog).where(eq(softwareCatalog.id, id));
@@ -726,13 +749,24 @@ softwareRoutes.post(
     const tempPath = join(tempDir, `${randomUUID()}${ext}`);
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      await writeFile(tempPath, buffer);
-
+      // Stream the upload straight to the temp file, hashing incrementally,
+      // instead of buffering the whole file into an ArrayBuffer and again into
+      // a Buffer (~2x the file size, transiently, on top of the parsed body).
+      // Follows the pipeline(stream, hash) pattern in s3Storage.ts. Cuts the
+      // peak transient heap per upload (partially addresses #1408).
       const hash = createHash('sha256');
-      hash.update(buffer);
+      await pipeline(
+        Readable.fromWeb(file.stream() as Parameters<typeof Readable.fromWeb>[0]),
+        async function* (source) {
+          for await (const chunk of source) {
+            hash.update(chunk as Buffer);
+            yield chunk;
+          }
+        },
+        createWriteStream(tempPath),
+      );
       const checksum = hash.digest('hex');
+      const fileSize = file.size;
 
       // Generate version ID for S3 key path
       const versionId = randomUUID();
@@ -750,7 +784,7 @@ softwareRoutes.post(
         fileType,
         originalFileName,
         checksum,
-        fileSize: buffer.length,
+        fileSize,
         supportedOs,
         architecture,
         silentInstallArgs,
@@ -769,7 +803,7 @@ softwareRoutes.post(
         resourceType: 'software_version',
         resourceId: versionRecord.id,
         resourceName: catalogItem.name,
-        details: { version, fileType, fileSize: buffer.length, checksum },
+        details: { version, fileType, fileSize, checksum },
       });
 
       return c.json({ data: versionRecord }, 201);
@@ -1029,13 +1063,13 @@ softwareRoutes.post(
   zValidator(
     'json',
     z.object({
-      softwareId: z.string().uuid(),
+      softwareId: z.string().guid(),
       version: z.string().min(1).max(64),
       targets: z
         .object({
-          deviceIds: z.array(z.string().uuid()).max(1000).optional(),
-          siteIds: z.array(z.string().uuid()).max(100).optional(),
-          deviceGroupIds: z.array(z.string().uuid()).max(100).optional(),
+          deviceIds: z.array(z.string().guid()).max(1000).optional(),
+          siteIds: z.array(z.string().guid()).max(100).optional(),
+          deviceGroupIds: z.array(z.string().guid()).max(100).optional(),
         })
         .optional(),
       configuration: z
