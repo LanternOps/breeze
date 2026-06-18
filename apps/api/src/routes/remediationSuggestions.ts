@@ -56,6 +56,45 @@ const updateBodySchema = z.object({
   failureMessage: z.string().max(5000).nullable().optional(),
 });
 
+type UpdateRemediationSuggestionInput = z.infer<typeof updateBodySchema>;
+
+function hasExecutionLink(input: {
+  toolExecutionId: string | null;
+  scriptExecutionId: string | null;
+  playbookExecutionId: string | null;
+}): boolean {
+  return Boolean(input.toolExecutionId || input.scriptExecutionId || input.playbookExecutionId);
+}
+
+function validateSuggestionLifecycleUpdate(
+  existing: typeof remediationSuggestions.$inferSelect,
+  input: UpdateRemediationSuggestionInput,
+): string | null {
+  if (input.status !== 'executed' && input.status !== 'failed') {
+    return null;
+  }
+
+  if (existing.status !== 'accepted' && existing.status !== 'edited') {
+    return 'Suggestion must be accepted or edited before it can be marked executed or failed';
+  }
+
+  const executionLinks = {
+    toolExecutionId: input.toolExecutionId === undefined ? existing.toolExecutionId : input.toolExecutionId,
+    scriptExecutionId: input.scriptExecutionId === undefined ? existing.scriptExecutionId : input.scriptExecutionId,
+    playbookExecutionId: input.playbookExecutionId === undefined ? existing.playbookExecutionId : input.playbookExecutionId,
+  };
+  if (!hasExecutionLink(executionLinks)) {
+    return 'Executed or failed suggestions must link to a tool, script, or playbook execution';
+  }
+
+  const failureMessage = input.failureMessage === undefined ? existing.failureMessage : input.failureMessage;
+  if (input.status === 'failed' && !failureMessage?.trim()) {
+    return 'Failed suggestions must include a failureMessage';
+  }
+
+  return null;
+}
+
 function serializeSuggestion(row: typeof remediationSuggestions.$inferSelect) {
   return {
     id: row.id,
@@ -443,6 +482,11 @@ remediationSuggestionRoutes.patch(
     }
     if (!(await siteAllowedForSuggestion(existing, perms))) {
       return c.json({ error: 'Suggestion not found or access denied' }, 403);
+    }
+
+    const validationError = validateSuggestionLifecycleUpdate(existing, input);
+    if (validationError) {
+      return c.json({ error: validationError }, 400);
     }
 
     const now = new Date();

@@ -123,6 +123,16 @@ function mockSelectOnce(result: unknown) {
   dbMocks.selectMock.mockReturnValueOnce(createSelectChain(result));
 }
 
+function mockSuggestionLoad(suggestion: Record<string, unknown>) {
+  dbMocks.selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([suggestion]),
+      }),
+    }),
+  });
+}
+
 describe('remediation suggestion routes', () => {
   let app: Hono;
 
@@ -162,13 +172,7 @@ describe('remediation suggestion routes', () => {
   });
 
   it('updates suggestion status and emits feedback', async () => {
-    dbMocks.selectMock.mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([baseSuggestion]),
-        }),
-      }),
-    });
+    mockSuggestionLoad(baseSuggestion);
     dbMocks.updateMock.mockReturnValueOnce({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -193,6 +197,98 @@ describe('remediation suggestion routes', () => {
     }));
     const body = await res.json();
     expect(body.data.status).toBe('accepted');
+  });
+
+  it('rejects execution status without a linked execution rail', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'executed' }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Executed or failed suggestions must link to a tool, script, or playbook execution');
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects direct execution from suggested status', async () => {
+    mockSuggestionLoad(baseSuggestion);
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        status: 'executed',
+        scriptExecutionId: '66666666-6666-4666-8666-666666666666',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Suggestion must be accepted or edited before it can be marked executed or failed');
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('requires failure details when marking a linked execution failed', async () => {
+    mockSuggestionLoad({
+      ...baseSuggestion,
+      status: 'accepted',
+      scriptExecutionId: '66666666-6666-4666-8666-666666666666',
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'failed' }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Failed suggestions must include a failureMessage');
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('marks accepted suggestions executed when a script execution is linked', async () => {
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    dbMocks.updateMock.mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            ...baseSuggestion,
+            status: 'executed',
+            scriptExecutionId,
+            executedBy: 'user-1',
+            executedAt: new Date('2026-06-18T12:10:00.000Z'),
+          }]),
+        }),
+      }),
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: baseSuggestion.orgId,
+      suggestionId: baseSuggestion.id,
+      eventType: 'suggestion.executed',
+      outcome: 'executed',
+      actorUserId: 'user-1',
+      metadata: expect.objectContaining({ scriptExecutionId }),
+    }));
+    const body = await res.json();
+    expect(body.data.status).toBe('executed');
+    expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
   });
 
   it('returns remediation status rates and lifecycle feedback counts', async () => {
