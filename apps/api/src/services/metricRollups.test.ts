@@ -55,12 +55,14 @@ describe('metric rollups service', () => {
       to: new Date('2026-06-18T13:00:00.000Z'),
     });
 
-    expect(result).toMatchObject({ statements: 12, skipped: false });
-    expect(executeMock).toHaveBeenCalledTimes(12);
+    expect(result).toMatchObject({ statements: 21, skipped: false });
+    expect(executeMock).toHaveBeenCalledTimes(21);
     const executedSql = JSON.stringify(executeMock.mock.calls);
     expect(executedSql).toContain('ON CONFLICT');
     expect(executedSql).toContain('percentile_cont(0.95)');
     expect(executedSql).toContain('NULL::double precision');
+    expect(executedSql).toContain('device_process_samples');
+    expect(executedSql).toContain('jsonb_array_elements');
   });
 
   it('materializes regular raw bucket grids so sparse heartbeats create gap buckets', async () => {
@@ -88,11 +90,44 @@ describe('metric rollups service', () => {
       to: new Date('2026-06-18T13:00:00.000Z'),
     });
 
-    const hourlyStatementSql = JSON.stringify(executeMock.mock.calls[10]);
+    const hourlyStatementSql = JSON.stringify(executeMock.mock.calls[17]);
     expect(hourlyStatementSql).toContain('sum(mr.avg_value * mr.sample_count)');
     expect(hourlyStatementSql).toContain('sum(mr.gap_seconds)');
     expect(hourlyStatementSql).not.toContain('AND mr.sample_count > 0');
     expect(hourlyStatementSql).toContain('HAVING sum(mr.sample_count) > 0');
+  });
+
+  it('rolls up top process sample metrics from JSON process payloads', async () => {
+    await rollupDeviceMetricsRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:15:00.000Z'),
+    });
+
+    const processStatementSql = JSON.stringify(executeMock.mock.calls[10]);
+    expect(processStatementSql).toContain('device_process_samples');
+    expect(processStatementSql).toContain('process_devices');
+    expect(processStatementSql).toContain('sample_values');
+    expect(processStatementSql).toContain('top_process_count');
+    expect(processStatementSql).toContain('jsonb_array_length(dps.top_processes)');
+    expect(processStatementSql).toContain("'process'");
+
+    const processCpuStatementSql = JSON.stringify(executeMock.mock.calls[11]);
+    expect(processCpuStatementSql).toContain('top_process_cpu_percent_sum');
+    expect(processCpuStatementSql).toContain('jsonb_array_elements(dps.top_processes)');
+    expect(processCpuStatementSql).toContain("proc.value -> 'cpu'");
+
+    const processCpuMaxStatementSql = JSON.stringify(executeMock.mock.calls[12]);
+    expect(processCpuMaxStatementSql).toContain('top_process_cpu_percent_max');
+    expect(processCpuMaxStatementSql).toContain('max(');
+
+    const processRamMaxStatementSql = JSON.stringify(executeMock.mock.calls[14]);
+    expect(processRamMaxStatementSql).toContain('top_process_ram_mb_max');
+    expect(processRamMaxStatementSql).toContain("proc.value -> 'ramMb'");
+
+    const processHourlyStatementSql = JSON.stringify(executeMock.mock.calls[19]);
+    expect(processHourlyStatementSql).toContain('device_process_samples');
+    expect(processHourlyStatementSql).toContain('sourceBucketSeconds');
   });
 
   it('rejects invalid ranges before executing writes', async () => {

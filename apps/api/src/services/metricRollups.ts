@@ -26,6 +26,67 @@ const DEVICE_METRIC_ROLLUP_SOURCES = [
   { metricType: 'process', metricName: 'process_count', column: 'process_count' },
 ] as const;
 
+const PROCESS_SAMPLE_ROLLUP_SOURCES = [
+  {
+    metricName: 'top_process_count',
+    valueSql: 'jsonb_array_length(dps.top_processes)::double precision',
+  },
+  {
+    metricName: 'top_process_cpu_percent_sum',
+    valueSql: `(SELECT coalesce(sum(
+      CASE WHEN jsonb_typeof(proc.value -> 'cpu') = 'number'
+        THEN (proc.value ->> 'cpu')::double precision
+        ELSE 0
+      END
+    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
+  },
+  {
+    metricName: 'top_process_cpu_percent_max',
+    valueSql: `(SELECT coalesce(max(
+      CASE WHEN jsonb_typeof(proc.value -> 'cpu') = 'number'
+        THEN (proc.value ->> 'cpu')::double precision
+        ELSE NULL
+      END
+    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
+  },
+  {
+    metricName: 'top_process_ram_mb_sum',
+    valueSql: `(SELECT coalesce(sum(
+      CASE WHEN jsonb_typeof(proc.value -> 'ramMb') = 'number'
+        THEN (proc.value ->> 'ramMb')::double precision
+        ELSE 0
+      END
+    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
+  },
+  {
+    metricName: 'top_process_ram_mb_max',
+    valueSql: `(SELECT coalesce(max(
+      CASE WHEN jsonb_typeof(proc.value -> 'ramMb') = 'number'
+        THEN (proc.value ->> 'ramMb')::double precision
+        ELSE NULL
+      END
+    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
+  },
+  {
+    metricName: 'top_process_disk_bps_sum',
+    valueSql: `(SELECT coalesce(sum(
+      CASE WHEN jsonb_typeof(proc.value -> 'diskBps') = 'number'
+        THEN (proc.value ->> 'diskBps')::double precision
+        ELSE 0
+      END
+    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
+  },
+  {
+    metricName: 'top_process_net_bps_sum',
+    valueSql: `(SELECT coalesce(sum(
+      CASE WHEN jsonb_typeof(proc.value -> 'netBps') = 'number'
+        THEN (proc.value ->> 'netBps')::double precision
+        ELSE 0
+      END
+    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
+  },
+] as const;
+
 export interface MetricRollupRange {
   orgId: string;
   from: Date;
@@ -149,7 +210,101 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
   `);
 }
 
-async function rollupDerivedDeviceMetrics(options: MetricRollupRange, sourceBucketSeconds: MetricRollupBucketSeconds, targetBucketSeconds: MetricRollupBucketSeconds): Promise<void> {
+async function rollupRawProcessSampleMetric(options: MetricRollupRange, metric: (typeof PROCESS_SAMPLE_ROLLUP_SOURCES)[number]): Promise<void> {
+  const { from, to } = normalizeRange(options.from, options.to);
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
+  const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
+  const valueSql = sql.raw(metric.valueSql);
+
+  await db.execute(sql`
+    WITH process_devices AS (
+      SELECT DISTINCT dps.org_id, dps.device_id
+      FROM device_process_samples dps
+      WHERE dps.org_id = ${options.orgId}
+        AND dps.timestamp >= ${fromIso}::timestamp
+        AND dps.timestamp < ${toIso}::timestamp
+    ),
+    buckets AS (
+      SELECT generate_series(
+        ${fromIso}::timestamp,
+        ${toIso}::timestamp - interval '1 second' * ${RAW_BUCKET_SECONDS},
+        interval '1 second' * ${RAW_BUCKET_SECONDS}
+      )::timestamp AS bucket_start
+    ),
+    bucket_grid AS (
+      SELECT pd.org_id, pd.device_id, buckets.bucket_start
+      FROM process_devices pd
+      CROSS JOIN buckets
+    ),
+    sample_values AS (
+      SELECT
+        dps.org_id,
+        dps.device_id,
+        dps.timestamp,
+        ${valueSql} AS metric_value
+      FROM device_process_samples dps
+      WHERE dps.org_id = ${options.orgId}
+        AND dps.timestamp >= ${fromIso}::timestamp
+        AND dps.timestamp < ${toIso}::timestamp
+    )
+    INSERT INTO metric_rollups (
+      org_id,
+      source_table,
+      device_id,
+      metric_type,
+      metric_name,
+      bucket_start,
+      bucket_seconds,
+      avg_value,
+      min_value,
+      max_value,
+      p95_value,
+      sum_value,
+      sample_count,
+      gap_seconds,
+      metadata
+    )
+    SELECT
+      bg.org_id,
+      'device_process_samples',
+      bg.device_id,
+      'process',
+      ${metric.metricName},
+      bg.bucket_start,
+      ${RAW_BUCKET_SECONDS},
+      avg(sv.metric_value)::double precision,
+      min(sv.metric_value)::double precision,
+      max(sv.metric_value)::double precision,
+      percentile_cont(0.95) within group (order by sv.metric_value)::double precision,
+      sum(sv.metric_value)::double precision,
+      count(sv.metric_value)::integer,
+      greatest(${RAW_BUCKET_SECONDS} - (count(sv.metric_value)::integer * ${expectedSampleSeconds}), 0)::integer,
+      jsonb_build_object(
+        'rollupVersion', ${METRIC_ROLLUP_VERSION}::text,
+        'source', 'raw',
+        'sourceTable', 'device_process_samples',
+        'expectedSampleSeconds', ${expectedSampleSeconds}::integer,
+        'isGap', count(sv.metric_value) = 0
+      )
+    FROM bucket_grid bg
+    LEFT JOIN sample_values sv
+      ON sv.org_id = bg.org_id
+      AND sv.device_id = bg.device_id
+      AND sv.timestamp >= bg.bucket_start
+      AND sv.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
+    GROUP BY bg.org_id, bg.device_id, bg.bucket_start
+    ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
+    DO UPDATE SET ${upsertAssignments()}
+  `);
+}
+
+async function rollupDerivedMetricSource(
+  options: MetricRollupRange,
+  sourceTable: 'device_metrics' | 'device_process_samples',
+  sourceBucketSeconds: MetricRollupBucketSeconds,
+  targetBucketSeconds: MetricRollupBucketSeconds,
+): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
@@ -195,7 +350,7 @@ async function rollupDerivedDeviceMetrics(options: MetricRollupRange, sourceBuck
       )
     FROM metric_rollups mr
     WHERE mr.org_id = ${options.orgId}
-      AND mr.source_table = 'device_metrics'
+      AND mr.source_table = ${sourceTable}
       AND mr.bucket_seconds = ${sourceBucketSeconds}
       AND mr.bucket_start >= ${fromIso}::timestamp
       AND mr.bucket_start < ${toIso}::timestamp
@@ -224,9 +379,18 @@ export async function rollupDeviceMetricsRange(options: MetricRollupRange): Prom
     statements += 1;
   }
 
-  await rollupDerivedDeviceMetrics(options, RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
+  for (const metric of PROCESS_SAMPLE_ROLLUP_SOURCES) {
+    await rollupRawProcessSampleMetric(options, metric);
+    statements += 1;
+  }
+
+  await rollupDerivedMetricSource(options, 'device_metrics', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
   statements += 1;
-  await rollupDerivedDeviceMetrics(options, HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
+  await rollupDerivedMetricSource(options, 'device_metrics', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
+  statements += 1;
+  await rollupDerivedMetricSource(options, 'device_process_samples', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
+  statements += 1;
+  await rollupDerivedMetricSource(options, 'device_process_samples', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
   statements += 1;
 
   return {
