@@ -169,6 +169,8 @@ vi.mock('../db/schema', () => ({
     bucketStart: 'metricRollups.bucketStart',
     bucketSeconds: 'metricRollups.bucketSeconds',
     avgValue: 'metricRollups.avgValue',
+    minValue: 'metricRollups.minValue',
+    maxValue: 'metricRollups.maxValue',
     sampleCount: 'metricRollups.sampleCount'
   },
   metricAnomalies: {
@@ -329,6 +331,85 @@ describe('analytics routes', () => {
       expect(body.series).toHaveLength(1);
       expect(body.series[0].metricType).toBe('cpu_usage');
       expect(body.series[0].data).toEqual([]);
+    });
+
+    it('uses metric rollups for hourly averages when available', async () => {
+      mockSelectOnce([
+        { bucket: new Date('2026-06-18T12:00:00.000Z'), value: 42.5 },
+      ]);
+
+      const res = await app.request('/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [DEVICE_IN_SCOPE],
+          metricTypes: ['cpu_usage'],
+          startTime: '2026-06-18T00:00:00Z',
+          endTime: '2026-06-19T00:00:00Z',
+          aggregation: 'avg',
+          interval: 'hour'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.series[0].data).toEqual([
+        { timestamp: '2026-06-18T12:00:00.000Z', value: 42.5 },
+      ]);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to raw metrics when hourly rollups are empty', async () => {
+      mockSelectOnce([]); // metric_rollups
+      mockSelectOnce([
+        { bucket: new Date('2026-06-18T12:00:00.000Z'), value: 37 },
+      ]); // raw device_metrics
+
+      const res = await app.request('/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [DEVICE_IN_SCOPE],
+          metricTypes: ['cpu_usage'],
+          startTime: '2026-06-18T00:00:00Z',
+          endTime: '2026-06-19T00:00:00Z',
+          aggregation: 'avg',
+          interval: 'hour'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.series[0].data).toEqual([
+        { timestamp: '2026-06-18T12:00:00.000Z', value: 37 },
+      ]);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses metric rollup sample counts for daily count aggregation', async () => {
+      mockSelectOnce([
+        { bucket: new Date('2026-06-18T00:00:00.000Z'), value: 15 },
+      ]);
+
+      const res = await app.request('/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [DEVICE_IN_SCOPE],
+          metricTypes: ['memory_usage'],
+          startTime: '2026-06-18T00:00:00Z',
+          endTime: '2026-06-19T00:00:00Z',
+          aggregation: 'count',
+          interval: 'day'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.series[0].data).toEqual([
+        { timestamp: '2026-06-18T00:00:00.000Z', value: 15 },
+      ]);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
     });
 
     it('should validate required fields', async () => {
@@ -940,7 +1021,8 @@ describe('analytics routes', () => {
       it('allows a site-restricted caller when all requested deviceIds are in scope', async () => {
         currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
         mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
-        mockSelectOnce([]); // metric series query
+        mockSelectOnce([]); // metric_rollups
+        mockSelectOnce([]); // raw metric series query
 
         const res = await app.request('/analytics/query', {
           method: 'POST',
@@ -962,7 +1044,8 @@ describe('analytics routes', () => {
 
       it('does not narrow timeseries for an unrestricted caller', async () => {
         currentPermissions = undefined; // unrestricted — no resolution query
-        mockSelectOnce([]); // metric series query is the first select
+        mockSelectOnce([]); // metric_rollups query is the first select
+        mockSelectOnce([]); // raw metric series query
 
         const res = await app.request('/analytics/query', {
           method: 'POST',

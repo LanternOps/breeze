@@ -128,6 +128,41 @@ function aggregationSql(col: any, agg: string) {
   }
 }
 
+function metricRollupNameForQuery(metricType: string): string | undefined {
+  const normalized = metricType.trim().toLowerCase();
+  if (normalized === 'cpu_usage' || normalized === 'cpu' || normalized === 'cpu utilization') return 'cpu_percent';
+  if (normalized === 'memory_usage' || normalized === 'memory' || normalized === 'ram' || normalized === 'memory utilization') return 'ram_percent';
+  if (normalized === 'ram_used_mb') return 'ram_used_mb';
+  if (normalized === 'disk_usage' || normalized === 'disk' || normalized === 'disk usage') return 'disk_percent';
+  if (normalized === 'disk_used_gb') return 'disk_used_gb';
+  if (normalized === 'network_in' || normalized === 'bandwidth_in') return 'bandwidth_in_bps';
+  if (normalized === 'network_out' || normalized === 'bandwidth_out') return 'bandwidth_out_bps';
+  if (normalized === 'network throughput') return 'bandwidth_in_bps';
+  if (normalized === 'process_count') return 'process_count';
+  return undefined;
+}
+
+function rollupBucketSeconds(interval: string): number | undefined {
+  if (interval === 'hour') return 3600;
+  if (interval === 'day') return 86400;
+  return undefined;
+}
+
+function rollupAggregationSql(agg: string) {
+  switch (agg) {
+    case 'avg':
+      return sql<number>`sum(${metricRollups.avgValue} * ${metricRollups.sampleCount}) / nullif(sum(${metricRollups.sampleCount}), 0)`;
+    case 'min':
+      return sql<number>`min(${metricRollups.minValue})`;
+    case 'max':
+      return sql<number>`max(${metricRollups.maxValue})`;
+    case 'count':
+      return sql<number>`sum(${metricRollups.sampleCount})`;
+    default:
+      return undefined;
+  }
+}
+
 const listDashboardsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -360,6 +395,41 @@ analyticsRoutes.post(
         continue;
       }
 
+      const rollupMetricName = metricRollupNameForQuery(normalizedMetricType);
+      const bucketSeconds = rollupBucketSeconds(interval);
+      const rollupValue = rollupAggregationSql(data.aggregation);
+      let rows: Array<{ bucket: Date | string; value: number | null }> = [];
+
+      if (rollupMetricName && bucketSeconds && rollupValue) {
+        const rollupBucket = metricRollups.bucketStart;
+        const rollupOrgCondition =
+          typeof auth?.orgCondition === 'function'
+            ? auth.orgCondition(metricRollups.orgId)
+            : auth?.orgId
+              ? eq(metricRollups.orgId, auth.orgId)
+              : undefined;
+        rows = await db
+          .select({
+            bucket: rollupBucket,
+            value: rollupValue
+          })
+          .from(metricRollups)
+          .where(
+            and(
+              inArray(metricRollups.deviceId, data.deviceIds),
+              eq(metricRollups.sourceTable, 'device_metrics'),
+              eq(metricRollups.bucketSeconds, bucketSeconds),
+              eq(metricRollups.metricName, rollupMetricName),
+              sql`${metricRollups.sampleCount} > 0`,
+              ...(rollupOrgCondition ? [rollupOrgCondition] : []),
+              gte(metricRollups.bucketStart, startTime),
+              lte(metricRollups.bucketStart, endTime)
+            )
+          )
+          .groupBy(rollupBucket)
+          .orderBy(rollupBucket);
+      }
+
       const bucket = sql<Date>`date_trunc(${interval}, ${deviceMetrics.timestamp})`;
       const value = aggregationSql(metricColumn, data.aggregation);
 
@@ -371,23 +441,25 @@ analyticsRoutes.post(
             ? eq(devices.orgId, auth.orgId)
             : undefined;
 
-      const rows = await db
-        .select({
-          bucket,
-          value
-        })
-        .from(deviceMetrics)
-        .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
-        .where(
-          and(
-            inArray(deviceMetrics.deviceId, data.deviceIds),
-            ...(orgCondition ? [orgCondition] : []),
-            gte(deviceMetrics.timestamp, startTime),
-            lte(deviceMetrics.timestamp, endTime)
+      if (rows.length === 0) {
+        rows = await db
+          .select({
+            bucket,
+            value
+          })
+          .from(deviceMetrics)
+          .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
+          .where(
+            and(
+              inArray(deviceMetrics.deviceId, data.deviceIds),
+              ...(orgCondition ? [orgCondition] : []),
+              gte(deviceMetrics.timestamp, startTime),
+              lte(deviceMetrics.timestamp, endTime)
+            )
           )
-        )
-        .groupBy(bucket)
-        .orderBy(bucket);
+          .groupBy(bucket)
+          .orderBy(bucket);
+      }
 
       series.push({
         metricType,
