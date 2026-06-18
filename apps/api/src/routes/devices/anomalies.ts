@@ -6,6 +6,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { metricAnomalies } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { promoteMetricAnomalyToAlert } from '../../services/metricAnomalyPromotion';
 import { emitAnomalyFeedback } from '../../services/mlFeedbackEmitters';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -108,6 +109,40 @@ anomaliesRoutes.patch(
     }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+
+    if (input.status === 'promoted') {
+      const result = await promoteMetricAnomalyToAlert({
+        orgId: device.orgId,
+        deviceId,
+        anomalyId,
+        actorUserId: auth.user.id,
+      });
+
+      if (result.status === 'not_found') {
+        return c.json({ error: 'Anomaly not found' }, 404);
+      }
+      if (result.status === 'disabled') {
+        return c.json({ error: 'Anomaly alert promotion is disabled' }, 409);
+      }
+
+      await emitAnomalyFeedback({
+        orgId: result.anomaly.orgId,
+        anomalyId: result.anomaly.id,
+        eventType: 'anomaly.promoted',
+        outcome: 'promoted',
+        actorUserId: auth.user.id,
+        metadata: {
+          route: 'devices.anomalies.status',
+          metricName: result.anomaly.metricName,
+          anomalyType: result.anomaly.anomalyType,
+          linkedAlertId: result.alertId,
+          createdAlert: result.created,
+          note: input.note,
+        },
+      });
+
+      return c.json({ data: serializeAnomaly(result.anomaly) });
     }
 
     const now = new Date();
