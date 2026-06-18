@@ -73,9 +73,28 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
   const { from, to } = normalizeRange(options.from, options.to);
   const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
   const valueSql = sql.raw(`dm.${metric.column}`);
-  const bucketSql = bucketStartSql(sql`dm.timestamp`, RAW_BUCKET_SECONDS);
 
   await db.execute(sql`
+    WITH metric_devices AS (
+      SELECT DISTINCT dm.org_id, dm.device_id
+      FROM device_metrics dm
+      WHERE dm.org_id = ${options.orgId}
+        AND dm.timestamp >= ${from}
+        AND dm.timestamp < ${to}
+        AND ${valueSql} IS NOT NULL
+    ),
+    buckets AS (
+      SELECT generate_series(
+        ${from}::timestamp,
+        ${to}::timestamp - interval '1 second' * ${RAW_BUCKET_SECONDS},
+        interval '1 second' * ${RAW_BUCKET_SECONDS}
+      )::timestamp AS bucket_start
+    ),
+    bucket_grid AS (
+      SELECT md.org_id, md.device_id, buckets.bucket_start
+      FROM metric_devices md
+      CROSS JOIN buckets
+    )
     INSERT INTO metric_rollups (
       org_id,
       source_table,
@@ -94,27 +113,34 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
       metadata
     )
     SELECT
-      dm.org_id,
+      bg.org_id,
       'device_metrics',
-      dm.device_id,
+      bg.device_id,
       ${metric.metricType},
       ${metric.metricName},
-      ${bucketSql},
+      bg.bucket_start,
       ${RAW_BUCKET_SECONDS},
       avg(${valueSql})::double precision,
       min(${valueSql})::double precision,
       max(${valueSql})::double precision,
       percentile_cont(0.95) within group (order by ${valueSql})::double precision,
       sum(${valueSql})::double precision,
-      count(*)::integer,
-      greatest(${RAW_BUCKET_SECONDS} - (count(*)::integer * ${expectedSampleSeconds}), 0)::integer,
-      jsonb_build_object('rollupVersion', ${METRIC_ROLLUP_VERSION}, 'source', 'raw', 'expectedSampleSeconds', ${expectedSampleSeconds})
-    FROM device_metrics dm
-    WHERE dm.org_id = ${options.orgId}
-      AND dm.timestamp >= ${from}
-      AND dm.timestamp < ${to}
+      count(${valueSql})::integer,
+      greatest(${RAW_BUCKET_SECONDS} - (count(${valueSql})::integer * ${expectedSampleSeconds}), 0)::integer,
+      jsonb_build_object(
+        'rollupVersion', ${METRIC_ROLLUP_VERSION},
+        'source', 'raw',
+        'expectedSampleSeconds', ${expectedSampleSeconds},
+        'isGap', count(${valueSql}) = 0
+      )
+    FROM bucket_grid bg
+    LEFT JOIN device_metrics dm
+      ON dm.org_id = bg.org_id
+      AND dm.device_id = bg.device_id
+      AND dm.timestamp >= bg.bucket_start
+      AND dm.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
       AND ${valueSql} IS NOT NULL
-    GROUP BY dm.org_id, dm.device_id, ${bucketSql}
+    GROUP BY bg.org_id, bg.device_id, bg.bucket_start
     ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
     DO UPDATE SET ${upsertAssignments()}
   `);
@@ -164,7 +190,6 @@ async function rollupDerivedDeviceMetrics(options: MetricRollupRange, sourceBuck
       AND mr.bucket_seconds = ${sourceBucketSeconds}
       AND mr.bucket_start >= ${from}
       AND mr.bucket_start < ${to}
-      AND mr.sample_count > 0
     GROUP BY mr.org_id, mr.source_table, mr.device_id, mr.metric_type, mr.metric_name, ${targetBucketSql}
     HAVING sum(mr.sample_count) > 0
     ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)

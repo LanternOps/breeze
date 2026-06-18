@@ -63,6 +63,38 @@ describe('metric rollups service', () => {
     expect(executedSql).toContain('NULL::double precision');
   });
 
+  it('materializes regular raw bucket grids so sparse heartbeats create gap buckets', async () => {
+    await rollupDeviceMetricsRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:15:00.000Z'),
+      expectedSampleSeconds: 60,
+    });
+
+    const rawStatementSql = JSON.stringify(executeMock.mock.calls[0]);
+    expect(rawStatementSql).toContain('generate_series');
+    expect(rawStatementSql).toContain('bucket_grid');
+    expect(rawStatementSql).toContain('LEFT JOIN device_metrics');
+    expect(rawStatementSql).toContain('count(');
+    expect(rawStatementSql).toContain('dm.cpu_percent');
+    expect(rawStatementSql).toContain('isGap');
+    expect(rawStatementSql).toContain('DO UPDATE SET');
+  });
+
+  it('lets derived rollups include gap buckets without averaging empty values', async () => {
+    await rollupDeviceMetricsRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T13:00:00.000Z'),
+    });
+
+    const hourlyStatementSql = JSON.stringify(executeMock.mock.calls[10]);
+    expect(hourlyStatementSql).toContain('sum(mr.avg_value * mr.sample_count)');
+    expect(hourlyStatementSql).toContain('sum(mr.gap_seconds)');
+    expect(hourlyStatementSql).not.toContain('AND mr.sample_count > 0');
+    expect(hourlyStatementSql).toContain('HAVING sum(mr.sample_count) > 0');
+  });
+
   it('rejects invalid ranges before executing writes', async () => {
     await expect(
       rollupDeviceMetricsRange({
