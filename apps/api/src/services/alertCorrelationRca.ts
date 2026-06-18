@@ -406,6 +406,43 @@ function buildLogCandidate(evidence: RcaEvidenceItem[]): RcaRootCauseCandidate |
   };
 }
 
+function buildCorrelationMetadataCandidate(evidence: RcaEvidenceItem[]): RcaRootCauseCandidate | null {
+  const correlation = evidence.find((item) => item.source === 'correlation' && item.metadata);
+  if (!correlation) return null;
+
+  const metadata = metadataRecord(correlation.metadata);
+  const logRuleNames = metadataStringArray(metadata, 'logCorrelationRuleNames', 3);
+  const logPatterns = metadataStringArray(metadata, 'logPatterns', 3);
+  const flappingRuleIds = metadataStringArray(metadata, 'flappingRuleIds', 3);
+  const flappingDeviceIds = metadataStringArray(metadata, 'flappingDeviceIds', 3);
+
+  if (metadata.flappingDetected === true) {
+    const details = [
+      flappingRuleIds.length > 0 ? `rules ${flappingRuleIds.join(', ')}` : null,
+      flappingDeviceIds.length > 0 ? `devices ${flappingDeviceIds.join(', ')}` : null,
+    ].filter((item): item is string => Boolean(item));
+    return {
+      summary: `Alert correlation detected flapping suppression evidence${details.length > 0 ? ` on ${details.join('; ')}` : ''}.`,
+      confidence: 0.64,
+      supportingEvidenceIds: [correlation.id],
+    };
+  }
+
+  if (logRuleNames.length > 0 || logPatterns.length > 0) {
+    const details = [
+      logRuleNames.length > 0 ? `rules ${logRuleNames.join(', ')}` : null,
+      logPatterns.length > 0 ? `patterns ${logPatterns.join(', ')}` : null,
+    ].filter((item): item is string => Boolean(item));
+    return {
+      summary: `Alert correlation included matching log-correlation evidence: ${details.join('; ')}.`,
+      confidence: 0.6,
+      supportingEvidenceIds: [correlation.id],
+    };
+  }
+
+  return null;
+}
+
 function buildSuggestedNextSteps(
   evidence: RcaEvidenceItem[],
   candidates: RcaRootCauseCandidate[],
@@ -758,6 +795,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
   const timeline = rankEvidence(evidence).slice(0, maxEvidenceItems);
   const candidates = [
     buildPrimaryAlertCandidate(alertRows, options.groupScore),
+    buildCorrelationMetadataCandidate(timeline),
     buildChangeCandidate(timeline),
     buildLogCandidate(timeline),
   ].filter((candidate): candidate is RcaRootCauseCandidate => Boolean(candidate));

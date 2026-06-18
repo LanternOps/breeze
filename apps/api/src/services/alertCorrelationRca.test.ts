@@ -498,6 +498,11 @@ describe('alert correlation RCA evidence builder', () => {
     });
     expect(result.rootCauseCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ confidence: 0.91 }),
+      expect.objectContaining({
+        confidence: 0.64,
+        summary: expect.stringContaining('flapping suppression evidence'),
+        supportingEvidenceIds: [`correlation:${ALERT_1}:${ALERT_2}`],
+      }),
       expect.objectContaining({ confidence: 0.58 }),
       expect.objectContaining({ confidence: 0.52 }),
     ]));
