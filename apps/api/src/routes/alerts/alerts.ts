@@ -17,6 +17,7 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
+import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -362,6 +363,19 @@ alertsRoutes.post(
             eventErr instanceof Error ? eventErr.message : eventErr
           );
         }
+
+        await emitAlertStateFeedback({
+          orgId: alert.orgId,
+          alertId: alert.id,
+          eventType: action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
+          outcome: action === 'acknowledge' ? 'acknowledged' : 'resolved',
+          actorUserId: auth.user.id,
+          occurredAt: now,
+          metadata: {
+            source: 'alerts.bulk',
+            previousStatus: alert.status,
+          },
+        });
       } catch (dbErr) {
         console.error(`[alerts/bulk] Failed to ${action} alert ${alert.id}:`, dbErr instanceof Error ? dbErr.message : dbErr);
         results.failed++;
@@ -405,11 +419,12 @@ alertsRoutes.post(
       return c.json({ error: `Cannot acknowledge alert with status: ${alert.status}` }, 400);
     }
 
+    const acknowledgedAt = new Date();
     const [updated] = await db
       .update(alerts)
       .set({
         status: 'acknowledged',
-        acknowledgedAt: new Date(),
+        acknowledgedAt,
         acknowledgedBy: auth.user.id
       })
       .where(eq(alerts.id, alertId))
@@ -434,6 +449,19 @@ alertsRoutes.post(
     } catch (error) {
       console.error('[AlertsRoute] Failed to publish alert.acknowledged event:', error);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.acknowledged',
+      outcome: 'acknowledged',
+      actorUserId: auth.user.id,
+      occurredAt: acknowledgedAt,
+      metadata: {
+        source: 'alerts.route',
+        previousStatus: alert.status,
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -472,11 +500,12 @@ alertsRoutes.post(
       return c.json({ error: 'Alert is already resolved' }, 400);
     }
 
+    const resolvedAt = new Date();
     const [updated] = await db
       .update(alerts)
       .set({
         status: 'resolved',
-        resolvedAt: new Date(),
+        resolvedAt,
         resolvedBy: auth.user.id,
         resolutionNote: data.note
       })
@@ -530,6 +559,20 @@ alertsRoutes.post(
     } catch (error) {
       console.error('[AlertsRoute] Failed to publish alert.resolved event:', error);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.resolved',
+      outcome: 'resolved',
+      actorUserId: auth.user.id,
+      occurredAt: resolvedAt,
+      metadata: {
+        source: 'alerts.route',
+        previousStatus: alert.status,
+        hasResolutionNote: Boolean(data.note),
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -585,6 +628,20 @@ alertsRoutes.post(
     if (!updated) {
       return c.json({ error: 'Failed to suppress alert' }, 500);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.suppressed',
+      outcome: 'suppressed',
+      actorUserId: auth.user.id,
+      occurredAt: new Date(),
+      metadata: {
+        source: 'alerts.route',
+        previousStatus: alert.status,
+        suppressedUntil: suppressedUntil.toISOString(),
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,

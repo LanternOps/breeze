@@ -177,6 +177,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'log_search_queries',
   'm365_connections',
   'maintenance_windows',
+  'ml_feedback_events',
   'network_baselines',
   'network_change_events',
   'network_monitors',
@@ -291,10 +292,15 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
 
 /**
  * Tables in the cascade set that require the `breeze_audit_admin` role
- * to DELETE. These are gated by the audit_log_immutable trigger and
- * the per-role DELETE grant established in migration 2026-05-25-i.
+ * to DELETE. These are gated by append-only triggers plus per-role DELETE
+ * grants so ordinary app paths can append/read but cannot mutate them.
  */
-const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>(['audit_logs', 'audit_log_chain', 'audit_chain_anchors']);
+const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
+  'audit_logs',
+  'audit_log_chain',
+  'audit_chain_anchors',
+  'ml_feedback_events',
+]);
 
 interface FkEdge {
   // SQL aliases are snake_case (postgres-js does not auto-camelCase).

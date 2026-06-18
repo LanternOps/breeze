@@ -47,6 +47,10 @@ vi.mock('../../services/alertCooldown', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: vi.fn() }));
+vi.mock('../../services/mlFeedbackEmitters', () => ({
+  emitAlertStateFeedback: vi.fn(),
+  emitCorrelationFeedback: vi.fn(),
+}));
 vi.mock('../../services/ticketService', () => ({
   createTicketFromAlert: vi.fn(),
   TicketServiceError: class TicketServiceError extends Error { status = 400; },

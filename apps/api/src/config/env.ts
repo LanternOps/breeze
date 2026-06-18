@@ -1,4 +1,4 @@
-function envFlag(name: string, fallback = false): boolean {
+export function envFlag(name: string, fallback = false): boolean {
   const raw = process.env[name];
   if (!raw) return fallback;
   const v = raw.trim().toLowerCase();
@@ -85,4 +85,48 @@ export function cfAccessAud(): string {
 }
 export function cfAccessTrustsMfa(): boolean {
   return envFlag('CF_ACCESS_TRUSTS_MFA');
+}
+
+// Emergency kill switches for ML/AI producers. These are intentionally read at
+// call time so ops can flip process/runtime env and workers can stop writing
+// outputs without a redeploy.
+export function mlFeaturesGloballyDisabled(): boolean {
+  return (
+    envFlag('ML_FEATURES_DISABLED') ||
+    envFlag('ML_OUTPUTS_DISABLED') ||
+    envFlag('ML_GLOBAL_KILL_SWITCH')
+  );
+}
+
+function mlFlagEnvNames(flag: string): string[] {
+  const normalized = flag
+    .replace(/^ml\./, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  const disabledName = `ML_${normalized}_DISABLED`;
+  const names = [disabledName];
+  if (disabledName.endsWith('_ENABLED_DISABLED')) {
+    names.push(disabledName.replace(/_ENABLED_DISABLED$/, '_DISABLED'));
+  }
+  return names;
+}
+
+function isFlagListed(raw: string | undefined, flag: string): boolean {
+  if (!raw) return false;
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .some((entry) => {
+      if (entry === flag || entry === '*' || entry === 'ml.*') return true;
+      if (entry.endsWith('.*')) return flag.startsWith(entry.slice(0, -1));
+      return false;
+    });
+}
+
+export function mlFeatureGloballyDisabled(flag: string): boolean {
+  if (mlFeaturesGloballyDisabled()) return true;
+  if (isFlagListed(process.env.ML_DISABLED_FLAGS, flag)) return true;
+  return mlFlagEnvNames(flag).some((name) => envFlag(name));
 }

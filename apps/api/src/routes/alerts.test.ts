@@ -54,6 +54,11 @@ vi.mock('../services/eventBus', () => ({
   publishEvent: publishEventMock
 }));
 
+vi.mock('../services/mlFeedbackEmitters', () => ({
+  emitAlertStateFeedback: vi.fn(),
+  emitCorrelationFeedback: vi.fn(),
+}));
+
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: vi.fn().mockResolvedValue(undefined),
   markConfigPolicyRuleCooldown: vi.fn().mockResolvedValue(undefined)

@@ -61,7 +61,8 @@ export default function AlertCorrelationView() {
       }
 
       const data = await response.json();
-      const alertList = (data.alerts || []).map((a: AlertSummary) => ({
+      const rawAlerts = data.alerts || data.data || [];
+      const alertList = rawAlerts.map((a: AlertSummary) => ({
         id: a.id,
         title: a.title,
         severity: a.severity,
