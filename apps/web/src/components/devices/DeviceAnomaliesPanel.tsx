@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle, ExternalLink, RefreshCw, TrendingUp, XCircl
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type AnomalyStatus = 'open' | 'dismissed' | 'promoted' | 'resolved';
 
@@ -93,10 +94,12 @@ function labelForAnomaly(type: string): string {
 }
 
 export default function DeviceAnomaliesPanel({ deviceId, compact = false }: DeviceAnomaliesPanelProps) {
+  const mlFlags = useMlFeatureFlags();
   const [anomalies, setAnomalies] = useState<MetricAnomaly[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const anomaliesDisabled = mlFlags.isDisabled('ml.anomalies.enabled');
 
   const fetchAnomalies = useCallback(async () => {
     setLoading(true);
@@ -114,8 +117,15 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
   }, [compact, deviceId]);
 
   useEffect(() => {
+    if (!mlFlags.loaded) return;
+    if (anomaliesDisabled) {
+      setAnomalies([]);
+      setError(undefined);
+      setLoading(false);
+      return;
+    }
     void fetchAnomalies();
-  }, [fetchAnomalies]);
+  }, [anomaliesDisabled, fetchAnomalies, mlFlags.loaded]);
 
   const sorted = useMemo(
     () => [...anomalies].sort((a, b) => b.confidence - a.confidence || b.score - a.score),
@@ -169,6 +179,26 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false }: Devi
             <RefreshCw className="h-4 w-4" />
             Retry
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (anomaliesDisabled) {
+    return (
+      <div className={`rounded-lg border bg-card shadow-sm ${compact ? 'p-4' : 'p-6'}`}>
+        <div className="flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-muted-foreground" />
+          <div>
+            <h3 className="text-lg font-semibold">Metric Anomalies</h3>
+            {!compact && (
+              <p className="text-sm text-muted-foreground">Anomaly detection is disabled for this organization.</p>
+            )}
+          </div>
+        </div>
+        <div className="mt-5 rounded-md border border-dashed p-6 text-center">
+          <CheckCircle className="mx-auto h-8 w-8 text-muted-foreground" />
+          <p className="mt-2 text-sm font-medium">Anomaly detection disabled</p>
         </div>
       </div>
     );
