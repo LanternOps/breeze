@@ -13,10 +13,11 @@ const ALERT_CORRELATION_QUEUE = 'alert-correlation';
 const DEDUPE_WINDOW_MS = 30 * 1000;
 const DEFAULT_DELAY_MS = 5 * 1000;
 const DEFAULT_WINDOW_MINUTES = 30;
-const MAX_ALERTS_PER_DEVICE_PASS = 50;
+const MAX_ALERTS_PER_SITE_PASS = 50;
 
 type CorrelatableAlert = {
   id: string;
+  deviceId: string;
   triggeredAt: Date;
   ruleId: string | null;
   templateId: string | null;
@@ -29,6 +30,7 @@ type AlertCorrelationEvidenceType =
   | 'same_rule_temporal'
   | 'same_template_temporal'
   | 'same_config_policy_item_temporal'
+  | 'same_site_temporal'
   | 'same_device_temporal';
 
 export type AlertCorrelationJobData = {
@@ -67,9 +69,10 @@ export function buildAlertCorrelationEvidence(options: {
   metadata: Record<string, unknown>;
 } {
   const baseConfidence = Math.round((1 - options.timeDiffMs / options.maxWindowMs) * 100) / 100;
-  let correlationType: AlertCorrelationEvidenceType = 'same_device_temporal';
+  const sameDevice = options.older.deviceId === options.newer.deviceId;
+  let correlationType: AlertCorrelationEvidenceType = sameDevice ? 'same_device_temporal' : 'same_site_temporal';
   let confidence = baseConfidence;
-  const evidence: string[] = ['same_device', 'time_window'];
+  const evidence: string[] = [sameDevice ? 'same_device' : 'same_site', 'time_window'];
 
   if (options.older.ruleId && options.older.ruleId === options.newer.ruleId) {
     correlationType = 'same_rule_temporal';
@@ -96,6 +99,8 @@ export function buildAlertCorrelationEvidence(options: {
     metadata: {
       timeDiffMinutes: Math.round(options.timeDiffMs / 60000),
       deviceId: options.deviceId,
+      parentDeviceId: options.older.deviceId,
+      childDeviceId: options.newer.deviceId,
       siteId: options.newer.siteId ?? options.older.siteId,
       ruleId: options.newer.ruleId ?? options.older.ruleId,
       templateId: options.newer.templateId ?? options.older.templateId,
@@ -155,10 +160,20 @@ export async function runAlertCorrelationForDevice(options: {
 
   const windowMinutes = options.windowMinutes ?? DEFAULT_WINDOW_MINUTES;
   const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
+  const [targetDevice] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, options.deviceId), eq(devices.orgId, options.orgId)))
+    .limit(1);
+
+  if (!targetDevice) {
+    return { scanned: 0, created: 0 };
+  }
 
   const recentAlerts = await db
     .select({
       id: alerts.id,
+      deviceId: alerts.deviceId,
       triggeredAt: alerts.triggeredAt,
       ruleId: alerts.ruleId,
       templateId: alertRules.templateId,
@@ -171,14 +186,14 @@ export async function runAlertCorrelationForDevice(options: {
     .innerJoin(devices, eq(alerts.deviceId, devices.id))
     .where(
       and(
-        eq(alerts.deviceId, options.deviceId),
         eq(alerts.orgId, options.orgId),
+        eq(devices.siteId, targetDevice.siteId),
         gte(alerts.triggeredAt, windowStart),
         inArray(alerts.status, ['active', 'acknowledged'])
       )
     )
     .orderBy(desc(alerts.triggeredAt))
-    .limit(MAX_ALERTS_PER_DEVICE_PASS);
+    .limit(MAX_ALERTS_PER_SITE_PASS);
 
   if (recentAlerts.length < 2) {
     return { scanned: recentAlerts.length, created: 0 };

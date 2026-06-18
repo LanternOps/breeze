@@ -63,6 +63,7 @@ import {
 
 const alertAt = (overrides: Partial<Parameters<typeof buildAlertCorrelationEvidence>[0]['newer']>) => ({
   id: 'alert-1',
+  deviceId: 'device-1',
   triggeredAt: new Date('2026-06-18T12:00:00.000Z'),
   ruleId: null,
   templateId: null,
@@ -147,6 +148,8 @@ describe('alert correlation queue helpers', () => {
       confidence: 0.98,
       metadata: {
         deviceId: 'device-1',
+        parentDeviceId: 'device-1',
+        childDeviceId: 'device-1',
         siteId: 'site-1',
         ruleId: 'rule-1',
         templateId: 'template-1',
@@ -190,6 +193,28 @@ describe('alert correlation queue helpers', () => {
         configPolicyId: 'policy-1',
         configItemName: 'disk-low',
         evidence: ['same_device', 'time_window', 'same_config_policy_item'],
+      },
+    });
+  });
+
+  it('builds same-site evidence for different-device alert pairs', () => {
+    const evidence = buildAlertCorrelationEvidence({
+      older: alertAt({ id: 'older', deviceId: 'device-1', siteId: 'site-1' }),
+      newer: alertAt({ id: 'newer', deviceId: 'device-2', siteId: 'site-1' }),
+      deviceId: 'device-2',
+      timeDiffMs: 3 * 60 * 1000,
+      maxWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(evidence).toMatchObject({
+      correlationType: 'same_site_temporal',
+      confidence: 0.9,
+      metadata: {
+        deviceId: 'device-2',
+        parentDeviceId: 'device-1',
+        childDeviceId: 'device-2',
+        siteId: 'site-1',
+        evidence: ['same_site', 'time_window'],
       },
     });
   });
