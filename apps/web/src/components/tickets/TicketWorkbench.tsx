@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -30,12 +30,22 @@ interface Props {
   // workbench skips its own /users fetch; undefined keeps the standalone
   // self-fetch (full-page /tickets/[id] view).
   assignees?: Array<{ id: string; name: string | null; email: string }> | null;
+  categories?: Array<{ id: string; name: string }>;
 }
 
 const STATUS_OPTIONS: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'];
 const PRIORITY_OPTIONS: TicketPriority[] = ['urgent', 'high', 'normal', 'low'];
 
-export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp }: Props) {
+type TicketTriageSuggestion = {
+  modelVersion: string;
+  confidence: number;
+  priority: TicketPriority | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  reasons: string[];
+};
+
+export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -52,6 +62,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
+  const [triageSuggestion, setTriageSuggestion] = useState<TicketTriageSuggestion | null>(null);
+  const [triageLoading, setTriageLoading] = useState(false);
+  const [applyingTriage, setApplyingTriage] = useState(false);
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
   const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
@@ -90,6 +103,28 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   }, [ticketId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!ticket) {
+      setTriageSuggestion(null);
+      return;
+    }
+    let cancelled = false;
+    setTriageLoading(true);
+    void fetchWithAuth(`/tickets/${ticketId}/triage-suggestion`)
+      .then(async (res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled) return;
+        setTriageSuggestion(body?.enabled ? (body.suggestion ?? null) : null);
+      })
+      .catch(() => {
+        if (!cancelled) setTriageSuggestion(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTriageLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [ticket, ticketId]);
 
   // Bulk actions in the queue mutate tickets behind the pane's back; the parent
   // bumps refreshToken after a bulk apply so the detail can't go stale. The ref
@@ -208,6 +243,33 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }
   }, [ticketId, creatingInvoice]);
 
+  const applyTriageSuggestion = useCallback(async () => {
+    if (!triageSuggestion || applyingTriage) return;
+    const body: Partial<Pick<TicketDetail, 'categoryId' | 'priority'>> = {};
+    if (triageSuggestion.categoryId !== null) body.categoryId = triageSuggestion.categoryId;
+    if (triageSuggestion.priority !== null) body.priority = triageSuggestion.priority;
+    if (Object.keys(body).length === 0) return;
+
+    setApplyingTriage(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/triage-suggestion/apply`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+        errorFallback: 'Could not apply ticket triage suggestion.',
+        successMessage: 'Ticket triage suggestion applied',
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setTriageSuggestion(null);
+      afterMutation(body);
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+    } finally {
+      setApplyingTriage(false);
+    }
+  }, [afterMutation, applyingTriage, ticketId, triageSuggestion]);
+
   // Fallback path: option values are the six core enums; POST {status}.
   const onStatusChange = useCallback(async (status: TicketStatus) => {
     setPendingStatusId(null);
@@ -296,6 +358,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         ?? config.statuses.find((s) => s.coreStatus === ticket.status && s.isSystem))?.id ?? null
     : null;
   const headerStatusColor = ticket.statusColor ?? config?.statuses.find((s) => s.id === selectedStatusId)?.color ?? null;
+  const suggestedCategoryName = triageSuggestion?.categoryId
+    ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? 'Suggested category')
+    : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading || undefined}>
@@ -421,6 +486,38 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             {creatingInvoice ? 'Creating…' : 'Create invoice'}
           </button>
         </div>
+        {(triageSuggestion || triageLoading) && (
+          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-triage-suggestion">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-medium">
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                  Suggested triage
+                </div>
+                {triageLoading ? (
+                  <p className="mt-1 text-xs text-muted-foreground">Checking ticket signals…</p>
+                ) : triageSuggestion ? (
+                  <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                    {triageSuggestion.priority && <span>Priority: {priorityLabel(config, triageSuggestion.priority)}</span>}
+                    {suggestedCategoryName && <span>Category: {suggestedCategoryName}</span>}
+                    <span>{Math.round(triageSuggestion.confidence * 100)}% confidence</span>
+                  </div>
+                ) : null}
+              </div>
+              {triageSuggestion && (
+                <button
+                  type="button"
+                  onClick={() => void applyTriageSuggestion()}
+                  disabled={applyingTriage}
+                  className="inline-flex shrink-0 items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  data-testid="ticket-triage-apply"
+                >
+                  {applyingTriage ? 'Applying…' : 'Apply'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         {resolveOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-resolve-form">
             <label className="text-xs font-medium" htmlFor="resolve-note">Resolution note (visible to requester)</label>

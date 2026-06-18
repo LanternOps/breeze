@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { serviceMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock } = vi.hoisted(() => {
+const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock } = vi.hoisted(() => {
   const lastWhereArgs: { conditions: unknown[] }[] = [];
   const lastOrderByArgs: unknown[][] = [];
   return {
@@ -14,6 +14,10 @@ const { serviceMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastO
       unlinkAlertFromTicket: vi.fn(),
       updateTicketFields: vi.fn(),
       getAssigneeForValidation: vi.fn(),
+    },
+    ticketTriageMocks: {
+      getTicketTriageSuggestion: vi.fn(),
+      evaluateTicketTriage: vi.fn(),
     },
     dbSelectMock: vi.fn(),
     dbGroupByMock: vi.fn(),
@@ -43,6 +47,12 @@ vi.mock('../../services/ticketService', async () => {
   const actual = await vi.importActual<typeof import('../../services/ticketService')>('../../services/ticketService');
   return { ...actual, ...serviceMocks };
 });
+
+vi.mock('../../services/ticketTriage', () => ticketTriageMocks);
+
+vi.mock('../../services/mlFeedbackEmitters', () => ({
+  emitTicketTriageFeedback: vi.fn(),
+}));
 
 // Mirror the REAL middleware contract: authMiddleware is the ONLY thing that
 // populates c.get('auth'); requireScope 401s when it is missing (exactly the
@@ -179,6 +189,7 @@ import { ticketsRoutes } from './index';
 // Real class (the service mock spreads importActual), so handleServiceError's
 // instanceof check in the route works against errors thrown by the mocks.
 import { TicketServiceError } from '../../services/ticketService';
+import { evaluateTicketTriage, getTicketTriageSuggestion } from '../../services/ticketTriage';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const ORG_ID    = '3f2f1d8e-1111-4222-8333-444455556666';
@@ -516,6 +527,108 @@ describe('GET /tickets/:id — scoped pre-check', () => {
     expect(body.data.orgName).toBeNull();
     expect(body.data.deviceHostname).toBeNull();
     expect(body.data.assigneeName).toBeNull();
+  });
+});
+
+describe('ticket triage suggestion routes', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('GET /tickets/triage-evaluation returns scoped evaluation summary', async () => {
+    vi.mocked(evaluateTicketTriage).mockResolvedValue({
+      labelWindowDays: 90,
+      totalLabels: 3,
+      acceptedSuggestionLabels: 1,
+      manualOverrideLabels: 2,
+      categoryLabels: 1,
+      priorityLabels: 1,
+      assigneeLabels: 1,
+      overrideRate: 0.67,
+    });
+
+    const res = await makeApp().request('/tickets/triage-evaluation?labelWindowDays=90');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.summary.overrideRate).toBe(0.67);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenCalledWith(expect.objectContaining({
+      labelWindowDays: 90,
+    }));
+  });
+
+  it('GET /tickets/:id/triage-suggestion returns a scoped suggestion', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    vi.mocked(getTicketTriageSuggestion).mockResolvedValue({
+      enabled: true,
+      flagSource: 'org_settings',
+      suggestion: {
+        modelVersion: 'ticket-triage-rules-v0',
+        confidence: 0.72,
+        priority: 'high',
+        categoryId: null,
+        categoryName: null,
+        reasons: ['high-impact keywords'],
+      },
+    });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/triage-suggestion`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.suggestion.priority).toBe('high');
+    expect(vi.mocked(getTicketTriageSuggestion)).toHaveBeenCalledWith(expect.objectContaining({ id: TICKET_ID }));
+  });
+
+  it('POST /tickets/:id/triage-suggestion/apply tags update as suggestion feedback', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    vi.mocked(getTicketTriageSuggestion).mockResolvedValue({
+      enabled: true,
+      flagSource: 'org_settings',
+      suggestion: {
+        modelVersion: 'ticket-triage-rules-v0',
+        confidence: 0.72,
+        priority: 'high',
+        categoryId: null,
+        categoryName: null,
+        reasons: ['high-impact keywords'],
+      },
+    });
+    serviceMocks.updateTicketFields.mockResolvedValue({ ...STUB_TICKET, priority: 'high' });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/triage-suggestion/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priority: 'high' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.updateTicketFields).toHaveBeenCalledWith(
+      TICKET_ID,
+      { priority: 'high' },
+      expect.objectContaining({ userId: 'u-1', triageFeedbackSource: 'suggestion' }),
+    );
+  });
+
+  it('POST /tickets/:id/triage-suggestion/apply rejects stale suggested values', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    vi.mocked(getTicketTriageSuggestion).mockResolvedValue({
+      enabled: true,
+      flagSource: 'org_settings',
+      suggestion: {
+        modelVersion: 'ticket-triage-rules-v0',
+        confidence: 0.72,
+        priority: 'high',
+        categoryId: null,
+        categoryName: null,
+        reasons: ['high-impact keywords'],
+      },
+    });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/triage-suggestion/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priority: 'urgent' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
   });
 });
 

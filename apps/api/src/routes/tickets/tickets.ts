@@ -16,6 +16,10 @@ import {
   linkAlertToTicket, unlinkAlertFromTicket, updateTicketFields,
   TicketServiceError
 } from '../../services/ticketService';
+import {
+  evaluateTicketTriage,
+  getTicketTriageSuggestion,
+} from '../../services/ticketTriage';
 import type { AuthContext } from '../../middleware/auth';
 
 // NOTE: authMiddleware is applied by the hub router in ./index.ts (alerts pattern) —
@@ -23,6 +27,15 @@ import type { AuthContext } from '../../middleware/auth';
 export const ticketsRoutes = new Hono();
 
 const idParam = z.object({ id: z.string().uuid() });
+const triageEvaluationQuerySchema = z.object({
+  labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
+});
+const applyTriageSuggestionSchema = z.object({
+  categoryId: z.string().uuid().nullable().optional(),
+  priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+}).refine((value) => value.categoryId !== undefined || value.priority !== undefined, {
+  message: 'At least one suggested field is required',
+});
 
 const OPEN_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
 const CLOSED_STATUSES = ['resolved', 'closed'] as const;
@@ -186,6 +199,34 @@ ticketsRoutes.get(
       .where(whereCondition);
     const atRisk = Number(slaRows[0]?.atRisk ?? 0);
     return c.json({ data: { open, unassigned, mine, breached, atRisk } });
+  }
+);
+
+ticketsRoutes.get(
+  '/triage-evaluation',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('query', triageEvaluationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    if (auth.scope === 'partner' && !auth.partnerId) {
+      return c.json({ error: 'Partner context required' }, 403);
+    }
+
+    const orgIds = auth.scope === 'organization'
+      ? [auth.orgId as string]
+      : auth.accessibleOrgIds?.length ? auth.accessibleOrgIds : undefined;
+
+    const summary = await evaluateTicketTriage({
+      orgIds,
+      labelWindowDays: query.labelWindowDays,
+    });
+
+    return c.json({ summary });
   }
 );
 
@@ -382,6 +423,69 @@ ticketsRoutes.get(
       .where(eq(ticketAlertLinks.ticketId, id));
 
     return c.json({ data: { ...ticket, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
+  }
+);
+
+ticketsRoutes.get(
+  '/:id/triage-suggestion',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('param', idParam),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const ticket = await getScopedTicketOr404(auth, id);
+    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+
+    const result = await getTicketTriageSuggestion(ticket);
+    return c.json(result);
+  }
+);
+
+ticketsRoutes.post(
+  '/:id/triage-suggestion/apply',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', idParam),
+  zValidator('json', applyTriageSuggestionSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const body = c.req.valid('json');
+
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const ticket = await getScopedTicketOr404(auth, id);
+    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+
+    const suggestion = await getTicketTriageSuggestion(ticket);
+    if (!suggestion.enabled) {
+      return c.json({ error: 'Ticket triage suggestions are disabled' }, 409);
+    }
+    if (!suggestion.suggestion) {
+      return c.json({ error: 'No ticket triage suggestion is currently available' }, 409);
+    }
+    if (body.priority !== undefined && body.priority !== suggestion.suggestion.priority) {
+      return c.json({ error: 'Priority no longer matches the current suggestion' }, 409);
+    }
+    if (body.categoryId !== undefined && (suggestion.suggestion.categoryId === null || body.categoryId !== suggestion.suggestion.categoryId)) {
+      return c.json({ error: 'Category no longer matches the current suggestion' }, 409);
+    }
+
+    try {
+      const ticket = await updateTicketFields(id, body, {
+        ...actorFrom(c),
+        triageFeedbackSource: 'suggestion',
+      });
+      return c.json({ data: ticket, suggestion: suggestion.suggestion });
+    } catch (err) {
+      return handleServiceError(c, err);
+    }
   }
 );
 

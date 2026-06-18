@@ -140,3 +140,24 @@ export async function emitDeviceReliabilityFeedback(options: {
     occurredAt: options.occurredAt ?? new Date(),
   });
 }
+
+export async function emitTicketTriageFeedback(options: {
+  orgId: string;
+  ticketId: string;
+  eventType: 'ticket.category_changed' | 'ticket.priority_changed' | 'ticket.assignee_changed' | 'ticket.resolved' | 'ticket.reopened';
+  outcome: 'category_changed' | 'priority_changed' | 'assignee_changed' | 'resolved' | 'reopened';
+  actorUserId?: string | null;
+  occurredAt?: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await emitFeedbackBestEffort({
+    orgId: options.orgId,
+    sourceType: 'ticket',
+    sourceId: options.ticketId,
+    eventType: options.eventType,
+    outcome: options.outcome,
+    actorUserId: actorUserIdOrNull(options.actorUserId),
+    metadata: options.metadata ?? {},
+    occurredAt: options.occurredAt ?? new Date(),
+  }, options.eventType);
+}
