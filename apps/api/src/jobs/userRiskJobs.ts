@@ -13,6 +13,7 @@ import {
 import { evaluateUserRiskSignalsForOrg } from '../services/userRiskSignals';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
+import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -142,6 +143,7 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
 
 async function processComputeOrg(data: ComputeOrgJobData): Promise<{
   orgId: string;
+  skipped?: boolean;
   usersProcessed: number;
   changedUsers: number;
   autoTrainingAssigned: number;
@@ -151,6 +153,21 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
   publishedSpikes: number;
   publishFailures: number;
 }> {
+  if (!(await shouldProduceMlOutput(data.orgId, 'ml.user_risk_v0.enabled'))) {
+    return {
+      orgId: data.orgId,
+      skipped: true,
+      usersProcessed: 0,
+      changedUsers: 0,
+      autoTrainingAssigned: 0,
+      signalsAppended: 0,
+      signalsDeduped: 0,
+      publishedHigh: 0,
+      publishedSpikes: 0,
+      publishFailures: 0
+    };
+  }
+
   const signalEvaluation = await evaluateUserRiskSignalsForOrg(data.orgId);
   const result = await computeAndPersistOrgUserRisk(data.orgId);
   const published = await publishUserRiskScoreEvents({
@@ -176,13 +193,28 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
 async function processSignalEvent(data: ProcessSignalEventJobData): Promise<{
   orgId: string;
   userId: string;
-  eventId: string;
+  eventId: string | null;
+  skipped?: boolean;
   recomputed: boolean;
   changedUsers: number;
   publishedHigh: number;
   publishedSpikes: number;
   publishFailures: number;
 }> {
+  if (!(await shouldProduceMlOutput(data.orgId, 'ml.user_risk_v0.enabled'))) {
+    return {
+      orgId: data.orgId,
+      userId: data.userId,
+      eventId: null,
+      skipped: true,
+      recomputed: false,
+      changedUsers: 0,
+      publishedHigh: 0,
+      publishedSpikes: 0,
+      publishFailures: 0
+    };
+  }
+
   const eventId = await appendUserRiskSignalEvent({
     orgId: data.orgId,
     userId: data.userId,
