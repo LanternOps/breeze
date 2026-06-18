@@ -34,6 +34,13 @@ export interface RcaRootCauseCandidate {
   supportingEvidenceIds: string[];
 }
 
+export interface RcaSuggestedNextStep {
+  title: string;
+  rationale: string;
+  riskTier: 'low' | 'medium' | 'high';
+  evidenceIds: string[];
+}
+
 export interface AlertCorrelationRcaResult {
   groupId: string;
   scope: {
@@ -45,6 +52,7 @@ export interface AlertCorrelationRcaResult {
   };
   timeline: RcaEvidenceItem[];
   rootCauseCandidates: RcaRootCauseCandidate[];
+  suggestedNextSteps: RcaSuggestedNextStep[];
   gaps: string[];
 }
 
@@ -144,6 +152,73 @@ function buildLogCandidate(evidence: RcaEvidenceItem[]): RcaRootCauseCandidate |
   };
 }
 
+function buildSuggestedNextSteps(
+  evidence: RcaEvidenceItem[],
+  candidates: RcaRootCauseCandidate[],
+  gaps: string[],
+): RcaSuggestedNextStep[] {
+  const steps: RcaSuggestedNextStep[] = [];
+  const firstCandidate = candidates[0];
+  if (firstCandidate) {
+    steps.push({
+      title: 'Validate the leading cause',
+      rationale: 'Review the evidence supporting the highest-confidence candidate before changing device state.',
+      riskTier: 'low',
+      evidenceIds: firstCandidate.supportingEvidenceIds,
+    });
+  }
+
+  const changeEvidence = evidence.find((item) => item.source === 'device_change');
+  if (changeEvidence) {
+    steps.push({
+      title: 'Review recent changes',
+      rationale: 'A configuration, service, software, or patch change overlaps the incident window.',
+      riskTier: 'low',
+      evidenceIds: [changeEvidence.id],
+    });
+  }
+
+  const logEvidence = evidence.find((item) => item.source === 'event_log' || item.source === 'agent_log');
+  if (logEvidence) {
+    steps.push({
+      title: 'Inspect aligned error logs',
+      rationale: 'Warning or error logs line up with the alert burst and may identify the failing service or component.',
+      riskTier: 'low',
+      evidenceIds: [logEvidence.id],
+    });
+  }
+
+  const metricEvidence = evidence.find((item) => item.source === 'metric_rollup');
+  if (metricEvidence) {
+    steps.push({
+      title: 'Verify resource pressure',
+      rationale: 'Metric rollups show elevated utilization during the incident window.',
+      riskTier: 'medium',
+      evidenceIds: [metricEvidence.id],
+    });
+  }
+
+  if (gaps.length > 0) {
+    steps.push({
+      title: 'Fill evidence gaps',
+      rationale: gaps.slice(0, 2).join(' '),
+      riskTier: 'low',
+      evidenceIds: [],
+    });
+  }
+
+  if (steps.length === 0) {
+    steps.push({
+      title: 'Confirm affected scope',
+      rationale: 'No strong supporting evidence was found, so confirm the affected devices and user impact before taking action.',
+      riskTier: 'low',
+      evidenceIds: [],
+    });
+  }
+
+  return steps.slice(0, 4);
+}
+
 export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promise<AlertCorrelationRcaResult> {
   const alertRows = [...options.alerts].sort((a, b) => a.triggeredAt.getTime() - b.triggeredAt.getTime());
   const alertIds = alertRows.map((alert) => alert.id);
@@ -168,6 +243,12 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
       },
       timeline: [],
       rootCauseCandidates: [],
+      suggestedNextSteps: [{
+        title: 'Confirm affected scope',
+        rationale: 'No alerts were attached, so confirm the incident group membership before taking action.',
+        riskTier: 'low',
+        evidenceIds: [],
+      }],
       gaps: ['No alerts were attached to this correlation group.'],
     };
   }
@@ -324,6 +405,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
     buildChangeCandidate(timeline),
     buildLogCandidate(timeline),
   ].filter((candidate): candidate is RcaRootCauseCandidate => Boolean(candidate));
+  const suggestedNextSteps = buildSuggestedNextSteps(timeline, candidates, gaps);
 
   return {
     groupId: options.groupId,
@@ -336,6 +418,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
     },
     timeline,
     rootCauseCandidates: candidates,
+    suggestedNextSteps,
     gaps,
   };
 }

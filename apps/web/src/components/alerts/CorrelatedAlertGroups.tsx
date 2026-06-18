@@ -58,10 +58,18 @@ type RcaCandidate = {
   supportingEvidenceIds: string[];
 };
 
+type RcaSuggestedNextStep = {
+  title: string;
+  rationale: string;
+  riskTier: 'low' | 'medium' | 'high';
+  evidenceIds: string[];
+};
+
 type RcaResult = {
   groupId: string;
   timeline: RcaEvidenceItem[];
   rootCauseCandidates: RcaCandidate[];
+  suggestedNextSteps?: RcaSuggestedNextStep[];
   gaps: string[];
   scope: {
     deviceIds: string[];
@@ -522,6 +530,28 @@ export default function CorrelatedAlertGroups() {
                                   ))
                                 )}
                               </div>
+
+                              {groupRca.suggestedNextSteps && groupRca.suggestedNextSteps.length > 0 && (
+                                <div>
+                                  <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                                    <FileText className="h-4 w-4" />
+                                    Suggested next steps
+                                  </div>
+                                  <div className="space-y-2">
+                                    {groupRca.suggestedNextSteps.map((step) => (
+                                      <div key={step.title} className="rounded-md border bg-muted/20 px-3 py-2">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <p className="text-sm font-medium">{step.title}</p>
+                                          <span className="rounded-full border bg-background px-2 py-0.5 text-[11px] capitalize text-muted-foreground">
+                                            {step.riskTier} risk
+                                          </span>
+                                        </div>
+                                        <p className="mt-1 text-xs text-muted-foreground">{step.rationale}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
 
                               <div>
                                 <div className="mb-2 flex items-center gap-2 text-sm font-medium">

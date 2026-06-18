@@ -252,6 +252,24 @@ describe('alert correlation RCA evidence builder', () => {
       expect.objectContaining({ confidence: 0.58 }),
       expect.objectContaining({ confidence: 0.52 }),
     ]));
+    expect(result.suggestedNextSteps).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: 'Validate the leading cause',
+        riskTier: 'low',
+        evidenceIds: expect.arrayContaining([`alert:${ALERT_1}`]),
+      }),
+      expect.objectContaining({
+        title: 'Review recent changes',
+        evidenceIds: ['device_change:change-1'],
+      }),
+      expect.objectContaining({
+        title: 'Inspect aligned error logs',
+      }),
+      expect.objectContaining({
+        title: 'Verify resource pressure',
+        riskTier: 'medium',
+      }),
+    ]));
     expect(result.gaps).toEqual([]);
   });
 

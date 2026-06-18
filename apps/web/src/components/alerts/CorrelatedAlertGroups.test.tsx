@@ -79,6 +79,14 @@ const rcaPayload = {
       supportingEvidenceIds: ['device_change:1']
     }
   ],
+  suggestedNextSteps: [
+    {
+      title: 'Review recent changes',
+      rationale: 'A service change overlaps the incident window.',
+      riskTier: 'low',
+      evidenceIds: ['device_change:1']
+    }
+  ],
   timeline: [
     {
       id: 'device_change:1',
@@ -166,6 +174,8 @@ describe('CorrelatedAlertGroups', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /Explain incident/i })[0]);
 
     expect(await screen.findByText('A recent service restart lines up with the alert burst.')).toBeInTheDocument();
+    expect(screen.getByText('Review recent changes')).toBeInTheDocument();
+    expect(screen.getByText('A service change overlaps the incident window.')).toBeInTheDocument();
     expect(screen.getByText('Restarted API service before the incident.')).toBeInTheDocument();
     expect(screen.getByText('No warning/error logs were found in the incident window.')).toBeInTheDocument();
 
