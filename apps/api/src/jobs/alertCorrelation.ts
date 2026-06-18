@@ -7,6 +7,7 @@ import { persistAlertCorrelationGroupsForAlerts } from '../services/alertCorrela
 import { isReusableState } from '../services/bullmqUtils';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const ALERT_CORRELATION_QUEUE = 'alert-correlation';
 const DEDUPE_WINDOW_MS = 30 * 1000;
@@ -177,6 +178,7 @@ export function createAlertCorrelationWorker(): Worker<AlertCorrelationJobData> 
 
 export async function initializeAlertCorrelationWorker(): Promise<void> {
   alertCorrelationWorker = createAlertCorrelationWorker();
+  attachWorkerObservability(alertCorrelationWorker, 'alertCorrelationWorker');
   alertCorrelationWorker.on('error', (error) => {
     console.error('[AlertCorrelationWorker] Worker error:', error);
   });

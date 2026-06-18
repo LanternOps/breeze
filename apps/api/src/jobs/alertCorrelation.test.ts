@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, closeMock, shouldProduceMlOutputMock, persistGroupsMock } = vi.hoisted(() => ({
+const { getJobMock, addMock, closeMock, shouldProduceMlOutputMock, persistGroupsMock, attachWorkerObservabilityMock } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   closeMock: vi.fn(),
   shouldProduceMlOutputMock: vi.fn(),
   persistGroupsMock: vi.fn(),
+  attachWorkerObservabilityMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -37,6 +38,10 @@ vi.mock('../services/alertCorrelationGroups', () => ({
   persistAlertCorrelationGroupsForAlerts: persistGroupsMock,
 }));
 
+vi.mock('./workerObservability', () => ({
+  attachWorkerObservability: attachWorkerObservabilityMock,
+}));
+
 vi.mock('../db', () => ({
   db: {},
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -50,6 +55,7 @@ vi.mock('../db/schema', () => ({
 import {
   buildAlertCorrelationJobId,
   enqueueAlertCorrelation,
+  initializeAlertCorrelationWorker,
   runAlertCorrelationForDevice,
   shutdownAlertCorrelationWorker,
 } from './alertCorrelation';
@@ -63,6 +69,7 @@ describe('alert correlation queue helpers', () => {
     closeMock.mockReset();
     shouldProduceMlOutputMock.mockReset();
     persistGroupsMock.mockReset();
+    attachWorkerObservabilityMock.mockReset();
     shouldProduceMlOutputMock.mockResolvedValue(true);
     persistGroupsMock.mockResolvedValue({ scanned: 0, groupsWritten: 0, membersWritten: 0 });
     getJobMock.mockResolvedValue(null);
@@ -106,5 +113,11 @@ describe('alert correlation queue helpers', () => {
 
     expect(result).toEqual({ scanned: 0, created: 0 });
     expect(shouldProduceMlOutputMock).toHaveBeenCalledWith('org-1', 'ml.alert_correlation.enabled');
+  });
+
+  it('attaches worker observability during initialization', async () => {
+    await initializeAlertCorrelationWorker();
+
+    expect(attachWorkerObservabilityMock).toHaveBeenCalledWith(expect.anything(), 'alertCorrelationWorker');
   });
 });
