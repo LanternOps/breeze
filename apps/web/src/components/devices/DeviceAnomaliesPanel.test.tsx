@@ -61,7 +61,7 @@ describe('DeviceAnomaliesPanel', () => {
     expect(screen.getByText('CPU')).toBeTruthy();
     expect(screen.getByText('96.4%')).toBeTruthy();
     expect(screen.getByText('42.2%')).toBeTruthy();
-    expect(screen.getByText('91%')).toBeTruthy();
+    expect(screen.getAllByText('91%').length).toBeGreaterThanOrEqual(1);
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/anomalies?status=open&limit=25');
   });
 
@@ -107,5 +107,37 @@ describe('DeviceAnomaliesPanel', () => {
     });
     await waitFor(() => expect(screen.queryByText('Network egress')).toBeNull());
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Anomaly dismissed' }));
+  });
+
+  it('renders process-sample anomaly metric labels', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: [
+          {
+            id: 'anomaly-process-1',
+            metricType: 'process',
+            metricName: 'top_process_net_bps_sum',
+            anomalyType: 'network_egress',
+            status: 'open',
+            windowStart: '2026-06-18T12:00:00.000Z',
+            windowEnd: '2026-06-18T12:05:00.000Z',
+            observedValue: 1500000,
+            baselineValue: 200000,
+            score: 8.2,
+            confidence: 0.93,
+            sampleCount: 3,
+            linkedAlertId: null,
+            detectedAt: '2026-06-18T12:05:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+
+    await screen.findByText('Network egress');
+    expect(screen.getByText('Top process network I/O')).toBeTruthy();
+    expect(screen.getByText('1.5 MB/s')).toBeTruthy();
+    expect(screen.getByText('200.0 KB/s')).toBeTruthy();
   });
 });

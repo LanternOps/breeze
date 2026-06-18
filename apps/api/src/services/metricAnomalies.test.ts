@@ -70,8 +70,11 @@ describe('metric anomalies service', () => {
     expect(processStatementSql).toContain('top_process_cpu_percent_max');
     expect(processStatementSql).toContain('top_process_ram_mb_sum');
     expect(processStatementSql).toContain('top_process_ram_mb_max');
+    expect(processStatementSql).toContain('top_process_disk_bps_sum');
+    expect(processStatementSql).toContain('top_process_net_bps_sum');
     expect(processStatementSql).toContain('process_sample_runaway');
     expect(processStatementSql).toContain('process_runaway');
+    expect(processStatementSql).toContain('network_egress');
   });
 
   it('rejects invalid ranges before executing writes', async () => {

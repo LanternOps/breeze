@@ -342,7 +342,9 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
           'top_process_cpu_percent_sum',
           'top_process_cpu_percent_max',
           'top_process_ram_mb_sum',
-          'top_process_ram_mb_max'
+          'top_process_ram_mb_max',
+          'top_process_disk_bps_sum',
+          'top_process_net_bps_sum'
         )
         AND mr.avg_value IS NOT NULL
         AND mr.sample_count > 0
@@ -414,6 +416,14 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
               1024
             )
           )
+          OR (
+            b.metric_name IN ('top_process_disk_bps_sum', 'top_process_net_bps_sum')
+            AND b.avg_value >= greatest(
+              coalesce(b.baseline_value, 0) + (4 * greatest(coalesce(b.baseline_stddev, 0), 1)),
+              coalesce(b.baseline_value, 0) * 3,
+              1000000
+            )
+          )
         )
     )
     INSERT INTO metric_anomalies (
@@ -443,7 +453,10 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
       s.source_table,
       s.metric_type,
       s.metric_name,
-      'process_runaway',
+      CASE
+        WHEN s.metric_name = 'top_process_net_bps_sum' THEN 'network_egress'
+        ELSE 'process_runaway'
+      END,
       'open',
       s.bucket_start,
       s.bucket_start + (${RAW_BUCKET_SECONDS} * interval '1 second'),

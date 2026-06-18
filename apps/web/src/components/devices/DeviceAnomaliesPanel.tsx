@@ -40,6 +40,13 @@ const metricLabels: Record<string, string> = {
   bandwidth_in_bps: 'Network in',
   bandwidth_out_bps: 'Network out',
   process_count: 'Processes',
+  top_process_count: 'Top processes',
+  top_process_cpu_percent_sum: 'Top process CPU total',
+  top_process_cpu_percent_max: 'Top process CPU peak',
+  top_process_ram_mb_sum: 'Top process RAM total',
+  top_process_ram_mb_max: 'Top process RAM peak',
+  top_process_disk_bps_sum: 'Top process disk I/O',
+  top_process_net_bps_sum: 'Top process network I/O',
 };
 
 const anomalyLabels: Record<string, string> = {
@@ -55,7 +62,7 @@ const anomalyLabels: Record<string, string> = {
 function formatMetricValue(metricName: string, value: number): string {
   if (!Number.isFinite(value)) return '0';
   if (metricName.endsWith('_percent')) return `${value.toFixed(1)}%`;
-  if (metricName.endsWith('_bps')) {
+  if (metricName.includes('_bps')) {
     if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)} GB/s`;
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} MB/s`;
     if (value >= 1_000) return `${(value / 1_000).toFixed(1)} KB/s`;
