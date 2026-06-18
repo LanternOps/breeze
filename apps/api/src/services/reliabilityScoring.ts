@@ -59,6 +59,7 @@ export interface ReliabilityListFilter {
   orgId?: string;
   orgIds?: string[];
   siteId?: string;
+  siteIds?: string[];
   minScore?: number;
   maxScore?: number;
   scoreRange?: ReliabilityScoreRange;
@@ -1038,6 +1039,8 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
   }
   if (filter.siteId) {
     conditions.push(eq(devices.siteId, filter.siteId));
+  } else if (filter.siteIds && filter.siteIds.length > 0) {
+    conditions.push(inArray(devices.siteId, filter.siteIds));
   }
 
   const [rangeMin, rangeMax] = filter.scoreRange ? scoreRangeBounds(filter.scoreRange) : [undefined, undefined];

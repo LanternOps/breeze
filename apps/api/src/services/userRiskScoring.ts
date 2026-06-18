@@ -266,6 +266,7 @@ export type UserRiskScoreListFilter = {
   orgIds?: string[];
   orgId?: string;
   siteId?: string;
+  siteIds?: string[];
   minScore?: number;
   maxScore?: number;
   trendDirection?: 'up' | 'down' | 'stable';
@@ -950,6 +951,9 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
   }
   if (filter.siteId) {
     conditions.push(sql`${organizationUsers.siteIds} @> ARRAY[${filter.siteId}]::uuid[]`);
+  } else if (filter.siteIds && filter.siteIds.length > 0) {
+    const allowedSiteIds = sql.join(filter.siteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
+    conditions.push(sql`${organizationUsers.siteIds} && ARRAY[${allowedSiteIds}]`);
   }
 
   const whereClause = and(...conditions);
