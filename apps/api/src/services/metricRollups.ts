@@ -131,6 +131,14 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
   return { from, to };
 }
 
+function expandRangeToBucketBounds(from: Date, to: Date, bucketSeconds: number): { from: Date; to: Date } {
+  const bucketMs = bucketSeconds * 1000;
+  return {
+    from: new Date(Math.floor(from.getTime() / bucketMs) * bucketMs),
+    to: new Date(Math.ceil(to.getTime() / bucketMs) * bucketMs),
+  };
+}
+
 async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof DEVICE_METRIC_ROLLUP_SOURCES)[number]): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
@@ -434,8 +442,9 @@ async function rollupDerivedMetricSource(
   targetBucketSeconds: MetricRollupBucketSeconds,
 ): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
-  const fromIso = from.toISOString();
-  const toIso = to.toISOString();
+  const sourceRange = expandRangeToBucketBounds(from, to, targetBucketSeconds);
+  const fromIso = sourceRange.from.toISOString();
+  const toIso = sourceRange.to.toISOString();
   const targetBucketSql = bucketStartSql(sql`mr.bucket_start`, targetBucketSeconds);
 
   await db.execute(sql`

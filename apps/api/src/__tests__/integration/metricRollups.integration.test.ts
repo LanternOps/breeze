@@ -169,6 +169,10 @@ async function runRollup(orgId: string, from: Date, to: Date): Promise<void> {
 }
 
 async function selectCpuRollups(orgId: string, deviceId: string) {
+  return selectCpuRollupsForBucket(orgId, deviceId, 300);
+}
+
+async function selectCpuRollupsForBucket(orgId: string, deviceId: string, bucketSeconds: number) {
   return getTestDb()
     .select()
     .from(metricRollups)
@@ -177,7 +181,7 @@ async function selectCpuRollups(orgId: string, deviceId: string) {
       eq(metricRollups.deviceId, deviceId),
       eq(metricRollups.sourceTable, 'device_metrics'),
       eq(metricRollups.metricName, 'cpu_percent'),
-      eq(metricRollups.bucketSeconds, 300)
+      eq(metricRollups.bucketSeconds, bucketSeconds)
     ))
     .orderBy(metricRollups.bucketStart);
 }
@@ -269,6 +273,36 @@ describe('metric rollups integration', () => {
       gapSeconds: 240,
     }));
     expect((updatedGapBucket.metadata as Record<string, unknown>).isGap).toBe(false);
+  });
+
+  it('recomputes derived buckets from the full target window on overlapping replays', async () => {
+    const device = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'derived-replay-device' });
+    await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:00:00.000Z'), cpuPercent: 10 });
+    await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:05:00.000Z'), cpuPercent: 20 });
+    await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:10:00.000Z'), cpuPercent: 30 });
+    await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:15:00.000Z'), cpuPercent: 40 });
+
+    await runRollup(orgA, new Date('2026-06-18T12:00:00.000Z'), new Date('2026-06-18T12:15:00.000Z'));
+
+    const firstHourly = await selectCpuRollupsForBucket(orgA, device, 3600);
+    expect(firstHourly).toHaveLength(1);
+    expect(firstHourly[0]).toEqual(expect.objectContaining({
+      bucketStart: new Date('2026-06-18T12:00:00.000Z'),
+      avgValue: 20,
+      sampleCount: 3,
+      gapSeconds: 720,
+    }));
+
+    await runRollup(orgA, new Date('2026-06-18T12:05:00.000Z'), new Date('2026-06-18T12:20:00.000Z'));
+
+    const replayedHourly = await selectCpuRollupsForBucket(orgA, device, 3600);
+    expect(replayedHourly).toHaveLength(1);
+    expect(replayedHourly[0]).toEqual(expect.objectContaining({
+      bucketStart: new Date('2026-06-18T12:00:00.000Z'),
+      avgValue: 25,
+      sampleCount: 4,
+      gapSeconds: 960,
+    }));
   });
 
   it('materializes process sample buckets and replay-updates late process samples', async () => {
