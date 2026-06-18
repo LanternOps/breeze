@@ -393,16 +393,31 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
       { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000002', hostname: 'host-no-watchdog', watchdogVersion: null },
     ];
 
-    const { container } = render(<DeviceList devices={devices} />);
+    render(<DeviceList devices={devices} />);
 
     expect(screen.getByText('0.70.1')).toBeInTheDocument();
     expect(screen.getByText('N/A')).toBeInTheDocument();
+  });
+
+  it('sorts watchdog versions numerically aware (0.9.0 before 0.10.0) with missing reports last in both directions', () => {
+    // Three rows — two real versions plus a null — so the asc/desc assertions
+    // actually exercise the direction multiplier (a two-row dataset where one
+    // is null only ever proves the nulls-last short-circuit). Mirrors the
+    // agentVersion and tags sort tests above.
+    seedColumns('watchdogVersion');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000001', hostname: 'host-ten', watchdogVersion: '0.10.0' },
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000002', hostname: 'host-nine', watchdogVersion: '0.9.0' },
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000003', hostname: 'host-none', watchdogVersion: null },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
 
     clickHeader('Sort by watchdog version');
-    expect(rowOrder(container)).toEqual(['host-watchdog', 'host-no-watchdog']);
+    expect(rowOrder(container)).toEqual(['host-nine', 'host-ten', 'host-none']);
 
     clickHeader('Sort by watchdog version');
-    expect(rowOrder(container)).toEqual(['host-watchdog', 'host-no-watchdog']);
+    expect(rowOrder(container)).toEqual(['host-ten', 'host-nine', 'host-none']);
   });
 
   it('sorts tags by the joined displayed list with untagged rows last in both directions', () => {

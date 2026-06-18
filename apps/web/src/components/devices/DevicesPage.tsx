@@ -405,14 +405,11 @@ export default function DevicesPage() {
             : d
         ));
       }
-      if (fields?.includes('watchdogVersion')) {
-        const watchdogVersion = typeof payload.watchdogVersion === 'string' ? payload.watchdogVersion : null;
-        setDevices(prev => prev.map(d =>
-          d.id === deviceId
-            ? { ...d, watchdogVersion }
-            : d
-        ));
-      }
+      // NOTE: no live watchdogVersion handler — the heartbeat path only
+      // publishes `device.updated` with fields:['agentVersion'], never
+      // 'watchdogVersion'. The watchdog version refreshes on the next list
+      // fetch / device-detail load. Wire a producer in the watchdog heartbeat
+      // branch before adding a consumer here.
     } else if (type === 'device.enrolled' || type === 'device.decommissioned') {
       fetchDevices();
     }
