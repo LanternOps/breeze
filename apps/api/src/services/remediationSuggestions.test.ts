@@ -47,4 +47,38 @@ describe('remediation suggestion heuristics', () => {
     expect(__testOnly.riskTierForCandidate(context, 'delete temp cleanup')).toBe('high');
     expect(__testOnly.riskTierForCandidate(context, 'restart service')).toBe('medium');
   });
+
+  it('builds RCA suggestion context from correlation group metadata', () => {
+    const context = __testOnly.rcaContextFromCorrelationGroup({
+      id: 'group-1',
+      orgId: 'org-1',
+      rootAlertId: 'alert-1',
+      groupKey: 'site:server-room',
+      status: 'open',
+      metadata: {
+        logCorrelationRuleNames: ['Service crash burst'],
+        logPatterns: ['service crashed'],
+        flappingDetected: true,
+      },
+    }, {
+      sourceType: 'rca',
+      sourceId: 'group-1',
+      orgId: 'org-1',
+      deviceId: 'dev-1',
+    });
+
+    expect(context).toMatchObject({
+      sourceType: 'rca',
+      sourceId: 'group-1',
+      orgId: 'org-1',
+      deviceId: 'dev-1',
+      alertId: 'alert-1',
+      correlationGroupId: 'group-1',
+      rcaId: 'group-1',
+      title: 'RCA for correlation group site:server-room',
+    });
+    expect(context.text).toContain('service crash burst');
+    expect(context.text).toContain('service crashed');
+    expect(context.text).toContain('flappingdetected');
+  });
 });

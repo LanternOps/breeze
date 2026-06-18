@@ -117,6 +117,24 @@ function riskTierForCandidate(ctx: SourceContext, candidateText: string): Candid
   return 'low';
 }
 
+function rcaContextFromCorrelationGroup(
+  row: Pick<typeof alertCorrelationGroups.$inferSelect, 'id' | 'orgId' | 'rootAlertId' | 'groupKey' | 'status' | 'metadata'>,
+  input: GenerateRemediationSuggestionsInput,
+): SourceContext {
+  return {
+    sourceType: 'rca',
+    sourceId: input.sourceId,
+    orgId: row.orgId,
+    deviceId: input.deviceId ?? null,
+    alertId: row.rootAlertId,
+    anomalyId: null,
+    correlationGroupId: row.id,
+    rcaId: input.sourceId,
+    title: `RCA for correlation group ${row.groupKey}`,
+    text: sourceTextParts(row.groupKey, row.status, JSON.stringify(row.metadata ?? {}), input.sourceId),
+  };
+}
+
 async function resolveSourceContext(input: GenerateRemediationSuggestionsInput): Promise<SourceContext | null> {
   if (input.sourceType === 'anomaly') {
     const [row] = await db.select().from(metricAnomalies).where(eq(metricAnomalies.id, input.sourceId)).limit(1);
@@ -170,6 +188,11 @@ async function resolveSourceContext(input: GenerateRemediationSuggestionsInput):
       title: `Correlation group ${row.groupKey}`,
       text: sourceTextParts(row.groupKey, row.status, JSON.stringify(row.metadata ?? {})),
     };
+  }
+
+  if (input.sourceType === 'rca') {
+    const [row] = await db.select().from(alertCorrelationGroups).where(eq(alertCorrelationGroups.id, input.sourceId)).limit(1);
+    if (row) return rcaContextFromCorrelationGroup(row, input);
   }
 
   if (!input.orgId) return null;
@@ -380,4 +403,5 @@ export const __testOnly = {
   termsForSource,
   scoreCandidate,
   riskTierForCandidate,
+  rcaContextFromCorrelationGroup,
 };
