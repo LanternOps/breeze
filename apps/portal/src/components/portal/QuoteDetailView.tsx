@@ -143,6 +143,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
         </div>
         <a
           href={buildPortalApiUrl(`/portal/quotes/${quote.id}/pdf`)}
+          download={`${quote.quoteNumber ?? `quote-${quote.id}`}.pdf`}
           target="_blank"
           rel="noreferrer"
           data-testid="quote-download-pdf"
