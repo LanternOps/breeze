@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, ShieldAlert, UserCheck
 
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
+import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type UserRiskScore = {
   orgId: string;
@@ -93,6 +94,7 @@ const formatFactor = (value: string): string => (
 );
 
 export default function UserRiskPage() {
+  const mlFlags = useMlFeatureFlags();
   const [scores, setScores] = useState<UserRiskScore[]>([]);
   const [detail, setDetail] = useState<UserRiskDetail | null>(null);
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
@@ -101,8 +103,13 @@ export default function UserRiskPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [labeling, setLabeling] = useState<'true_positive' | 'false_positive' | null>(null);
+  const userRiskDisabled = mlFlags.isDisabled('ml.user_risk_v0.enabled');
 
   const loadScores = useCallback(async () => {
+    if (!mlFlags.loaded || userRiskDisabled) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -123,13 +130,27 @@ export default function UserRiskPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [mlFlags.loaded, userRiskDisabled]);
 
   useEffect(() => {
+    if (!mlFlags.loaded) return;
+    if (userRiskDisabled) {
+      setScores([]);
+      setEvaluation(null);
+      setSelected(null);
+      setDetail(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     void loadScores();
-  }, [loadScores]);
+  }, [loadScores, mlFlags.loaded, userRiskDisabled]);
 
   useEffect(() => {
+    if (userRiskDisabled) {
+      setDetail(null);
+      return;
+    }
     if (!selected) {
       setDetail(null);
       return;
@@ -153,7 +174,7 @@ export default function UserRiskPage() {
     return () => {
       active = false;
     };
-  }, [selected]);
+  }, [selected, userRiskDisabled]);
 
   const factors = useMemo(() => (
     Object.entries(detail?.latestScore.factors ?? selected?.factors ?? {})
@@ -190,6 +211,26 @@ export default function UserRiskPage() {
     return (
       <div className="flex min-h-[420px] items-center justify-center" data-testid="user-risk-loading">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (userRiskDisabled) {
+    return (
+      <div className="space-y-5" data-testid="user-risk-page">
+        <header>
+          <h1 className="text-2xl font-semibold tracking-normal">User Risk</h1>
+          <p className="text-sm text-muted-foreground">Review rules-v0 risk scores, evidence, and evaluation labels.</p>
+        </header>
+        <section className="rounded-lg border bg-card p-6" data-testid="user-risk-disabled">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="mt-0.5 h-5 w-5 text-muted-foreground" />
+            <div>
+              <h2 className="text-sm font-semibold">User risk scoring is disabled for this organization.</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Scores, evidence, and labels will appear here when the user-risk v0 producer is enabled.</p>
+            </div>
+          </div>
+        </section>
       </div>
     );
   }

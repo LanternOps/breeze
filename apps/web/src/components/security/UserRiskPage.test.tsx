@@ -23,6 +23,17 @@ const response = (payload: unknown, ok = true, status = ok ? 200 : 500): Respons
   json: vi.fn().mockResolvedValue(payload),
 }) as unknown as Response;
 
+const flagsPayload = (enabled: boolean) => ({
+  mlFeatureFlags: {
+    'ml.user_risk_v0.enabled': {
+      flag: 'ml.user_risk_v0.enabled',
+      enabled,
+      defaultEnabled: true,
+      source: 'org_settings',
+    },
+  },
+});
+
 const scorePayload = {
   data: [
     {
@@ -83,12 +94,13 @@ const detailPayload = {
 
 describe('UserRiskPage', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchWithAuthMock.mockReset();
     showToast.mockReset();
   });
 
   it('renders scores, evaluation metrics, and selected user evidence', async () => {
     fetchWithAuthMock
+      .mockResolvedValueOnce(response(flagsPayload(true)))
       .mockResolvedValueOnce(response(scorePayload))
       .mockResolvedValueOnce(response(evaluationPayload))
       .mockResolvedValueOnce(response(detailPayload));
@@ -98,7 +110,7 @@ describe('UserRiskPage', () => {
     await screen.findByTestId('user-risk-page');
     expect(screen.getAllByText('Alice Admin')).toHaveLength(2);
     expect(screen.getByText('75%')).toBeTruthy();
-    expect(screen.getByText('Multiple failed sign-in attempts')).toBeTruthy();
+    expect(await screen.findByText('Multiple failed sign-in attempts')).toBeTruthy();
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/user-risk/scores?limit=25&minScore=50');
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/user-risk/evaluation?days=30');
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/user-risk/users/00000000-0000-4000-8000-000000000010?orgId=00000000-0000-4000-8000-000000000001');
@@ -106,6 +118,7 @@ describe('UserRiskPage', () => {
 
   it('posts false-positive feedback through runAction', async () => {
     fetchWithAuthMock
+      .mockResolvedValueOnce(response(flagsPayload(true)))
       .mockResolvedValueOnce(response(scorePayload))
       .mockResolvedValueOnce(response(evaluationPayload))
       .mockResolvedValueOnce(response(detailPayload))
@@ -136,5 +149,17 @@ describe('UserRiskPage', () => {
       type: 'success',
       message: 'False positive label saved',
     }));
+  });
+
+  it('shows disabled state and does not fetch stale scores when user-risk v0 is disabled', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(response(flagsPayload(false)));
+
+    render(<UserRiskPage />);
+
+    await screen.findByTestId('user-risk-disabled');
+    expect(screen.getByText('User risk scoring is disabled for this organization.')).toBeTruthy();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/config/ml-feature-flags');
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/user-risk/scores?limit=25&minScore=50');
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/user-risk/evaluation?days=30');
   });
 });
