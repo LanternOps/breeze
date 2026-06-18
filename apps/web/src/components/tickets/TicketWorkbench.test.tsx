@@ -427,6 +427,58 @@ describe('TicketWorkbench ML triage suggestions', () => {
     });
   });
 
+  it('records explicit rejection feedback for a triage suggestion', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', priority: 'normal', categoryId: null }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({
+          enabled: true,
+          flagSource: 'org_settings',
+          suggestion: {
+            modelVersion: 'ticket-triage-rules-v0',
+            confidence: 0.72,
+            priority: 'high',
+            categoryId: 'cat-hardware',
+            categoryName: 'Hardware',
+            reasons: ['matched Hardware'],
+          },
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(
+      <TicketWorkbench
+        ticketId="tk-1"
+        assignees={[]}
+        categories={[{ id: 'cat-hardware', name: 'Hardware' }]}
+      />,
+    );
+
+    await screen.findByTestId('ticket-triage-suggestion');
+    fireEvent.click(screen.getByTestId('ticket-triage-reject'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/triage-suggestion/reject',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({}),
+        }),
+      );
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      message: 'Ticket triage feedback saved',
+    }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-triage-suggestion')).toBeNull();
+    });
+  });
+
   it('hides the suggestion strip when triage is disabled', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

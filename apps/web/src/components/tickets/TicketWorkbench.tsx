@@ -65,6 +65,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [triageSuggestion, setTriageSuggestion] = useState<TicketTriageSuggestion | null>(null);
   const [triageLoading, setTriageLoading] = useState(false);
   const [applyingTriage, setApplyingTriage] = useState(false);
+  const [rejectingTriage, setRejectingTriage] = useState(false);
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
   const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
@@ -269,6 +270,27 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       setApplyingTriage(false);
     }
   }, [afterMutation, applyingTriage, ticketId, triageSuggestion]);
+
+  const rejectTriageSuggestion = useCallback(async () => {
+    if (!triageSuggestion || rejectingTriage) return;
+    setRejectingTriage(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/triage-suggestion/reject`, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        }),
+        errorFallback: 'Could not save ticket triage feedback.',
+        successMessage: 'Ticket triage feedback saved',
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setTriageSuggestion(null);
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+    } finally {
+      setRejectingTriage(false);
+    }
+  }, [rejectingTriage, ticketId, triageSuggestion]);
 
   // Fallback path: option values are the six core enums; POST {status}.
   const onStatusChange = useCallback(async (status: TicketStatus) => {
@@ -528,15 +550,26 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 ) : null}
               </div>
               {triageSuggestion && (
-                <button
-                  type="button"
-                  onClick={() => void applyTriageSuggestion()}
-                  disabled={applyingTriage}
-                  className="inline-flex shrink-0 items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                  data-testid="ticket-triage-apply"
-                >
-                  {applyingTriage ? 'Applying…' : 'Apply'}
-                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void rejectTriageSuggestion()}
+                    disabled={applyingTriage || rejectingTriage}
+                    className="inline-flex items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                    data-testid="ticket-triage-reject"
+                  >
+                    {rejectingTriage ? 'Saving…' : 'Not right'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void applyTriageSuggestion()}
+                    disabled={applyingTriage || rejectingTriage}
+                    className="inline-flex items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                    data-testid="ticket-triage-apply"
+                  >
+                    {applyingTriage ? 'Applying…' : 'Apply'}
+                  </button>
+                </div>
               )}
             </div>
           </div>

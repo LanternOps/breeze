@@ -144,8 +144,8 @@ export async function emitDeviceReliabilityFeedback(options: {
 export async function emitTicketTriageFeedback(options: {
   orgId: string;
   ticketId: string;
-  eventType: 'ticket.category_changed' | 'ticket.priority_changed' | 'ticket.assignee_changed' | 'ticket.resolved' | 'ticket.reopened';
-  outcome: 'category_changed' | 'priority_changed' | 'assignee_changed' | 'resolved' | 'reopened';
+  eventType: 'ticket.category_changed' | 'ticket.priority_changed' | 'ticket.assignee_changed' | 'ticket.triage_rejected' | 'ticket.resolved' | 'ticket.reopened';
+  outcome: 'category_changed' | 'priority_changed' | 'assignee_changed' | 'rejected' | 'resolved' | 'reopened';
   actorUserId?: string | null;
   occurredAt?: Date;
   metadata?: Record<string, unknown>;

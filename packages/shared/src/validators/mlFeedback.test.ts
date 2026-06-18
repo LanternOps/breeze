@@ -49,6 +49,20 @@ describe('mlFeedbackEventSchema', () => {
     expect(parsed.eventType).toBe('anomaly.promoted');
   });
 
+  it('accepts explicit ticket triage rejection feedback', () => {
+    const parsed = mlFeedbackEventSchema.parse({
+      ...validEvent,
+      sourceType: 'ticket',
+      sourceId: 'ticket-1',
+      eventType: 'ticket.triage_rejected',
+      outcome: 'rejected',
+      metadata: { modelVersion: 'ticket-triage-rules-v0' },
+    });
+
+    expect(parsed.sourceType).toBe('ticket');
+    expect(parsed.eventType).toBe('ticket.triage_rejected');
+  });
+
   it('rejects metadata over the byte cap', () => {
     const oversized = { notes: 'x'.repeat(ML_FEEDBACK_METADATA_MAX_BYTES + 1) };
     expect(getJsonByteLength(oversized)).toBeGreaterThan(ML_FEEDBACK_METADATA_MAX_BYTES);

@@ -41,16 +41,18 @@ describe('ticketTriageInternals', () => {
       { eventType: 'ticket.priority_changed', metadata: { acceptedSuggestion: true } },
       { eventType: 'ticket.category_changed', metadata: { acceptedSuggestion: false } },
       { eventType: 'ticket.assignee_changed', metadata: { source: 'manual_update' } },
+      { eventType: 'ticket.triage_rejected', metadata: { acceptedSuggestion: false } },
     ], 90);
 
     expect(summary).toEqual(expect.objectContaining({
-      totalLabels: 3,
+      totalLabels: 4,
       acceptedSuggestionLabels: 1,
-      manualOverrideLabels: 2,
+      manualOverrideLabels: 3,
+      rejectedSuggestionLabels: 1,
       categoryLabels: 1,
       priorityLabels: 1,
       assigneeLabels: 1,
-      overrideRate: 0.67,
+      overrideRate: 0.75,
     }));
   });
 });

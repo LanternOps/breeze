@@ -190,6 +190,7 @@ import { ticketsRoutes } from './index';
 // instanceof check in the route works against errors thrown by the mocks.
 import { TicketServiceError } from '../../services/ticketService';
 import { evaluateTicketTriage, getTicketTriageSuggestion } from '../../services/ticketTriage';
+import { emitTicketTriageFeedback } from '../../services/mlFeedbackEmitters';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const ORG_ID    = '3f2f1d8e-1111-4222-8333-444455556666';
@@ -539,6 +540,7 @@ describe('ticket triage suggestion routes', () => {
       totalLabels: 3,
       acceptedSuggestionLabels: 1,
       manualOverrideLabels: 2,
+      rejectedSuggestionLabels: 0,
       categoryLabels: 1,
       priorityLabels: 1,
       assigneeLabels: 1,
@@ -628,6 +630,47 @@ describe('ticket triage suggestion routes', () => {
     });
 
     expect(res.status).toBe(409);
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+  });
+
+  it('POST /tickets/:id/triage-suggestion/reject records explicit rejection feedback', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    vi.mocked(getTicketTriageSuggestion).mockResolvedValue({
+      enabled: true,
+      flagSource: 'org_settings',
+      suggestion: {
+        modelVersion: 'ticket-triage-rules-v0',
+        confidence: 0.72,
+        priority: 'high',
+        categoryId: '00000000-0000-4000-8000-000000000123',
+        categoryName: 'Hardware',
+        reasons: ['matched Hardware'],
+      },
+    });
+    vi.mocked(emitTicketTriageFeedback).mockResolvedValue(undefined);
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/triage-suggestion/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Wrong queue' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(emitTicketTriageFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: STUB_TICKET.orgId,
+      ticketId: TICKET_ID,
+      eventType: 'ticket.triage_rejected',
+      outcome: 'rejected',
+      actorUserId: 'u-1',
+      metadata: expect.objectContaining({
+        acceptedSuggestion: false,
+        rejectedSuggestion: true,
+        modelVersion: 'ticket-triage-rules-v0',
+        suggestedPriority: 'high',
+        suggestedCategoryId: '00000000-0000-4000-8000-000000000123',
+        note: 'Wrong queue',
+      }),
+    }));
     expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
   });
 });

@@ -20,6 +20,7 @@ import {
   evaluateTicketTriage,
   getTicketTriageSuggestion,
 } from '../../services/ticketTriage';
+import { emitTicketTriageFeedback } from '../../services/mlFeedbackEmitters';
 import type { AuthContext } from '../../middleware/auth';
 
 // NOTE: authMiddleware is applied by the hub router in ./index.ts (alerts pattern) —
@@ -35,6 +36,9 @@ const applyTriageSuggestionSchema = z.object({
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
 }).refine((value) => value.categoryId !== undefined || value.priority !== undefined, {
   message: 'At least one suggested field is required',
+});
+const rejectTriageSuggestionSchema = z.object({
+  note: z.string().trim().max(500).optional(),
 });
 
 const OPEN_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
@@ -486,6 +490,55 @@ ticketsRoutes.post(
     } catch (err) {
       return handleServiceError(c, err);
     }
+  }
+);
+
+ticketsRoutes.post(
+  '/:id/triage-suggestion/reject',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', idParam),
+  zValidator('json', rejectTriageSuggestionSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const body = c.req.valid('json');
+
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const ticket = await getScopedTicketOr404(auth, id);
+    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+
+    const suggestion = await getTicketTriageSuggestion(ticket);
+    if (!suggestion.enabled) {
+      return c.json({ error: 'Ticket triage suggestions are disabled' }, 409);
+    }
+    if (!suggestion.suggestion) {
+      return c.json({ error: 'No ticket triage suggestion is currently available' }, 409);
+    }
+
+    await emitTicketTriageFeedback({
+      orgId: ticket.orgId,
+      ticketId: id,
+      eventType: 'ticket.triage_rejected',
+      outcome: 'rejected',
+      actorUserId: auth.user.id,
+      metadata: {
+        source: 'ticket_triage_v0',
+        acceptedSuggestion: false,
+        rejectedSuggestion: true,
+        modelVersion: suggestion.suggestion.modelVersion,
+        suggestedPriority: suggestion.suggestion.priority,
+        suggestedCategoryId: suggestion.suggestion.categoryId,
+        suggestedCategoryName: suggestion.suggestion.categoryName,
+        confidence: suggestion.suggestion.confidence,
+        reasons: suggestion.suggestion.reasons,
+        note: body.note,
+      },
+    });
+
+    return c.json({ success: true, suggestion: suggestion.suggestion });
   }
 );
 

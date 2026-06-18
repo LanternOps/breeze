@@ -38,6 +38,7 @@ export const ML_FEEDBACK_EVENT_TYPES = [
   'ticket.category_changed',
   'ticket.priority_changed',
   'ticket.assignee_changed',
+  'ticket.triage_rejected',
   'ticket.resolved',
   'ticket.reopened',
   'device.failure_confirmed',

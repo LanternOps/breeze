@@ -36,6 +36,7 @@ export interface TicketTriageEvaluationSummary {
   totalLabels: number;
   acceptedSuggestionLabels: number;
   manualOverrideLabels: number;
+  rejectedSuggestionLabels: number;
   categoryLabels: number;
   priorityLabels: number;
   assigneeLabels: number;
@@ -156,6 +157,7 @@ export function computeTicketTriageEvaluationSummary(
 ): TicketTriageEvaluationSummary {
   let acceptedSuggestionLabels = 0;
   let manualOverrideLabels = 0;
+  let rejectedSuggestionLabels = 0;
   let categoryLabels = 0;
   let priorityLabels = 0;
   let assigneeLabels = 0;
@@ -165,8 +167,14 @@ export function computeTicketTriageEvaluationSummary(
     if (label.eventType === 'ticket.category_changed') categoryLabels += 1;
     if (label.eventType === 'ticket.priority_changed') priorityLabels += 1;
     if (label.eventType === 'ticket.assignee_changed') assigneeLabels += 1;
-    if (metadata.acceptedSuggestion === true) acceptedSuggestionLabels += 1;
-    else manualOverrideLabels += 1;
+    if (label.eventType === 'ticket.triage_rejected') {
+      rejectedSuggestionLabels += 1;
+      manualOverrideLabels += 1;
+    } else if (metadata.acceptedSuggestion === true) {
+      acceptedSuggestionLabels += 1;
+    } else {
+      manualOverrideLabels += 1;
+    }
   }
 
   const denominator = acceptedSuggestionLabels + manualOverrideLabels;
@@ -175,6 +183,7 @@ export function computeTicketTriageEvaluationSummary(
     totalLabels: labels.length,
     acceptedSuggestionLabels,
     manualOverrideLabels,
+    rejectedSuggestionLabels,
     categoryLabels,
     priorityLabels,
     assigneeLabels,
@@ -187,7 +196,7 @@ export async function evaluateTicketTriage(input: TicketTriageEvaluationInput = 
   const since = new Date(Date.now() - labelWindowDays * DAY_MS);
   const conditions = [
     eq(mlFeedbackEvents.sourceType, 'ticket'),
-    inArray(mlFeedbackEvents.eventType, ['ticket.category_changed', 'ticket.priority_changed', 'ticket.assignee_changed']),
+    inArray(mlFeedbackEvents.eventType, ['ticket.category_changed', 'ticket.priority_changed', 'ticket.assignee_changed', 'ticket.triage_rejected']),
     gte(mlFeedbackEvents.occurredAt, since),
   ];
   if (input.orgIds && input.orgIds.length > 0) {
