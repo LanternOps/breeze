@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle, PlayCircle, RefreshCw, Sparkles, XCircle } from 'lucide-react';
 
 import { handleActionError, runAction } from '../../lib/runAction';
-import { executeScript } from '../../services/deviceActions';
 import { fetchWithAuth } from '../../stores/auth';
 
 type SuggestionStatus = 'suggested' | 'accepted' | 'edited' | 'rejected' | 'executed' | 'failed';
@@ -133,25 +132,16 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
   }
 
   async function executeSuggestion(suggestion: RemediationSuggestion) {
-    const scriptId = suggestion.scriptId;
-    const deviceId = singleTargetDeviceId(suggestion);
-    if (!scriptId || !deviceId) return;
+    if (!canExecuteScriptSuggestion(suggestion)) return;
 
     setExecutingId(suggestion.id);
     try {
-      const execution = await executeScript(scriptId, [deviceId], suggestion.parameters);
-      const scriptExecutionId = execution.executions[0]?.executionId;
-      if (!scriptExecutionId) {
-        throw new Error('Script execution did not return an execution ID');
-      }
-
       const result = await runAction<{ data?: RemediationSuggestion }>({
-        request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}`, {
-          method: 'PATCH',
+        request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}/execute`, {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'executed', scriptExecutionId }),
         }),
-        errorFallback: 'Script queued, but the suggested fix could not be updated',
+        errorFallback: 'Could not execute suggested fix',
         successMessage: 'Script queued and suggested fix updated',
       });
       if (result.data) {

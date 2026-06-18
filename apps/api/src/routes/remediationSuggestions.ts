@@ -4,12 +4,13 @@ import { z } from 'zod';
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
-import { devices, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
-import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
+import { devices, mlFeedbackEvents, remediationSuggestions, scriptExecutions } from '../db/schema';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
 import { generateRemediationSuggestions } from '../services/remediationSuggestions';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { executeScriptOnDevices } from '../services/scriptExecution';
 
 export const remediationSuggestionRoutes = new Hono();
 
@@ -64,6 +65,55 @@ function hasExecutionLink(input: {
   playbookExecutionId: string | null;
 }): boolean {
   return Boolean(input.toolExecutionId || input.scriptExecutionId || input.playbookExecutionId);
+}
+
+function normalizeSuggestionParameters(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function singleTargetDeviceId(row: Pick<typeof remediationSuggestions.$inferSelect, 'deviceId' | 'targetDeviceIds'>): string | null {
+  if (row.targetDeviceIds.length === 1) return row.targetDeviceIds[0] ?? null;
+  if (row.targetDeviceIds.length === 0) return row.deviceId;
+  return null;
+}
+
+async function validateLinkedScriptExecution(
+  existing: typeof remediationSuggestions.$inferSelect,
+  scriptExecutionId: string | null | undefined,
+): Promise<string | null> {
+  if (!scriptExecutionId) return null;
+
+  const [execution] = await db
+    .select({
+      orgId: scriptExecutions.orgId,
+      scriptId: scriptExecutions.scriptId,
+      deviceId: scriptExecutions.deviceId,
+    })
+    .from(scriptExecutions)
+    .where(eq(scriptExecutions.id, scriptExecutionId))
+    .limit(1);
+
+  if (!execution) {
+    return 'Linked script execution not found';
+  }
+  if (execution.orgId !== existing.orgId) {
+    return 'Linked script execution must belong to the same organization';
+  }
+  if (existing.scriptId && execution.scriptId !== existing.scriptId) {
+    return 'Linked script execution must run the suggested script';
+  }
+
+  const targetDeviceIds = existing.targetDeviceIds.length > 0
+    ? existing.targetDeviceIds
+    : existing.deviceId
+      ? [existing.deviceId]
+      : [];
+  if (targetDeviceIds.length > 0 && !targetDeviceIds.includes(execution.deviceId)) {
+    return 'Linked script execution must target the suggested device';
+  }
+
+  return null;
 }
 
 function validateSuggestionLifecycleUpdate(
@@ -456,6 +506,132 @@ remediationSuggestionRoutes.post(
   }
 );
 
+remediationSuggestionRoutes.post(
+  '/:id/execute',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const id = c.req.param('id') ?? '';
+
+    const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
+    const orgCond = auth.orgCondition(remediationSuggestions.orgId);
+    if (orgCond) conditions.push(orgCond);
+
+    const [existing] = await db
+      .select()
+      .from(remediationSuggestions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!existing) {
+      return c.json({ error: 'Suggestion not found' }, 404);
+    }
+    if (!(await siteAllowedForSuggestion(existing, perms))) {
+      return c.json({ error: 'Suggestion not found or access denied' }, 403);
+    }
+    if (existing.status !== 'accepted' && existing.status !== 'edited') {
+      return c.json({ error: 'Suggestion must be accepted or edited before it can be executed' }, 400);
+    }
+    if (existing.scriptExecutionId) {
+      return c.json({ error: 'Suggestion already has a linked script execution' }, 409);
+    }
+    if (existing.targetType !== 'script' || !existing.scriptId) {
+      return c.json({ error: 'Only script remediation suggestions can be executed' }, 400);
+    }
+
+    const deviceId = singleTargetDeviceId(existing);
+    if (!deviceId) {
+      return c.json({ error: 'Remediation script execution requires exactly one target device' }, 400);
+    }
+
+    const execution = await executeScriptOnDevices({
+      scriptId: existing.scriptId,
+      deviceIds: [deviceId],
+      parameters: normalizeSuggestionParameters(existing.parameters),
+      triggerType: 'manual',
+      auth,
+      permissions: perms,
+    });
+
+    if (!execution.ok) {
+      return c.json({
+        error: execution.error,
+        maintenanceSuppressedDeviceIds: execution.maintenanceSuppressedDeviceIds,
+      }, execution.status);
+    }
+
+    const scriptExecutionId = execution.executions[0]?.executionId;
+    if (!scriptExecutionId) {
+      return c.json({ error: 'Script execution did not return an execution ID' }, 500);
+    }
+
+    const now = new Date();
+    const [updated] = await db
+      .update(remediationSuggestions)
+      .set({
+        status: 'executed',
+        scriptExecutionId,
+        executedBy: auth.user.id,
+        executedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(remediationSuggestions.id, existing.id))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Failed to update suggestion' }, 500);
+    }
+
+    await emitRemediationSuggestionFeedback({
+      orgId: updated.orgId,
+      suggestionId: updated.id,
+      eventType: 'suggestion.executed',
+      outcome: 'executed',
+      actorUserId: auth.user.id,
+      metadata: {
+        route: 'remediation_suggestions.execute',
+        sourceType: updated.sourceType,
+        sourceId: updated.sourceId,
+        targetType: updated.targetType,
+        scriptId: updated.scriptId,
+        scriptExecutionId: updated.scriptExecutionId,
+      },
+    });
+
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'ml.remediation_suggestion.execute',
+      resourceType: 'remediation_suggestion',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: {
+        sourceType: updated.sourceType,
+        sourceId: updated.sourceId,
+        targetType: updated.targetType,
+        scriptId: updated.scriptId,
+        scriptExecutionId,
+      },
+    });
+
+    return c.json({
+      data: serializeSuggestion(updated),
+      execution: {
+        batchId: execution.batchId,
+        scriptId: execution.scriptId,
+        devicesTargeted: execution.devicesTargeted,
+        maintenanceSuppressedDeviceIds: execution.maintenanceSuppressedDeviceIds.length > 0
+          ? execution.maintenanceSuppressedDeviceIds
+          : undefined,
+        executions: execution.executions,
+        status: execution.status,
+      },
+    }, 201);
+  }
+);
+
 remediationSuggestionRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
@@ -487,6 +663,13 @@ remediationSuggestionRoutes.patch(
     const validationError = validateSuggestionLifecycleUpdate(existing, input);
     if (validationError) {
       return c.json({ error: validationError }, 400);
+    }
+    if (input.status === 'executed' || input.status === 'failed') {
+      const scriptExecutionId = input.scriptExecutionId === undefined ? existing.scriptExecutionId : input.scriptExecutionId;
+      const linkedExecutionError = await validateLinkedScriptExecution(existing, scriptExecutionId);
+      if (linkedExecutionError) {
+        return c.json({ error: linkedExecutionError }, 400);
+      }
     }
 
     const now = new Date();

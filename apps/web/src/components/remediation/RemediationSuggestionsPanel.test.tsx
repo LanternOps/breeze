@@ -2,7 +2,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RemediationSuggestionsPanel from './RemediationSuggestionsPanel';
-import { executeScript } from '../../services/deviceActions';
 import { fetchWithAuth } from '../../stores/auth';
 
 const showToast = vi.fn();
@@ -11,16 +10,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
-vi.mock('../../services/deviceActions', () => ({
-  executeScript: vi.fn(),
-}));
-
 vi.mock('../shared/Toast', () => ({
   showToast: (input: unknown) => showToast(input),
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
-const executeScriptMock = vi.mocked(executeScript);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -111,39 +105,17 @@ describe('RemediationSuggestionsPanel', () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(makeJsonResponse({ data: [accepted] }))
       .mockResolvedValueOnce(makeJsonResponse({ data: executed }));
-    executeScriptMock.mockResolvedValueOnce({
-      batchId: null,
-      scriptId: suggestion.scriptId,
-      devicesTargeted: 1,
-      executions: [{
-        executionId: '33333333-3333-4333-8333-333333333333',
-        deviceId: suggestion.deviceId,
-        commandId: '44444444-4444-4444-8444-444444444444',
-      }],
-      status: 'queued',
-    });
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
     fireEvent.click(await screen.findByRole('button', { name: /execute/i }));
 
     await waitFor(() => {
-      expect(executeScriptMock).toHaveBeenCalledWith(
-        suggestion.scriptId,
-        [suggestion.deviceId],
-        suggestion.parameters,
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/suggestion-1/execute',
+        expect.objectContaining({ method: 'POST' }),
       );
     });
-    expect(fetchWithAuthMock).toHaveBeenCalledWith(
-      '/remediation-suggestions/suggestion-1',
-      expect.objectContaining({
-        method: 'PATCH',
-        body: JSON.stringify({
-          status: 'executed',
-          scriptExecutionId: '33333333-3333-4333-8333-333333333333',
-        }),
-      }),
-    );
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
       type: 'success',
       message: 'Script queued and suggested fix updated',

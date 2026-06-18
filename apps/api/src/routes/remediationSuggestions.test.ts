@@ -7,6 +7,7 @@ const dbMocks = vi.hoisted(() => ({
   writeRouteAuditMock: vi.fn(),
   generateMock: vi.fn(),
   emitFeedbackMock: vi.fn(),
+  executeScriptOnDevicesMock: vi.fn(),
 }));
 
 let currentPermissions: { allowedSiteIds?: string[] } | undefined;
@@ -40,6 +41,12 @@ vi.mock('../db/schema', () => ({
     status: 'remediationSuggestions.status',
     createdAt: 'remediationSuggestions.createdAt',
   },
+  scriptExecutions: {
+    id: 'scriptExecutions.id',
+    orgId: 'scriptExecutions.orgId',
+    scriptId: 'scriptExecutions.scriptId',
+    deviceId: 'scriptExecutions.deviceId',
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -58,6 +65,7 @@ vi.mock('../middleware/auth', () => ({
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -70,6 +78,10 @@ vi.mock('../services/remediationSuggestions', () => ({
 
 vi.mock('../services/mlFeedbackEmitters', () => ({
   emitRemediationSuggestionFeedback: dbMocks.emitFeedbackMock,
+}));
+
+vi.mock('../services/scriptExecution', () => ({
+  executeScriptOnDevices: dbMocks.executeScriptOnDevicesMock,
 }));
 
 import { remediationSuggestionRoutes } from './remediationSuggestions';
@@ -128,6 +140,16 @@ function mockSuggestionLoad(suggestion: Record<string, unknown>) {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue([suggestion]),
+      }),
+    }),
+  });
+}
+
+function mockScriptExecutionLoad(execution: Record<string, unknown> | undefined) {
+  dbMocks.selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(execution ? [execution] : []),
       }),
     }),
   });
@@ -257,6 +279,11 @@ describe('remediation suggestion routes', () => {
   it('marks accepted suggestions executed when a script execution is linked', async () => {
     const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
     mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptExecutionLoad({
+      orgId: baseSuggestion.orgId,
+      scriptId: baseSuggestion.scriptId,
+      deviceId: baseSuggestion.deviceId,
+    });
     dbMocks.updateMock.mockReturnValueOnce({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -289,6 +316,144 @@ describe('remediation suggestion routes', () => {
     const body = await res.json();
     expect(body.data.status).toBe('executed');
     expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
+  });
+
+  it('rejects linked script executions from another organization', async () => {
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptExecutionLoad({
+      orgId: '77777777-7777-4777-8777-777777777777',
+      scriptId: baseSuggestion.scriptId,
+      deviceId: baseSuggestion.deviceId,
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Linked script execution must belong to the same organization');
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects linked script executions for another script', async () => {
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptExecutionLoad({
+      orgId: baseSuggestion.orgId,
+      scriptId: '77777777-7777-4777-8777-777777777777',
+      deviceId: baseSuggestion.deviceId,
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Linked script execution must run the suggested script');
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects linked script executions for another target device', async () => {
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptExecutionLoad({
+      orgId: baseSuggestion.orgId,
+      scriptId: baseSuggestion.scriptId,
+      deviceId: '77777777-7777-4777-8777-777777777777',
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'executed', scriptExecutionId }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Linked script execution must target the suggested device');
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+  });
+
+  it('executes accepted script suggestions through the server-side script rail', async () => {
+    const accepted = { ...baseSuggestion, status: 'accepted' };
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+    mockSuggestionLoad(accepted);
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
+      ok: true,
+      batchId: null,
+      scriptId: baseSuggestion.scriptId,
+      script: { id: baseSuggestion.scriptId, name: 'Disk Cleanup' },
+      devicesTargeted: 1,
+      maintenanceSuppressedDeviceIds: [],
+      executions: [{
+        executionId: scriptExecutionId,
+        deviceId: baseSuggestion.deviceId,
+        commandId: '77777777-7777-4777-8777-777777777777',
+      }],
+      status: 'queued',
+      triggerType: 'manual',
+      runAs: 'system',
+      auditOrgId: baseSuggestion.orgId,
+    });
+    dbMocks.updateMock.mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            ...accepted,
+            status: 'executed',
+            scriptExecutionId,
+            executedBy: 'user-1',
+            executedAt: new Date('2026-06-18T12:10:00.000Z'),
+          }]),
+        }),
+      }),
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.executeScriptOnDevicesMock).toHaveBeenCalledWith(expect.objectContaining({
+      scriptId: baseSuggestion.scriptId,
+      deviceIds: [baseSuggestion.deviceId],
+      parameters: baseSuggestion.parameters,
+      triggerType: 'manual',
+    }));
+    expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'suggestion.executed',
+      outcome: 'executed',
+      metadata: expect.objectContaining({
+        route: 'remediation_suggestions.execute',
+        scriptExecutionId,
+      }),
+    }));
+    const body = await res.json();
+    expect(body.data.status).toBe('executed');
+    expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
+    expect(body.execution.executions[0].executionId).toBe(scriptExecutionId);
+  });
+
+  it('rejects server-side execution before acceptance', async () => {
+    mockSuggestionLoad(baseSuggestion);
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Suggestion must be accepted or edited before it can be executed');
+    expect(dbMocks.executeScriptOnDevicesMock).not.toHaveBeenCalled();
   });
 
   it('returns remediation status rates and lifecycle feedback counts', async () => {
