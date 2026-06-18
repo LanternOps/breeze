@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
 import { db } from '../db';
 import {
   agentLogs,
+  alertCorrelationMembers,
   alertCorrelations,
   alertRules,
   alertTemplates,
@@ -62,6 +63,14 @@ type LinkedLogCorrelation = {
   occurrences: number;
   affectedDevices: unknown;
   sampleLogs: unknown;
+};
+
+type CorrelationMemberEvidence = {
+  alertId: string;
+  role: string;
+  confidence: string | null;
+  evidence: unknown;
+  updatedAt: Date;
 };
 
 export interface RcaEvidenceItem {
@@ -245,7 +254,9 @@ function buildAlertMetadata(
   ruleSource: AlertRuleSource | undefined,
   configSource: ConfigPolicyAlertSource | undefined,
   linkedLogCorrelations: LinkedLogCorrelation[],
+  memberEvidence: CorrelationMemberEvidence | undefined,
 ): Record<string, unknown> {
+  const memberEvidenceRecord = metadataRecord(memberEvidence?.evidence);
   return {
     alertId: alert.id,
     status: alert.status,
@@ -296,6 +307,13 @@ function buildAlertMetadata(
       affectedDevices: compactAffectedDevices(correlation.affectedDevices),
       sampleLogIds: compactSampleLogIds(correlation.sampleLogs),
     })),
+    correlationMember: memberEvidence ? {
+      role: memberEvidence.role,
+      confidence: Number(memberEvidence.confidence ?? 0),
+      evidenceVersion: metadataString(memberEvidenceRecord, 'version'),
+      evidence: memberEvidenceRecord,
+      updatedAt: toIso(asDate(memberEvidence.updatedAt)),
+    } : null,
   };
 }
 
@@ -323,12 +341,14 @@ function buildAlertEvidence(
   ruleSources: Map<string, AlertRuleSource>,
   configSources: Map<string, ConfigPolicyAlertSource>,
   linkedLogCorrelations: Map<string, LinkedLogCorrelation[]>,
+  memberEvidenceByAlertId: Map<string, CorrelationMemberEvidence>,
 ): RcaEvidenceItem[] {
   return alertRows.map((alert) => {
     const device = deviceNames.get(alert.deviceId);
     const ruleSource = alert.ruleId ? ruleSources.get(alert.ruleId) : undefined;
     const configSource = alert.configPolicyId ? configSources.get(alert.configPolicyId) : undefined;
     const alertLinkedLogCorrelations = linkedLogCorrelations.get(alert.id) ?? [];
+    const memberEvidence = memberEvidenceByAlertId.get(alert.id);
     const sourceSummary = ruleSource?.ruleName
       ? ` via rule "${ruleSource.ruleName}"`
       : configSource?.configPolicyAlertRuleName
@@ -349,7 +369,7 @@ function buildAlertEvidence(
       severity: alert.severity,
       title: alert.title,
       summary: `${alert.severity.toUpperCase()} alert on ${device?.hostname ?? alert.deviceId}${sourceSummary}${linkedLogSummary}: ${alert.message ?? alert.title}`,
-      metadata: buildAlertMetadata(alert, ruleSource, configSource, alertLinkedLogCorrelations),
+      metadata: buildAlertMetadata(alert, ruleSource, configSource, alertLinkedLogCorrelations, memberEvidence),
     };
   });
 }
@@ -570,6 +590,24 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
     rows.push(correlation);
     linkedLogCorrelationsByAlertId.set(correlation.alertId, rows);
   }
+  const memberEvidenceRows: CorrelationMemberEvidence[] = alertIds.length > 0
+    ? await db
+        .select({
+          alertId: alertCorrelationMembers.alertId,
+          role: alertCorrelationMembers.role,
+          confidence: alertCorrelationMembers.confidence,
+          evidence: alertCorrelationMembers.evidence,
+          updatedAt: alertCorrelationMembers.updatedAt,
+        })
+        .from(alertCorrelationMembers)
+        .where(and(
+          eq(alertCorrelationMembers.orgId, options.orgId),
+          eq(alertCorrelationMembers.groupId, options.groupId),
+          inArray(alertCorrelationMembers.alertId, alertIds)
+        ))
+        .limit(alertIds.length)
+    : [];
+  const memberEvidenceByAlertId = new Map(memberEvidenceRows.map((row) => [row.alertId, row]));
 
   const correlationRows = alertIds.length > 1
     ? await db
@@ -648,7 +686,14 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
   if (metricRows.length === 0) gaps.push('No 5-minute metric rollups were available in the incident window.');
 
   const evidence: RcaEvidenceItem[] = [
-    ...buildAlertEvidence(alertRows, deviceNames, ruleSources, configSources, linkedLogCorrelationsByAlertId),
+    ...buildAlertEvidence(
+      alertRows,
+      deviceNames,
+      ruleSources,
+      configSources,
+      linkedLogCorrelationsByAlertId,
+      memberEvidenceByAlertId
+    ),
     ...correlationRows.map((link) => ({
       id: `correlation:${link.parentAlertId}:${link.childAlertId}`,
       source: 'correlation' as const,

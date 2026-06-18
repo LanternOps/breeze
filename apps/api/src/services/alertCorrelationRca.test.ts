@@ -29,6 +29,15 @@ const { dbMock, state, tables } = vi.hoisted(() => {
       metadata: 'alert_correlations.metadata',
       createdAt: 'alert_correlations.createdAt',
     },
+    alertCorrelationMembers: {
+      orgId: 'alertCorrelationMembers.orgId',
+      groupId: 'alertCorrelationMembers.groupId',
+      alertId: 'alertCorrelationMembers.alertId',
+      role: 'alertCorrelationMembers.role',
+      confidence: 'alertCorrelationMembers.confidence',
+      evidence: 'alertCorrelationMembers.evidence',
+      updatedAt: 'alertCorrelationMembers.updatedAt',
+    },
     brainDeviceContext: {
       id: 'brainDeviceContext.id',
       orgId: 'brainDeviceContext.orgId',
@@ -135,6 +144,7 @@ const { dbMock, state, tables } = vi.hoisted(() => {
     devices: [] as Array<Record<string, any>>,
     alertRuleSources: [] as Array<Record<string, any>>,
     correlations: [] as Array<Record<string, any>>,
+    memberEvidence: [] as Array<Record<string, any>>,
     configPolicySources: [] as Array<Record<string, any>>,
     context: [] as Array<Record<string, any>>,
     changes: [] as Array<Record<string, any>>,
@@ -162,19 +172,21 @@ const { dbMock, state, tables } = vi.hoisted(() => {
           ? state.alertRuleSources
           : this.table === tables.alertCorrelations
             ? state.correlations
-            : this.table === tables.configPolicyAlertRules
-              ? state.configPolicySources
-              : this.table === tables.brainDeviceContext
-                ? state.context
-                : this.table === tables.logCorrelations
-                  ? state.linkedLogCorrelations
-                  : this.table === tables.deviceChangeLog
-                    ? state.changes
-                    : this.table === tables.deviceEventLogs
-                      ? state.eventLogs
-                      : this.table === tables.agentLogs
-                        ? state.agentLogs
-                        : state.metricRollups;
+            : this.table === tables.alertCorrelationMembers
+              ? state.memberEvidence
+              : this.table === tables.configPolicyAlertRules
+                ? state.configPolicySources
+                : this.table === tables.brainDeviceContext
+                  ? state.context
+                  : this.table === tables.logCorrelations
+                    ? state.linkedLogCorrelations
+                    : this.table === tables.deviceChangeLog
+                      ? state.changes
+                      : this.table === tables.deviceEventLogs
+                        ? state.eventLogs
+                        : this.table === tables.agentLogs
+                          ? state.agentLogs
+                          : state.metricRollups;
       const filtered = source.filter((row) => evalPredicate(row, this.predicate));
       if (!this.projection) return filtered;
       return filtered.map((row) => {
@@ -210,6 +222,7 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('../db', () => ({ db: dbMock }));
 vi.mock('../db/schema', () => ({
   agentLogs: tables.agentLogs,
+  alertCorrelationMembers: tables.alertCorrelationMembers,
   alertCorrelations: tables.alertCorrelations,
   alertRules: tables.alertRules,
   alertTemplates: tables.alertTemplates,
@@ -273,6 +286,26 @@ describe('alert correlation RCA evidence builder', () => {
       },
       createdAt: new Date('2026-06-18T12:03:00Z'),
     }];
+    state.memberEvidence = [
+      {
+        orgId: ORG_ID,
+        groupId: 'group-1',
+        alertId: ALERT_1,
+        role: 'root',
+        confidence: '1.00',
+        evidence: { version: 'alert-correlation-groups-v1', source: 'component-root' },
+        updatedAt: new Date('2026-06-18T12:04:00Z'),
+      },
+      {
+        orgId: ORG_ID,
+        groupId: 'group-1',
+        alertId: ALERT_2,
+        role: 'related',
+        confidence: '0.91',
+        evidence: { version: 'alert-correlation-groups-v1', source: 'same-device' },
+        updatedAt: new Date('2026-06-18T12:04:30Z'),
+      },
+    ];
     state.configPolicySources = [{
       orgId: ORG_ID,
       configPolicyAlertRuleId: 'cpar-1',
@@ -419,6 +452,12 @@ describe('alert correlation RCA evidence builder', () => {
         isBuiltIn: false,
         cooldownMinutes: 10,
       },
+      correlationMember: {
+        role: 'root',
+        confidence: 1,
+        evidenceVersion: 'alert-correlation-groups-v1',
+        updatedAt: '2026-06-18T12:04:00.000Z',
+      },
     });
     const configAlertEvidence = result.timeline.find((item) => item.id === `alert:${ALERT_2}`);
     expect(configAlertEvidence?.summary).toContain('via config policy rule "Memory threshold"');
@@ -450,6 +489,12 @@ describe('alert correlation RCA evidence builder', () => {
         affectedDevices: [{ deviceId: DEVICE_ID, hostname: 'server-1', count: 5 }],
         sampleLogIds: ['sample-log-1'],
       }],
+      correlationMember: {
+        role: 'related',
+        confidence: 0.91,
+        evidenceVersion: 'alert-correlation-groups-v1',
+        updatedAt: '2026-06-18T12:04:30.000Z',
+      },
     });
     expect(result.rootCauseCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ confidence: 0.91 }),
