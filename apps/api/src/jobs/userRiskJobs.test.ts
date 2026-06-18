@@ -44,6 +44,10 @@ vi.mock('../services/userRiskScoring', () => ({
   publishUserRiskScoreEvents: vi.fn(),
 }));
 
+vi.mock('../services/userRiskSignals', () => ({
+  evaluateUserRiskSignalsForOrg: vi.fn(),
+}));
+
 import {
   enqueueUserRiskSignalEvent,
   shutdownUserRiskJobs,

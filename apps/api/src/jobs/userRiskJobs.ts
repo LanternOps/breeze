@@ -10,6 +10,7 @@ import {
   computeAndPersistOrgUserRisk,
   publishUserRiskScoreEvents
 } from '../services/userRiskScoring';
+import { evaluateUserRiskSignalsForOrg } from '../services/userRiskSignals';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -144,10 +145,13 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
   usersProcessed: number;
   changedUsers: number;
   autoTrainingAssigned: number;
+  signalsAppended: number;
+  signalsDeduped: number;
   publishedHigh: number;
   publishedSpikes: number;
   publishFailures: number;
 }> {
+  const signalEvaluation = await evaluateUserRiskSignalsForOrg(data.orgId);
   const result = await computeAndPersistOrgUserRisk(data.orgId);
   const published = await publishUserRiskScoreEvents({
     orgId: data.orgId,
@@ -161,6 +165,8 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
     usersProcessed: result.usersProcessed,
     changedUsers: result.changedUsers.length,
     autoTrainingAssigned: result.autoTrainingAssigned,
+    signalsAppended: signalEvaluation.appended,
+    signalsDeduped: signalEvaluation.deduped,
     publishedHigh: published.publishedHigh,
     publishedSpikes: published.publishedSpikes,
     publishFailures: published.failed
