@@ -42,7 +42,8 @@ export interface MetricRollupResult {
 }
 
 function bucketStartSql(timestampSql: SQL, bucketSeconds: number): SQL<Date> {
-  return sql<Date>`to_timestamp(floor(extract(epoch from ${timestampSql}) / ${bucketSeconds}) * ${bucketSeconds})::timestamp`;
+  const bucketSecondsSql = sql.raw(String(bucketSeconds));
+  return sql<Date>`to_timestamp(floor(extract(epoch from ${timestampSql}) / ${bucketSecondsSql}) * ${bucketSecondsSql})::timestamp`;
 }
 
 function upsertAssignments(): SQL {
@@ -71,6 +72,8 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
 
 async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof DEVICE_METRIC_ROLLUP_SOURCES)[number]): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
   const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
   const valueSql = sql.raw(`dm.${metric.column}`);
 
@@ -79,14 +82,14 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
       SELECT DISTINCT dm.org_id, dm.device_id
       FROM device_metrics dm
       WHERE dm.org_id = ${options.orgId}
-        AND dm.timestamp >= ${from}
-        AND dm.timestamp < ${to}
+        AND dm.timestamp >= ${fromIso}::timestamp
+        AND dm.timestamp < ${toIso}::timestamp
         AND ${valueSql} IS NOT NULL
     ),
     buckets AS (
       SELECT generate_series(
-        ${from}::timestamp,
-        ${to}::timestamp - interval '1 second' * ${RAW_BUCKET_SECONDS},
+        ${fromIso}::timestamp,
+        ${toIso}::timestamp - interval '1 second' * ${RAW_BUCKET_SECONDS},
         interval '1 second' * ${RAW_BUCKET_SECONDS}
       )::timestamp AS bucket_start
     ),
@@ -128,9 +131,9 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
       count(${valueSql})::integer,
       greatest(${RAW_BUCKET_SECONDS} - (count(${valueSql})::integer * ${expectedSampleSeconds}), 0)::integer,
       jsonb_build_object(
-        'rollupVersion', ${METRIC_ROLLUP_VERSION},
+        'rollupVersion', ${METRIC_ROLLUP_VERSION}::text,
         'source', 'raw',
-        'expectedSampleSeconds', ${expectedSampleSeconds},
+        'expectedSampleSeconds', ${expectedSampleSeconds}::integer,
         'isGap', count(${valueSql}) = 0
       )
     FROM bucket_grid bg
@@ -148,6 +151,8 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
 
 async function rollupDerivedDeviceMetrics(options: MetricRollupRange, sourceBucketSeconds: MetricRollupBucketSeconds, targetBucketSeconds: MetricRollupBucketSeconds): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
   const targetBucketSql = bucketStartSql(sql`mr.bucket_start`, targetBucketSeconds);
 
   await db.execute(sql`
@@ -183,13 +188,17 @@ async function rollupDerivedDeviceMetrics(options: MetricRollupRange, sourceBuck
       sum(mr.sum_value)::double precision,
       sum(mr.sample_count)::integer,
       sum(mr.gap_seconds)::integer,
-      jsonb_build_object('rollupVersion', ${METRIC_ROLLUP_VERSION}, 'source', 'derived', 'sourceBucketSeconds', ${sourceBucketSeconds})
+      jsonb_build_object(
+        'rollupVersion', ${METRIC_ROLLUP_VERSION}::text,
+        'source', 'derived',
+        'sourceBucketSeconds', ${sourceBucketSeconds}::integer
+      )
     FROM metric_rollups mr
     WHERE mr.org_id = ${options.orgId}
       AND mr.source_table = 'device_metrics'
       AND mr.bucket_seconds = ${sourceBucketSeconds}
-      AND mr.bucket_start >= ${from}
-      AND mr.bucket_start < ${to}
+      AND mr.bucket_start >= ${fromIso}::timestamp
+      AND mr.bucket_start < ${toIso}::timestamp
     GROUP BY mr.org_id, mr.source_table, mr.device_id, mr.metric_type, mr.metric_name, ${targetBucketSql}
     HAVING sum(mr.sample_count) > 0
     ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
