@@ -161,6 +161,16 @@ vi.mock('../db/schema', () => ({
     bandwidthInBps: 'deviceMetrics.bandwidthInBps',
     processCount: 'deviceMetrics.processCount'
   },
+  metricRollups: {
+    orgId: 'metricRollups.orgId',
+    sourceTable: 'metricRollups.sourceTable',
+    deviceId: 'metricRollups.deviceId',
+    metricName: 'metricRollups.metricName',
+    bucketStart: 'metricRollups.bucketStart',
+    bucketSeconds: 'metricRollups.bucketSeconds',
+    avgValue: 'metricRollups.avgValue',
+    sampleCount: 'metricRollups.sampleCount'
+  },
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
@@ -354,6 +364,28 @@ describe('analytics routes', () => {
       expect(body.predictions).toHaveLength(1);
       expect(body.predictions[0].value).toBe(76);
       expect(body.thresholds).toEqual({ warning: 80, critical: 90 });
+    });
+
+    it('uses daily metric rollups before falling back to raw device metrics', async () => {
+      mockSelectOnce([]); // stored predictions empty
+      mockSelectOnce([
+        { timestamp: new Date('2026-06-17T00:00:00.000Z'), value: 10 },
+        { timestamp: new Date('2026-06-18T00:00:00.000Z'), value: 20 },
+      ]); // metric_rollups aggregate
+
+      const res = await app.request('/analytics/capacity?metricType=disk', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.currentValue).toBe(20);
+      expect(body.predictions[0]).toMatchObject({
+        timestamp: '2026-06-17T00:00:00.000Z',
+        value: 10,
+      });
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -727,6 +759,7 @@ describe('analytics routes', () => {
         currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
         mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
         mockSelectOnce([]); // predictions empty -> fall through to live metrics
+        mockSelectOnce([]); // metric_rollups aggregate empty
         mockSelectOnce([]); // live device_metrics aggregate
 
         const res = await app.request('/analytics/capacity?metricType=disk', {

@@ -9,6 +9,7 @@ import {
   capacityPredictions,
   capacityThresholds,
   deviceMetrics,
+  metricRollups,
   devices,
   slaDefinitions as slaDefinitionsTable,
   slaCompliance as slaComplianceTable
@@ -197,6 +198,12 @@ const capacityQuerySchema = z.object({
   metricType: z.string().min(1).optional().default('disk'),
   range: z.string().optional().default('30d')
 });
+
+function capacityRollupMetricName(metricType: string): string {
+  if (metricType === 'cpu') return 'cpu_percent';
+  if (metricType === 'memory') return 'ram_percent';
+  return 'disk_percent';
+}
 
 const listSlaSchema = z.object({
   page: z.string().optional(),
@@ -988,18 +995,18 @@ analyticsRoutes.get(
     const rangeDays = normalizedRange === '7d' ? 7 : normalizedRange === '90d' ? 90 : 30;
     const rangeStart = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
 
-    const metricColumn =
-      metricType === 'cpu'
-        ? deviceMetrics.cpuPercent
-        : metricType === 'memory'
-          ? deviceMetrics.ramPercent
-          : deviceMetrics.diskPercent;
-
     const metricsOrgCondition =
       typeof auth?.orgCondition === 'function'
         ? auth.orgCondition(devices.orgId)
         : auth?.orgId
           ? eq(devices.orgId, auth.orgId)
+          : undefined;
+
+    const rollupsOrgCondition =
+      typeof auth?.orgCondition === 'function'
+        ? auth.orgCondition(metricRollups.orgId)
+        : auth?.orgId
+          ? eq(metricRollups.orgId, auth.orgId)
           : undefined;
 
     // device_metrics.deviceId is NOT NULL — constrain the broad (no-deviceId)
@@ -1008,6 +1015,37 @@ analyticsRoutes.get(
     if (allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length === 0) {
       return c.json({ currentValue: 0, predictions: [], thresholds: undefined });
     }
+
+    const rollupsWhere = and(
+      eq(metricRollups.sourceTable, 'device_metrics'),
+      eq(metricRollups.bucketSeconds, 86400),
+      eq(metricRollups.metricName, capacityRollupMetricName(metricType)),
+      gte(metricRollups.bucketStart, rangeStart),
+      sql`${metricRollups.sampleCount} > 0`,
+      sql`${metricRollups.avgValue} IS NOT NULL`,
+      ...(rollupsOrgCondition ? [rollupsOrgCondition] : []),
+      ...(query.deviceId ? [eq(metricRollups.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(metricRollups.deviceId, allowedDeviceIds)]
+        : [])
+    );
+
+    const rollupRows = await db
+      .select({
+        timestamp: metricRollups.bucketStart,
+        value: sql<number>`sum(${metricRollups.avgValue} * ${metricRollups.sampleCount}) / nullif(sum(${metricRollups.sampleCount}), 0)`
+      })
+      .from(metricRollups)
+      .where(rollupsWhere)
+      .groupBy(metricRollups.bucketStart)
+      .orderBy(metricRollups.bucketStart);
+
+    const metricColumn =
+      metricType === 'cpu'
+        ? deviceMetrics.cpuPercent
+        : metricType === 'memory'
+          ? deviceMetrics.ramPercent
+          : deviceMetrics.diskPercent;
 
     const metricsWhere = and(
       gte(deviceMetrics.timestamp, rangeStart),
@@ -1018,16 +1056,18 @@ analyticsRoutes.get(
         : [])
     );
 
-    const actualRows = await db
-      .select({
-        timestamp: sql<Date>`date_trunc('day', ${deviceMetrics.timestamp})`,
-        value: sql<number>`avg(${metricColumn})`
-      })
-      .from(deviceMetrics)
-      .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
-      .where(metricsWhere)
-      .groupBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`)
-      .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
+    const actualRows = rollupRows.length > 0
+      ? rollupRows
+      : await db
+          .select({
+            timestamp: sql<Date>`date_trunc('day', ${deviceMetrics.timestamp})`,
+            value: sql<number>`avg(${metricColumn})`
+          })
+          .from(deviceMetrics)
+          .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
+          .where(metricsWhere)
+          .groupBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`)
+          .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
 
     const actuals = actualRows.map((row) => ({
       timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : String(row.timestamp),

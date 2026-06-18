@@ -150,6 +150,7 @@ import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/e
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
 import { initializeAlertCorrelationWorker, shutdownAlertCorrelationWorker } from './jobs/alertCorrelation';
+import { initializeMetricRollupsWorker, shutdownMetricRollupsWorker } from './jobs/metricRollups';
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
@@ -1043,6 +1044,7 @@ async function initializeWorkers(): Promise<void> {
   const workers: Array<[string, () => Promise<void>]> = [
     ['alertWorkers', initializeAlertWorkers],
     ['alertCorrelationWorker', initializeAlertCorrelationWorker],
+    ['metricRollupsWorker', initializeMetricRollupsWorker],
     ['offlineDetector', initializeOfflineDetector],
     ['notificationDispatcher', initializeNotificationDispatcher],
     ['webhookDelivery', initializeWebhookDeliveryWorker],
@@ -1257,6 +1259,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
+    shutdownMetricRollupsWorker,
     shutdownAlertCorrelationWorker,
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
