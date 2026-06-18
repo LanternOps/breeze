@@ -62,6 +62,7 @@ type AuthContext = {
 };
 
 type AlertRow = typeof alerts.$inferSelect;
+type AlertWithDeviceHostname = AlertRow & { deviceHostname: string | null };
 type CorrelationRow = typeof alertCorrelations.$inferSelect;
 type CorrelationGroupRow = typeof alertCorrelationGroups.$inferSelect;
 
@@ -167,7 +168,7 @@ async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGro
     .from(devices)
     .where(inArray(devices.id, orgAlerts.map((alert) => alert.deviceId)));
   const deviceNames = new Map(deviceRows.map((device) => [device.id, device.hostname]));
-  const alertMap = new Map(
+  const alertMap = new Map<string, AlertWithDeviceHostname>(
     orgAlerts.map((alert) => [alert.id, { ...alert, deviceHostname: deviceNames.get(alert.deviceId) ?? null }])
   );
 
@@ -208,7 +209,7 @@ async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGro
   return [...groupMap.entries()].map(([rootId, alertIds]) => {
     const groupAlerts = alertIds
       .map((id) => alertMap.get(id))
-      .filter((alert): alert is AlertRow & { deviceHostname?: string | null } => Boolean(alert))
+      .filter((alert): alert is AlertWithDeviceHostname => Boolean(alert))
       .sort((a, b) => b.triggeredAt.getTime() - a.triggeredAt.getTime());
     const groupCorrelations = scopedCorrelations.filter(
       (correlation) => alertIds.includes(correlation.parentAlertId) || alertIds.includes(correlation.childAlertId)

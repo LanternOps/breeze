@@ -22,6 +22,7 @@ import {
   Timer,
   Usb,
   Ticket,
+  TrendingUp,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus } from './DeviceList';
@@ -53,6 +54,7 @@ import { navigateTo } from '@/lib/navigation';
 import { OverflowTabs } from '../shared/OverflowTabs';
 import DeviceBackupTab from '../backup/DeviceBackupTab';
 import DeviceTicketsTab from '../tickets/DeviceTicketsTab';
+import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
 
 type Tab =
   | 'overview'
@@ -64,6 +66,7 @@ type Tab =
   | 'management'
   | 'effective-config'
   | 'alerts'
+  | 'anomalies'
   | 'scripts'
   | 'performance'
   | 'eventlog'
@@ -124,7 +127,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
 const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
-  'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
+  'anomalies', 'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
   'boot-performance', 'playbooks', 'peripherals', 'backup', 'tickets',
 ];
 
@@ -159,6 +162,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     // --- Monitoring ---
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" />, separator: true, title: 'CPU, RAM, and disk usage over time' },
     { id: 'alerts', label: 'Alerts', icon: <AlertTriangle className="h-4 w-4" />, title: 'Alert history for this device' },
+    { id: 'anomalies', label: 'Anomalies', icon: <TrendingUp className="h-4 w-4" />, title: 'Metric anomaly signals for this device' },
     { id: 'tickets', label: 'Tickets', icon: <Ticket className="h-4 w-4" />, title: 'Tickets linked to this device' },
     { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" />, title: 'Windows/macOS system event logs' },
     // --- Inventory ---
@@ -335,6 +339,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
         <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
+      {activeTab === 'anomalies' && (
+        <DeviceAnomaliesPanel deviceId={device.id} />
+      )}
+
       {activeTab === 'tickets' && (
         <DeviceTicketsTab deviceId={device.id} />
       )}
@@ -344,7 +352,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       )}
 
       {activeTab === 'performance' && (
-        <DevicePerformanceGraphs deviceId={device.id} />
+        <div className="space-y-6">
+          <DevicePerformanceGraphs deviceId={device.id} />
+          <DeviceAnomaliesPanel deviceId={device.id} compact />
+        </div>
       )}
 
       {activeTab === 'boot-performance' && (

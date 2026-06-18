@@ -14,6 +14,7 @@ import {
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { alerts, alertCorrelationGroups } from './alerts';
 
 export const timeSeriesMetrics = pgTable('time_series_metrics', {
   timestamp: timestamp('timestamp').notNull(),
@@ -59,6 +60,47 @@ export const metricRollups = pgTable('metric_rollups', {
   ),
   orgBucketIdx: index('metric_rollups_org_bucket_idx').on(table.orgId, table.bucketSeconds, table.bucketStart),
   deviceMetricIdx: index('metric_rollups_device_metric_idx').on(table.deviceId, table.metricName, table.bucketSeconds, table.bucketStart)
+}));
+
+export const metricAnomalies = pgTable('metric_anomalies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  sourceTable: varchar('source_table', { length: 80 }).notNull().default('device_metrics'),
+  metricType: varchar('metric_type', { length: 80 }).notNull(),
+  metricName: varchar('metric_name', { length: 120 }).notNull(),
+  anomalyType: varchar('anomaly_type', { length: 40 }).notNull(),
+  status: varchar('status', { length: 40 }).notNull().default('open'),
+  windowStart: timestamp('window_start').notNull(),
+  windowEnd: timestamp('window_end').notNull(),
+  bucketSeconds: integer('bucket_seconds').notNull().default(300),
+  observedValue: doublePrecision('observed_value').notNull(),
+  baselineValue: doublePrecision('baseline_value'),
+  baselineMin: doublePrecision('baseline_min'),
+  baselineMax: doublePrecision('baseline_max'),
+  score: doublePrecision('score').notNull(),
+  confidence: doublePrecision('confidence').notNull(),
+  sampleCount: integer('sample_count').notNull().default(0),
+  baselineSummary: jsonb('baseline_summary').notNull().default({}),
+  evidence: jsonb('evidence').notNull().default({}),
+  linkedAlertId: uuid('linked_alert_id').references(() => alerts.id, { onDelete: 'set null' }),
+  linkedCorrelationGroupId: uuid('linked_correlation_group_id').references(() => alertCorrelationGroups.id, { onDelete: 'set null' }),
+  detectedAt: timestamp('detected_at').defaultNow().notNull(),
+  resolvedAt: timestamp('resolved_at'),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  keyUniq: uniqueIndex('metric_anomalies_key_uq').on(
+    table.orgId,
+    table.deviceId,
+    table.metricName,
+    table.anomalyType,
+    table.bucketSeconds,
+    table.windowStart
+  ),
+  orgStatusDetectedIdx: index('metric_anomalies_org_status_detected_idx').on(table.orgId, table.status, table.detectedAt),
+  deviceStatusDetectedIdx: index('metric_anomalies_device_status_detected_idx').on(table.deviceId, table.status, table.detectedAt),
+  linkedAlertIdx: index('metric_anomalies_linked_alert_idx').on(table.linkedAlertId),
+  linkedCorrelationIdx: index('metric_anomalies_linked_correlation_idx').on(table.linkedCorrelationGroupId)
 }));
 
 export const analyticsDashboards = pgTable('analytics_dashboards', {

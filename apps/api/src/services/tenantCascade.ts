@@ -179,6 +179,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'log_search_queries',
   'm365_connections',
   'maintenance_windows',
+  'metric_anomalies',
   'metric_rollups',
   'metric_rollups_default',
   'ml_feedback_events',

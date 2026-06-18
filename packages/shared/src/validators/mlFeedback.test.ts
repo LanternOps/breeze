@@ -35,6 +35,20 @@ describe('mlFeedbackEventSchema', () => {
     expect(parsed.actorUserId).toBeNull();
   });
 
+  it('accepts anomaly lifecycle feedback events', () => {
+    const parsed = mlFeedbackEventSchema.parse({
+      ...validEvent,
+      sourceType: 'anomaly',
+      sourceId: 'metric-anomaly-1',
+      eventType: 'anomaly.promoted',
+      outcome: 'promoted',
+      metadata: { metricName: 'cpu_percent', anomalyType: 'spike' },
+    });
+
+    expect(parsed.sourceType).toBe('anomaly');
+    expect(parsed.eventType).toBe('anomaly.promoted');
+  });
+
   it('rejects metadata over the byte cap', () => {
     const oversized = { notes: 'x'.repeat(ML_FEEDBACK_METADATA_MAX_BYTES + 1) };
     expect(getJsonByteLength(oversized)).toBeGreaterThan(ML_FEEDBACK_METADATA_MAX_BYTES);

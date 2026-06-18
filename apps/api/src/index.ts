@@ -151,6 +151,7 @@ import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/a
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
 import { initializeAlertCorrelationWorker, shutdownAlertCorrelationWorker } from './jobs/alertCorrelation';
 import { initializeMetricRollupsWorker, shutdownMetricRollupsWorker } from './jobs/metricRollups';
+import { initializeMetricAnomaliesWorker, shutdownMetricAnomaliesWorker } from './jobs/metricAnomalies';
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
@@ -1045,6 +1046,7 @@ async function initializeWorkers(): Promise<void> {
     ['alertWorkers', initializeAlertWorkers],
     ['alertCorrelationWorker', initializeAlertCorrelationWorker],
     ['metricRollupsWorker', initializeMetricRollupsWorker],
+    ['metricAnomaliesWorker', initializeMetricAnomaliesWorker],
     ['offlineDetector', initializeOfflineDetector],
     ['notificationDispatcher', initializeNotificationDispatcher],
     ['webhookDelivery', initializeWebhookDeliveryWorker],
@@ -1259,6 +1261,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
+    shutdownMetricAnomaliesWorker,
     shutdownMetricRollupsWorker,
     shutdownAlertCorrelationWorker,
     shutdownAlertWorkers,

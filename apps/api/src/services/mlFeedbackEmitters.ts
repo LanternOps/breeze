@@ -57,6 +57,27 @@ export async function emitCorrelationFeedback(options: {
   }, options.eventType);
 }
 
+export async function emitAnomalyFeedback(options: {
+  orgId: string;
+  anomalyId: string;
+  eventType: 'anomaly.dismissed' | 'anomaly.promoted' | 'anomaly.resolved';
+  outcome: 'dismissed' | 'promoted' | 'resolved';
+  actorUserId?: string | null;
+  occurredAt?: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await emitFeedbackBestEffort({
+    orgId: options.orgId,
+    sourceType: 'anomaly',
+    sourceId: options.anomalyId,
+    eventType: options.eventType,
+    outcome: options.outcome,
+    actorUserId: actorUserIdOrNull(options.actorUserId),
+    metadata: options.metadata ?? {},
+    occurredAt: options.occurredAt ?? new Date(),
+  }, options.eventType);
+}
+
 export async function emitRcaFeedback(options: {
   orgId: string;
   rcaId: string;
