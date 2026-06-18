@@ -33,6 +33,7 @@ import {
   type UserRiskPolicyWeights
 } from '../db/schema';
 import { publishEvent } from './eventBus';
+import { emitSystemMlFeedbackEvent } from './mlFeedback';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HIGH_EVENT_TYPE = 'user.risk_score_high';
@@ -1375,6 +1376,29 @@ async function recordTrainingAssignment(input: RecordTrainingInput): Promise<Rec
     console.error(`[UserRisk] Failed to publish ${TRAINING_ASSIGNED_EVENT_TYPE} for user ${input.userId}:`, error);
   }
 
+  if (input.assignedBy === null) {
+    try {
+      await emitSystemMlFeedbackEvent({
+        orgId: input.orgId,
+        sourceType: 'user_risk',
+        sourceId: input.userId,
+        eventType: 'training.assigned',
+        outcome: 'assigned',
+        actorUserId: null,
+        occurredAt: now,
+        metadata: {
+          source: input.source,
+          assignmentEventId: eventRow?.id ?? null,
+          moduleId: input.moduleId,
+          reason: input.reason ?? null,
+          autoAssigned: true
+        }
+      });
+    } catch (error) {
+      console.error(`[UserRisk] Failed to emit training.assigned feedback for user ${input.userId}:`, error);
+    }
+  }
+
   return {
     id: eventRow?.id ?? '',
     deduplicated: false,
@@ -1551,3 +1575,7 @@ export async function listActiveDeviceSessionsForUserInOrg(input: {
     idleSessions: rows.filter((row) => row.activityState === 'idle' || row.activityState === 'away').length
   };
 }
+
+export const userRiskScoringInternals = {
+  recordTrainingAssignment
+};

@@ -1,10 +1,28 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const dbMocks = vi.hoisted(() => ({
+  selectMock: vi.fn(),
+  insertMock: vi.fn(),
+  emitSystemMlFeedbackEventMock: vi.fn()
+}));
 
 vi.mock('./eventBus', () => ({
   publishEvent: vi.fn(async () => 'evt-1')
 }));
 
+vi.mock('./mlFeedback', () => ({
+  emitSystemMlFeedbackEvent: dbMocks.emitSystemMlFeedbackEventMock
+}));
+
+vi.mock('../db', () => ({
+  db: {
+    select: dbMocks.selectMock,
+    insert: dbMocks.insertMock
+  }
+}));
+
 import { publishEvent } from './eventBus';
+import { emitSystemMlFeedbackEvent } from './mlFeedback';
 import {
   classifyUserRiskSeverity,
   computeUserRiskScoreFromFactors,
@@ -12,8 +30,36 @@ import {
   normalizeUserRiskInterventions,
   normalizeUserRiskThresholds,
   normalizeUserRiskWeights,
-  publishUserRiskScoreEvents
+  publishUserRiskScoreEvents,
+  userRiskScoringInternals
 } from './userRiskScoring';
+
+function mockRecentTrainingAssignments(rows: Array<{ id: string }>) {
+  dbMocks.selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    })
+  });
+}
+
+function mockTrainingAssignmentInsert(id: string) {
+  dbMocks.insertMock.mockReturnValueOnce({
+    values: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id }])
+    })
+  });
+}
+
+beforeEach(() => {
+  dbMocks.selectMock.mockReset();
+  dbMocks.insertMock.mockReset();
+  dbMocks.emitSystemMlFeedbackEventMock.mockReset();
+  vi.mocked(publishEvent).mockClear();
+});
 
 describe('userRiskScoring helpers', () => {
   it('normalizes weights and preserves deterministic scoring', () => {
@@ -116,5 +162,55 @@ describe('publishUserRiskScoreEvents', () => {
     expect(result.publishedHigh).toBe(0);
     expect(result.publishedSpikes).toBe(0);
     expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
+  });
+});
+
+describe('userRiskScoringInternals.recordTrainingAssignment', () => {
+  it('emits canonical feedback for new auto-assigned training', async () => {
+    mockRecentTrainingAssignments([]);
+    mockTrainingAssignmentInsert('assignment-event-1');
+
+    const result = await userRiskScoringInternals.recordTrainingAssignment({
+      orgId: '00000000-0000-4000-8000-000000000001',
+      userId: '00000000-0000-4000-8000-000000000010',
+      moduleId: 'security-awareness-baseline',
+      assignedBy: null,
+      source: 'user-risk-auto-training',
+      reason: 'Auto-assigned for user risk score 91'
+    });
+
+    expect(result).toMatchObject({ id: 'assignment-event-1', deduplicated: false });
+    expect(emitSystemMlFeedbackEvent).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: '00000000-0000-4000-8000-000000000001',
+      sourceType: 'user_risk',
+      sourceId: '00000000-0000-4000-8000-000000000010',
+      eventType: 'training.assigned',
+      outcome: 'assigned',
+      actorUserId: null,
+      metadata: expect.objectContaining({
+        source: 'user-risk-auto-training',
+        assignmentEventId: 'assignment-event-1',
+        moduleId: 'security-awareness-baseline',
+        reason: 'Auto-assigned for user risk score 91',
+        autoAssigned: true
+      })
+    }));
+  });
+
+  it('does not emit canonical feedback for deduplicated auto-training assignments', async () => {
+    mockRecentTrainingAssignments([{ id: 'existing-assignment' }]);
+
+    const result = await userRiskScoringInternals.recordTrainingAssignment({
+      orgId: '00000000-0000-4000-8000-000000000001',
+      userId: '00000000-0000-4000-8000-000000000010',
+      moduleId: 'security-awareness-baseline',
+      assignedBy: null,
+      source: 'user-risk-auto-training',
+      reason: 'Auto-assigned for user risk score 91'
+    });
+
+    expect(result).toEqual({ id: 'existing-assignment', deduplicated: true, eventPublished: false });
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+    expect(emitSystemMlFeedbackEvent).not.toHaveBeenCalled();
   });
 });
