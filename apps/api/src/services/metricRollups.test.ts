@@ -55,13 +55,14 @@ describe('metric rollups service', () => {
       to: new Date('2026-06-18T13:00:00.000Z'),
     });
 
-    expect(result).toMatchObject({ statements: 21, skipped: false });
-    expect(executeMock).toHaveBeenCalledTimes(21);
+    expect(result).toMatchObject({ statements: 24, skipped: false });
+    expect(executeMock).toHaveBeenCalledTimes(24);
     const executedSql = JSON.stringify(executeMock.mock.calls);
     expect(executedSql).toContain('ON CONFLICT');
     expect(executedSql).toContain('percentile_cont(0.95)');
     expect(executedSql).toContain('NULL::double precision');
     expect(executedSql).toContain('device_process_samples');
+    expect(executedSql).toContain('snmp_metrics');
     expect(executedSql).toContain('jsonb_array_elements');
   });
 
@@ -90,7 +91,7 @@ describe('metric rollups service', () => {
       to: new Date('2026-06-18T13:00:00.000Z'),
     });
 
-    const hourlyStatementSql = JSON.stringify(executeMock.mock.calls[17]);
+    const hourlyStatementSql = JSON.stringify(executeMock.mock.calls[18]);
     expect(hourlyStatementSql).toContain('sum(mr.avg_value * mr.sample_count)');
     expect(hourlyStatementSql).toContain('sum(mr.gap_seconds)');
     expect(hourlyStatementSql).not.toContain('AND mr.sample_count > 0');
@@ -125,9 +126,33 @@ describe('metric rollups service', () => {
     expect(processRamMaxStatementSql).toContain('top_process_ram_mb_max');
     expect(processRamMaxStatementSql).toContain("proc.value -> 'ramMb'");
 
-    const processHourlyStatementSql = JSON.stringify(executeMock.mock.calls[19]);
+    const processHourlyStatementSql = JSON.stringify(executeMock.mock.calls[20]);
     expect(processHourlyStatementSql).toContain('device_process_samples');
     expect(processHourlyStatementSql).toContain('sourceBucketSeconds');
+  });
+
+  it('rolls up numeric SNMP metrics for SNMP assets linked to managed devices', async () => {
+    await rollupDeviceMetricsRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:15:00.000Z'),
+    });
+
+    const snmpStatementSql = JSON.stringify(executeMock.mock.calls[17]);
+    expect(snmpStatementSql).toContain('snmp_metrics');
+    expect(snmpStatementSql).toContain('snmp_devices');
+    expect(snmpStatementSql).toContain('discovered_assets');
+    expect(snmpStatementSql).toContain('da.linked_device_id');
+    expect(snmpStatementSql).toContain('JOIN devices');
+    expect(snmpStatementSql).toContain("btrim(sm.value) ~ '^-?[0-9]+");
+    expect(snmpStatementSql).toContain("'snmp_metrics'");
+    expect(snmpStatementSql).toContain("'snmp'");
+    expect(snmpStatementSql).toContain('snmpDeviceId');
+    expect(snmpStatementSql).toContain('displayName');
+
+    const snmpHourlyStatementSql = JSON.stringify(executeMock.mock.calls[22]);
+    expect(snmpHourlyStatementSql).toContain('snmp_metrics');
+    expect(snmpHourlyStatementSql).toContain('sourceBucketSeconds');
   });
 
   it('rejects invalid ranges before executing writes', async () => {

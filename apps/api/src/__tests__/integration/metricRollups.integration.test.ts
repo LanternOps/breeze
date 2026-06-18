@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { devices, deviceMetrics, deviceProcessSamples, metricRollups } from '../../db/schema';
+import { discoveredAssets, devices, deviceMetrics, deviceProcessSamples, metricRollups, snmpDevices, snmpMetrics } from '../../db/schema';
 import { rollupDeviceMetricsRange } from '../../services/metricRollups';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -93,6 +93,70 @@ async function insertProcessSample(options: {
   });
 }
 
+let ipCounter = 10;
+async function insertSnmpDevice(options: {
+  orgId: string;
+  siteId?: string;
+  linkedDeviceId?: string | null;
+  name: string;
+}): Promise<string> {
+  ipCounter++;
+  let assetId: string | null = null;
+  if (options.siteId) {
+    const [asset] = await getTestDb()
+      .insert(discoveredAssets)
+      .values({
+        orgId: options.orgId,
+        siteId: options.siteId,
+        ipAddress: `10.60.0.${ipCounter}`,
+        hostname: options.name,
+        assetType: 'switch',
+        approvalStatus: 'approved',
+        isOnline: true,
+        linkedDeviceId: options.linkedDeviceId ?? null,
+        discoveryMethods: ['snmp'],
+      })
+      .returning({ id: discoveredAssets.id });
+    if (!asset) throw new Error('insert discovered asset returned no row');
+    assetId = asset.id;
+  }
+
+  const [device] = await getTestDb()
+    .insert(snmpDevices)
+    .values({
+      orgId: options.orgId,
+      assetId,
+      name: options.name,
+      ipAddress: `10.60.0.${ipCounter}`,
+      snmpVersion: '2c',
+      port: 161,
+      pollingInterval: 300,
+      isActive: true,
+    })
+    .returning({ id: snmpDevices.id });
+  if (!device) throw new Error('insert SNMP device returned no row');
+  return device.id;
+}
+
+async function insertSnmpMetric(options: {
+  orgId: string;
+  snmpDeviceId: string;
+  oid: string;
+  name: string;
+  value: string;
+  timestamp: Date;
+}): Promise<void> {
+  await getTestDb().insert(snmpMetrics).values({
+    orgId: options.orgId,
+    deviceId: options.snmpDeviceId,
+    oid: options.oid,
+    name: options.name,
+    value: options.value,
+    valueType: 'Gauge',
+    timestamp: options.timestamp,
+  });
+}
+
 async function runRollup(orgId: string, from: Date, to: Date): Promise<void> {
   await withSystemDbAccessContext(() =>
     rollupDeviceMetricsRange({
@@ -127,6 +191,20 @@ async function selectProcessRollups(orgId: string, deviceId: string, metricName:
       eq(metricRollups.deviceId, deviceId),
       eq(metricRollups.sourceTable, 'device_process_samples'),
       eq(metricRollups.metricName, metricName),
+      eq(metricRollups.bucketSeconds, 300)
+    ))
+    .orderBy(metricRollups.bucketStart);
+}
+
+async function selectSnmpRollups(orgId: string, deviceId: string) {
+  return getTestDb()
+    .select()
+    .from(metricRollups)
+    .where(and(
+      eq(metricRollups.orgId, orgId),
+      eq(metricRollups.deviceId, deviceId),
+      eq(metricRollups.sourceTable, 'snmp_metrics'),
+      eq(metricRollups.metricType, 'snmp'),
       eq(metricRollups.bucketSeconds, 300)
     ))
     .orderBy(metricRollups.bucketStart);
@@ -255,6 +333,113 @@ describe('metric rollups integration', () => {
       gapSeconds: 240,
     }));
     expect((updatedGapBucket.metadata as Record<string, unknown>).isGap).toBe(false);
+  });
+
+  it('materializes linked SNMP metric buckets and ignores unlinked or non-numeric SNMP series', async () => {
+    const device = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'snmp-linked-device' });
+    const linkedSnmpDevice = await insertSnmpDevice({
+      orgId: orgA,
+      siteId: siteA,
+      linkedDeviceId: device,
+      name: 'linked-switch',
+    });
+    const unlinkedSnmpDevice = await insertSnmpDevice({
+      orgId: orgA,
+      siteId: siteA,
+      linkedDeviceId: null,
+      name: 'unlinked-switch',
+    });
+    const assetlessSnmpDevice = await insertSnmpDevice({
+      orgId: orgA,
+      name: 'assetless-switch',
+    });
+
+    await insertSnmpMetric({
+      orgId: orgA,
+      snmpDeviceId: linkedSnmpDevice,
+      oid: '1.3.6.1.2.1.25.3.3.1.2',
+      name: 'hrProcessorLoad',
+      value: '12.5',
+      timestamp: new Date('2026-06-18T12:00:00.000Z'),
+    });
+    await insertSnmpMetric({
+      orgId: orgA,
+      snmpDeviceId: linkedSnmpDevice,
+      oid: '1.3.6.1.2.1.25.3.3.1.2',
+      name: 'hrProcessorLoad',
+      value: '40',
+      timestamp: new Date('2026-06-18T12:10:00.000Z'),
+    });
+    await insertSnmpMetric({
+      orgId: orgA,
+      snmpDeviceId: linkedSnmpDevice,
+      oid: '1.3.6.1.2.1.1.5.0',
+      name: 'sysName',
+      value: 'switch-a',
+      timestamp: new Date('2026-06-18T12:00:00.000Z'),
+    });
+    await insertSnmpMetric({
+      orgId: orgA,
+      snmpDeviceId: unlinkedSnmpDevice,
+      oid: '1.3.6.1.2.1.25.3.3.1.2',
+      name: 'hrProcessorLoad',
+      value: '99',
+      timestamp: new Date('2026-06-18T12:00:00.000Z'),
+    });
+    await insertSnmpMetric({
+      orgId: orgA,
+      snmpDeviceId: assetlessSnmpDevice,
+      oid: '1.3.6.1.2.1.25.3.3.1.2',
+      name: 'hrProcessorLoad',
+      value: '88',
+      timestamp: new Date('2026-06-18T12:00:00.000Z'),
+    });
+
+    const from = new Date('2026-06-18T12:00:00.000Z');
+    const to = new Date('2026-06-18T12:15:00.000Z');
+    await runRollup(orgA, from, to);
+
+    const rollups = await selectSnmpRollups(orgA, device);
+    expect(rollups.map((row) => ({
+      bucketStart: row.bucketStart.toISOString(),
+      avgValue: row.avgValue,
+      sampleCount: row.sampleCount,
+      gapSeconds: row.gapSeconds,
+      isGap: (row.metadata as Record<string, unknown>).isGap,
+      oid: (row.metadata as Record<string, unknown>).oid,
+      displayName: (row.metadata as Record<string, unknown>).displayName,
+    }))).toEqual([
+      {
+        bucketStart: '2026-06-18T12:00:00.000Z',
+        avgValue: 12.5,
+        sampleCount: 1,
+        gapSeconds: 240,
+        isGap: false,
+        oid: '1.3.6.1.2.1.25.3.3.1.2',
+        displayName: 'hrProcessorLoad',
+      },
+      {
+        bucketStart: '2026-06-18T12:05:00.000Z',
+        avgValue: null,
+        sampleCount: 0,
+        gapSeconds: 300,
+        isGap: true,
+        oid: '1.3.6.1.2.1.25.3.3.1.2',
+        displayName: 'hrProcessorLoad',
+      },
+      {
+        bucketStart: '2026-06-18T12:10:00.000Z',
+        avgValue: 40,
+        sampleCount: 1,
+        gapSeconds: 240,
+        isGap: false,
+        oid: '1.3.6.1.2.1.25.3.3.1.2',
+        displayName: 'hrProcessorLoad',
+      },
+    ]);
+
+    expect(rollups.every((row) => row.metricName.startsWith('hrProcessorLoad:'))).toBe(true);
+    expect(rollups.some((row) => (row.metadata as Record<string, unknown>).displayName === 'sysName')).toBe(false);
   });
 
   it('enforces org RLS for metric rollup reads and forged writes', async () => {

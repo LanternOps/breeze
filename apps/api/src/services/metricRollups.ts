@@ -299,9 +299,137 @@ async function rollupRawProcessSampleMetric(options: MetricRollupRange, metric: 
   `);
 }
 
+async function rollupRawSnmpMetrics(options: MetricRollupRange): Promise<void> {
+  const { from, to } = normalizeRange(options.from, options.to);
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
+  const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
+
+  await db.execute(sql`
+    WITH snmp_values AS (
+      SELECT
+        sm.org_id,
+        da.linked_device_id AS device_id,
+        sm.device_id AS snmp_device_id,
+        sm.oid,
+        sm.name,
+        left(
+          regexp_replace(coalesce(nullif(sm.name, ''), sm.oid), '[^a-zA-Z0-9_.:-]+', '_', 'g')
+            || ':' || md5(sm.device_id::text || ':' || sm.oid),
+          120
+        ) AS metric_name,
+        CASE
+          WHEN btrim(sm.value) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN btrim(sm.value)::double precision
+          ELSE NULL
+        END AS metric_value,
+        sm.timestamp
+      FROM snmp_metrics sm
+      JOIN snmp_devices sd
+        ON sd.id = sm.device_id
+        AND sd.org_id = sm.org_id
+      JOIN discovered_assets da
+        ON da.id = sd.asset_id
+        AND da.org_id = sm.org_id
+        AND da.linked_device_id IS NOT NULL
+      JOIN devices d
+        ON d.id = da.linked_device_id
+        AND d.org_id = sm.org_id
+      WHERE sm.org_id = ${options.orgId}
+        AND sm.timestamp >= ${fromIso}::timestamp
+        AND sm.timestamp < ${toIso}::timestamp
+    ),
+    snmp_series AS (
+      SELECT DISTINCT
+        org_id,
+        device_id,
+        snmp_device_id,
+        oid,
+        name,
+        metric_name
+      FROM snmp_values
+      WHERE metric_value IS NOT NULL
+    ),
+    buckets AS (
+      SELECT generate_series(
+        ${fromIso}::timestamp,
+        ${toIso}::timestamp - interval '1 second' * ${RAW_BUCKET_SECONDS},
+        interval '1 second' * ${RAW_BUCKET_SECONDS}
+      )::timestamp AS bucket_start
+    ),
+    bucket_grid AS (
+      SELECT
+        ss.org_id,
+        ss.device_id,
+        ss.snmp_device_id,
+        ss.oid,
+        ss.name,
+        ss.metric_name,
+        buckets.bucket_start
+      FROM snmp_series ss
+      CROSS JOIN buckets
+    )
+    INSERT INTO metric_rollups (
+      org_id,
+      source_table,
+      device_id,
+      metric_type,
+      metric_name,
+      bucket_start,
+      bucket_seconds,
+      avg_value,
+      min_value,
+      max_value,
+      p95_value,
+      sum_value,
+      sample_count,
+      gap_seconds,
+      metadata
+    )
+    SELECT
+      bg.org_id,
+      'snmp_metrics',
+      bg.device_id,
+      'snmp',
+      bg.metric_name,
+      bg.bucket_start,
+      ${RAW_BUCKET_SECONDS},
+      avg(sv.metric_value)::double precision,
+      min(sv.metric_value)::double precision,
+      max(sv.metric_value)::double precision,
+      percentile_cont(0.95) within group (order by sv.metric_value)::double precision,
+      sum(sv.metric_value)::double precision,
+      count(sv.metric_value)::integer,
+      greatest(${RAW_BUCKET_SECONDS} - (count(sv.metric_value)::integer * ${expectedSampleSeconds}), 0)::integer,
+      jsonb_build_object(
+        'rollupVersion', ${METRIC_ROLLUP_VERSION}::text,
+        'source', 'raw',
+        'sourceTable', 'snmp_metrics',
+        'expectedSampleSeconds', ${expectedSampleSeconds}::integer,
+        'isGap', count(sv.metric_value) = 0,
+        'snmpDeviceId', bg.snmp_device_id,
+        'oid', bg.oid,
+        'displayName', bg.name
+      )
+    FROM bucket_grid bg
+    LEFT JOIN snmp_values sv
+      ON sv.org_id = bg.org_id
+      AND sv.device_id = bg.device_id
+      AND sv.snmp_device_id = bg.snmp_device_id
+      AND sv.oid = bg.oid
+      AND sv.metric_name = bg.metric_name
+      AND sv.timestamp >= bg.bucket_start
+      AND sv.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
+      AND sv.metric_value IS NOT NULL
+    GROUP BY bg.org_id, bg.device_id, bg.snmp_device_id, bg.oid, bg.name, bg.metric_name, bg.bucket_start
+    ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
+    DO UPDATE SET ${upsertAssignments()}
+  `);
+}
+
 async function rollupDerivedMetricSource(
   options: MetricRollupRange,
-  sourceTable: 'device_metrics' | 'device_process_samples',
+  sourceTable: 'device_metrics' | 'device_process_samples' | 'snmp_metrics',
   sourceBucketSeconds: MetricRollupBucketSeconds,
   targetBucketSeconds: MetricRollupBucketSeconds,
 ): Promise<void> {
@@ -384,6 +512,9 @@ export async function rollupDeviceMetricsRange(options: MetricRollupRange): Prom
     statements += 1;
   }
 
+  await rollupRawSnmpMetrics(options);
+  statements += 1;
+
   await rollupDerivedMetricSource(options, 'device_metrics', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
   statements += 1;
   await rollupDerivedMetricSource(options, 'device_metrics', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
@@ -391,6 +522,10 @@ export async function rollupDeviceMetricsRange(options: MetricRollupRange): Prom
   await rollupDerivedMetricSource(options, 'device_process_samples', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
   statements += 1;
   await rollupDerivedMetricSource(options, 'device_process_samples', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
+  statements += 1;
+  await rollupDerivedMetricSource(options, 'snmp_metrics', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
+  statements += 1;
+  await rollupDerivedMetricSource(options, 'snmp_metrics', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
   statements += 1;
 
   return {
