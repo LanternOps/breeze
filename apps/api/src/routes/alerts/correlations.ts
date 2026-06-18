@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, inArray, or, type SQL } from 'drizzle-orm';
@@ -7,14 +7,47 @@ import { db } from '../../db';
 import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { buildAlertCorrelationRca } from '../../services/alertCorrelationRca';
 import { publishEvent } from '../../services/eventBus';
-import { emitAlertStateFeedback, emitCorrelationFeedback } from '../../services/mlFeedbackEmitters';
+import { emitAlertStateFeedback, emitCorrelationFeedback, emitRcaFeedback } from '../../services/mlFeedbackEmitters';
+import { shouldProduceMlOutput } from '../../services/mlFeatureFlags';
 import { PERMISSIONS } from '../../services/permissions';
 
 export const alertCorrelationRoutes = new Hono();
 
 const alertIdParamSchema = z.object({ alertId: z.string().uuid() });
 const groupIdParamSchema = z.object({ groupId: z.string().uuid() });
+const explainGroupSchema = z.object({
+  windowHours: z.number().int().min(1).max(24).optional(),
+  maxEvidenceItems: z.number().int().min(5).max(100).optional(),
+}).optional().default({});
+const rcaFeedbackSchema = z.object({
+  eventType: z.enum(['rca.helpful', 'rca.not_helpful', 'rca.edited', 'rca.used_in_ticket']),
+  outcome: z.enum(['helpful', 'not_helpful', 'edited', 'used_in_ticket']),
+  metadata: z.record(z.unknown()).optional().default({}),
+}).superRefine((value, ctx) => {
+  const expectedOutcome = value.eventType.replace('rca.', '') as typeof value.outcome;
+  if (value.outcome !== expectedOutcome) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'outcome must match eventType',
+      path: ['outcome'],
+    });
+  }
+});
+
+async function parseOptionalExplainBody(c: Context) {
+  const contentType = c.req.header('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    return {};
+  }
+
+  try {
+    return await c.req.json();
+  } catch {
+    return {};
+  }
+}
 
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
@@ -390,6 +423,102 @@ alertCorrelationRoutes.get(
     }
 
     return c.json({ group, data: group });
+  }
+);
+
+alertCorrelationRoutes.post(
+  '/correlations/:groupId/explain',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
+  zValidator('param', groupIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { groupId } = c.req.valid('param');
+    const parsedBody = explainGroupSchema.safeParse(await parseOptionalExplainBody(c));
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid RCA options', details: parsedBody.error.flatten() }, 400);
+    }
+    const body = parsedBody.data;
+    const group = await getAccessiblePersistedGroup(groupId, auth);
+    if (!group) {
+      return c.json({ error: 'Correlation group not found' }, 404);
+    }
+
+    if (!(await shouldProduceMlOutput(group.orgId, 'ml.rca.enabled'))) {
+      return c.json({ error: 'RCA is disabled for this organization' }, 403);
+    }
+
+    const groupAlerts = await getPersistedGroupAlerts(groupId, auth);
+    if (groupAlerts === null) {
+      return c.json({ error: 'Correlation group not found' }, 404);
+    }
+
+    const rca = await buildAlertCorrelationRca({
+      orgId: group.orgId,
+      groupId: group.id,
+      groupScore: group.score === null ? null : Number(group.score),
+      alerts: groupAlerts,
+      windowHours: body.windowHours,
+      maxEvidenceItems: body.maxEvidenceItems,
+    });
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'alert_correlation.explain_group',
+      resourceType: 'alert_correlation',
+      resourceId: group.id,
+      details: {
+        alertIds: rca.scope.alertIds,
+        deviceIds: rca.scope.deviceIds,
+        evidenceCount: rca.timeline.length,
+        candidateCount: rca.rootCauseCandidates.length,
+      },
+    });
+
+    return c.json({ rca, data: rca });
+  }
+);
+
+alertCorrelationRoutes.post(
+  '/correlations/:groupId/rca-feedback',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
+  zValidator('param', groupIdParamSchema),
+  zValidator('json', rcaFeedbackSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { groupId } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const group = await getAccessiblePersistedGroup(groupId, auth);
+    if (!group) {
+      return c.json({ error: 'Correlation group not found' }, 404);
+    }
+
+    await emitRcaFeedback({
+      orgId: group.orgId,
+      rcaId: group.id,
+      eventType: body.eventType,
+      outcome: body.outcome,
+      actorUserId: auth.user.id,
+      metadata: {
+        ...body.metadata,
+        groupId: group.id,
+        rootAlertId: group.rootAlertId,
+      },
+    });
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'alert_correlation.rca_feedback',
+      resourceType: 'alert_correlation',
+      resourceId: group.id,
+      details: {
+        eventType: body.eventType,
+        outcome: body.outcome,
+      },
+    });
+
+    return c.json({ success: true });
   }
 );
 

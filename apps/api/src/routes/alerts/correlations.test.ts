@@ -3,9 +3,12 @@ import { Hono } from 'hono';
 
 const {
   authRef,
+  buildAlertCorrelationRcaMock,
   grantedRef,
   emitAlertStateFeedbackMock,
   emitCorrelationFeedbackMock,
+  emitRcaFeedbackMock,
+  shouldProduceMlOutputMock,
   state,
   tables,
   dbMock,
@@ -111,9 +114,12 @@ const {
 
   return {
     authRef: { current: null as any },
+    buildAlertCorrelationRcaMock: vi.fn(),
     grantedRef: { current: new Set<string>() },
     emitAlertStateFeedbackMock: vi.fn(),
     emitCorrelationFeedbackMock: vi.fn(),
+    emitRcaFeedbackMock: vi.fn(),
+    shouldProduceMlOutputMock: vi.fn(),
     state,
     tables,
     dbMock,
@@ -149,10 +155,17 @@ vi.mock('../../db/schema', () => ({
   devices: tables.devices,
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/alertCorrelationRca', () => ({
+  buildAlertCorrelationRca: buildAlertCorrelationRcaMock,
+}));
 vi.mock('../../services/eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
 vi.mock('../../services/mlFeedbackEmitters', () => ({
   emitAlertStateFeedback: emitAlertStateFeedbackMock,
   emitCorrelationFeedback: emitCorrelationFeedbackMock,
+  emitRcaFeedback: emitRcaFeedbackMock,
+}));
+vi.mock('../../services/mlFeatureFlags', () => ({
+  shouldProduceMlOutput: shouldProduceMlOutputMock,
 }));
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {
@@ -218,6 +231,24 @@ describe('/alerts correlation routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     seed();
+    shouldProduceMlOutputMock.mockResolvedValue(true);
+    buildAlertCorrelationRcaMock.mockResolvedValue({
+      groupId: GROUP_1,
+      scope: {
+        orgId: ORG_1,
+        deviceIds: [DEVICE_1],
+        alertIds: [ALERT_1, ALERT_2],
+        windowStart: '2026-06-18T06:00:00.000Z',
+        windowEnd: '2026-06-18T13:02:00.000Z',
+      },
+      timeline: [
+        { id: `alert:${ALERT_1}`, source: 'alert', type: 'critical', timestamp: '2026-06-18T12:00:00.000Z', title: 'CPU high', summary: 'CPU high' },
+      ],
+      rootCauseCandidates: [
+        { summary: 'CPU high was earliest', confidence: 0.91, supportingEvidenceIds: [`alert:${ALERT_1}`] },
+      ],
+      gaps: [],
+    });
     grantedRef.current = new Set(['alerts:read', 'alerts:acknowledge', 'alerts:write']);
     authRef.current = {
       scope: 'organization',
@@ -298,6 +329,115 @@ describe('/alerts correlation routes', () => {
 
     const denied = await makeApp().request('/alerts/correlations/ffffffff-ffff-4fff-8fff-ffffffffffff');
     expect(denied.status).toBe(404);
+  });
+
+  it('returns a deterministic RCA bundle for a persisted correlation group', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ windowHours: 4, maxEvidenceItems: 12 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(shouldProduceMlOutputMock).toHaveBeenCalledWith(ORG_1, 'ml.rca.enabled');
+    expect(buildAlertCorrelationRcaMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_1,
+      groupId: GROUP_1,
+      alerts: expect.arrayContaining([
+        expect.objectContaining({ id: ALERT_1 }),
+        expect.objectContaining({ id: ALERT_2 }),
+      ]),
+      windowHours: 4,
+      maxEvidenceItems: 12,
+    }));
+    const body = await res.json();
+    expect(body.rca.rootCauseCandidates[0]).toEqual(expect.objectContaining({ confidence: 0.91 }));
+  });
+
+  it('uses default RCA options when explain is called without a JSON body', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/explain`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    expect(buildAlertCorrelationRcaMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_1,
+      groupId: GROUP_1,
+      windowHours: undefined,
+      maxEvidenceItems: undefined,
+    }));
+  });
+
+  it('rejects invalid RCA explain options', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ windowHours: 99 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(buildAlertCorrelationRcaMock).not.toHaveBeenCalled();
+  });
+
+  it('does not build RCA output when the RCA flag is disabled', async () => {
+    seedPersistedGroup();
+    shouldProduceMlOutputMock.mockResolvedValue(false);
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(403);
+    expect(buildAlertCorrelationRcaMock).not.toHaveBeenCalled();
+  });
+
+  it('records RCA feedback for a visible persisted correlation group', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/rca-feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'rca.helpful',
+        outcome: 'helpful',
+        metadata: { surface: 'test' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(emitRcaFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_1,
+      rcaId: GROUP_1,
+      eventType: 'rca.helpful',
+      outcome: 'helpful',
+      actorUserId: '99999999-9999-4999-8999-999999999999',
+      metadata: expect.objectContaining({ groupId: GROUP_1, rootAlertId: ALERT_1, surface: 'test' }),
+    }));
+  });
+
+  it('rejects inconsistent RCA feedback event/outcome pairs', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/rca-feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventType: 'rca.helpful',
+        outcome: 'not_helpful',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(emitRcaFeedbackMock).not.toHaveBeenCalled();
   });
 
   it('acknowledges all accessible alerts in a correlation group', async () => {

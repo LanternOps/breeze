@@ -56,3 +56,24 @@ export async function emitCorrelationFeedback(options: {
     occurredAt: options.occurredAt ?? new Date(),
   }, options.eventType);
 }
+
+export async function emitRcaFeedback(options: {
+  orgId: string;
+  rcaId: string;
+  eventType: 'rca.helpful' | 'rca.not_helpful' | 'rca.edited' | 'rca.used_in_ticket';
+  outcome: 'helpful' | 'not_helpful' | 'edited' | 'used_in_ticket';
+  actorUserId?: string | null;
+  occurredAt?: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await emitFeedbackBestEffort({
+    orgId: options.orgId,
+    sourceType: 'rca',
+    sourceId: options.rcaId,
+    eventType: options.eventType,
+    outcome: options.outcome,
+    actorUserId: actorUserIdOrNull(options.actorUserId),
+    metadata: options.metadata ?? {},
+    occurredAt: options.occurredAt ?? new Date(),
+  }, options.eventType);
+}
