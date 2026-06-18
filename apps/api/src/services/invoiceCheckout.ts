@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
-import { getPartnerStripe, getPartnerStripeStatus } from './partnerStripe';
+import { getPartnerStripe, getPartnerStripeStatus, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess } from './invoiceService';
@@ -12,8 +12,8 @@ const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
 
 /**
  * Partner-initiated "Send payment link": open a Stripe Checkout session on the
- * partner's connected account for the invoice's outstanding balance and return
- * the hosted-checkout URL for the MSP to share with the customer. The webhook
+ * partner's OWN Stripe account (using their stored API key — no Connect) for the
+ * invoice's outstanding balance and return the hosted-checkout URL. The webhook
  * (routes/webhooks/stripe.ts → stripeReconcile) records the resulting payment
  * idempotently via the `invoice_stripe_payments` mapping, so this only creates
  * the session + a pending mapping row.
@@ -34,17 +34,23 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   if (balanceMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
 
   // The partner charges on their OWN Stripe account using their stored key (no
-  // platform/Connect). Resolve the account id (for the mapping row) + a client
-  // built from their key; either being absent means Stripe isn't configured.
+  // platform/Connect). The discriminated status narrows stripeAccountId to non-null
+  // once connected (used for the mapping row).
   const status = await getPartnerStripeStatus(inv.partnerId);
-  if (!status.connected || !status.stripeAccountId) {
+  if (!status.connected) {
     throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
   }
   let stripe;
   try {
     stripe = await getPartnerStripe(inv.partnerId);
-  } catch {
-    throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
+  } catch (err) {
+    // Only "no key configured" is a benign 409. A decrypt/unreadable-key fault is an
+    // internal error — surface it as such (and let it be logged) instead of lying
+    // "connect Stripe first" when the key is actually corrupt/misconfigured.
+    if (err instanceof PartnerStripeError && err.code === 'NO_STRIPE_KEY') {
+      throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
+    }
+    throw new InvoiceServiceError('Could not initialize payment — please contact support', 500, 'STRIPE_INIT_FAILED');
   }
 
   const portalBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');

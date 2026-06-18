@@ -29,7 +29,8 @@ export type InvoiceServiceErrorCode =
   | 'NOT_PAYABLE'
   | 'NOTHING_TO_PAY'
   | 'STRIPE_NOT_CONNECTED'
-  | 'STRIPE_NO_URL';
+  | 'STRIPE_NO_URL'
+  | 'STRIPE_INIT_FAILED';
 
 export class InvoiceServiceError extends Error {
   constructor(

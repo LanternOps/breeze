@@ -7,21 +7,34 @@ import { encryptSecret, decryptSecret } from './secretCrypto';
 // Pinned API version — do not rely on the SDK default (it moves on upgrade).
 const API_VERSION = '2026-03-25.dahlia';
 
-export type PartnerStripeErrorCode = 'NO_STRIPE_KEY' | 'INVALID_STRIPE_KEY';
+export type PartnerStripeErrorCode =
+  | 'NO_STRIPE_KEY'        // partner never configured a key / disconnected
+  | 'INVALID_STRIPE_KEY'   // key rejected by Stripe at save time
+  | 'STRIPE_KEY_UNREADABLE'; // stored ciphertext can't be decrypted (corrupt / KEK rotated away)
+
+// Status is a function of the code, not an independent field — keeps the pair on
+// its valid diagonal (no `('NO_STRIPE_KEY', 400)` foot-guns).
+const STATUS_FOR_CODE: Record<PartnerStripeErrorCode, 400 | 409 | 500> = {
+  NO_STRIPE_KEY: 409,
+  INVALID_STRIPE_KEY: 400,
+  STRIPE_KEY_UNREADABLE: 500,
+};
 
 export class PartnerStripeError extends Error {
-  constructor(message: string, public code: PartnerStripeErrorCode, public status: 400 | 409 = 400) {
+  readonly status: 400 | 409 | 500;
+  constructor(message: string, readonly code: PartnerStripeErrorCode) {
     super(message);
     this.name = 'PartnerStripeError';
+    this.status = STATUS_FOR_CODE[code];
   }
 }
 
-export interface PartnerStripeStatus {
-  connected: boolean;
-  stripeAccountId: string | null;
-  last4: string | null;
-  livemode: boolean;
-}
+// Discriminated so `connected: true` guarantees a non-null stripeAccountId — callers
+// don't need to defensively re-check it. The disconnected arm carries only display
+// leftovers (last4), never a stale account id.
+export type PartnerStripeStatus =
+  | { connected: false; last4: string | null }
+  | { connected: true; stripeAccountId: string; last4: string | null; livemode: boolean };
 
 /**
  * Per-partner Stripe API-key model (replaces Connect OAuth). The partner pastes
@@ -47,8 +60,19 @@ export async function savePartnerStripeKey(input: {
     // Connect), so cast to the documented no-arg form.
     const account = await (probe.accounts.retrieve as unknown as () => Promise<Stripe.Account>)();
     accountId = account.id;
-  } catch {
-    throw new PartnerStripeError('That Stripe key was rejected — double-check it and try again.', 'INVALID_STRIPE_KEY', 400);
+  } catch (err) {
+    // Always log the real reason — a money-onboarding path must not swallow it. A
+    // transient Stripe outage / rate-limit isn't the partner's fault, so say so
+    // rather than telling them to rotate a valid key.
+    const type = (err as { type?: string })?.type;
+    const transient = type === 'StripeConnectionError' || type === 'StripeAPIError' || type === 'StripeRateLimitError';
+    console.error('[partnerStripe] key validation failed', { partnerId: input.partnerId, type: type ?? 'unknown', transient, message: err instanceof Error ? err.message : String(err) });
+    throw new PartnerStripeError(
+      transient
+        ? 'Could not reach Stripe to verify the key right now — please try again in a moment.'
+        : 'That Stripe key was rejected — double-check it (and that it can read your account) and try again.',
+      'INVALID_STRIPE_KEY',
+    );
   }
 
   const last4 = apiKey.slice(-4);
@@ -96,11 +120,22 @@ export async function getPartnerStripe(partnerId: string): Promise<Stripe> {
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
     .limit(1);
   if (!row || row.status !== 'connected' || !row.apiKey) {
-    throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY', 409);
+    throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY');
   }
-  const key = decryptSecret(row.apiKey);
+  // A connected row whose ciphertext can't be decrypted is a CORRUPT-KEY fault (DB
+  // corruption, or KEK rotated away), NOT "not connected". decryptSecret throws on
+  // a bad payload/auth-tag and returns null only on empty input — handle both, and
+  // log: a wave of these means an APP_ENCRYPTION_KEY misconfig, a platform incident.
+  let key: string | null;
+  try {
+    key = decryptSecret(row.apiKey);
+  } catch (err) {
+    console.error('[partnerStripe] failed to decrypt stored key for connected partner', { partnerId, message: err instanceof Error ? err.message : String(err) });
+    throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
+  }
   if (!key) {
-    throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY', 409);
+    console.error('[partnerStripe] decrypt returned empty for connected partner', { partnerId });
+    throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
   }
   return new Stripe(key, { apiVersion: API_VERSION });
 }
@@ -112,13 +147,10 @@ export async function getPartnerStripeStatus(partnerId: string): Promise<Partner
     .from(stripeConnectAccounts)
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
     .limit(1);
-  const connected = Boolean(row && row.status === 'connected' && row.apiKey);
-  return {
-    connected,
-    stripeAccountId: row?.stripeAccountId ?? null,
-    last4: row?.keyLast4 ?? null,
-    livemode: row?.livemode ?? false,
-  };
+  if (row && row.status === 'connected' && row.apiKey) {
+    return { connected: true, stripeAccountId: row.stripeAccountId, last4: row.keyLast4 ?? null, livemode: row.livemode };
+  }
+  return { connected: false, last4: row?.keyLast4 ?? null };
 }
 
 /** Disconnect: wipe the stored secret + last4 and mark disconnected. */
