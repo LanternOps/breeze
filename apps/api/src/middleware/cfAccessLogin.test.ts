@@ -322,7 +322,7 @@ describe('cfAccessLoginMiddleware', () => {
     envState.enabled = true;
     verifyState.next = {
       kind: 'claims',
-      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1, country: 'CA' },
     };
     dbState.userRow = { ...activeUser, status: 'suspended' };
     const { next, called } = createNext();
@@ -342,7 +342,7 @@ describe('cfAccessLoginMiddleware', () => {
     envState.enabled = true;
     verifyState.next = {
       kind: 'claims',
-      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1, country: 'CA' },
     };
     dbState.userRow = { ...activeUser };
     const { next, called } = createNext();
@@ -364,7 +364,7 @@ describe('cfAccessLoginMiddleware', () => {
     expect(dbState.lastUpdateId).toBe(activeUser.id);
     expect(auditState.audits[0]).toMatchObject({
       action: 'user.login',
-      details: expect.objectContaining({ method: 'cf_access_jwt' }),
+      details: expect.objectContaining({ method: 'cf_access_jwt', cfAccessCountry: 'CA' }),
     });
   });
 

@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 
 import * as dbModule from '../db';
 import { organizationUsers } from '../db/schema';
@@ -10,8 +11,10 @@ import {
   computeAndPersistOrgUserRisk,
   publishUserRiskScoreEvents
 } from '../services/userRiskScoring';
+import { evaluateUserRiskSignalsForOrg } from '../services/userRiskSignals';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
+import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -40,7 +43,7 @@ const USER_RISK_DETAILS_MAX_BYTES = 8 * 1024;
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
-  queuedAt: string;
+  queuedAt?: string;
 };
 
 type ComputeOrgJobData = {
@@ -98,6 +101,28 @@ function sanitizeUserRiskSignalEventInput(
   };
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function buildUserRiskSignalEventJobId(input: Omit<ProcessSignalEventJobData, 'type' | 'queuedAt'>): string {
+  const sanitized = sanitizeUserRiskSignalEventInput(input);
+  const fingerprint = createHash('sha256')
+    .update(stableJson(sanitized))
+    .digest('hex')
+    .slice(0, 24);
+  return `user-risk-signal:${sanitized.orgId}:${sanitized.userId}:${fingerprint}`;
+}
+
 export function getUserRiskQueue(): Queue<UserRiskJobData> {
   if (!userRiskQueue) {
     userRiskQueue = new Queue<UserRiskJobData>(USER_RISK_QUEUE, {
@@ -119,14 +144,16 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   }
 
   const queue = getUserRiskQueue();
-  const slotKey = data.queuedAt.slice(0, 13);
+  const scannedAt = new Date();
+  const queuedAt = scannedAt.toISOString();
+  const slotKey = queuedAt.slice(0, 13);
   await queue.addBulk(
     orgRows.map((row) => ({
       name: 'compute-org',
       data: {
         type: 'compute-org' as const,
         orgId: row.orgId,
-        queuedAt: data.queuedAt
+        queuedAt
       },
       opts: {
         jobId: `user-risk-${row.orgId}-${slotKey}`,
@@ -141,13 +168,32 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
 
 async function processComputeOrg(data: ComputeOrgJobData): Promise<{
   orgId: string;
+  skipped?: boolean;
   usersProcessed: number;
   changedUsers: number;
   autoTrainingAssigned: number;
+  signalsAppended: number;
+  signalsDeduped: number;
   publishedHigh: number;
   publishedSpikes: number;
   publishFailures: number;
 }> {
+  if (!(await shouldProduceMlOutput(data.orgId, 'ml.user_risk_v0.enabled'))) {
+    return {
+      orgId: data.orgId,
+      skipped: true,
+      usersProcessed: 0,
+      changedUsers: 0,
+      autoTrainingAssigned: 0,
+      signalsAppended: 0,
+      signalsDeduped: 0,
+      publishedHigh: 0,
+      publishedSpikes: 0,
+      publishFailures: 0
+    };
+  }
+
+  const signalEvaluation = await evaluateUserRiskSignalsForOrg(data.orgId);
   const result = await computeAndPersistOrgUserRisk(data.orgId);
   const published = await publishUserRiskScoreEvents({
     orgId: data.orgId,
@@ -161,6 +207,8 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
     usersProcessed: result.usersProcessed,
     changedUsers: result.changedUsers.length,
     autoTrainingAssigned: result.autoTrainingAssigned,
+    signalsAppended: signalEvaluation.appended,
+    signalsDeduped: signalEvaluation.deduped,
     publishedHigh: published.publishedHigh,
     publishedSpikes: published.publishedSpikes,
     publishFailures: published.failed
@@ -170,13 +218,28 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
 async function processSignalEvent(data: ProcessSignalEventJobData): Promise<{
   orgId: string;
   userId: string;
-  eventId: string;
+  eventId: string | null;
+  skipped?: boolean;
   recomputed: boolean;
   changedUsers: number;
   publishedHigh: number;
   publishedSpikes: number;
   publishFailures: number;
 }> {
+  if (!(await shouldProduceMlOutput(data.orgId, 'ml.user_risk_v0.enabled'))) {
+    return {
+      orgId: data.orgId,
+      userId: data.userId,
+      eventId: null,
+      skipped: true,
+      recomputed: false,
+      changedUsers: 0,
+      publishedHigh: 0,
+      publishedSpikes: 0,
+      publishFailures: 0
+    };
+  }
+
   const eventId = await appendUserRiskSignalEvent({
     orgId: data.orgId,
     userId: data.userId,
@@ -242,7 +305,6 @@ async function scheduleUserRiskScan(): Promise<void> {
     'scan-orgs',
     {
       type: 'scan-orgs',
-      queuedAt: new Date().toISOString()
     },
     {
       repeat: { every: SCAN_INTERVAL_MS },
@@ -311,6 +373,18 @@ export async function triggerUserRiskRecompute(orgId: string): Promise<string> {
 export async function enqueueUserRiskSignalEvent(input: Omit<ProcessSignalEventJobData, 'type' | 'queuedAt'>): Promise<string> {
   const queue = getUserRiskQueue();
   const sanitized = sanitizeUserRiskSignalEventInput(input);
+  const jobId = buildUserRiskSignalEventJobId(sanitized);
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[UserRiskJobs] Failed to remove stale signal-event job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'process-signal-event',
     {
@@ -319,6 +393,7 @@ export async function enqueueUserRiskSignalEvent(input: Omit<ProcessSignalEventJ
       queuedAt: new Date().toISOString()
     },
     {
+      jobId,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 200 }
     }

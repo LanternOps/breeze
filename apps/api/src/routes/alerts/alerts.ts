@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { and, or, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
+  alertCorrelationGroups,
+  alertCorrelationMembers,
   alertRules,
   alertTemplates,
   alerts,
@@ -17,6 +19,7 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
+import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -35,6 +38,86 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 const requireAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
 
 const alertIdParamSchema = z.object({ id: z.string().uuid() });
+
+type AlertCorrelationSummaryRow = {
+  alertId: string;
+  groupId: string;
+  role: string;
+  groupStatus: string;
+  memberCount: number | string | null;
+  noiseReductionPercent: number | string | null;
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function normalizeMetricAnomalyContext(context: unknown) {
+  const record = asRecord(context);
+  if (record.source !== 'metric_anomaly') return null;
+  return {
+    source: 'metric_anomaly',
+    anomalyId: typeof record.anomalyId === 'string' ? record.anomalyId : null,
+    metricName: typeof record.metricName === 'string' ? record.metricName : null,
+    metricType: typeof record.metricType === 'string' ? record.metricType : null,
+    anomalyType: typeof record.anomalyType === 'string' ? record.anomalyType : null,
+    observedValue: typeof record.observedValue === 'number' ? record.observedValue : null,
+    baselineValue: typeof record.baselineValue === 'number' ? record.baselineValue : null,
+    confidence: typeof record.confidence === 'number' ? record.confidence : null,
+    score: typeof record.score === 'number' ? record.score : null,
+    modelVersion: typeof record.modelVersion === 'string' ? record.modelVersion : null,
+  };
+}
+
+function withMlAlertContext<T extends { context?: unknown }>(alert: T) {
+  return {
+    ...alert,
+    contextData: alert.context ?? null,
+    anomalyContext: normalizeMetricAnomalyContext(alert.context),
+  };
+}
+
+export function attachAlertCorrelationSummaries<T extends { id: string; context?: unknown }>(
+  alertRows: T[],
+  correlationRows: AlertCorrelationSummaryRow[]
+) {
+  const correlationByAlertId = new Map<string, AlertCorrelationSummaryRow>();
+
+  for (const row of correlationRows) {
+    const existing = correlationByAlertId.get(row.alertId);
+    if (!existing || row.role === 'root') {
+      correlationByAlertId.set(row.alertId, row);
+    }
+  }
+
+  return alertRows.map((alert) => {
+    const correlation = correlationByAlertId.get(alert.id);
+    if (!correlation) {
+      return withMlAlertContext({
+        ...alert,
+        correlationGroupId: null,
+        correlationRole: null,
+        correlationGroupStatus: null,
+        correlationMemberCount: 0,
+        correlationChildCount: 0,
+        noiseReductionPercent: null,
+      });
+    }
+
+    const memberCount = Number(correlation.memberCount ?? 0);
+    const noiseReductionPercent = Number(correlation.noiseReductionPercent ?? 0);
+
+    return withMlAlertContext({
+      ...alert,
+      correlationGroupId: correlation.groupId,
+      correlationRole: correlation.role,
+      correlationGroupStatus: correlation.groupStatus,
+      correlationMemberCount: Number.isFinite(memberCount) ? memberCount : 0,
+      correlationChildCount: Math.max((Number.isFinite(memberCount) ? memberCount : 0) - 1, 0),
+      noiseReductionPercent: Number.isFinite(noiseReductionPercent) ? noiseReductionPercent : null,
+    });
+  });
+}
 
 // GET /alerts - List alerts with filters
 alertsRoutes.get(
@@ -169,8 +252,24 @@ alertsRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    const alertIds = alertsList.map((alert) => alert.id);
+    const correlationRows = alertIds.length > 0
+      ? await db
+        .select({
+          alertId: alertCorrelationMembers.alertId,
+          groupId: alertCorrelationMembers.groupId,
+          role: alertCorrelationMembers.role,
+          groupStatus: alertCorrelationGroups.status,
+          memberCount: alertCorrelationGroups.memberCount,
+          noiseReductionPercent: alertCorrelationGroups.noiseReductionPercent,
+        })
+        .from(alertCorrelationMembers)
+        .innerJoin(alertCorrelationGroups, eq(alertCorrelationMembers.groupId, alertCorrelationGroups.id))
+        .where(inArray(alertCorrelationMembers.alertId, alertIds))
+      : [];
+
     return c.json({
-      data: alertsList,
+      data: attachAlertCorrelationSummaries(alertsList, correlationRows),
       pagination: { page, limit, total }
     });
   }
@@ -362,6 +461,19 @@ alertsRoutes.post(
             eventErr instanceof Error ? eventErr.message : eventErr
           );
         }
+
+        await emitAlertStateFeedback({
+          orgId: alert.orgId,
+          alertId: alert.id,
+          eventType: action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
+          outcome: action === 'acknowledge' ? 'acknowledged' : 'resolved',
+          actorUserId: auth.user.id,
+          occurredAt: now,
+          metadata: {
+            source: 'alerts.bulk',
+            previousStatus: alert.status,
+          },
+        });
       } catch (dbErr) {
         console.error(`[alerts/bulk] Failed to ${action} alert ${alert.id}:`, dbErr instanceof Error ? dbErr.message : dbErr);
         results.failed++;
@@ -405,11 +517,12 @@ alertsRoutes.post(
       return c.json({ error: `Cannot acknowledge alert with status: ${alert.status}` }, 400);
     }
 
+    const acknowledgedAt = new Date();
     const [updated] = await db
       .update(alerts)
       .set({
         status: 'acknowledged',
-        acknowledgedAt: new Date(),
+        acknowledgedAt,
         acknowledgedBy: auth.user.id
       })
       .where(eq(alerts.id, alertId))
@@ -434,6 +547,19 @@ alertsRoutes.post(
     } catch (error) {
       console.error('[AlertsRoute] Failed to publish alert.acknowledged event:', error);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.acknowledged',
+      outcome: 'acknowledged',
+      actorUserId: auth.user.id,
+      occurredAt: acknowledgedAt,
+      metadata: {
+        source: 'alerts.route',
+        previousStatus: alert.status,
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -472,11 +598,12 @@ alertsRoutes.post(
       return c.json({ error: 'Alert is already resolved' }, 400);
     }
 
+    const resolvedAt = new Date();
     const [updated] = await db
       .update(alerts)
       .set({
         status: 'resolved',
-        resolvedAt: new Date(),
+        resolvedAt,
         resolvedBy: auth.user.id,
         resolutionNote: data.note
       })
@@ -530,6 +657,20 @@ alertsRoutes.post(
     } catch (error) {
       console.error('[AlertsRoute] Failed to publish alert.resolved event:', error);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.resolved',
+      outcome: 'resolved',
+      actorUserId: auth.user.id,
+      occurredAt: resolvedAt,
+      metadata: {
+        source: 'alerts.route',
+        previousStatus: alert.status,
+        hasResolutionNote: Boolean(data.note),
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -585,6 +726,21 @@ alertsRoutes.post(
     if (!updated) {
       return c.json({ error: 'Failed to suppress alert' }, 500);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.suppressed',
+      dedupeKey: `suppress:${suppressedUntil.toISOString()}`,
+      outcome: 'suppressed',
+      actorUserId: auth.user.id,
+      occurredAt: new Date(),
+      metadata: {
+        source: 'alerts.route',
+        previousStatus: alert.status,
+        suppressedUntil: suppressedUntil.toISOString(),
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -652,7 +808,7 @@ alertsRoutes.get(
       .where(eq(alertNotifications.alertId, alertId))
       .orderBy(desc(alertNotifications.createdAt));
 
-    return c.json({
+    return c.json(withMlAlertContext({
       ...alert,
       device: device ? {
         id: device.id,
@@ -669,7 +825,7 @@ alertsRoutes.get(
         isActive: rule.isActive
       } : null,
       notifications
-    });
+    }));
   }
 );
 
@@ -681,6 +837,7 @@ alertsRoutes.post(
   zValidator('param', alertIdParamSchema),
   zValidator('json', z.object({
     subject: z.string().min(1).max(255).optional(),
+    description: z.string().max(5000).optional(),
     categoryId: z.string().uuid().optional(),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
     assigneeId: z.string().uuid().optional()

@@ -17,6 +17,7 @@ import {
   auditLogs,
   deviceSessions,
   devices,
+  mlFeedbackEvents,
   organizationUsers,
   securityPostureSnapshots,
   securityThreats,
@@ -32,6 +33,7 @@ import {
   type UserRiskPolicyWeights
 } from '../db/schema';
 import { publishEvent } from './eventBus';
+import { emitSystemMlFeedbackEvent } from './mlFeedback';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HIGH_EVENT_TYPE = 'user.risk_score_high';
@@ -264,6 +266,7 @@ export type UserRiskScoreListFilter = {
   orgIds?: string[];
   orgId?: string;
   siteId?: string;
+  siteIds?: string[];
   minScore?: number;
   maxScore?: number;
   trendDirection?: 'up' | 'down' | 'stable';
@@ -282,6 +285,27 @@ export type UserRiskEventFilter = {
   to?: Date;
   limit?: number;
   offset?: number;
+};
+
+export type UserRiskEvaluationFilter = {
+  orgIds?: string[];
+  orgId?: string;
+  days?: number;
+};
+
+export type UserRiskEvaluation = {
+  windowDays: number;
+  totalLabels: number;
+  truePositives: number;
+  falsePositives: number;
+  precision: number | null;
+  trainingAssigned: number;
+  trainingCompleted: number;
+  trainingCompletionRate: number | null;
+  riskSignals: number;
+  usersWithRiskSignals: number;
+  repeatSignalUsers: number;
+  repeatSignalRate: number | null;
 };
 
 type ComputedUserRisk = {
@@ -927,6 +951,13 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
   }
   if (filter.siteId) {
     conditions.push(sql`${organizationUsers.siteIds} @> ARRAY[${filter.siteId}]::uuid[]`);
+  } else if (filter.siteIds) {
+    if (filter.siteIds.length === 0) {
+      conditions.push(sql`false`);
+    } else {
+      const allowedSiteIds = sql.join(filter.siteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
+      conditions.push(sql`${organizationUsers.siteIds} && ARRAY[${allowedSiteIds}]`);
+    }
   }
 
   const whereClause = and(...conditions);
@@ -1201,6 +1232,76 @@ export async function listUserRiskEvents(filter: UserRiskEventFilter): Promise<{
   };
 }
 
+function roundMetric(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 1000) / 1000;
+}
+
+export async function getUserRiskEvaluation(filter: UserRiskEvaluationFilter): Promise<UserRiskEvaluation> {
+  const days = Math.min(Math.max(1, filter.days ?? 30), 365);
+  const since = new Date(Date.now() - days * DAY_MS);
+
+  const feedbackConditions: SQL[] = [
+    eq(mlFeedbackEvents.sourceType, 'user_risk'),
+    gte(mlFeedbackEvents.occurredAt, since)
+  ];
+  const riskEventConditions: SQL[] = [
+    gte(userRiskEvents.occurredAt, since)
+  ];
+
+  if (filter.orgId) {
+    feedbackConditions.push(eq(mlFeedbackEvents.orgId, filter.orgId));
+    riskEventConditions.push(eq(userRiskEvents.orgId, filter.orgId));
+  } else if (filter.orgIds && filter.orgIds.length > 0) {
+    feedbackConditions.push(inArray(mlFeedbackEvents.orgId, filter.orgIds));
+    riskEventConditions.push(inArray(userRiskEvents.orgId, filter.orgIds));
+  }
+
+  const [feedbackRows, signalRows] = await Promise.all([
+    db
+      .select({
+        eventType: mlFeedbackEvents.eventType,
+        count: sql<number>`count(*)::int`
+      })
+      .from(mlFeedbackEvents)
+      .where(and(...feedbackConditions))
+      .groupBy(mlFeedbackEvents.eventType),
+    db
+      .select({
+        userId: userRiskEvents.userId,
+        count: sql<number>`count(*)::int`
+      })
+      .from(userRiskEvents)
+      .where(and(...riskEventConditions))
+      .groupBy(userRiskEvents.userId)
+  ]);
+
+  const countByEventType = new Map(feedbackRows.map((row) => [row.eventType, Number(row.count) || 0]));
+  const truePositives = countByEventType.get('user_risk.true_positive') ?? 0;
+  const falsePositives = countByEventType.get('user_risk.false_positive') ?? 0;
+  const trainingAssigned = countByEventType.get('training.assigned') ?? 0;
+  const trainingCompleted = countByEventType.get('training.completed') ?? 0;
+  const totalLabels = truePositives + falsePositives;
+  const riskSignals = signalRows.reduce((sum, row) => sum + (Number(row.count) || 0), 0);
+  const usersWithRiskSignals = signalRows.length;
+  const repeatSignalUsers = signalRows.filter((row) => (Number(row.count) || 0) > 1).length;
+
+  return {
+    windowDays: days,
+    totalLabels,
+    truePositives,
+    falsePositives,
+    precision: totalLabels > 0 ? roundMetric(truePositives / totalLabels) : null,
+    trainingAssigned,
+    trainingCompleted,
+    trainingCompletionRate: trainingAssigned > 0 ? roundMetric(trainingCompleted / trainingAssigned) : null,
+    riskSignals,
+    usersWithRiskSignals,
+    repeatSignalUsers,
+    repeatSignalRate: usersWithRiskSignals > 0 ? roundMetric(repeatSignalUsers / usersWithRiskSignals) : null
+  };
+}
+
 type RecordTrainingInput = {
   orgId: string;
   userId: string;
@@ -1281,6 +1382,29 @@ async function recordTrainingAssignment(input: RecordTrainingInput): Promise<Rec
     eventPublished = true;
   } catch (error) {
     console.error(`[UserRisk] Failed to publish ${TRAINING_ASSIGNED_EVENT_TYPE} for user ${input.userId}:`, error);
+  }
+
+  if (input.assignedBy === null) {
+    try {
+      await emitSystemMlFeedbackEvent({
+        orgId: input.orgId,
+        sourceType: 'user_risk',
+        sourceId: input.userId,
+        eventType: 'training.assigned',
+        outcome: 'assigned',
+        actorUserId: null,
+        occurredAt: now,
+        metadata: {
+          source: input.source,
+          assignmentEventId: eventRow?.id ?? null,
+          moduleId: input.moduleId,
+          reason: input.reason ?? null,
+          autoAssigned: true
+        }
+      });
+    } catch (error) {
+      console.error(`[UserRisk] Failed to emit training.assigned feedback for user ${input.userId}:`, error);
+    }
   }
 
   return {
@@ -1459,3 +1583,7 @@ export async function listActiveDeviceSessionsForUserInOrg(input: {
     idleSessions: rows.filter((row) => row.activityState === 'idle' || row.activityState === 'away').length
   };
 }
+
+export const userRiskScoringInternals = {
+  recordTrainingAssignment
+};

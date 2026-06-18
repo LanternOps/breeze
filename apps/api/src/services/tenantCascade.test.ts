@@ -86,6 +86,11 @@ describe('ORG_CASCADE_DELETE_ORDER', () => {
     expect(ORG_CASCADE_DELETE_ORDER.at(-1)).toBe('organizations');
   });
 
+  it('routes append-only ML feedback labels through the audit-admin delete path', () => {
+    expect(ORG_CASCADE_DELETE_ORDER).toContain('ml_feedback_events');
+    expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('ml_feedback_events')).toBe(true);
+  });
+
   it('includes the canonical tenant tables', () => {
     const set = new Set(ORG_CASCADE_DELETE_ORDER);
     for (const required of [
@@ -95,6 +100,7 @@ describe('ORG_CASCADE_DELETE_ORDER', () => {
       'alerts',
       'audit_logs',
       'agent_logs',
+      'ml_feedback_events',
       'organizations',
     ]) {
       expect(set.has(required), `missing required table ${required}`).toBe(true);

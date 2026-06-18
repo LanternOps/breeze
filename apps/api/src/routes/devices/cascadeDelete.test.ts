@@ -156,6 +156,14 @@ describe('device hard-delete table coverage contract', () => {
     expect(DEVICE_CASCADE_DELETE_TABLES).not.toContain('tickets');
   });
 
+  it('deletes ML output rows before anomaly parent rows during device hard-delete', () => {
+    expect(DEVICE_CASCADE_DELETE_TABLES).toContain('remediation_suggestions');
+    expect(DEVICE_CASCADE_DELETE_TABLES).toContain('metric_anomalies');
+    expect(DEVICE_CASCADE_DELETE_TABLES.indexOf('remediation_suggestions')).toBeLessThan(
+      DEVICE_CASCADE_DELETE_TABLES.indexOf('metric_anomalies'),
+    );
+  });
+
   it('includes every table whose linked_device_id FK references devices.id', () => {
     const linkedSet = new Set<string>(DEVICE_LINKED_DEVICE_ID_TABLES);
     const missing: string[] = [];

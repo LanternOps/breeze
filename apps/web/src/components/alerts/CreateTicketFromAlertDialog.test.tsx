@@ -88,6 +88,20 @@ describe('CreateTicketFromAlertDialog', () => {
     expect(body).toEqual({ subject: 'CPU pegged on SRV-01', priority: 'urgent', categoryId: CAT_ID });
   });
 
+  it('prefills and POSTs an editable description', async () => {
+    mockApi();
+    render(<CreateTicketFromAlertDialog {...baseProps} initialDescription="Initial RCA note" />);
+    expect((screen.getByTestId('alert-ticket-description') as HTMLTextAreaElement).value).toBe('Initial RCA note');
+    fireEvent.change(screen.getByTestId('alert-ticket-description'), { target: { value: 'Edited RCA note' } });
+    fireEvent.click(screen.getByTestId('alert-ticket-submit'));
+
+    await waitFor(() => expect(baseProps.onCreated).toHaveBeenCalled());
+    const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(JSON.parse(String(postCall![1]!.body))).toEqual(expect.objectContaining({
+      description: 'Edited RCA note'
+    }));
+  });
+
   it('omits categoryId when none selected', async () => {
     mockApi();
     render(<CreateTicketFromAlertDialog {...baseProps} />);

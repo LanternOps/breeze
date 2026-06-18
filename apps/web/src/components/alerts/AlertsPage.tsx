@@ -12,8 +12,26 @@ import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 import { runAction, ActionError } from '../../lib/runAction';
+import { normalizeMetricAnomalyContext } from './alertMlContext';
 
 type Device = { id: string; name: string };
+
+function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
+  return rows.map((row) => {
+    const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? 'Unknown device';
+    const contextData = row.contextData ?? row.context;
+    const anomalyContext = row.anomalyContext ?? normalizeMetricAnomalyContext(contextData);
+    return {
+      ...row,
+      deviceName: String(deviceName),
+      contextData,
+      anomalyContext,
+      correlationMemberCount: Number(row.correlationMemberCount ?? 0),
+      correlationChildCount: Number(row.correlationChildCount ?? 0),
+      noiseReductionPercent: row.noiseReductionPercent == null ? null : Number(row.noiseReductionPercent),
+    } as Alert;
+  });
+}
 
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -51,7 +69,8 @@ export default function AlertsPage() {
         throw new Error('Failed to fetch alerts');
       }
       const data = await response.json();
-      setAlerts(data.data ?? data.alerts ?? (Array.isArray(data) ? data : []));
+      const raw: Record<string, unknown>[] = data.data ?? data.alerts ?? (Array.isArray(data) ? data : []);
+      setAlerts(normalizeAlertRows(raw));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

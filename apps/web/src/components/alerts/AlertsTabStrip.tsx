@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 
 const TABS = [
   { href: '/alerts', label: 'Alerts' },
+  { href: '/alerts/correlations', label: 'Correlations' },
   { href: '/alerts/rules', label: 'Rules' },
   { href: '/alerts/channels', label: 'Channels' },
 ] as const;
@@ -10,6 +11,7 @@ export default function AlertsTabStrip() {
   const activeHref = useMemo(() => {
     if (typeof window === 'undefined') return '/alerts';
     const path = window.location.pathname;
+    if (path.startsWith('/alerts/correlations')) return '/alerts/correlations';
     if (path.startsWith('/alerts/channels')) return '/alerts/channels';
     if (path.startsWith('/alerts/rules')) return '/alerts/rules';
     return '/alerts';

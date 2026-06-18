@@ -14,6 +14,7 @@ vi.mock('../services/auditEvents', () => ({
 
 vi.mock('../services/userRiskScoring', () => ({
   listUserRiskScores: vi.fn(),
+  getUserRiskEvaluation: vi.fn(),
   getUserRiskDetail: vi.fn(),
   getUserRiskOrgMembership: vi.fn(),
   listUserRiskEvents: vi.fn(),
@@ -22,16 +23,23 @@ vi.mock('../services/userRiskScoring', () => ({
   assignSecurityTraining: vi.fn()
 }));
 
+vi.mock('../services/mlFeedbackEmitters', () => ({
+  emitUserRiskFeedback: vi.fn()
+}));
+
 import { userRiskRoutes } from './userRisk';
 import {
   assignSecurityTraining,
   getOrCreateUserRiskPolicy,
+  getUserRiskEvaluation,
   getUserRiskDetail,
+  getUserRiskOrgMembership,
   listUserRiskEvents,
   listUserRiskScores,
   updateUserRiskPolicy
 } from '../services/userRiskScoring';
 import { resolveOrgAccess } from '../middleware/auth';
+import { emitUserRiskFeedback } from '../services/mlFeedbackEmitters';
 
 const ORG_ID = '00000000-0000-0000-0000-000000000001';
 const ORG_ID_2 = '00000000-0000-0000-0000-000000000002';
@@ -165,6 +173,166 @@ describe('userRiskRoutes', () => {
     expect(body.pagination.total).toBe(1);
   });
 
+  it('GET /evaluation returns label quality metrics', async () => {
+    vi.mocked(getUserRiskEvaluation).mockResolvedValue({
+      windowDays: 30,
+      totalLabels: 4,
+      truePositives: 3,
+      falsePositives: 1,
+      precision: 0.75,
+      trainingAssigned: 2,
+      trainingCompleted: 1,
+      trainingCompletionRate: 0.5,
+      riskSignals: 12,
+      usersWithRiskSignals: 5,
+      repeatSignalUsers: 2,
+      repeatSignalRate: 0.4
+    });
+
+    const app = buildApp();
+    const res = await app.request('/user-risk/evaluation?days=14');
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.data.precision).toBe(0.75);
+    expect(getUserRiskEvaluation).toHaveBeenCalledWith({
+      orgIds: [ORG_ID],
+      days: 14
+    });
+  });
+
+  it('GET /evaluation returns 403 for inaccessible org filter', async () => {
+    const app = buildApp();
+    const res = await app.request(`/user-risk/evaluation?orgId=${ORG_ID_2}`);
+    expect(res.status).toBe(403);
+    expect(getUserRiskEvaluation).not.toHaveBeenCalled();
+  });
+
+  it('POST /users/:userId/feedback records a true-positive label', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'true_positive', score: 88, reason: 'confirmed_incident' })
+    });
+
+    expect(res.status).toBe(200);
+    expect(emitUserRiskFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID,
+      userId: USER_ID,
+      eventType: 'user_risk.true_positive',
+      outcome: 'true_positive',
+      dedupeKey: undefined,
+      actorUserId: '00000000-0000-0000-0000-000000000099'
+    }));
+  });
+
+  it('POST /users/:userId/feedback uses source event id as a replay key', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        outcome: 'false_positive',
+        sourceEventId: '00000000-0000-0000-0000-000000000030'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    expect(emitUserRiskFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'user_risk.false_positive',
+      dedupeKey: 'review:00000000-0000-0000-0000-000000000030:false_positive'
+    }));
+  });
+
+  it('POST /users/:userId/feedback returns 404 for a user outside the org', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(false);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'false_positive' })
+    });
+
+    expect(res.status).toBe(404);
+    expect(emitUserRiskFeedback).not.toHaveBeenCalled();
+  });
+
+  it('POST /users/:userId/training-completed records a completion label', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/training-completed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        moduleId: 'security-awareness-baseline',
+        assignmentEventId: '00000000-0000-0000-0000-000000000020',
+        completedAt: '2026-06-18T12:00:00.000Z'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, eventType: 'training.completed' });
+    expect(emitUserRiskFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID,
+      userId: USER_ID,
+      eventType: 'training.completed',
+      dedupeKey: 'assignment:00000000-0000-0000-0000-000000000020',
+      outcome: 'completed',
+      actorUserId: '00000000-0000-0000-0000-000000000099',
+      occurredAt: new Date('2026-06-18T12:00:00.000Z'),
+      metadata: expect.objectContaining({
+        source: 'user_risk_training_completion',
+        moduleId: 'security-awareness-baseline',
+        assignmentEventId: '00000000-0000-0000-0000-000000000020',
+        completedAt: '2026-06-18T12:00:00.000Z'
+      })
+    }));
+  });
+
+  it('POST /users/:userId/training-completed returns 404 for a user outside the org', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(false);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/training-completed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'User not found in this organization' });
+    expect(emitUserRiskFeedback).not.toHaveBeenCalled();
+  });
+
+  it('POST /users/:userId/training-completed rejects inaccessible orgs before membership lookup', async () => {
+    const app = buildApp({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (id) => id === ORG_ID
+    });
+    const res = await app.request(`/user-risk/users/${USER_ID}/training-completed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID_2 })
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access denied to this organization' });
+    expect(getUserRiskOrgMembership).not.toHaveBeenCalled();
+    expect(emitUserRiskFeedback).not.toHaveBeenCalled();
+  });
+
   it('PUT /policy updates policy', async () => {
     vi.mocked(updateUserRiskPolicy).mockResolvedValue({
       orgId: ORG_ID,
@@ -221,5 +389,11 @@ describe('userRiskRoutes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.assignmentEventId).toBeDefined();
+    expect(emitUserRiskFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID,
+      userId: USER_ID,
+      eventType: 'training.assigned',
+      outcome: 'assigned'
+    }));
   });
 });

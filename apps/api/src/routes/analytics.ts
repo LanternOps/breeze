@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, gte, lte, ne, inArray, isNull, or, desc } from 'drizzle-orm';
+import { and, eq, sql, gte, lte, ne, inArray, isNull, or, desc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   analyticsDashboards,
@@ -9,6 +9,9 @@ import {
   capacityPredictions,
   capacityThresholds,
   deviceMetrics,
+  mlFeedbackEvents,
+  metricAnomalies,
+  metricRollups,
   devices,
   slaDefinitions as slaDefinitionsTable,
   slaCompliance as slaComplianceTable
@@ -125,6 +128,41 @@ function aggregationSql(col: any, agg: string) {
   }
 }
 
+function metricRollupNameForQuery(metricType: string): string | undefined {
+  const normalized = metricType.trim().toLowerCase();
+  if (normalized === 'cpu_usage' || normalized === 'cpu' || normalized === 'cpu utilization') return 'cpu_percent';
+  if (normalized === 'memory_usage' || normalized === 'memory' || normalized === 'ram' || normalized === 'memory utilization') return 'ram_percent';
+  if (normalized === 'ram_used_mb') return 'ram_used_mb';
+  if (normalized === 'disk_usage' || normalized === 'disk' || normalized === 'disk usage') return 'disk_percent';
+  if (normalized === 'disk_used_gb') return 'disk_used_gb';
+  if (normalized === 'network_in' || normalized === 'bandwidth_in') return 'bandwidth_in_bps';
+  if (normalized === 'network_out' || normalized === 'bandwidth_out') return 'bandwidth_out_bps';
+  if (normalized === 'network throughput') return 'bandwidth_in_bps';
+  if (normalized === 'process_count') return 'process_count';
+  return undefined;
+}
+
+function rollupBucketSeconds(interval: string): number | undefined {
+  if (interval === 'hour') return 3600;
+  if (interval === 'day') return 86400;
+  return undefined;
+}
+
+function rollupAggregationSql(agg: string) {
+  switch (agg) {
+    case 'avg':
+      return sql<number>`sum(${metricRollups.avgValue} * ${metricRollups.sampleCount}) / nullif(sum(${metricRollups.sampleCount}), 0)`;
+    case 'min':
+      return sql<number>`min(${metricRollups.minValue})`;
+    case 'max':
+      return sql<number>`max(${metricRollups.maxValue})`;
+    case 'count':
+      return sql<number>`sum(${metricRollups.sampleCount})`;
+    default:
+      return undefined;
+  }
+}
+
 const listDashboardsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -197,6 +235,60 @@ const capacityQuerySchema = z.object({
   metricType: z.string().min(1).optional().default('disk'),
   range: z.string().optional().default('30d')
 });
+
+const anomalyEvaluationQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  deviceId: z.string().uuid().optional(),
+  range: z.enum(['7d', '30d', '90d']).optional().default('30d')
+});
+
+function capacityRollupMetricName(metricType: string): string {
+  if (metricType === 'cpu') return 'cpu_percent';
+  if (metricType === 'memory') return 'ram_percent';
+  return 'disk_percent';
+}
+
+function rangeDays(range: string): number {
+  if (range === '7d') return 7;
+  if (range === '90d') return 90;
+  return 30;
+}
+
+function zeroAnomalyEvaluationResponse(options: {
+  since: Date;
+  until: Date;
+  range: string;
+  orgId?: string;
+  deviceId?: string;
+}) {
+  return {
+    window: {
+      range: options.range,
+      since: options.since.toISOString(),
+      until: options.until.toISOString(),
+    },
+    orgId: options.orgId,
+    deviceId: options.deviceId,
+    total: 0,
+    status: {
+      open: 0,
+      dismissed: 0,
+      promoted: 0,
+      resolved: 0,
+    },
+    rates: {
+      dismissRate: 0,
+      promoteRate: 0,
+      resolveRate: 0,
+    },
+    feedback: {
+      total: 0,
+      dismissed: 0,
+      promoted: 0,
+      resolved: 0,
+    },
+  };
+}
 
 const listSlaSchema = z.object({
   page: z.string().optional(),
@@ -303,6 +395,41 @@ analyticsRoutes.post(
         continue;
       }
 
+      const rollupMetricName = metricRollupNameForQuery(normalizedMetricType);
+      const bucketSeconds = rollupBucketSeconds(interval);
+      const rollupValue = rollupAggregationSql(data.aggregation);
+      let rows: Array<{ bucket: Date | string; value: number | null }> = [];
+
+      if (rollupMetricName && bucketSeconds && rollupValue) {
+        const rollupBucket = metricRollups.bucketStart;
+        const rollupOrgCondition =
+          typeof auth?.orgCondition === 'function'
+            ? auth.orgCondition(metricRollups.orgId)
+            : auth?.orgId
+              ? eq(metricRollups.orgId, auth.orgId)
+              : undefined;
+        rows = await db
+          .select({
+            bucket: rollupBucket,
+            value: rollupValue
+          })
+          .from(metricRollups)
+          .where(
+            and(
+              inArray(metricRollups.deviceId, data.deviceIds),
+              eq(metricRollups.sourceTable, 'device_metrics'),
+              eq(metricRollups.bucketSeconds, bucketSeconds),
+              eq(metricRollups.metricName, rollupMetricName),
+              sql`${metricRollups.sampleCount} > 0`,
+              ...(rollupOrgCondition ? [rollupOrgCondition] : []),
+              gte(metricRollups.bucketStart, startTime),
+              lte(metricRollups.bucketStart, endTime)
+            )
+          )
+          .groupBy(rollupBucket)
+          .orderBy(rollupBucket);
+      }
+
       const bucket = sql<Date>`date_trunc(${interval}, ${deviceMetrics.timestamp})`;
       const value = aggregationSql(metricColumn, data.aggregation);
 
@@ -314,23 +441,25 @@ analyticsRoutes.post(
             ? eq(devices.orgId, auth.orgId)
             : undefined;
 
-      const rows = await db
-        .select({
-          bucket,
-          value
-        })
-        .from(deviceMetrics)
-        .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
-        .where(
-          and(
-            inArray(deviceMetrics.deviceId, data.deviceIds),
-            ...(orgCondition ? [orgCondition] : []),
-            gte(deviceMetrics.timestamp, startTime),
-            lte(deviceMetrics.timestamp, endTime)
+      if (rows.length === 0) {
+        rows = await db
+          .select({
+            bucket,
+            value
+          })
+          .from(deviceMetrics)
+          .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
+          .where(
+            and(
+              inArray(deviceMetrics.deviceId, data.deviceIds),
+              ...(orgCondition ? [orgCondition] : []),
+              gte(deviceMetrics.timestamp, startTime),
+              lte(deviceMetrics.timestamp, endTime)
+            )
           )
-        )
-        .groupBy(bucket)
-        .orderBy(bucket);
+          .groupBy(bucket)
+          .orderBy(bucket);
+      }
 
       series.push({
         metricType,
@@ -878,6 +1007,144 @@ analyticsRoutes.delete(
 // ============================================
 
 analyticsRoutes.get(
+  '/anomalies/evaluation',
+  requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
+  zValidator('query', anomalyEvaluationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const query = c.req.valid('query');
+
+    if (query.orgId && !(await ensureOrgAccess(query.orgId, auth))) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    const effectiveOrgId = query.orgId ?? auth.orgId;
+    const until = new Date();
+    const since = new Date(until.getTime() - rangeDays(query.range) * 24 * 60 * 60 * 1000);
+
+    let allowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && effectiveOrgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(effectiveOrgId, perms);
+      if (query.deviceId && !(allowedDeviceIds ?? []).includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!query.deviceId && (allowedDeviceIds ?? []).length === 0) {
+        return c.json(zeroAnomalyEvaluationResponse({
+          since,
+          until,
+          range: query.range,
+          orgId: effectiveOrgId,
+        }));
+      }
+    }
+
+    const anomalyOrgCondition =
+      query.orgId
+        ? eq(metricAnomalies.orgId, query.orgId)
+        : typeof auth?.orgCondition === 'function'
+          ? auth.orgCondition(metricAnomalies.orgId)
+          : auth?.orgId
+            ? eq(metricAnomalies.orgId, auth.orgId)
+            : undefined;
+
+    const feedbackOrgCondition =
+      query.orgId
+        ? eq(mlFeedbackEvents.orgId, query.orgId)
+        : typeof auth?.orgCondition === 'function'
+          ? auth.orgCondition(mlFeedbackEvents.orgId)
+          : auth?.orgId
+            ? eq(mlFeedbackEvents.orgId, auth.orgId)
+            : undefined;
+
+    const anomalyConditions: SQL[] = [
+      gte(metricAnomalies.detectedAt, since),
+      ...(anomalyOrgCondition ? [anomalyOrgCondition] : []),
+      ...(query.deviceId ? [eq(metricAnomalies.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(metricAnomalies.deviceId, allowedDeviceIds)]
+        : []),
+    ];
+
+    const feedbackAnomalyConditions: SQL[] = [
+      gte(metricAnomalies.detectedAt, since),
+      ...(query.deviceId ? [eq(metricAnomalies.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(metricAnomalies.deviceId, allowedDeviceIds)]
+        : []),
+    ];
+
+    const statusRows = await db
+      .select({
+        status: metricAnomalies.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(metricAnomalies)
+      .where(and(...anomalyConditions))
+      .groupBy(metricAnomalies.status);
+
+    const feedbackRows = await db
+      .select({
+        eventType: mlFeedbackEvents.eventType,
+        count: sql<number>`count(*)`,
+      })
+      .from(mlFeedbackEvents)
+      .innerJoin(
+        metricAnomalies,
+        and(
+          sql`${mlFeedbackEvents.sourceId} = ${metricAnomalies.id}::text`,
+          eq(metricAnomalies.orgId, mlFeedbackEvents.orgId),
+        ),
+      )
+      .where(and(
+        eq(mlFeedbackEvents.sourceType, 'anomaly'),
+        inArray(mlFeedbackEvents.eventType, ['anomaly.dismissed', 'anomaly.promoted', 'anomaly.resolved']),
+        gte(mlFeedbackEvents.occurredAt, since),
+        ...(feedbackOrgCondition ? [feedbackOrgCondition] : []),
+        ...feedbackAnomalyConditions,
+      ))
+      .groupBy(mlFeedbackEvents.eventType);
+
+    const status = { open: 0, dismissed: 0, promoted: 0, resolved: 0 };
+    for (const row of statusRows) {
+      const key = String(row.status);
+      if (key === 'open' || key === 'dismissed' || key === 'promoted' || key === 'resolved') {
+        status[key] = Number(row.count) || 0;
+      }
+    }
+
+    const total = status.open + status.dismissed + status.promoted + status.resolved;
+    const feedback = { total: 0, dismissed: 0, promoted: 0, resolved: 0 };
+    for (const row of feedbackRows) {
+      const count = Number(row.count) || 0;
+      if (row.eventType === 'anomaly.dismissed') feedback.dismissed += count;
+      if (row.eventType === 'anomaly.promoted') feedback.promoted += count;
+      if (row.eventType === 'anomaly.resolved') feedback.resolved += count;
+    }
+    feedback.total = feedback.dismissed + feedback.promoted + feedback.resolved;
+
+    return c.json({
+      window: {
+        range: query.range,
+        since: since.toISOString(),
+        until: until.toISOString(),
+      },
+      orgId: effectiveOrgId,
+      deviceId: query.deviceId,
+      total,
+      status,
+      rates: {
+        dismissRate: total > 0 ? status.dismissed / total : 0,
+        promoteRate: total > 0 ? status.promoted / total : 0,
+        resolveRate: total > 0 ? status.resolved / total : 0,
+      },
+      feedback,
+    });
+  }
+);
+
+analyticsRoutes.get(
   '/capacity',
   requireScope('organization', 'partner', 'system'),
   requireAnalyticsRead,
@@ -988,18 +1255,18 @@ analyticsRoutes.get(
     const rangeDays = normalizedRange === '7d' ? 7 : normalizedRange === '90d' ? 90 : 30;
     const rangeStart = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
 
-    const metricColumn =
-      metricType === 'cpu'
-        ? deviceMetrics.cpuPercent
-        : metricType === 'memory'
-          ? deviceMetrics.ramPercent
-          : deviceMetrics.diskPercent;
-
     const metricsOrgCondition =
       typeof auth?.orgCondition === 'function'
         ? auth.orgCondition(devices.orgId)
         : auth?.orgId
           ? eq(devices.orgId, auth.orgId)
+          : undefined;
+
+    const rollupsOrgCondition =
+      typeof auth?.orgCondition === 'function'
+        ? auth.orgCondition(metricRollups.orgId)
+        : auth?.orgId
+          ? eq(metricRollups.orgId, auth.orgId)
           : undefined;
 
     // device_metrics.deviceId is NOT NULL — constrain the broad (no-deviceId)
@@ -1008,6 +1275,37 @@ analyticsRoutes.get(
     if (allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length === 0) {
       return c.json({ currentValue: 0, predictions: [], thresholds: undefined });
     }
+
+    const rollupsWhere = and(
+      eq(metricRollups.sourceTable, 'device_metrics'),
+      eq(metricRollups.bucketSeconds, 86400),
+      eq(metricRollups.metricName, capacityRollupMetricName(metricType)),
+      gte(metricRollups.bucketStart, rangeStart),
+      sql`${metricRollups.sampleCount} > 0`,
+      sql`${metricRollups.avgValue} IS NOT NULL`,
+      ...(rollupsOrgCondition ? [rollupsOrgCondition] : []),
+      ...(query.deviceId ? [eq(metricRollups.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(metricRollups.deviceId, allowedDeviceIds)]
+        : [])
+    );
+
+    const rollupRows = await db
+      .select({
+        timestamp: metricRollups.bucketStart,
+        value: sql<number>`sum(${metricRollups.avgValue} * ${metricRollups.sampleCount}) / nullif(sum(${metricRollups.sampleCount}), 0)`
+      })
+      .from(metricRollups)
+      .where(rollupsWhere)
+      .groupBy(metricRollups.bucketStart)
+      .orderBy(metricRollups.bucketStart);
+
+    const metricColumn =
+      metricType === 'cpu'
+        ? deviceMetrics.cpuPercent
+        : metricType === 'memory'
+          ? deviceMetrics.ramPercent
+          : deviceMetrics.diskPercent;
 
     const metricsWhere = and(
       gte(deviceMetrics.timestamp, rangeStart),
@@ -1018,16 +1316,18 @@ analyticsRoutes.get(
         : [])
     );
 
-    const actualRows = await db
-      .select({
-        timestamp: sql<Date>`date_trunc('day', ${deviceMetrics.timestamp})`,
-        value: sql<number>`avg(${metricColumn})`
-      })
-      .from(deviceMetrics)
-      .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
-      .where(metricsWhere)
-      .groupBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`)
-      .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
+    const actualRows = rollupRows.length > 0
+      ? rollupRows
+      : await db
+          .select({
+            timestamp: sql<Date>`date_trunc('day', ${deviceMetrics.timestamp})`,
+            value: sql<number>`avg(${metricColumn})`
+          })
+          .from(deviceMetrics)
+          .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
+          .where(metricsWhere)
+          .groupBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`)
+          .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
 
     const actuals = actualRows.map((row) => ({
       timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : String(row.timestamp),

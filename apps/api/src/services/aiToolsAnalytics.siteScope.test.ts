@@ -65,4 +65,42 @@ describe('query_analytics capacity_predictions — site narrowing', () => {
     const parsed = JSON.parse(r);
     expect(parsed.showing).toBe(1);
   });
+
+  it('falls back to daily metric rollups when stored predictions are empty', async () => {
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            groupBy: () => ({
+              orderBy: () => Promise.resolve([
+                { timestamp: new Date('2026-06-17T00:00:00.000Z'), value: 10 },
+                { timestamp: new Date('2026-06-18T00:00:00.000Z'), value: 20 },
+              ]),
+            }),
+          }),
+        }),
+      });
+
+    const r = await handlerFor('query_analytics')(
+      { action: 'capacity_predictions', metricType: 'disk', limit: 3 },
+      makeAuth(undefined),
+    );
+    const parsed = JSON.parse(r);
+
+    expect(parsed.source).toBe('metric_rollups');
+    expect(parsed.showing).toBe(3);
+    expect(parsed.capacityPredictions[0]).toMatchObject({
+      metricType: 'disk',
+      metricName: 'disk_percent',
+      currentValue: 20,
+      predictedValue: 30,
+      predictionDate: '2026-06-19T00:00:00.000Z',
+      modelType: 'rollup_linear_projection',
+      trainingDataDays: 2,
+    });
+    expect(mockDb.select).toHaveBeenCalledTimes(2);
+  });
 });

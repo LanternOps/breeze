@@ -206,6 +206,7 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
       mfa: mfaSatisfied,
       scope: context.scope,
       cfAccessSub: claims.sub,
+      cfAccessCountry: claims.country ?? null,
     },
     ipAddress: getClientIP(c),
     userAgent: c.req.header('user-agent'),

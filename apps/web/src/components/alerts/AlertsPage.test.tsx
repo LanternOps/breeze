@@ -49,6 +49,17 @@ const activeAlert = {
   triggeredAt: new Date().toISOString()
 };
 
+const remediationFlags = (enabled: boolean) => ({
+  mlFeatureFlags: {
+    'ml.remediation_suggestions.enabled': {
+      flag: 'ml.remediation_suggestions.enabled',
+      enabled,
+      defaultEnabled: false,
+      source: 'org_settings',
+    },
+  },
+});
+
 /** A promise we can resolve from the test body to simulate a slow ack. */
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -126,6 +137,12 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
         // Detail-panel fetch (status/notification history).
         return Promise.resolve(makeJsonResponse({ statusHistory: [], notificationHistory: [] }));
       }
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      }
+      if (url === `/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
       if (url === `/alerts/${ALERT_ID}/acknowledge` && method === 'POST') {
         return ackDeferred.promise;
       }
@@ -155,6 +172,52 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     });
   });
 
+  it('loads and generates suggested fixes from the selected alert', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === `/alerts/${ALERT_ID}` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ statusHistory: [], notificationHistory: [] }));
+      }
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      }
+      if (url === `/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/remediation-suggestions/generate' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    fireEvent.click(await screen.findByText('High CPU on SRV-01'));
+
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('Suggested Fixes');
+    expect(fetchMock).toHaveBeenCalledWith(`/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5`);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Generate$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/generate',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ sourceType: 'alert', sourceId: ALERT_ID, limit: 3 }),
+        }),
+      );
+    });
+  });
+
   it('surfaces an error toast when the acknowledge request fails', async () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
@@ -179,5 +242,93 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     });
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('shows grouped incident count and noise reduction in the alert list', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({
+          data: [{
+            ...activeAlert,
+            deviceName: undefined,
+            deviceHostname: 'SRV-01',
+            correlationGroupId: '6f5e4d3c-2222-4333-8444-555566667777',
+            correlationRole: 'root',
+            correlationGroupStatus: 'open',
+            correlationMemberCount: 4,
+            correlationChildCount: 3,
+            noiseReductionPercent: 75,
+          }]
+        }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: 'unexpected' }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    expect(await screen.findByText('Grouped incident: 3 related · 75% noise cut')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /SRV-01/i })).toHaveAttribute('href', '/devices/device-1');
+  });
+
+  it('renders promoted metric anomaly context in the alert list and details panel', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({
+          data: [{
+            ...activeAlert,
+            context: {
+              source: 'metric_anomaly',
+              anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              metricName: 'cpu.usage',
+              metricType: 'gauge',
+              anomalyType: 'spike',
+              observedValue: 97.3,
+              baselineValue: 42.1,
+              confidence: 0.92,
+              score: 8.4,
+              modelVersion: 'rollup-v0',
+            },
+          }]
+        }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === `/alerts/${ALERT_ID}` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ statusHistory: [], notificationHistory: [] }));
+      }
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      }
+      if (url === `/remediation-suggestions?sourceType=alert&sourceId=${ALERT_ID}&limit=5` && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    expect(await screen.findByText('ML anomaly: cpu.usage · spike · 92%')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('High CPU on SRV-01'));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByText('ML Anomaly Evidence')).toBeInTheDocument();
+    expect(within(dialog).getByText('cpu.usage')).toBeInTheDocument();
+    expect(within(dialog).getByText('spike')).toBeInTheDocument();
+    expect(within(dialog).getByText('97.30')).toBeInTheDocument();
+    expect(within(dialog).getByText('42.10')).toBeInTheDocument();
+    expect(within(dialog).getByText('92%')).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: /Open device anomalies/i })).toHaveAttribute(
+      'href',
+      '/devices/device-1#anomalies/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    );
   });
 });

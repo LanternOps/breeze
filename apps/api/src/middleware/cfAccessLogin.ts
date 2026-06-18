@@ -207,6 +207,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       mfa: mfaSatisfied,
       scope: context.scope,
       cfAccessSub: claims.sub,
+      cfAccessCountry: claims.country ?? null,
     },
     ipAddress: getClientIP(c),
     userAgent: c.req.header('user-agent'),

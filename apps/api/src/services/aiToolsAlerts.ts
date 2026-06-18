@@ -13,6 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { emitAlertStateFeedback } from './mlFeedbackEmitters';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -138,11 +139,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const alert = await findAlertWithAccess(input.alertId as string, auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
+        const acknowledgedAt = new Date();
         await db
           .update(alerts)
           .set({
             status: 'acknowledged',
-            acknowledgedAt: new Date(),
+            acknowledgedAt,
             acknowledgedBy: auth.user.id
           })
           .where(eq(alerts.id, input.alertId as string));
@@ -166,6 +168,19 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           eventWarning = 'Alert was acknowledged but event notification may be delayed';
         }
 
+        await emitAlertStateFeedback({
+          orgId: alert.orgId,
+          alertId: alert.id,
+          eventType: 'alert.acknowledged',
+          outcome: 'acknowledged',
+          actorUserId: auth.user.id,
+          occurredAt: acknowledgedAt,
+          metadata: {
+            source: 'ai_tools.manage_alerts',
+            previousStatus: alert.status,
+          },
+        });
+
         return JSON.stringify({ success: true, message: `Alert "${alert.title}" acknowledged`, warning: eventWarning });
       }
 
@@ -175,13 +190,15 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const alert = await findAlertWithAccess(input.alertId as string, auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
+        const resolvedAt = new Date();
+        const resolutionNote = (input.resolutionNote as string) ?? 'Resolved via AI assistant';
         await db
           .update(alerts)
           .set({
             status: 'resolved',
-            resolvedAt: new Date(),
+            resolvedAt,
             resolvedBy: auth.user.id,
-            resolutionNote: (input.resolutionNote as string) ?? 'Resolved via AI assistant'
+            resolutionNote
           })
           .where(eq(alerts.id, input.alertId as string));
 
@@ -195,7 +212,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
               ruleId: alert.ruleId,
               deviceId: alert.deviceId,
               resolvedBy: auth.user.id,
-              resolutionNote: (input.resolutionNote as string) ?? 'Resolved via AI assistant'
+              resolutionNote
             },
             'ai-tools',
             { userId: auth.user.id }
@@ -204,6 +221,20 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           console.error('[AiTools] Failed to publish alert.resolved event:', error);
           resolveEventWarning = 'Alert was resolved but event notification may be delayed';
         }
+
+        await emitAlertStateFeedback({
+          orgId: alert.orgId,
+          alertId: alert.id,
+          eventType: 'alert.resolved',
+          outcome: 'resolved',
+          actorUserId: auth.user.id,
+          occurredAt: resolvedAt,
+          metadata: {
+            source: 'ai_tools.manage_alerts',
+            previousStatus: alert.status,
+            hasResolutionNote: Boolean(input.resolutionNote),
+          },
+        });
 
         return JSON.stringify({ success: true, message: `Alert "${alert.title}" resolved`, warning: resolveEventWarning });
       }
@@ -216,13 +247,15 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         const durationHours = Math.min(Math.max(1, Number(input.suppressDuration) || 24), 720);
         const suppressedUntil = new Date(Date.now() + durationHours * 60 * 60 * 1000);
+        const occurredAt = new Date();
+        const resolutionNote = (input.resolutionNote as string) ?? `Suppressed for ${durationHours}h via AI assistant`;
 
         await db
           .update(alerts)
           .set({
             status: 'suppressed',
             suppressedUntil,
-            resolutionNote: (input.resolutionNote as string) ?? `Suppressed for ${durationHours}h via AI assistant`
+            resolutionNote
           })
           .where(eq(alerts.id, input.alertId as string));
 
@@ -246,6 +279,22 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           console.error('[AiTools] Failed to publish alert.suppressed event:', error);
           suppressEventWarning = 'Alert was suppressed but event notification may be delayed';
         }
+
+        await emitAlertStateFeedback({
+          orgId: alert.orgId,
+          alertId: alert.id,
+          eventType: 'alert.suppressed',
+          dedupeKey: `suppress:${suppressedUntil.toISOString()}`,
+          outcome: 'suppressed',
+          actorUserId: auth.user.id,
+          occurredAt,
+          metadata: {
+            source: 'ai_tools.manage_alerts',
+            previousStatus: alert.status,
+            suppressedUntil: suppressedUntil.toISOString(),
+            durationHours,
+          },
+        });
 
         return JSON.stringify({
           success: true,

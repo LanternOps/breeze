@@ -6,6 +6,7 @@ import { authMiddleware, requirePermission, requireScope, resolveOrgAccess } fro
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   assignSecurityTraining,
+  getUserRiskEvaluation,
   getUserRiskDetail,
   getUserRiskOrgMembership,
   getOrCreateUserRiskPolicy,
@@ -13,6 +14,7 @@ import {
   listUserRiskScores,
   updateUserRiskPolicy
 } from '../services/userRiskScoring';
+import { emitUserRiskFeedback } from '../services/mlFeedbackEmitters';
 
 const listScoresQuerySchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -44,6 +46,11 @@ const eventsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(50)
 });
 
+const evaluationQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  days: z.coerce.number().int().min(1).max(365).default(30)
+});
+
 const policyPayloadSchema = z.object({
   orgId: z.string().uuid().optional(),
   weights: z.record(z.string(), z.number().min(0)).optional(),
@@ -57,6 +64,29 @@ const assignTrainingSchema = z.object({
   moduleId: z.string().min(1).max(120).optional(),
   reason: z.string().min(1).max(500).optional()
 });
+
+const completeTrainingSchema = z.object({
+  orgId: z.string().uuid().optional(),
+  moduleId: z.string().min(1).max(120).optional(),
+  assignmentEventId: z.string().uuid().optional(),
+  completedAt: z.string().datetime().optional(),
+  note: z.string().trim().max(1000).optional()
+});
+
+const feedbackPayloadSchema = z.object({
+  orgId: z.string().uuid().optional(),
+  outcome: z.enum(['true_positive', 'false_positive']),
+  note: z.string().trim().max(1000).optional(),
+  sourceEventId: z.string().uuid().optional(),
+  score: z.number().int().min(0).max(100).optional(),
+  reason: z.string().trim().max(120).optional()
+});
+
+function trainingCompletionDedupeKey(payload: z.infer<typeof completeTrainingSchema>, completedAt: Date): string {
+  if (payload.assignmentEventId) return `assignment:${payload.assignmentEventId}`;
+  if (payload.moduleId) return `module:${payload.moduleId}`;
+  return `completed:${completedAt.toISOString()}`;
+}
 
 function resolveWriteOrgId(
   auth: {
@@ -252,6 +282,147 @@ userRiskRoutes.get(
   }
 );
 
+userRiskRoutes.get(
+  '/evaluation',
+  requirePermission('users', 'read'),
+  zValidator('query', evaluationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const orgIds = query.orgId
+      ? [query.orgId]
+      : auth.orgId
+        ? [auth.orgId]
+        : (auth.accessibleOrgIds?.length ? auth.accessibleOrgIds : undefined);
+
+    if (!orgIds && auth.scope !== 'system') {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+
+    const evaluation = await getUserRiskEvaluation({
+      orgIds,
+      days: query.days
+    });
+
+    return c.json({ data: evaluation });
+  }
+);
+
+userRiskRoutes.post(
+  '/users/:userId/training-completed',
+  requirePermission('users', 'write'),
+  zValidator('param', detailParamSchema),
+  zValidator('json', completeTrainingSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { userId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const resolved = resolveWriteOrgId(auth, payload.orgId);
+    if (!resolved.orgId) {
+      return c.json({ error: resolved.error ?? 'Organization resolution failed' }, resolved.status ?? 400);
+    }
+
+    const isMember = await getUserRiskOrgMembership(userId, resolved.orgId);
+    if (!isMember) {
+      return c.json({ error: 'User not found in this organization' }, 404);
+    }
+
+    const completedAt = payload.completedAt ? new Date(payload.completedAt) : new Date();
+
+    await emitUserRiskFeedback({
+      orgId: resolved.orgId,
+      userId,
+      eventType: 'training.completed',
+      dedupeKey: trainingCompletionDedupeKey(payload, completedAt),
+      outcome: 'completed',
+      actorUserId: auth.user.id,
+      occurredAt: completedAt,
+      metadata: {
+        source: 'user_risk_training_completion',
+        moduleId: payload.moduleId ?? null,
+        assignmentEventId: payload.assignmentEventId ?? null,
+        completedAt: completedAt.toISOString(),
+        note: payload.note ?? null
+      }
+    });
+
+    writeRouteAudit(c, {
+      orgId: resolved.orgId,
+      action: 'user_risk.training.complete',
+      resourceType: 'user',
+      resourceId: userId,
+      details: {
+        moduleId: payload.moduleId ?? null,
+        assignmentEventId: payload.assignmentEventId ?? null
+      }
+    });
+
+    return c.json({ success: true, eventType: 'training.completed' });
+  }
+);
+
+userRiskRoutes.post(
+  '/users/:userId/feedback',
+  requirePermission('users', 'write'),
+  zValidator('param', detailParamSchema),
+  zValidator('json', feedbackPayloadSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { userId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const resolved = resolveWriteOrgId(auth, payload.orgId);
+    if (!resolved.orgId) {
+      return c.json({ error: resolved.error ?? 'Organization resolution failed' }, resolved.status ?? 400);
+    }
+
+    const isMember = await getUserRiskOrgMembership(userId, resolved.orgId);
+    if (!isMember) {
+      return c.json({ error: 'User not found in this organization' }, 404);
+    }
+
+    const eventType = payload.outcome === 'true_positive'
+      ? 'user_risk.true_positive'
+      : 'user_risk.false_positive';
+
+    await emitUserRiskFeedback({
+      orgId: resolved.orgId,
+      userId,
+      eventType,
+      dedupeKey: payload.sourceEventId ? `review:${payload.sourceEventId}:${payload.outcome}` : undefined,
+      outcome: payload.outcome,
+      actorUserId: auth.user.id,
+      metadata: {
+        source: 'user_risk_review',
+        sourceEventId: payload.sourceEventId ?? null,
+        score: payload.score ?? null,
+        reason: payload.reason ?? null,
+        note: payload.note ?? null
+      }
+    });
+
+    writeRouteAudit(c, {
+      orgId: resolved.orgId,
+      action: eventType,
+      resourceType: 'user',
+      resourceId: userId,
+      details: {
+        outcome: payload.outcome,
+        sourceEventId: payload.sourceEventId ?? null,
+        reason: payload.reason ?? null
+      }
+    });
+
+    return c.json({ success: true, eventType });
+  }
+);
+
 userRiskRoutes.put(
   '/policy',
   requirePermission('users', 'write'),
@@ -320,6 +491,22 @@ userRiskRoutes.post(
       reason: payload.reason,
       assignedBy: auth.user.id
     });
+
+    if (!assignment.deduplicated) {
+      await emitUserRiskFeedback({
+        orgId: resolved.orgId,
+        userId: payload.userId,
+        eventType: 'training.assigned',
+        outcome: 'assigned',
+        actorUserId: auth.user.id,
+        metadata: {
+          source: 'user_risk_training_assignment',
+          assignmentEventId: assignment.assignmentEventId,
+          moduleId: assignment.moduleId,
+          reason: payload.reason ?? null
+        }
+      });
+    }
 
     writeRouteAudit(c, {
       orgId: resolved.orgId,
