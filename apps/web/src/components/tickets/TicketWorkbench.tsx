@@ -440,6 +440,29 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           >
             {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{priorityLabel(config, p)}</option>)}
           </select>
+          {categories.length > 0 && (
+            <select
+              value={ticket.categoryId ?? ''}
+              onChange={(e) => {
+                const categoryId = e.target.value || null;
+                if (categoryId === (ticket.categoryId ?? null)) return;
+                void runAction({
+                  request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ categoryId }) }),
+                  errorFallback: 'Category update failed. Retry.',
+                  onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+                }).then(() => afterMutation({ categoryId })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+              }}
+              className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+              data-testid="ticket-workbench-category"
+              aria-label="Category"
+            >
+              <option value="">No category</option>
+              {ticket.categoryId && !categories.some((category) => category.id === ticket.categoryId) && (
+                <option value={ticket.categoryId}>Current category</option>
+              )}
+              {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+            </select>
+          )}
           {assignees !== null ? (
             <select
               value={ticket.assignedTo ?? ''}

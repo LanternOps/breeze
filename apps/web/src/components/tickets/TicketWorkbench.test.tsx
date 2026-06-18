@@ -395,6 +395,38 @@ describe('TicketWorkbench ML triage suggestions', () => {
     }));
   });
 
+  it('lets a tech override the ticket category from the workbench', async () => {
+    mockTicketApi({
+      'tk-1': makeTicket({ id: 'tk-1', categoryId: 'cat-hardware' }),
+    });
+
+    render(
+      <TicketWorkbench
+        ticketId="tk-1"
+        assignees={[]}
+        categories={[
+          { id: 'cat-hardware', name: 'Hardware' },
+          { id: 'cat-network', name: 'Network' },
+        ]}
+      />,
+    );
+
+    const categorySelect = await screen.findByTestId('ticket-workbench-category');
+    expect(categorySelect).toHaveValue('cat-hardware');
+
+    fireEvent.change(categorySelect, { target: { value: 'cat-network' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ categoryId: 'cat-network' }),
+        }),
+      );
+    });
+  });
+
   it('hides the suggestion strip when triage is disabled', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
