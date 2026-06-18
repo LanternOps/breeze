@@ -33,6 +33,8 @@ type RemediationSuggestionsPanelProps = {
   sourceId: string;
 };
 
+type EditDraft = Pick<RemediationSuggestion, 'title' | 'rationale' | 'expectedAction' | 'riskTier'>;
+
 const riskClasses: Record<RemediationSuggestion['riskTier'], string> = {
   low: 'border-success/30 bg-success/10 text-success',
   medium: 'border-warning/30 bg-warning/10 text-warning',
@@ -80,6 +82,8 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [requestingApprovalId, setRequestingApprovalId] = useState<string | null>(null);
   const [approvalStatuses, setApprovalStatuses] = useState<Record<string, string>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [error, setError] = useState<string>();
 
   const fetchSuggestions = useCallback(async () => {
@@ -144,6 +148,56 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
       if (result.data) {
         setSuggestions((current) => current.map((item) => item.id === suggestion.id ? result.data! : item));
       }
+    } catch (err) {
+      handleActionError(err, 'Could not update suggested fix');
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  function beginEdit(suggestion: RemediationSuggestion) {
+    setEditingId(suggestion.id);
+    setEditDraft({
+      title: suggestion.title,
+      rationale: suggestion.rationale,
+      expectedAction: suggestion.expectedAction,
+      riskTier: suggestion.riskTier,
+    });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditDraft(null);
+  }
+
+  async function saveEditedSuggestion(suggestion: RemediationSuggestion) {
+    if (!editDraft) return;
+    const title = editDraft.title.trim();
+    const rationale = editDraft.rationale.trim();
+    const expectedAction = editDraft.expectedAction.trim();
+    if (!title || !rationale || !expectedAction) return;
+
+    setUpdatingId(suggestion.id);
+    try {
+      const result = await runAction<{ data?: RemediationSuggestion }>({
+        request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            status: 'edited',
+            title,
+            rationale,
+            expectedAction,
+            riskTier: editDraft.riskTier,
+          }),
+        }),
+        errorFallback: 'Could not update suggested fix',
+        successMessage: 'Suggested fix updated',
+      });
+      if (result.data) {
+        setSuggestions((current) => current.map((item) => item.id === suggestion.id ? result.data! : item));
+      }
+      cancelEdit();
     } catch (err) {
       handleActionError(err, 'Could not update suggested fix');
     } finally {
@@ -253,27 +307,93 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
           {suggestions.map((suggestion) => {
             const approvalStatus = approvalStatuses[suggestion.id];
             const approvalPending = requiresExecutionApproval(suggestion) && suggestion.elevationRequestId && approvalStatus === 'pending';
+            const editing = editingId === suggestion.id && editDraft;
             return (
               <div key={suggestion.id} className="rounded-md border p-3">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0">
+                {editing ? (
+                  <div className="space-y-3">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_10rem]">
+                      <label className="grid gap-1 text-sm font-medium">
+                        Title
+                        <input
+                          value={editDraft.title}
+                          onChange={(event) => setEditDraft({ ...editDraft, title: event.currentTarget.value })}
+                          className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
+                        />
+                      </label>
+                      <label className="grid gap-1 text-sm font-medium">
+                        Risk
+                        <select
+                          value={editDraft.riskTier}
+                          onChange={(event) => setEditDraft({ ...editDraft, riskTier: event.currentTarget.value as RemediationSuggestion['riskTier'] })}
+                          className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
+                        >
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                          <option value="critical">critical</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label className="grid gap-1 text-sm font-medium">
+                      Rationale
+                      <textarea
+                        value={editDraft.rationale}
+                        onChange={(event) => setEditDraft({ ...editDraft, rationale: event.currentTarget.value })}
+                        rows={3}
+                        className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
+                      />
+                    </label>
+                    <label className="grid gap-1 text-sm font-medium">
+                      Expected action
+                      <textarea
+                        value={editDraft.expectedAction}
+                        onChange={(event) => setEditDraft({ ...editDraft, expectedAction: event.currentTarget.value })}
+                        rows={3}
+                        className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
+                      />
+                    </label>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-semibold">{suggestion.title}</span>
-                      <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{targetLabel(suggestion)}</span>
-                      <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${riskClasses[suggestion.riskTier]}`}>
-                        {suggestion.riskTier}
-                      </span>
-                      {suggestion.confidence != null && (
-                        <span className="text-xs text-muted-foreground">{Math.round(suggestion.confidence * 100)}%</span>
+                      <button
+                        type="button"
+                        disabled={updatingId === suggestion.id || !editDraft.title.trim() || !editDraft.rationale.trim() || !editDraft.expectedAction.trim()}
+                        onClick={() => void saveEditedSuggestion(suggestion)}
+                        className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <CheckCircle className="h-4 w-4" />
+                        Save edits
+                      </button>
+                      <button
+                        type="button"
+                        disabled={updatingId === suggestion.id}
+                        onClick={cancelEdit}
+                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold">{suggestion.title}</span>
+                        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{targetLabel(suggestion)}</span>
+                        <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${riskClasses[suggestion.riskTier]}`}>
+                          {suggestion.riskTier}
+                        </span>
+                        {suggestion.confidence != null && (
+                          <span className="text-xs text-muted-foreground">{Math.round(suggestion.confidence * 100)}%</span>
+                        )}
+                      </div>
+                      <p className="mt-2 text-sm text-muted-foreground">{suggestion.rationale}</p>
+                      <p className="mt-2 text-sm">{suggestion.expectedAction}</p>
+                      {suggestion.status !== 'suggested' && (
+                        <p className="mt-2 text-xs font-medium text-muted-foreground">Status: {suggestion.status}</p>
                       )}
                     </div>
-                    <p className="mt-2 text-sm text-muted-foreground">{suggestion.rationale}</p>
-                    <p className="mt-2 text-sm">{suggestion.expectedAction}</p>
-                    {suggestion.status !== 'suggested' && (
-                      <p className="mt-2 text-xs font-medium text-muted-foreground">Status: {suggestion.status}</p>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <button
                       type="button"
                       disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'accepted'}
@@ -288,16 +408,15 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
                       disabled={
                         updatingId === suggestion.id ||
                         executingId === suggestion.id ||
-                        suggestion.status === 'edited' ||
                         suggestion.status === 'rejected' ||
                         suggestion.status === 'executed' ||
                         suggestion.status === 'failed'
                       }
-                      onClick={() => void updateSuggestion(suggestion, 'edited')}
+                      onClick={() => beginEdit(suggestion)}
                       className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <PencilLine className="h-4 w-4" />
-                      Mark edited
+                      Edit
                     </button>
                     <button
                       type="button"
@@ -342,8 +461,9 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
                         Approval pending
                       </button>
                     )}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             );
           })}

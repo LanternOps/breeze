@@ -125,7 +125,15 @@ describe('RemediationSuggestionsPanel', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Suggested fix accepted' }));
   });
 
-  it('marks a suggested fix edited through runAction', async () => {
+  it('saves revised suggested fix details through runAction', async () => {
+    const edited = {
+      ...suggestion,
+      status: 'edited',
+      title: 'Targeted Disk Cleanup',
+      rationale: 'Tech narrowed this to temp files only.',
+      expectedAction: 'Run the cleanup script with temp-only parameters.',
+      riskTier: 'low',
+    };
     fetchWithAuthMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
@@ -134,25 +142,37 @@ describe('RemediationSuggestionsPanel', () => {
         return Promise.resolve(makeJsonResponse({ data: [suggestion] }));
       }
       if (url === '/remediation-suggestions/suggestion-1' && method === 'PATCH') {
-        return Promise.resolve(makeJsonResponse({ data: { ...suggestion, status: 'edited' } }));
+        return Promise.resolve(makeJsonResponse({ data: edited }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
     });
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /mark edited/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: edited.title } });
+    fireEvent.change(screen.getByLabelText('Risk'), { target: { value: edited.riskTier } });
+    fireEvent.change(screen.getByLabelText('Rationale'), { target: { value: edited.rationale } });
+    fireEvent.change(screen.getByLabelText('Expected action'), { target: { value: edited.expectedAction } });
+    fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
 
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
         '/remediation-suggestions/suggestion-1',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ status: 'edited' }),
+          body: JSON.stringify({
+            status: 'edited',
+            title: edited.title,
+            rationale: edited.rationale,
+            expectedAction: edited.expectedAction,
+            riskTier: edited.riskTier,
+          }),
         }),
       );
     });
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Suggested fix marked edited' }));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Suggested fix updated' }));
+    expect(await screen.findByText('Targeted Disk Cleanup')).toBeTruthy();
   });
 
   it('executes an accepted single-device script suggestion and links the execution', async () => {
