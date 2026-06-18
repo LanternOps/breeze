@@ -161,3 +161,24 @@ export async function emitTicketTriageFeedback(options: {
     occurredAt: options.occurredAt ?? new Date(),
   }, options.eventType);
 }
+
+export async function emitUserRiskFeedback(options: {
+  orgId: string;
+  userId: string;
+  eventType: 'user_risk.true_positive' | 'user_risk.false_positive' | 'training.assigned' | 'training.completed';
+  outcome: 'true_positive' | 'false_positive' | 'assigned' | 'completed';
+  actorUserId?: string | null;
+  occurredAt?: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await emitMlFeedbackEvent({
+    orgId: options.orgId,
+    sourceType: 'user_risk',
+    sourceId: options.userId,
+    eventType: options.eventType,
+    outcome: options.outcome,
+    actorUserId: actorUserIdOrNull(options.actorUserId),
+    metadata: options.metadata ?? {},
+    occurredAt: options.occurredAt ?? new Date(),
+  });
+}

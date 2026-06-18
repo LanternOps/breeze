@@ -39,6 +39,7 @@ import {
   X,
   Cloud,
   ShieldEllipsis,
+  UserCheck,
   UserX,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -150,6 +151,7 @@ export const navSections: NavSection[] = [
       { name: 'Security', href: '/security', icon: ShieldCheck },
       { name: 'DNS Security', href: '/dns-security', icon: Network },
       { name: 'PAM', href: '/pam', icon: KeyRound },
+      { name: 'User Risk', href: '/security/user-risk', icon: UserCheck },
       { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch },
       { name: 'Peripherals', href: '/peripherals', icon: Usb },
       { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
