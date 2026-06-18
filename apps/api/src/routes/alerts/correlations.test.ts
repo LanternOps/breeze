@@ -19,6 +19,18 @@ const {
       id: 'alert_correlations.id', parentAlertId: 'alert_correlations.parentAlertId', childAlertId: 'alert_correlations.childAlertId',
       correlationType: 'alert_correlations.correlationType', confidence: 'alert_correlations.confidence', createdAt: 'alert_correlations.createdAt',
     },
+    alertCorrelationGroups: {
+      id: 'alert_correlation_groups.id', orgId: 'alert_correlation_groups.orgId', groupKey: 'alert_correlation_groups.groupKey',
+      rootAlertId: 'alert_correlation_groups.rootAlertId', status: 'alert_correlation_groups.status', score: 'alert_correlation_groups.score',
+      noiseReductionPercent: 'alert_correlation_groups.noiseReductionPercent', memberCount: 'alert_correlation_groups.memberCount',
+      firstSeenAt: 'alert_correlation_groups.firstSeenAt', lastSeenAt: 'alert_correlation_groups.lastSeenAt',
+      metadata: 'alert_correlation_groups.metadata', createdAt: 'alert_correlation_groups.createdAt',
+    },
+    alertCorrelationMembers: {
+      id: 'alert_correlation_members.id', orgId: 'alert_correlation_members.orgId', groupId: 'alert_correlation_members.groupId',
+      alertId: 'alert_correlation_members.alertId', role: 'alert_correlation_members.role',
+      confidence: 'alert_correlation_members.confidence', createdAt: 'alert_correlation_members.createdAt',
+    },
     devices: { id: 'devices.id', hostname: 'devices.hostname' },
   };
 
@@ -36,6 +48,8 @@ const {
   const state = {
     alerts: [] as Array<Record<string, any>>,
     correlations: [] as Array<Record<string, any>>,
+    groups: [] as Array<Record<string, any>>,
+    members: [] as Array<Record<string, any>>,
     devices: [] as Array<Record<string, any>>,
   };
 
@@ -53,7 +67,11 @@ const {
         ? state.alerts
         : this.table === tables.alertCorrelations
           ? state.correlations
-          : state.devices;
+          : this.table === tables.alertCorrelationGroups
+            ? state.groups
+            : this.table === tables.alertCorrelationMembers
+              ? state.members
+              : state.devices;
       const filtered = source.filter((row) => evalPredicate(row, this.predicate));
       if (!this.projection) return filtered;
       return filtered.map((row) => {
@@ -73,7 +91,11 @@ const {
     update: vi.fn((table: unknown) => ({
       set: (values: Record<string, unknown>) => ({
         where: async (predicate: Predicate) => {
-          const source = table === tables.alerts ? state.alerts : [];
+          const source = table === tables.alerts
+            ? state.alerts
+            : table === tables.alertCorrelationGroups
+              ? state.groups
+              : [];
           let updated = 0;
           for (const row of source) {
             if (evalPredicate(row, predicate)) {
@@ -121,6 +143,8 @@ vi.mock('../../middleware/auth', () => ({
 vi.mock('../../db', () => ({ db: dbMock }));
 vi.mock('../../db/schema', () => ({
   alerts: tables.alerts,
+  alertCorrelationGroups: tables.alertCorrelationGroups,
+  alertCorrelationMembers: tables.alertCorrelationMembers,
   alertCorrelations: tables.alertCorrelations,
   devices: tables.devices,
 }));
@@ -146,6 +170,7 @@ const ALERT_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ALERT_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ALERT_3 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_1 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const GROUP_1 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 function makeApp() {
   const app = new Hono();
@@ -163,7 +188,30 @@ function seed() {
     { id: '11111111-aaaa-4aaa-8aaa-111111111111', parentAlertId: ALERT_1, childAlertId: ALERT_2, correlationType: 'same_device_temporal', confidence: '0.91', createdAt: new Date('2026-06-18T12:03:00Z') },
     { id: '22222222-aaaa-4aaa-8aaa-222222222222', parentAlertId: ALERT_1, childAlertId: ALERT_3, correlationType: 'same_device_temporal', confidence: '0.88', createdAt: new Date('2026-06-18T12:04:00Z') },
   ];
+  state.groups = [];
+  state.members = [];
   state.devices = [{ id: DEVICE_1, hostname: 'server-1' }];
+}
+
+function seedPersistedGroup() {
+  state.groups = [{
+    id: GROUP_1,
+    orgId: ORG_1,
+    groupKey: `root:${ALERT_1}`,
+    rootAlertId: ALERT_1,
+    status: 'open',
+    score: '0.91',
+    noiseReductionPercent: 50,
+    memberCount: 2,
+    firstSeenAt: new Date('2026-06-18T12:00:00Z'),
+    lastSeenAt: new Date('2026-06-18T12:02:00Z'),
+    metadata: { version: 'test' },
+    createdAt: new Date('2026-06-18T12:03:00Z'),
+  }];
+  state.members = [
+    { id: 'eeeeeeee-0001-4eee-8eee-eeeeeeeeeeee', orgId: ORG_1, groupId: GROUP_1, alertId: ALERT_1, role: 'root', confidence: '1.00', createdAt: new Date('2026-06-18T12:03:00Z') },
+    { id: 'eeeeeeee-0002-4eee-8eee-eeeeeeeeeeee', orgId: ORG_1, groupId: GROUP_1, alertId: ALERT_2, role: 'related', confidence: '0.91', createdAt: new Date('2026-06-18T12:03:00Z') },
+  ];
 }
 
 describe('/alerts correlation routes', () => {
@@ -208,20 +256,64 @@ describe('/alerts correlation routes', () => {
     expect(body.groups[0].rootCause.device).toBe('server-1');
   });
 
+  it('returns persisted correlation groups before falling back to derived groups', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request('/alerts/correlations');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0]).toEqual(expect.objectContaining({
+      id: GROUP_1,
+      relatedCount: 1,
+      correlationScore: 0.91,
+      noiseReductionPercent: 50,
+      status: 'open',
+    }));
+    expect(body.groups[0].rootCause.id).toBe(ALERT_1);
+  });
+
+  it('returns persisted correlation group detail without leaking cross-org groups', async () => {
+    seedPersistedGroup();
+    state.groups.push({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      orgId: ORG_2,
+      groupKey: `root:${ALERT_3}`,
+      rootAlertId: ALERT_3,
+      status: 'open',
+      score: '0.88',
+      noiseReductionPercent: 0,
+      memberCount: 1,
+      firstSeenAt: new Date('2026-06-18T12:03:00Z'),
+      lastSeenAt: new Date('2026-06-18T12:03:00Z'),
+      metadata: {},
+      createdAt: new Date('2026-06-18T12:04:00Z'),
+    });
+
+    const allowed = await makeApp().request(`/alerts/correlations/${GROUP_1}`);
+    expect(allowed.status).toBe(200);
+    const allowedBody = await allowed.json();
+    expect(allowedBody.group.id).toBe(GROUP_1);
+
+    const denied = await makeApp().request('/alerts/correlations/ffffffff-ffff-4fff-8fff-ffffffffffff');
+    expect(denied.status).toBe(404);
+  });
+
   it('acknowledges all accessible alerts in a correlation group', async () => {
-    const groupsRes = await makeApp().request('/alerts/correlations');
-    const groupsBody = await groupsRes.json();
-    const res = await makeApp().request(`/alerts/correlations/${groupsBody.groups[0].id}/acknowledge`, { method: 'POST' });
+    seedPersistedGroup();
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/acknowledge`, { method: 'POST' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ updated: 2, skipped: 0 });
     expect(state.alerts.find((alert) => alert.id === ALERT_1)?.status).toBe('acknowledged');
     expect(state.alerts.find((alert) => alert.id === ALERT_2)?.status).toBe('acknowledged');
     expect(state.alerts.find((alert) => alert.id === ALERT_3)?.status).toBe('active');
+    expect(state.groups.find((group) => group.id === GROUP_1)?.status).toBe('acknowledged');
     expect(emitAlertStateFeedbackMock).toHaveBeenCalledTimes(2);
     expect(emitCorrelationFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
       orgId: ORG_1,
-      correlationId: groupsBody.groups[0].id,
+      correlationId: GROUP_1,
       eventType: 'correlation.accepted',
       outcome: 'accepted',
       actorUserId: '99999999-9999-4999-8999-999999999999',

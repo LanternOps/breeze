@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, closeMock, shouldProduceMlOutputMock } = vi.hoisted(() => ({
+const { getJobMock, addMock, closeMock, shouldProduceMlOutputMock, persistGroupsMock } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   closeMock: vi.fn(),
   shouldProduceMlOutputMock: vi.fn(),
+  persistGroupsMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -32,6 +33,10 @@ vi.mock('../services/mlFeatureFlags', () => ({
   shouldProduceMlOutput: shouldProduceMlOutputMock,
 }));
 
+vi.mock('../services/alertCorrelationGroups', () => ({
+  persistAlertCorrelationGroupsForAlerts: persistGroupsMock,
+}));
+
 vi.mock('../db', () => ({
   db: {},
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -57,7 +62,9 @@ describe('alert correlation queue helpers', () => {
     addMock.mockReset();
     closeMock.mockReset();
     shouldProduceMlOutputMock.mockReset();
+    persistGroupsMock.mockReset();
     shouldProduceMlOutputMock.mockResolvedValue(true);
+    persistGroupsMock.mockResolvedValue({ scanned: 0, groupsWritten: 0, membersWritten: 0 });
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queued-correlation-job' });
     await shutdownAlertCorrelationWorker();

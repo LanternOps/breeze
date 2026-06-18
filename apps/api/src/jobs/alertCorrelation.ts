@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../db';
 import { alertCorrelations, alerts } from '../db/schema';
+import { persistAlertCorrelationGroupsForAlerts } from '../services/alertCorrelationGroups';
 import { isReusableState } from '../services/bullmqUtils';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 import { getBullMQConnection } from '../services/redis';
@@ -153,6 +154,11 @@ export async function runAlertCorrelationForDevice(options: {
       created += 1;
     }
   }
+
+  await persistAlertCorrelationGroupsForAlerts({
+    orgId: options.orgId,
+    alertIds,
+  });
 
   return { scanned: recentAlerts.length, created };
 }

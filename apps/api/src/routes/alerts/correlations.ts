@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, or, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db';
-import { alertCorrelations, alerts, devices } from '../../db/schema';
+import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
@@ -30,6 +30,7 @@ type AuthContext = {
 
 type AlertRow = typeof alerts.$inferSelect;
 type CorrelationRow = typeof alertCorrelations.$inferSelect;
+type CorrelationGroupRow = typeof alertCorrelationGroups.$inferSelect;
 
 function orgConditionsForAuth(auth: AuthContext): SQL[] | null {
   if (auth.scope === 'organization') {
@@ -39,6 +40,19 @@ function orgConditionsForAuth(auth: AuthContext): SQL[] | null {
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     return orgIds.length > 0 ? [inArray(alerts.orgId, orgIds)] : null;
+  }
+
+  return [];
+}
+
+function groupOrgConditionsForAuth(auth: AuthContext): SQL[] | null {
+  if (auth.scope === 'organization') {
+    return auth.orgId ? [eq(alertCorrelationGroups.orgId, auth.orgId)] : null;
+  }
+
+  if (auth.scope === 'partner') {
+    const orgIds = auth.accessibleOrgIds ?? [];
+    return orgIds.length > 0 ? [inArray(alertCorrelationGroups.orgId, orgIds)] : null;
   }
 
   return [];
@@ -84,13 +98,31 @@ function toGroupAlert(alert: AlertRow & { deviceHostname?: string | null }) {
   };
 }
 
+type GroupAlert = ReturnType<typeof toGroupAlert>;
+
+interface CorrelationGroupForUi {
+  id: string;
+  rootCause: GroupAlert | null;
+  relatedCount: number;
+  alerts: GroupAlert[];
+  correlationScore: number;
+  correlationLinks: CorrelationRow[];
+  createdAt: Date;
+  noiseReductionPercent?: number;
+  status?: string;
+  memberCount?: number;
+  firstSeenAt?: Date;
+  lastSeenAt?: Date;
+  metadata?: unknown;
+}
+
 function correlationTypeForUi(link: CorrelationRow): 'causal' | 'symptom' | 'duplicate' {
   if (link.correlationType.includes('duplicate')) return 'duplicate';
   if (link.correlationType.includes('causal')) return 'causal';
   return 'symptom';
 }
 
-async function buildCorrelationGroups(auth: AuthContext) {
+async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGroupForUi[]> {
   const orgAlerts = await listAccessibleAlerts(auth);
   const orgAlertIds = orgAlerts.map((alert) => alert.id);
   if (orgAlertIds.length === 0) {
@@ -165,6 +197,122 @@ async function buildCorrelationGroups(auth: AuthContext) {
   }).filter((group) => group.rootCause !== null);
 }
 
+async function getAccessiblePersistedGroup(groupId: string, auth: AuthContext): Promise<CorrelationGroupRow | null> {
+  const groupOrgConditions = groupOrgConditionsForAuth(auth);
+  if (groupOrgConditions === null) {
+    return null;
+  }
+
+  const where = and(
+    eq(alertCorrelationGroups.id, groupId),
+    ...(groupOrgConditions.length > 0 ? groupOrgConditions : [])
+  );
+
+  const [group] = await db
+    .select()
+    .from(alertCorrelationGroups)
+    .where(where)
+    .limit(1);
+
+  return group ?? null;
+}
+
+async function buildPersistedCorrelationGroups(auth: AuthContext, groupId?: string): Promise<CorrelationGroupForUi[]> {
+  const groupOrgConditions = groupOrgConditionsForAuth(auth);
+  if (groupOrgConditions === null) {
+    return [];
+  }
+
+  const groupsWhere = and(
+    ...(groupId ? [eq(alertCorrelationGroups.id, groupId)] : []),
+    ...(groupOrgConditions.length > 0 ? groupOrgConditions : [])
+  );
+
+  const persistedGroups = await db
+    .select()
+    .from(alertCorrelationGroups)
+    .where(groupsWhere)
+    .orderBy(desc(alertCorrelationGroups.lastSeenAt))
+    .limit(groupId ? 1 : 50);
+
+  if (persistedGroups.length === 0) {
+    return [];
+  }
+
+  const groupIds = persistedGroups.map((group) => group.id);
+  const members = await db
+    .select()
+    .from(alertCorrelationMembers)
+    .where(inArray(alertCorrelationMembers.groupId, groupIds));
+
+  const alertIds = [...new Set(members.map((member) => member.alertId))];
+  const memberAlerts = alertIds.length > 0
+    ? await db.select().from(alerts).where(inArray(alerts.id, alertIds))
+    : [];
+  const alertById = new Map(memberAlerts.map((alert) => [alert.id, alert]));
+
+  const deviceIds = [...new Set(memberAlerts.map((alert) => alert.deviceId))];
+  const deviceRows = deviceIds.length > 0
+    ? await db.select({ id: devices.id, hostname: devices.hostname }).from(devices).where(inArray(devices.id, deviceIds))
+    : [];
+  const deviceNames = new Map(deviceRows.map((device) => [device.id, device.hostname]));
+
+  return persistedGroups.map((group) => {
+    const groupMembers = members
+      .filter((member) => member.groupId === group.id)
+      .sort((a, b) => {
+        if (a.role === b.role) return a.createdAt.getTime() - b.createdAt.getTime();
+        return a.role === 'root' ? -1 : 1;
+      });
+    const groupAlerts = groupMembers
+      .map((member) => alertById.get(member.alertId))
+      .filter((alert): alert is AlertRow => Boolean(alert))
+      .map((alert) => ({ ...alert, deviceHostname: deviceNames.get(alert.deviceId) ?? null }))
+      .sort((a, b) => b.triggeredAt.getTime() - a.triggeredAt.getTime());
+    const rootCause =
+      (group.rootAlertId ? groupAlerts.find((alert) => alert.id === group.rootAlertId) : undefined) ??
+      groupAlerts[0] ??
+      null;
+
+    return {
+      id: group.id,
+      rootCause: rootCause ? toGroupAlert(rootCause) : null,
+      relatedCount: Math.max(groupAlerts.length - 1, 0),
+      alerts: groupAlerts.map(toGroupAlert),
+      correlationScore: Number(group.score ?? 0),
+      noiseReductionPercent: group.noiseReductionPercent,
+      status: group.status,
+      memberCount: group.memberCount,
+      firstSeenAt: group.firstSeenAt,
+      lastSeenAt: group.lastSeenAt,
+      metadata: group.metadata ?? {},
+      correlationLinks: [],
+      createdAt: group.createdAt,
+    };
+  }).filter((group) => group.rootCause !== null);
+}
+
+async function getPersistedGroupAlerts(groupId: string, auth: AuthContext): Promise<AlertRow[] | null> {
+  const group = await getAccessiblePersistedGroup(groupId, auth);
+  if (!group) return null;
+
+  const members = await db
+    .select()
+    .from(alertCorrelationMembers)
+    .where(and(eq(alertCorrelationMembers.orgId, group.orgId), eq(alertCorrelationMembers.groupId, group.id)));
+  if (members.length === 0) return [];
+
+  const alertIds = members.map((member) => member.alertId);
+  return db.select().from(alerts).where(and(eq(alerts.orgId, group.orgId), inArray(alerts.id, alertIds)));
+}
+
+async function updatePersistedGroupStatus(groupId: string, status: 'acknowledged' | 'resolved'): Promise<void> {
+  await db
+    .update(alertCorrelationGroups)
+    .set({ status, updatedAt: new Date() })
+    .where(eq(alertCorrelationGroups.id, groupId));
+}
+
 async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'resolve', userId: string) {
   const now = new Date();
   const eligible = action === 'acknowledge'
@@ -222,8 +370,26 @@ alertCorrelationRoutes.get(
   requireAlertRead,
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const groups = await buildCorrelationGroups(auth);
+    const persistedGroups = await buildPersistedCorrelationGroups(auth);
+    const groups = persistedGroups.length > 0 ? persistedGroups : await buildCorrelationGroups(auth);
     return c.json({ groups, data: groups });
+  }
+);
+
+alertCorrelationRoutes.get(
+  '/correlations/:groupId',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
+  zValidator('param', groupIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { groupId } = c.req.valid('param');
+    const [group] = await buildPersistedCorrelationGroups(auth, groupId);
+    if (!group) {
+      return c.json({ error: 'Correlation group not found' }, 404);
+    }
+
+    return c.json({ group, data: group });
   }
 );
 
@@ -235,15 +401,19 @@ alertCorrelationRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { groupId } = c.req.valid('param');
-    const groups = await buildCorrelationGroups(auth);
+    const persistedGroupAlerts = await getPersistedGroupAlerts(groupId, auth);
+    const groups = persistedGroupAlerts === null ? await buildCorrelationGroups(auth) : [];
     const group = groups.find((candidate) => candidate.id === groupId);
-    if (!group) {
+    if (persistedGroupAlerts === null && !group) {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
 
-    const groupAlertIds = group.alerts.map((alert) => alert.id);
-    const groupAlerts = await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
+    const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
+    const groupAlerts = persistedGroupAlerts ?? await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
     const result = await mutateAlerts(groupAlerts, 'acknowledge', auth.user.id);
+    if (persistedGroupAlerts !== null) {
+      await updatePersistedGroupStatus(groupId, 'acknowledged');
+    }
 
     writeRouteAudit(c, {
       orgId: groupAlerts[0]?.orgId,
@@ -281,15 +451,19 @@ alertCorrelationRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { groupId } = c.req.valid('param');
-    const groups = await buildCorrelationGroups(auth);
+    const persistedGroupAlerts = await getPersistedGroupAlerts(groupId, auth);
+    const groups = persistedGroupAlerts === null ? await buildCorrelationGroups(auth) : [];
     const group = groups.find((candidate) => candidate.id === groupId);
-    if (!group) {
+    if (persistedGroupAlerts === null && !group) {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
 
-    const groupAlertIds = group.alerts.map((alert) => alert.id);
-    const groupAlerts = await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
+    const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
+    const groupAlerts = persistedGroupAlerts ?? await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
     const result = await mutateAlerts(groupAlerts, 'resolve', auth.user.id);
+    if (persistedGroupAlerts !== null) {
+      await updatePersistedGroupStatus(groupId, 'resolved');
+    }
 
     writeRouteAudit(c, {
       orgId: groupAlerts[0]?.orgId,

@@ -64,6 +64,8 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_cost_usage',
   'ai_screenshots',
   'ai_sessions',
+  'alert_correlation_groups',
+  'alert_correlation_members',
   'alert_rules',
   'alert_templates',
   'alerts',
