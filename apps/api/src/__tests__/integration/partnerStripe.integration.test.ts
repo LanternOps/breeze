@@ -8,7 +8,7 @@
 import './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import { stripeConnectAccounts } from '../../db/schema/stripePayments';
 import { createPartner } from './db-utils';
 import { isEncryptedSecret } from '../../services/secretCrypto';
@@ -30,6 +30,9 @@ import {
 } from '../../services/partnerStripe';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+function partnerCtx(partnerId: string): DbAccessContext {
+  return { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [partnerId], userId: null };
+}
 // Assembled from parts so the literal doesn't trip secret-scanning push protection
 // (it's a fake key, but matches the sk_test_ shape). Ends in 9999 → last4 assertion.
 const TEST_KEY = ['sk', 'test', '51ABCdefGHIjklMNOpqr9999'].join('_');
@@ -116,6 +119,24 @@ describe('partner Stripe API-key credentials (breeze_app, real DB)', () => {
     expect(res.livemode).toBe(true);
     const status = await withSystemDbAccessContext(() => getPartnerStripeStatus(partner.id));
     expect(status).toMatchObject({ connected: true, livemode: true });
+  });
+
+  // Functional tenant isolation (not just the mechanical RLS contract test): one
+  // partner's stored Stripe key must be invisible to another partner. A leak here is
+  // a direct financial-takeover vector.
+  runDb('partner B cannot see partner A\'s Stripe key (RLS)', async () => {
+    const { a, b } = await withSystemDbAccessContext(async () => ({ a: await createPartner(), b: await createPartner() }));
+    await withSystemDbAccessContext(() => savePartnerStripeKey({ partnerId: a.id, apiKey: TEST_KEY, userId: null }));
+
+    // A, scoped to itself, sees connected.
+    const ownView = await withDbAccessContext(partnerCtx(a.id), () => getPartnerStripeStatus(a.id));
+    expect(ownView.connected).toBe(true);
+    // B, scoped to itself, querying A's id → RLS filters the row → not connected, no key leak.
+    const crossView = await withDbAccessContext(partnerCtx(b.id), () => getPartnerStripeStatus(a.id));
+    expect(crossView.connected).toBe(false);
+    // And B cannot build a client from A's key.
+    await expect(withDbAccessContext(partnerCtx(b.id), () => getPartnerStripe(a.id)))
+      .rejects.toMatchObject({ code: 'NO_STRIPE_KEY' });
   });
 
   runDb('getPartnerStripe throws NO_STRIPE_KEY after disconnect', async () => {

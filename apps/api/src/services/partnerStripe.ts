@@ -112,10 +112,15 @@ export async function savePartnerStripeKey(input: {
   return { stripeAccountId: accountId, last4, livemode };
 }
 
-/** Build a Stripe client bound to the partner's own key. Throws NO_STRIPE_KEY if unconfigured. */
-export async function getPartnerStripe(partnerId: string): Promise<Stripe> {
+/**
+ * Build a Stripe client bound to the partner's own key AND return their account id
+ * in a single row read (callers that need both — e.g. createInvoicePayLink for the
+ * payment mapping — avoid a second query). Throws NO_STRIPE_KEY if unconfigured,
+ * STRIPE_KEY_UNREADABLE if the stored ciphertext can't be decrypted.
+ */
+export async function getPartnerStripeClient(partnerId: string): Promise<{ stripe: Stripe; stripeAccountId: string }> {
   const [row] = await db
-    .select({ apiKey: stripeConnectAccounts.apiKey, status: stripeConnectAccounts.status })
+    .select({ apiKey: stripeConnectAccounts.apiKey, status: stripeConnectAccounts.status, stripeAccountId: stripeConnectAccounts.stripeAccountId })
     .from(stripeConnectAccounts)
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
     .limit(1);
@@ -137,7 +142,12 @@ export async function getPartnerStripe(partnerId: string): Promise<Stripe> {
     console.error('[partnerStripe] decrypt returned empty for connected partner', { partnerId });
     throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
   }
-  return new Stripe(key, { apiVersion: API_VERSION });
+  return { stripe: new Stripe(key, { apiVersion: API_VERSION }), stripeAccountId: row.stripeAccountId };
+}
+
+/** Build a Stripe client bound to the partner's own key. Throws NO_STRIPE_KEY if unconfigured. */
+export async function getPartnerStripe(partnerId: string): Promise<Stripe> {
+  return (await getPartnerStripeClient(partnerId)).stripe;
 }
 
 /** Display status for the settings UI (never returns the key itself). */

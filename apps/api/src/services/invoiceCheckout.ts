@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
-import { getPartnerStripe, getPartnerStripeStatus, PartnerStripeError } from './partnerStripe';
+import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess } from './invoiceService';
@@ -34,15 +34,11 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   if (balanceMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
 
   // The partner charges on their OWN Stripe account using their stored key (no
-  // platform/Connect). The discriminated status narrows stripeAccountId to non-null
-  // once connected (used for the mapping row).
-  const status = await getPartnerStripeStatus(inv.partnerId);
-  if (!status.connected) {
-    throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
-  }
-  let stripe;
+  // platform/Connect). One read returns both the client and the account id (for the
+  // mapping row).
+  let stripe, stripeAccountId: string;
   try {
-    stripe = await getPartnerStripe(inv.partnerId);
+    ({ stripe, stripeAccountId } = await getPartnerStripeClient(inv.partnerId));
   } catch (err) {
     // Only "no key configured" is a benign 409. A decrypt/unreadable-key fault is an
     // internal error — surface it as such (and let it be logged) instead of lying
@@ -85,7 +81,7 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   await db.insert(invoiceStripePayments).values({
     orgId: inv.orgId,
     invoiceId: inv.id,
-    stripeAccountId: status.stripeAccountId,
+    stripeAccountId,
     stripeObjectType: 'checkout_session',
     stripeObjectId: session.id,
     stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
