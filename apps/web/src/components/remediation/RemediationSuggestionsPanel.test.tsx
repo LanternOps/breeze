@@ -124,6 +124,36 @@ describe('RemediationSuggestionsPanel', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Suggested fix accepted' }));
   });
 
+  it('marks a suggested fix edited through runAction', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [suggestion] }));
+      }
+      if (url === '/remediation-suggestions/suggestion-1' && method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({ data: { ...suggestion, status: 'edited' } }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /mark edited/i }));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/suggestion-1',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'edited' }),
+        }),
+      );
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Suggested fix marked edited' }));
+  });
+
   it('executes an accepted single-device script suggestion and links the execution', async () => {
     const accepted = { ...suggestion, status: 'accepted' };
     const executed = {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle, PlayCircle, RefreshCw, Sparkles, XCircle } from 'lucide-react';
+import { CheckCircle, PencilLine, PlayCircle, RefreshCw, Sparkles, XCircle } from 'lucide-react';
 
 import { handleActionError, runAction } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -114,7 +114,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
     }
   }
 
-  async function updateSuggestion(suggestion: RemediationSuggestion, status: 'accepted' | 'rejected') {
+  async function updateSuggestion(suggestion: RemediationSuggestion, status: 'accepted' | 'edited' | 'rejected') {
     setUpdatingId(suggestion.id);
     try {
       const result = await runAction<{ data?: RemediationSuggestion }>({
@@ -124,7 +124,11 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
           body: JSON.stringify({ status }),
         }),
         errorFallback: 'Could not update suggested fix',
-        successMessage: status === 'accepted' ? 'Suggested fix accepted' : 'Suggested fix rejected',
+        successMessage: status === 'accepted'
+          ? 'Suggested fix accepted'
+          : status === 'edited'
+            ? 'Suggested fix marked edited'
+            : 'Suggested fix rejected',
       });
       if (result.data) {
         setSuggestions((current) => current.map((item) => item.id === suggestion.id ? result.data! : item));
@@ -232,6 +236,22 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId }: Re
                   >
                     <CheckCircle className="h-4 w-4" />
                     Accept
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      updatingId === suggestion.id ||
+                      executingId === suggestion.id ||
+                      suggestion.status === 'edited' ||
+                      suggestion.status === 'rejected' ||
+                      suggestion.status === 'executed' ||
+                      suggestion.status === 'failed'
+                    }
+                    onClick={() => void updateSuggestion(suggestion, 'edited')}
+                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <PencilLine className="h-4 w-4" />
+                    Mark edited
                   </button>
                   <button
                     type="button"
