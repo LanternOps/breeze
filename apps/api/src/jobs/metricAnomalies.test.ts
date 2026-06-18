@@ -1,23 +1,47 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, closeMock, getRepeatableJobsMock, removeRepeatableByKeyMock, attachWorkerObservabilityMock } = vi.hoisted(() => ({
+const {
+  getJobMock,
+  addMock,
+  addBulkMock,
+  closeMock,
+  getRepeatableJobsMock,
+  removeRepeatableByKeyMock,
+  attachWorkerObservabilityMock,
+  selectMock,
+  fromMock,
+  whereMock,
+  groupByMock,
+  workerProcessorMock,
+} = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
+  addBulkMock: vi.fn(),
   closeMock: vi.fn(),
   getRepeatableJobsMock: vi.fn(),
   removeRepeatableByKeyMock: vi.fn(),
   attachWorkerObservabilityMock: vi.fn(),
+  selectMock: vi.fn(),
+  fromMock: vi.fn(),
+  whereMock: vi.fn(),
+  groupByMock: vi.fn(),
+  workerProcessorMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
   Queue: class {
     getJob = getJobMock;
     add = addMock;
+    addBulk = addBulkMock;
     getRepeatableJobs = getRepeatableJobsMock;
     removeRepeatableByKey = removeRepeatableByKeyMock;
     close = closeMock;
   },
   Worker: class {
+    constructor(_name: string, processor: (job: { data: unknown }) => unknown) {
+      workerProcessorMock.mockImplementation(processor);
+    }
+
     close = closeMock;
     on = vi.fn();
   },
@@ -33,7 +57,7 @@ vi.mock('../services/bullmqUtils', () => ({
 }));
 
 vi.mock('../db', () => ({
-  db: {},
+  db: { select: selectMock },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -62,13 +86,24 @@ describe('metric anomalies queue helpers', () => {
     vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
     getJobMock.mockReset();
     addMock.mockReset();
+    addBulkMock.mockReset();
     closeMock.mockReset();
     getRepeatableJobsMock.mockReset();
     removeRepeatableByKeyMock.mockReset();
     attachWorkerObservabilityMock.mockReset();
+    selectMock.mockReset();
+    fromMock.mockReset();
+    whereMock.mockReset();
+    groupByMock.mockReset();
+    workerProcessorMock.mockReset();
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queued-anomaly-job' });
+    addBulkMock.mockResolvedValue([]);
     getRepeatableJobsMock.mockResolvedValue([]);
+    selectMock.mockReturnValue({ from: fromMock });
+    fromMock.mockReturnValue({ where: whereMock });
+    whereMock.mockReturnValue({ groupBy: groupByMock });
+    groupByMock.mockResolvedValue([{ orgId: 'org-1' }]);
     await shutdownMetricAnomaliesWorker();
   });
 
@@ -121,5 +156,37 @@ describe('metric anomalies queue helpers', () => {
       expect.objectContaining({ type: 'scan-orgs' }),
       expect.objectContaining({ jobId: 'metric-anomalies-scan-orgs' }),
     );
+    const scanData = addMock.mock.calls.find(([name]) => name === 'scan-orgs')?.[1];
+    expect(scanData).not.toHaveProperty('queuedAt');
+  });
+
+  it('uses the worker execution time when fan-out repeat scans create anomaly ranges', async () => {
+    vi.setSystemTime(new Date('2026-06-18T12:01:00.000Z'));
+    await initializeMetricAnomaliesWorker();
+    addBulkMock.mockClear();
+
+    vi.setSystemTime(new Date('2026-06-18T12:26:10.000Z'));
+    await workerProcessorMock({
+      data: {
+        type: 'scan-orgs',
+        queuedAt: '2026-06-18T12:01:00.000Z',
+        lookbackMinutes: 30,
+      },
+    });
+
+    expect(addBulkMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        name: 'detect-org-range',
+        data: expect.objectContaining({
+          orgId: 'org-1',
+          from: '2026-06-18T11:55:00.000Z',
+          to: '2026-06-18T12:25:00.000Z',
+          queuedAt: '2026-06-18T12:26:10.000Z',
+        }),
+        opts: expect.objectContaining({
+          jobId: 'metric-anomalies-org-1-20260618T115500000Z-20260618T122500000Z',
+        }),
+      }),
+    ]);
   });
 });

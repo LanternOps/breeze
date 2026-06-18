@@ -14,7 +14,7 @@ const JOB_REUSE_STATES = new Set(['waiting', 'delayed', 'active']);
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
-  queuedAt: string;
+  queuedAt?: string;
   lookbackMinutes?: number;
 };
 
@@ -66,7 +66,9 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
     return { queued: 0 };
   }
 
-  const { from, to } = recentWindow(new Date(data.queuedAt), data.lookbackMinutes);
+  const scannedAt = new Date();
+  const queuedAt = scannedAt.toISOString();
+  const { from, to } = recentWindow(scannedAt, data.lookbackMinutes);
   const queue = getMetricAnomaliesQueue();
   await queue.addBulk(
     orgRows.map((row) => ({
@@ -76,7 +78,7 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
         orgId: row.orgId,
         from: from.toISOString(),
         to: to.toISOString(),
-        queuedAt: data.queuedAt,
+        queuedAt,
       },
       opts: {
         jobId: buildMetricAnomalyJobId(row.orgId, from, to),
@@ -130,7 +132,6 @@ async function scheduleMetricAnomaliesScan(): Promise<void> {
     'scan-orgs',
     {
       type: 'scan-orgs',
-      queuedAt: new Date().toISOString(),
       lookbackMinutes: DEFAULT_LOOKBACK_MINUTES,
     },
     {
