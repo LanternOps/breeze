@@ -1,20 +1,45 @@
 # docker-compose.override.yml.worktree
 # Namespaceable worktree stack. Stacks AFTER docker-compose.override.yml.dev.
 # Phase 1 (--shared): reuses the dev override's fixed host ports.
+# Phase 2 (per-worktree): ephemeral ports + tmpfs Postgres for isolation.
 # Adds a code-mounted Portal dev service so the worktree's portal code runs.
 services:
+  binaries-init:
+    container_name: !reset null
+
   postgres:
     container_name: !reset null
+    ports: !reset []
+    volumes: !reset []
+    tmpfs:
+      - /var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+
   redis:
     container_name: !reset null
+    ports: !reset []
+
   api:
     container_name: !reset null
+    ports: !override
+      - "0:3001"
+
   web:
     container_name: !reset null
+    ports: !override
+      - "0:4321"
+
   caddy:
     container_name: !reset null
     environment:
       CADDY_SITE_ADDRESS: ":80"
+    ports: !override
+      - "0:80"
 
   portal:
     image: breeze-portal:dev
