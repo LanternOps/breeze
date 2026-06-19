@@ -1,15 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  db: {
-    select: vi.fn(),
-    insert: vi.fn(),
-    update: vi.fn(),
-  },
-  encryptSecret: vi.fn((value: string | null | undefined) => value ? `enc(${value})` : null),
-  decryptForColumn: vi.fn((_table: string, _column: string, value: string | null | undefined) => value ?? null),
-  createCatalogItem: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  class SsrfBlockedError extends Error {}
+  return {
+    db: {
+      select: vi.fn(),
+      insert: vi.fn(),
+      update: vi.fn(),
+    },
+    encryptSecret: vi.fn((value: string | null | undefined) => value ? `enc(${value})` : null),
+    decryptForColumn: vi.fn((_table: string, _column: string, value: string | null | undefined) => value ?? null),
+    createCatalogItem: vi.fn(),
+    safeFetch: vi.fn(),
+    SsrfBlockedError,
+  };
+});
 
 vi.mock('../db', () => ({ db: mocks.db }));
 vi.mock('./secretCrypto', () => ({
@@ -19,12 +24,19 @@ vi.mock('./secretCrypto', () => ({
 vi.mock('./catalogService', () => ({
   createCatalogItem: mocks.createCatalogItem,
 }));
+vi.mock('./urlSafety', () => ({
+  safeFetch: mocks.safeFetch,
+  SsrfBlockedError: mocks.SsrfBlockedError,
+}));
 
 import {
   getTdSynnexDigitalBridgeStatus,
   importTdSynnexCatalogItem,
   saveTdSynnexDigitalBridgeConfig,
+  searchTdSynnexProducts,
   normalizeTdSynnexProducts,
+  normalizeTdSynnexBaseUrl,
+  normalizeTdSynnexEndpointPath,
   TD_SYNNEX_MASKED_SECRET,
   TdSynnexDigitalBridgeError,
 } from './tdSynnexDigitalBridge';
@@ -46,6 +58,32 @@ function insertChain(returningRows: unknown[]) {
     returning: vi.fn().mockResolvedValue(returningRows),
   };
 }
+
+// db.update(...).set(...).where(...) — `where` is awaited directly on the search
+// path and `.returning()` is chained on the test-connection path.
+function updateChain(returningRows: unknown[] = []) {
+  return {
+    set: vi.fn().mockReturnThis(),
+    where: vi.fn().mockResolvedValue(returningRows),
+    returning: vi.fn().mockResolvedValue(returningRows),
+  };
+}
+
+function fakeResponse(status: number, body: string) {
+  return { status, ok: status >= 200 && status < 300, text: async () => body } as unknown as Response;
+}
+
+const enabledRow = {
+  id: 'integration-1',
+  partnerId: actor.partnerId,
+  environment: 'sandbox',
+  region: 'US',
+  baseUrl: 'https://digitalbridge.example.test',
+  authType: 'api_key',
+  enabled: true,
+  credentials: { apiKey: 'enc(key)' },
+  settings: { searchPath: '/search' },
+};
 
 describe('tdSynnexDigitalBridge service', () => {
   beforeEach(() => {
@@ -204,5 +242,199 @@ describe('tdSynnexDigitalBridge service', () => {
       cost: '99.50',
       availability: 8,
     });
+  });
+
+  it('detects products across array/products/items/results/data shapes', () => {
+    const one = { id: 'a', name: 'A' };
+    expect(normalizeTdSynnexProducts([one])).toHaveLength(1);
+    expect(normalizeTdSynnexProducts({ products: [one] })).toHaveLength(1);
+    expect(normalizeTdSynnexProducts({ items: [one] })).toHaveLength(1);
+    expect(normalizeTdSynnexProducts({ results: [one] })).toHaveLength(1);
+    expect(normalizeTdSynnexProducts({ data: [one] })).toHaveLength(1);
+  });
+
+  it('returns [] for garbage / unexpected payload shapes', () => {
+    expect(normalizeTdSynnexProducts(null)).toEqual([]);
+    expect(normalizeTdSynnexProducts({})).toEqual([]);
+    expect(normalizeTdSynnexProducts({ products: 'nope' })).toEqual([]);
+    expect(normalizeTdSynnexProducts('garbage')).toEqual([]);
+  });
+
+  it('skips provider rows with no usable identifier instead of fabricating ids', () => {
+    const products = normalizeTdSynnexProducts([
+      { name: 'No identifier' },           // no id, no sku -> skipped
+      {},                                  // empty -> skipped
+      { sku: 'ONLY-SKU', name: 'Has SKU' } // sku becomes the sourceProductId
+    ]);
+    expect(products).toHaveLength(1);
+    expect(products[0]).toMatchObject({ sourceProductId: 'ONLY-SKU', sku: 'ONLY-SKU' });
+  });
+
+  it('formats numeric cost to a 2-decimal string', () => {
+    const [product] = normalizeTdSynnexProducts([{ id: 'p', name: 'P', price: 99.5 }]);
+    expect(product!.cost).toBe('99.50');
+  });
+
+  it('rejects partner-less actors before touching the database', async () => {
+    await expect(getTdSynnexDigitalBridgeStatus({ ...actor, partnerId: null }))
+      .rejects.toMatchObject({ code: 'TD_SYNNEX_PARTNER_REQUIRED', status: 400 });
+    expect(mocks.db.select).not.toHaveBeenCalled();
+  });
+
+  it('encrypts a freshly submitted credential (trimmed)', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([{ credentials: {}, settings: {} }]));
+    mocks.db.insert.mockReturnValueOnce(insertChain([{ ...enabledRow, credentials: { apiKey: 'enc(new-key)' } }]));
+
+    await saveTdSynnexDigitalBridgeConfig({
+      environment: 'sandbox', region: 'US', baseUrl: 'https://digitalbridge.example.test',
+      authType: 'api_key', enabled: true,
+      credentials: { apiKey: '  new-key  ' },
+      settings: { searchPath: '/search', searchMethod: 'GET' },
+    }, actor);
+
+    const values = mocks.db.insert.mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(values.credentials.apiKey).toBe('enc(new-key)');
+    expect(mocks.encryptSecret).toHaveBeenCalledWith('new-key');
+  });
+
+  it('never emits stored ciphertext or plaintext in masked status', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([{
+      ...enabledRow, credentials: { apiKey: 'enc(supersecret)', apiSecret: 'enc(topsecret)' },
+    }]));
+    const status = await getTdSynnexDigitalBridgeStatus(actor);
+    const serialized = JSON.stringify(status);
+    expect(serialized).not.toContain('supersecret');
+    expect(serialized).not.toContain('enc(');
+  });
+
+  it('requires the secret for basic auth before reporting configured', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([{
+      ...enabledRow, authType: 'basic', credentials: { apiKey: 'enc(key)' },
+    }]));
+    const status = await getTdSynnexDigitalBridgeStatus(actor);
+    expect(status.configured).toBe(false);
+  });
+
+  describe('normalizeTdSynnexBaseUrl', () => {
+    it('accepts and trims a valid https url', () => {
+      expect(normalizeTdSynnexBaseUrl('https://digitalbridge.example.test/v1/?x=1#frag'))
+        .toBe('https://digitalbridge.example.test/v1');
+    });
+
+    it.each([
+      ['not-a-url'],
+      ['http://digitalbridge.example.test'],     // not https
+      ['https://user:pass@digitalbridge.example.test'], // embedded credentials
+      ['https://127.0.0.1'],                     // internal address
+      ['https://localhost'],
+    ])('rejects %s', (value) => {
+      expect(() => normalizeTdSynnexBaseUrl(value))
+        .toThrow(expect.objectContaining({ code: 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED' }));
+    });
+  });
+
+  describe('normalizeTdSynnexEndpointPath', () => {
+    it('accepts a relative path', () => {
+      expect(normalizeTdSynnexEndpointPath('/v1/search')).toBe('/v1/search');
+    });
+
+    it.each([
+      ['search'],            // no leading slash
+      ['//evil.example'],    // protocol-relative
+      ['/a\\b'],             // backslash
+      ['/a\r\nb'],           // CRLF
+      ['https://evil.test'], // absolute url / scheme
+      ['javascript:alert(1)'],
+    ])('rejects %s', (value) => {
+      expect(() => normalizeTdSynnexEndpointPath(value))
+        .toThrow(expect.objectContaining({ code: 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED' }));
+    });
+  });
+
+  describe('requestDigitalBridge error mapping (via search)', () => {
+    beforeEach(() => {
+      mocks.db.select.mockReturnValue(selectChain([enabledRow]));
+      mocks.db.update.mockReturnValue(updateChain());
+    });
+
+    it('maps a 401 response to TD_SYNNEX_AUTH_FAILED and records lastError', async () => {
+      mocks.safeFetch.mockResolvedValueOnce(fakeResponse(401, ''));
+      await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
+        .rejects.toMatchObject({ code: 'TD_SYNNEX_AUTH_FAILED', status: 401 });
+      const setArg = mocks.db.update.mock.results[0]!.value.set.mock.calls[0]![0];
+      expect(setArg.lastError).toContain('credentials');
+    });
+
+    it('maps a non-ok response to TD_SYNNEX_PROVIDER_ERROR (502)', async () => {
+      mocks.safeFetch.mockResolvedValueOnce(fakeResponse(500, '{}'));
+      await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
+        .rejects.toMatchObject({ code: 'TD_SYNNEX_PROVIDER_ERROR', status: 502 });
+    });
+
+    it('maps invalid JSON to TD_SYNNEX_PROVIDER_ERROR', async () => {
+      mocks.safeFetch.mockResolvedValueOnce(fakeResponse(200, '{not json'));
+      await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
+        .rejects.toMatchObject({ code: 'TD_SYNNEX_PROVIDER_ERROR' });
+    });
+
+    it('maps a timeout to TD_SYNNEX_PROVIDER_ERROR', async () => {
+      const abort = new Error('aborted'); abort.name = 'AbortError';
+      mocks.safeFetch.mockRejectedValueOnce(abort);
+      await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
+        .rejects.toMatchObject({ code: 'TD_SYNNEX_PROVIDER_ERROR' });
+    });
+
+    it('maps an SSRF block to TD_SYNNEX_ENDPOINT_NOT_CONFIGURED', async () => {
+      mocks.safeFetch.mockRejectedValueOnce(new mocks.SsrfBlockedError('blocked'));
+      await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
+        .rejects.toMatchObject({ code: 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED' });
+    });
+
+    it('returns normalized products and clears lastError on success', async () => {
+      mocks.safeFetch.mockResolvedValueOnce(fakeResponse(200, JSON.stringify({ products: [{ id: 'p-1', name: 'Dock' }] })));
+      const products = await searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor);
+      expect(products).toHaveLength(1);
+      const setArg = mocks.db.update.mock.results[0]!.value.set.mock.calls[0]![0];
+      expect(setArg.lastError).toBeNull();
+    });
+  });
+
+  it('fails loudly when stored credentials are a corrupt non-string', async () => {
+    mocks.db.select.mockReturnValue(selectChain([{ ...enabledRow, credentials: { apiKey: 123 } }]));
+    mocks.db.update.mockReturnValue(updateChain());
+    await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
+      .rejects.toMatchObject({ code: 'TD_SYNNEX_CREDENTIALS_INVALID', status: 400 });
+  });
+
+  it('maps a configured base path through to the resolved endpoint url', async () => {
+    mocks.db.select.mockReturnValue(selectChain([{
+      ...enabledRow, baseUrl: 'https://digitalbridge.example.test/digitalbridge/v1', settings: { searchPath: '/products/search' },
+    }]));
+    mocks.db.update.mockReturnValue(updateChain());
+    mocks.safeFetch.mockResolvedValueOnce(fakeResponse(200, JSON.stringify({ products: [] })));
+    await searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor);
+    const calledUrl = mocks.safeFetch.mock.calls[0]![0] as string;
+    // base path prefix must be preserved, not dropped by absolute-path resolution
+    expect(calledUrl).toContain('/digitalbridge/v1/products/search');
+  });
+
+  it('imports a provider product mapping distributor metadata into attributes', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
+    mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-1' });
+    await importTdSynnexCatalogItem({
+      product: {
+        source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+        manufacturerPartNumber: 'MPN-1', vendor: 'Lenovo', name: 'Dock', description: 'desc',
+        cost: '100.00', currency: 'USD', availability: 4, warehouses: [{ code: 'A' }],
+        raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
+      },
+      item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, taxable: true },
+    }, actor);
+    const input = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(input.attributes.distributor).toMatchObject({
+      provider: 'td_synnex_digital_bridge', sourceProductId: 'td-1', vendor: 'Lenovo',
+    });
+    // raw provider blob must NOT be persisted into the catalog item
+    expect(input.attributes.distributor).not.toHaveProperty('raw');
   });
 });

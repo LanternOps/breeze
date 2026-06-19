@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Plug, Search } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { isApiFailure, extractApiError } from '../../lib/apiError';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -146,7 +147,8 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
       const body = (await res.json()) as { data: IntegrationStatus };
       setStatus(body.data);
       setConfig(configFromStatus(body.data));
-    } catch {
+    } catch (err) {
+      console.error('[td-synnex] status load failed', err);
       showToast({ message: 'TD SYNNEX settings failed to load.', type: 'error' });
     } finally {
       setLoading(false);
@@ -229,7 +231,11 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
         return;
       }
       const body = await res.json().catch(() => null) as { data?: TdSynnexProduct[]; error?: string } | null;
-      if (!res.ok) throw new Error(body?.error ?? 'Search failed');
+      // Honor the runAction failure contract: a non-2xx status OR an HTTP-200
+      // { success:false } body both count as failures (CLAUDE.md no-silent-mutations).
+      if (isApiFailure(body, res.status)) {
+        throw new Error(extractApiError(body, 'TD SYNNEX search failed.'));
+      }
       setProducts(body?.data ?? []);
     } catch (err) {
       showToast({ message: err instanceof Error ? err.message : 'TD SYNNEX search failed.', type: 'error' });

@@ -125,4 +125,41 @@ describe('TdSynnexCatalogPanel', () => {
     });
     expect(onImported).toHaveBeenCalledOnce();
   });
+
+  it('surfaces an import failure and does not fire the imported callback', async () => {
+    const onImported = vi.fn();
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonResponse(statusPayload))
+      .mockResolvedValueOnce(jsonResponse({ data: [product] }))
+      .mockResolvedValueOnce(jsonResponse({ error: 'An item with this SKU already exists', code: 'DUPLICATE_SKU' }, 409));
+
+    render(<TdSynnexCatalogPanel onImported={onImported} />);
+    await screen.findByTestId('td-synnex-panel');
+    fireEvent.change(screen.getByTestId('td-synnex-search-query'), { target: { value: 'dock' } });
+    fireEvent.click(screen.getByTestId('td-synnex-search'));
+    fireEvent.click(await screen.findByTestId('td-synnex-import-open-td-1'));
+    fireEvent.change(screen.getByTestId('td-synnex-import-price'), { target: { value: '125.00' } });
+    fireEvent.click(screen.getByTestId('td-synnex-import-save'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it('treats an HTTP-200 { success:false } search body as a failure', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonResponse(statusPayload))
+      .mockResolvedValueOnce(jsonResponse({ success: false, error: 'Search backend down' }, 200));
+
+    render(<TdSynnexCatalogPanel />);
+    await screen.findByTestId('td-synnex-panel');
+    fireEvent.change(screen.getByTestId('td-synnex-search-query'), { target: { value: 'dock' } });
+    fireEvent.click(screen.getByTestId('td-synnex-search'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(screen.queryByText('ThinkPad Dock')).toBeNull();
+  });
 });

@@ -1,6 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '../db';
-import { catalogItems, tdSynnexDigitalBridgeIntegrations } from '../db/schema';
+import { tdSynnexDigitalBridgeIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { createCatalogItem, type CatalogActor } from './catalogService';
 import type { CreateCatalogItemInput } from '@breeze/shared';
@@ -57,27 +57,38 @@ export interface TdSynnexProduct {
   lastRefreshedAt: string;
 }
 
+// Single source of truth for the HTTP status each error code maps to. Coupling
+// the status to the code here makes incoherent pairs (e.g. a 502 duplicate-SKU)
+// unrepresentable and removes the old misleading 400/PROVIDER_ERROR default.
+const TD_SYNNEX_ERROR_STATUS = {
+  TD_SYNNEX_PARTNER_REQUIRED: 400,
+  TD_SYNNEX_NOT_CONFIGURED: 404,
+  TD_SYNNEX_DISABLED: 400,
+  TD_SYNNEX_ENDPOINT_NOT_CONFIGURED: 400,
+  TD_SYNNEX_CREDENTIALS_INVALID: 400,
+  TD_SYNNEX_AUTH_FAILED: 401,
+  TD_SYNNEX_PROVIDER_ERROR: 502,
+  TD_SYNNEX_NO_RESULTS: 404,
+  TD_SYNNEX_DUPLICATE_SKU: 409,
+} as const;
+
+export type TdSynnexDigitalBridgeErrorCode = keyof typeof TD_SYNNEX_ERROR_STATUS;
+
 export class TdSynnexDigitalBridgeError extends Error {
+  public readonly status: number;
   constructor(
     message: string,
-    public status: 400 | 401 | 404 | 409 | 502 = 400,
-    public code:
-      | 'TD_SYNNEX_NOT_CONFIGURED'
-      | 'TD_SYNNEX_DISABLED'
-      | 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED'
-      | 'TD_SYNNEX_AUTH_FAILED'
-      | 'TD_SYNNEX_PROVIDER_ERROR'
-      | 'TD_SYNNEX_NO_RESULTS'
-      | 'TD_SYNNEX_DUPLICATE_SKU' = 'TD_SYNNEX_PROVIDER_ERROR'
+    public readonly code: TdSynnexDigitalBridgeErrorCode = 'TD_SYNNEX_PROVIDER_ERROR'
   ) {
     super(message);
     this.name = 'TdSynnexDigitalBridgeError';
+    this.status = TD_SYNNEX_ERROR_STATUS[code];
   }
 }
 
 function requirePartner(actor: CatalogActor): string {
   if (!actor.partnerId) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX integration is partner-scoped', 400, 'TD_SYNNEX_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX integration is partner-scoped', 'TD_SYNNEX_PARTNER_REQUIRED');
   }
   return actor.partnerId;
 }
@@ -99,7 +110,13 @@ function asAuthType(value: unknown): AuthType {
 }
 
 function decryptCredential(value: unknown): string | null {
-  if (typeof value !== 'string' || value.length === 0) return null;
+  if (value === undefined || value === null) return null;
+  // A present-but-non-string credential means the stored JSONB is corrupt — fail
+  // loudly with an actionable code instead of silently treating it as "absent".
+  if (typeof value !== 'string') {
+    throw new TdSynnexDigitalBridgeError('Stored TD SYNNEX credentials are corrupt — please re-enter and save them', 'TD_SYNNEX_CREDENTIALS_INVALID');
+  }
+  if (value.length === 0) return null;
   return decryptForColumn(TABLE, CREDENTIALS_COLUMN, value);
 }
 
@@ -128,16 +145,16 @@ export function normalizeTdSynnexBaseUrl(rawUrl: string): string {
   try {
     parsed = new URL(rawUrl);
   } catch {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX base URL must be a valid URL', 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX base URL must be a valid URL', 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   }
 
   if (parsed.username || parsed.password) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX base URL cannot include credentials', 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX base URL cannot include credentials', 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   }
 
   const ssrf = checkSsrfSafe(parsed.toString(), { mode: 'strict-https' });
   if (!ssrf.ok) {
-    throw new TdSynnexDigitalBridgeError(`TD SYNNEX base URL rejected: ${ssrf.reason}`, 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError(`TD SYNNEX base URL rejected: ${ssrf.reason}`, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   }
 
   parsed.hash = '';
@@ -149,7 +166,7 @@ export function normalizeTdSynnexBaseUrl(rawUrl: string): string {
 export function normalizeTdSynnexEndpointPath(path: string): string {
   const value = path.trim();
   if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\') || /[\r\n]/.test(value) || /^[a-z][a-z0-9+.-]*:/i.test(value)) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX endpoint paths must be relative paths beginning with /', 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX endpoint paths must be relative paths beginning with /', 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   }
   return value;
 }
@@ -167,8 +184,11 @@ function maskConfig(row: typeof tdSynnexDigitalBridgeIntegrations.$inferSelect |
   const credentials = asRecord(row.credentials);
   const hasApiKey = typeof credentials.apiKey === 'string' && credentials.apiKey.length > 0;
   const hasApiSecret = typeof credentials.apiSecret === 'string' && credentials.apiSecret.length > 0;
+  // basic auth needs both key and secret to authenticate; key-only auth modes
+  // (api_key headers / bearer) are configured with just the key.
+  const requiresSecret = asAuthType(row.authType) === 'basic';
   return {
-    configured: hasApiKey,
+    configured: hasApiKey && (!requiresSecret || hasApiSecret),
     id: row.id,
     environment: row.environment,
     region: row.region,
@@ -254,10 +274,10 @@ async function getActiveIntegration(actor: CatalogActor) {
     .where(eq(tdSynnexDigitalBridgeIntegrations.partnerId, partnerId))
     .limit(1);
   if (!row) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX Digital Bridge is not configured', 404, 'TD_SYNNEX_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX Digital Bridge is not configured', 'TD_SYNNEX_NOT_CONFIGURED');
   }
   if (!row.enabled) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX Digital Bridge is disabled', 400, 'TD_SYNNEX_DISABLED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX Digital Bridge is disabled', 'TD_SYNNEX_DISABLED');
   }
   return row;
 }
@@ -265,20 +285,41 @@ async function getActiveIntegration(actor: CatalogActor) {
 function endpointUrl(baseUrl: string, path: string, params?: Record<string, string | number | undefined>): string {
   const safeBaseUrl = normalizeTdSynnexBaseUrl(baseUrl);
   const safePath = normalizeTdSynnexEndpointPath(path);
-  const url = new URL(safePath, safeBaseUrl.endsWith('/') ? safeBaseUrl : `${safeBaseUrl}/`);
+  // Resolve the endpoint path RELATIVE to the base so a base URL carrying a path
+  // prefix (e.g. https://host/digitalbridge/v1) is preserved. `new URL('/x', base)`
+  // treats the leading slash as origin-absolute and silently drops the prefix, so
+  // strip it and resolve against a trailing-slashed base instead.
+  const base = safeBaseUrl.endsWith('/') ? safeBaseUrl : `${safeBaseUrl}/`;
+  const url = new URL(safePath.replace(/^\/+/, ''), base);
   for (const [key, value] of Object.entries(params ?? {})) {
     if (value !== undefined && String(value).length > 0) url.searchParams.set(key, String(value));
+  }
+  // Re-validate the fully-resolved URL: the path/param join must not escape the
+  // SSRF-vetted https origin.
+  const ssrf = checkSsrfSafe(url.toString(), { mode: 'strict-https' });
+  if (!ssrf.ok) {
+    throw new TdSynnexDigitalBridgeError(`TD SYNNEX endpoint rejected: ${ssrf.reason}`, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   }
   return url.toString();
 }
 
 function authHeaders(row: typeof tdSynnexDigitalBridgeIntegrations.$inferSelect): HeadersInit {
   const credentials = asRecord(row.credentials);
-  const apiKey = decryptCredential(credentials.apiKey);
-  const apiSecret = decryptCredential(credentials.apiSecret);
+  let apiKey: string | null;
+  let apiSecret: string | null;
+  try {
+    apiKey = decryptCredential(credentials.apiKey);
+    apiSecret = decryptCredential(credentials.apiSecret);
+  } catch (err) {
+    // decryptCredential throws a typed error for corrupt JSONB; decryptForColumn
+    // throws a plain Error for an undecryptable blob (rotated key / truncated
+    // ciphertext). Both are actionable "re-enter credentials" situations, not 500s.
+    if (err instanceof TdSynnexDigitalBridgeError) throw err;
+    throw new TdSynnexDigitalBridgeError('Stored TD SYNNEX credentials could not be decrypted — please re-enter and save them', 'TD_SYNNEX_CREDENTIALS_INVALID');
+  }
   const authType = asAuthType(row.authType);
   if (!apiKey) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX API key is not configured', 400, 'TD_SYNNEX_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX API key is not configured', 'TD_SYNNEX_CREDENTIALS_INVALID');
   }
 
   if (authType === 'bearer') {
@@ -301,41 +342,43 @@ async function requestDigitalBridge(row: typeof tdSynnexDigitalBridgeIntegration
 }) {
   const method = options.method ?? 'GET';
   const url = endpointUrl(row.baseUrl, path, method === 'GET' ? options.query : undefined);
+  // Build headers (which decrypt credentials) BEFORE the try so a typed
+  // credential error surfaces as-is instead of being remapped to PROVIDER_ERROR.
+  const headers = {
+    accept: 'application/json',
+    ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+    ...authHeaders(row)
+  };
   let response: Response;
   try {
     response = await safeFetch(url, {
       method,
-      headers: {
-        accept: 'application/json',
-        ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
-        ...authHeaders(row)
-      },
+      headers,
       body: method === 'POST' ? JSON.stringify(options.body ?? {}) : undefined,
       timeoutMs: requestTimeoutMs()
     });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {
-      throw new TdSynnexDigitalBridgeError('TD SYNNEX base URL resolved to a blocked address', 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+      throw new TdSynnexDigitalBridgeError('TD SYNNEX base URL resolved to a blocked address', 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
     }
     const isTimeout = err instanceof Error && (err.name === 'AbortError' || err.message.toLowerCase().includes('timed out'));
     throw new TdSynnexDigitalBridgeError(
       isTimeout ? 'TD SYNNEX request timed out' : 'TD SYNNEX request failed',
-      502,
       'TD_SYNNEX_PROVIDER_ERROR'
     );
   }
   if (response.status === 401 || response.status === 403) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX rejected the configured credentials', 401, 'TD_SYNNEX_AUTH_FAILED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX rejected the configured credentials', 'TD_SYNNEX_AUTH_FAILED');
   }
   const text = await response.text();
   let parsed: unknown = null;
   try {
     parsed = text ? JSON.parse(text) as unknown : null;
   } catch {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX returned an invalid JSON response', 502, 'TD_SYNNEX_PROVIDER_ERROR');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX returned an invalid JSON response', 'TD_SYNNEX_PROVIDER_ERROR');
   }
   if (!response.ok) {
-    throw new TdSynnexDigitalBridgeError(`TD SYNNEX request failed with HTTP ${response.status}`, 502, 'TD_SYNNEX_PROVIDER_ERROR');
+    throw new TdSynnexDigitalBridgeError(`TD SYNNEX request failed with HTTP ${response.status}`, 'TD_SYNNEX_PROVIDER_ERROR');
   }
   return parsed;
 }
@@ -377,14 +420,20 @@ function productArray(payload: unknown): Array<Record<string, unknown>> {
 
 export function normalizeTdSynnexProducts(payload: unknown): TdSynnexProduct[] {
   const now = new Date().toISOString();
-  return productArray(payload).map((product, index) => {
-    const sourceProductId = pickString(product, ['id', 'productId', 'itemId', 'tdSynnexItemId', 'sku', 'partNumber']) ?? `result-${index}`;
+  const products: TdSynnexProduct[] = [];
+  for (const product of productArray(payload)) {
+    const sourceProductId = pickString(product, ['id', 'productId', 'itemId', 'tdSynnexItemId', 'sku', 'partNumber']);
     const sku = pickString(product, ['sku', 'tdSku', 'tdSynnexSku', 'itemNumber', 'partNumber']);
-    const name = pickString(product, ['name', 'title', 'productName', 'description']) ?? sku ?? sourceProductId;
+    // Require a stable identifier. Fabricating `result-${index}` ids collides
+    // across searches (React keys, distributor.sourceProductId) and lets garbage
+    // provider rows import as meaningless catalog items — skip them instead.
+    const resolvedId = sourceProductId ?? sku;
+    if (!resolvedId) continue;
+    const name = pickString(product, ['name', 'title', 'productName', 'description']) ?? sku ?? resolvedId;
     const cost = pickNumber(product, ['cost', 'price', 'netPrice', 'dealerPrice', 'unitCost']);
-    return {
+    products.push({
       source: 'td_synnex_digital_bridge',
-      sourceProductId,
+      sourceProductId: resolvedId,
       sku,
       manufacturerPartNumber: pickString(product, ['manufacturerPartNumber', 'mfrPartNumber', 'mpn', 'vendorPartNumber']),
       vendor: pickString(product, ['vendor', 'manufacturer', 'brand']),
@@ -396,8 +445,9 @@ export function normalizeTdSynnexProducts(payload: unknown): TdSynnexProduct[] {
       warehouses: pickArray(product, ['warehouses', 'warehouseAvailability', 'inventory']),
       raw: product,
       lastRefreshedAt: now
-    };
-  });
+    });
+  }
+  return products;
 }
 
 export async function testTdSynnexDigitalBridgeConnection(actor: CatalogActor) {
@@ -405,7 +455,7 @@ export async function testTdSynnexDigitalBridgeConnection(actor: CatalogActor) {
   const settings = asRecord(row.settings);
   const testPath = asString(settings.testPath);
   if (!testPath) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX test endpoint path is not configured', 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX test endpoint path is not configured', 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   }
   try {
     await requestDigitalBridge(row, testPath, { method: 'GET', query: { region: row.region } });
@@ -434,15 +484,26 @@ export async function searchTdSynnexProducts(query: { q: string; limit: number }
   const settings = asRecord(row.settings);
   const searchPath = asString(settings.searchPath);
   if (!searchPath) {
-    throw new TdSynnexDigitalBridgeError('TD SYNNEX search endpoint path is not configured', 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+    throw new TdSynnexDigitalBridgeError('TD SYNNEX search endpoint path is not configured', 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   }
   const accountId = asString(settings.accountId);
   const method = asMethod(settings.searchMethod);
-  const payload = await requestDigitalBridge(row, searchPath, {
-    method,
-    query: { q: query.q, query: query.q, limit: query.limit, region: row.region, accountId },
-    body: { q: query.q, query: query.q, limit: query.limit, region: row.region, accountId }
-  });
+  let payload: unknown;
+  try {
+    payload = await requestDigitalBridge(row, searchPath, {
+      method,
+      query: { q: query.q, query: query.q, limit: query.limit, region: row.region, accountId },
+      body: { q: query.q, query: query.q, limit: query.limit, region: row.region, accountId }
+    });
+  } catch (err) {
+    // Record the failure so the status panel reflects an unhealthy integration
+    // instead of a stale "last sync succeeded" — mirrors the test-connection path.
+    await db
+      .update(tdSynnexDigitalBridgeIntegrations)
+      .set({ lastError: err instanceof Error ? err.message : 'TD SYNNEX search failed', updatedAt: new Date() })
+      .where(eq(tdSynnexDigitalBridgeIntegrations.id, row.id));
+    throw err;
+  }
   const products = normalizeTdSynnexProducts(payload).slice(0, query.limit);
   await db
     .update(tdSynnexDigitalBridgeIntegrations)
@@ -465,19 +526,11 @@ export interface ImportTdSynnexCatalogItemInput {
 }
 
 export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItemInput, actor: CatalogActor) {
-  const partnerId = requirePartner(actor);
   await getActiveIntegration(actor);
   const existingSku = input.item.sku?.trim();
-  if (existingSku) {
-    const existing = await db
-      .select({ id: catalogItems.id })
-      .from(catalogItems)
-      .where(and(eq(catalogItems.partnerId, partnerId), eq(catalogItems.sku, existingSku)))
-      .limit(1);
-    if (existing.length > 0) {
-      throw new TdSynnexDigitalBridgeError('An item with this SKU already exists', 409, 'TD_SYNNEX_DUPLICATE_SKU');
-    }
-  }
+  // Duplicate-SKU is enforced authoritatively by createCatalogItem's partial
+  // unique index (it throws CatalogServiceError DUPLICATE_SKU/409, mapped by the
+  // route). A pre-check here would only add a TOCTOU race and a second error code.
   const catalogInput: CreateCatalogItemInput = {
     itemType: 'hardware',
     name: input.item.name,

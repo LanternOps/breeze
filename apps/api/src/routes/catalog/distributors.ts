@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { checkSsrfSafe } from '../../services/ssrfGuard';
+import { CatalogServiceError } from '../../services/catalogService';
 import { catalogActorFrom } from './catalog';
 import {
   getTdSynnexDigitalBridgeStatus,
@@ -82,11 +83,17 @@ const productSchema = z.object({
   vendor: z.string().max(255).nullable(),
   name: z.string().min(1).max(500),
   description: z.string().max(10_000).nullable(),
-  cost: z.string().max(30).nullable(),
+  // Normalized money string (matches normalizeTdSynnexProducts' toFixed(2) output).
+  cost: z.string().regex(/^-?\d+\.\d{2}$/).max(30).nullable(),
   currency: z.string().max(10).nullable(),
   availability: z.number().nullable(),
   warehouses: z.array(z.record(z.string(), z.unknown())).max(200),
-  raw: z.record(z.string(), z.unknown()),
+  // Provider passthrough — not persisted, but bound the inbound size so a partner
+  // can't post a multi-MB blob through the import endpoint.
+  raw: z.record(z.string(), z.unknown()).refine(
+    (v) => JSON.stringify(v).length <= 200_000,
+    { message: 'raw product payload is too large' }
+  ),
   lastRefreshedAt: z.string().max(100)
 });
 
@@ -108,6 +115,14 @@ function handleTdSynnexError(c: { json: (body: unknown, status: number) => Respo
   if (err instanceof TdSynnexDigitalBridgeError) {
     return c.json({ error: err.message, code: err.code }, err.status);
   }
+  // createCatalogItem (used by import) surfaces duplicate-SKU / price-range as a
+  // typed CatalogServiceError — map it instead of letting it fall through to a 500.
+  if (err instanceof CatalogServiceError) {
+    return c.json({ error: err.message, code: err.code }, err.status);
+  }
+  // Genuinely unexpected (DB outage, etc.): tag it so the Sentry entry from the
+  // global onError handler is attributable to this integration, then re-throw.
+  console.error('[td-synnex] unexpected error', err);
   throw err;
 }
 

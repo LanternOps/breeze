@@ -222,6 +222,45 @@ describe('catalog TD SYNNEX distributor routes', () => {
     const body = await res.json();
     expect(body.code).toBe('TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
   });
+
+  it('maps a duplicate-SKU CatalogServiceError from import to a 409', async () => {
+    // import drops its own pre-check and relies on createCatalogItem's unique
+    // index, which surfaces a CatalogServiceError the distributor route must map.
+    (tdSvc.importTdSynnexCatalogItem as any).mockRejectedValue(
+      new (svc as any).CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU')
+    );
+    const product = {
+      source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+      manufacturerPartNumber: null, vendor: null, name: 'Dock', description: null,
+      cost: '100.00', currency: 'USD', availability: null, warehouses: [], raw: {},
+      lastRefreshedAt: new Date().toISOString()
+    };
+    const res = await app().request('/distributors/td-synnex/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, taxable: true } })
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('DUPLICATE_SKU');
+  });
+
+  it('rejects an oversized raw provider blob on import', async () => {
+    const product = {
+      source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+      manufacturerPartNumber: null, vendor: null, name: 'Dock', description: null,
+      cost: '100.00', currency: 'USD', availability: null, warehouses: [],
+      raw: { blob: 'x'.repeat(200_001) },
+      lastRefreshedAt: new Date().toISOString()
+    };
+    const res = await app().request('/distributors/td-synnex/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Dock', unitPrice: 125, taxable: true } })
+    });
+    expect(res.status).toBe(400);
+    expect(tdSvc.importTdSynnexCatalogItem).not.toHaveBeenCalled();
+  });
 });
 
 const ITEM_ID = '11111111-1111-1111-1111-111111111111';
