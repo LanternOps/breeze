@@ -1,9 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// hasDbAccessContext defaults to false (simulating a contextless caller, e.g. the
+// #1448 self-managed-DB-context pay routes whose permission read runs with no
+// ambient transaction). withSystemDbAccessContext is a transparent pass-through so
+// the wrapped reads still run against the mocked db. Individual tests can override
+// hasDbAccessContext to assert the no-op-nest path when a context is already active.
+const mockHasDbAccessContext = vi.fn(() => false);
+const mockWithSystemDbAccessContext = vi.fn(<T>(fn: () => Promise<T>) => fn());
 vi.mock('../db', () => ({
   db: {
     select: vi.fn()
-  }
+  },
+  hasDbAccessContext: () => mockHasDbAccessContext(),
+  withSystemDbAccessContext: <T>(fn: () => Promise<T>) => mockWithSystemDbAccessContext(fn)
 }));
 
 vi.mock('../db/schema', () => ({
@@ -54,6 +63,8 @@ describe('permissions service', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.mocked(getRedis).mockReturnValue(null);
+    mockHasDbAccessContext.mockReturnValue(false);
+    mockWithSystemDbAccessContext.mockImplementation(<T>(fn: () => Promise<T>) => fn());
     await clearPermissionCache();
   });
 
@@ -395,6 +406,67 @@ describe('permissions service', () => {
 
       await clearPermissionCache('user-123');
       expect(redis.incr).toHaveBeenCalledWith('permission-cache:user-version:user-123');
+    });
+  });
+
+  describe('getUserPermissions DB access context (#1448)', () => {
+    function mockMembershipAndRoleReads() {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-reader', siteIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ resource: 'devices', action: 'read' }])
+            })
+          })
+        } as any);
+    }
+
+    it('establishes a system context for its RLS-protected reads when none is active (the #1448 pay-route path)', async () => {
+      // The self-managed-DB-context pay routes run requirePermission with NO ambient
+      // transaction. Without the wrapper the membership reads would RLS-filter to 0
+      // rows under breeze_app → null → 403 (the #1375 class). Assert it wraps instead.
+      mockHasDbAccessContext.mockReturnValue(false);
+      mockMembershipAndRoleReads();
+
+      const perms = await getUserPermissions('user-123', { orgId: 'org-123' });
+
+      expect(perms).not.toBeNull();
+      expect(perms?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      expect(mockWithSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT open a redundant context when one is already active (no-op nest on normal routes)', async () => {
+      // Normal routes already run inside an org/partner withDbAccessContext; opening a
+      // second system context there would override the request scope. Assert pass-through.
+      mockHasDbAccessContext.mockReturnValue(true);
+      mockMembershipAndRoleReads();
+
+      const perms = await getUserPermissions('user-123', { orgId: 'org-123' });
+
+      expect(perms?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      expect(mockWithSystemDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('returns null (→ 403) when the user has no membership, regardless of context', async () => {
+      mockHasDbAccessContext.mockReturnValue(false);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const perms = await getUserPermissions('user-orphan', { orgId: 'org-123' });
+
+      expect(perms).toBeNull();
     });
   });
 
