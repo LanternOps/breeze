@@ -34,6 +34,7 @@ const TARGET_GLOBS = [
   'src/components/patches/PatchesPage.tsx',
   'src/components/settings/RolesPage.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
+  'src/components/devices/DevicePatchStatusTab.tsx',
   'src/components/dnsSecurity/DnsSecurityIntegrationsTab.tsx',
   'src/components/dnsSecurity/AddDnsIntegrationModal.tsx',
   'src/components/dnsSecurity/DnsSecurityPoliciesTab.tsx',
@@ -261,7 +262,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(42);
+    expect(absoluteFiles.length).toBe(43);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

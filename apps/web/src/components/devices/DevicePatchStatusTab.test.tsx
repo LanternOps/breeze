@@ -198,6 +198,9 @@ describe('DevicePatchStatusTab', () => {
     const installButton = await screen.findByRole('button', { name: /Install 3rd-party patches \(1\)/i });
     fireEvent.click(installButton);
 
+    // Destructive batch install now requires confirmation before firing.
+    fireEvent.click(await screen.findByTestId('confirm-install-patches'));
+
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
         `/devices/${deviceId}/patches/install`,
@@ -314,6 +317,7 @@ describe('DevicePatchStatusTab', () => {
     expect(installButton.textContent).toMatch(/1 pending approval/i);
 
     fireEvent.click(installButton);
+    fireEvent.click(await screen.findByTestId('confirm-install-patches'));
 
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
@@ -362,8 +366,8 @@ describe('DevicePatchStatusTab', () => {
 
     const installButton = await screen.findByRole('button', { name: /Install pending OS patches \(1\)/i });
     fireEvent.click(installButton);
+    fireEvent.click(await screen.findByTestId('confirm-install-patches'));
 
     await screen.findByText(/pending approval/i);
-    expect(screen.queryByText(/Only approved patches can be installed/i)).not.toBeNull();
   });
 });

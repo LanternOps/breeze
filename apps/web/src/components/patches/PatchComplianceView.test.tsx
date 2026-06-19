@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Mock showToast so runAction (used by handleExport) writes to the spy.
+const showToast = vi.fn();
+vi.mock('../../components/shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
+
 import PatchComplianceView from './PatchComplianceView';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -8,29 +12,19 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
-// Two orgs in store. currentOrgId is set to org-1, but the bug was: when
-// devices span both orgs, the confirm message must name both — not just
-// "Acme Corp" from currentOrgId.
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(
-    () => ({
-      organizations: [
-        { id: 'org-1', name: 'Acme Corp' },
-        { id: 'org-2', name: 'Globex' },
-      ],
-      currentOrgId: 'org-1',
-    }),
-    {
-      getState: () => ({
-        currentOrgId: 'org-1',
-        organizations: [
-          { id: 'org-1', name: 'Acme Corp' },
-          { id: 'org-2', name: 'Globex' },
-        ],
-      }),
-    }
-  ),
-}));
+// Two orgs in store. currentOrgId defaults to org-1, but the multi-org scan
+// confirm test relies on devices spanning both orgs (the message must name
+// both — not just "Acme Corp" from currentOrgId). currentOrgId is mutable so
+// the export tests can model All-orgs mode (null) vs. a specific org selected.
+const orgState = vi.hoisted(() => ({ currentOrgId: 'org-1' as string | null }));
+vi.mock('../../stores/orgStore', () => {
+  const organizations = [
+    { id: 'org-1', name: 'Acme Corp' },
+    { id: 'org-2', name: 'Globex' },
+  ];
+  const read = () => ({ organizations, currentOrgId: orgState.currentOrgId });
+  return { useOrgStore: Object.assign(read, { getState: read }) };
+});
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -45,6 +39,75 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('PatchComplianceView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    orgState.currentOrgId = 'org-1';
+  });
+
+  // Minimal compliance + devices payloads for the export tests (no devices need).
+  const emptyComplianceImpl = (extra: (url: string) => Response | null) =>
+    async (input: unknown) => {
+      const url = String(input);
+      if (url === '/patches/compliance') {
+        return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      }
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      const e = extra(url);
+      if (e) return e;
+      return makeJsonResponse({}, false, 404);
+    };
+
+  it('disables Export in All-orgs mode (no org, no ring) with a select-an-org hint', async () => {
+    orgState.currentOrgId = null;
+    fetchMock.mockImplementation(emptyComplianceImpl(() => null));
+
+    render(<PatchComplianceView ringId={null} />);
+
+    const exportBtn = await screen.findByRole('button', { name: /Export/i });
+    expect(exportBtn).toBeDisabled();
+    expect(exportBtn).toHaveAttribute('title', expect.stringMatching(/select an organization/i));
+  });
+
+  it('exports (orgId auto-injected) and surfaces a queued banner when an org is selected', async () => {
+    orgState.currentOrgId = 'org-1';
+    fetchMock.mockImplementation(
+      emptyComplianceImpl((url) =>
+        url.startsWith('/patches/compliance/report?')
+          ? makeJsonResponse({ reportId: 'rep-1' })
+          : null
+      )
+    );
+
+    render(<PatchComplianceView ringId={null} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Export/i }));
+
+    await waitFor(() => {
+      const exportCall = fetchMock.mock.calls.find((c) =>
+        String(c[0]).startsWith('/patches/compliance/report?')
+      );
+      expect(exportCall).toBeTruthy();
+    });
+    expect(await screen.findByText(/Compliance report rep-1 queued/i)).toBeTruthy();
+  });
+
+  it('surfaces an error toast when the export request fails (HTTP 500)', async () => {
+    orgState.currentOrgId = 'org-1';
+    fetchMock.mockImplementation(
+      emptyComplianceImpl((url) =>
+        url.startsWith('/patches/compliance/report?')
+          ? makeJsonResponse({ error: 'report engine down' }, false, 500)
+          : null
+      )
+    );
+
+    render(<PatchComplianceView ringId={null} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Export/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'report engine down' })
+      );
+    });
   });
 
   it('resolves approved pending patch ids before queuing bulk install', async () => {

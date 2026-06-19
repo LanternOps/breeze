@@ -65,7 +65,7 @@ describe('PatchApprovalModal', () => {
     );
   });
 
-  it('blocks approve and prompts for a ring when there is no ring or org context', async () => {
+  it('disables the action and prompts for an org/ring when there is no ring or org context', async () => {
     render(
       <PatchApprovalModal
         open
@@ -84,11 +84,51 @@ describe('PatchApprovalModal', () => {
       />
     );
 
-    fireEvent.click(screen.getAllByRole('button', { name: /Approve/i }).at(-1)!);
+    // The hint is shown up-front and the submit button is disabled — no doomed
+    // request should fire even on click.
+    await screen.findByText(/select an organization \(or an update ring\)/i);
+    const submit = screen.getAllByRole('button', { name: /Approve/i }).at(-1)!;
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
 
-    await screen.findByText(/select an update ring/i);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId('confirm-fleet-action')).toBeNull();
+  });
+
+  it('enables approve when a specific org is selected (orgId is auto-injected by fetchWithAuth)', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ id: 'patch-1', status: 'approved' }));
+    render(
+      <PatchApprovalModal
+        open
+        patch={{
+          id: 'patch-1',
+          title: 'Security Update',
+          severity: 'critical',
+          source: 'Microsoft',
+          os: 'Windows',
+          releaseDate: '2026-04-01T00:00:00.000Z',
+          approvalStatus: 'pending',
+        }}
+        ringId={null}
+        currentOrgId="org-1"
+        orgName="Acme Corp"
+        onClose={() => {}}
+      />
+    );
+
+    const submit = screen.getAllByRole('button', { name: /Approve/i }).at(-1)!;
+    expect(submit).not.toBeDisabled();
+    fireEvent.click(submit);
+
+    // Approve opens the scope-naming confirm dialog; confirm fires the POST.
+    fireEvent.click(await screen.findByTestId('confirm-fleet-action'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/patch-1/approve',
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
   });
 
   it('surfaces backend approval errors instead of a generic message', async () => {

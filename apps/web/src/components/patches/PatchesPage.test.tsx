@@ -146,8 +146,135 @@ describe('PatchesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
     fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
 
-    await screen.findByText(/select an update ring/i);
+    await screen.findByText(/select an organization or update ring/i);
     expect(fetchMock).not.toHaveBeenCalledWith('/patches/bulk-approve', expect.anything());
+  });
+
+  it('Deploy on an approved patch routes to the Compliance tab with feedback (no dead click)', async () => {
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/?tab=patches');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'Approved Update',
+              severity: 'critical',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'approved',
+            },
+          ],
+        });
+      }
+      // Compliance tab data (rendered after Deploy switches tabs).
+      if (url === '/patches/compliance') {
+        return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      }
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    const deploy = await screen.findByRole('button', { name: 'Deploy' });
+    fireEvent.click(deploy);
+
+    // Feedback toast fires and the Compliance tab content renders.
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: expect.stringMatching(/Compliance tab/i) })
+      );
+    });
+  });
+
+  it('disables New Ring in All-orgs mode (currentOrgId null) with a select-an-org hint', async () => {
+    orgState.currentOrgId = null;
+    window.history.replaceState({}, '', '/?tab=rings');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    const newRing = await screen.findByRole('button', { name: /New Ring/i });
+    expect(newRing).toBeDisabled();
+    expect(newRing).toHaveAttribute('title', expect.stringMatching(/select an organization/i));
+  });
+
+  it('enables New Ring when a specific org is selected and creates the ring (orgId auto-injected) with a success toast', async () => {
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/?tab=rings');
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/update-rings' && (!init || init.method === undefined)) {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/update-rings' && init?.method === 'POST') {
+        return makeJsonResponse({ data: { id: 'ring-new' } });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    const newRing = await screen.findByRole('button', { name: /New Ring/i });
+    expect(newRing).not.toBeDisabled();
+    fireEvent.click(newRing);
+
+    // Fill the minimal ring form and submit.
+    fireEvent.change(await screen.findByPlaceholderText(/Pilot, Broad/i), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByRole('button', { name: /Create Ring/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/update-rings',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: 'Update ring created' })
+      );
+    });
+  });
+
+  it('surfaces a failure toast (and keeps the dialog open) when create-ring fails', async () => {
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/?tab=rings');
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/update-rings' && (!init || init.method === undefined)) {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/update-rings' && init?.method === 'POST') {
+        return makeJsonResponse({ error: 'Ring name already in use' }, false, 409);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /New Ring/i }));
+    fireEvent.change(await screen.findByPlaceholderText(/Pilot, Broad/i), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByRole('button', { name: /Create Ring/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Ring name already in use' })
+      );
+    });
+    // Dialog remains open + actionable (the form's submit button is still there).
+    expect(screen.getByRole('button', { name: /Create Ring/i })).toBeTruthy();
   });
 
   it('does NOT fire the scan POST until the confirm button is clicked', async () => {

@@ -11,6 +11,7 @@ import { Dialog } from '../../shared/Dialog';
 import UpdateRingForm, { type UpdateRingFormValues } from '../../patches/UpdateRingForm';
 import type { UpdateRingItem as UpdateRing } from '../../patches/UpdateRingList';
 import { normalizeRing } from '../../patches/patchHelpers';
+import { showToast } from '../../shared/Toast';
 
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
@@ -161,13 +162,21 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
       featurePolicyId: selectedRingId || null,
       inlineSettings: settings,
     });
-    if (result) onLinkChanged(result, 'patch');
+    // The save POST returned 201 with no UI feedback before — confirm success
+    // (the hook surfaces failures via `error` → FeatureTabShell).
+    if (result) {
+      showToast({ message: 'Patch settings saved', type: 'success' });
+      onLinkChanged(result, 'patch');
+    }
   };
 
   const handleRemove = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
-    if (ok) onLinkChanged(null, 'patch');
+    if (ok) {
+      showToast({ message: 'Patch settings removed', type: 'success' });
+      onLinkChanged(null, 'patch');
+    }
   };
 
   const handleOverride = async () => {
@@ -180,13 +189,19 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
       featurePolicyId: selectedRingId || null,
       inlineSettings: settings,
     });
-    if (result) onLinkChanged(result, 'patch');
+    if (result) {
+      showToast({ message: 'Patch settings overridden', type: 'success' });
+      onLinkChanged(result, 'patch');
+    }
   };
 
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
-    if (ok) onLinkChanged(null, 'patch');
+    if (ok) {
+      showToast({ message: 'Reverted to inherited patch settings', type: 'success' });
+      onLinkChanged(null, 'patch');
+    }
   };
 
   const selectedRing = rings.find((r) => r.id === selectedRingId);

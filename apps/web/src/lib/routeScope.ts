@@ -7,7 +7,12 @@
 
 const GLOBAL_ROUTE_PATTERNS: RegExp[] = [
   /^\/scripts(\/.*)?$/, // script library / new / detail+edit
-  /^\/patches(\/.*)?$/, // approvals + compliance derive org from the selected ring
+  // NOTE: /patches is intentionally NOT global. It honours the org switcher so
+  // single-org actions (approve/decline/defer, compliance export, create-ring)
+  // can attach an explicit orgId when a specific org is selected, while the
+  // patch list + compliance READ views still work in All-orgs mode (partner
+  // scope). Marking it global made the orgId provider return null, stripping the
+  // auto-injected ?orgId= and 400ing every partner action with >1 accessible org.
   /^\/alert-templates(\/.*)?$/,
   /^\/settings\/alert-templates(\/.*)?$/, // partner-wide alert-template catalog (#1425)
 ];

@@ -20,6 +20,7 @@ import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
+import { runAction, ActionError } from '@/lib/runAction';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
@@ -47,6 +48,15 @@ const DEVICE_SCAN_PAGE_LIMIT = 100;
 export default function PatchesPage() {
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
+  // "All orgs" mode: a partner/multi-org user with no specific org selected via
+  // the switcher. Single-org actions (create-ring, approve/decline/defer,
+  // compliance export) can't pick a target org here, so we disable them with a
+  // hint instead of firing a request that 400s ("orgId is required"). A
+  // single-org user always has an implicit org (currentOrgId set), so this is
+  // never true for them. The patch list + compliance READ views still work in
+  // this mode (partner scope returns the full catalog).
+  const allOrgsMode = currentOrgId === null;
+  const SELECT_ORG_HINT = 'Select an organization to perform this action';
 
   const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
   const setActiveTab = useCallback((tab: TabKey) => {
@@ -185,12 +195,13 @@ export default function PatchesPage() {
   // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
   // See spec 2026-05-15-ws-a-action-feedback-design.md (targeted scope; sweeping migration is a non-goal).
   const handleBulkApprove = async (patchIds: string[]) => {
-    // Approval is ring-scoped. With no current org (a partner on the global
-    // /patches catalog view) and no ring selected, the API has no org to attach
-    // the approval to and returns 400 ('orgId is required for partner/system
-    // scope'). Guard with a clear prompt instead of firing a doomed request.
+    // Approval needs a target org. With a specific org selected, fetchWithAuth
+    // auto-injects ?orgId=<currentOrgId>; a selected ring also resolves the org
+    // server-side. In All-orgs mode with no ring, there is nothing to attach the
+    // approval to and the API returns 400 ('orgId is required for partner/system
+    // scope'), so guard with a clear prompt instead of firing a doomed request.
     if (!selectedRingId && !currentOrgId) {
-      throw new Error('Select an update ring to approve patches');
+      throw new Error('Select an organization or update ring to approve patches');
     }
     // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
@@ -223,7 +234,7 @@ export default function PatchesPage() {
   const handleBulkDecline = async (patchIds: string[]) => {
     // Same ring/org context requirement as approve (see handleBulkApprove).
     if (!selectedRingId && !currentOrgId) {
-      throw new Error('Select an update ring to decline patches');
+      throw new Error('Select an organization or update ring to decline patches');
     }
     const failed: string[] = [];
     for (const id of patchIds) {
@@ -396,33 +407,52 @@ export default function PatchesPage() {
   };
 
   const handleRingSubmit = async (values: UpdateRingFormValues) => {
-    setRingSubmitting(true);
     const isEditing = !!editingRing;
+    // Creating a ring needs a target org. With a specific org selected,
+    // fetchWithAuth auto-injects ?orgId=<currentOrgId>; in All-orgs mode there is
+    // no org to attach, so block early with a clear toast rather than 400ing.
+    // (Editing an existing ring resolves its org server-side from the ring id.)
+    if (!isEditing && allOrgsMode) {
+      showToast({ message: SELECT_ORG_HINT, type: 'error' });
+      return;
+    }
+    setRingSubmitting(true);
+    setRingsError(undefined);
     try {
       const url = isEditing ? `/update-rings/${editingRing.id}` : '/update-rings';
-      // runaction-exempt: inline ringsError UI (see NOTE above)
-      const response = await fetchWithAuth(url, {
-        method: isEditing ? 'PATCH' : 'POST',
-        body: JSON.stringify({
-          name: values.name,
-          description: values.description,
-          ringOrder: values.ringOrder,
-          deferralDays: values.deferralDays,
-          deadlineDays: values.deadlineDays,
-          gracePeriodHours: values.gracePeriodHours,
-          autoApprove: values.autoApprove,
-          categoryRules: values.categoryRules,
-        })
+      await runAction({
+        request: () =>
+          fetchWithAuth(url, {
+            method: isEditing ? 'PATCH' : 'POST',
+            body: JSON.stringify({
+              name: values.name,
+              description: values.description,
+              ringOrder: values.ringOrder,
+              deferralDays: values.deferralDays,
+              deadlineDays: values.deadlineDays,
+              gracePeriodHours: values.gracePeriodHours,
+              autoApprove: values.autoApprove,
+              categoryRules: values.categoryRules,
+            }),
+          }),
+        errorFallback: isEditing ? 'Failed to update ring' : 'Failed to create update ring',
+        successMessage: isEditing ? 'Update ring saved' : 'Update ring created',
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error(isEditing ? 'Failed to update ring' : 'Failed to create update ring');
-      }
       await fetchRings();
       setRingModalOpen(false);
       setEditingRing(null);
     } catch (err) {
-      setRingsError(err instanceof Error ? err.message : (isEditing ? 'Failed to update ring' : 'Failed to create update ring'));
+      // runAction already toasted (and 401 already redirected). Keep the dialog
+      // open + actionable by also surfacing the message inline in the form area.
+      if (err instanceof ActionError && err.status === 401) return;
+      setRingsError(
+        err instanceof ActionError
+          ? err.message
+          : isEditing
+            ? 'Failed to update ring'
+            : 'Failed to create update ring'
+      );
     } finally {
       setRingSubmitting(false);
     }
@@ -430,17 +460,32 @@ export default function PatchesPage() {
 
   const handleRingDelete = async (ring: UpdateRingItem) => {
     try {
-      // runaction-exempt: inline ringsError UI (see NOTE above)
-      const response = await fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to delete ring');
-      }
+      await runAction({
+        request: () => fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' }),
+        errorFallback: 'Failed to delete ring',
+        successMessage: 'Update ring deleted',
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
       await fetchRings();
     } catch (err) {
-      setRingsError(err instanceof Error ? err.message : 'Failed to delete ring');
+      if (err instanceof ActionError && err.status === 401) return;
+      setRingsError(err instanceof ActionError ? err.message : 'Failed to delete ring');
     }
   };
+
+  // "Deploy" on an approved patch row: there is no single endpoint that pushes a
+  // catalog patch fleet-wide from this list — actual installation happens
+  // per-device on the Compliance tab (Select devices → Install) or on a device's
+  // own Patches tab. Wiring onDeploy here closes the dead-click (the button
+  // previously fired nothing because PatchesPage never passed onDeploy) by
+  // routing the user to where deployment is actually performed, with feedback.
+  const handleDeploy = useCallback(() => {
+    setActiveTab('compliance');
+    showToast({
+      message: 'Choose the devices to install this patch on from the Compliance tab.',
+      type: 'success',
+    });
+  }, [setActiveTab]);
 
   // ---- Derived ----
 
@@ -472,7 +517,9 @@ export default function PatchesPage() {
                 setRingsError(undefined);
                 setRingModalOpen(true);
               }}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+              disabled={allOrgsMode}
+              title={allOrgsMode ? SELECT_ORG_HINT : undefined}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />
               New Ring
@@ -567,6 +614,7 @@ export default function PatchesPage() {
             error={patchesError}
             onRetry={fetchPatches}
             onReview={handleReview}
+            onDeploy={handleDeploy}
             onBulkApprove={handleBulkApprove}
             onBulkDecline={handleBulkDecline}
           />

@@ -7,6 +7,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { runAction, ActionError } from '@/lib/runAction';
 
 export type PatchApprovalAction = 'approve' | 'decline' | 'defer';
 
@@ -83,11 +84,18 @@ export default function PatchApprovalModal({
   }, [open, patch?.id]);
 
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
+  // Approval needs a target org: either a selected ring (resolves its org
+  // server-side) or a specific org selected in the switcher (sent as ?orgId=).
+  // In All-orgs mode with no ring there is nothing to attach the decision to, so
+  // disable the action up-front with a clear hint rather than letting the click
+  // 400 ('orgId is required for partner/system scope').
+  const canResolveOrg = useMemo(() => !!ringId || !!currentOrgId, [ringId, currentOrgId]);
   const canSubmit = useMemo(() => {
     if (isSubmitting) return false;
+    if (!canResolveOrg) return false;
     if (action !== 'defer') return true;
     return deferUntil.trim().length > 0;
-  }, [action, deferUntil, isSubmitting]);
+  }, [action, deferUntil, isSubmitting, canResolveOrg]);
 
   if (!patch) return null;
 
@@ -119,6 +127,8 @@ export default function PatchApprovalModal({
       const endpoint = action === 'approve' ? 'approve' : action === 'decline' ? 'decline' : 'defer';
       const body: Record<string, unknown> = { note: notes };
       if (ringId) body.ringId = ringId;
+      // orgId is auto-injected by fetchWithAuth from the selected org (?orgId=)
+      // when no ring is selected; the API also resolves it from the ring.
       if (action === 'defer') {
         if (!deferUntil.trim()) {
           throw new Error('Choose when the patch should be deferred until');
@@ -126,22 +136,29 @@ export default function PatchApprovalModal({
         body.deferUntil = new Date(deferUntil).toISOString();
       }
 
-      const response = await fetchWithAuth(`/patches/${patch.id}/${endpoint}`, {
-        method: 'POST',
-        body: JSON.stringify(body)
-      });
+      const successMessage =
+        action === 'approve' ? 'Patch approved' : action === 'decline' ? 'Patch declined' : 'Patch deferred';
 
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        const errorBody = await response.json().catch(() => ({})) as { error?: string; message?: string };
-        throw new Error(errorBody.error || errorBody.message || 'Failed to update patch approval');
-      }
+      // Surface success/failure via runAction (toast + HTTP-200 {success:false}
+      // handling). Keep the inline submitError too so the message stays visible
+      // inside the open modal, not just as a transient toast.
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/patches/${patch.id}/${endpoint}`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+          }),
+        errorFallback: 'Failed to update patch approval',
+        successMessage,
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
 
       await onSubmit?.(patch.id, action, notes);
     } catch (err) {
+      // 401 already redirected; ActionError was already toasted by runAction —
+      // mirror it inline so it's visible in the modal. A pre-request throw (e.g.
+      // the defer-date guard) lands here as a plain Error.
+      if (err instanceof ActionError && err.status === 401) return;
       setSubmitError(err instanceof Error ? err.message : 'Failed to update patch approval');
     } finally {
       setSubmitting(false);
@@ -219,6 +236,12 @@ export default function PatchApprovalModal({
           </div>
         )}
 
+        {!canResolveOrg && !submitError && (
+          <div className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
+            Select an organization (or an update ring) to {action} patches.
+          </div>
+        )}
+
         {submitError && (
           <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {submitError}
@@ -238,7 +261,8 @@ export default function PatchApprovalModal({
             type="button"
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            title={!canResolveOrg ? `Select an organization to ${action} patches` : undefined}
+            className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="inline-flex items-center gap-2">
               {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}

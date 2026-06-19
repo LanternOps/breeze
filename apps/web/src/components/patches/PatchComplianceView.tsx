@@ -23,6 +23,8 @@ import { useBulkActions, type ResolvedInstallPatchIds } from './useBulkActions';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { useOrgStore } from '../../stores/orgStore';
+import { runAction, ActionError } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 
 type ComplianceSummary = {
   totalDevices: number;
@@ -37,7 +39,13 @@ type PatchComplianceViewProps = {
 };
 
 export default function PatchComplianceView({ ringId }: PatchComplianceViewProps) {
-  const { organizations } = useOrgStore();
+  const { organizations, currentOrgId } = useOrgStore();
+  // Compliance export resolves a single target org server-side
+  // (resolvePatchReportOrgId), which 400s for a partner with >1 accessible org
+  // and no orgId. With a specific org selected, fetchWithAuth auto-injects
+  // ?orgId=; a selected ring also resolves the org. In All-orgs mode with no
+  // ring, disable export with a hint instead of firing a request that 400s.
+  const canExport = currentOrgId !== null || !!ringId;
   const [devices, setDevices] = useState<DevicePatchRow[]>([]);
   const [summary, setSummary] = useState<ComplianceSummary>({ totalDevices: 0, compliantDevices: 0, criticalPatches: 0, pendingPatches: 0, rebootPending: 0 });
   const [loading, setLoading] = useState(true);
@@ -230,6 +238,10 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   );
 
   const handleExport = useCallback(async () => {
+    if (!canExport) {
+      showToast({ message: 'Select an organization to export a compliance report', type: 'error' });
+      return;
+    }
     try {
       setExporting(true);
       setBulkError(undefined);
@@ -237,12 +249,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       const params = new URLSearchParams();
       if (ringId) params.set('ringId', ringId);
       params.set('format', 'csv');
-      const response = await fetchWithAuth(`/patches/compliance/report?${params}`);
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to generate report');
-      }
-      const result = await response.json();
+      // Surface the initial queue request via runAction (toast + HTTP-200
+      // {success:false} handling) so a failed export is never a silent no-op.
+      // The async report itself is then polled below.
+      const result = await runAction<{ reportId?: string; id?: string; data?: { id?: string } }>({
+        request: () => fetchWithAuth(`/patches/compliance/report?${params}`),
+        errorFallback: 'Failed to generate report',
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
       const reportId = result.reportId ?? result.data?.id ?? result.id;
       if (reportId) {
         setBulkSuccess(`Compliance report ${reportId} queued. Preparing download...`);
@@ -287,11 +301,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
         setBulkError('Report was queued but no report ID was returned');
       }
     } catch (err) {
-      setBulkError(err instanceof Error ? err.message : 'Failed to generate report');
+      // 401 already redirected; ActionError was already toasted by runAction —
+      // mirror it in the inline banner. Plain errors fall through to the banner.
+      if (err instanceof ActionError && err.status === 401) return;
+      setBulkError(err instanceof ActionError ? err.message : err instanceof Error ? err.message : 'Failed to generate report');
     } finally {
       setExporting(false);
     }
-  }, [ringId, setBulkError, setBulkSuccess]);
+  }, [ringId, canExport, setBulkError, setBulkSuccess]);
 
   const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {
@@ -384,8 +401,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           <button
             type="button"
             onClick={handleExport}
-            disabled={exporting}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            disabled={exporting || !canExport}
+            title={!canExport ? 'Select an organization to export a compliance report' : undefined}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
             Export

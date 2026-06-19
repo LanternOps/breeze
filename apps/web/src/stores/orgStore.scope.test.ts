@@ -58,7 +58,10 @@ describe('orgStore — page-aware orgId provider', () => {
     fetchSpy.mockRestore();
   });
 
-  it('on a global route (/patches) the provider returns null even when currentOrgId is set', async () => {
+  it('on /patches (now org-scoped) the provider injects the selected org so single-org actions resolve', async () => {
+    // /patches honours the org switcher now — with a specific org selected, the
+    // orgId is auto-injected so approve/decline/defer/export/create-ring attach
+    // it (previously /patches was global → orgId stripped → 400 for partners).
     Object.defineProperty(globalThis.window, 'location', {
       value: { pathname: '/patches' },
       writable: true,
@@ -75,7 +78,30 @@ describe('orgStore — page-aware orgId provider', () => {
     );
     auth.useAuthStore.setState({ tokens: { accessToken: 't', expiresAt: Date.now() + 60_000 } as any, user: { id: 'u', email: 'e' } as any, isAuthenticated: true });
 
-    await auth.fetchWithAuth('/patches/approvals');
+    await auth.fetchWithAuth('/patches/some-id/approve', { method: 'POST', body: '{}' });
+    const calledUrl = fetchSpy.mock.calls[0]?.[0] as string;
+    expect(calledUrl).toContain('orgId=org-abc');
+    fetchSpy.mockRestore();
+  });
+
+  it('on /patches in All-orgs mode (currentOrgId null) no orgId is injected — list/compliance READ still works', async () => {
+    Object.defineProperty(globalThis.window, 'location', {
+      value: { pathname: '/patches' },
+      writable: true,
+      configurable: true,
+    });
+
+    const { useOrgStore } = await import('./orgStore');
+    const auth = await import('./auth');
+
+    useOrgStore.setState({ currentOrgId: null });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    auth.useAuthStore.setState({ tokens: { accessToken: 't', expiresAt: Date.now() + 60_000 } as any, user: { id: 'u', email: 'e' } as any, isAuthenticated: true });
+
+    await auth.fetchWithAuth('/patches?limit=200');
     const calledUrl = fetchSpy.mock.calls[0]?.[0] as string;
     expect(calledUrl).not.toContain('orgId=');
     fetchSpy.mockRestore();

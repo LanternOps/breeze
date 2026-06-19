@@ -8,9 +8,9 @@ describe('isGlobalScopeRoute', () => {
     expect(isGlobalScopeRoute('/scripts/new')).toBe(true);
     expect(isGlobalScopeRoute('/scripts/abc-123')).toBe(true);
   });
-  it('treats patch surfaces as global (org comes from the ring)', () => {
-    expect(isGlobalScopeRoute('/patches')).toBe(true);
-    expect(isGlobalScopeRoute('/patches/anything')).toBe(true);
+  it('treats patch surfaces as org-scoped so the switcher applies (single-org actions need an explicit orgId)', () => {
+    expect(isGlobalScopeRoute('/patches')).toBe(false);
+    expect(isGlobalScopeRoute('/patches/anything')).toBe(false);
   });
   it('treats alert templates as global', () => {
     expect(isGlobalScopeRoute('/alert-templates')).toBe(true);

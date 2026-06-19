@@ -17,6 +17,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
 import { widthPercentClass } from '@/lib/utils';
+import { runAction, ActionError } from '@/lib/runAction';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 type PatchItem = {
   id?: string;
@@ -484,6 +486,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   // Track per-patch install in progress: patchId -> true
   const [installingPatchIds, setInstallingPatchIds] = useState<Set<string>>(new Set());
 
+  // Pending confirmation for the destructive batch-install controls. Installing
+  // patches is destructive (queues installs that may reboot the device), so it
+  // must be confirmed before firing rather than firing on a single click.
+  const [pendingInstall, setPendingInstall] = useState<
+    { action: 'install-native' | 'install-third-party'; patchIds: string[]; label: string } | null
+  >(null);
+
   // Track polling state after install
   const [isPolling, setIsPolling] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -643,17 +652,18 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     setControlAction(action);
     setControlNotice(null);
     try {
-      const response = await fetchWithAuth('/patches/scan', {
-        method: 'POST',
-        body: JSON.stringify({
-          deviceIds: [deviceId],
-          source
-        })
+      // runAction gives the toast feedback (and HTTP-200 {success:false}
+      // handling); we keep the detailed inline notice with the queued/dispatched
+      // breakdown the toast can't carry.
+      const body = await runAction<PatchScanResponse & { error?: string }>({
+        request: () =>
+          fetchWithAuth('/patches/scan', {
+            method: 'POST',
+            body: JSON.stringify({ deviceIds: [deviceId], source }),
+          }),
+        errorFallback: `Failed to queue ${label.toLowerCase()}`,
+        successMessage: `${label} queued`,
       });
-      const body = await response.json().catch(() => ({})) as PatchScanResponse & { error?: string };
-      if (!response.ok) {
-        throw new Error(body.error || `Failed to queue ${label.toLowerCase()}`);
-      }
 
       const queuedCount = Array.isArray(body.queuedCommandIds) ? body.queuedCommandIds.length : 0;
       const dispatchedCount = Array.isArray(body.dispatchedCommandIds) ? body.dispatchedCommandIds.length : 0;
@@ -665,9 +675,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         message: `${label} queued${commandSuffix}${dispatchSuffix}${jobSuffix}.`
       });
     } catch (err) {
+      // runAction already toasted the failure; mirror it inline. (No 401 redirect
+      // wired here — the device page resolves auth before mounting this tab.)
       setControlNotice({
         kind: 'error',
-        message: err instanceof Error ? err.message : `Failed to queue ${label.toLowerCase()}`
+        message: err instanceof ActionError ? err.message : err instanceof Error ? err.message : `Failed to queue ${label.toLowerCase()}`
       });
     } finally {
       setControlAction(null);
@@ -691,23 +703,19 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     setControlAction(action);
     setControlNotice(null);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/patches/install`, {
-        method: 'POST',
-        body: JSON.stringify({ patchIds })
-      });
-      const body = await response.json().catch(() => ({})) as PatchInstallResponse & {
+      const body = await runAction<PatchInstallResponse & {
         error?: string;
         unapprovedPatchIds?: string[];
         missingPatchIds?: string[];
-      };
-      if (!response.ok) {
-        let message = body.error || `Failed to queue ${label.toLowerCase()}`;
-        const unapprovedCount = Array.isArray(body.unapprovedPatchIds) ? body.unapprovedPatchIds.length : 0;
-        if (response.status === 409 && unapprovedCount > 0) {
-          message += ` (${unapprovedCount} ${unapprovedCount === 1 ? 'patch' : 'patches'} still pending approval - approve them first or refresh)`;
-        }
-        throw new Error(message);
-      }
+      }>({
+        request: () =>
+          fetchWithAuth(`/devices/${deviceId}/patches/install`, {
+            method: 'POST',
+            body: JSON.stringify({ patchIds }),
+          }),
+        errorFallback: `Failed to queue ${label.toLowerCase()}`,
+        successMessage: `${label} queued`,
+      });
 
       const commandSuffix = body.commandId ? ` (command ${body.commandId})` : '';
       const patchCount = typeof body.patchCount === 'number' ? body.patchCount : patchIds.length;
@@ -720,14 +728,32 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       // Start polling for completion
       startInstallPolling(currentPendingCount);
     } catch (err) {
-      setControlNotice({
-        kind: 'error',
-        message: err instanceof Error ? err.message : `Failed to queue ${label.toLowerCase()}`
-      });
+      // runAction already toasted; the 409 "pending approval" detail in the JSON
+      // body can't ride the toast, so add it to the inline notice when present.
+      let message = err instanceof ActionError ? err.message : err instanceof Error ? err.message : `Failed to queue ${label.toLowerCase()}`;
+      if (err instanceof ActionError && err.status === 409 && !/pending approval/i.test(message)) {
+        message += ' (some patches may still be pending approval - approve them first or refresh)';
+      }
+      setControlNotice({ kind: 'error', message });
     } finally {
       setControlAction(null);
     }
   }, [deviceId, pendingNative.length, pendingOther.length, startInstallPolling]);
+
+  // The batch-install buttons request confirmation first; the ConfirmDialog's
+  // onConfirm runs the queuePatchInstall above. Destructive action ⇒ never fire
+  // on a single click.
+  const requestInstall = useCallback((
+    action: 'install-native' | 'install-third-party',
+    patchIds: string[],
+    label: string
+  ) => {
+    if (patchIds.length === 0) {
+      setControlNotice({ kind: 'error', message: `No pending patches available for ${label.toLowerCase()}.` });
+      return;
+    }
+    setPendingInstall({ action, patchIds, label });
+  }, []);
 
   // Single-patch install handler
   const queueSinglePatchInstall = useCallback(async (patchId: string, patchName: string) => {
@@ -737,14 +763,15 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     setInstallingPatchIds(prev => new Set(prev).add(patchId));
     setControlNotice(null);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/patches/install`, {
-        method: 'POST',
-        body: JSON.stringify({ patchIds: [patchId] })
+      const body = await runAction<PatchInstallResponse & { error?: string }>({
+        request: () =>
+          fetchWithAuth(`/devices/${deviceId}/patches/install`, {
+            method: 'POST',
+            body: JSON.stringify({ patchIds: [patchId] }),
+          }),
+        errorFallback: `Failed to install ${patchName}`,
+        successMessage: `Install queued for "${patchName}"`,
       });
-      const body = await response.json().catch(() => ({})) as PatchInstallResponse & { error?: string };
-      if (!response.ok) {
-        throw new Error(body.error || `Failed to install ${patchName}`);
-      }
 
       const dispatchSuffix = body.commandStatus === 'sent' ? ' and dispatched' : '';
       setControlNotice({
@@ -760,9 +787,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         next.delete(patchId);
         return next;
       });
+      // runAction already toasted; mirror inline.
       setControlNotice({
         kind: 'error',
-        message: err instanceof Error ? err.message : `Failed to install ${patchName}`
+        message: err instanceof ActionError ? err.message : err instanceof Error ? err.message : `Failed to install ${patchName}`
       });
     }
   }, [deviceId, pendingNative.length, pendingOther.length, startInstallPolling]);
@@ -820,7 +848,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           <button
             type="button"
-            onClick={() => queuePatchInstall('install-native', nativePendingIds, `Install pending ${nativeProviderLabel} patches`)}
+            onClick={() => requestInstall('install-native', nativePendingIds, `Install pending ${nativeProviderLabel} patches`)}
             disabled={isBusy || nativePendingIds.length === 0}
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -855,7 +883,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
 
           <button
             type="button"
-            onClick={() => queuePatchInstall('install-third-party', thirdPartyPendingIds, 'Install pending third-party patches')}
+            onClick={() => requestInstall('install-third-party', thirdPartyPendingIds, 'Install pending third-party patches')}
             disabled={isBusy || thirdPartyPendingIds.length === 0}
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -1331,6 +1359,31 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       )}
 
       <PatchInstallHistory deviceId={deviceId} />
+
+      {/* Destructive batch-install confirmation. Installing pending patches may
+          reboot the device, so it must be confirmed before firing. */}
+      <ConfirmDialog
+        open={pendingInstall !== null}
+        onClose={() => setPendingInstall(null)}
+        onConfirm={() => {
+          if (!pendingInstall) return;
+          const { action, patchIds, label } = pendingInstall;
+          setPendingInstall(null);
+          void queuePatchInstall(action, patchIds, label);
+        }}
+        title="Install pending patches"
+        variant="warning"
+        confirmLabel="Install"
+        confirmTestId="confirm-install-patches"
+        isLoading={controlAction !== null}
+        message={
+          pendingInstall
+            ? `Queue installation of ${pendingInstall.patchIds.length} ${
+                pendingInstall.patchIds.length === 1 ? 'patch' : 'patches'
+              } on this device? This may require a reboot.`
+            : ''
+        }
+      />
     </div>
   );
 }
