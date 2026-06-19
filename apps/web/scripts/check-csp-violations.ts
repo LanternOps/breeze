@@ -33,9 +33,21 @@ async function main(): Promise<void> {
     env: { ...process.env, HOST, PORT: String(PORT) },
     stdio: 'inherit',
   });
+  // Surface early server-boot failures so waitForServer() rejects immediately
+  // rather than spinning the full 30s and throwing a generic timeout.
+  let serverBootError: Error | null = null;
+  server.on('exit', (code) => {
+    serverBootError = new Error(`web server exited during startup (code ${code})`);
+  });
+  server.on('error', (err) => {
+    serverBootError = new Error(`web server process error during startup: ${err.message}`);
+  });
   const violations: Violation[] = [];
   try {
-    await waitForServer();
+    await waitForServer().then(
+      (v) => { if (serverBootError) throw serverBootError; return v; },
+      (err) => { throw serverBootError ?? err; },
+    );
     const browser = await chromium.launch();
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -44,6 +56,9 @@ async function main(): Promise<void> {
     // Only collect inline-script violations (blockedURI === 'inline'); eval
     // violations from Monaco Editor are a separate concern and expected under
     // the current CSP (no 'unsafe-eval' needed for the page shell itself).
+    // Note: addInitScript runs on every full-page load AND persists across
+    // same-document <ClientRouter> view-transition swaps, so both navigation
+    // paths are covered by a single registration.
     await page.addInitScript(() => {
       // @ts-expect-error injected global
       window.__cspViolations = window.__cspViolations || [];
@@ -94,7 +109,8 @@ async function main(): Promise<void> {
       server.once('close', done);
       server.kill('SIGTERM');
       // Fallback: resolve after 5s if the process hasn't exited cleanly.
-      setTimeout(done, 5000);
+      // unref() so this timer doesn't keep the event loop alive after a clean exit.
+      setTimeout(done, 5000).unref();
     });
   }
 
