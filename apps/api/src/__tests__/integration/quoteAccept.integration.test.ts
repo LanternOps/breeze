@@ -55,6 +55,7 @@ describe('quote accept → convert', () => {
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
 
     const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane Buyer' }));
+    expect(res.invoiceIssued).toBe(true); // drives the post-commit invoice.issued emit + PDF enqueue
     const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
     expect(inv!.status).toBe('sent'); // issued → payable (PAYABLE set in invoiceCheckout)
     expect(inv!.invoiceNumber).toMatch(/^INV-\d{4}-\d{4}$/);
@@ -112,6 +113,7 @@ describe('quote accept → convert', () => {
     await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Managed services', quantity: 1, unitPrice: 99, taxable: false, customerVisible: true, recurrence: 'monthly' } as any, actor));
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
     const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Bob' }));
+    expect(res.invoiceIssued).toBe(false); // no one-time lines → invoice not issued → no invoice.issued emit
     const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
     expect(inv!.total).toBe('0.00');
     const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));

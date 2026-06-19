@@ -9,7 +9,7 @@ import { portalBranding } from '../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
-import { acceptQuote } from '../services/quoteAcceptService';
+import { acceptQuote, emitAcceptInvoiceIssued } from '../services/quoteAcceptService';
 import { readQuoteImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
 import { InvoiceServiceError } from '../services/invoiceTypes';
@@ -85,6 +85,9 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     // Post-commit (atom-2): consume the single-use token so the link can't be replayed.
     // A failed revoke leaves the accept link replayable (security-relevant) → capture.
     try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
+    // Post-commit: emit invoice.issued + enqueue the PDF render (matches issueInvoice).
+    // Fire-and-forget; a public accepter has no user id.
+    await emitAcceptInvoiceIssued(res, null);
     // Phase 3 accept→pay: mint a Stripe checkout link for the just-issued invoice and
     // return it (the accept token is now revoked, so the URL must come back in THIS
     // response). Runs in its own context AFTER the accept committed — it must never

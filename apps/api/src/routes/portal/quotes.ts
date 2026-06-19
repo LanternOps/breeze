@@ -7,8 +7,8 @@ import { quotes, quoteBlocks, quoteLines } from '../../db/schema/quotes';
 import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
-import { markQuoteViewed } from '../../services/quoteLifecycle';
-import { acceptQuote } from '../../services/quoteAcceptService';
+import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
+import { acceptQuote, emitAcceptInvoiceIssued } from '../../services/quoteAcceptService';
 import { createQuotePayLink } from '../../services/quotePay';
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
@@ -88,6 +88,10 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
       quoteId: id, signerName: auth.user.name || auth.user.email, signerEmail: auth.user.email,
       ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null, actorUserId: null,
     })));
+    // Post-commit (outside the DB context): emit invoice.issued + enqueue the PDF
+    // render, matching invoiceService.issueInvoice. Fire-and-forget; never fails the
+    // accept the customer already completed.
+    await emitAcceptInvoiceIssued(res, auth.user.id);
     return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });
@@ -95,12 +99,20 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
 // POST /quotes/:id/decline
 quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator('json', declineQuoteSchema), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param'); const { reason } = c.req.valid('json');
-  const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
-  if (!quote) return c.json({ error: 'Quote not found' }, 404);
-  if (quote.status !== 'sent' && quote.status !== 'viewed') return c.json({ error: `Cannot decline a quote in status ${quote.status}`, code: 'INVALID_STATE' }, 409);
-  const now = new Date();
-  await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));
-  return c.json({ data: { status: 'declined' } });
+  // Route through declineQuoteByActor so the portal shares the same status +
+  // read-time expiry (410) guards as the public/internal decline paths — an
+  // inline update here previously let an authed portal user decline an
+  // expired-but-not-yet-swept quote, diverging from "expired is terminal".
+  try {
+    const updated = await declineQuoteByActor(id, reason ?? undefined, { userId: auth.user.id, partnerId: null, accessibleOrgIds: [auth.user.orgId] });
+    return c.json({ data: { status: updated.status } });
+  } catch (err) {
+    if (err instanceof QuoteServiceError) {
+      // getQuote throws 404 QUOTE_NOT_FOUND / 403 ORG_DENIED for a non-owned id.
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
+    throw err;
+  }
 });
 
 // POST /quotes/:id/pay — mint a Stripe checkout link for an accepted (converted)
