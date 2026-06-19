@@ -1,7 +1,17 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+
+// Derive a URL-safe slug from an organization name. Matches the slug schema
+// (^[a-z0-9-]+$) and the existing setup-wizard slugify behavior.
+export function slugifyOrganizationName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100);
+}
 
 const organizationSchema = z
   .object({
@@ -65,6 +75,7 @@ export default function OrganizationForm({
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors, isSubmitting }
   } = useForm<z.input<typeof organizationSchema>, unknown, z.output<typeof organizationSchema>>({
     resolver: zodResolver(organizationSchema),
@@ -82,6 +93,14 @@ export default function OrganizationForm({
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
+  // Keep the slug linked to the name until the user manually edits the slug.
+  // If the form was seeded with an existing slug (edit mode), treat it as
+  // already manually set so we never overwrite it.
+  const slugManuallyEdited = useRef<boolean>(Boolean(defaultValues?.slug));
+
+  const nameField = register('name');
+  const slugField = register('slug');
+
   return (
     <form
       onSubmit={handleSubmit(async values => {
@@ -98,7 +117,15 @@ export default function OrganizationForm({
             id="organization-name"
             placeholder="Acme Corp"
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            {...register('name')}
+            {...nameField}
+            onChange={event => {
+              nameField.onChange(event);
+              if (!slugManuallyEdited.current) {
+                setValue('slug', slugifyOrganizationName(event.target.value), {
+                  shouldValidate: true
+                });
+              }
+            }}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
         </div>
@@ -111,7 +138,12 @@ export default function OrganizationForm({
             id="organization-slug"
             placeholder="acme-corp"
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            {...register('slug')}
+            {...slugField}
+            onChange={event => {
+              // Once the user touches the slug, stop syncing it from the name.
+              slugManuallyEdited.current = true;
+              slugField.onChange(event);
+            }}
           />
           {errors.slug && <p className="text-sm text-destructive">{errors.slug.message}</p>}
         </div>
