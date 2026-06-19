@@ -22,11 +22,11 @@ type QuoteRow = typeof quotes.$inferSelect;
  * invoicePdf.ts. The public quote route lives at `<portalBase>/quote/<token>`.
  *
  * Hardening (malformed `https:///quote/...` accept links): a configured value
- * that is empty or parses to an empty host (e.g. a bare `https://`) must NEVER
- * silently produce an empty-host URL in a customer-facing email. We walk the
- * configured chain and, if none yields a usable host, throw loudly so the
- * caller's best-effort email swallow records the failure rather than mailing a
- * dead link.
+ * that is empty, an empty-authority triple-slash form (`https:///portal`), or
+ * otherwise parses to an empty host (e.g. a bare `https://`) must NEVER silently
+ * produce an empty-host URL in a customer-facing email. We walk the configured
+ * chain and, if none yields a usable host, throw loudly so the caller's
+ * best-effort email swallow records the failure rather than mailing a dead link.
  */
 export function portalBase(): string {
   const candidates = [
@@ -39,6 +39,14 @@ export function portalBase(): string {
   for (const candidate of candidates) {
     const trimmed = candidate?.trim();
     if (!trimmed) continue;
+    // Reject the empty-authority triple-slash form before parsing: `https:///portal`
+    // (a templating accident where the host var didn't interpolate) has an empty
+    // authority, but `new URL('https:///portal').hostname` reinterprets the first
+    // path segment (`portal`) as the host — so the parsed-hostname guard below would
+    // wrongly pass and we'd emit a dead `https:///portal/quote/...` link. Treat any
+    // value whose authority component (between `://` and the next `/`, `?`, `#`, or
+    // end) is empty as malformed and skip it.
+    if (/^[a-z][a-z0-9+.-]*:\/\/(?=[/?#]|$)/i.test(trimmed)) continue;
     let parsed: URL;
     try {
       parsed = new URL(trimmed);
