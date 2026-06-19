@@ -1,0 +1,204 @@
+---
+title: AI Insights
+description: Machine-learning features that surface metric anomalies, group correlated alerts into incidents, explain root causes, suggest remediations, and forecast capacity.
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze includes a suite of machine-learning features that turn raw fleet telemetry into actionable insight: it spots unusual metric behavior before it becomes an outage, groups noisy related alerts into a single incident, explains the likely root cause, suggests fixes, and projects when you'll run out of capacity.
+
+These features are designed to be **turned on gradually**. Each one is governed independently so you can enable a capability, watch its output, judge its quality, and roll it back instantly if it isn't useful for your environment yet. Several start **off by default** — if a panel shows a "disabled" message, the feature simply hasn't been enabled for that organization yet (see [Availability and enabling](#availability-and-enabling) below).
+
+The AI Insights suite covers:
+
+- **Anomaly Detection** — flags unusual device metric behavior (CPU spikes, runaway memory/disk growth, etc.)
+- **Alert Correlation** — groups related alerts into a single incident to cut inbox noise
+- **Root Cause Analysis (RCA)** — gathers evidence on demand and proposes the likely cause of an incident
+- **Remediation Suggestions** — recommends fixes (scripts, playbooks, diagnostics) for an anomaly or incident
+- **Capacity Forecasting** — projects future resource utilization from recent usage
+
+Two closely related capabilities have their own dedicated pages: [User Risk Scoring](/features/user-risk/) and [Device Reliability](/features/reliability/).
+
+---
+
+## Availability and enabling
+
+Every AI Insights capability is controlled by an independent feature flag. Flags resolve in a fixed order of precedence, so you can set a sensible organization-wide default and still flip a single capability on or off without redeploying:
+
+1. **Global kill switches** (environment variables) — highest priority; can only *disable*
+2. **Organization settings** — per-organization override
+3. **Partner settings** — applies to every organization under a partner
+4. **Built-in defaults** — used when nothing above applies
+
+### Default state
+
+| Feature | Default |
+|---------|---------|
+| Device Reliability | **On** |
+| User Risk scoring | **On** |
+| Metric rollups (prepares the data anomalies are detected from) | **On** |
+| Alert Correlation | **On** outside production; **off** in production unless enabled |
+| Anomaly Detection | **Off** |
+| Root Cause Analysis | **Off** |
+| Remediation Suggestions | **Off** |
+| Ticket Triage | **Off** |
+
+<Aside>
+  Anomaly Detection depends on metric rollups, which are on by default — so once you enable Anomaly Detection there is already recent data for it to analyze. Root Cause Analysis and Remediation Suggestions add the most value once Alert Correlation is also on.
+</Aside>
+
+### Enabling a feature for an organization
+
+ML feature flags live in the organization's settings under an `mlFeatureFlags` object, keyed by flag name. To enable Anomaly Detection, Root Cause Analysis, and Remediation Suggestions for an organization, set:
+
+```json
+{
+  "mlFeatureFlags": {
+    "ml.anomalies.enabled": true,
+    "ml.rca.enabled": true,
+    "ml.remediation_suggestions.enabled": true
+  }
+}
+```
+
+The available flags are:
+
+| Flag | Controls |
+|------|----------|
+| `ml.anomalies.enabled` | Anomaly Detection panels |
+| `ml.anomalies.create_alerts` | Whether anomalies can be promoted into alerts automatically |
+| `ml.alert_correlation.enabled` | Alert Correlation / incident grouping |
+| `ml.rca.enabled` | Root Cause Analysis ("Explain incident") |
+| `ml.remediation_suggestions.enabled` | Remediation Suggestions ("Suggested Fixes") |
+| `ml.device_reliability.enabled` | Device Reliability scoring |
+| `ml.user_risk_v0.enabled` | User Risk scoring |
+| `ml.metric_rollups.enabled` | Metric rollups (anomaly input data) |
+
+A partner-level override using the same `mlFeatureFlags` shape applies to all of that partner's organizations unless an individual organization overrides it.
+
+### Global kill switches
+
+For self-hosted operators, environment variables provide an emergency off-switch that overrides all per-organization settings. These only ever **disable** — they cannot turn a feature on.
+
+| Variable | Effect |
+|----------|--------|
+| `ML_FEATURES_DISABLED` / `ML_GLOBAL_KILL_SWITCH` | Disable **all** AI Insights features instantly |
+| `ML_DISABLED_FLAGS` | Comma-separated list of flags to disable (supports wildcards, e.g. `ml.anomalies.*`) |
+| `ML_<FLAG>_DISABLED` | Disable a single flag (e.g. `ML_RCA_DISABLED=true`) |
+
+<Aside type="tip">
+  Setting a kill switch to `false` does **not** enable a feature — it just leaves the switch disengaged so the per-organization setting and defaults apply. Use organization settings to turn features on; use kill switches only to force them off.
+</Aside>
+
+<Aside type="caution">
+  Self-hosters running Breeze from source: the repository ships a full operations runbook at `docs/runbooks/ml-operations.md` covering every flag, kill switch, feedback signal, evaluation endpoint, background worker, and data-retention setting. Consult it for production rollout, quality measurement, and troubleshooting.
+</Aside>
+
+---
+
+## Anomaly Detection
+
+Anomaly Detection watches each device's metric history and flags behavior that deviates from the device's own recent baseline — a CPU spike, a sudden drop, a steady upward trend, runaway memory or disk growth, or unusual network egress. It catches developing problems that a fixed alert threshold would miss.
+
+### Where to find it
+
+Open any device, then select the **Anomalies** tab. Each open anomaly is shown as a card with:
+
+- The **anomaly type** (spike, drop, trend, process runaway, memory growth, disk growth, network egress)
+- The **metric** involved (CPU, RAM, disk, network, processes)
+- The **observed value** versus the device's **baseline**, and a **confidence** score
+
+### Acting on an anomaly
+
+| Action | What it does |
+|--------|--------------|
+| **Dismiss** | Marks the anomaly as not worth acting on |
+| **Resolve** | Marks the underlying issue as handled |
+| **Promote** | Turns the anomaly into a standard alert so it flows through your normal alert and notification process |
+
+If Remediation Suggestions is enabled, each open anomaly also shows a **Suggested Fixes** panel (see [below](#remediation-suggestions)).
+
+<Aside>
+  When the **Anomalies** tab shows "Anomaly detection is disabled for this organization," the `ml.anomalies.enabled` flag is off for that organization. Enable it as described in [Availability and enabling](#availability-and-enabling).
+</Aside>
+
+---
+
+## Alert Correlation and Root Cause Analysis
+
+When many related alerts fire at once — a network outage taking devices offline, a failing service triggering a cascade — Alert Correlation groups them into a single **incident** so your inbox shows one item to triage instead of dozens.
+
+### The Correlations view
+
+Open **Alerts → Correlations**. The page summarizes the impact of grouping across your fleet:
+
+| Metric | Meaning |
+|--------|---------|
+| **Incidents** | Number of correlated groups |
+| **Grouped alerts** | Total alerts pulled into those groups |
+| **Inbox reduction** | How many individual alerts were suppressed into incidents |
+| **Avg noise cut** | Average reduction in alert volume across groups |
+
+Each incident shows its root-cause alert, severity, status, the number of related alerts, a correlation score, and the noise reduction it achieved. From an incident you can **Acknowledge**, **Resolve**, **Mark wrong group**, or **Dismiss grouping** — the last two feed back into the correlation quality (see [Feedback](#feedback-improves-the-models)).
+
+### Root Cause Analysis
+
+With Root Cause Analysis enabled, an incident offers an on-demand **Explain incident** button. Breeze gathers evidence from around the incident's time window and produces:
+
+- **Root cause candidates**, each with a confidence score and supporting evidence (the earliest alert, a recent device change, an aligned error log, and so on)
+- **Suggested next steps**, each with a risk tier and links to the evidence behind it
+- An **evidence timeline** stitched together from alerts, device changes (services, software, configuration), event logs, and agent logs
+- **Evidence gaps** — what Breeze looked for but couldn't find
+
+You can turn an RCA into a ticket with **Create ticket from RCA**, and rate it to improve future analyses.
+
+<Aside>
+  Evidence is gathered **on demand** when you click **Explain incident**, not continuously — so RCA has no ongoing cost until you ask for it.
+</Aside>
+
+---
+
+## Remediation Suggestions
+
+Remediation Suggestions (shown as **Suggested Fixes**) recommends concrete actions for an anomaly or incident — a script to run, a playbook to launch, or a diagnostic to collect — each with a rationale, an expected outcome, a confidence score, and a risk tier.
+
+### Acting on a suggestion
+
+<Steps>
+1. Review the suggestion's rationale and expected action.
+2. **Accept**, **Edit**, or **Reject** it. Editing lets you adjust the title, risk, rationale, or expected action before acting.
+3. For a script suggestion on a selected device, **Execute** runs it directly. High- and critical-risk actions route through [PAM approval](/features/pam/) first and show **Request approval** / **Approval pending** until an approver signs off.
+</Steps>
+
+<Aside type="caution">
+  Remediation Suggestions never act on their own. Nothing runs until you accept and explicitly execute it, and elevated-risk actions still require approval.
+</Aside>
+
+---
+
+## Capacity Forecasting
+
+Capacity Forecasting projects future resource utilization from recent usage so you can plan upgrades before you hit a wall.
+
+Open **Analytics** and switch the dashboard to **Capacity Planning**. The **Capacity Forecast** panel charts current utilization alongside a projected trend line, with optional warning and critical threshold markers so you can see when usage is expected to cross them.
+
+---
+
+## Feedback improves the models
+
+Several AI Insights surfaces capture feedback, and that feedback is used to measure and improve quality over time:
+
+- **User Risk** — mark a score as a **true positive** or **false positive**
+- **Alert Correlation** — **Mark wrong group** or **Dismiss grouping** when a grouping is incorrect
+- **Root Cause Analysis** — rate an explanation helpful or not, or mark it edited
+- **Remediation Suggestions** — accept, edit, or reject a suggested fix
+
+Providing this feedback during a gradual rollout is the fastest way to judge whether a feature is ready to enable more broadly.
+
+---
+
+## Related features
+
+- [User Risk Scoring](/features/user-risk/) — composite risk scores for users, with behavior analytics and access reviews
+- [Device Reliability](/features/reliability/) — uptime, crash, hang, and BSOD tracking with a computed reliability score
+- [Alerts](/features/alerts/) — the alerting system that correlation and RCA build on

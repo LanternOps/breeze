@@ -119,6 +119,7 @@ export default defineConfig({
               label: 'AI & Intelligence',
               items: [
                 { slug: 'features/ai' },
+                { slug: 'features/ml-insights' },
                 { slug: 'features/ai-computer-control' },
                 { slug: 'features/ai-for-office' },
                 { slug: 'features/mcp-server' },
