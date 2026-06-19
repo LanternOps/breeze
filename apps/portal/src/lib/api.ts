@@ -563,6 +563,21 @@ export const portalApi = {
     return apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, undefined, config);
   },
 
+  // Verify-on-return: settle the Checkout session server-side after the customer
+  // lands back on the invoice (success_url carries the session id). Idempotent — the
+  // reconcile sweep is the eventual backstop if this is skipped/fails.
+  settleInvoice: async (
+    id: string,
+    sessionId: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ settled: boolean; invoiceId?: string }>> => {
+    return apiPost<{ settled: boolean; invoiceId?: string }>(
+      `/portal/invoices/${id}/settle`,
+      { sessionId },
+      config
+    );
+  },
+
   getProfile: async (config: ApiRequestConfig = {}): Promise<ApiResponse<Profile>> => {
     const response = await apiGet<{ user: Profile }>('/portal/profile', config);
     if (!response.data) {

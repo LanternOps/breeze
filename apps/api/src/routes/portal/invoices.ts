@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -15,7 +16,11 @@ import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getPartnerStripeClient, PartnerStripeError } from '../../services/partnerStripe';
+import { settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
+
+// The Checkout session id Stripe substitutes into success_url ({CHECKOUT_SESSION_ID}).
+const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
 
 // Invoice statuses that may be paid online. Drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
@@ -220,3 +225,53 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
 
   return c.json({ url: session.url });
 });
+
+// POST /portal/invoices/:id/settle — verify-on-return: the customer just came back
+// from Checkout (success_url carries &session_id={CHECKOUT_SESSION_ID}). Settle the
+// payment server-side NOW for instant feedback. The API-key model has no inbound
+// webhook, so the reconcile sweep is the eventual backstop — this is the fast path,
+// and it is idempotent (safe to call twice / alongside the sweep).
+invoiceRoutes.post('/invoices/:id/settle',
+  zValidator('param', ticketParamSchema),
+  zValidator('json', settleSchema),
+  async (c) => {
+    const auth = c.get('portalAuth');
+    const { id } = c.req.valid('param');
+    const { sessionId } = c.req.valid('json');
+
+    // Org-scoped: the invoice must belong to this portal user's org (404, not 403,
+    // so we don't leak existence cross-tenant).
+    const [inv] = await db.select({ id: invoices.id, partnerId: invoices.partnerId })
+      .from(invoices)
+      .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
+      .limit(1);
+    if (!inv) return c.json({ error: 'Invoice not found' }, 404);
+
+    // The session must be one WE created for THIS invoice — a pending/recorded
+    // mapping row, read in org scope (RLS confirms ownership). This blocks a customer
+    // from passing a foreign session_id to settle (and reveal) someone else's checkout.
+    const [mapping] = await db.select({ id: invoiceStripePayments.id })
+      .from(invoiceStripePayments)
+      .where(and(
+        eq(invoiceStripePayments.stripeObjectId, sessionId),
+        eq(invoiceStripePayments.invoiceId, inv.id),
+        eq(invoiceStripePayments.orgId, auth.user.orgId),
+      ))
+      .limit(1);
+    if (!mapping) return c.json({ settled: false });
+
+    // settleCheckoutSession reads the partner-axis key + records the payment — both
+    // need system scope (the portal request runs in ORG scope, where the key row is
+    // RLS-invisible — the #1375 class). The service expects the caller to establish it.
+    try {
+      const result = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => settleCheckoutSession(inv.partnerId, sessionId)));
+      return c.json(result);
+    } catch (err) {
+      // Never strand the customer on an error just because instant-settle hiccuped —
+      // the sweep settles it within the minute. Log + report unsettled (200), so the
+      // page can show "processing" rather than a failure.
+      console.error('[portal] verify-on-return settle failed', { invoiceId: inv.id, sessionId, err });
+      return c.json({ settled: false });
+    }
+  });

@@ -65,6 +65,10 @@ vi.mock('../../services/partnerStripe', async (importOriginal) => {
   };
 });
 
+// Verify-on-return settle primitive (system-scoped in the route).
+const { settleCheckoutSessionMock } = vi.hoisted(() => ({ settleCheckoutSessionMock: vi.fn() }));
+vi.mock('../../services/stripeSettle', () => ({ settleCheckoutSession: settleCheckoutSessionMock }));
+
 // Real InvoiceServiceError / PartnerStripeError so `instanceof` branches in the route fire.
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { PartnerStripeError } from '../../services/partnerStripe';
@@ -233,5 +237,54 @@ describe('portal invoices routes', () => {
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(500);
     expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  // ---- verify-on-return settle ----
+
+  function settle(sessionId: unknown, orgId = ORG_ID) {
+    return app(orgId).request(`/invoices/${INV_ID}/settle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    });
+  }
+
+  it('POST /invoices/:id/settle settles the session for this invoice and returns the result', async () => {
+    dbResults.push([{ id: INV_ID, partnerId: 'p1' }]);   // invoice SELECT
+    dbResults.push([{ id: 'map_1' }]);                    // mapping SELECT (session belongs to this invoice)
+    settleCheckoutSessionMock.mockResolvedValue({ settled: true, invoiceId: INV_ID });
+
+    const res = await settle('cs_123');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ settled: true, invoiceId: INV_ID });
+    expect(settleCheckoutSessionMock).toHaveBeenCalledWith('p1', 'cs_123');
+  });
+
+  it('POST /invoices/:id/settle returns settled:false (no settle call) for a session not tied to this invoice', async () => {
+    dbResults.push([{ id: INV_ID, partnerId: 'p1' }]);   // invoice SELECT
+    dbResults.push([]);                                   // mapping SELECT → none (foreign/unknown session)
+
+    const res = await settle('cs_foreign');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ settled: false });
+    expect(settleCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /invoices/:id/settle 404s for an invoice not in this org', async () => {
+    dbResults.push([]);                                   // invoice SELECT → none (cross-tenant)
+
+    const res = await settle('cs_123');
+    expect(res.status).toBe(404);
+    expect(settleCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /invoices/:id/settle swallows a settle error as settled:false (sweep is the backstop)', async () => {
+    dbResults.push([{ id: INV_ID, partnerId: 'p1' }]);   // invoice SELECT
+    dbResults.push([{ id: 'map_1' }]);                    // mapping SELECT
+    settleCheckoutSessionMock.mockRejectedValue(new Error('stripe timeout'));
+
+    const res = await settle('cs_123');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ settled: false });
   });
 });

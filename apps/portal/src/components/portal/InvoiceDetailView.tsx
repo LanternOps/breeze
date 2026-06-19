@@ -1,5 +1,5 @@
 import { withBase } from '@/lib/basePath';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -57,6 +57,39 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
+  // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
+  const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending'>('idle');
+
+  // Instant settle on return from Stripe Checkout. success_url lands the customer back
+  // here as ?paid=1&session_id=cs_… — POST that session to the settle route so the
+  // status flips to Paid immediately (the API-key model has no inbound webhook; the
+  // reconcile sweep is the eventual backstop). Idempotent, so a stray re-run is safe.
+  useEffect(() => {
+    if (!detail) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('paid') !== '1') return;
+    const sessionId = params.get('session_id');
+    if (!sessionId) return;
+
+    const invoiceId = detail.invoice.id;
+    let cancelled = false;
+    setSettleState('settling');
+    void portalApi.settleInvoice(invoiceId, sessionId)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.data?.settled) {
+          // Reload WITHOUT the return params (replace, not push) so the page re-fetches
+          // fresh server data showing Paid — and a manual refresh won't re-trigger settle.
+          window.location.replace(withBase(`/invoices/${invoiceId}`));
+        } else {
+          // Not yet settled (async method, or instant-settle hiccup) — the sweep will
+          // catch it. Tell the customer rather than silently leaving it "Sent".
+          setSettleState('pending');
+        }
+      })
+      .catch(() => { if (!cancelled) setSettleState('pending'); });
+    return () => { cancelled = true; };
+  }, [detail]);
 
   if (error || !detail) {
     return (
@@ -175,6 +208,16 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         </div>
       </div>
 
+      {settleState === 'settling' && (
+        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="invoice-settle-confirming">
+          Confirming your payment…
+        </div>
+      )}
+      {settleState === 'pending' && (
+        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="invoice-settle-pending">
+          Thanks! We're still confirming your payment — this can take a moment. Refresh shortly to see it applied.
+        </div>
+      )}
       {payError && (
         <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive" data-testid="invoice-pay-error">{payError}</div>
       )}
