@@ -11,6 +11,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import AccessDenied from '../shared/AccessDenied';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'clone' | 'delete' | 'users';
 
@@ -25,6 +26,9 @@ export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // Distinct from `error`: a 403 is a permission denial, not a transient load
+  // failure, so it renders the access-denied state (no misleading retry button).
+  const [forbidden, setForbidden] = useState(false);
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -36,10 +40,15 @@ export default function RolesPage() {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const response = await fetchWithAuth('/roles');
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
+          return;
+        }
+        if (response.status === 403) {
+          setForbidden(true);
           return;
         }
         throw new Error('Failed to fetch roles');
@@ -345,6 +354,10 @@ export default function RolesPage() {
         </div>
       </div>
     );
+  }
+
+  if (forbidden) {
+    return <AccessDenied message="You don't have permission to manage roles." />;
   }
 
   if (error && roles.length === 0) {

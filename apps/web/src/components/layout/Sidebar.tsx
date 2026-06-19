@@ -109,15 +109,20 @@ type NavItem = {
 // ---------------------------------------------------------------------------
 // Top-level items (always visible, 6-8 max)
 // ---------------------------------------------------------------------------
+// Each item maps to the permission its backing route enforces (see the
+// requirePermission calls in apps/api/src/routes/*). Gating the nav on the same
+// grant keeps a permission-scoped role (e.g. "Partner Billing", which holds only
+// catalog/invoices/quotes/contracts) from seeing items it has no access to.
+// Dashboard is ungated — it's the always-available landing page.
 const topLevelNav: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Devices', href: '/devices', icon: Monitor },
-  { name: 'Alerts', href: '/alerts', icon: Bell },
-  { name: 'Tickets', href: '/tickets', icon: Ticket },
-  { name: 'Incidents', href: '/incidents', icon: ShieldAlert },
-  { name: 'Remote Access', href: '/remote', icon: Terminal },
-  { name: 'Scripts', href: '/scripts', icon: FileCode },
-  { name: 'Patches', href: '/patches', icon: Download },
+  { name: 'Devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'Alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
+  { name: 'Incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Remote Access', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
+  { name: 'Scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
+  { name: 'Patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
 
 // ---------------------------------------------------------------------------
@@ -146,25 +151,28 @@ export const navSections: NavSection[] = [
     id: 'monitoring',
     label: 'Monitoring',
     icon: Activity,
+    // Both surfaces read device/network state, gated on devices:read server-side.
     items: [
-      { name: 'Network Monitor', href: '/monitoring', icon: Activity },
-      { name: 'Network Discovery', href: '/discovery', icon: Network },
+      { name: 'Network Monitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Network Discovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
   },
   {
     id: 'security',
     label: 'Security',
     icon: ShieldCheck,
+    // The security suite is built on device posture/scan data (devices:read).
+    // A billing-only role has no devices:read grant, so the whole section hides.
     items: [
-      { name: 'Security', href: '/security', icon: ShieldCheck },
-      { name: 'DNS Security', href: '/dns-security', icon: Network },
-      { name: 'PAM', href: '/pam', icon: KeyRound },
-      { name: 'User Risk', href: '/security/user-risk', icon: UserCheck },
-      { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch },
-      { name: 'Peripherals', href: '/peripherals', icon: Usb },
-      { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
-      { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck },
-      { name: 'Compliance Baselines', href: '/audit-baselines', icon: ListChecks },
+      { name: 'Security', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'DNS Security', href: '/dns-security', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'PAM', href: '/pam', icon: KeyRound, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'User Risk', href: '/security/user-risk', icon: UserCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Peripherals', href: '/peripherals', icon: Usb, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Compliance Baselines', href: '/audit-baselines', icon: ListChecks, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
   },
   {
@@ -176,9 +184,9 @@ export const navSections: NavSection[] = [
       { name: 'Invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
       { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
       { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
-      { name: 'Software Library', href: '/software', icon: Package },
-      { name: 'Software Policies', href: '/software-inventory', icon: Package },
-      { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
+      { name: 'Software Library', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Software Policies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Config Policies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Integrations', href: '/integrations', icon: Plug },
     ],
   },
@@ -186,10 +194,11 @@ export const navSections: NavSection[] = [
     id: 'backup',
     label: 'Backup',
     icon: HardDrive,
+    // Backup/recovery surfaces are gated on the backup:read grant.
     items: [
-      { name: 'Backup', href: '/backup', icon: HardDrive },
-      { name: 'Cloud Backup', href: '/c2c', icon: Cloud },
-      { name: 'Disaster Recovery', href: '/dr', icon: ShieldEllipsis },
+      { name: 'Backup', href: '/backup', icon: HardDrive, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Cloud Backup', href: '/c2c', icon: Cloud, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Disaster Recovery', href: '/dr', icon: ShieldEllipsis, requiredPermission: { resource: 'backup', action: 'read' } },
     ],
   },
   {
@@ -197,10 +206,10 @@ export const navSections: NavSection[] = [
     label: 'Reporting',
     icon: BarChart3,
     items: [
-      { name: 'Reports', href: '/reports', icon: FileText },
-      { name: 'Analytics', href: '/analytics', icon: BarChart3 },
-      { name: 'Audit Trail', href: '/audit', icon: FileText },
-      { name: 'Event Logs', href: '/logs', icon: ScrollText },
+      { name: 'Reports', href: '/reports', icon: FileText, requiredPermission: { resource: 'reports', action: 'read' } },
+      { name: 'Analytics', href: '/analytics', icon: BarChart3, requiredPermission: { resource: 'reports', action: 'read' } },
+      { name: 'Audit Trail', href: '/audit', icon: FileText, requiredPermission: { resource: 'audit', action: 'read' } },
+      { name: 'Event Logs', href: '/logs', icon: ScrollText, requiredPermission: { resource: 'audit', action: 'read' } },
     ],
   },
   {
@@ -208,14 +217,15 @@ export const navSections: NavSection[] = [
     label: 'Settings',
     icon: Building,
     items: [
-      { name: 'Partner', href: '/settings/partner', icon: Building },
-      { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
-      { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit },
-      { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
+      { name: 'Partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
+      { name: 'Organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
+      { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
+      { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
       { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
-      { name: 'Users', href: '/settings/users', icon: Users },
-      { name: 'Roles', href: '/settings/roles', icon: KeyRound },
-      { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
+      // Users + Roles are both served by the users routes (users:read).
+      { name: 'Users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'Roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Deletion requests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
     ],
   },
