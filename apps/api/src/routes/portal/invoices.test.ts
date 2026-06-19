@@ -51,21 +51,30 @@ vi.mock('../../db', () => {
 });
 
 // Stripe client + connect service mocks for the pay route.
-const { sessionsCreateMock, getConnectionMock } = vi.hoisted(() => ({
+// Partner Stripe-key mocks for the pay route (API-key model — no Connect). The
+// pay route builds the partner's own client and charges directly on their account.
+const { sessionsCreateMock, getPartnerStripeClientMock } = vi.hoisted(() => ({
   sessionsCreateMock: vi.fn(),
-  getConnectionMock: vi.fn(),
+  getPartnerStripeClientMock: vi.fn(),
 }));
-vi.mock('../../services/stripeClient', () => ({
-  getStripe: () => ({ checkout: { sessions: { create: sessionsCreateMock } } }),
-  getConnectedStripeOptions: (acct: string) => ({ stripeAccount: acct }),
-}));
-vi.mock('../../services/stripeConnectService', () => ({
-  getConnection: getConnectionMock,
-}));
+vi.mock('../../services/partnerStripe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/partnerStripe')>();
+  return {
+    PartnerStripeError: actual.PartnerStripeError,
+    getPartnerStripeClient: getPartnerStripeClientMock,
+  };
+});
 
-// Real InvoiceServiceError so `instanceof` branches in the route fire.
+// Real InvoiceServiceError / PartnerStripeError so `instanceof` branches in the route fire.
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { PartnerStripeError } from '../../services/partnerStripe';
 import { invoiceRoutes as portalInvoiceRoutes } from './invoices';
+
+// A fake partner Stripe client whose checkout.sessions.create is the shared spy.
+const partnerClient = (stripeAccountId = 'acct_9') => ({
+  stripe: { checkout: { sessions: { create: sessionsCreateMock } } },
+  stripeAccountId,
+});
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const INV_ID = '11111111-1111-1111-1111-111111111111';
@@ -140,18 +149,19 @@ describe('portal invoices routes', () => {
     expect(renderInvoicePdfMock).toHaveBeenCalledWith(INV_ID);
   });
 
-  it('POST /invoices/:id/pay creates a checkout session on the connected account', async () => {
+  it('POST /invoices/:id/pay charges directly on the partner key (no Connect) + carries session_id', async () => {
     // invoice SELECT → a payable sent invoice with a 100.00 balance
     dbResults.push([{
       id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-1',
     }]);
-    getConnectionMock.mockResolvedValue({ status: 'connected', stripeAccountId: 'acct_9' });
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/c/cs_1', payment_intent: 'pi_1' });
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ url: expect.stringContaining('checkout.stripe.com') });
+    expect(getPartnerStripeClientMock).toHaveBeenCalledWith('p1');
     expect(sessionsCreateMock).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: 'payment',
@@ -160,10 +170,12 @@ describe('portal invoices routes', () => {
         payment_method_types: ['card'],
         // metadata key matches the design spec (section 6 step 3).
         metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
+        // The return URL must carry {CHECKOUT_SESSION_ID} for verify-on-return settle.
+        success_url: expect.stringContaining('session_id={CHECKOUT_SESSION_ID}'),
       }),
-      // Connected-account scope + an idempotency key keyed on (invoice, balance) so a
-      // double-click reuses the same Checkout session rather than minting a second one.
-      { stripeAccount: 'acct_9', idempotencyKey: `inv_${INV_ID}_10000` },
+      // No Connect stripeAccount option — the client is already the partner's. Only an
+      // idempotency key keyed on (invoice, balance) so a double-click reuses the session.
+      { idempotencyKey: `inv_${INV_ID}_10000` },
     );
     // the Stripe object → payment mapping row is recorded
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -178,7 +190,7 @@ describe('portal invoices routes', () => {
       id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
       balance: '1000.00', currencyCode: 'JPY', invoiceNumber: 'INV-JPY',
     }]);
-    getConnectionMock.mockResolvedValue({ status: 'connected', stripeAccountId: 'acct_9' });
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_jpy', url: 'https://checkout.stripe.com/c/cs_jpy', payment_intent: 'pi_jpy' });
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
@@ -190,22 +202,36 @@ describe('portal invoices routes', () => {
         })],
         metadata: expect.objectContaining({ invoice_balance_cents: '1000' }),
       }),
-      { stripeAccount: 'acct_9', idempotencyKey: `inv_${INV_ID}_1000` },
+      { idempotencyKey: `inv_${INV_ID}_1000` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
       stripeObjectId: 'cs_jpy', amount: '1000.00', currency: 'JPY',
     }));
   });
 
-  it('POST /invoices/:id/pay returns 409 when the partner has not connected Stripe', async () => {
+  it('POST /invoices/:id/pay returns 409 when the partner has no Stripe key configured', async () => {
     dbResults.push([{
       id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-2',
     }]);
-    getConnectionMock.mockResolvedValue(null);
+    getPartnerStripeClientMock.mockRejectedValue(new PartnerStripeError('not connected', 'NO_STRIPE_KEY'));
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(409);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /invoices/:id/pay returns 500 (not 409) when the stored key is unreadable', async () => {
+    // A corrupt/undecryptable key is an internal fault — surfacing it as 409
+    // "not available" would lie about why payment failed (mirrors createInvoicePayLink).
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-3',
+    }]);
+    getPartnerStripeClientMock.mockRejectedValue(new PartnerStripeError('unreadable', 'STRIPE_KEY_UNREADABLE'));
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(500);
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
 });

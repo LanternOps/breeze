@@ -14,8 +14,7 @@ import { getCustomerInvoice, markViewed } from '../../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
-import { getConnection } from '../../services/stripeConnectService';
-import { getStripe, getConnectedStripeOptions } from '../../services/stripeClient';
+import { getPartnerStripeClient, PartnerStripeError } from '../../services/partnerStripe';
 import { toMinorUnits } from '../../services/stripeMoney';
 
 // Invoice statuses that may be paid online. Drafts/paid/void are excluded.
@@ -133,9 +132,9 @@ invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), a
 });
 
 // POST /portal/invoices/:id/pay — open a Stripe Checkout session on the partner's
-// connected account (direct charge). The invoice SELECT and the mapping INSERT run
-// under the customer's org context (RLS-safe as that org); the partner-axis
-// connected-account read escapes to a system sub-context (see below).
+// OWN Stripe account using their stored API key (no Connect). The invoice SELECT and
+// the mapping INSERT run under the customer's org context (RLS-safe as that org); the
+// partner-axis key read escapes to a system sub-context (see below).
 invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), async (c) => {
   const auth = c.get('portalAuth');
   const { id } = c.req.valid('param');
@@ -155,16 +154,29 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // portal user's ORGANIZATION scope (portal/auth.ts), where breeze_has_partner_access
   // is false — a bare org-scope read would be silently RLS-filtered to 0 rows with no
   // error (the #1375 class of bug), making the pay route always 409. Read the partner's
-  // connection in a system-scoped sub-context outside the request transaction.
-  const conn = await runOutsideDbContext(() => withSystemDbAccessContext(() => getConnection(inv.partnerId)));
-  if (!conn || conn.status !== 'connected') {
-    return c.json({ error: 'Online payment is not available' }, 409);
+  // key + build their client in a system-scoped sub-context outside the request txn.
+  let stripe: Awaited<ReturnType<typeof getPartnerStripeClient>>['stripe'];
+  let stripeAccountId: string;
+  try {
+    ({ stripe, stripeAccountId } = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => getPartnerStripeClient(inv.partnerId))));
+  } catch (err) {
+    // "No key configured" is a benign 409 (partner hasn't set up online payment).
+    // A decrypt/unreadable-key fault is a real 500 — don't lie "not available" when
+    // the key is actually corrupt/misconfigured (it's already logged in the service).
+    if (err instanceof PartnerStripeError && err.code === 'NO_STRIPE_KEY') {
+      return c.json({ error: 'Online payment is not available' }, 409);
+    }
+    if (err instanceof PartnerStripeError) {
+      return c.json({ error: 'Could not initialize payment — please contact support' }, 500);
+    }
+    throw err;
   }
 
   // Customer-facing portal base URL (mirrors invoicePdf.ts portal-link building).
   const portalBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');
 
-  const session = await getStripe().checkout.sessions.create({
+  const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     // v1 is card-only. Restricting payment_method_types keeps the recorded
     // invoice_payments.method ('card') accurate and avoids enabling async/
@@ -178,7 +190,9 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       },
       quantity: 1,
     }],
-    success_url: `${portalBase}/portal/invoices/${inv.id}?paid=1`,
+    // {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect — the verify-on-return
+    // handler reads it to settle server-side (the API-key model has no inbound webhook).
+    success_url: `${portalBase}/portal/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${portalBase}/portal/invoices/${inv.id}`,
     metadata: {
       invoice_id: inv.id,
@@ -187,7 +201,6 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       invoice_balance_cents: String(balanceMinor),
     },
   }, {
-    ...getConnectedStripeOptions(conn.stripeAccountId),
     // Dedupe double-click / retry: identical (invoice, balance) reuses the same
     // Checkout session instead of creating a second pending mapping row.
     idempotencyKey: `inv_${inv.id}_${balanceMinor}`,
@@ -196,7 +209,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   await db.insert(invoiceStripePayments).values({
     orgId: inv.orgId,
     invoiceId: inv.id,
-    stripeAccountId: conn.stripeAccountId,
+    stripeAccountId,
     stripeObjectType: 'checkout_session',
     stripeObjectId: session.id,
     stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
