@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RemediationSuggestionsPanel from './RemediationSuggestionsPanel';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 const showToast = vi.fn();
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -60,6 +62,9 @@ describe('RemediationSuggestionsPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     showToast.mockReset();
+    // useMlFeatureFlags only fetches when an org is active; seed one so the
+    // flag-driven (enabled/disabled) branches resolve under test.
+    useOrgStore.setState({ currentOrgId: 'org-1' });
   });
 
   it('lists suggested fixes for a source', async () => {

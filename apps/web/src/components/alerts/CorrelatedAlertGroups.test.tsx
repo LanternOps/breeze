@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CorrelatedAlertGroups from './CorrelatedAlertGroups';
 import AlertsTabStrip from './AlertsTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn()
 }));
 
 const showToast = vi.fn();
@@ -244,6 +246,9 @@ function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEna
 describe('CorrelatedAlertGroups', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // useMlFeatureFlags only fetches when an org is active; seed one so the
+    // flag-driven (enabled/disabled) branches resolve under test.
+    useOrgStore.setState({ currentOrgId: 'org-1' });
   });
 
   it('renders grouped alert summary and expanded members', async () => {
@@ -578,15 +583,12 @@ describe('CorrelatedAlertGroups', () => {
   });
 
   it('marks the correlations tab active on the correlations route', () => {
-    window.history.pushState({}, '', '/alerts/correlations');
-
-    render(<AlertsTabStrip />);
+    render(<AlertsTabStrip currentPath="/alerts/correlations" />);
 
     expect(screen.getByRole('link', { name: 'Correlations' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('labels the correlations tab as disabled when alert correlation is disabled', async () => {
-    window.history.pushState({}, '', '/alerts');
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
@@ -596,7 +598,7 @@ describe('CorrelatedAlertGroups', () => {
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
     });
 
-    render(<AlertsTabStrip />);
+    render(<AlertsTabStrip currentPath="/alerts" />);
 
     expect(await screen.findByText('Correlations disabled')).toHaveAttribute('aria-disabled', 'true');
     expect(screen.queryByRole('link', { name: 'Correlations' })).toBeNull();

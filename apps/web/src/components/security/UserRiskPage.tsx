@@ -69,6 +69,15 @@ const scoreBarClass = (score: number): string => {
   return 'bg-emerald-500';
 };
 
+// Risk-factor (driver) bars represent how much a factor *contributes* to risk,
+// so they use a warm risk palette and never green — a low contribution is still
+// risk, not "good" (which an emerald bar would imply on a high-risk user).
+const driverBarClass = (value: number): string => {
+  if (value >= 25) return 'bg-red-500';
+  if (value >= 15) return 'bg-orange-500';
+  return 'bg-amber-500';
+};
+
 const severityClass = (severity: string | null): string => {
   if (severity === 'critical') return 'border-red-500/40 bg-red-500/10 text-red-700';
   if (severity === 'high') return 'border-orange-500/40 bg-orange-500/10 text-orange-700';
@@ -377,7 +386,7 @@ export default function UserRiskPage() {
                         <span className="font-medium">{value}</span>
                       </div>
                       <div className="h-2 rounded-full bg-muted">
-                        <div className={`h-2 rounded-full ${scoreBarClass(value)}`} style={{ width: `${value}%` }} />
+                        <div className={`h-2 rounded-full ${driverBarClass(value)}`} style={{ width: `${value}%` }} />
                       </div>
                     </div>
                   ))}

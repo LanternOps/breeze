@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 const showToast = vi.fn();
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -39,6 +41,9 @@ describe('DeviceAnomaliesPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     showToast.mockReset();
+    // useMlFeatureFlags only fetches when an org is active; seed one so the
+    // flag-driven (enabled/disabled) branches resolve under test.
+    useOrgStore.setState({ currentOrgId: 'org-1' });
   });
 
   it('renders open metric anomalies for a device', async () => {

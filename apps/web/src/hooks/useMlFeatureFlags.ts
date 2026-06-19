@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../stores/auth';
+import { useOrgStore } from '../stores/orgStore';
 
 export type MlFeatureFlagName =
   | 'ml.alert_correlation.enabled'
@@ -29,8 +30,20 @@ export function useMlFeatureFlags() {
   const [flags, setFlags] = useState<Partial<Record<MlFeatureFlagName, MlFeatureFlagResolution>>>({});
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The /config/ml-feature-flags endpoint resolves flags per organization and
+  // returns 400 without an org context, so scope the request to the active org.
+  const currentOrgId = useOrgStore((state) => state.currentOrgId);
 
   const load = useCallback(async () => {
+    // No active org (e.g. the "All orgs" scope) → there's nothing to resolve
+    // flags against. Skip the request rather than firing one that 400s, and
+    // treat it as loaded with no overrides (every flag stays enabled).
+    if (!currentOrgId) {
+      setFlags({});
+      setError(null);
+      setLoaded(true);
+      return;
+    }
     try {
       const response = await fetchWithAuth('/config/ml-feature-flags');
       if (!response.ok) {
@@ -44,7 +57,7 @@ export function useMlFeatureFlags() {
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [currentOrgId]);
 
   useEffect(() => {
     void load();

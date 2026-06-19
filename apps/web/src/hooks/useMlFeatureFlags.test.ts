@@ -3,12 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useMlFeatureFlags } from './useMlFeatureFlags';
 import { fetchWithAuth } from '../stores/auth';
+import { useOrgStore } from '../stores/orgStore';
 
 vi.mock('../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+
+const setCurrentOrgId = (orgId: string | null) => {
+  useOrgStore.setState({ currentOrgId: orgId });
+};
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -28,6 +34,9 @@ const disabledFlag = {
 describe('useMlFeatureFlags', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
+    // Default to an active org so the fetch path runs; the no-org case is
+    // exercised explicitly below.
+    setCurrentOrgId('org-1');
   });
 
   it('parses the mlFeatureFlags response shape', async () => {
@@ -80,6 +89,18 @@ describe('useMlFeatureFlags', () => {
     await waitFor(() => expect(result.current.loaded).toBe(true));
     expect(result.current.error).toBe('network down');
     expect(result.current.isDisabled('ml.device_reliability.enabled')).toBe(false);
+  });
+
+  it('skips the request when there is no active org (All-orgs scope)', async () => {
+    setCurrentOrgId(null);
+
+    const { result } = renderHook(() => useMlFeatureFlags());
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+    expect(result.current.flags).toEqual({});
+    expect(result.current.isDisabled('ml.anomalies.enabled')).toBe(false);
   });
 
   it('treats flags as not-disabled until loaded resolves', () => {

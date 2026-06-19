@@ -464,7 +464,7 @@ export default function NotificationChannelsPage() {
 
   return (
     <div className="space-y-6">
-      <AlertsTabStrip />
+      <AlertsTabStrip currentPath="/alerts/channels" />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Notification Channels</h1>

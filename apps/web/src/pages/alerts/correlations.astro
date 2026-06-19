@@ -2,11 +2,13 @@
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import AlertsTabStrip from '../../components/alerts/AlertsTabStrip';
 import CorrelatedAlertGroups from '../../components/alerts/CorrelatedAlertGroups';
+
+const currentPath = Astro.url.pathname;
 ---
 
 <DashboardLayout title="Alert Correlations">
   <div class="space-y-5">
-    <AlertsTabStrip client:load />
+    <AlertsTabStrip currentPath={currentPath} client:load />
     <div>
       <h1 class="text-xl font-bold tracking-tight">Alert Correlations</h1>
       <p class="mt-1 text-sm text-muted-foreground">

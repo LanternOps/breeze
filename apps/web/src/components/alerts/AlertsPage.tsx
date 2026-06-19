@@ -361,7 +361,7 @@ export default function AlertsPage() {
 
   return (
     <div className="space-y-5">
-      <AlertsTabStrip />
+      <AlertsTabStrip currentPath="/alerts" />
       <div>
         <h1 className="text-xl font-bold tracking-tight">Alerts</h1>
         <p className="text-sm text-muted-foreground mt-1">

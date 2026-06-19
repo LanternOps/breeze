@@ -188,7 +188,7 @@ export default function AlertRulesPage() {
 
   return (
     <div className="space-y-6">
-      <AlertsTabStrip />
+      <AlertsTabStrip currentPath="/alerts/rules" />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Alert Rules</h1>

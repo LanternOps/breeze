@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 const TABS = [
@@ -8,17 +8,39 @@ const TABS = [
   { href: '/alerts/channels', label: 'Channels' },
 ] as const;
 
-export default function AlertsTabStrip() {
+interface AlertsTabStripProps {
+  // SSR-correct current path supplied by the rendering page/component so the
+  // server and client first paint agree on the active tab (no hydration mismatch).
+  currentPath?: string;
+}
+
+// Seed from the prop (SSR-stable) and update after mount so the active tab
+// stays correct across Astro View Transitions and back/forward navigation.
+// Mirrors useCurrentPath in components/layout/Sidebar.tsx.
+function useCurrentPath(initialPath: string): string {
+  const [path, setPath] = useState(initialPath);
+  useEffect(() => {
+    const update = () => setPath(window.location.pathname);
+    document.addEventListener('astro:after-swap', update);
+    window.addEventListener('popstate', update);
+    return () => {
+      document.removeEventListener('astro:after-swap', update);
+      window.removeEventListener('popstate', update);
+    };
+  }, []);
+  return path;
+}
+
+export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStripProps) {
   const mlFlags = useMlFeatureFlags();
   const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
+  const path = useCurrentPath(currentPath);
   const activeHref = useMemo(() => {
-    if (typeof window === 'undefined') return '/alerts';
-    const path = window.location.pathname;
     if (path.startsWith('/alerts/correlations')) return '/alerts/correlations';
     if (path.startsWith('/alerts/channels')) return '/alerts/channels';
     if (path.startsWith('/alerts/rules')) return '/alerts/rules';
     return '/alerts';
-  }, []);
+  }, [path]);
 
   return (
     <nav className="flex gap-1 border-b text-sm" aria-label="Alerts sections">

@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UserRiskPage from './UserRiskPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 const showToast = vi.fn();
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -96,6 +98,10 @@ describe('UserRiskPage', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
     showToast.mockReset();
+    // useMlFeatureFlags only fetches /config/ml-feature-flags when an org is
+    // active; seed one so the flag request is the first call, matching the
+    // ordered mockResolvedValueOnce chains below.
+    useOrgStore.setState({ currentOrgId: 'org-1' });
   });
 
   it('renders scores, evaluation metrics, and selected user evidence', async () => {
