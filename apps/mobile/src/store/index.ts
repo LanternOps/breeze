@@ -1,4 +1,4 @@
-import { configureStore } from '@reduxjs/toolkit';
+import { configureStore, combineReducers } from '@reduxjs/toolkit';
 import { useDispatch, useSelector } from 'react-redux';
 
 import authReducer from './authSlice';
@@ -6,15 +6,22 @@ import alertsReducer from './alertsSlice';
 import approvalsReducer from './approvalsSlice';
 import aiChatReducer from './aiChatSlice';
 import lifecycleReducer from './lifecycleSlice';
+import { withLogoutReset } from './resettable';
+
+const appReducer = combineReducers({
+  auth: authReducer,
+  alerts: alertsReducer,
+  approvals: approvalsReducer,
+  aiChat: aiChatReducer,
+  lifecycle: lifecycleReducer,
+});
+
+// Wipe every slice on sign-out so no prior server/account data leaks into the
+// next session (chat history, alerts, pending approvals). See ./resettable.
+const rootReducer = withLogoutReset(appReducer);
 
 export const store = configureStore({
-  reducer: {
-    auth: authReducer,
-    alerts: alertsReducer,
-    approvals: approvalsReducer,
-    aiChat: aiChatReducer,
-    lifecycle: lifecycleReducer,
-  },
+  reducer: rootReducer,
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
       serializableCheck: {

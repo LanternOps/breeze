@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import type { User } from './api';
+import { clearApprovalCache } from './approvalCache';
 
 const TOKEN_KEY = 'breeze_auth_token';
 const USER_KEY = 'breeze_user';
@@ -84,12 +85,21 @@ export async function removeUser(): Promise<void> {
 }
 
 /**
- * Clear all authentication data
+ * Clear all authentication data.
+ *
+ * Also clears the persistent approvals cache (`breeze.approvals.cache.v1`).
+ * The in-memory Redux reset (store/resettable.ts) drops session state on
+ * sign-out, but the approval queue is additionally persisted to SecureStore
+ * for offline cold-open. Without clearing it here, the next account signing in
+ * on the same device would read the prior session's cached approvals — the
+ * same cross-session leak the Redux logout reset in `store/resettable.ts`
+ * closes for in-memory state.
  */
 export async function clearAuthData(): Promise<void> {
   await Promise.all([
     removeToken(),
     removeUser(),
+    clearApprovalCache(),
   ]);
 }
 

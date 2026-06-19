@@ -5,7 +5,7 @@ const KEY = 'breeze.approvals.cache.v1';
 
 // Cache last /pending response so cold open with no network still renders the queue.
 
-async function clearCache(): Promise<void> {
+export async function clearApprovalCache(): Promise<void> {
   try {
     await SecureStore.deleteItemAsync(KEY);
   } catch (err) {
@@ -28,7 +28,7 @@ export async function readCachedApprovals(): Promise<ApprovalRequest[]> {
     return parsed.filter((a) => new Date(a.expiresAt).getTime() > Date.now());
   } catch (err) {
     console.warn('[approvalCache] corrupt cache, resetting', err);
-    await clearCache();
+    await clearApprovalCache();
     return [];
   }
 }
