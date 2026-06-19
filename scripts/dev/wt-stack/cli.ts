@@ -69,6 +69,14 @@ function test(passthrough: string[]): void {
   });
 }
 
+function ls(): void {
+  const out = execFileSync('docker', ['compose', 'ls', '--format', 'json'], { encoding: 'utf8' });
+  const projects = (JSON.parse(out) as Array<{ Name: string; Status: string }>)
+    .filter((p) => p.Name === 'breeze' || p.Name.startsWith('breeze-wt-'));
+  if (!projects.length) { console.log('No breeze stacks running.'); return; }
+  for (const p of projects) console.log(`${p.Name}\t${p.Status}`);
+}
+
 function main(): void {
   const [cmd, ...rest] = process.argv.slice(2);
   switch (cmd) {
@@ -76,6 +84,7 @@ function main(): void {
     case 'info': info(); break;
     case 'down': down(rest.includes('--keep-volumes')); break;
     case 'test': test(rest[0] === '--' ? rest.slice(1) : rest); break;
+    case 'ls': ls(); break;
     default:
       console.error('Usage: wt-stack <up|down|info|test|ls> [--shared] [--rebuild] [--keep-volumes]');
       process.exit(1);
