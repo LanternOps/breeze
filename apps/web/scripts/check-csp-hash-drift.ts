@@ -85,7 +85,11 @@ export function extractDirective(csp: string, name: string): string {
 /** Inline <script> bodies (no `src`, non-empty) from a rendered HTML document. */
 export function inlineScriptBodies(html: string): string[] {
   const bodies: string[] = [];
-  const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  // Tolerate whitespace in the closing tag (`</script >`, `</script\n>`). Without
+  // `\s*`, a non-greedy `[\s\S]*?` would run past such a close to the next
+  // `</script>`, yielding a wrong body + wrong hash → a false-positive drift
+  // failure that blocks CI on a perfectly good build (flagged by CodeQL).
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
   let match: RegExpExecArray | null;
   while ((match = re.exec(html)) !== null) {
     const attrs = match[1];

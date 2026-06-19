@@ -43,6 +43,14 @@ describe('inlineScriptBodies', () => {
     const html = `<script>${body}</script>`;
     expect(inlineScriptBodies(html)).toEqual([body]);
   });
+
+  it('matches closing tags with whitespace and does not run past them', () => {
+    // `</script >` / `</script\n>` are valid closes. A regex that only matched
+    // `</script>` would skip the first close and capture everything up to the
+    // next one — a wrong body, a wrong hash, and a false-positive drift failure.
+    const html = `<script>first();</script >\n<script>second();</script\n>`;
+    expect(inlineScriptBodies(html)).toEqual(['first();', 'second();']);
+  });
 });
 
 describe('extractDirective', () => {
