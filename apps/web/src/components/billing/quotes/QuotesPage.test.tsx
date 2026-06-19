@@ -28,7 +28,7 @@ const QUOTES = [
     id: 'q-1', quoteNumber: 'Q-0001', partnerId: 'p-1', orgId: 'org-1', siteId: null, status: 'draft',
     currencyCode: 'USD', issueDate: null, expiryDate: null, subtotal: '0.00', taxRate: null, taxTotal: '0.00',
     total: '150.00', oneTimeTotal: '100.00', monthlyRecurringTotal: '50.00', annualRecurringTotal: '0.00',
-    billToName: null, introNotes: null, terms: null, acceptedAt: null, declinedAt: null, convertedAt: null,
+    billToName: null, introNotes: null, terms: null, termsAndConditions: null, sellerSnapshot: null, acceptedAt: null, declinedAt: null, convertedAt: null,
     convertedInvoiceId: null, sentAt: null, viewedAt: null, createdBy: null,
     createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
   },

@@ -24,13 +24,14 @@ const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: ok ? 'OK' : 'ERR', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-function draft(lines: InvoiceDetail['lines']): InvoiceDetail {
+function draft(lines: InvoiceDetail['lines'], extra: Partial<InvoiceDetail['invoice']> = {}): InvoiceDetail {
   return {
     invoice: {
       id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status: 'draft',
       currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '0.00', taxRate: null,
       taxTotal: '0.00', total: '0.00', amountPaid: '0.00', balance: '0.00', billToName: 'Acme',
-      notes: '', createdAt: '2026-06-01T00:00:00Z',
+      notes: '', termsAndConditions: null, sellerSnapshot: null, createdAt: '2026-06-01T00:00:00Z',
+      ...extra,
     },
     lines,
   };
@@ -180,5 +181,31 @@ describe('InvoiceEditor', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
     // never a success "sent" claim when nothing went out
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Invoice issued and sent' }));
+  });
+
+  it('editing the T&C textarea and blurring issues PATCH /invoices/:id with { termsAndConditions }', async () => {
+    const onChanged = vi.fn();
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1' && opts?.method === 'PATCH') return json({ data: {} });
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([])} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const textarea = screen.getByTestId('invoice-terms');
+    fireEvent.change(textarea, { target: { value: 'Net 30' } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(
+        (c) => c[0] === '/invoices/inv-1' && (c[1] as RequestInit)?.method === 'PATCH',
+      );
+      expect(patchCall).toBeTruthy();
+      expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject({
+        termsAndConditions: 'Net 30',
+      });
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Terms saved' }));
   });
 });

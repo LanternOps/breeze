@@ -31,7 +31,7 @@ const mixedDetail: QuoteDetailData = {
     currencyCode: 'USD', issueDate: null, expiryDate: null, subtotal: '1950.00', taxRate: null,
     taxTotal: '0.00', total: '1950.00', oneTimeTotal: '500.00', monthlyRecurringTotal: '1000.00',
     annualRecurringTotal: '450.00', dueOnAcceptanceTotal: '500.00',
-    billToName: 'Acme', introNotes: null, terms: null, acceptedAt: null,
+    billToName: 'Acme', introNotes: null, terms: null, termsAndConditions: null, sellerSnapshot: null, acceptedAt: null,
     declinedAt: null, convertedAt: null, convertedInvoiceId: null, sentAt: null,
     viewedAt: null, createdBy: null, createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
   },

@@ -2,6 +2,10 @@
 // Mirrors invoiceTypes.ts. Money fields arrive from the API as numeric(12,2)
 // strings (e.g. '123.40'); tax rate is a numeric(6,3) FRACTION string ('0.07').
 
+import type { SellerSnapshot } from '../invoiceTypes';
+export type { SellerSnapshot } from '../invoiceTypes';
+export { sellerLines } from '../invoiceTypes';
+
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
 
@@ -37,6 +41,8 @@ export interface Quote {
   billToName: string | null;
   introNotes: string | null;
   terms: string | null;
+  termsAndConditions: string | null;
+  sellerSnapshot: SellerSnapshot | null;
   acceptedAt: string | null;
   declinedAt: string | null;
   convertedAt: string | null;

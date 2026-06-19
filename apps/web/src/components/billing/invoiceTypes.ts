@@ -1,6 +1,30 @@
 // Shared client-side types + helpers for the invoice billing UI.
 // Money fields arrive from the API as numeric(12,2) strings (e.g. '123.40').
 
+/** Snapshot of the seller's contact info captured at invoice/quote creation time.
+ *  Any field may be null if not filled in at the time. */
+export interface SellerSnapshot {
+  name: string | null;
+  address: {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    region: string | null;
+    postalCode: string | null;
+    country: string | null;
+  } | null;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+}
+
+/** Convert a SellerSnapshot address into an array of non-empty display lines. */
+export function sellerLines(a: SellerSnapshot['address'] | null | undefined): string[] {
+  if (!a) return [];
+  const cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ');
+  return [a.line1, a.line2, cityLine, a.country].filter((s): s is string => !!s && s.trim().length > 0);
+}
+
 export type InvoiceStatus =
   | 'draft' | 'sent' | 'partially_paid' | 'overdue' | 'paid' | 'void';
 
@@ -24,6 +48,8 @@ export interface InvoiceSummary {
   balance: string;
   billToName: string | null;
   notes: string | null;
+  termsAndConditions: string | null;
+  sellerSnapshot: SellerSnapshot | null;
   createdAt: string;
 }
 
