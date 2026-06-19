@@ -138,10 +138,12 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
         return img?.data ? { data: img.data } : null;
       };
       const { renderQuotePdf } = await import('./quotePdf');
-      const pdf = await renderQuotePdf({ ...quote, status: 'sent', quoteNumber }, blocks, lines, loadImage, {
-        partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-        footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
-      });
+      const pdf = await renderQuotePdf(
+        { ...quote, status: 'sent', quoteNumber, sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow) },
+        blocks, lines, loadImage, {
+          partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+          footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
+        });
       const template = buildQuoteTemplate({
         quoteNumber, partnerName: partner?.name ?? 'your provider',
         total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,

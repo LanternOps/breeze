@@ -140,3 +140,32 @@ describe('renderInvoicePdfBuffer', () => {
     expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Seller From block + T&C tests
+// ---------------------------------------------------------------------------
+
+const sellerSnapshot = {
+  name: 'Acme MSP LLC', phone: '+1 555 0100', email: 'billing@acme.test', website: 'acme.test',
+  address: { line1: '1 Main St', line2: null, city: 'Austin', region: 'TX', postalCode: '78701', country: 'US' },
+};
+
+it('renderInvoiceHtml shows the From block and T&C', () => {
+  const html = renderInvoiceHtml(
+    { invoiceNumber: 'INV-1', currencyCode: 'USD', subtotal: '10', taxTotal: '0', total: '10', amountPaid: '0', balance: '10', billToName: 'Cust', sellerSnapshot, termsAndConditions: 'Net 30 terms' } as never,
+    [],
+    { partnerName: 'Acme MSP LLC' },
+  );
+  expect(html).toContain('From');
+  expect(html).toContain('billing@acme.test');
+  expect(html).toContain('Net 30 terms');
+});
+
+it('renderInvoicePdfBuffer emits a %PDF with a seller snapshot present', async () => {
+  const buf = await renderInvoicePdfBuffer(
+    { invoiceNumber: 'INV-1', currencyCode: 'USD', subtotal: '10', taxTotal: '0', total: '10', amountPaid: '0', balance: '10', billToName: 'Cust', sellerSnapshot, termsAndConditions: 'Net 30' } as never,
+    [],
+    { partnerName: 'Acme MSP LLC' },
+  );
+  expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+});

@@ -24,6 +24,7 @@ import { getEmailService, buildInvoiceTemplate } from './email';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
+import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
 
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect;
@@ -93,6 +94,8 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
     : '#2563eb';
   const groups = groupVisibleLinesByTicket(lines);
   const billTo = addressLines(invoice.billToAddress as BillToAddress | null);
+  const seller = (invoice.sellerSnapshot as SellerSnapshot | null) ?? null;
+  const sellerLines = sellerAddressLines(seller);
 
   const logoHtml = branding.logoUrl
     ? `<img src="${escapeHtml(branding.logoUrl)}" alt="${escapeHtml(branding.partnerName)}" style="max-height:56px;max-width:220px;" />`
@@ -125,6 +128,14 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       </div>
       <div style="padding:24px;display:flex;justify-content:space-between;gap:24px;">
         <div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">From</div>
+          <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">${escapeHtml(seller?.name ?? branding.partnerName)}</div>
+          ${sellerLines.map((l) => `<div style="font-size:13px;color:#4b5563;">${escapeHtml(l)}</div>`).join('')}
+          ${seller?.phone ? `<div style="font-size:12px;color:#6b7280;">${escapeHtml(seller.phone)}</div>` : ''}
+          ${seller?.email ? `<div style="font-size:12px;color:#6b7280;">${escapeHtml(seller.email)}</div>` : ''}
+          ${seller?.website ? `<div style="font-size:12px;color:#6b7280;">${escapeHtml(seller.website)}</div>` : ''}
+        </div>
+        <div>
           <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">Bill to</div>
           <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">${escapeHtml(invoice.billToName ?? '')}</div>
           ${billTo.map((l) => `<div style="font-size:13px;color:#4b5563;">${escapeHtml(l)}</div>`).join('')}
@@ -155,6 +166,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
         </table>
       </div>
       ${invoice.notes ? `<div style="padding:0 24px 16px;font-size:13px;color:#4b5563;">${escapeHtml(invoice.notes)}</div>` : ''}
+      ${invoice.termsAndConditions ? `<div style="padding:0 24px 16px;font-size:12px;color:#6b7280;"><div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">Terms &amp; Conditions</div>${escapeHtml(invoice.termsAndConditions)}</div>` : ''}
       ${(invoice.terms || branding.footerText) ? `<div style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">${escapeHtml(invoice.terms ?? branding.footerText ?? '')}</div>` : ''}
     </div>
   </div>
@@ -197,25 +209,34 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       doc.fillColor('#6b7280').fontSize(10).font('Helvetica').text(invoice.invoiceNumber ?? 'DRAFT', left, 74, { width: contentWidth, align: 'right' });
       doc.moveTo(left, 96).lineTo(right, 96).lineWidth(2).strokeColor(primary).stroke();
 
-      // Bill-to block + dates.
+      // From (seller) — left column; Bill To — right column; dates under Bill To.
+      const seller = (invoice.sellerSnapshot as SellerSnapshot | null) ?? null;
+      const rightX = left + contentWidth * 0.55;
+      const rightW = contentWidth * 0.45;
       let y = 112;
-      doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('BILL TO', left, y);
-      doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(invoice.billToName ?? '', left, y + 12);
+
+      doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('FROM', left, y);
+      doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? branding.partnerName, left, y + 12, { width: contentWidth * 0.5 });
+      let fromY = y + 28;
+      doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
+      for (const aline of sellerAddressLines(seller)) { doc.text(aline, left, fromY, { width: contentWidth * 0.5 }); fromY += 13; }
+      doc.fillColor('#6b7280').fontSize(9);
+      if (seller?.phone) { doc.text(seller.phone, left, fromY, { width: contentWidth * 0.5 }); fromY += 12; }
+      if (seller?.email) { doc.text(seller.email, left, fromY, { width: contentWidth * 0.5 }); fromY += 12; }
+      if (seller?.website) { doc.text(seller.website, left, fromY, { width: contentWidth * 0.5 }); fromY += 12; }
+
+      doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('BILL TO', rightX, y, { width: rightW });
+      doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(invoice.billToName ?? '', rightX, y + 12, { width: rightW });
       let billY = y + 28;
       doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
-      for (const aline of addressLines(invoice.billToAddress as BillToAddress | null)) {
-        doc.text(aline, left, billY); billY += 13;
-      }
-      if (invoice.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${invoice.billToTaxId}`, left, billY); billY += 13; }
-
-      const dateX = left + contentWidth * 0.6;
-      let dateY = y;
+      for (const aline of addressLines(invoice.billToAddress as BillToAddress | null)) { doc.text(aline, rightX, billY, { width: rightW }); billY += 13; }
+      if (invoice.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${invoice.billToTaxId}`, rightX, billY, { width: rightW }); billY += 13; }
       doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
-      if (invoice.issueDate) { doc.text(`Issued: ${formatDate(invoice.issueDate)}`, dateX, dateY, { width: contentWidth * 0.4, align: 'right' }); dateY += 14; }
-      if (invoice.dueDate) { doc.text(`Due: ${formatDate(invoice.dueDate)}`, dateX, dateY, { width: contentWidth * 0.4, align: 'right' }); dateY += 14; }
+      if (invoice.issueDate) { doc.text(`Issued: ${formatDate(invoice.issueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
+      if (invoice.dueDate) { doc.text(`Due: ${formatDate(invoice.dueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
 
-      // Line table.
-      y = Math.max(billY, dateY) + 20;
+      // Line table starts below the taller of the two columns.
+      y = Math.max(fromY, billY) + 20;
       const colQtyX = left + contentWidth * 0.62;
       const colAmtX = left + contentWidth * 0.80;
       const colDescW = contentWidth * 0.60;
@@ -264,10 +285,17 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
         drawTotal('Balance due', invoice.balance, true);
       }
 
-      // Notes + footer/terms.
+      // Notes (memo) + Terms & Conditions + footer/terms.
       if (invoice.notes) {
         y += 14;
+        doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('NOTES', left, y); y += 12;
         doc.fillColor('#4b5563').fontSize(10).font('Helvetica').text(invoice.notes, left, y, { width: contentWidth });
+        y = doc.y + 8;
+      }
+      if (invoice.termsAndConditions) {
+        y += 6;
+        doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('TERMS & CONDITIONS', left, y); y += 12;
+        doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(invoice.termsAndConditions, left, y, { width: contentWidth });
         y = doc.y + 8;
       }
       const footer = invoice.terms ?? branding.footerText ?? null;
@@ -291,8 +319,11 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
-  const [partner] = await db.select({ name: partners.name, footer: partners.invoiceFooter, currency: partners.currencyCode }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  const [partner] = await db.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   const [branding] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, invoice.orgId)).limit(1);
+  if (!invoice.sellerSnapshot && partner) {
+    (invoice as { sellerSnapshot: unknown }).sellerSnapshot = buildSellerSnapshot(partner);
+  }
   return {
     invoice,
     lines,
@@ -300,8 +331,8 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
       partnerName: partner?.name ?? 'Invoice',
       logoUrl: branding?.logoUrl ?? null,
       primaryColor: branding?.primaryColor ?? null,
-      footerText: invoice.terms ?? partner?.footer ?? branding?.footerText ?? null,
-      currencyCode: invoice.currencyCode ?? partner?.currency ?? 'USD',
+      footerText: invoice.terms ?? partner?.invoiceFooter ?? branding?.footerText ?? null,
+      currencyCode: invoice.currencyCode ?? partner?.currencyCode ?? 'USD',
     },
   };
 }

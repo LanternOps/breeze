@@ -14,6 +14,7 @@
 // route in routes/quotes/quotes.ts supplies the real quote_images loader.
 
 import PDFDocument from 'pdfkit';
+import { sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -95,6 +96,8 @@ interface QuoteHeader {
   annualRecurringTotal?: string | number | null;
   // Amount invoiced on accept (one-time + one-time tax); derived in getQuote.
   dueOnAcceptanceTotal?: string | number | null;
+  sellerSnapshot?: unknown;
+  termsAndConditions?: string | null;
 }
 
 interface QuoteBlock {
@@ -262,26 +265,36 @@ export async function renderQuotePdf(
   doc.fillColor('#6b7280').fontSize(10).font('Helvetica').text(quote.quoteNumber ?? 'DRAFT', c.left, 74, { width: c.contentWidth, align: 'right' });
   doc.moveTo(c.left, 96).lineTo(c.right, 96).lineWidth(2).strokeColor(primary).stroke();
 
-  // ---- Bill-to block + dates ----------------------------------------------
+  // ---- From (seller) left column; Prepared For + dates right column ---------
   let y = 112;
+  const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
+  const rightX = c.left + c.contentWidth * 0.55;
+  const rightW = c.contentWidth * 0.45;
+
+  doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('FROM', c.left, y);
+  doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? partnerName, c.left, y + 12, { width: c.contentWidth * 0.5 });
+  let fromY = y + 28;
+  doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
+  for (const aline of sellerAddressLines(seller)) { doc.text(aline, c.left, fromY, { width: c.contentWidth * 0.5 }); fromY += 13; }
+  doc.fillColor('#6b7280').fontSize(9);
+  if (seller?.phone) { doc.text(seller.phone, c.left, fromY, { width: c.contentWidth * 0.5 }); fromY += 12; }
+  if (seller?.email) { doc.text(seller.email, c.left, fromY, { width: c.contentWidth * 0.5 }); fromY += 12; }
+  if (seller?.website) { doc.text(seller.website, c.left, fromY, { width: c.contentWidth * 0.5 }); fromY += 12; }
+
+  let billY = y;
   if (quote.billToName) {
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED FOR', c.left, y);
-    doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(quote.billToName, c.left, y + 12);
+    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED FOR', rightX, billY, { width: rightW });
+    doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(quote.billToName, rightX, billY + 12, { width: rightW });
+    billY += 28;
   }
-  let billY = y + (quote.billToName ? 28 : 12);
   doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
-  for (const aline of addressLines(quote.billToAddress as BillToAddress | null)) {
-    doc.text(aline, c.left, billY); billY += 13;
-  }
-  if (quote.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${quote.billToTaxId}`, c.left, billY); billY += 13; }
-
-  const dateX = c.left + c.contentWidth * 0.6;
-  let dateY = y;
+  for (const aline of addressLines(quote.billToAddress as BillToAddress | null)) { doc.text(aline, rightX, billY, { width: rightW }); billY += 13; }
+  if (quote.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${quote.billToTaxId}`, rightX, billY, { width: rightW }); billY += 13; }
   doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
-  if (quote.issueDate) { doc.text(`Issued: ${formatDate(quote.issueDate)}`, dateX, dateY, { width: c.contentWidth * 0.4, align: 'right' }); dateY += 14; }
-  if (quote.expiryDate) { doc.text(`Valid until: ${formatDate(quote.expiryDate)}`, dateX, dateY, { width: c.contentWidth * 0.4, align: 'right' }); dateY += 14; }
+  if (quote.issueDate) { doc.text(`Issued: ${formatDate(quote.issueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
+  if (quote.expiryDate) { doc.text(`Valid until: ${formatDate(quote.expiryDate)}`, rightX, billY, { width: rightW }); billY += 14; }
 
-  y = Math.max(billY, dateY) + 20;
+  y = Math.max(fromY, billY) + 20;
 
   // Intro notes, if any (above the blocks).
   if (quote.introNotes) {
@@ -348,6 +361,14 @@ export async function renderQuotePdf(
 
   // ---- Recurring summary footer -------------------------------------------
   y = renderRecurringSummary(doc, quote, currency, y);
+
+  // ---- Terms & Conditions --------------------------------------------------
+  if (quote.termsAndConditions) {
+    y = ensureSpace(doc, y + 14, 60);
+    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
+    doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
+    y = doc.y;
+  }
 
   // ---- Terms + branding footer --------------------------------------------
   const footer = quote.terms ?? branding.footer ?? null;

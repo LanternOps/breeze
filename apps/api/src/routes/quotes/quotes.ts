@@ -18,6 +18,7 @@ import { quoteImages } from '../../db/schema/quotes';
 import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
+import { buildSellerSnapshot } from '../../services/sellerSnapshot';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -94,7 +95,7 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
     const { quote, blocks, lines } = await getQuote(id, quoteActorFrom(c));
 
     const [partner] = await db
-      .select({ name: partners.name, footer: partners.invoiceFooter, currency: partners.currencyCode })
+      .select()
       .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
     const [brand] = await db
       .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText })
@@ -104,8 +105,13 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
       partnerName: partner?.name ?? 'Proposal',
       logoUrl: brand?.logoUrl ?? null,
       primaryColor: brand?.primaryColor ?? null,
-      footer: quote.terms ?? partner?.footer ?? brand?.footerText ?? null,
-      currencyCode: quote.currencyCode ?? partner?.currency ?? 'USD',
+      footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
+      currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
+    };
+
+    const quoteForRender = {
+      ...quote,
+      sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partner),
     };
 
     // Real image loader: pull bytes from quote_images, constrained to BOTH the
@@ -122,7 +128,7 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
     };
 
     const { renderQuotePdf } = await import('../../services/quotePdf');
-    const pdf = await renderQuotePdf(quote, blocks, lines, loadImage, branding);
+    const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding);
 
     const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
     return new Response(new Uint8Array(pdf), {

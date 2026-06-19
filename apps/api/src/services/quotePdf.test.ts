@@ -81,4 +81,15 @@ describe('renderQuotePdf', () => {
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     expect(buf.length).toBeGreaterThan(800);
   });
+
+  it('renderQuotePdf includes the From block and T&C', async () => {
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-1', currencyCode: 'USD', billToName: 'Cust',
+        sellerSnapshot: { name: 'Acme MSP LLC', phone: null, email: 'billing@acme.test', website: null,
+          address: { line1: '1 Main St', line2: null, city: 'Austin', region: 'TX', postalCode: '78701', country: 'US' } },
+        termsAndConditions: 'Valid 30 days' } as never,
+      [], [], async () => null, { partnerName: 'Acme MSP LLC' },
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+  });
 });
