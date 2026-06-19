@@ -92,7 +92,8 @@ export async function removeUser(): Promise<void> {
  * sign-out, but the approval queue is additionally persisted to SecureStore
  * for offline cold-open. Without clearing it here, the next account signing in
  * on the same device would read the prior session's cached approvals — the
- * same cross-session leak PR #1415's Redux reset closes for in-memory state.
+ * same cross-session leak the Redux logout reset in `store/resettable.ts`
+ * closes for in-memory state.
  */
 export async function clearAuthData(): Promise<void> {
   await Promise.all([

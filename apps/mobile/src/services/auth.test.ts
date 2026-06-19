@@ -26,9 +26,11 @@ describe('clearAuthData', () => {
     expect(keys).toContain('breeze.approvals.cache.v1');
   });
 
-  it('still clears the other keys when one delete rejects', async () => {
-    // SecureStore failures degrade gracefully (each clear swallows its own
-    // error), so a single failure must not abort the rest of the teardown.
+  it('attempts every delete (no short-circuit) when one SecureStore entry is locked', async () => {
+    // A locked-keychain failure on one key must not stop the other deletes from
+    // being attempted. The helpers swallow their own errors, so clearAuthData
+    // resolves; the load-bearing assertion is that all three deletes were still
+    // dispatched — i.e. nobody refactors this into a short-circuiting sequence.
     secureStore.deleteItemAsync.mockImplementation(async (key: string) => {
       if (key === 'breeze_auth_token') throw new Error('keychain locked');
     });
