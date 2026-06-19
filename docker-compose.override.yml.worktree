@@ -30,6 +30,8 @@ services:
 
   web:
     container_name: !reset null
+    environment:
+      PUBLIC_API_URL: ""
     ports: !override
       - "0:4321"
 
