@@ -61,22 +61,18 @@ export default defineConfig({
         "connect-src 'self' https: ws: wss:"
       ],
       scriptDirective: {
-        // Astro auto-hashes its own inline scripts, but is:inline scripts in
-        // Layout.astro and certain hydration bootstrap fragments may not be
-        // covered.  Add their sha256 hashes here so they pass CSP validation.
-        // If a CSP script-src-elem violation appears in the browser console,
-        // copy the suggested sha256 hash from the error into this array.
-        //
-        // ClientRouter swap script: this hash is for the inline script Astro's
-        // <ClientRouter> injects during view-transition swaps (issue #618).
-        // It is constant per Astro version; if you bump astro, re-verify and
-        // update.  Hash-chasing here is a known-fragile workaround --
-        // longer-term we should migrate to a nonce-based CSP.
+        // Astro auto-hashes every build-time inline script it emits (client
+        // islands, hydration bootstrap, is:inline). We carry NO hand-pinned
+        // sha256 hashes here: a 2026-06-19 spike (#1232) proved the previous
+        // two pins were dead on Astro 6.4.7 — removing them and driving real
+        // <ClientRouter> view-transition swaps produced zero CSP violations.
+        // The real-browser CSP drift guard (apps/web/scripts/check-csp-violations.ts,
+        // run in CI) is the safety net: if a future Astro version introduces a
+        // runtime-only inline script needing a hash, the guard fails loudly
+        // instead of breaking silently in production.
         resources: [
           "'self'",
           'https://static.cloudflareinsights.com',
-          "'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0='",
-          "'sha256-6wgjuQN80bYuvy8C2/v+mFX1HAEgrfvSs+beElRyx+8='"
         ]
       },
       styleDirective: {
