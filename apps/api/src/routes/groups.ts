@@ -167,6 +167,21 @@ async function getGroupWithAccess(
   return group;
 }
 
+/**
+ * Site-axis gate for an existing group. RLS only defends the org axis, so a
+ * site-restricted org user could otherwise mutate/delete a group bound to a
+ * site outside their allowlist (same org). Org-wide groups (siteId null) stay
+ * accessible, matching the read (GET) visibility model. Empty/unset allowlist
+ * (partner/system scope) = full access.
+ */
+export function groupSiteAllowed(
+  group: { siteId: string | null },
+  perms: UserPermissions | undefined
+): boolean {
+  if (!perms?.allowedSiteIds) return true;
+  return group.siteId === null || canAccessSite(perms, group.siteId);
+}
+
 async function getDeviceCountForGroup(groupId: string): Promise<number> {
   const [result] = await db
     .select({ count: sql<number>`count(*)` })
@@ -503,6 +518,11 @@ groupRoutes.patch(
       return c.json({ error: 'Group not found' }, 404);
     }
 
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!groupSiteAllowed(group, perms)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     // Validate parent group if provided
     if (payload.parentId) {
       if (payload.parentId === id) {
@@ -521,6 +541,11 @@ groupRoutes.patch(
       const validSite = await siteBelongsToOrg(payload.siteId, group.orgId);
       if (!validSite) {
         return c.json({ error: 'Site not found or belongs to different organization' }, 400);
+      }
+      // A site-restricted caller cannot re-point a group into a site outside
+      // their allowlist either.
+      if (perms?.allowedSiteIds && !canAccessSite(perms, payload.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
       }
     }
 
@@ -602,6 +627,10 @@ groupRoutes.delete(
     const group = await getGroupWithAccess(id, auth);
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
+    }
+
+    if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Check for child groups

@@ -102,8 +102,31 @@ vi.mock('../db/schema', () => ({
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart,
-  getTimesheet, getTicketBillingSummary, listBillables
+  getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed
 } from './timeEntryService';
+
+describe('entryOrgAllowed (security review #1: time_entries org-axis allowlist)', () => {
+  it('system scope (accessibleOrgIds null) sees every entry', () => {
+    expect(entryOrgAllowed({ orgId: 'o-1' }, null)).toBe(true);
+    expect(entryOrgAllowed({ orgId: null }, null)).toBe(true);
+  });
+
+  it('confines partner scope to its granted orgs (the cross-org leak)', () => {
+    // orgAccess='selected' admin granted only o-1: an o-9 entry under the same
+    // partner must look "not found" even though partner-axis RLS would return it.
+    expect(entryOrgAllowed({ orgId: 'o-1' }, ['o-1', 'o-2'])).toBe(true);
+    expect(entryOrgAllowed({ orgId: 'o-9' }, ['o-1', 'o-2'])).toBe(false);
+  });
+
+  it('null-org (unlinked) entries carry no org to leak and stay in scope', () => {
+    expect(entryOrgAllowed({ orgId: null }, ['o-1'])).toBe(true);
+    expect(entryOrgAllowed({ orgId: null }, [])).toBe(true);
+  });
+
+  it('empty allowlist denies every org-bound entry', () => {
+    expect(entryOrgAllowed({ orgId: 'o-1' }, [])).toBe(false);
+  });
+});
 
 // accessibleOrgIds null = unrestricted within partner (orgAccess='all' / system).
 // Existing fixtures use 'o-1'/'o-9' etc., so null keeps prior tests passing.

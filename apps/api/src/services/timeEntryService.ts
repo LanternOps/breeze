@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
@@ -372,11 +372,37 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
 
 // ── Update / Delete ──────────────────────────────────────────────────────
 
-async function getEntryOr404(id: string) {
-  // RLS (partner-axis) scopes this read in the request context.
+/**
+ * Org-axis SQL predicate for the partner-axis `time_entries` table. RLS scopes
+ * this table by partner only (Shape 3) — a partner user with orgAccess='selected'
+ * is NOT confined to their granted orgs by RLS, so the org allowlist must be
+ * applied at the app layer (mirrors resolveTicketLink's existing check, which
+ * only fires on the ticket-link path). `null` accessibleOrgIds = system scope
+ * (no filter). Null-org (unlinked) entries carry no org to leak and stay in
+ * scope. (#sec-review-1)
+ */
+function orgAxisSql(accessibleOrgIds: string[] | null): SQL | undefined {
+  if (accessibleOrgIds === null) return undefined;
+  if (accessibleOrgIds.length === 0) return isNull(timeEntries.orgId);
+  return or(isNull(timeEntries.orgId), inArray(timeEntries.orgId, accessibleOrgIds));
+}
+
+/** In-memory counterpart of orgAxisSql for an already-fetched row. */
+export function entryOrgAllowed(entry: { orgId: string | null }, accessibleOrgIds: string[] | null): boolean {
+  if (accessibleOrgIds === null) return true;
+  if (entry.orgId === null) return true;
+  return accessibleOrgIds.includes(entry.orgId);
+}
+
+async function getEntryOr404(id: string, actor: TimeEntryActor) {
+  // RLS (partner-axis) scopes this read to the actor's partner; the org-axis
+  // allowlist is enforced here because RLS does not constrain it.
   const rows = await db.select().from(timeEntries).where(eq(timeEntries.id, id)).limit(1);
   const entry = rows[0];
   if (!entry) throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
+  if (!entryOrgAllowed(entry, actor.accessibleOrgIds)) {
+    throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
+  }
   return entry;
 }
 
@@ -390,7 +416,7 @@ function assertCanMutate(entry: { userId: string; isApproved: boolean }, actor: 
 }
 
 export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, actor: TimeEntryActor) {
-  const entry = await getEntryOr404(id);
+  const entry = await getEntryOr404(id, actor);
   assertCanMutate(entry, actor);
 
   const startedAt = input.startedAt ?? entry.startedAt;
@@ -447,7 +473,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
 }
 
 export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
-  const entry = await getEntryOr404(id);
+  const entry = await getEntryOr404(id, actor);
   assertCanMutate(entry, actor);
   await db.delete(timeEntries).where(eq(timeEntries.id, id));
 
@@ -479,11 +505,15 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
   if (!actor.manageAll) {
     throw new TimeEntryServiceError('Approving time entries requires an admin role', 403, 'ADMIN_REQUIRED');
   }
-  // RLS scopes to the actor's partner — out-of-partner ids look "missing", by design.
+  // RLS scopes to the actor's partner — out-of-partner ids look "missing", by
+  // design. The org-axis allowlist is applied here too (RLS is partner-axis
+  // only), so an orgAccess='selected' admin can't approve entries in a
+  // non-granted org under the same partner — those ids also look "missing".
+  const orgAxis = orgAxisSql(actor.accessibleOrgIds);
   const candidates = await db
     .select({ id: timeEntries.id, endedAt: timeEntries.endedAt, partnerId: timeEntries.partnerId, ticketId: timeEntries.ticketId })
     .from(timeEntries)
-    .where(inArray(timeEntries.id, ids));
+    .where(orgAxis ? and(inArray(timeEntries.id, ids), orgAxis) : inArray(timeEntries.id, ids));
 
   const found = new Map(candidates.map((c) => [c.id, c]));
   const skippedReasons: Partial<Record<TimeEntryServiceErrorCode, number>> = {};
@@ -590,6 +620,13 @@ export interface ListTimeEntriesFilters {
   userId?: string;
   ticketId?: string;
   orgId?: string;
+  /**
+   * The caller's org-axis allowlist (auth.accessibleOrgIds). `null`/omitted =
+   * system scope (no org filter). For partner scope this confines the
+   * partner-axis time_entries list to the caller's granted orgs — RLS does not
+   * do it. (#sec-review-1)
+   */
+  accessibleOrgIds?: string[] | null;
   from?: Date;
   to?: Date;
   running?: boolean;
@@ -632,6 +669,13 @@ function listConditions(filters: ListTimeEntriesFilters) {
   if (filters.userId) conditions.push(eq(timeEntries.userId, filters.userId));
   if (filters.ticketId) conditions.push(eq(timeEntries.ticketId, filters.ticketId));
   if (filters.orgId) conditions.push(eq(timeEntries.orgId, filters.orgId));
+  // Org-axis allowlist (partner scope): RLS is partner-axis only, so confine
+  // the list to the caller's granted orgs here. Skipped for system scope
+  // (accessibleOrgIds null/undefined) and when a specific in-scope orgId is set.
+  if (!filters.orgId && filters.accessibleOrgIds != null) {
+    const orgAxis = orgAxisSql(filters.accessibleOrgIds);
+    if (orgAxis) conditions.push(orgAxis);
+  }
   if (filters.from) conditions.push(gte(timeEntries.startedAt, filters.from));
   if (filters.to) conditions.push(lt(timeEntries.startedAt, filters.to));
   if (filters.running !== undefined) {
@@ -770,7 +814,19 @@ const toFinite = (v: string | null): number | null => {
   return n;
 };
 
-export async function listBillables(from: Date, to: Date, orgId?: string): Promise<BillableRow[]> {
+export async function listBillables(
+  from: Date,
+  to: Date,
+  orgId?: string,
+  accessibleOrgIds?: string[] | null
+): Promise<BillableRow[]> {
+  // Org-axis allowlist for the partner-axis time_entries half. RLS scopes
+  // time_entries by partner only, so without this an orgAccess='selected'
+  // partner admin omitting `orgId` would export billing data for every org
+  // under the partner. ticket_parts carries a direct org_id and is already
+  // org-axis RLS-scoped, but we constrain it too for defense-in-depth.
+  // `accessibleOrgIds` null/undefined = system scope (no filter). (#sec-review-1)
+  const applyOrgAxis = !orgId && accessibleOrgIds != null;
   const timeConditions = [
     eq(timeEntries.isBillable, true),
     sql`${timeEntries.endedAt} IS NOT NULL`,
@@ -778,6 +834,10 @@ export async function listBillables(from: Date, to: Date, orgId?: string): Promi
     lte(timeEntries.startedAt, to)
   ];
   if (orgId) timeConditions.push(eq(timeEntries.orgId, orgId));
+  if (applyOrgAxis) {
+    const orgAxis = orgAxisSql(accessibleOrgIds);
+    if (orgAxis) timeConditions.push(orgAxis);
+  }
 
   const timeRows = await db
     .select({
@@ -804,6 +864,10 @@ export async function listBillables(from: Date, to: Date, orgId?: string): Promi
     lte(ticketParts.createdAt, to)
   ];
   if (orgId) partConditions.push(eq(ticketParts.orgId, orgId));
+  if (applyOrgAxis && accessibleOrgIds != null) {
+    // ticket_parts.org_id is NOT NULL; an empty allowlist matches nothing.
+    partConditions.push(inArray(ticketParts.orgId, accessibleOrgIds));
+  }
 
   const partRows = await db
     .select({

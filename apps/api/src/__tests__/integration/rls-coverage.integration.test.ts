@@ -227,6 +227,21 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['plugin_logs', ['plugin_installations']],
   ['report_runs', ['reports']],
   ['maintenance_occurrences', ['maintenance_windows']],
+  // 2026-06-23 security-review #1 backstop: five tenant child tables that
+  // shipped with NO rls and reach their org only through a parent FK. The three
+  // config_policy_* children reach the org via a 2–3 hop chain expressed as
+  // scalar subqueries, so the org-bearing parent in their EXISTS `FROM` is
+  // configuration_policies. See 2026-06-23-sec-review-1-fk-child-rls-backstop.sql.
+  ['config_policy_sensitive_data_settings', ['configuration_policies']],
+  ['config_policy_monitoring_settings', ['configuration_policies']],
+  ['config_policy_monitoring_watches', ['configuration_policies']],
+  ['dashboard_widgets', ['analytics_dashboards']],
+  ['backup_snapshot_files', ['backup_snapshots']],
+  // psa_ticket_mappings already shipped a correct single-table-join policy
+  // (2026-04-11-bucket-c-dead-cleanup-rls.sql) but had no org_id column and was
+  // never allowlisted, so the contract test couldn't see it. Register it so a
+  // future regression that drops/weakens the policy is caught.
+  ['psa_ticket_mappings', ['psa_connections']],
 ]);
 
 // Tables scoped to the calling user via breeze_current_user_id().

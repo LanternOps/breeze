@@ -18,7 +18,14 @@ ticketExportRoutes.get(
   zValidator('query', billablesExportQuerySchema),
   async (c) => {
     const q = c.req.valid('query');
-    const rows = await listBillables(q.from, q.to, q.orgId);
+    const auth = c.get('auth');
+    // A requested orgId must be in the caller's accessible set; otherwise confine
+    // the export to the caller's org allowlist (time_entries is partner-axis RLS,
+    // so omitting orgId would otherwise leak every org under the partner).
+    if (q.orgId && !auth.canAccessOrg(q.orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+    const rows = await listBillables(q.from, q.to, q.orgId, auth.accessibleOrgIds);
     const lines = [CSV_HEADERS.join(',')];
     for (const r of rows) {
       lines.push(csvRow([

@@ -339,6 +339,52 @@ describe('CIS hardening routes', () => {
       expect(body.queued).toBe(1);
     });
 
+    it('blocks the requester from approving their own actions (security review #1)', async () => {
+      // The action was requested by the same user now approving it — maker/checker
+      // must reject the self-approval before any status flip or command dispatch.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: ACTION_ID, orgId: ORG_ID, status: 'pending_approval', approvalStatus: 'pending', requestedBy: 'user-1' },
+          ]),
+        }),
+      } as any);
+
+      const res = await app.request('/cis/remediate/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ actionIds: [ACTION_ID], approved: true }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.selfApprovedIds).toEqual([ACTION_ID]);
+      // No remediation was dispatched.
+      expect(vi.mocked(scheduleCisRemediationWithResult)).not.toHaveBeenCalled();
+    });
+
+    it('lets the requester REJECT their own actions (denials are not self-approval)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: ACTION_ID, orgId: ORG_ID, status: 'pending_approval', approvalStatus: 'pending', requestedBy: 'user-1' },
+          ]),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      } as any);
+
+      const res = await app.request('/cis/remediate/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ actionIds: [ACTION_ID], approved: false }),
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).approved).toBe(false);
+    });
+
     it('rejects remediation actions', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

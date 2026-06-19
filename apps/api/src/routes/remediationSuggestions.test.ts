@@ -95,7 +95,32 @@ vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: dbMocks.executeScriptOnDevicesMock,
 }));
 
-import { remediationSuggestionRoutes } from './remediationSuggestions';
+import { remediationSuggestionRoutes, resolvePatchedRiskTier } from './remediationSuggestions';
+
+describe('resolvePatchedRiskTier (security review #1: execution-approval downgrade guard)', () => {
+  it('keeps the stored tier when the client omits riskTier', () => {
+    expect(resolvePatchedRiskTier('critical', undefined)).toBe('critical');
+    expect(resolvePatchedRiskTier('high', null)).toBe('high');
+  });
+
+  it('refuses to LOWER the stored tier (the bypass)', () => {
+    // critical→low downgrade would make /execute skip the elevation approval.
+    expect(resolvePatchedRiskTier('critical', 'low')).toBe('critical');
+    expect(resolvePatchedRiskTier('high', 'medium')).toBe('high');
+    expect(resolvePatchedRiskTier('medium', 'low')).toBe('medium');
+  });
+
+  it('allows RAISING the tier (more approval is always safe)', () => {
+    expect(resolvePatchedRiskTier('low', 'critical')).toBe('critical');
+    expect(resolvePatchedRiskTier('medium', 'high')).toBe('high');
+  });
+
+  it('keeps equal tiers and treats an unknown stored tier as lowest rank', () => {
+    expect(resolvePatchedRiskTier('high', 'high')).toBe('high');
+    // unknown stored tier (rank -1) → any valid requested tier is a raise.
+    expect(resolvePatchedRiskTier('weird', 'low')).toBe('low');
+  });
+});
 
 const baseSuggestion = {
   id: '22222222-2222-4222-8222-222222222222',
