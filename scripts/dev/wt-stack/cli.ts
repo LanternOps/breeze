@@ -53,12 +53,29 @@ function down(keepVolumes: boolean): void {
   composeDown(project, !keepVolumes);
 }
 
+function test(passthrough: string[]): void {
+  const worktreePath = process.cwd();
+  const d = readDescriptor(worktreePath); // throws clear error if not up
+  execFileSync('npx', ['playwright', 'test', ...passthrough], {
+    cwd: `${worktreePath}/e2e-tests`,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      E2E_STACK_FILE: `${worktreePath}/.breeze-stack.json`,
+      E2E_BASE_URL: d.baseUrl,
+      E2E_ADMIN_EMAIL: d.admin.email,
+      E2E_ADMIN_PASSWORD: d.admin.password,
+    },
+  });
+}
+
 function main(): void {
   const [cmd, ...rest] = process.argv.slice(2);
   switch (cmd) {
     case 'up': up(rest.includes('--shared'), rest.includes('--rebuild')); break;
     case 'info': info(); break;
     case 'down': down(rest.includes('--keep-volumes')); break;
+    case 'test': test(rest[0] === '--' ? rest.slice(1) : rest); break;
     default:
       console.error('Usage: wt-stack <up|down|info|test|ls> [--shared] [--rebuild] [--keep-volumes]');
       process.exit(1);
