@@ -79,14 +79,23 @@ async function main(): Promise<void> {
     await page.goto(BASE + '/login', { waitUntil: 'networkidle' });
     await page.getByRole('link', { name: 'Forgot password?' }).click();
     await page.waitForURL('**/forgot-password');
+    await page.waitForLoadState('networkidle');
     await collect('swap /login -> /forgot-password');
     await page.getByRole('link', { name: 'Sign in' }).click();
     await page.waitForURL('**/login');
+    await page.waitForLoadState('networkidle');
     await collect('swap /forgot-password -> /login');
 
     await browser.close();
   } finally {
-    server.kill('SIGTERM');
+    await new Promise<void>((resolve) => {
+      const done = () => resolve();
+      server.once('exit', done);
+      server.once('close', done);
+      server.kill('SIGTERM');
+      // Fallback: resolve after 5s if the process hasn't exited cleanly.
+      setTimeout(done, 5000);
+    });
   }
 
   if (violations.length > 0) {
