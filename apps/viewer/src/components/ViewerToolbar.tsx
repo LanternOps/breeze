@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal } from 'lucide-react';
 import type { TransportCapabilities } from '../lib/transports/types';
 
 interface MonitorInfo {
@@ -176,15 +176,30 @@ export default function ViewerToolbar({
   const VolumeOffIcon = VolumeX as unknown as ComponentType<{ className?: string }>;
   const CursorIcon = MousePointer2 as unknown as ComponentType<{ className?: string }>;
   const CheckIcon = Check as unknown as ComponentType<{ className?: string }>;
+  const ZapIcon = Zap as unknown as ComponentType<{ className?: string }>;
+  const MoreIcon = MoreVertical as unknown as ComponentType<{ className?: string }>;
+  const SlidersIcon = SlidersHorizontal as unknown as ComponentType<{ className?: string }>;
+
+  // Transport label: a crisp lucide glyph + text, replacing emoji so the badge
+  // matches the rest of the toolbar's monochrome icon vocabulary.
+  const renderTransport = (t: 'webrtc' | 'vnc' | 'websocket' | null) => {
+    if (t === 'webrtc') return (<><ZapIcon className="w-3 h-3" /><span>WebRTC</span></>);
+    if (t === 'vnc') return (<><MonitorIcon className="w-3 h-3" /><span>VNC</span></>);
+    return <span>WS</span>;
+  };
 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
   const [keysOpen, setKeysOpen] = useState(false);
   const [sasFlash, setSasFlash] = useState(false);
   const [transportDropdownOpen, setTransportDropdownOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [qualityOpen, setQualityOpen] = useState(false);
   const [pillDismissed, setPillDismissed] = useState(false);
   const keysDropdownRef = useRef<HTMLDivElement>(null);
   const transportDropdownRef = useRef<HTMLDivElement>(null);
+  const moreDropdownRef = useRef<HTMLDivElement>(null);
+  const qualityDropdownRef = useRef<HTMLDivElement>(null);
 
   // Update duration every second
   useEffect(() => {
@@ -228,6 +243,45 @@ export default function ViewerToolbar({
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
   }, [transportDropdownOpen]);
 
+  // Close the overflow ("More") menu when clicking outside
+  useEffect(() => {
+    if (!moreOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (moreDropdownRef.current && !moreDropdownRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [moreOpen]);
+
+  // Close the quality popover when clicking outside
+  useEffect(() => {
+    if (!qualityOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (qualityDropdownRef.current && !qualityDropdownRef.current.contains(e.target as Node)) {
+        setQualityOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [qualityOpen]);
+
+  // Close any open menu on Escape (keyboard escape from the toolbar)
+  useEffect(() => {
+    if (!keysOpen && !transportDropdownOpen && !moreOpen && !qualityOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setKeysOpen(false);
+        setTransportDropdownOpen(false);
+        setMoreOpen(false);
+        setQualityOpen(false);
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [keysOpen, transportDropdownOpen, moreOpen, qualityOpen]);
+
   // Reset pill dismissed state when webRTCAvailable toggles off then back on
   useEffect(() => {
     if (!webRTCAvailable) {
@@ -261,23 +315,28 @@ export default function ViewerToolbar({
   };
 
   const statusColor = {
-    connecting: 'text-yellow-400',
-    connected: 'text-green-400',
-    reconnecting: 'text-orange-400',
+    connecting: 'text-pending',
+    connected: 'text-ok',
+    reconnecting: 'text-retry',
     disconnected: 'text-gray-400',
-    error: 'text-red-400',
+    error: 'text-danger',
   }[status];
 
   const StatusIcon = status === 'connected' ? ConnectedIcon : DisconnectedIcon;
 
   const isWebRTC = transport === 'webrtc';
 
+  // Whether the active transport exposes any stream-tuning controls (grouped
+  // into the Quality popover so the bar isn't a row of loose sliders/selects).
+  const hasQualityControls =
+    (capabilities?.bitrateControl && transport === 'webrtc') || transport === 'websocket';
+
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-800 border-b border-gray-700 text-sm select-none">
       {/* Connection info */}
       <div className="flex items-center gap-2">
         <MonitorIcon className="w-4 h-4 text-gray-400" />
-        <span className="text-gray-200 font-medium">{hostname || 'Connecting...'}</span>
+        <span className="text-gray-200 font-medium">{hostname || 'Connecting…'}</span>
         <StatusIcon className={`w-3.5 h-3.5 ${statusColor}`} />
         {connectedAt && (
           <span className="text-gray-500 text-xs">{duration}</span>
@@ -300,7 +359,7 @@ export default function ViewerToolbar({
                 }`}
                 title="Switch transport"
               >
-                <span>{transport === 'webrtc' ? '⚡ WebRTC' : transport === 'vnc' ? '🖥 VNC' : 'WS'}</span>
+                <span className="flex items-center gap-1">{renderTransport(transport)}</span>
                 <ChevronDownIcon className="w-3 h-3" />
               </button>
 
@@ -309,7 +368,6 @@ export default function ViewerToolbar({
                   {(['webrtc', 'vnc'] as const).map((opt) => {
                     const isActive = transport === opt;
                     const isLoginWindow = opt === 'webrtc' && desktopState?.state === 'loginwindow';
-                    const label = opt === 'webrtc' ? '⚡ WebRTC' : '🖥 VNC';
                     return (
                       <button
                         key={opt}
@@ -329,8 +387,8 @@ export default function ViewerToolbar({
                             : 'text-gray-300 hover:bg-gray-700'
                         }`}
                       >
-                        <span>{label}</span>
-                        {isActive && <CheckIcon className="w-3 h-3 text-green-400" />}
+                        <span className="flex items-center gap-1.5">{renderTransport(opt)}</span>
+                        {isActive && <CheckIcon className="w-3 h-3 text-ok" />}
                       </button>
                     );
                   })}
@@ -338,12 +396,12 @@ export default function ViewerToolbar({
               )}
             </div>
           ) : (
-            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+            <span className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded font-medium ${
               isWebRTC
                 ? 'bg-green-900/50 text-green-400 border border-green-800'
                 : 'bg-blue-900/50 text-blue-400 border border-blue-800'
             }`}>
-              {isWebRTC ? 'WebRTC' : transport === 'vnc' ? 'VNC' : 'WS'}
+              {renderTransport(transport)}
             </span>
           )}
 
@@ -374,73 +432,104 @@ export default function ViewerToolbar({
         </>
       )}
 
-      {/* FPS */}
+      {/* FPS (read-only telemetry) */}
       <span className="text-gray-400 text-xs tabular-nums">{fps} FPS</span>
 
-      <div className="w-px h-5 bg-gray-600" />
-
-      {/* WebRTC mode: Bitrate control */}
-      {capabilities?.bitrateControl && transport === 'webrtc' && (
-        <div className="flex items-center gap-1.5">
-          <label className="text-gray-400 text-xs">Max Bitrate</label>
-          <input
-            type="range"
-            min="500"
-            max="15000"
-            step="250"
-            value={bitrate}
-            onChange={(e) => onBitrateChange(parseInt(e.target.value))}
-            className="w-16 h-1 accent-green-500"
-          />
-          <span className="text-gray-400 text-xs w-12 tabular-nums">{bitrate >= 1000 ? `${(bitrate / 1000).toFixed(1)}M` : `${bitrate}K`}</span>
-        </div>
-      )}
-
-      {/* WebSocket mode: Quality / Scale / FPS Limit */}
-      {transport === 'websocket' && (
+      {/* Quality popover — groups the per-transport stream tuning so the bar
+          shows read-only telemetry, not a row of loose sliders and selects. */}
+      {hasQualityControls && (
         <>
-          <div className="flex items-center gap-1.5">
-            <label className="text-gray-400 text-xs">Quality</label>
-            <input
-              type="range"
-              min="10"
-              max="100"
-              step="5"
-              value={quality}
-              onChange={(e) => onConfigChange(parseInt(e.target.value), scale, maxFps)}
-              className="w-16 h-1 accent-blue-500"
-            />
-            <span className="text-gray-400 text-xs w-6 tabular-nums">{quality}</span>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <label className="text-gray-400 text-xs">Scale</label>
-            <select
-              value={scale}
-              onChange={(e) => onConfigChange(quality, parseFloat(e.target.value), maxFps)}
-              className="bg-gray-700 text-gray-300 text-xs rounded px-1 py-0.5 border border-gray-600"
+          <div className="w-px h-5 bg-gray-600" />
+          <div className="relative" ref={qualityDropdownRef}>
+            <button
+              onClick={() => setQualityOpen(!qualityOpen)}
+              className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
+                qualityOpen ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white hover:bg-gray-700'
+              }`}
+              title="Stream quality"
+              aria-haspopup="menu"
+              aria-expanded={qualityOpen}
             >
-              <option value={0.25}>25%</option>
-              <option value={0.5}>50%</option>
-              <option value={0.75}>75%</option>
-              <option value={1.0}>100%</option>
-            </select>
-          </div>
+              <SlidersIcon className="w-3.5 h-3.5" />
+              <span>Quality</span>
+              <ChevronDownIcon className="w-3 h-3" />
+            </button>
 
-          <div className="flex items-center gap-1.5">
-            <label className="text-gray-400 text-xs">FPS Limit</label>
-            <select
-              value={maxFps}
-              onChange={(e) => onConfigChange(quality, scale, parseInt(e.target.value))}
-              className="bg-gray-700 text-gray-300 text-xs rounded px-1 py-0.5 border border-gray-600"
-            >
-              <option value={5}>5</option>
-              <option value={10}>10</option>
-              <option value={15}>15</option>
-              <option value={20}>20</option>
-              <option value={30}>30</option>
-              <option value={60}>60</option>
-            </select>
+            {qualityOpen && (
+              <div role="menu" className="absolute left-0 top-full mt-1 w-60 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 p-3 flex flex-col gap-3">
+                {/* WebRTC: Max bitrate */}
+                {capabilities?.bitrateControl && transport === 'webrtc' && (
+                  <label className="flex flex-col gap-1.5">
+                    <span className="flex items-center justify-between text-gray-300 text-xs">
+                      <span>Max bitrate</span>
+                      <span className="text-gray-400 tabular-nums">
+                        {bitrate >= 1000 ? `${(bitrate / 1000).toFixed(1)} Mbps` : `${bitrate} Kbps`}
+                      </span>
+                    </span>
+                    <input
+                      type="range"
+                      min="500"
+                      max="15000"
+                      step="250"
+                      value={bitrate}
+                      onChange={(e) => onBitrateChange(parseInt(e.target.value))}
+                      className="w-full h-1 accent-accent"
+                    />
+                  </label>
+                )}
+
+                {/* WebSocket: Quality / Scale / FPS limit */}
+                {transport === 'websocket' && (
+                  <>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="flex items-center justify-between text-gray-300 text-xs">
+                        <span>Quality</span>
+                        <span className="text-gray-400 tabular-nums">{quality}</span>
+                      </span>
+                      <input
+                        type="range"
+                        min="10"
+                        max="100"
+                        step="5"
+                        value={quality}
+                        onChange={(e) => onConfigChange(parseInt(e.target.value), scale, maxFps)}
+                        className="w-full h-1 accent-accent"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between gap-3 text-gray-300 text-xs">
+                      <span>Scale</span>
+                      <select
+                        value={scale}
+                        onChange={(e) => onConfigChange(quality, parseFloat(e.target.value), maxFps)}
+                        className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 border border-gray-600"
+                      >
+                        <option value={0.25}>25%</option>
+                        <option value={0.5}>50%</option>
+                        <option value={0.75}>75%</option>
+                        <option value={1.0}>100%</option>
+                      </select>
+                    </label>
+
+                    <label className="flex items-center justify-between gap-3 text-gray-300 text-xs">
+                      <span>FPS limit</span>
+                      <select
+                        value={maxFps}
+                        onChange={(e) => onConfigChange(quality, scale, parseInt(e.target.value))}
+                        className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 border border-gray-600"
+                      >
+                        <option value={5}>5</option>
+                        <option value={10}>10</option>
+                        <option value={15}>15</option>
+                        <option value={20}>20</option>
+                        <option value={30}>30</option>
+                        <option value={60}>60</option>
+                      </select>
+                    </label>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </>
       )}
@@ -457,7 +546,7 @@ export default function ViewerToolbar({
                 title={`${m.name || `Display ${m.index + 1}`}${m.isPrimary ? ' (Primary)' : ''} ${m.width}x${m.height}`}
                 className={`p-1 rounded transition-colors ${
                   activeMonitor === m.index
-                    ? 'text-blue-400 bg-blue-500/20'
+                    ? 'text-accent-soft bg-accent/20'
                     : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700'
                 }`}
               >
@@ -498,19 +587,19 @@ export default function ViewerToolbar({
 
       {/* Reconnecting indicator */}
       {status === 'reconnecting' && reconnectSecondsLeft != null && (
-        <span className="text-xs text-orange-400 animate-pulse">
-          Reconnecting... ({reconnectSecondsLeft}s)
+        <span className="text-xs text-retry animate-pulse">
+          Reconnecting… ({reconnectSecondsLeft}s)
         </span>
       )}
 
       {/* SAS sent flash */}
       {sasFlash && (
-        <span className="text-xs text-yellow-400 animate-pulse">Ctrl+Alt+Del sent</span>
+        <span className="text-xs text-pending animate-pulse">Ctrl+Alt+Del sent</span>
       )}
 
       {/* Paste progress indicator */}
       {pasteProgress && (
-        <div className="flex items-center gap-1.5 text-xs text-yellow-400">
+        <div className="flex items-center gap-1.5 text-xs text-pending">
           <span>Pasting {pasteProgress.current}/{pasteProgress.total}</span>
           <button
             onClick={onCancelPaste}
@@ -522,60 +611,20 @@ export default function ViewerToolbar({
         </div>
       )}
 
-      {/* Audio toggle (only shown when transport supports audio and agent has audio track) */}
-      {capabilities?.audio && hasAudioTrack && (
-        <button
-          onClick={onToggleAudio}
-          className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
-            audioEnabled
-              ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
-              : 'text-gray-400 hover:text-white hover:bg-gray-700'
-          }`}
-          title={audioEnabled ? 'Mute remote audio' : 'Unmute remote audio'}
-        >
-          {audioEnabled ? <VolumeOnIcon className="w-3.5 h-3.5" /> : <VolumeOffIcon className="w-3.5 h-3.5" />}
-          <span>Audio</span>
-        </button>
-      )}
+      {/* Divider between status/telemetry and the primary action group */}
+      <div className="w-px h-5 bg-gray-600" />
+
+      {/* ── Primary actions: the controls a tech reaches for every session ── */}
 
       {/* Paste as Keystrokes */}
       <button
         onClick={onPasteAsKeystrokes}
         disabled={!!pasteProgress}
         className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded disabled:opacity-40 disabled:cursor-not-allowed"
-        title="Paste clipboard text as keystrokes"
+        title="Paste clipboard text as keystrokes (Ctrl/Cmd+Shift+V)"
       >
         <PasteIcon className="w-3.5 h-3.5" />
         <span>Paste Text</span>
-      </button>
-
-      {/* Cmd↔Ctrl remap toggle */}
-      <button
-        onClick={() => onRemapCmdCtrlChange(!remapCmdCtrl)}
-        className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
-          remapCmdCtrl
-            ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
-            : 'text-gray-400 hover:text-white hover:bg-gray-700'
-        }`}
-        title={remapCmdCtrl ? 'Cmd↔Ctrl remap ON (click to disable)' : 'Cmd↔Ctrl remap OFF (click to enable)'}
-      >
-        <SwapIcon className="w-3.5 h-3.5" />
-        <span>Cmd↔Ctrl</span>
-      </button>
-
-      {/* Remote cursor visibility toggle */}
-      <button
-        onClick={() => onShowRemoteCursorChange(!showRemoteCursor)}
-        disabled={transport !== 'webrtc'}
-        className={`flex items-center gap-1 px-2 py-1 text-xs rounded disabled:opacity-40 disabled:cursor-not-allowed ${
-          showRemoteCursor
-            ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
-            : 'text-gray-400 hover:text-white hover:bg-gray-700'
-        }`}
-        title={showRemoteCursor ? 'Hide remote cursor overlay' : 'Show remote cursor overlay'}
-      >
-        <CursorIcon className="w-3.5 h-3.5" />
-        <span>Remote Cursor</span>
       </button>
 
       {/* Send Keys dropdown */}
@@ -630,10 +679,76 @@ export default function ViewerToolbar({
       <button
         onClick={toggleFullscreen}
         className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
-        title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+        title={isFullscreen ? 'Exit fullscreen (Ctrl/Cmd+Shift+F)' : 'Fullscreen (Ctrl/Cmd+Shift+F)'}
       >
         {isFullscreen ? <MinimizeIcon className="w-4 h-4" /> : <MaximizeIcon className="w-4 h-4" />}
       </button>
+
+      {/* ── Overflow menu: set-once session toggles ──────────────────────── */}
+      <div className="w-px h-5 bg-gray-600" />
+      <div className="relative" ref={moreDropdownRef}>
+        <button
+          onClick={() => setMoreOpen(!moreOpen)}
+          className={`p-1 rounded ${moreOpen ? 'text-white bg-gray-700' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}
+          title="More options"
+          aria-haspopup="menu"
+          aria-expanded={moreOpen}
+        >
+          <MoreIcon className="w-4 h-4" />
+        </button>
+
+        {moreOpen && (
+          <div role="menu" className="absolute right-0 top-full mt-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
+            <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Session options</div>
+
+            {/* Remote audio (only when the transport carries an audio track) */}
+            {capabilities?.audio && hasAudioTrack && (
+              <button
+                role="menuitemcheckbox"
+                aria-checked={audioEnabled}
+                onClick={onToggleAudio}
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700"
+              >
+                <span className="flex items-center gap-2">
+                  {audioEnabled ? <VolumeOnIcon className="w-3.5 h-3.5" /> : <VolumeOffIcon className="w-3.5 h-3.5" />}
+                  Remote audio
+                </span>
+                {audioEnabled && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+              </button>
+            )}
+
+            {/* Cmd↔Ctrl remap */}
+            <button
+              role="menuitemcheckbox"
+              aria-checked={remapCmdCtrl}
+              onClick={() => onRemapCmdCtrlChange(!remapCmdCtrl)}
+              className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700"
+            >
+              <span className="flex items-center gap-2">
+                <SwapIcon className="w-3.5 h-3.5" />
+                Cmd↔Ctrl remap
+              </span>
+              {remapCmdCtrl && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+            </button>
+
+            {/* Remote cursor overlay (WebRTC only) */}
+            <button
+              role="menuitemcheckbox"
+              aria-checked={showRemoteCursor}
+              onClick={() => onShowRemoteCursorChange(!showRemoteCursor)}
+              disabled={transport !== 'webrtc'}
+              title={transport !== 'webrtc' ? 'Remote cursor overlay requires WebRTC' : undefined}
+              className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+            >
+              <span className="flex items-center gap-2">
+                <CursorIcon className="w-3.5 h-3.5" />
+                Remote cursor
+              </span>
+              {showRemoteCursor && transport === 'webrtc' && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+            </button>
+          </div>
+        )}
+      </div>
 
     </div>
   );

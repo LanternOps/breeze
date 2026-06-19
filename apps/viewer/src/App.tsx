@@ -117,10 +117,10 @@ export default function App() {
       <UpdateIndicator />
       <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="text-center">
-          <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-gray-400 text-sm">Connecting...</p>
+          <div className="w-6 h-6 border-2 border-accent-soft border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-gray-400 text-sm">Connecting…</p>
           {error && (
-            <p className="text-red-400 text-sm mt-2">{error}</p>
+            <p className="text-danger text-sm mt-2">{error}</p>
           )}
         </div>
       </div>
