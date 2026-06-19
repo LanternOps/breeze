@@ -22,6 +22,12 @@ const {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      Apply persisted appearance preferences before first paint. Auth pages can
+      be reached by hard redirects after token expiry, so they cannot rely on
+      the main app layout having installed the theme swap listener.
+    -->
+    <script is:inline src="/theme-bootstrap.js"></script>
     <title>{title} | Breeze RMM</title>
     <ClientRouter />
   </head>
