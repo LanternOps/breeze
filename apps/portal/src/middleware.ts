@@ -1,6 +1,7 @@
 import { defineMiddleware } from 'astro:middleware';
 import { hasPortalSessionCookie } from './lib/session';
 import { isOutsideBase, stripBase, withBase } from './lib/basePath';
+import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
 
 const protectedPrefixes = ['/devices', '/tickets', '/assets', '/profile'];
 const authOnlyPaths = new Set(['/login', '/forgot-password']);
@@ -9,46 +10,19 @@ function isProtectedPath(pathname: string): boolean {
   return protectedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
-function resolveConnectSrcDirective(): string {
-  const sources = new Set<string>(["'self'", 'https:', 'ws:', 'wss:']);
-  const configuredApiUrl = process.env.PUBLIC_API_URL;
-
-  if (configuredApiUrl) {
-    try {
-      const parsed = new URL(configuredApiUrl);
-      sources.add(parsed.origin);
-      if (parsed.protocol === 'http:') {
-        sources.add(`ws://${parsed.host}`);
-      } else if (parsed.protocol === 'https:') {
-        sources.add(`wss://${parsed.host}`);
-      }
-    } catch {
-      // Ignore invalid URL configuration and fall back to default policy.
-    }
-  }
-
-  if (import.meta.env.DEV) {
-    sources.add('http://localhost:3001');
-    sources.add('ws://localhost:3001');
-  }
-
-  return `connect-src ${Array.from(sources).join(' ')}`;
+/** True for env flags set to `1`/`true`. Mirrors apps/web/src/middleware.ts. */
+function readFlag(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === '1' || raw === 'true';
 }
 
-const fallbackCspDirectives = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "object-src 'none'",
-  "script-src 'self'",
-  "style-src 'self'",
-  "style-src-attr 'none'",
-  "script-src-attr 'none'",
-  "img-src 'self' data: https:",
-  "font-src 'self' data:",
-  resolveConnectSrcDirective()
-].join('; ');
+/** Non-CSP security headers applied to every portal response. */
+function applyBaseSecurityHeaders(headers: Headers): void {
+  headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  headers.set('X-Frame-Options', 'DENY');
+  headers.set('X-Content-Type-Options', 'nosniff');
+}
 
 export const onRequest = defineMiddleware(async (context, next) => {
   // Defense-in-depth: the portal is mounted under BASE_PATH in prod — Caddy only
@@ -81,26 +55,27 @@ export const onRequest = defineMiddleware(async (context, next) => {
 
   const response = await next();
   const headers = new Headers(response.headers);
-  const existingCsp = headers.get('Content-Security-Policy');
 
-  // Astro experimental.csp sets hash-based CSP for HTML responses.
-  // Keep this strict fallback for non-HTML responses or routes without Astro rendering.
-  if (!existingCsp) {
-    headers.set('Content-Security-Policy', fallbackCspDirectives);
+  // Dev hydration fix: `astro dev` does NOT emit Astro's `security.csp` hash-based
+  // policy (hashing only runs at build), so the strict `script-src 'self'` fallback
+  // blocks Vite/Astro's inline hydration bootstrap. That left the public quote
+  // `client:load` island un-hydrated (kept its `ssr` attribute) and the Accept /
+  // Decline buttons firing zero network calls. resolvePortalCspHeader drops CSP in
+  // local dev (so HMR + hydration work) while keeping production strict via Astro
+  // hashes. Set CSP_STRICT_DEV=1 to opt back into enforcement locally.
+  const isDev = import.meta.env.DEV;
+  const decision = resolvePortalCspHeader({
+    existingCsp: headers.get('Content-Security-Policy'),
+    isDev,
+    strictDev: readFlag('CSP_STRICT_DEV'),
+    fallback: buildFallbackCspDirectives({ isDev })
+  });
+  if (decision.action === 'delete') {
+    headers.delete('Content-Security-Policy');
   } else {
-    let patchedCsp = existingCsp;
-    if (!/\bscript-src-attr\b/i.test(patchedCsp)) {
-      patchedCsp = `${patchedCsp}; script-src-attr 'none'`;
-    }
-    if (!/\bstyle-src-attr\b/i.test(patchedCsp)) {
-      patchedCsp = `${patchedCsp}; style-src-attr 'none'`;
-    }
-    headers.set('Content-Security-Policy', patchedCsp);
+    headers.set('Content-Security-Policy', decision.value);
   }
-  headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
-  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
-  headers.set('X-Frame-Options', 'DENY');
-  headers.set('X-Content-Type-Options', 'nosniff');
+  applyBaseSecurityHeaders(headers);
 
   return new Response(response.body, {
     status: response.status,

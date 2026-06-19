@@ -14,9 +14,55 @@ import { isQuoteExpired } from './quoteExpiry';
 
 type QuoteRow = typeof quotes.$inferSelect;
 
-function portalBase(): string {
-  // The customer portal app (apps/portal) is where /quote/<token> is served.
-  return (process.env.PUBLIC_PORTAL_URL || process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');
+/**
+ * Resolve the public origin (scheme + host [+ base path]) the customer portal is
+ * served under, for outbound email links. `PUBLIC_PORTAL_URL` is expected to
+ * already include the portal base prefix (default `/portal`, see .env.example) —
+ * e.g. `https://example.com/portal` — matching the invoice-link convention in
+ * invoicePdf.ts. The public quote route lives at `<portalBase>/quote/<token>`.
+ *
+ * Hardening (malformed `https:///quote/...` accept links): a configured value
+ * that is empty or parses to an empty host (e.g. a bare `https://`) must NEVER
+ * silently produce an empty-host URL in a customer-facing email. We walk the
+ * configured chain and, if none yields a usable host, throw loudly so the
+ * caller's best-effort email swallow records the failure rather than mailing a
+ * dead link.
+ */
+export function portalBase(): string {
+  const candidates = [
+    process.env.PUBLIC_PORTAL_URL,
+    process.env.PUBLIC_APP_URL,
+    process.env.DASHBOARD_URL,
+    'http://localhost:4321/portal',
+  ];
+
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (!trimmed) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      // Not a parseable absolute URL (bare `https://`, host-only string, etc.) — skip.
+      continue;
+    }
+    // A bare scheme like `https://` parses with an empty hostname; reject it so
+    // we never emit `https:///quote/...`.
+    if (!parsed.hostname) continue;
+    return trimmed.replace(/\/+$/, '');
+  }
+
+  // The localhost fallback above always has a host, so this is unreachable in
+  // practice — but if every configured value were malformed we fail loudly
+  // rather than hand back an empty-host link.
+  throw new Error(
+    '[quoteLifecycle] Cannot build a public quote URL: PUBLIC_PORTAL_URL / PUBLIC_APP_URL / DASHBOARD_URL are unset or malformed (no host).',
+  );
+}
+
+/** Build the public accept link emailed to the prospect: `<portalBase>/quote/<token>`. */
+export function buildPublicQuoteAcceptUrl(token: string): string {
+  return `${portalBase()}/quote/${encodeURIComponent(token)}`;
 }
 
 /** Light money formatter for the email body (invoicePdf's formatMoney is module-private). */
@@ -57,7 +103,7 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
     quoteId: id, orgId: quote.orgId, partnerId: quote.partnerId,
     expiresAt: quote.expiryDate ? new Date(`${quote.expiryDate}T23:59:59Z`) : null,
   });
-  const acceptUrl = `${portalBase()}/quote/${token}`;
+  const acceptUrl = buildPublicQuoteAcceptUrl(token);
 
   // Best-effort email, rendered + sent here within the request transaction
   // (it commits when the handler returns). A failure is swallowed so the send
