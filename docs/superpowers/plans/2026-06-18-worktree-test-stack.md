@@ -371,6 +371,11 @@ const DEV_ENV: Record<string, string> = {
   ENABLE_REGISTRATION: 'true',
   BINARY_SOURCE: 'github',
   CADDY_SITE_ADDRESS: ':80',
+  // Base compose's portal service has `image: ${BREEZE_PORTAL_IMAGE_REF:?}` — a
+  // mandatory interpolation evaluated BEFORE the override merge, so it must be
+  // defined here even though the worktree override replaces portal.image with a
+  // source build. Point it at the dev image so config resolves.
+  BREEZE_PORTAL_IMAGE_REF: 'breeze-portal:dev',
   // Caddy/postgres/redis images are digest-pinned in base compose; reuse the
   // values already present in the developer's root .env via compose interpolation.
 };
@@ -463,23 +468,38 @@ git commit -m "feat(wt-stack): hot-reload portal dev Dockerfile"
 # Namespaceable worktree stack. Stacks AFTER docker-compose.override.yml.dev.
 # Phase 1 (--shared): reuses the dev override's fixed host ports.
 # Adds a code-mounted Portal dev service so the worktree's portal code runs.
+# NOTE: `!reset null` (Compose 2.24+) is required to UNSET container_name set in
+# the base file — plain `null` is ignored and the fixed names survive the merge.
 services:
   postgres:
-    container_name: null
+    container_name: !reset null
   redis:
-    container_name: null
+    container_name: !reset null
   api:
-    container_name: null
+    container_name: !reset null
   web:
-    container_name: null
+    container_name: !reset null
+    # Browser calls the API same-origin through Caddy. Without this, the web
+    # container inherits the developer root .env PUBLIC_API_URL (e.g.
+    # http://localhost implicit :80), so the BROWSER's API calls target :80 instead
+    # of the stack's ephemeral Caddy port → login POST never lands → waitForURL hangs.
+    # Empty string makes the web app's resolveApiHost() use relative /api paths,
+    # which Caddy routes regardless of the published port. (portal sets this too.)
+    environment:
+      PUBLIC_API_URL: ""
   caddy:
-    container_name: null
+    container_name: !reset null
     environment:
       CADDY_SITE_ADDRESS: ":80"
 
   portal:
     image: breeze-portal:dev
-    container_name: null
+    container_name: !reset null
+    # The dev override publishes portal as a FIXED 4322:4322 host port — the last
+    # non-ephemeral publish, so two stacks collide on it and Caddy (which depends on
+    # portal being healthy) won't start. Portal is only reached via Caddy (baseUrl/portal),
+    # so unpublish it entirely rather than burning an ephemeral port.
+    ports: !reset []
     build:
       context: .
       dockerfile: docker/Dockerfile.portal.dev
@@ -509,6 +529,16 @@ services:
       start_period: 60s
     networks:
       - breeze
+
+# Per-project network isolation (REQUIRED for parallel stacks). Base compose pins
+# `networks.breeze.name: breeze`, a FIXED name shared across every Compose project.
+# Two stacks then both register the `postgres`/`api`/`redis` service aliases into
+# the one shared network, and Docker DNS resolves them non-deterministically across
+# stacks (Stack B's API talks to Stack A's postgres). Unset the fixed name so Compose
+# namespaces it per project (`<project>_breeze`), isolating service discovery.
+networks:
+  breeze:
+    name: !reset null
 ```
 
 - [ ] **Step 2: Verify the merged config is valid**
@@ -906,9 +936,15 @@ git commit -m "feat(wt-stack): test subcommand runs Playwright against the stack
 
 Update `docker-compose.override.yml.worktree` so port-publishing and tmpfs apply. Because the dev override hardcodes fixed ports, override them back to ephemeral here:
 ```yaml
+  # binaries-init keeps a fixed container_name from base compose; reset it too or
+  # two parallel stacks collide on `breeze-binaries-init` (Task 12's two-stack test
+  # catches this if omitted).
+  binaries-init:
+    container_name: !reset null
   postgres:
-    container_name: null
+    container_name: !reset null   # already set in Task 6; keep consistent
     ports: !reset []          # drop dev override's 5432 publish; not needed externally
+    volumes: !reset []        # clear the named pgdata volume so tmpfs can mount the same path
     tmpfs:
       - /var/lib/postgresql/data
     command:
@@ -918,24 +954,24 @@ Update `docker-compose.override.yml.worktree` so port-publishing and tmpfs apply
       - -c
       - synchronous_commit=off
   redis:
-    container_name: null
+    container_name: !reset null
     ports: !reset []
   api:
-    container_name: null
-    ports:
+    container_name: !reset null
+    ports: !override        # REPLACE the dev override's fixed list with an ephemeral one
       - "0:3001"
   web:
-    container_name: null
-    ports:
+    container_name: !reset null
+    ports: !override
       - "0:4321"
   caddy:
-    container_name: null
+    container_name: !reset null
     environment:
       CADDY_SITE_ADDRESS: ":80"
-    ports:
+    ports: !override
       - "0:80"
 ```
-> `!reset []` requires Compose's override-reset support (Docker Compose v2.24+). If unavailable, instead publish ephemeral (`"0:5432"`) rather than resetting. tmpfs means the Postgres init scripts (which create the `breeze_app` role + extensions) re-run on every `up` — desired for a disposable DB.
+> Tag choice matters in Compose v2.24+ (we run v5.x): `!reset []` clears a list (postgres/redis publish nothing externally; postgres `volumes` cleared so tmpfs owns the data path). To *replace* a list with a new value use `!override [...]` — `!reset ["0:3001"]` silently discards the value and behaves like `!reset []`, so api/web/caddy ephemeral publishes MUST use `!override`. tmpfs means the Postgres init scripts (breeze_app role + extensions) re-run on every `up` — desired for a disposable DB.
 
 - [ ] **Step 2: Bring up a worktree stack (non-shared) and confirm dynamic ports**
 
