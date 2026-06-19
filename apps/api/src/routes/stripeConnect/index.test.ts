@@ -41,25 +41,35 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
-vi.mock('../../services/stripeConnectService', () => ({
-  buildOAuthUrl: vi.fn().mockResolvedValue({ url: 'https://connect.stripe.com/oauth/authorize?x=1' }),
-  getConnection: vi.fn().mockResolvedValue({ status: 'connected', stripeAccountId: 'acct_9', livemode: false }),
-  consumeState: vi.fn().mockResolvedValue(true),
-  completeOAuth: vi.fn().mockResolvedValue({ stripeAccountId: 'acct_9' }),
-  disconnect: vi.fn().mockResolvedValue(undefined),
-}));
+// Re-export the real PartnerStripeError so the route's `instanceof` check matches.
+vi.mock('../../services/partnerStripe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/partnerStripe')>();
+  return {
+    PartnerStripeError: actual.PartnerStripeError,
+    savePartnerStripeKey: vi.fn(),
+    getPartnerStripeStatus: vi.fn(),
+    disconnectPartnerStripe: vi.fn(),
+  };
+});
 
 import { stripeConnectRoutes } from './index';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
-  buildOAuthUrl,
-  getConnection,
-  consumeState,
-  completeOAuth,
-  disconnect,
-} from '../../services/stripeConnectService';
+  savePartnerStripeKey,
+  getPartnerStripeStatus,
+  disconnectPartnerStripe,
+  PartnerStripeError,
+} from '../../services/partnerStripe';
 
-describe('stripe-connect routes', () => {
+function postKey(apiKey: unknown) {
+  return stripeConnectRoutes.request('/key', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ apiKey }),
+  });
+}
+
+describe('stripe-connect (API-key) routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     authGates.permissionDenied = false;
@@ -68,81 +78,70 @@ describe('stripe-connect routes', () => {
       user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' },
       partnerId: 'partner-1',
     };
-    (buildOAuthUrl as any).mockResolvedValue({ url: 'https://connect.stripe.com/oauth/authorize?x=1' });
-    (getConnection as any).mockResolvedValue({ status: 'connected', stripeAccountId: 'acct_9', livemode: false });
-    (consumeState as any).mockResolvedValue(true);
-    (completeOAuth as any).mockResolvedValue({ stripeAccountId: 'acct_9' });
-    (disconnect as any).mockResolvedValue(undefined);
+    (savePartnerStripeKey as any).mockResolvedValue({ stripeAccountId: 'acct_9', last4: '4242', livemode: false });
+    (getPartnerStripeStatus as any).mockResolvedValue({ connected: true, stripeAccountId: 'acct_9', last4: '4242', livemode: false });
+    (disconnectPartnerStripe as any).mockResolvedValue(undefined);
   });
 
-  it('POST /oauth/start returns an authorize url', async () => {
-    const res = await stripeConnectRoutes.request('/oauth/start', { method: 'POST' });
+  it('POST /key saves the key, audits, and returns connected status', async () => {
+    const res = await postKey('sk_test_abcdefghijkl');
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ url: expect.stringContaining('connect.stripe.com') });
-    expect(buildOAuthUrl).toHaveBeenCalledWith({
+    expect(await res.json()).toMatchObject({ status: 'connected', stripeAccountId: 'acct_9', livemode: false, last4: '4242' });
+    expect(savePartnerStripeKey).toHaveBeenCalledWith({
       partnerId: 'partner-1',
-      userId: '11111111-1111-1111-1111-111111111111',
-    });
-  });
-
-  it('GET / returns connection status', async () => {
-    const res = await stripeConnectRoutes.request('/', { method: 'GET' });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'connected', stripeAccountId: 'acct_9', livemode: false });
-  });
-
-  it('GET / returns disconnected when no connected row', async () => {
-    (getConnection as any).mockResolvedValue(null);
-    const res = await stripeConnectRoutes.request('/', { method: 'GET' });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'disconnected' });
-  });
-
-  it('GET /oauth/callback consumes state, completes oauth, audits, and REDIRECTS to billing settings', async () => {
-    const res = await stripeConnectRoutes.request('/oauth/callback?code=ac_1&state=st_1', { method: 'GET' });
-    // UX: redirect the browser back to the partner billing-settings page (not raw JSON).
-    expect(res.status).toBe(302);
-    const location = res.headers.get('location') ?? '';
-    expect(location).toContain('/settings/billing');
-    expect(location).toContain('stripe_connected=1');
-    expect(consumeState).toHaveBeenCalledWith('st_1', 'partner-1');
-    expect(completeOAuth).toHaveBeenCalledWith({
-      code: 'ac_1',
-      partnerId: 'partner-1',
+      apiKey: 'sk_test_abcdefghijkl',
       userId: '11111111-1111-1111-1111-111111111111',
     });
     expect(writeRouteAudit).toHaveBeenCalled();
   });
 
-  it('GET /oauth/callback REDIRECTS with an error flag on invalid state', async () => {
-    (consumeState as any).mockResolvedValue(false);
-    const res = await stripeConnectRoutes.request('/oauth/callback?code=ac_1&state=bad', { method: 'GET' });
-    expect(res.status).toBe(302);
-    const location = res.headers.get('location') ?? '';
-    expect(location).toContain('/settings/billing');
-    expect(location).toContain('stripe_error=');
-    expect(completeOAuth).not.toHaveBeenCalled();
+  it('POST /key rejects an empty/too-short key with 400 before hitting Stripe', async () => {
+    const res = await postKey('sk_x');
+    expect(res.status).toBe(400);
+    expect(savePartnerStripeKey).not.toHaveBeenCalled();
   });
 
-  it('GET /oauth/callback REDIRECTS with an error flag on missing code/state', async () => {
-    const res = await stripeConnectRoutes.request('/oauth/callback', { method: 'GET' });
-    expect(res.status).toBe(302);
-    const location = res.headers.get('location') ?? '';
-    expect(location).toContain('/settings/billing');
-    expect(location).toContain('stripe_error=');
+  it('POST /key surfaces a rejected key as a 400 with the service message (not a 500)', async () => {
+    (savePartnerStripeKey as any).mockRejectedValue(
+      new PartnerStripeError('That Stripe key was rejected — double-check it.', 'INVALID_STRIPE_KEY'),
+    );
+    const res = await postKey('sk_test_rejectedkey0');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining('rejected') });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('GET / returns connected status with last4', async () => {
+    const res = await stripeConnectRoutes.request('/', { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'connected', stripeAccountId: 'acct_9', livemode: false, last4: '4242' });
+  });
+
+  it('GET / returns disconnected when no key is configured', async () => {
+    (getPartnerStripeStatus as any).mockResolvedValue({ connected: false, last4: null });
+    const res = await stripeConnectRoutes.request('/', { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'disconnected' });
   });
 
   it('DELETE / disconnects and audits', async () => {
     const res = await stripeConnectRoutes.request('/', { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: 'disconnected' });
-    expect(disconnect).toHaveBeenCalledWith('partner-1');
+    expect(disconnectPartnerStripe).toHaveBeenCalledWith('partner-1');
     expect(writeRouteAudit).toHaveBeenCalled();
   });
 
   it('403s when no partner context', async () => {
     authState.value = { user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' }, partnerId: null };
-    const res = await stripeConnectRoutes.request('/oauth/start', { method: 'POST' });
+    const res = await postKey('sk_test_abcdefghijkl');
     expect(res.status).toBe(403);
+  });
+
+  it('403s when MFA is not satisfied', async () => {
+    authGates.mfaDenied = true;
+    const res = await postKey('sk_test_abcdefghijkl');
+    expect(res.status).toBe(403);
+    expect(savePartnerStripeKey).not.toHaveBeenCalled();
   });
 });
