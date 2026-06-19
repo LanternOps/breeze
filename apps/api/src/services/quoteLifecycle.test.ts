@@ -51,6 +51,27 @@ describe('quoteLifecycle portal URL', () => {
     expect(new URL(url).hostname).not.toBe('');
   });
 
+  it('SKIPS the empty-authority triple-slash form (`https:///portal`) rather than emitting a dead link', () => {
+    // #1630 follow-up: PUBLIC_PORTAL_URL="https:///portal" (host var didn't
+    // interpolate). `new URL('https:///portal').hostname === 'portal'` — Node
+    // reinterprets the first path segment as the host, so the parsed-hostname
+    // guard wrongly passes and we'd ship `https:///portal/quote/<token>`.
+    process.env.PUBLIC_PORTAL_URL = 'https:///portal';
+    process.env.PUBLIC_APP_URL = 'https://app.example.com';
+    const url = buildPublicQuoteAcceptUrl('tok');
+    expect(url).not.toMatch(/^https?:\/\/\//); // no empty-authority `://[/]`
+    expect(url).not.toContain('https:///portal');
+    expect(new URL(url).hostname).toBe('app.example.com'); // fell through to next valid candidate
+    expect(url).toBe('https://app.example.com/quote/tok');
+  });
+
+  it('preserves a valid host + /portal base path (not over-eagerly skipped)', () => {
+    process.env.PUBLIC_PORTAL_URL = 'https://example.com/portal';
+    const base = portalBase();
+    expect(base).toBe('https://example.com/portal'); // returned as-is, base path intact
+    expect(new URL(base).hostname).toBe('example.com');
+  });
+
   it('falls through an empty PUBLIC_PORTAL_URL to PUBLIC_APP_URL', () => {
     process.env.PUBLIC_PORTAL_URL = '';
     process.env.PUBLIC_APP_URL = 'https://app.example.com';
@@ -68,9 +89,9 @@ describe('quoteLifecycle portal URL', () => {
     // monkeypatching: not possible via env since the fallback is a constant, so
     // we assert the happy-path host invariant instead — portalBase always yields
     // a parseable URL with a hostname.
-    process.env.PUBLIC_PORTAL_URL = 'not-a-url';
-    process.env.PUBLIC_APP_URL = 'https://'; // empty host
-    process.env.DASHBOARD_URL = '   ';        // blank
+    process.env.PUBLIC_PORTAL_URL = 'https:///portal'; // empty-authority triple-slash
+    process.env.PUBLIC_APP_URL = 'https://';           // empty host
+    process.env.DASHBOARD_URL = '   ';                 // blank
     const base = portalBase();
     expect(new URL(base).hostname).toBe('localhost'); // last good fallback
   });
