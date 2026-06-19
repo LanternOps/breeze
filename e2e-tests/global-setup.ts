@@ -23,8 +23,8 @@ export default async function globalSetup(config: FullConfig) {
   const sqlPath = path.resolve(__dirname, 'seed-fixtures.sql');
   try {
     const psqlArgs = composeBase
-      ? [...composeBase, 'exec', '-T', 'postgres', 'psql', '-U', 'breeze', '-d', 'breeze']
-      : ['exec', '-i', 'breeze-postgres', 'psql', '-U', 'breeze', '-d', 'breeze'];
+      ? [...composeBase, 'exec', '-T', 'postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'breeze', '-d', 'breeze']
+      : ['exec', '-i', 'breeze-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'breeze', '-d', 'breeze'];
     execFileSync('docker', psqlArgs, {
       cwd: repoRoot,
       input: readFileSync(sqlPath, 'utf8'),

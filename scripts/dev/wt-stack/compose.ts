@@ -70,7 +70,7 @@ export function waitHealthy(project: string, services: string[], timeoutMs: numb
 
 export function seedDatabase(project: string): void {
   if (!existsSync(SEED_SQL)) throw new Error(`Seed file not found: ${SEED_SQL}`);
-  execFileSync('docker', [...composeArgs(project), 'exec', '-T', 'postgres', 'psql', '-U', 'breeze', '-d', 'breeze'],
+  execFileSync('docker', [...composeArgs(project), 'exec', '-T', 'postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'breeze', '-d', 'breeze'],
     { cwd: ROOT, input: readFileSync(SEED_SQL, 'utf8'), stdio: ['pipe', 'inherit', 'inherit'] });
 }
 

@@ -1,6 +1,6 @@
 // scripts/dev/wt-stack/cli.ts
 import { execFileSync } from 'node:child_process';
-import { deriveProjectName } from './project';
+import { deriveProjectName, descriptorPath } from './project';
 import { writeDescriptor, readDescriptor, type StackDescriptor } from './descriptor';
 import { writeEnvStack } from './env';
 import { composeUp, waitHealthy, publishedPort, containerName, seedDatabase, composeDown } from './compose';
@@ -61,7 +61,7 @@ function test(passthrough: string[]): void {
     stdio: 'inherit',
     env: {
       ...process.env,
-      E2E_STACK_FILE: `${worktreePath}/.breeze-stack.json`,
+      E2E_STACK_FILE: descriptorPath(worktreePath),
       E2E_BASE_URL: d.baseUrl,
       E2E_ADMIN_EMAIL: d.admin.email,
       E2E_ADMIN_PASSWORD: d.admin.password,

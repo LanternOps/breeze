@@ -1,7 +1,6 @@
 # docker-compose.override.yml.worktree
-# Namespaceable worktree stack. Stacks AFTER docker-compose.override.yml.dev.
-# Phase 1 (--shared): reuses the dev override's fixed host ports.
-# Phase 2 (per-worktree): ephemeral ports + tmpfs Postgres for isolation.
+# Always applied for both per-worktree and --shared stacks. Stacks AFTER docker-compose.override.yml.dev.
+# All stacks use ephemeral host ports (0:N) + tmpfs Postgres; only the Compose project namespace differs.
 # Adds a code-mounted Portal dev service so the worktree's portal code runs.
 services:
   binaries-init:
