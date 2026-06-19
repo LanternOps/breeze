@@ -168,6 +168,9 @@ export interface DeviceHardware {
   serialNumber: string | null;
   manufacturer: string | null;
   model: string | null;
+  motherboardManufacturer: string | null;
+  motherboardProduct: string | null;
+  motherboardVersion: string | null;
   biosVersion: string | null;
   updatedAt: Date;
 }
