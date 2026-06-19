@@ -587,9 +587,9 @@ export function composeUp(project: string, opts: { rebuild: boolean }): void {
 }
 
 export function containerName(project: string, service: string): string {
-  return docker([...composeArgs(project), 'ps', '-q', service]).trim()
-    ? `${project}-${service}-1`
-    : `${project}-${service}-1`;
+  const cid = docker([...composeArgs(project), 'ps', '-q', service]).trim();
+  if (!cid) throw new Error(`Service ${service} has no container in project ${project}.`);
+  return docker(['inspect', '-f', '{{ .Name }}', cid]).trim().replace(/^\//, '');
 }
 
 export function publishedPort(project: string, service: string, containerPort: number): number {
@@ -627,7 +627,7 @@ export function composeDown(project: string, removeVolumes: boolean): void {
 }
 ```
 
-> **Note:** `waitHealthy` accepts `running` for services without a healthcheck and `healthy` for those with one. `containerName` returns the deterministic Compose default `<project>-<service>-1`; the `ps -q` call only confirms the service exists.
+> **Note:** `waitHealthy` accepts `running` for services without a healthcheck and `healthy` for those with one. `containerName` resolves the real container name via `docker inspect` (handles non-default Compose naming) and throws if the service has no container.
 
 - [ ] **Step 2: Re-run the parser unit test to confirm no regression**
 
@@ -854,7 +854,6 @@ git commit -m "feat(wt-stack): Playwright reads stack descriptor for baseURL and
 function test(passthrough: string[]): void {
   const worktreePath = process.cwd();
   const d = readDescriptor(worktreePath); // throws clear error if not up
-  execFileSync('pnpm', ['--filter', 'NONE', 'exec', 'true'], { stdio: 'ignore' }); // no-op guard; keeps pnpm resolved
   execFileSync('npx', ['playwright', 'test', ...passthrough], {
     cwd: `${worktreePath}/e2e-tests`,
     stdio: 'inherit',
@@ -872,7 +871,7 @@ Wire into `main()`:
 ```ts
     case 'test': test(rest[0] === '--' ? rest.slice(1) : rest); break;
 ```
-> Remove the `pnpm --filter NONE` guard line if it complicates resolution; it exists only to fail fast when pnpm is missing. Prefer simply documenting the pinned-Node PATH requirement.
+> The pinned-Node PATH requirement (`v22.20.0`) is documented in the agent skill (Task 13); `npx playwright` resolves from `e2e-tests/node_modules`.
 
 - [ ] **Step 2: Run one real spec against the worktree stack**
 
