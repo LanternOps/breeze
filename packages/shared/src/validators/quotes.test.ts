@@ -46,3 +46,15 @@ describe('declineQuoteSchema', () => {
     expect(declineQuoteSchema.safeParse({ reason: 'x'.repeat(5001) }).success).toBe(false);
   });
 });
+
+import { updateQuoteSchema } from './quotes';
+
+describe('quote T&C field', () => {
+  it('create accepts termsAndConditions', () => {
+    const p = createQuoteSchema.parse({ orgId: '00000000-0000-0000-0000-000000000000', termsAndConditions: 'Valid 30 days' });
+    expect(p.termsAndConditions).toBe('Valid 30 days');
+  });
+  it('update accepts termsAndConditions (nullable to clear)', () => {
+    expect(updateQuoteSchema.parse({ termsAndConditions: null }).termsAndConditions).toBeNull();
+  });
+});

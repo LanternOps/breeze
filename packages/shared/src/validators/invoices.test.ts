@@ -35,3 +35,36 @@ describe('partnerBillingSettingsSchema', () => {
     expect(partnerBillingSettingsSchema.safeParse({ currencyCode: 'USD', defaultTaxRate: 0.085, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }).success).toBe(true);
   });
 });
+
+import { createManualInvoiceSchema, updateInvoiceSchema } from './invoices';
+
+describe('partnerBillingSettingsSchema — contact fields', () => {
+  it('accepts the new seller contact + T&C fields', () => {
+    const parsed = partnerBillingSettingsSchema.parse({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      billingCompanyName: 'Acme MSP LLC', billingPhone: '+1 555 0100', billingWebsite: 'acme.test',
+      billingAddressLine1: '1 Main St', billingAddressCity: 'Austin', billingAddressRegion: 'TX',
+      billingAddressPostalCode: '78701', billingAddressCountry: 'US',
+      billingTermsAndConditions: 'Net 30. Late fee 1.5%/mo.',
+    });
+    expect(parsed.billingCompanyName).toBe('Acme MSP LLC');
+    expect(parsed.billingAddressCountry).toBe('US');
+  });
+
+  it('rejects a 3-letter country code', () => {
+    expect(() => partnerBillingSettingsSchema.parse({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, billingAddressCountry: 'USA',
+    })).toThrow();
+  });
+});
+
+describe('invoice T&C field', () => {
+  it('create accepts termsAndConditions', () => {
+    const p = createManualInvoiceSchema.parse({ orgId: '00000000-0000-0000-0000-000000000000', termsAndConditions: 'Net 30' });
+    expect(p.termsAndConditions).toBe('Net 30');
+  });
+  it('update accepts termsAndConditions', () => {
+    const p = updateInvoiceSchema.parse({ termsAndConditions: 'Net 15' });
+    expect(p.termsAndConditions).toBe('Net 15');
+  });
+});

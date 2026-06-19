@@ -41,13 +41,15 @@ export const updateLineSchema = z.object({
 export const createManualInvoiceSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid().optional(),
-  notes: z.string().max(5000).optional()
+  notes: z.string().max(5000).optional(),
+  termsAndConditions: z.string().max(20_000).optional()
 });
 
 export const updateInvoiceSchema = z.object({
   notes: z.string().max(5000).optional(),
   siteId: z.string().guid().nullable().optional(),
-  dueDate: isoDate.optional()
+  dueDate: isoDate.optional(),
+  termsAndConditions: z.string().max(20_000).nullable().optional()
 });
 
 export const recordPaymentSchema = z.object({
@@ -77,7 +79,18 @@ export const partnerBillingSettingsSchema = z.object({
   defaultTaxRate: taxRate.nullable().optional(),
   invoiceNumberPrefix: z.string().min(1).max(12),
   invoiceTermsDays: z.number().int().min(0).max(365),
-  invoiceFooter: z.string().max(5000).nullable().optional()
+  invoiceFooter: z.string().max(5000).nullable().optional(),
+  // Seller "From" contact profile (snapshotted onto each document at issue).
+  billingCompanyName: z.string().max(255).nullable().optional(),
+  billingPhone: z.string().max(40).nullable().optional(),
+  billingWebsite: z.string().max(255).nullable().optional(),
+  billingAddressLine1: z.string().max(255).nullable().optional(),
+  billingAddressLine2: z.string().max(255).nullable().optional(),
+  billingAddressCity: z.string().max(120).nullable().optional(),
+  billingAddressRegion: z.string().max(120).nullable().optional(),
+  billingAddressPostalCode: z.string().max(40).nullable().optional(),
+  billingAddressCountry: z.string().length(2).nullable().optional(),
+  billingTermsAndConditions: z.string().max(20_000).nullable().optional(),
 });
 
 export const orgBillingSettingsSchema = z.object({

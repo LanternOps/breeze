@@ -61,6 +61,7 @@ export const createQuoteSchema = z.object({
   expiryDate: isoDate.optional(),
   introNotes: z.string().max(5000).optional(),
   terms: z.string().max(20_000).optional(),
+  termsAndConditions: z.string().max(20_000).optional(),
 });
 
 export const updateQuoteSchema = z.object({
@@ -68,6 +69,7 @@ export const updateQuoteSchema = z.object({
   expiryDate: isoDate.nullable().optional(),
   introNotes: z.string().max(5000).nullable().optional(),
   terms: z.string().max(20_000).nullable().optional(),
+  termsAndConditions: z.string().max(20_000).nullable().optional(),
   taxRate: taxRate.nullable().optional(),
   billToName: z.string().max(255).nullable().optional(),
 });
