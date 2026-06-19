@@ -149,6 +149,16 @@ fn validate_deep_link(url: &str) -> Result<String, String> {
     Ok(url.trim().to_string())
 }
 
+/// Pick the first `breeze:`-scheme argument out of a process argv.
+///
+/// Used by the single-instance handler: when a second viewer launch forwards its
+/// argv to the running instance, this locates the deep link (if any). Returns an
+/// owned copy so the caller can move it across the thread hop that defers window
+/// creation off the (possibly main-thread) single-instance callback (issue #1409).
+fn first_deep_link_arg(argv: &[String]) -> Option<String> {
+    argv.iter().find(|arg| arg.starts_with("breeze:")).cloned()
+}
+
 fn active_session_window_count(app: &tauri::AppHandle) -> usize {
     let counter = app.state::<WindowCounter>();
     let n = *lock_or_recover(&counter.0, "window_counter");
@@ -613,26 +623,40 @@ pub fn run() {
             update_session_hostname,
         ]);
 
-    // Single instance plugin (desktop only) — ensures deep links open in existing process.
-    // IMPORTANT: Defer all window operations (set_focus, WebviewWindowBuilder::build)
-    // via run_on_main_thread so they execute AFTER this callback returns. On macOS,
-    // the plugin holds an internal lock during the callback; set_focus/build pump
-    // the AppKit run loop, which can re-enter the plugin and deadlock.
+    // Single instance plugin (desktop only) — ensures deep links open in existing
+    // process. A second remote session is launched by the OS handing the running
+    // viewer a fresh `breeze://` argv, which this callback receives.
+    //
+    // IMPORTANT: window operations (set_focus, WebviewWindowBuilder::build) MUST be
+    // queued to a LATER event-loop tick, never run inside this callback. On Windows
+    // the second instance signals via a synchronous SendMessageW(WM_COPYDATA) to the
+    // running viewer's main-thread-owned window, so this callback runs INLINE on the
+    // main/event-loop thread (confirmed in tauri-plugin-single-instance windows.rs).
+    // build() pumps the wry event loop and needs it to return the new window — doing
+    // that re-entrantly from inside the WM_COPYDATA dispatch deadlocks the single
+    // thread that drives every window, hanging the whole app ("Not Responding" on a
+    // second concurrent session — issue #1409).
+    //
+    // run_on_main_thread does NOT save us here: tauri-runtime-wry runs the closure
+    // INLINE/synchronously when it is invoked while already on the main thread (it
+    // only queues via proxy.send_event when called from another thread). So calling
+    // it directly in this callback still re-enters build() synchronously. We must
+    // hop off the main thread FIRST — spawning a thread forces run_on_main_thread
+    // down its cross-thread (async-queued) path, deferring build() to a clean tick.
+    // This mirrors the macOS on_open_url handler below, which already does this.
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(url) = argv.iter().find(|arg| arg.starts_with("breeze:")).cloned() {
-                let handle = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    route_deep_link(&handle, url);
+            let handle = app.clone();
+            let url = first_deep_link_arg(&argv);
+            std::thread::spawn(move || {
+                let h = handle.clone();
+                let _ = handle.run_on_main_thread(move || match url {
+                    Some(url) => route_deep_link(&h, url),
+                    // No deep link — just activate. Focus most recent session window if any.
+                    None => focus_any_session_window(&h),
                 });
-            } else {
-                // No deep link — just activate. Focus most recent session window if any.
-                let handle = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    focus_any_session_window(&handle);
-                });
-            }
+            });
         }));
     }
 
@@ -824,6 +848,37 @@ mod tests {
         for (status, expected) in cases {
             assert_eq!(serde_json::to_value(&status).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn first_deep_link_arg_cases() {
+        // Typical second-instance launch: argv[0] is the exe path, the deep link follows.
+        assert_eq!(
+            first_deep_link_arg(&[
+                "/Applications/Breeze Viewer.app".to_string(),
+                "breeze://connect?session=s&code=c".to_string(),
+            ])
+            .as_deref(),
+            Some("breeze://connect?session=s&code=c")
+        );
+        // `breeze:` (no slashes) is also a valid scheme prefix.
+        assert_eq!(
+            first_deep_link_arg(&["breeze:vnc?tunnel=t".to_string()]).as_deref(),
+            Some("breeze:vnc?tunnel=t")
+        );
+        // First match wins when (improbably) more than one is present.
+        assert_eq!(
+            first_deep_link_arg(&["breeze://a".to_string(), "breeze://b".to_string()]).as_deref(),
+            Some("breeze://a")
+        );
+        // No deep link → None (handler falls back to focusing an existing window).
+        assert_eq!(first_deep_link_arg(&["exe".to_string()]), None);
+        assert_eq!(first_deep_link_arg(&[]), None);
+        // A non-breeze arg that merely contains the substring must not match.
+        assert_eq!(
+            first_deep_link_arg(&["--url=breeze://x".to_string()]),
+            None
+        );
     }
 
     #[test]
