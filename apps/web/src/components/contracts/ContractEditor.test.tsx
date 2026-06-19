@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ContractEditor from './ContractEditor';
@@ -53,9 +53,14 @@ describe('ContractEditor (create)', () => {
 
   it('includes the Terms field in the create payload', async () => {
     render(<ContractEditor />);
-    await screen.findByTestId('contract-form-org');
+    const orgSelect = await screen.findByTestId('contract-form-org');
+    // The <option>s populate only after the async /orgs/organizations fetch
+    // resolves. Wait for the option before selecting it — otherwise the
+    // controlled <select> rejects a value with no matching option, orgId stays
+    // empty, canSaveHeader is false, and the save no-ops (flaky under CI load).
+    await within(orgSelect).findByRole('option', { name: 'Acme' });
 
-    fireEvent.change(screen.getByTestId('contract-form-org'), { target: { value: 'org-1' } });
+    fireEvent.change(orgSelect, { target: { value: 'org-1' } });
     fireEvent.change(screen.getByTestId('contract-form-name'), { target: { value: 'Acme MSA' } });
     fireEvent.change(screen.getByTestId('contract-form-terms'), { target: { value: 'Net 30. Auto-renews.' } });
     fireEvent.click(screen.getByTestId('save-contract-btn'));
