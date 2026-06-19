@@ -29,7 +29,7 @@ type RetentionJobData = {
 };
 
 type PrunedTable = {
-  table: 'remediation_suggestions' | 'metric_anomalies';
+  table: 'remediation_suggestions' | 'metric_anomalies' | 'metric_anomaly_candidates';
   deleted: number;
   batches: number;
   hasMore: boolean;
@@ -121,6 +121,35 @@ async function pruneMetricAnomalies(cutoff: string, batchSize: number, maxBatche
   };
 }
 
+async function pruneMetricAnomalyCandidates(cutoff: string, batchSize: number, maxBatches: number): Promise<PrunedTable> {
+  let deleted = 0;
+  let batches = 0;
+  let lastBatchDeleted = 0;
+
+  while (batches < maxBatches) {
+    const result = await db.execute(sql`
+      DELETE FROM metric_anomaly_candidates
+      WHERE ctid IN (
+        SELECT ctid
+        FROM metric_anomaly_candidates
+        WHERE detected_at < ${cutoff}::timestamptz
+        LIMIT ${batchSize}
+      )
+    `);
+    lastBatchDeleted = extractMlOutputRetentionRowCount(result);
+    deleted += lastBatchDeleted;
+    batches += 1;
+    if (lastBatchDeleted < batchSize) break;
+  }
+
+  return {
+    table: 'metric_anomaly_candidates',
+    deleted,
+    batches,
+    hasMore: batches >= maxBatches && lastBatchDeleted >= batchSize,
+  };
+}
+
 export async function pruneMlOutputs(options: {
   retentionDays: number;
   batchSize?: number;
@@ -135,6 +164,7 @@ export async function pruneMlOutputs(options: {
   const tables = [
     await pruneRemediationSuggestions(cutoff, batchSize, maxBatches),
     await pruneMetricAnomalies(cutoff, batchSize, maxBatches),
+    await pruneMetricAnomalyCandidates(cutoff, batchSize, maxBatches),
   ];
   const durationMs = Date.now() - startedAt;
 

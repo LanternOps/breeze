@@ -104,10 +104,11 @@ describe('ML output retention worker', () => {
     );
   });
 
-  it('prunes remediation suggestions and metric anomalies in bounded ctid batches inside system DB context', async () => {
+  it('prunes remediation suggestions, metric anomalies, and shadow candidates in bounded ctid batches inside system DB context', async () => {
     dbExecuteMock
       .mockResolvedValueOnce({ rowCount: 4 })
       .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 0 })
       .mockResolvedValueOnce({ rowCount: 0 });
     createMlOutputRetentionWorker();
 
@@ -116,9 +117,10 @@ describe('ML output retention worker', () => {
     });
 
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-    expect(dbExecuteMock).toHaveBeenCalledTimes(3);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(4);
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('DELETE FROM remediation_suggestions');
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('DELETE FROM metric_anomalies');
+    expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('DELETE FROM metric_anomaly_candidates');
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('SELECT ctid');
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('created_at <');
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('detected_at <');
@@ -132,6 +134,7 @@ describe('ML output retention worker', () => {
       tables: [
         { table: 'remediation_suggestions', deleted: 5, batches: 2, hasMore: false },
         { table: 'metric_anomalies', deleted: 0, batches: 1, hasMore: false },
+        { table: 'metric_anomaly_candidates', deleted: 0, batches: 1, hasMore: false },
       ],
     });
   });
@@ -140,20 +143,22 @@ describe('ML output retention worker', () => {
     dbExecuteMock
       .mockResolvedValueOnce({ rowCount: 4 })
       .mockResolvedValueOnce({ rowCount: 4 })
-      .mockResolvedValueOnce({ rowCount: 1 });
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 0 });
     createMlOutputRetentionWorker();
 
     const result = await capturedWorkerProcessor.current!({
       data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
     });
 
-    expect(dbExecuteMock).toHaveBeenCalledTimes(3);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(4);
     expect(result).toMatchObject({
       deleted: 9,
       hasMore: true,
       tables: [
         { table: 'remediation_suggestions', deleted: 8, batches: 2, hasMore: true },
         { table: 'metric_anomalies', deleted: 1, batches: 1, hasMore: false },
+        { table: 'metric_anomaly_candidates', deleted: 0, batches: 1, hasMore: false },
       ],
     });
   });

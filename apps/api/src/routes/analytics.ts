@@ -1184,7 +1184,13 @@ analyticsRoutes.get(
           : []),
       ];
 
+      // Keep the v0 side of the overlap join bounded to the same eval window as
+      // `total` (which is filtered by metricAnomalies.detectedAt >= since). Without
+      // this, an in-window candidate could match a v0 anomaly detected outside the
+      // window — inflating overlapWithV0 and understating v1Only against a window the
+      // user did not ask about.
       const overlapJoin = and(
+        gte(metricAnomalies.detectedAt, since),
         eq(metricAnomalies.orgId, metricAnomalyCandidates.orgId),
         eq(metricAnomalies.deviceId, metricAnomalyCandidates.deviceId),
         eq(metricAnomalies.sourceTable, metricAnomalyCandidates.sourceTable),
@@ -1239,6 +1245,11 @@ analyticsRoutes.get(
       labeledOutcomes.total = labeledOutcomes.dismissed + labeledOutcomes.promoted + labeledOutcomes.resolved;
 
       const v1Only = Math.max(totalCandidates - overlapWithV0, 0);
+      // Approximate: subtracts the distinct-candidate overlap count from the v0
+      // anomaly total. The overlap join is effectively 1:1 (its key set is a
+      // superset of both unique indexes), so distinct candidates ≈ distinct v0
+      // anomalies in practice; the Math.max guards the residual mismatch. This is
+      // a shadow-eval diagnostic, not an exact set difference.
       const v0Only = Math.max(total - overlapWithV0, 0);
       v1Shadow = {
         modelVersion: METRIC_ANOMALY_V1_SHADOW_VERSION,

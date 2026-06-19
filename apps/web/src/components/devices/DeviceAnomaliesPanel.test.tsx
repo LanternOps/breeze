@@ -489,6 +489,63 @@ describe('DeviceAnomaliesPanel', () => {
     expect(screen.getByText('50%')).toBeTruthy();
   });
 
+  it('renders the v1 shadow error state and retries on demand', async () => {
+    let shadowAttempt = 0;
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
+        shadowAttempt += 1;
+        if (shadowAttempt === 1) {
+          return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+        }
+        return Promise.resolve(makeJsonResponse({
+          v1Shadow: {
+            modelVersion: 'metric-anomaly-v1-seasonal-robust',
+            totalCandidates: 6,
+            overlapWithV0: 3,
+            v1Only: 3,
+            v0Only: 2,
+            labeledOutcomes: { total: 0, dismissed: 0, promoted: 0, resolved: 0 },
+            rates: { overlapRate: 0.5, v1OnlyRate: 0.5, v0OnlyRate: 0.4, dismissRate: 0, promoteRate: 0, resolveRate: 0 },
+          },
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+
+    expect(await screen.findByTestId('anomaly-v1-shadow-error')).toBeTruthy();
+    fireEvent.click(screen.getByText('Retry'));
+
+    expect(await screen.findByTestId('anomaly-v1-shadow-populated')).toBeTruthy();
+    expect(shadowAttempt).toBe(2);
+  });
+
+  it('does not render or fetch the shadow comparison in compact mode', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/config/ml-feature-flags'));
+    await waitFor(() =>
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('includeV1=true')),
+    );
+    expect(screen.queryByTestId('anomaly-v1-shadow-disabled')).toBeNull();
+    expect(screen.queryByTestId('anomaly-v1-shadow-populated')).toBeNull();
+  });
+
   it('labels the panel disabled and does not load anomalies when anomaly output is disabled', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
