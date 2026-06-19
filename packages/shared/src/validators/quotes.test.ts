@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createQuoteSchema, quoteLineInputSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   acceptQuoteSchema, declineQuoteSchema,
+  updateQuoteSchema,
 } from './quotes';
 
 describe('quote validators', () => {
@@ -47,7 +48,6 @@ describe('declineQuoteSchema', () => {
   });
 });
 
-import { updateQuoteSchema } from './quotes';
 
 describe('quote T&C field', () => {
   it('create accepts termsAndConditions', () => {

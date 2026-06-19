@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   assembleFromOrgSchema, manualLineSchema, recordPaymentSchema,
-  partnerBillingSettingsSchema, orgBillingSettingsSchema
+  partnerBillingSettingsSchema, orgBillingSettingsSchema,
+  createManualInvoiceSchema, updateInvoiceSchema
 } from './invoices';
 
 describe('assembleFromOrgSchema', () => {
@@ -36,7 +37,6 @@ describe('partnerBillingSettingsSchema', () => {
   });
 });
 
-import { createManualInvoiceSchema, updateInvoiceSchema } from './invoices';
 
 describe('partnerBillingSettingsSchema — contact fields', () => {
   it('accepts the new seller contact + T&C fields', () => {
