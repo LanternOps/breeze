@@ -8,6 +8,7 @@ const {
   getEligibilityMock,
   getEligibilityForUserMock,
   revokeOauthArtifactsMock,
+  revokeRefreshFamiliesMock,
   revokeAllUserTokensMock,
   recordFailedLoginMock,
 } = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ const {
   getEligibilityMock: vi.fn(),
   getEligibilityForUserMock: vi.fn(),
   revokeOauthArtifactsMock: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 })),
+  revokeRefreshFamiliesMock: vi.fn(async () => undefined),
   revokeAllUserTokensMock: vi.fn(async () => undefined),
   recordFailedLoginMock: vi.fn(),
 }));
@@ -53,6 +55,7 @@ vi.mock('../../services', () => ({
     getdel: getdelMock,
   })),
   invalidateAllUserSessions: vi.fn(async () => undefined),
+  revokeAllRefreshTokenFamiliesForUser: revokeRefreshFamiliesMock,
   revokeAllUserTokens: revokeAllUserTokensMock,
 }));
 
@@ -149,6 +152,8 @@ describe('password reset eligibility (#719)', () => {
     getEligibilityForUserMock.mockReset();
     revokeOauthArtifactsMock.mockReset();
     revokeOauthArtifactsMock.mockResolvedValue({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 });
+    revokeRefreshFamiliesMock.mockReset();
+    revokeRefreshFamiliesMock.mockResolvedValue(undefined);
     revokeAllUserTokensMock.mockReset();
     revokeAllUserTokensMock.mockResolvedValue(undefined);
     recordFailedLoginMock.mockReset();
@@ -313,6 +318,7 @@ describe('password reset eligibility (#719)', () => {
       // Stolen MCP OAuth refresh tokens must be revoked on reset, not just
       // first-party JWTs.
       expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
+      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-pending', 'password-reset');
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -344,6 +350,7 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
       expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-pending');
+      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-pending', 'password-reset');
       expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
     });
 
@@ -382,6 +389,7 @@ describe('password reset eligibility (#719)', () => {
 
       expect(res.status).toBe(400);
       expect(revokeOauthArtifactsMock).not.toHaveBeenCalled();
+      expect(revokeRefreshFamiliesMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset completion if partner became suspended after token issue', async () => {
@@ -476,6 +484,7 @@ describe('password reset eligibility (#719)', () => {
       expect(body.success).toBe(true);
       // A previously authorized MCP OAuth refresh token must be revoked on a
       // password change, not just first-party JWTs.
+      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-1', 'password-change');
       expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
     });
 
@@ -493,6 +502,7 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
       expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-1');
+      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-1', 'password-change');
       expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
     });
 

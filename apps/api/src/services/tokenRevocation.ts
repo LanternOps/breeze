@@ -137,6 +137,51 @@ export async function revokeAllUserTokens(userId: string): Promise<void> {
   }
 }
 
+/**
+ * Durable backstop for password reset/change invalidation. Redis revocation is
+ * still the hot path for access tokens, but password changes must also survive a
+ * Redis outage or flush. Revoking every refresh-token family for the user makes
+ * existing refresh cookies fail through `isFamilyRevoked()`'s Postgres check.
+ */
+export async function revokeAllRefreshTokenFamiliesForUser(
+  userId: string,
+  reason: string
+): Promise<void> {
+  const truncatedReason = reason.length > 64 ? reason.slice(0, 64) : reason;
+
+  await dbModule.withSystemDbAccessContext(async () => {
+    await dbModule.db
+      .update(refreshTokenFamilies)
+      .set({
+        revokedAt: sql`COALESCE(revoked_at, now())`,
+        revokedReason: sql`COALESCE(revoked_reason, ${truncatedReason})`,
+      })
+      .where(eq(refreshTokenFamilies.userId, userId));
+  });
+}
+
+export function isTokenIssuedBeforePasswordChange(
+  tokenIssuedAt: number | undefined,
+  passwordChangedAt: Date | string | null | undefined
+): boolean {
+  if (!passwordChangedAt) return false;
+
+  const changedAtMs = passwordChangedAt instanceof Date
+    ? passwordChangedAt.getTime()
+    : new Date(passwordChangedAt).getTime();
+  if (!Number.isFinite(changedAtMs)) return false;
+
+  // A token with no sane iat cannot prove it was minted after the password
+  // changed, so fail closed once passwordChangedAt is set.
+  if (typeof tokenIssuedAt !== 'number' || !Number.isFinite(tokenIssuedAt)) {
+    return true;
+  }
+
+  // JWT iat is second-granularity. Use a strict comparison so a legitimate
+  // immediate re-login in the same second as the password change is not rejected.
+  return tokenIssuedAt < Math.floor(changedAtMs / 1000);
+}
+
 export async function isRefreshTokenJtiRevoked(jti: string): Promise<boolean> {
   const redis = getRedis();
   if (!redis) {

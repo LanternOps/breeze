@@ -16,6 +16,7 @@ vi.mock('../../db/schema', () => ({
     email: 'users.email',
     passwordHash: 'users.passwordHash',
     status: 'users.status',
+    passwordChangedAt: 'users.passwordChangedAt',
     lastLoginAt: 'users.lastLoginAt',
   },
 }));
@@ -43,6 +44,7 @@ vi.mock('../../services', () => ({
   revokeFamily: vi.fn(async () => undefined),
   isFamilyRevoked: vi.fn(async () => false),
   touchFamilyLastUsed: vi.fn(async () => undefined),
+  isTokenIssuedBeforePasswordChange: vi.fn(() => false),
   mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   recordAccountFailure: vi.fn(async () => ({ count: 1, newlyLocked: false })),
@@ -148,6 +150,7 @@ import {
   revokeFamily,
   revokeRefreshTokenJti,
   bindRefreshJtiToFamily,
+  isTokenIssuedBeforePasswordChange,
 } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
@@ -272,6 +275,7 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     process.env.NODE_ENV = 'test';
     process.env.E2E_MODE = 'true';
     vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(isTokenIssuedBeforePasswordChange).mockReturnValue(false);
     vi.mocked(db.update).mockReturnValue(updateChain() as any);
   });
 
@@ -296,7 +300,9 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     // Generic body — no account/tenant status leaks.
     expect(body).toMatchObject({ error: 'Invalid email or password' });
     expect(JSON.stringify(body)).not.toContain('suspended');
-    expect(recordFailedLogin).toHaveBeenCalledWith('account_inactive');
+    await vi.waitFor(() => {
+      expect(recordFailedLogin).toHaveBeenCalledWith('account_inactive');
+    });
     // Exactly once — a single inactive-account attempt must not double-count.
     // The metric is emitted ONLY via auditUserLoginFailure's internal
     // recordFailedLogin call; login.ts must not add its own (#719 regression).
@@ -329,7 +335,9 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     expect(res.status).toBe(401);
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ error: 'Invalid email or password' });
-    expect(recordFailedLogin).toHaveBeenCalledWith('tenant_inactive');
+    await vi.waitFor(() => {
+      expect(recordFailedLogin).toHaveBeenCalledWith('tenant_inactive');
+    });
     // Exactly once — a single inactive-tenant attempt must not double-count.
     // The metric is emitted ONLY via auditUserLoginFailure's internal
     // recordFailedLogin call; login.ts must not add its own (#719 regression).

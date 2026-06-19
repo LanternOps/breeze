@@ -11,6 +11,7 @@ import {
   forgotPasswordLimiter,
   getRedis,
   invalidateAllUserSessions,
+  revokeAllRefreshTokenFamiliesForUser,
   revokeAllUserTokens
 } from '../../services';
 import { getEmailService } from '../../services/email';
@@ -241,6 +242,9 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   await revokeAllUserTokens(userId).catch((error) =>
     console.error('[auth] Failed to revoke JWTs after password reset:', error),
   );
+  await revokeAllRefreshTokenFamiliesForUser(userId, 'password-reset').catch((error) =>
+    console.error('[auth] Failed to revoke refresh-token families after password reset:', error),
+  );
   await revokeAllUserOauthArtifacts(userId).catch((error) =>
     console.error('[auth] Failed to revoke OAuth artifacts after password reset:', error),
   );
@@ -315,6 +319,9 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   // failure (e.g. a Redis blip), which is the exact window this revoke closes.
   await revokeAllUserTokens(auth.user.id).catch((error) =>
     console.error('[auth] Failed to revoke JWTs after password change:', error),
+  );
+  await revokeAllRefreshTokenFamiliesForUser(auth.user.id, 'password-change').catch((error) =>
+    console.error('[auth] Failed to revoke refresh-token families after password change:', error),
   );
   await revokeCurrentRefreshTokenJti(c, auth.user.id).catch((error) =>
     console.error('[auth] Failed to revoke current refresh token after password change:', error),

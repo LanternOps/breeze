@@ -23,7 +23,9 @@ vi.mock('../services', () => ({
   invalidateSession: vi.fn(),
   invalidateAllUserSessions: vi.fn(),
   isUserTokenRevoked: vi.fn().mockResolvedValue(false),
+  isTokenIssuedBeforePasswordChange: vi.fn(() => false),
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined),
+  revokeAllRefreshTokenFamiliesForUser: vi.fn().mockResolvedValue(undefined),
   isRefreshTokenJtiRevoked: vi.fn().mockResolvedValue(false),
   revokeRefreshTokenJti: vi.fn().mockResolvedValue(true),
   // #1107: rotation-grace helpers. Default mock = "not recently rotated" so
@@ -173,7 +175,9 @@ import {
   generateRecoveryCodes,
   invalidateAllUserSessions,
   isUserTokenRevoked,
+  isTokenIssuedBeforePasswordChange,
   revokeAllUserTokens,
+  revokeAllRefreshTokenFamiliesForUser,
   isRefreshTokenJtiRevoked,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
@@ -216,6 +220,8 @@ describe('auth routes', () => {
       email: 'test@example.com',
     });
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
+    vi.mocked(isTokenIssuedBeforePasswordChange).mockReturnValue(false);
+    vi.mocked(revokeAllRefreshTokenFamiliesForUser).mockResolvedValue(undefined);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     // #1107: reset rotation-grace + family helpers to the happy-path baseline.
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);

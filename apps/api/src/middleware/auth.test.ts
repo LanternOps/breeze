@@ -19,7 +19,8 @@ vi.mock('../services/permissions', () => ({
 }));
 
 vi.mock('../services/tokenRevocation', () => ({
-  isUserTokenRevoked: vi.fn().mockResolvedValue(false)
+  isUserTokenRevoked: vi.fn().mockResolvedValue(false),
+  isTokenIssuedBeforePasswordChange: vi.fn(() => false)
 }));
 
 vi.mock('../services/tenantStatus', () => ({
@@ -58,6 +59,7 @@ vi.mock('../db/schema', () => ({
     email: 'email',
     name: 'name',
     status: 'status',
+    passwordChangedAt: 'passwordChangedAt',
     mfaEnabled: 'mfaEnabled',
     isPlatformAdmin: 'isPlatformAdmin'
   },
@@ -86,7 +88,7 @@ vi.mock('../db/schema', () => ({
 import { Hono } from 'hono';
 import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, resolveOrgAccess, AuthContext } from './auth';
 import { verifyToken } from '../services/jwt';
-import { isUserTokenRevoked } from '../services/tokenRevocation';
+import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
 import { getUserPermissions, hasPermission, canAccessOrg } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
@@ -99,7 +101,8 @@ const basePayload = {
   partnerId: 'partner-123',
   scope: 'organization' as const,
   type: 'access' as const,
-  mfa: false
+  mfa: false,
+  iat: 1_700_000_000
 };
 
 const activeUser = {
@@ -107,6 +110,7 @@ const activeUser = {
   email: 'test@example.com',
   name: 'Test User',
   status: 'active',
+  passwordChangedAt: null,
   // Default to enrolled so existing tests don't pick up the new role-MFA
   // gate; the gate-specific tests below override this explicitly.
   mfaEnabled: true,
@@ -176,6 +180,7 @@ describe('authMiddleware', () => {
     vi.mocked(db.select).mockReset();
     vi.mocked(verifyToken).mockReset();
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
+    vi.mocked(isTokenIssuedBeforePasswordChange).mockReturnValue(false);
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
   });
 
@@ -234,6 +239,24 @@ describe('authMiddleware', () => {
     });
 
     expect(res.status).toBe(403);
+  });
+
+  it('rejects when the token predates the current password change', async () => {
+    const app = buildAuthApp();
+    const passwordChangedAt = new Date('2026-06-19T10:00:00Z');
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    vi.mocked(isTokenIssuedBeforePasswordChange).mockReturnValue(true);
+    mockUserSelect([{ ...activeUser, passwordChangedAt }]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(401);
+    expect(isTokenIssuedBeforePasswordChange).toHaveBeenCalledWith(
+      basePayload.iat,
+      passwordChangedAt
+    );
   });
 
   it('sets auth context for valid token', async () => {

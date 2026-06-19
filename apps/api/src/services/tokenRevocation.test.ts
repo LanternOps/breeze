@@ -1,15 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Redis } from 'ioredis';
 
+const dbMocks = vi.hoisted(() => ({
+  update: vi.fn(),
+  set: vi.fn(),
+  where: vi.fn(),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
+}));
+
 // Mock the redis module before importing the module under test
 vi.mock('./redis', () => ({
   getRedis: vi.fn()
+}));
+
+vi.mock('../db', () => ({
+  db: {
+    update: dbMocks.update
+  },
+  withSystemDbAccessContext: dbMocks.withSystemDbAccessContext
 }));
 
 import { getRedis } from './redis';
 import {
   isUserTokenRevoked,
   revokeAllUserTokens,
+  revokeAllRefreshTokenFamiliesForUser,
+  isTokenIssuedBeforePasswordChange,
   isRefreshTokenJtiRevoked,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
@@ -40,6 +56,10 @@ describe('tokenRevocation', () => {
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    dbMocks.where.mockResolvedValue(undefined);
+    dbMocks.set.mockReturnValue({ where: dbMocks.where });
+    dbMocks.update.mockReturnValue({ set: dbMocks.set });
+    dbMocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
   });
 
   afterEach(() => {
@@ -263,6 +283,38 @@ describe('tokenRevocation', () => {
         expect.stringContaining('Failed to revoke user tokens'),
         expect.any(Error)
       );
+    });
+  });
+
+  describe('revokeAllRefreshTokenFamiliesForUser', () => {
+    it('revokes every refresh-token family for the user under system DB context', async () => {
+      await revokeAllRefreshTokenFamiliesForUser('user-1', 'password-reset');
+
+      expect(dbMocks.withSystemDbAccessContext).toHaveBeenCalledWith(expect.any(Function));
+      expect(dbMocks.update).toHaveBeenCalled();
+      expect(dbMocks.set).toHaveBeenCalledWith({
+        revokedAt: expect.anything(),
+        revokedReason: expect.anything(),
+      });
+      expect(dbMocks.where).toHaveBeenCalled();
+    });
+  });
+
+  describe('isTokenIssuedBeforePasswordChange', () => {
+    it('rejects tokens issued before passwordChangedAt', () => {
+      expect(
+        isTokenIssuedBeforePasswordChange(1_700_000_000, new Date(1_700_000_010_000))
+      ).toBe(true);
+    });
+
+    it('allows tokens issued in the same second as passwordChangedAt', () => {
+      expect(
+        isTokenIssuedBeforePasswordChange(1_700_000_010, new Date(1_700_000_010_500))
+      ).toBe(false);
+    });
+
+    it('fails closed for missing iat after a password change', () => {
+      expect(isTokenIssuedBeforePasswordChange(undefined, new Date())).toBe(true);
     });
   });
 

@@ -2,7 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
-import { isUserTokenRevoked } from '../services/tokenRevocation';
+import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
@@ -323,6 +323,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         email: users.email,
         name: users.name,
         status: users.status,
+        passwordChangedAt: users.passwordChangedAt,
         mfaEnabled: users.mfaEnabled,
         isPlatformAdmin: users.isPlatformAdmin
       })
@@ -337,6 +338,10 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
 
   if (user.status !== 'active') {
     throw new HTTPException(403, { message: 'Account is not active' });
+  }
+
+  if (isTokenIssuedBeforePasswordChange(payload.iat, user.passwordChangedAt)) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
   try {

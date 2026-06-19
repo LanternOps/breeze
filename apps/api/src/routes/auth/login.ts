@@ -19,6 +19,7 @@ import {
   revokeFamily,
   isFamilyRevoked,
   touchFamilyLastUsed,
+  isTokenIssuedBeforePasswordChange,
   mintRefreshTokenFamily,
   bindRefreshJtiToFamily,
   recordAccountFailure,
@@ -686,13 +687,23 @@ loginRoutes.post('/refresh', async (c) => {
   // Check if user still exists and is active — pre-auth, wrap in system scope.
   const [user] = await withSystemDbAccessContext(async () =>
     db
-      .select({ id: users.id, email: users.email, status: users.status })
+      .select({
+        id: users.id,
+        email: users.email,
+        status: users.status,
+        passwordChangedAt: users.passwordChangedAt,
+      })
       .from(users)
       .where(eq(users.id, payload.sub))
       .limit(1)
   );
 
   if (!user || user.status !== 'active') {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  if (isTokenIssuedBeforePasswordChange(payload.iat, user.passwordChangedAt)) {
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
