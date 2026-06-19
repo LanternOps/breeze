@@ -91,12 +91,16 @@ async function seed() {
     const partnerB = await createPartner();
     const orgB = await createOrganization({ partnerId: partnerB.id });
 
-    // A connected Stripe account under partner A (partner-axis row).
+    // A connected Stripe account under partner A (partner-axis row). The API-key
+    // model's CHECK (stripe_connect_connected_requires_key) demands an api_key +
+    // last4 on any 'connected' row, so supply placeholders.
     const [acctA] = await db
       .insert(stripeConnectAccounts)
       .values({
         partnerId: partnerA.id,
         stripeAccountId: `acct_${partnerA.id.slice(0, 8)}`,
+        apiKey: 'enc:test-key',
+        keyLast4: '4242',
         livemode: false,
       })
       .returning();
@@ -134,6 +138,10 @@ describe('stripe_connect_accounts RLS (breeze_app)', () => {
         db.insert(stripeConnectAccounts).values({
           partnerId: partnerA.id, // forged — RLS must reject
           stripeAccountId: 'acct_forge',
+          // Valid key so the CHECK (connected-requires-key) passes and RLS (42501)
+          // is the ONLY reason this insert can fail.
+          apiKey: 'enc:test-key',
+          keyLast4: '4242',
           livemode: false,
         })
       )

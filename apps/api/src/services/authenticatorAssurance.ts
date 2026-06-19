@@ -53,25 +53,62 @@ export class StepUpRequiredError extends Error {
   }
 }
 
-export interface AssuranceDecision {
+/**
+ * The recorded authentication factor and the level/device-id it implies. These
+ * three fields are NOT independent — the real invariants are:
+ *   - `session_tap` ⟺ L1 ⟺ no device id (the no-proof base case);
+ *   - any verified L2+ factor (`webauthn_platform` / `mobile_hw_key`) always
+ *     carries a device id and a level of 2, 3 or 4 (never 1).
+ * Modelling them as a discriminated union on `decidedVia` makes the compiler
+ * reject the illegal combinations (e.g. `session_tap` at L3, or an L2 factor
+ * with a null device id) that a flat record would silently permit — these
+ * records are persisted verbatim to the audit columns, so an illegal shape is a
+ * corrupt forensic row. See #1373.
+ */
+export type DecidedFactor =
+  | {
+      decidedVia: 'session_tap';
+      decidedAssuranceLevel: 1;
+      authenticatorDeviceId: null;
+    }
+  | {
+      decidedVia: 'webauthn_platform' | 'mobile_hw_key';
+      decidedAssuranceLevel: Exclude<AssuranceLevel, 1>;
+      authenticatorDeviceId: string;
+    };
+
+/** Fields shared by every decision, independent of the recorded factor and
+ * (unlike the factor fields) mutated after the base decision is built — the
+ * partner-policy floor raises `requiredLevel` and the grace path sets
+ * `graceDowngrade`. Kept out of the discriminated union so those post-build
+ * writes stay legal regardless of which factor arm was chosen. */
+export interface AssuranceDecisionShared {
   /** Level the policy would require for this approval (telemetry / future gate). */
   requiredLevel: AssuranceLevel;
-  /** Level actually satisfied by the recorded decision. */
-  decidedAssuranceLevel: AssuranceLevel;
-  /** Factor recorded: 'session_tap' when no proof was presented, else the verified L2 factor. */
-  decidedVia: 'session_tap' | 'mobile_hw_key' | 'webauthn_platform';
-  authenticatorDeviceId: string | null;
   /** Phase 4: under-assured but allowed because enforcement is off / in grace. */
   graceDowngrade?: boolean;
 }
 
 /**
- * Guard the cross-field invariants of a decision before it is persisted to the
- * audit columns: the four fields are independent at the type level, so a future
- * edit to a construction site could write a self-contradictory forensic row.
- * Throws (fail-closed) rather than recording an inconsistent assurance record.
+ * A complete assurance decision: the recorded factor (a discriminated union that
+ * makes the level/device-id invariants unrepresentable when illegal) intersected
+ * with the shared, post-build-mutable fields.
  */
-function assertDecisionConsistent(d: AssuranceDecision): void {
+export type AssuranceDecision = DecidedFactor & AssuranceDecisionShared;
+
+/**
+ * Defense-in-depth guard before a decision is persisted to the audit columns.
+ * The `DecidedFactor` union now makes the factor↔level↔device-id invariants
+ * unrepresentable at every *typed* construction site, so this can only fire on
+ * an `as`-cast or untyped build — but it stays as a fail-closed runtime backstop
+ * at the audit-write boundary rather than recording a self-contradictory
+ * forensic row. (#1373: type makes it statically unrepresentable; this keeps the
+ * shipped runtime mitigation as belt-and-suspenders.)
+ *
+ * Exported only so the retained backstop keeps direct negative coverage — no
+ * typed caller can drive it to throw now that the union is in place (#1373).
+ */
+export function assertDecisionConsistent(d: AssuranceDecision): void {
   const isSession = d.decidedVia === 'session_tap';
   const violations: string[] = [];
   if (isSession !== (d.decidedAssuranceLevel === 1)) violations.push('session_tap must be exactly L1');
@@ -200,7 +237,10 @@ export async function assertApprovalAssurance(input: {
  * server-derived age (the consume path reads it from Redis; it is never trusted
  * from the route/client). */
 interface VerifiedFactor {
-  decidedVia: AssuranceDecision['decidedVia'];
+  /** A verified factor is always one of the two L2 factors — never a session
+   * tap (the no-proof base case). Narrowing this to the L2-only union lets the
+   * proof branch build the L2+ arm of `DecidedFactor` without a cast. */
+  decidedVia: 'webauthn_platform' | 'mobile_hw_key';
   authenticatorDeviceId: string;
   isPlatformBound: boolean;
   challengeIssuedAt: number;
@@ -217,7 +257,7 @@ function escalateAchievedLevel(
   riskTier: RiskTier,
   factor: VerifiedFactor,
   ctx: { reauthVerified: boolean },
-): AssuranceLevel {
+): Exclude<AssuranceLevel, 1> {
   // low / medium are satisfied by the L2 factor alone.
   if (riskTier !== 'high' && riskTier !== 'critical') return 2;
 

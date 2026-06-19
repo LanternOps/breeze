@@ -24,10 +24,16 @@ export const stripeConnectAccounts = pgTable('stripe_connect_accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   stripeAccountId: text('stripe_account_id').notNull(),
-  // encrypted via secretCrypto; used only for deauthorize. Charges use platform key + Stripe-Account header.
+  // Per-partner Stripe secret/restricted key, encrypted via secretCrypto. Charges
+  // run directly on the partner's own account with this key (no Connect/Stripe-Account).
+  apiKey: text('api_key'),
+  // Plaintext last 4 of the key, for the settings UI ("•••• 1234"). Never the full key.
+  keyLast4: varchar('key_last4', { length: 4 }),
+  // Legacy Connect-OAuth token (unused by the API-key path; retained until a later drop migration).
   credentials: jsonb('credentials').$type<{ accessToken: string | null }>(),
   livemode: boolean('livemode').notNull().default(false),
   status: stripeConnectStatusEnum('status').notNull().default('connected'),
+  // Legacy Connect-OAuth scope (unused by the API-key path; retained until a later drop migration).
   scope: varchar('scope', { length: 50 }),
   connectedBy: uuid('connected_by').references(() => users.id),
   connectedAt: timestamp('connected_at').defaultNow().notNull(),

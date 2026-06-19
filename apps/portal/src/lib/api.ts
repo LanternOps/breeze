@@ -563,6 +563,21 @@ export const portalApi = {
     return apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, undefined, config);
   },
 
+  // Verify-on-return: settle the Checkout session server-side after the customer
+  // lands back on the invoice (success_url carries the session id). Idempotent — the
+  // reconcile sweep is the eventual backstop if this is skipped/fails.
+  settleInvoice: async (
+    id: string,
+    sessionId: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ settled: boolean; invoiceId?: string }>> => {
+    return apiPost<{ settled: boolean; invoiceId?: string }>(
+      `/portal/invoices/${id}/settle`,
+      { sessionId },
+      config
+    );
+  },
+
   getProfile: async (config: ApiRequestConfig = {}): Promise<ApiResponse<Profile>> => {
     const response = await apiGet<{ user: Profile }>('/portal/profile', config);
     if (!response.data) {
@@ -664,6 +679,14 @@ export const portalApi = {
     );
   },
 
+  // Mint a Stripe checkout link for an accepted (converted) quote's invoice.
+  payQuote: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { url: string } }>> => {
+    return apiPost<{ data: { url: string } }>(`/portal/quotes/${id}/pay`, undefined, config);
+  },
+
   // Public, token-gated proposal access for prospects without a portal account.
   // These hit /quotes/public/* (NOT /portal/*) — no auth cookie required.
   getPublicQuote: async (
@@ -680,8 +703,8 @@ export const portalApi = {
     token: string,
     signerName: string,
     signerEmail?: string
-  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null } }>> => {
-    return apiPost<{ data: { status: string; invoiceNumber: string | null } }>(
+  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null; payDeferred?: boolean } }>> => {
+    return apiPost<{ data: { status: string; invoiceNumber: string | null; payUrl: string | null; payDeferred?: boolean } }>(
       `/quotes/public/${encodeURIComponent(token)}/accept`,
       { signerName, signerEmail },
       { redirectOnUnauthorized: false }

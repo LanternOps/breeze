@@ -130,6 +130,7 @@ import { dnsSecurityRoutes } from './routes/dnsSecurity';
 import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
 import { huntressRoutes } from './routes/huntress';
+import { pax8Routes } from './routes/pax8';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
@@ -203,6 +204,7 @@ import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './
 import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
 import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
+import { initializePax8SyncWorkers, shutdownPax8SyncWorkers } from './jobs/pax8SyncWorker';
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
@@ -224,6 +226,8 @@ import {
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
+import { initializeStripeReconcileSweep, shutdownStripeReconcileSweep } from './jobs/stripeReconcileSweep';
+import { initializeQuoteExpiryReaper, shutdownQuoteExpiryReaper } from './jobs/quoteExpiryReaper';
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
@@ -869,6 +873,7 @@ api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
 api.route('/s1', sentinelOneRoutes);
 api.route('/huntress', huntressRoutes);
+api.route('/pax8', pax8Routes);
 api.route('/software-inventory', softwareInventoryRoutes);
 api.route('/sensitive-data', sensitiveDataRoutes);
 api.route('/peripherals', peripheralControlRoutes);
@@ -1108,6 +1113,7 @@ async function initializeWorkers(): Promise<void> {
     ['dnsThreatAlertSubscriber', async () => { registerDnsThreatAlertSubscriber(); }],
     ['s1SyncWorker', initializeS1SyncJob],
     ['huntressSyncWorker', initializeHuntressSyncJob],
+    ['pax8SyncWorker', initializePax8SyncWorkers],
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
@@ -1127,6 +1133,8 @@ async function initializeWorkers(): Promise<void> {
     ['staleCommandReaper', initializeStaleCommandReaper],
     ['pamJobs', initializePamJobs],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
+    ['stripeReconcileSweep', initializeStripeReconcileSweep],
+    ['quoteExpiryReaper', initializeQuoteExpiryReaper],
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
@@ -1252,6 +1260,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
     shutdownHuntressSyncJob,
+    shutdownPax8SyncWorkers,
     shutdownBackupVerificationJobs,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
@@ -1292,6 +1301,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownStaleCommandReaper,
     shutdownPamJobs,
     shutdownApprovalExpiryReaper,
+    shutdownStripeReconcileSweep,
+    shutdownQuoteExpiryReaper,
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,

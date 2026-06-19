@@ -57,9 +57,11 @@ describe('invoice read enrichments (breeze_app, real DB)', () => {
     const before = await withSystemDbAccessContext(() => svc.getInvoice(inv.id, actor));
     expect(before.stripeConnected).toBe(false);
 
-    // Connect → true.
+    // Connect → true. The API-key model's CHECK (stripe_connect_connected_requires_key)
+    // demands an api_key + last4 on any 'connected' row, so supply placeholders.
     await withSystemDbAccessContext(() => db.insert(stripeConnectAccounts).values({
-      partnerId: f.partnerId, stripeAccountId: `acct_${f.partnerId.slice(0, 8)}`, livemode: false,
+      partnerId: f.partnerId, stripeAccountId: `acct_${f.partnerId.slice(0, 8)}`,
+      apiKey: 'enc:test-key', keyLast4: '4242', livemode: false,
     }));
     const after = await withSystemDbAccessContext(() => svc.getInvoice(inv.id, actor));
     expect(after.stripeConnected).toBe(true);

@@ -12,6 +12,7 @@ import { assertActiveTenantContext, TenantInactiveError } from '../services/tena
 import { writeAuditEvent } from '../services/auditEvents';
 import { mfaForcePartnerAdmin } from '../config/env';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
+import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 
 export interface AuthContext {
   user: {
@@ -433,10 +434,40 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   }
   const canAccessSite = siteAccessCheck(allowedSiteIds);
 
+  c.set('auth', {
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      isPlatformAdmin: user.isPlatformAdmin
+    },
+    token: payload,
+    partnerId: payload.partnerId,
+    orgId: payload.orgId,
+    scope: payload.scope,
+    accessibleOrgIds,
+    orgCondition,
+    canAccessOrg,
+    allowedSiteIds,
+    canAccessSite
+  });
+
   // The return value matters: ipAllowlistGuard returns its deny/error
   // Response as a value (it does not throw). Dropping it leaves the Hono
   // context unfinalized — every gated request then 500s with "Context is
   // not finalized" instead of the intended 403/503.
+  const runGuardedHandler = () => ipAllowlistGuard(c, next);
+
+  // #1448 — a small set of routes (the Stripe pay routes) opt OUT of the auto
+  // request-transaction so a slow outbound HTTP call isn't made inside a held
+  // transaction (pinning a pooled connection idle-in-transaction, the #1105
+  // class). They run with NO ambient context and manage their own short DB
+  // access contexts; auth is still set above so requireScope/requirePermission
+  // and the handler's actor still work.
+  if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
+    return runGuardedHandler();
+  }
+
   return withDbAccessContext(
     {
       scope: payload.scope,
@@ -450,27 +481,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
       // accessiblePartnerIds.
       currentPartnerId: payload.partnerId ?? null
     },
-    async () => {
-      c.set('auth', {
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          isPlatformAdmin: user.isPlatformAdmin
-        },
-        token: payload,
-        partnerId: payload.partnerId,
-        orgId: payload.orgId,
-        scope: payload.scope,
-        accessibleOrgIds,
-        orgCondition,
-        canAccessOrg,
-        allowedSiteIds,
-        canAccessSite
-      });
-
-      return ipAllowlistGuard(c, next);
-    }
+    runGuardedHandler
   );
 }
 

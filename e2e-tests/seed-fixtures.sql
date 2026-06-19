@@ -46,6 +46,18 @@ BEGIN
   SELECT id INTO v_user_id FROM users WHERE email = 'admin@breeze.local' LIMIT 1;
 
   -- ───────────────────────────────────────────────────────────────────
+  -- Mark admin setup complete so the setup wizard is skipped on login.
+  -- userRequiresSetup() returns true for admin@breeze.local when
+  -- setup_completed_at IS NULL, redirecting to /setup and breaking E2E.
+  -- ───────────────────────────────────────────────────────────────────
+  IF v_user_id IS NOT NULL THEN
+    UPDATE users
+    SET setup_completed_at = NOW(),
+        preferences = preferences - 'bootstrapSetupRequired'
+    WHERE id = v_user_id AND setup_completed_at IS NULL;
+  END IF;
+
+  -- ───────────────────────────────────────────────────────────────────
   -- Devices
   -- ───────────────────────────────────────────────────────────────────
   INSERT INTO devices (id, org_id, site_id, agent_id, hostname, display_name, os_type, os_version, architecture, agent_version, status, last_seen_at)

@@ -41,6 +41,7 @@ import {
   buildPortalUserPayload,
   validatePortalCookieCsrfRequest,
 } from './helpers';
+import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 
 export const authRoutes = new Hono();
 const ALLOW_IN_MEMORY_PORTAL_STATE = !PORTAL_USE_REDIS;
@@ -165,6 +166,16 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   }
 
   c.set('portalAuth', { user, token, authMethod });
+
+  // #1448 — a small set of routes (the Stripe pay route) opt OUT of the auto
+  // request-transaction so a slow outbound HTTP call (Checkout sessions.create)
+  // isn't made inside a held transaction (pinning a pooled connection
+  // idle-in-transaction, the #1105 class). They run with NO ambient context and
+  // manage their own short DB access contexts; portalAuth is still set above so
+  // the handler can read the authenticated org.
+  if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
+    return next();
+  }
 
   // Run the protected request under the portal user's organization scope so
   // RLS on every portal-facing table (tickets, devices, assets, profile, ...)

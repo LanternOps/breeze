@@ -1,4 +1,4 @@
-import { db } from '../db';
+import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
 import { roles, permissions, rolePermissions, partnerUsers, organizationUsers } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
@@ -96,79 +96,100 @@ export async function getUserPermissions(
     return cached.userPerms;
   }
 
-  let roleId: string | null = null;
-  let scope: 'system' | 'partner' | 'organization' = 'system';
-  let orgAccess: 'all' | 'selected' | 'none' | undefined;
-  let allowedOrgIds: string[] | undefined;
-  let allowedSiteIds: string[] | undefined;
+  // The membership/role reads below hit RLS-protected tables (organization_users,
+  // partner_users, role_permissions). They must run under an RLS access context or
+  // the unprivileged breeze_app role silently filters them to 0 rows — returning a
+  // spurious `null` (→ 403) instead of the real permission set (the #1375 class).
+  // Most callers (normal routes via authMiddleware) already have an org/partner
+  // context active, in which case this is a no-op nest that keeps that context.
+  // The self-managed-DB-context pay routes (#1448) run requirePermission with NO
+  // ambient context, so without this wrapper getUserPermissions would 403 on a
+  // cold/expired permission cache. The explicit userId + orgId/partnerId equality
+  // filters mean a system-scope read returns the same single row a narrower scope
+  // would, so widening the read scope here doesn't change the result set.
+  const wrap = hasDbAccessContext()
+    ? <T>(fn: () => Promise<T>) => fn()
+    : withSystemDbAccessContext;
 
-  // Check organization-level access first
-  if (context.orgId) {
-    const [orgUser] = await db
-      .select()
-      .from(organizationUsers)
-      .where(
-        and(
-          eq(organizationUsers.userId, userId),
-          eq(organizationUsers.orgId, context.orgId)
+  const userPerms = await wrap(async (): Promise<UserPermissions | null> => {
+    let roleId: string | null = null;
+    let scope: 'system' | 'partner' | 'organization' = 'system';
+    let orgAccess: 'all' | 'selected' | 'none' | undefined;
+    let allowedOrgIds: string[] | undefined;
+    let allowedSiteIds: string[] | undefined;
+
+    // Check organization-level access first
+    if (context.orgId) {
+      const [orgUser] = await db
+        .select()
+        .from(organizationUsers)
+        .where(
+          and(
+            eq(organizationUsers.userId, userId),
+            eq(organizationUsers.orgId, context.orgId)
+          )
         )
-      )
-      .limit(1);
+        .limit(1);
 
-    if (orgUser) {
-      roleId = orgUser.roleId;
-      scope = 'organization';
-      allowedSiteIds = orgUser.siteIds || undefined;
+      if (orgUser) {
+        roleId = orgUser.roleId;
+        scope = 'organization';
+        allowedSiteIds = orgUser.siteIds || undefined;
+      }
     }
-  }
 
-  // Check partner-level access
-  if (!roleId && context.partnerId) {
-    const [partnerUser] = await db
-      .select()
-      .from(partnerUsers)
-      .where(
-        and(
-          eq(partnerUsers.userId, userId),
-          eq(partnerUsers.partnerId, context.partnerId)
+    // Check partner-level access
+    if (!roleId && context.partnerId) {
+      const [partnerUser] = await db
+        .select()
+        .from(partnerUsers)
+        .where(
+          and(
+            eq(partnerUsers.userId, userId),
+            eq(partnerUsers.partnerId, context.partnerId)
+          )
         )
-      )
-      .limit(1);
+        .limit(1);
 
-    if (partnerUser) {
-      roleId = partnerUser.roleId;
-      scope = 'partner';
-      orgAccess = partnerUser.orgAccess;
-      allowedOrgIds = partnerUser.orgIds || undefined;
+      if (partnerUser) {
+        roleId = partnerUser.roleId;
+        scope = 'partner';
+        orgAccess = partnerUser.orgAccess;
+        allowedOrgIds = partnerUser.orgIds || undefined;
+      }
     }
-  }
 
-  if (!roleId) {
+    if (!roleId) {
+      return null;
+    }
+
+    // Get role permissions
+    const rolePerms = await db
+      .select({
+        resource: permissions.resource,
+        action: permissions.action
+      })
+      .from(rolePermissions)
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .where(eq(rolePermissions.roleId, roleId));
+
+    const perms = rolePerms.map(p => ({ resource: p.resource, action: p.action }));
+
+    return {
+      permissions: perms,
+      partnerId: context.partnerId || null,
+      orgId: context.orgId || null,
+      roleId,
+      scope,
+      orgAccess,
+      allowedOrgIds,
+      allowedSiteIds
+    };
+  });
+
+  if (!userPerms) {
     return null;
   }
-
-  // Get role permissions
-  const rolePerms = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action
-    })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(eq(rolePermissions.roleId, roleId));
-
-  const perms = rolePerms.map(p => ({ resource: p.resource, action: p.action }));
-
-  const userPerms = {
-    permissions: perms,
-    partnerId: context.partnerId || null,
-    orgId: context.orgId || null,
-    roleId,
-    scope,
-    orgAccess,
-    allowedOrgIds,
-    allowedSiteIds
-  };
 
   // Cache the result
   permissionCache.set(cacheKey, {

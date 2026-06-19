@@ -1,71 +1,67 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
+import { zValidator } from '@hono/zod-validator';
 import { HTTPException } from 'hono/http-exception';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
-  buildOAuthUrl,
-  getConnection,
-  consumeState,
-  completeOAuth,
-  disconnect,
-} from '../../services/stripeConnectService';
+  savePartnerStripeKey,
+  getPartnerStripeStatus,
+  disconnectPartnerStripe,
+  PartnerStripeError,
+} from '../../services/partnerStripe';
 
 export const stripeConnectRoutes = new Hono();
 
-// Web app base URL (mirrors routes/portal/invoices.ts). The OAuth callback is a
-// browser redirect from Stripe, so it must land the user back on a real page —
-// the partner billing-settings page — rather than returning raw JSON.
-function billingSettingsUrl(params: Record<string, string>): string {
-  const base = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');
-  const qs = new URLSearchParams(params).toString();
-  return `${base}/settings/billing${qs ? `?${qs}` : ''}`;
-}
+// The partner pastes their OWN Stripe secret/restricted key. Stripe keys are
+// `sk_*` / `rk_*` (live or test). We don't hard-validate the exact format here —
+// savePartnerStripeKey proves the key by retrieving the account it belongs to —
+// but a min length blocks empty/obviously-truncated pastes before a Stripe round-trip.
+const saveKeySchema = z.object({
+  apiKey: z.string().trim().min(12, 'Enter a valid Stripe secret key (sk_… or rk_…).'),
+});
 
 stripeConnectRoutes.use('*', authMiddleware);
 
+// POST /key — paste/replace the partner's Stripe API key (replaces Connect OAuth).
+// MFA-gated: storing a live payment credential is a sensitive billing action.
 stripeConnectRoutes.post(
-  '/oauth/start',
+  '/key',
   requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
   requireMfa(),
+  zValidator('json', saveKeySchema),
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    const { url } = await buildOAuthUrl({ partnerId: auth.partnerId, userId: auth.user.id });
-    return c.json({ url });
-  }
-);
-
-// Callback is hit by Stripe's browser redirect carrying the user's session.
-stripeConnectRoutes.get(
-  '/oauth/callback',
-  requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
-  async (c) => {
-    const auth = c.get('auth');
-    if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    const code = c.req.query('code');
-    const state = c.req.query('state');
-    // Invalid/expired/forged callbacks redirect back to billing settings with an
-    // error flag — a raw 400 JSON body would strand the user on an API URL.
-    if (!code || !state) {
-      return c.redirect(billingSettingsUrl({ stripe_error: 'missing_params' }));
+    const { apiKey } = c.req.valid('json');
+    try {
+      const result = await savePartnerStripeKey({
+        partnerId: auth.partnerId,
+        apiKey,
+        userId: auth.user.id,
+      });
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'stripe_connect.connected',
+        resourceType: 'partner',
+        resourceId: auth.partnerId,
+        details: { stripeAccountId: result.stripeAccountId, livemode: result.livemode },
+      });
+      return c.json({
+        status: 'connected',
+        stripeAccountId: result.stripeAccountId,
+        livemode: result.livemode,
+        last4: result.last4,
+      });
+    } catch (err) {
+      // A rejected/unreadable key is a user-actionable 400/409/500 with a clear
+      // message — never a generic 500 that hides why the paste failed.
+      if (err instanceof PartnerStripeError) {
+        return c.json({ error: err.message }, err.status);
+      }
+      throw err;
     }
-    if (!(await consumeState(state, auth.partnerId))) {
-      return c.redirect(billingSettingsUrl({ stripe_error: 'invalid_state' }));
-    }
-    const { stripeAccountId } = await completeOAuth({
-      code,
-      partnerId: auth.partnerId,
-      userId: auth.user.id,
-    });
-    writeRouteAudit(c, {
-      orgId: null,
-      action: 'stripe_connect.connected',
-      resourceType: 'partner',
-      resourceId: auth.partnerId,
-      details: { stripeAccountId },
-    });
-    return c.redirect(billingSettingsUrl({ stripe_connected: '1' }));
   }
 );
 
@@ -75,9 +71,14 @@ stripeConnectRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    const row = await getConnection(auth.partnerId);
-    if (!row || row.status !== 'connected') return c.json({ status: 'disconnected' });
-    return c.json({ status: 'connected', stripeAccountId: row.stripeAccountId, livemode: row.livemode });
+    const status = await getPartnerStripeStatus(auth.partnerId);
+    if (!status.connected) return c.json({ status: 'disconnected', last4: status.last4 });
+    return c.json({
+      status: 'connected',
+      stripeAccountId: status.stripeAccountId,
+      livemode: status.livemode,
+      last4: status.last4,
+    });
   }
 );
 
@@ -88,7 +89,7 @@ stripeConnectRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    await disconnect(auth.partnerId);
+    await disconnectPartnerStripe(auth.partnerId);
     writeRouteAudit(c, {
       orgId: null,
       action: 'stripe_connect.disconnected',

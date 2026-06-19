@@ -551,6 +551,61 @@ describe('analytics routes', () => {
       expect(body.data.devices).toEqual({ total: 3, online: 2, offline: 1, pending: 0 });
       expect(body.data.highlights).toEqual([]);
     });
+
+    it('returns 500 (not a zeroed 200) when the query fails (issue #1608)', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(db.select).mockImplementationOnce(() => {
+        throw new Error('too many clients already');
+      });
+
+      const res = await app.request('/analytics/executive-summary?periodType=monthly', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body).toEqual({ error: 'Failed to load executive summary' });
+      // The old behavior returned a fully-zeroed success body; assert we no longer do.
+      expect(body.data).toBeUndefined();
+      errSpy.mockRestore();
+    });
+  });
+
+  describe('GET /analytics/os-distribution', () => {
+    it('returns the OS distribution on success', async () => {
+      mockSelectOnce([
+        { osType: 'Windows', osVersion: '11', count: 4 },
+        { osType: 'Linux', osVersion: 'Ubuntu 24.04', count: 1 }
+      ]);
+
+      const res = await app.request('/analytics/os-distribution', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([
+        { name: 'Windows 11', value: 4 },
+        { name: 'Linux Ubuntu 24.04', value: 1 }
+      ]);
+    });
+
+    it('returns 500 (not an empty 200) when the query fails (issue #1608)', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(db.select).mockImplementationOnce(() => {
+        throw new Error('query timeout');
+      });
+
+      const res = await app.request('/analytics/os-distribution', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Failed to load OS distribution' });
+      errSpy.mockRestore();
+    });
   });
 
   describe('dashboards and widgets', () => {

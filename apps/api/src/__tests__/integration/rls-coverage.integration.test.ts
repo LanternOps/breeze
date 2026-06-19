@@ -83,6 +83,17 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // quarantined Huntress orgs.
   'huntress_integrations',
   'huntress_org_mappings',
+  // Pax8 sync tables: partner-axis (Shape 3). The MSP partner owns the Pax8
+  // integration; org_id is denormalized (nullable on mappings/snapshots, for the
+  // resolved customer) for FK joins + filtering only — the RLS axis is partner_id
+  // (breeze_has_partner_access, asserted via PARTNER_TENANT_TABLES). Without these
+  // the org_id column makes auto-discovery treat them as shape-1 org-tenant and
+  // demand breeze_has_org_access they intentionally don't have (#1594 added them
+  // to PARTNER_TENANT_TABLES but missed this set). pax8_integrations /
+  // pax8_product_mappings have no org_id, so they're never auto-discovered here.
+  'pax8_company_mappings',
+  'pax8_subscription_snapshots',
+  'pax8_contract_line_links',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -108,6 +119,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['time_entries', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
+  ['pax8_integrations', 'partner_id'],
+  ['pax8_company_mappings', 'partner_id'],
+  ['pax8_subscription_snapshots', 'partner_id'],
+  ['pax8_product_mappings', 'partner_id'],
+  ['pax8_contract_line_links', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
   ['script_tags', 'partner_id'],
@@ -120,6 +136,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // as an ordinary shape-1 org-tenant table.
   ['catalog_items', 'partner_id'],
   ['catalog_bundle_components', 'partner_id'],
+  ['td_synnex_digital_bridge_integrations', 'partner_id'],
   // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
   // ticket_email_inbound (only system scope may write null-partner rows);
   // NOT NULL on partner_inbound_domains. Policy:

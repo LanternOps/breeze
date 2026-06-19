@@ -17,15 +17,20 @@ import { partners, organizations, users, invoices, invoiceStripePayments } from 
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
-const { sessionsCreateMock, getConnectionMock } = vi.hoisted(() => ({
-  sessionsCreateMock: vi.fn(),
-  getConnectionMock: vi.fn(),
+const { sessionsCreateMock, getClientMock, PartnerStripeError } = vi.hoisted(() => {
+  class PartnerStripeError extends Error {
+    constructor(message: string, public code: string) { super(message); this.name = 'PartnerStripeError'; }
+  }
+  return { sessionsCreateMock: vi.fn(), getClientMock: vi.fn(), PartnerStripeError };
+});
+// Per-partner API-key model: createInvoicePayLink charges with the partner's own
+// key via getPartnerStripeClient (single read → {stripe, stripeAccountId}). Mock it
+// so we don't need a real key, while the invoice reads, payability guards, and the
+// invoice_stripe_payments insert run against Postgres.
+vi.mock('../../services/partnerStripe', () => ({
+  getPartnerStripeClient: getClientMock,
+  PartnerStripeError,
 }));
-vi.mock('../../services/stripeClient', () => ({
-  getStripe: () => ({ checkout: { sessions: { create: sessionsCreateMock } } }),
-  getConnectedStripeOptions: (acct: string) => ({ stripeAccount: acct }),
-}));
-vi.mock('../../services/stripeConnectService', () => ({ getConnection: getConnectionMock }));
 
 import * as svc from '../../services/invoiceService';
 import { createInvoicePayLink } from '../../services/invoiceCheckout';
@@ -63,7 +68,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 describe('createInvoicePayLink (breeze_app, real DB)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getConnectionMock.mockResolvedValue({ partnerId: 'p', stripeAccountId: 'acct_test', status: 'connected' });
+    getClientMock.mockResolvedValue({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: 'acct_test' });
     sessionsCreateMock.mockResolvedValue({ id: 'cs_test_123', url: 'https://checkout.stripe.com/c/pay/abc', payment_intent: null });
   });
 
@@ -95,10 +100,27 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const f = await seedFixture();
     const actor: InvoiceActor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
     const inv = await seedIssuedInvoice(f, actor);
-    getConnectionMock.mockResolvedValue(null);
+    getClientMock.mockRejectedValue(new PartnerStripeError('not connected', 'NO_STRIPE_KEY'));
 
     await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
       .rejects.toMatchObject({ status: 409, code: 'STRIPE_NOT_CONNECTED' });
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    const mappings = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, inv.id)));
+    expect(mappings).toHaveLength(0);
+  });
+
+  // Two-call seam: status says connected but the client build fails (e.g. a corrupt/
+  // undecryptable stored key). That's an internal fault — must surface as 500, NOT a
+  // misleading "connect Stripe first" 409, and must not write a mapping row.
+  runDb('status connected but getPartnerStripe fails → STRIPE_INIT_FAILED (500), no mapping', async () => {
+    const f = await seedFixture();
+    const actor: InvoiceActor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
+    const inv = await seedIssuedInvoice(f, actor);
+    getClientMock.mockRejectedValue(new Error('decrypt failed'));
+
+    await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
+      .rejects.toMatchObject({ status: 500, code: 'STRIPE_INIT_FAILED' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
     const mappings = await withSystemDbAccessContext(() =>
       db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, inv.id)));

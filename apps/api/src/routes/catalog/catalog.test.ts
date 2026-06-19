@@ -16,6 +16,17 @@ vi.mock('../../services/catalogService', () => ({
   }
 }));
 
+vi.mock('../../services/tdSynnexDigitalBridge', () => ({
+  getTdSynnexDigitalBridgeStatus: vi.fn(),
+  saveTdSynnexDigitalBridgeConfig: vi.fn(),
+  testTdSynnexDigitalBridgeConnection: vi.fn(),
+  searchTdSynnexProducts: vi.fn(),
+  importTdSynnexCatalogItem: vi.fn(),
+  TdSynnexDigitalBridgeError: class TdSynnexDigitalBridgeError extends Error {
+    constructor(msg: string, public status = 400, public code?: string) { super(msg); }
+  }
+}));
+
 // Mock auth middleware to inject a partner-scoped actor with catalog perms.
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
@@ -23,11 +34,13 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: () => async (_c: any, next: any) => next()
+  requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next()
 }));
 
 import { catalogRoutes } from './index';
 import * as svc from '../../services/catalogService';
+import * as tdSvc from '../../services/tdSynnexDigitalBridge';
 
 function app() {
   // catalogRoutes already applies authMiddleware internally
@@ -78,6 +91,175 @@ describe('catalog routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('DUPLICATE_SKU');
+  });
+});
+
+describe('catalog TD SYNNEX distributor routes', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('GET /distributors/td-synnex/status returns masked integration status', async () => {
+    (tdSvc.getTdSynnexDigitalBridgeStatus as any).mockResolvedValue({
+      configured: true,
+      enabled: true,
+      credentials: { apiKey: '********', apiSecret: '********' }
+    });
+    const res = await app().request('/distributors/td-synnex/status', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.credentials.apiKey).toBe('********');
+    expect(tdSvc.getTdSynnexDigitalBridgeStatus).toHaveBeenCalledOnce();
+  });
+
+  it('PUT /distributors/td-synnex/config validates and saves config', async () => {
+    (tdSvc.saveTdSynnexDigitalBridgeConfig as any).mockResolvedValue({ configured: true, enabled: true });
+    const res = await app().request('/distributors/td-synnex/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        environment: 'sandbox',
+        region: 'US',
+        baseUrl: 'https://example.test',
+        authType: 'api_key',
+        credentials: { apiKey: 'key', apiSecret: 'secret' },
+        settings: { searchPath: '/catalog/search', searchMethod: 'GET' }
+      })
+    });
+    expect(res.status).toBe(200);
+    expect(tdSvc.saveTdSynnexDigitalBridgeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: 'https://example.test' }),
+      expect.anything()
+    );
+  });
+
+  it('PUT /distributors/td-synnex/config rejects invalid baseUrl', async () => {
+    const res = await app().request('/distributors/td-synnex/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ baseUrl: 'not-a-url' })
+    });
+    expect(res.status).toBe(400);
+    expect(tdSvc.saveTdSynnexDigitalBridgeConfig).not.toHaveBeenCalled();
+  });
+
+  it('PUT /distributors/td-synnex/config rejects internal or non-HTTPS baseUrl values', async () => {
+    const res = await app().request('/distributors/td-synnex/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        environment: 'sandbox',
+        region: 'US',
+        baseUrl: 'http://127.0.0.1:8080',
+        authType: 'api_key',
+        credentials: { apiKey: 'key' },
+        settings: { searchPath: '/catalog/search', searchMethod: 'GET' }
+      })
+    });
+    expect(res.status).toBe(400);
+    expect(tdSvc.saveTdSynnexDigitalBridgeConfig).not.toHaveBeenCalled();
+  });
+
+  it('PUT /distributors/td-synnex/config rejects absolute endpoint paths', async () => {
+    const res = await app().request('/distributors/td-synnex/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        environment: 'sandbox',
+        region: 'US',
+        baseUrl: 'https://example.test',
+        authType: 'api_key',
+        credentials: { apiKey: 'key' },
+        settings: { searchPath: 'https://evil.example/search', searchMethod: 'GET' }
+      })
+    });
+    expect(res.status).toBe(400);
+    expect(tdSvc.saveTdSynnexDigitalBridgeConfig).not.toHaveBeenCalled();
+  });
+
+  it('GET /distributors/td-synnex/search forwards query and limit', async () => {
+    (tdSvc.searchTdSynnexProducts as any).mockResolvedValue([{ sourceProductId: 'td-1', name: 'Dock' }]);
+    const res = await app().request('/distributors/td-synnex/search?q=dock&limit=10', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].name).toBe('Dock');
+    expect(tdSvc.searchTdSynnexProducts).toHaveBeenCalledWith({ q: 'dock', limit: 10 }, expect.anything());
+  });
+
+  it('POST /distributors/td-synnex/import creates a catalog item from a provider product', async () => {
+    (tdSvc.importTdSynnexCatalogItem as any).mockResolvedValue({ id: 'catalog-1', name: 'Dock' });
+    const product = {
+      source: 'td_synnex_digital_bridge',
+      sourceProductId: 'td-1',
+      sku: 'SKU-1',
+      manufacturerPartNumber: 'MPN-1',
+      vendor: 'Vendor',
+      name: 'Dock',
+      description: null,
+      cost: '100.00',
+      currency: 'USD',
+      availability: 4,
+      warehouses: [],
+      raw: {},
+      lastRefreshedAt: new Date().toISOString()
+    };
+    const res = await app().request('/distributors/td-synnex/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, costBasis: 100, taxable: true } })
+    });
+    expect(res.status).toBe(200);
+    expect(tdSvc.importTdSynnexCatalogItem).toHaveBeenCalledOnce();
+  });
+
+  it('maps provider errors to their status code', async () => {
+    (tdSvc.searchTdSynnexProducts as any).mockRejectedValue(
+      new (tdSvc as any).TdSynnexDigitalBridgeError('missing endpoint', 400, 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED')
+    );
+    const res = await app().request('/distributors/td-synnex/search?q=dock', { method: 'GET' });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+  });
+
+  it('maps a duplicate-SKU CatalogServiceError from import to a 409', async () => {
+    // import drops its own pre-check and relies on createCatalogItem's unique
+    // index, which surfaces a CatalogServiceError the distributor route must map.
+    (tdSvc.importTdSynnexCatalogItem as any).mockRejectedValue(
+      new (svc as any).CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU')
+    );
+    const product = {
+      source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+      manufacturerPartNumber: null, vendor: null, name: 'Dock', description: null,
+      cost: '100.00', currency: 'USD', availability: null, warehouses: [], raw: {},
+      lastRefreshedAt: new Date().toISOString()
+    };
+    const res = await app().request('/distributors/td-synnex/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, taxable: true } })
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('DUPLICATE_SKU');
+  });
+
+  it('rejects an oversized raw provider blob on import', async () => {
+    const product = {
+      source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+      manufacturerPartNumber: null, vendor: null, name: 'Dock', description: null,
+      cost: '100.00', currency: 'USD', availability: null, warehouses: [],
+      raw: { blob: 'x'.repeat(200_001) },
+      lastRefreshedAt: new Date().toISOString()
+    };
+    const res = await app().request('/distributors/td-synnex/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Dock', unitPrice: 125, taxable: true } })
+    });
+    expect(res.status).toBe(400);
+    expect(tdSvc.importTdSynnexCatalogItem).not.toHaveBeenCalled();
   });
 });
 
