@@ -628,22 +628,23 @@ pub fn run() {
     // viewer a fresh `breeze://` argv, which this callback receives.
     //
     // IMPORTANT: window operations (set_focus, WebviewWindowBuilder::build) MUST be
-    // queued to a LATER event-loop tick, never run inside this callback. On Windows
-    // the second instance signals via a synchronous SendMessageW(WM_COPYDATA) to the
-    // running viewer's main-thread-owned window, so this callback runs INLINE on the
-    // main/event-loop thread (confirmed in tauri-plugin-single-instance windows.rs).
-    // build() pumps the wry event loop and needs it to return the new window — doing
-    // that re-entrantly from inside the WM_COPYDATA dispatch deadlocks the single
-    // thread that drives every window, hanging the whole app ("Not Responding" on a
-    // second concurrent session — issue #1409).
+    // queued to a LATER event-loop tick, never run inside this callback. As of
+    // tauri-plugin-single-instance 2.4.2, the Windows path signals via a synchronous
+    // SendMessageW(WM_COPYDATA) to the running viewer's main-thread-owned window, so
+    // this callback runs INLINE on the main/event-loop thread (see that crate's
+    // windows.rs). build() pumps the wry event loop and needs it to return the new
+    // window — doing that re-entrantly from inside the WM_COPYDATA dispatch deadlocks
+    // the single thread that drives every window, hanging the whole app ("Not
+    // Responding" on a second concurrent session — issue #1409).
     //
-    // run_on_main_thread does NOT save us here: tauri-runtime-wry runs the closure
-    // INLINE/synchronously when it is invoked while already on the main thread (it
-    // only queues via proxy.send_event when called from another thread). So calling
+    // run_on_main_thread does NOT save us here: as of tauri-runtime-wry 2.11.3 it runs
+    // the closure INLINE/synchronously when invoked while already on the main thread
+    // (it only queues via proxy.send_event when called from another thread). So calling
     // it directly in this callback still re-enters build() synchronously. We must
     // hop off the main thread FIRST — spawning a thread forces run_on_main_thread
     // down its cross-thread (async-queued) path, deferring build() to a clean tick.
-    // This mirrors the macOS on_open_url handler below, which already does this.
+    // This mirrors the macOS on_open_url handler (search `on_open_url`, in the
+    // .setup() closure below), which already does this.
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -883,6 +884,10 @@ mod tests {
         // not "breeze:" (e.g. the helper binary name) must not match.
         assert_eq!(first_deep_link_arg(&["breeze-helper".to_string()]), None);
         assert_eq!(first_deep_link_arg(&["breezed".to_string()]), None);
+        // Scheme match is case-sensitive, intentionally kept in sync with the
+        // downstream parser (parse_breeze_deep_link strips "breeze:" case-sensitively).
+        // The registered scheme is lowercase, so an upcased variant must not match.
+        assert_eq!(first_deep_link_arg(&["BREEZE://a".to_string()]), None);
     }
 
     #[test]
