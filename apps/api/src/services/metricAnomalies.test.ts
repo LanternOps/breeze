@@ -15,14 +15,14 @@ vi.mock('./mlFeatureFlags', () => ({
   shouldProduceMlOutput: shouldProduceMlOutputMock,
 }));
 
-import { detectMetricAnomaliesRange } from './metricAnomalies';
+import { METRIC_ANOMALY_V1_SHADOW_VERSION, detectMetricAnomaliesRange } from './metricAnomalies';
 
 describe('metric anomalies service', () => {
   beforeEach(() => {
     executeMock.mockReset();
     executeMock.mockResolvedValue([]);
     shouldProduceMlOutputMock.mockReset();
-    shouldProduceMlOutputMock.mockResolvedValue(true);
+    shouldProduceMlOutputMock.mockImplementation(async (_orgId: string, flag: string) => flag === 'ml.anomalies.enabled');
   });
 
   it('gates all writes behind the anomaly ML feature flag', async () => {
@@ -56,6 +56,7 @@ describe('metric anomalies service', () => {
     });
 
     expect(result).toMatchObject({ statements: 3, skipped: false });
+    expect(result).toMatchObject({ v1ShadowStatements: 0, v1ShadowSkipped: true });
     expect(executeMock).toHaveBeenCalledTimes(3);
     const executedSql = JSON.stringify(executeMock.mock.calls);
     expect(executedSql).toContain('INSERT INTO metric_anomalies');
@@ -75,6 +76,34 @@ describe('metric anomalies service', () => {
     expect(processStatementSql).toContain('process_sample_runaway');
     expect(processStatementSql).toContain('process_runaway');
     expect(processStatementSql).toContain('network_egress');
+  });
+
+  it('runs the v1 seasonal robust shadow scorer only when the shadow flag is enabled', async () => {
+    shouldProduceMlOutputMock.mockImplementation(async (_orgId: string, flag: string) =>
+      flag === 'ml.anomalies.enabled' || flag === 'ml.anomalies.v1_shadow.enabled',
+    );
+
+    const result = await detectMetricAnomaliesRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:30:00.000Z'),
+    });
+
+    expect(result).toMatchObject({
+      statements: 3,
+      v1ShadowStatements: 1,
+      v1ShadowSkipped: false,
+      skipped: false,
+    });
+    expect(executeMock).toHaveBeenCalledTimes(4);
+
+    const v1StatementSql = JSON.stringify(executeMock.mock.calls[3]);
+    expect(v1StatementSql).toContain('INSERT INTO metric_anomaly_candidates');
+    expect(v1StatementSql).toContain(METRIC_ANOMALY_V1_SHADOW_VERSION);
+    expect(v1StatementSql).toContain('percentile_cont');
+    expect(v1StatementSql).toContain('mad_value');
+    expect(v1StatementSql).toContain('ON CONFLICT');
+    expect(v1StatementSql).not.toContain('INSERT INTO metric_anomalies');
   });
 
   it('rejects invalid ranges before executing writes', async () => {

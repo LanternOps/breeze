@@ -10,6 +10,7 @@ import {
   capacityThresholds,
   deviceMetrics,
   mlFeedbackEvents,
+  metricAnomalyCandidates,
   metricAnomalies,
   metricRollups,
   devices,
@@ -20,6 +21,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { METRIC_ANOMALY_V1_SHADOW_VERSION } from '../services/metricAnomalies';
 
 export const analyticsRoutes = new Hono();
 const requireAnalyticsRead = requirePermission(
@@ -237,10 +239,17 @@ const capacityQuerySchema = z.object({
   range: z.string().optional().default('30d')
 });
 
+const optionalBooleanQuery = z.preprocess((value) => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return ['true', '1', 'yes'].includes(value.toLowerCase());
+  return value;
+}, z.boolean()).optional().default(false);
+
 const anomalyEvaluationQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   deviceId: z.string().guid().optional(),
-  range: z.enum(['7d', '30d', '90d']).optional().default('30d')
+  range: z.enum(['7d', '30d', '90d']).optional().default('30d'),
+  includeV1: optionalBooleanQuery,
 });
 
 function capacityRollupMetricName(metricType: string): string {
@@ -261,6 +270,7 @@ function zeroAnomalyEvaluationResponse(options: {
   range: string;
   orgId?: string;
   deviceId?: string;
+  includeV1?: boolean;
 }) {
   return {
     window: {
@@ -287,6 +297,33 @@ function zeroAnomalyEvaluationResponse(options: {
       dismissed: 0,
       promoted: 0,
       resolved: 0,
+    },
+    ...(options.includeV1 ? {
+      v1Shadow: zeroV1ShadowEvaluation(0),
+    } : {}),
+  };
+}
+
+function zeroV1ShadowEvaluation(totalV0: number) {
+  return {
+    modelVersion: METRIC_ANOMALY_V1_SHADOW_VERSION,
+    totalCandidates: 0,
+    overlapWithV0: 0,
+    v1Only: 0,
+    v0Only: totalV0,
+    labeledOutcomes: {
+      total: 0,
+      dismissed: 0,
+      promoted: 0,
+      resolved: 0,
+    },
+    rates: {
+      overlapRate: 0,
+      v1OnlyRate: 0,
+      v0OnlyRate: totalV0 > 0 ? 1 : 0,
+      dismissRate: 0,
+      promoteRate: 0,
+      resolveRate: 0,
     },
   };
 }
@@ -1037,6 +1074,7 @@ analyticsRoutes.get(
           until,
           range: query.range,
           orgId: effectiveOrgId,
+          includeV1: query.includeV1,
         }));
       }
     }
@@ -1057,6 +1095,15 @@ analyticsRoutes.get(
           ? auth.orgCondition(mlFeedbackEvents.orgId)
           : auth?.orgId
             ? eq(mlFeedbackEvents.orgId, auth.orgId)
+            : undefined;
+
+    const candidateOrgCondition =
+      query.orgId
+        ? eq(metricAnomalyCandidates.orgId, query.orgId)
+        : typeof auth?.orgCondition === 'function'
+          ? auth.orgCondition(metricAnomalyCandidates.orgId)
+          : auth?.orgId
+            ? eq(metricAnomalyCandidates.orgId, auth.orgId)
             : undefined;
 
     const anomalyConditions: SQL[] = [
@@ -1125,6 +1172,92 @@ analyticsRoutes.get(
     }
     feedback.total = feedback.dismissed + feedback.promoted + feedback.resolved;
 
+    let v1Shadow: ReturnType<typeof zeroV1ShadowEvaluation> | undefined;
+    if (query.includeV1) {
+      const candidateConditions: SQL[] = [
+        gte(metricAnomalyCandidates.detectedAt, since),
+        eq(metricAnomalyCandidates.modelVersion, METRIC_ANOMALY_V1_SHADOW_VERSION),
+        ...(candidateOrgCondition ? [candidateOrgCondition] : []),
+        ...(query.deviceId ? [eq(metricAnomalyCandidates.deviceId, query.deviceId)] : []),
+        ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+          ? [inArray(metricAnomalyCandidates.deviceId, allowedDeviceIds)]
+          : []),
+      ];
+
+      const overlapJoin = and(
+        eq(metricAnomalies.orgId, metricAnomalyCandidates.orgId),
+        eq(metricAnomalies.deviceId, metricAnomalyCandidates.deviceId),
+        eq(metricAnomalies.sourceTable, metricAnomalyCandidates.sourceTable),
+        eq(metricAnomalies.metricName, metricAnomalyCandidates.metricName),
+        eq(metricAnomalies.anomalyType, metricAnomalyCandidates.anomalyType),
+        eq(metricAnomalies.bucketSeconds, metricAnomalyCandidates.bucketSeconds),
+        eq(metricAnomalies.windowStart, metricAnomalyCandidates.windowStart),
+      );
+
+      const [candidateTotalRows, overlapRows, v1FeedbackRows] = await Promise.all([
+        db
+          .select({ totalCandidates: sql<number>`count(*)` })
+          .from(metricAnomalyCandidates)
+          .where(and(...candidateConditions)),
+        db
+          .select({ overlapWithV0: sql<number>`count(distinct ${metricAnomalyCandidates.id})` })
+          .from(metricAnomalyCandidates)
+          .innerJoin(metricAnomalies, overlapJoin)
+          .where(and(...candidateConditions)),
+        db
+          .select({
+            eventType: mlFeedbackEvents.eventType,
+            count: sql<number>`count(*)`,
+          })
+          .from(mlFeedbackEvents)
+          .innerJoin(
+            metricAnomalies,
+            and(
+              sql`${mlFeedbackEvents.sourceId} = ${metricAnomalies.id}::text`,
+              eq(metricAnomalies.orgId, mlFeedbackEvents.orgId),
+            ),
+          )
+          .innerJoin(metricAnomalyCandidates, overlapJoin)
+          .where(and(
+            eq(mlFeedbackEvents.sourceType, 'anomaly'),
+            inArray(mlFeedbackEvents.eventType, ['anomaly.dismissed', 'anomaly.promoted', 'anomaly.resolved']),
+            gte(mlFeedbackEvents.occurredAt, since),
+            ...candidateConditions,
+          ))
+          .groupBy(mlFeedbackEvents.eventType),
+      ]);
+
+      const totalCandidates = Number(candidateTotalRows[0]?.totalCandidates) || 0;
+      const overlapWithV0 = Number(overlapRows[0]?.overlapWithV0) || 0;
+      const labeledOutcomes = { total: 0, dismissed: 0, promoted: 0, resolved: 0 };
+      for (const row of v1FeedbackRows) {
+        const count = Number(row.count) || 0;
+        if (row.eventType === 'anomaly.dismissed') labeledOutcomes.dismissed += count;
+        if (row.eventType === 'anomaly.promoted') labeledOutcomes.promoted += count;
+        if (row.eventType === 'anomaly.resolved') labeledOutcomes.resolved += count;
+      }
+      labeledOutcomes.total = labeledOutcomes.dismissed + labeledOutcomes.promoted + labeledOutcomes.resolved;
+
+      const v1Only = Math.max(totalCandidates - overlapWithV0, 0);
+      const v0Only = Math.max(total - overlapWithV0, 0);
+      v1Shadow = {
+        modelVersion: METRIC_ANOMALY_V1_SHADOW_VERSION,
+        totalCandidates,
+        overlapWithV0,
+        v1Only,
+        v0Only,
+        labeledOutcomes,
+        rates: {
+          overlapRate: totalCandidates > 0 ? overlapWithV0 / totalCandidates : 0,
+          v1OnlyRate: totalCandidates > 0 ? v1Only / totalCandidates : 0,
+          v0OnlyRate: total > 0 ? v0Only / total : 0,
+          dismissRate: labeledOutcomes.total > 0 ? labeledOutcomes.dismissed / labeledOutcomes.total : 0,
+          promoteRate: labeledOutcomes.total > 0 ? labeledOutcomes.promoted / labeledOutcomes.total : 0,
+          resolveRate: labeledOutcomes.total > 0 ? labeledOutcomes.resolved / labeledOutcomes.total : 0,
+        },
+      };
+    }
+
     return c.json({
       window: {
         range: query.range,
@@ -1141,6 +1274,7 @@ analyticsRoutes.get(
         resolveRate: total > 0 ? status.resolved / total : 0,
       },
       feedback,
+      ...(v1Shadow ? { v1Shadow } : {}),
     });
   }
 );

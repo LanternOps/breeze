@@ -24,11 +24,17 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
-const anomalyFlags = (enabled: boolean) => ({
+const anomalyFlags = (enabled: boolean, shadowEnabled = false) => ({
   mlFeatureFlags: {
     'ml.anomalies.enabled': {
       flag: 'ml.anomalies.enabled',
       enabled,
+      defaultEnabled: false,
+      source: 'org_settings',
+    },
+    'ml.anomalies.v1_shadow.enabled': {
+      flag: 'ml.anomalies.v1_shadow.enabled',
+      enabled: shadowEnabled,
       defaultEnabled: false,
       source: 'org_settings',
     },
@@ -385,6 +391,102 @@ describe('DeviceAnomaliesPanel', () => {
 
     await screen.findByText('No open anomalies');
     expect(attempt).toBe(2);
+  });
+
+  it('renders the v1 shadow comparison disabled state', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, false)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+
+    expect(await screen.findByTestId('anomaly-v1-shadow-disabled')).toBeTruthy();
+    expect(screen.getByText('Shadow model disabled for this organization.')).toBeTruthy();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('includeV1=true'));
+  });
+
+  it('renders the v1 shadow comparison loading state', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
+        return new Promise<Response>(() => {});
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+
+    expect(await screen.findByTestId('anomaly-v1-shadow-loading')).toBeTruthy();
+  });
+
+  it('renders the v1 shadow comparison empty state', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
+        return Promise.resolve(makeJsonResponse({
+          v1Shadow: {
+            modelVersion: 'metric-anomaly-v1-seasonal-robust',
+            totalCandidates: 0,
+            overlapWithV0: 0,
+            v1Only: 0,
+            v0Only: 0,
+            labeledOutcomes: { total: 0, dismissed: 0, promoted: 0, resolved: 0 },
+            rates: { overlapRate: 0, v1OnlyRate: 0, v0OnlyRate: 0, dismissRate: 0, promoteRate: 0, resolveRate: 0 },
+          },
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+
+    expect(await screen.findByTestId('anomaly-v1-shadow-empty')).toBeTruthy();
+    expect(screen.getByText('No v1 shadow candidates in the last 30 days.')).toBeTruthy();
+  });
+
+  it('renders populated v0 versus v1 shadow comparison counts', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
+        return Promise.resolve(makeJsonResponse({
+          v1Shadow: {
+            modelVersion: 'metric-anomaly-v1-seasonal-robust',
+            totalCandidates: 6,
+            overlapWithV0: 3,
+            v1Only: 3,
+            v0Only: 2,
+            labeledOutcomes: { total: 3, dismissed: 2, promoted: 1, resolved: 0 },
+            rates: { overlapRate: 0.5, v1OnlyRate: 0.5, v0OnlyRate: 0.4, dismissRate: 0.67, promoteRate: 0.33, resolveRate: 0 },
+          },
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+
+    expect(await screen.findByTestId('anomaly-v1-shadow-populated')).toBeTruthy();
+    expect(screen.getByText('metric-anomaly-v1-seasonal-robust')).toBeTruthy();
+    expect(screen.getByText('Candidates')).toBeTruthy();
+    expect(screen.getByText('Overlap rate')).toBeTruthy();
+    expect(screen.getByText('50%')).toBeTruthy();
   });
 
   it('labels the panel disabled and does not load anomalies when anomaly output is disabled', async () => {

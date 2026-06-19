@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle, ExternalLink, RefreshCw, TrendingUp, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, ExternalLink, RefreshCw, TrendingUp, XCircle } from 'lucide-react';
 
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -36,6 +36,32 @@ type PromotedAlert = {
   alertId: string;
   metricName: string;
   anomalyType: string;
+};
+
+type AnomalyV1ShadowEvaluation = {
+  modelVersion: string;
+  totalCandidates: number;
+  overlapWithV0: number;
+  v1Only: number;
+  v0Only: number;
+  labeledOutcomes: {
+    total: number;
+    dismissed: number;
+    promoted: number;
+    resolved: number;
+  };
+  rates: {
+    overlapRate: number;
+    v1OnlyRate: number;
+    v0OnlyRate: number;
+    dismissRate: number;
+    promoteRate: number;
+    resolveRate: number;
+  };
+};
+
+type AnomalyEvaluationResponse = {
+  v1Shadow?: AnomalyV1ShadowEvaluation;
 };
 
 const metricLabels: Record<string, string> = {
@@ -100,6 +126,11 @@ function formatDate(value: string): string {
   });
 }
 
+function formatRate(value: number): string {
+  if (!Number.isFinite(value)) return '0%';
+  return `${Math.round(value * 100)}%`;
+}
+
 function labelForMetric(metricName: string): string {
   return metricLabels[metricName] ?? metricName.replace(/_/g, ' ');
 }
@@ -115,7 +146,11 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
   const [error, setError] = useState<string>();
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [promotedAlert, setPromotedAlert] = useState<PromotedAlert | null>(null);
+  const [shadowEvaluation, setShadowEvaluation] = useState<AnomalyV1ShadowEvaluation | null>(null);
+  const [shadowLoading, setShadowLoading] = useState(false);
+  const [shadowError, setShadowError] = useState<string>();
   const anomaliesDisabled = mlFlags.isDisabled('ml.anomalies.enabled');
+  const shadowEnabled = mlFlags.flags['ml.anomalies.v1_shadow.enabled']?.enabled === true;
 
   const fetchAnomalies = useCallback(async () => {
     setLoading(true);
@@ -134,6 +169,21 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
     }
   }, [compact, deviceId, focusedAnomalyId]);
 
+  const fetchShadowEvaluation = useCallback(async () => {
+    setShadowLoading(true);
+    setShadowError(undefined);
+    try {
+      const response = await fetchWithAuth(`/analytics/anomalies/evaluation?deviceId=${encodeURIComponent(deviceId)}&range=30d&includeV1=true`);
+      if (!response.ok) throw new Error('Failed to load shadow model comparison');
+      const json = await response.json() as AnomalyEvaluationResponse;
+      setShadowEvaluation(json.v1Shadow ?? null);
+    } catch (err) {
+      setShadowError(err instanceof Error ? err.message : 'Failed to load shadow model comparison');
+    } finally {
+      setShadowLoading(false);
+    }
+  }, [deviceId]);
+
   useEffect(() => {
     if (!mlFlags.loaded) return;
     if (anomaliesDisabled) {
@@ -144,6 +194,16 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
     }
     void fetchAnomalies();
   }, [anomaliesDisabled, fetchAnomalies, mlFlags.loaded]);
+
+  useEffect(() => {
+    if (!mlFlags.loaded || compact || anomaliesDisabled || !shadowEnabled) {
+      setShadowEvaluation(null);
+      setShadowError(undefined);
+      setShadowLoading(false);
+      return;
+    }
+    void fetchShadowEvaluation();
+  }, [anomaliesDisabled, compact, fetchShadowEvaluation, mlFlags.loaded, shadowEnabled]);
 
   const sorted = useMemo(
     () => [...anomalies].sort((a, b) => b.confidence - a.confidence || b.score - a.score),
@@ -186,6 +246,104 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
     } finally {
       setUpdatingId(null);
     }
+  }
+
+  function renderShadowComparison() {
+    if (compact || anomaliesDisabled) return null;
+
+    if (!shadowEnabled) {
+      return (
+        <div data-testid="anomaly-v1-shadow-disabled" className="mt-5 border-t pt-4">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-muted-foreground" />
+            <h4 className="text-sm font-semibold">v1 Shadow Comparison</h4>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">Shadow model disabled for this organization.</p>
+        </div>
+      );
+    }
+
+    if (shadowLoading) {
+      return (
+        <div data-testid="anomaly-v1-shadow-loading" className="mt-5 border-t pt-4">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-muted-foreground" />
+            <h4 className="text-sm font-semibold">v1 Shadow Comparison</h4>
+          </div>
+          <div className="mt-3 h-2 w-40 animate-pulse rounded bg-muted" />
+        </div>
+      );
+    }
+
+    if (shadowError) {
+      return (
+        <div data-testid="anomaly-v1-shadow-error" className="mt-5 border-t pt-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-muted-foreground" />
+                <h4 className="text-sm font-semibold">v1 Shadow Comparison</h4>
+              </div>
+              <p className="mt-2 text-sm text-destructive">{shadowError}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void fetchShadowEvaluation()}
+              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (!shadowEvaluation || shadowEvaluation.totalCandidates === 0) {
+      return (
+        <div data-testid="anomaly-v1-shadow-empty" className="mt-5 border-t pt-4">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-muted-foreground" />
+            <h4 className="text-sm font-semibold">v1 Shadow Comparison</h4>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">No v1 shadow candidates in the last 30 days.</p>
+        </div>
+      );
+    }
+
+    return (
+      <div data-testid="anomaly-v1-shadow-populated" className="mt-5 border-t pt-4">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-muted-foreground" />
+            <h4 className="text-sm font-semibold">v1 Shadow Comparison</h4>
+          </div>
+          <span className="text-xs text-muted-foreground">{shadowEvaluation.modelVersion}</span>
+        </div>
+        <div className="mt-3 grid gap-3 text-sm sm:grid-cols-5">
+          <div>
+            <div className="text-xs text-muted-foreground">Candidates</div>
+            <div className="font-semibold tabular-nums">{shadowEvaluation.totalCandidates}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Overlap</div>
+            <div className="font-semibold tabular-nums">{shadowEvaluation.overlapWithV0}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">v1 only</div>
+            <div className="font-semibold tabular-nums">{shadowEvaluation.v1Only}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">v0 only</div>
+            <div className="font-semibold tabular-nums">{shadowEvaluation.v0Only}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Overlap rate</div>
+            <div className="font-semibold tabular-nums">{formatRate(shadowEvaluation.rates.overlapRate)}</div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (loading) {
@@ -260,6 +418,8 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
           <RefreshCw className="h-4 w-4" />
         </button>
       </div>
+
+      {renderShadowComparison()}
 
       {sorted.length === 0 ? (
         <>

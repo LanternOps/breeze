@@ -8,6 +8,7 @@ export const ML_FEATURE_FLAGS = [
   'ml.rca.enabled',
   'ml.metric_rollups.enabled',
   'ml.anomalies.enabled',
+  'ml.anomalies.v1_shadow.enabled',
   'ml.anomalies.create_alerts',
   'ml.remediation_suggestions.enabled',
   'ml.ticket_triage.enabled',

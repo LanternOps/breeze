@@ -177,8 +177,25 @@ vi.mock('../db/schema', () => ({
     id: 'metricAnomalies.id',
     orgId: 'metricAnomalies.orgId',
     deviceId: 'metricAnomalies.deviceId',
+    sourceTable: 'metricAnomalies.sourceTable',
+    metricName: 'metricAnomalies.metricName',
+    anomalyType: 'metricAnomalies.anomalyType',
+    bucketSeconds: 'metricAnomalies.bucketSeconds',
+    windowStart: 'metricAnomalies.windowStart',
     status: 'metricAnomalies.status',
     detectedAt: 'metricAnomalies.detectedAt'
+  },
+  metricAnomalyCandidates: {
+    id: 'metricAnomalyCandidates.id',
+    orgId: 'metricAnomalyCandidates.orgId',
+    deviceId: 'metricAnomalyCandidates.deviceId',
+    sourceTable: 'metricAnomalyCandidates.sourceTable',
+    metricName: 'metricAnomalyCandidates.metricName',
+    anomalyType: 'metricAnomalyCandidates.anomalyType',
+    bucketSeconds: 'metricAnomalyCandidates.bucketSeconds',
+    windowStart: 'metricAnomalyCandidates.windowStart',
+    detectedAt: 'metricAnomalyCandidates.detectedAt',
+    modelVersion: 'metricAnomalyCandidates.modelVersion'
   },
   mlFeedbackEvents: {
     orgId: 'mlFeedbackEvents.orgId',
@@ -527,6 +544,42 @@ describe('analytics routes', () => {
       expect(body.total).toBe(0);
       expect(body.rates).toEqual({ dismissRate: 0, promoteRate: 0, resolveRate: 0 });
       expect(body.feedback.total).toBe(0);
+    });
+
+    it('includes v1 shadow comparison only when requested', async () => {
+      mockSelectOnce([
+        { status: 'open', count: 4 },
+        { status: 'dismissed', count: 1 },
+      ]);
+      mockSelectOnce([
+        { eventType: 'anomaly.dismissed', count: 1 },
+      ]);
+      mockSelectOnce([{ totalCandidates: 6 }]);
+      mockSelectOnce([{ overlapWithV0: 3 }]);
+      mockSelectOnce([
+        { eventType: 'anomaly.dismissed', count: 2 },
+        { eventType: 'anomaly.promoted', count: 1 },
+      ]);
+
+      const res = await app.request('/analytics/anomalies/evaluation?range=30d&includeV1=true', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(5);
+      expect(body.v1Shadow).toMatchObject({
+        modelVersion: 'metric-anomaly-v1-seasonal-robust',
+        totalCandidates: 6,
+        overlapWithV0: 3,
+        v1Only: 3,
+        v0Only: 2,
+        labeledOutcomes: { total: 3, dismissed: 2, promoted: 1, resolved: 0 },
+      });
+      expect(body.v1Shadow.rates.overlapRate).toBe(0.5);
+      expect(body.v1Shadow.rates.v0OnlyRate).toBe(0.4);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(5);
     });
   });
 

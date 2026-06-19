@@ -86,6 +86,7 @@ describe('mlFeatureFlags', () => {
     expect(defaultMlFeatureFlagValue('ml.metric_rollups.enabled', { nodeEnv: 'production' })).toBe(true);
     expect(defaultMlFeatureFlagValue('ml.device_reliability.enabled', { nodeEnv: 'production' })).toBe(true);
     expect(defaultMlFeatureFlagValue('ml.user_risk_v0.enabled', { nodeEnv: 'production' })).toBe(true);
+    expect(defaultMlFeatureFlagValue('ml.anomalies.v1_shadow.enabled', { nodeEnv: 'production' })).toBe(false);
     expect(defaultMlFeatureFlagValue('ml.rca.enabled', { nodeEnv: 'production' })).toBe(false);
   });
 

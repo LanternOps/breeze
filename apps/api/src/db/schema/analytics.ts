@@ -103,6 +103,44 @@ export const metricAnomalies = pgTable('metric_anomalies', {
   linkedCorrelationIdx: index('metric_anomalies_linked_correlation_idx').on(table.linkedCorrelationGroupId)
 }));
 
+export const metricAnomalyCandidates = pgTable('metric_anomaly_candidates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  sourceTable: varchar('source_table', { length: 80 }).notNull().default('device_metrics'),
+  metricType: varchar('metric_type', { length: 80 }).notNull(),
+  metricName: varchar('metric_name', { length: 120 }).notNull(),
+  modelVersion: varchar('model_version', { length: 80 }).notNull(),
+  anomalyType: varchar('anomaly_type', { length: 40 }).notNull(),
+  windowStart: timestamp('window_start').notNull(),
+  windowEnd: timestamp('window_end').notNull(),
+  bucketSeconds: integer('bucket_seconds').notNull().default(300),
+  observedValue: doublePrecision('observed_value').notNull(),
+  baselineValue: doublePrecision('baseline_value'),
+  baselineMin: doublePrecision('baseline_min'),
+  baselineMax: doublePrecision('baseline_max'),
+  score: doublePrecision('score').notNull(),
+  confidence: doublePrecision('confidence').notNull(),
+  sampleCount: integer('sample_count').notNull().default(0),
+  baselineSummary: jsonb('baseline_summary').notNull().default({}),
+  evidence: jsonb('evidence').notNull().default({}),
+  detectedAt: timestamp('detected_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  keyUniq: uniqueIndex('metric_anomaly_candidates_key_uq').on(
+    table.orgId,
+    table.deviceId,
+    table.sourceTable,
+    table.metricName,
+    table.anomalyType,
+    table.modelVersion,
+    table.bucketSeconds,
+    table.windowStart
+  ),
+  orgModelDetectedIdx: index('metric_anomaly_candidates_org_model_detected_idx').on(table.orgId, table.modelVersion, table.detectedAt),
+  deviceModelDetectedIdx: index('metric_anomaly_candidates_device_model_detected_idx').on(table.deviceId, table.modelVersion, table.detectedAt)
+}));
+
 export const analyticsDashboards = pgTable('analytics_dashboards', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
