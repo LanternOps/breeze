@@ -109,7 +109,13 @@ export async function getQuote(id: string, actor: QuoteActor) {
   assertOrg(actor, q.orgId);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
   const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
-  return { quote: q, blocks, lines };
+  // dueOnAcceptanceTotal is a derived (non-persisted) figure: the amount accept
+  // actually invoices (one-time lines only — recurring is deferred to the Phase 4
+  // contract). Computed from the canonical quoteMath so it stays penny-consistent
+  // with quoteAcceptService's invoice, and so the UI can advertise an accurate
+  // "due on acceptance" instead of the recurring-inclusive `total` (see #bug).
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], q.taxRate ? parseFloat(q.taxRate) : null);
+  return { quote: { ...q, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal }, blocks, lines };
 }
 
 export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {

@@ -10,6 +10,7 @@ import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
 import { acceptQuote, emitAcceptInvoiceIssued } from '../../services/quoteAcceptService';
 import { createQuotePayLink } from '../../services/quotePay';
+import { computeQuoteTotals, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -39,7 +40,10 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
   const lines = (await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible);
   try { await markQuoteViewed(id, auth.user.orgId); } catch (err) { console.error('[portal] quote markViewed failed', { id, err }); }
-  return c.json({ data: { quote, blocks, lines } });
+  // Derive the amount accept actually invoices (one-time only) so the customer
+  // sees an accurate "due on acceptance" instead of the recurring-inclusive total.
+  const dueOnAcceptanceTotal = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null).dueOnAcceptanceTotal;
+  return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal }, blocks, lines } });
 });
 
 // GET /quotes/:id/pdf

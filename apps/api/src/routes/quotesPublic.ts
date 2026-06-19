@@ -15,6 +15,7 @@ import { QuoteServiceError } from '../services/quoteTypes';
 import { InvoiceServiceError } from '../services/invoiceTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
 import { createQuotePayLink } from '../services/quotePay';
+import { computeQuoteTotals, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
@@ -53,7 +54,10 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
     const [partner] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
     const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
     await markQuoteViewed(quote.id, quote.orgId);
-    return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
+    // Derive the amount accept actually invoices (one-time only) so the prospect
+    // sees an accurate "due on acceptance" instead of the recurring-inclusive total.
+    const dueOnAcceptanceTotal = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null).dueOnAcceptanceTotal;
+    return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
   }));
   if (!data) return c.json({ error: 'Quote not found' }, 404);
   return c.json({ data });

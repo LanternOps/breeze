@@ -155,13 +155,19 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
               )}
             </dl>
             <div className="mt-3 flex items-end justify-between border-t pt-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">First-invoice total</span>
-              <span className="text-2xl font-semibold tabular-nums" data-testid="quote-detail-total">{formatMoney(quote.total, currency)}</span>
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
+              <span className="text-2xl font-semibold tabular-nums" data-testid="quote-detail-due-on-acceptance">{formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}</span>
             </div>
             {hasRecurring && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                First-invoice total combines one-time charges with the first period of each recurring cadence (monthly + annual).
-              </p>
+              <>
+                <div className="mt-2 flex justify-between text-sm tabular-nums">
+                  <span className="text-muted-foreground">First-period total (incl. recurring)</span>
+                  <span className="font-medium" data-testid="quote-detail-first-period">{formatMoney(quote.total, currency)}</span>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Accepting this quote invoices only the one-time charges now. Recurring lines (monthly + annual) bill on their own schedule via the contract. The first-period total combines the one-time charges with the first period of each recurring cadence.
+                </p>
+              </>
             )}
           </div>
 

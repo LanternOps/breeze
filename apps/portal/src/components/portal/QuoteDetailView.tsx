@@ -187,9 +187,20 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
           </>
         )}
         <div className="flex justify-between border-t pt-1 font-semibold">
-          <span>{hasRecurring ? 'First invoice total' : 'Total'}</span>
-          <span>{money(quote.total, currency)}</span>
+          <span>{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
+          <span>{money(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total, currency)}</span>
         </div>
+        {hasRecurring && (
+          <>
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>First-period total (incl. recurring)</span>
+              <span>{money(quote.total, currency)}</span>
+            </div>
+            <p className="pt-1 text-xs text-muted-foreground">
+              Accepting invoices only the one-time charges now. Recurring lines bill on their own schedule.
+            </p>
+          </>
+        )}
       </div>
 
       {quote.terms && (

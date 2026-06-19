@@ -93,6 +93,8 @@ interface QuoteHeader {
   oneTimeTotal?: string | number | null;
   monthlyRecurringTotal?: string | number | null;
   annualRecurringTotal?: string | number | null;
+  // Amount invoiced on accept (one-time + one-time tax); derived in getQuote.
+  dueOnAcceptanceTotal?: string | number | null;
 }
 
 interface QuoteBlock {
@@ -185,10 +187,14 @@ function renderLineTable(doc: PDFKit.PDFDocument, lines: QuoteLine[], currency: 
 }
 
 // ---------------------------------------------------------------------------
-// Recurring summary footer: One-time / Monthly / Annual / first-invoice total,
-// drawn from the quote header buckets. The "first invoice total" is the quote's
-// `total` (one-time charges + the first recurring period), matching how the
-// header total is computed in quoteMath.
+// Recurring summary footer: One-time / Monthly / Annual / due-on-acceptance,
+// drawn from the quote header buckets. The bold "Due on acceptance" figure is
+// what accept actually invoices (one-time charges + tax on the one-time lines —
+// quote.dueOnAcceptanceTotal); recurring lines bill later via the contract, so
+// they are NOT in that figure. When there is recurring revenue we also show the
+// `total` as a secondary "first-period total (incl. recurring)" line so the
+// recurring-inclusive number is still visible but not presented as the invoiced
+// amount.
 // ---------------------------------------------------------------------------
 
 function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, currency: string, startY: number): number {
@@ -213,7 +219,14 @@ function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, cur
   if (quote.taxTotal != null && Number(quote.taxTotal) > 0) {
     drawRow(`Tax${quote.taxRate ? ` (${(Number(quote.taxRate) * 100).toFixed(2)}%)` : ''}`, quote.taxTotal, '');
   }
-  drawRow('First invoice total', quote.total, '', true);
+  const hasRecurring =
+    Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
+  // Bold primary figure = what accept invoices now. Fall back to the one-time
+  // total if the derived field is somehow absent.
+  drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', true);
+  if (hasRecurring) {
+    drawRow('First-period total (incl. recurring)', quote.total, '');
+  }
   return y;
 }
 

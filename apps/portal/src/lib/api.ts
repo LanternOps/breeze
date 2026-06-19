@@ -377,6 +377,8 @@ export interface QuoteHeader extends QuoteSummary {
   oneTimeTotal?: string;
   monthlyRecurringTotal?: string;
   annualRecurringTotal?: string;
+  /** Amount invoiced on accept (one-time + one-time tax); derived server-side. */
+  dueOnAcceptanceTotal?: string;
   billToName?: string | null;
 }
 

@@ -27,6 +27,13 @@ export interface Quote {
   oneTimeTotal: string;
   monthlyRecurringTotal: string;
   annualRecurringTotal: string;
+  /**
+   * Amount actually invoiced on accept = one-time subtotal + tax on one-time
+   * taxable lines (recurring is deferred to the Phase 4 contract). Derived
+   * server-side in `getQuote`, so it's present on `GET /quotes/:id` but absent
+   * from the list endpoint. The UI shows this as "Due on acceptance"; `total`
+   * is the recurring-inclusive first-period figure shown separately. */
+  dueOnAcceptanceTotal?: string;
   billToName: string | null;
   introNotes: string | null;
   terms: string | null;

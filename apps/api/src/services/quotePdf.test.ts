@@ -63,4 +63,22 @@ describe('renderQuotePdf', () => {
     // A multi-line, multi-section document should be non-trivial in size.
     expect(buf.length).toBeGreaterThan(1500);
   });
+
+  it('renders the due-on-acceptance + first-period summary rows for a recurring quote', async () => {
+    // Quote with recurring revenue: the summary draws a bold "Due on acceptance"
+    // (one-time + one-time tax) plus a "First-period total (incl. recurring)" row.
+    const buf = await renderQuotePdf(
+      {
+        id: 'q1', quoteNumber: 'Q-4',
+        oneTimeTotal: '500.00', monthlyRecurringTotal: '1000.00', annualRecurringTotal: '450.00',
+        dueOnAcceptanceTotal: '500.00', total: '1950.00', currencyCode: 'USD',
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '500', lineTotal: '500.00', recurrence: 'one_time' }],
+      async () => null,
+      {},
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(buf.length).toBeGreaterThan(800);
+  });
 });
