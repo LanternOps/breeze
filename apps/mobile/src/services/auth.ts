@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
+import * as Sentry from '@sentry/react-native';
 import type { User } from './api';
-import { clearApprovalCache } from './approvalCache';
+import { APPROVAL_CACHE_KEY, clearApprovalCacheOrThrow } from './approvalCache';
 
 const TOKEN_KEY = 'breeze_auth_token';
 const USER_KEY = 'breeze_user';
@@ -85,6 +86,24 @@ export async function removeUser(): Promise<void> {
 }
 
 /**
+ * Error thrown when one or more sensitive entries could not be wiped during
+ * `clearAuthData`. Carries the list of keys that survived so callers / Sentry
+ * can see exactly what leaked.
+ */
+export class SecureWipeError extends Error {
+  readonly failedKeys: string[];
+
+  constructor(failedKeys: string[], cause?: unknown) {
+    super(`Failed to wipe sensitive SecureStore entries: ${failedKeys.join(', ')}`);
+    this.name = 'SecureWipeError';
+    this.failedKeys = failedKeys;
+    if (cause !== undefined) {
+      (this as { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
+/**
  * Clear all authentication data.
  *
  * Also clears the persistent approvals cache (`breeze.approvals.cache.v1`).
@@ -94,13 +113,48 @@ export async function removeUser(): Promise<void> {
  * on the same device would read the prior session's cached approvals — the
  * same cross-session leak the Redux logout reset in `store/resettable.ts`
  * closes for in-memory state.
+ *
+ * This is a security teardown, so a *partial* wipe must not be silently
+ * swallowed: if a SecureStore delete throws (locked keychain, decrypt failure)
+ * the surviving token / cache re-opens the cross-session leak while the user
+ * lands on the signed-out screen. We therefore:
+ *   - attempt every delete (no short-circuit), via `Promise.allSettled`;
+ *   - report any failure to Sentry so it's observable on production builds
+ *     where `console.*` goes nowhere a developer sees;
+ *   - throw a `SecureWipeError` naming the surviving keys so callers can react
+ *     (e.g. retry on next keychain-unlock) instead of assuming a clean wipe.
  */
 export async function clearAuthData(): Promise<void> {
-  await Promise.all([
-    removeToken(),
-    removeUser(),
-    clearApprovalCache(),
-  ]);
+  const deletions: Array<{ key: string; run: () => Promise<unknown> }> = [
+    { key: TOKEN_KEY, run: () => SecureStore.deleteItemAsync(TOKEN_KEY) },
+    { key: USER_KEY, run: () => SecureStore.deleteItemAsync(USER_KEY) },
+    { key: APPROVAL_CACHE_KEY, run: () => clearApprovalCacheOrThrow() },
+  ];
+
+  const results = await Promise.allSettled(deletions.map((d) => d.run()));
+
+  const failures = results
+    .map((result, i) => ({ result, key: deletions[i].key }))
+    .filter(
+      (entry): entry is { result: PromiseRejectedResult; key: string } =>
+        entry.result.status === 'rejected'
+    );
+
+  if (failures.length === 0) return;
+
+  const failedKeys = failures.map((f) => f.key);
+  const firstReason = failures[0].result.reason;
+  const error = new SecureWipeError(failedKeys, firstReason);
+
+  // Surface to telemetry — on a production RN build the per-helper console.*
+  // logs go nowhere a developer sees, so without this the partial wipe is
+  // invisible. Sentry is initialized in App.tsx.
+  Sentry.captureException(error, {
+    tags: { area: 'auth-teardown' },
+    extra: { failedKeys },
+  });
+
+  throw error;
 }
 
 /**

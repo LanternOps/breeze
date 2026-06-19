@@ -97,7 +97,10 @@ export function RootNavigator() {
         } catch (err) {
           const status = (err as { statusCode?: number } | null)?.statusCode;
           if (status === 401 || status === 403) {
-            await clearAuthData();
+            // A failed secure wipe (SecureWipeError) is already reported to
+            // Sentry inside clearAuthData; don't let it abort the redux logout
+            // or fall through to the outer catch and double-wipe.
+            await clearAuthData().catch(() => {});
             dispatch(logout());
           }
           // Other failures (network down, 5xx) intentionally leave the
@@ -106,7 +109,7 @@ export function RootNavigator() {
         }
       } catch (error) {
         console.error('Error checking auth:', error);
-        await clearAuthData();
+        await clearAuthData().catch(() => {});
         dispatch(logout());
       } finally {
         setIsCheckingAuth(false);

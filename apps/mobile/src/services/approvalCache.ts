@@ -1,13 +1,27 @@
 import * as SecureStore from 'expo-secure-store';
 import type { ApprovalRequest } from './approvals';
 
-const KEY = 'breeze.approvals.cache.v1';
+export const APPROVAL_CACHE_KEY = 'breeze.approvals.cache.v1';
+const KEY = APPROVAL_CACHE_KEY;
 
 // Cache last /pending response so cold open with no network still renders the queue.
 
+/**
+ * Delete the persisted approvals cache, propagating any SecureStore error.
+ *
+ * Use this on the security-teardown path (sign-out) where a failed wipe must be
+ * surfaced rather than swallowed — leaving the prior session's approvals cache
+ * on-device is the cross-session leak #1415 closed. The swallowing
+ * `clearApprovalCache` below is for best-effort/graceful-degradation callers
+ * (e.g. resetting a corrupt cache) where a failure is non-sensitive.
+ */
+export async function clearApprovalCacheOrThrow(): Promise<void> {
+  await SecureStore.deleteItemAsync(KEY);
+}
+
 export async function clearApprovalCache(): Promise<void> {
   try {
-    await SecureStore.deleteItemAsync(KEY);
+    await clearApprovalCacheOrThrow();
   } catch (err) {
     console.warn('[approvalCache] clear failed', err);
   }

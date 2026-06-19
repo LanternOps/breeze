@@ -70,14 +70,29 @@ export const verifyMfaAsync = createAsyncThunk(
 export const logoutAsync = createAsyncThunk(
   'auth/logout',
   async (_, { rejectWithValue }) => {
+    // Best-effort server logout; we tear down local state regardless of its
+    // outcome so the user always leaves the authenticated surface.
+    let apiErrorMessage: string | undefined;
     try {
       await apiLogout();
+    } catch (error: unknown) {
+      apiErrorMessage = (error as { message?: string }).message || 'Logout failed';
+    }
+
+    // Local secure wipe runs exactly once. `clearAuthData` now throws a
+    // SecureWipeError (already reported to Sentry) if any sensitive entry
+    // survived; surface that as a rejection rather than letting it escape the
+    // thunk unhandled — the Redux session reset still happens via the
+    // logout/rejected reducers, so the user is signed out either way.
+    try {
       await clearAuthData();
     } catch (error: unknown) {
-      // Clear local data even if API call fails
-      await clearAuthData();
-      const apiError = error as { message?: string };
-      return rejectWithValue(apiError.message || 'Logout failed');
+      const wipeMessage = (error as { message?: string }).message || 'Secure wipe failed';
+      return rejectWithValue(apiErrorMessage ? `${apiErrorMessage}; ${wipeMessage}` : wipeMessage);
+    }
+
+    if (apiErrorMessage) {
+      return rejectWithValue(apiErrorMessage);
     }
   }
 );
