@@ -9,11 +9,21 @@ import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
+// #1105 (duration variant): withSystemDbAccessContext holds a DB transaction
+// for the whole callback. compute-org fans out across every device in the org,
+// so the held transaction would pin one pooled connection for the entire scan.
+// Wrap in runOutsideDbContext(() => withSystemDbAccessContext(...)) so the
+// background job opens a fresh context (not an inherited request transaction)
+// and the connection is released promptly when the compute completes.
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
     throw new Error('[ReliabilityWorker] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
   }
-  return dbModule.withSystemDbAccessContext(fn);
+  const runOutside = dbModule.runOutsideDbContext;
+  if (typeof runOutside !== 'function') {
+    return dbModule.withSystemDbAccessContext(fn);
+  }
+  return runOutside(() => dbModule.withSystemDbAccessContext(fn));
 };
 
 const RELIABILITY_QUEUE = 'reliability-scoring';
@@ -21,7 +31,7 @@ const ON_DEMAND_RELIABILITY_DEDUPE_WINDOW_MS = 30 * 1000;
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
-  queuedAt: string;
+  queuedAt?: string;
 };
 
 type ComputeOrgJobData = {
@@ -62,14 +72,16 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   }
 
   const queue = getReliabilityQueue();
-  const slotKey = data.queuedAt.slice(0, 13);
+  const scannedAt = new Date();
+  const queuedAt = scannedAt.toISOString();
+  const slotKey = queuedAt.slice(0, 13);
   await queue.addBulk(
     orgRows.map((row) => ({
       name: 'compute-org',
       data: {
         type: 'compute-org' as const,
         orgId: row.orgId,
-        queuedAt: data.queuedAt,
+        queuedAt,
       },
       opts: {
         jobId: `reliability-${row.orgId}-${slotKey}`,
@@ -82,7 +94,9 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   return { queued: orgRows.length };
 }
 
-async function processComputeOrg(data: ComputeOrgJobData): Promise<{ orgId: string; devicesComputed: number }> {
+async function processComputeOrg(
+  data: ComputeOrgJobData
+): Promise<{ orgId: string; devicesComputed: number; devicesFailed: number }> {
   return computeAndPersistOrgReliability(data.orgId);
 }
 
@@ -128,7 +142,6 @@ async function scheduleReliabilityScan(): Promise<void> {
     'scan-orgs',
     {
       type: 'scan-orgs',
-      queuedAt: new Date().toISOString(),
     },
     {
       jobId: 'reliability-scan-orgs',

@@ -24,6 +24,7 @@ import { publishEvent } from '../services/eventBus';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { dispatchWake } from '../services/wakeOnLan';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { emitAlertStateFeedback } from '../services/mlFeedbackEmitters';
 
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -670,11 +671,12 @@ mobileRoutes.post(
       return c.json({ error: `Cannot acknowledge alert with status: ${alert.status}` }, 400);
     }
 
+    const acknowledgedAt = new Date();
     const [updated] = await db
       .update(alerts)
       .set({
         status: 'acknowledged',
-        acknowledgedAt: new Date(),
+        acknowledgedAt,
         acknowledgedBy: auth.user.id
       })
       .where(eq(alerts.id, alertId))
@@ -696,6 +698,19 @@ mobileRoutes.post(
     } catch (error) {
       console.error('[MobileRoutes] Failed to publish alert.acknowledged event:', error);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated?.id ?? alertId,
+      eventType: 'alert.acknowledged',
+      outcome: 'acknowledged',
+      actorUserId: auth.user.id,
+      occurredAt: acknowledgedAt,
+      metadata: {
+        source: 'mobile.alerts',
+        previousStatus: alert.status,
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -729,11 +744,12 @@ mobileRoutes.post(
       return c.json({ error: 'Alert is already resolved' }, 400);
     }
 
+    const resolvedAt = new Date();
     const [updated] = await db
       .update(alerts)
       .set({
         status: 'resolved',
-        resolvedAt: new Date(),
+        resolvedAt,
         resolvedBy: auth.user.id,
         resolutionNote: data.note
       })
@@ -786,6 +802,20 @@ mobileRoutes.post(
     } catch (error) {
       console.error('[MobileRoutes] Failed to publish alert.resolved event:', error);
     }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated?.id ?? alertId,
+      eventType: 'alert.resolved',
+      outcome: 'resolved',
+      actorUserId: auth.user.id,
+      occurredAt: resolvedAt,
+      metadata: {
+        source: 'mobile.alerts',
+        previousStatus: alert.status,
+        hasResolutionNote: Boolean(data.note),
+      },
+    });
 
     writeRouteAudit(c, {
       orgId: alert.orgId,

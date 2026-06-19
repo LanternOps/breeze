@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { mobileRoutes } from './mobile';
 
-const { publishEventMock, setCooldownMock, rateLimitState, authState } = vi.hoisted(() => ({
+const { publishEventMock, setCooldownMock, emitAlertStateFeedbackMock, rateLimitState, authState } = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1'),
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
+  emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
   rateLimitState: { allowed: true },
   authState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
 }));
@@ -61,6 +62,10 @@ vi.mock('../services/eventBus', () => ({
 
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: setCooldownMock
+}));
+
+vi.mock('../services/mlFeedbackEmitters', () => ({
+  emitAlertStateFeedback: emitAlertStateFeedbackMock
 }));
 
 vi.mock('../middleware/userRateLimit', () => ({
@@ -609,6 +614,7 @@ describe('mobile routes', () => {
       });
 
       expect(res.status).toBe(404);
+      expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
     });
 
     it('should reject non-active alerts', async () => {
@@ -623,12 +629,13 @@ describe('mobile routes', () => {
       });
 
       expect(res.status).toBe(400);
+      expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
     });
 
-    it('should acknowledge active alert', async () => {
+    it('should acknowledge active alert and emit feedback', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
-          { id: 'alert-1', status: 'active', orgId: 'org-123' }
+          { id: 'alert-1', status: 'active', orgId: 'org-123', ruleId: 'rule-1', deviceId: 'device-1' }
         ]) as any
       );
       vi.mocked(db.update).mockReturnValue(
@@ -644,6 +651,17 @@ describe('mobile routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('acknowledged');
+      expect(emitAlertStateFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'org-123',
+        alertId: 'alert-1',
+        eventType: 'alert.acknowledged',
+        outcome: 'acknowledged',
+        actorUserId: 'user-123',
+        metadata: {
+          source: 'mobile.alerts',
+          previousStatus: 'active',
+        },
+      }));
     });
   });
 
@@ -658,6 +676,7 @@ describe('mobile routes', () => {
       });
 
       expect(res.status).toBe(404);
+      expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
     });
 
     it('should reject already resolved alerts', async () => {
@@ -674,9 +693,10 @@ describe('mobile routes', () => {
       });
 
       expect(res.status).toBe(400);
+      expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
     });
 
-    it('should resolve alert with note', async () => {
+    it('should resolve alert with note and emit feedback', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
           { id: 'alert-1', status: 'acknowledged', orgId: 'org-123' }
@@ -697,6 +717,18 @@ describe('mobile routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('resolved');
+      expect(emitAlertStateFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'org-123',
+        alertId: 'alert-1',
+        eventType: 'alert.resolved',
+        outcome: 'resolved',
+        actorUserId: 'user-123',
+        metadata: {
+          source: 'mobile.alerts',
+          previousStatus: 'acknowledged',
+          hasResolutionNote: true,
+        },
+      }));
     });
   });
 

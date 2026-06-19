@@ -48,6 +48,7 @@ type CreateTicketFromAlertDialogProps = {
   alertId: string;
   alertTitle: string;
   alertSeverity: string;
+  initialDescription?: string;
   /** internalNumber of an open linked ticket, if one exists — shows a duplicate warning. */
   openTicketNumber: string | null;
   /** True when the linked-tickets fetch failed — "no warning" must not read as "no duplicates". */
@@ -57,9 +58,10 @@ type CreateTicketFromAlertDialogProps = {
 };
 
 export default function CreateTicketFromAlertDialog({
-  alertId, alertTitle, alertSeverity, openTicketNumber, duplicateCheckFailed = false, onClose, onCreated
+  alertId, alertTitle, alertSeverity, initialDescription = '', openTicketNumber, duplicateCheckFailed = false, onClose, onCreated
 }: CreateTicketFromAlertDialogProps) {
   const [subject, setSubject] = useState(alertTitle);
+  const [description, setDescription] = useState(initialDescription);
   const [priority, setPriority] = useState<Priority>(SEVERITY_TO_PRIORITY[alertSeverity] ?? 'normal');
   const [categoryId, setCategoryId] = useState('');
   const [categories, setCategories] = useState<CategoryOption[]>([]);
@@ -93,6 +95,7 @@ export default function CreateTicketFromAlertDialog({
           method: 'POST',
           body: JSON.stringify({
             subject: subject.trim(),
+            ...(description.trim() ? { description: description.trim() } : {}),
             priority,
             ...(categoryId ? { categoryId } : {})
           })
@@ -107,7 +110,7 @@ export default function CreateTicketFromAlertDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [subject, priority, categoryId, submitting, alertId, onCreated]);
+  }, [subject, description, priority, categoryId, submitting, alertId, onCreated]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="alert-ticket-dialog">
@@ -147,6 +150,18 @@ export default function CreateTicketFromAlertDialog({
               maxLength={255}
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
               data-testid="alert-ticket-subject"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="alert-ticket-description">Description</label>
+            <textarea
+              id="alert-ticket-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={5000}
+              rows={initialDescription ? 8 : 4}
+              className="mt-1 w-full resize-y rounded-md border bg-background px-3 py-1.5 text-sm"
+              data-testid="alert-ticket-description"
             />
           </div>
           <div className="grid grid-cols-2 gap-3">

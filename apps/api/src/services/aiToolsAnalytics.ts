@@ -12,8 +12,9 @@ import {
   slaDefinitions,
   capacityPredictions,
   executiveSummaries,
+  metricRollups,
 } from '../db/schema';
-import { eq, and, desc, asc, inArray, SQL } from 'drizzle-orm';
+import { eq, and, desc, asc, inArray, gte, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
@@ -26,6 +27,79 @@ type AnalyticsHandler = (input: Record<string, unknown>, auth: AuthContext) => P
 
 function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof eq> | any): SQL | undefined {
   return auth.orgCondition(orgIdCol) ?? undefined;
+}
+
+function capacityRollupMetricName(metricType: string): string {
+  if (metricType === 'cpu') return 'cpu_percent';
+  if (metricType === 'memory') return 'ram_percent';
+  return 'disk_percent';
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function buildCapacityRollupForecast(
+  rows: Array<{ timestamp: Date | string; value: number | string }>,
+  metricType: string,
+  limit: number,
+): Array<Record<string, unknown>> {
+  const actuals = rows.map((row) => ({
+    timestamp: row.timestamp instanceof Date ? row.timestamp : new Date(row.timestamp),
+    value: Number(row.value),
+  })).filter((row) => Number.isFinite(row.value) && !Number.isNaN(row.timestamp.getTime()));
+
+  if (actuals.length === 0) return [];
+
+  const currentValue = actuals[actuals.length - 1]!.value;
+  let slope = 0;
+  let intercept = currentValue;
+
+  if (actuals.length >= 2) {
+    let sumX = 0;
+    let sumY = 0;
+    let sumXY = 0;
+    let sumXX = 0;
+
+    for (let i = 0; i < actuals.length; i += 1) {
+      const x = i;
+      const y = actuals[i]!.value;
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumXX += x * x;
+    }
+
+    const denominator = actuals.length * sumXX - sumX * sumX;
+    if (denominator !== 0) {
+      slope = (actuals.length * sumXY - sumX * sumY) / denominator;
+      intercept = (sumY - slope * sumX) / actuals.length;
+    }
+  }
+
+  const baselineDate = new Date(actuals[actuals.length - 1]!.timestamp);
+  const forecastDays = Math.min(limit, 30);
+  return Array.from({ length: forecastDays }, (_, index) => {
+    const predictionDate = new Date(baselineDate);
+    predictionDate.setUTCDate(predictionDate.getUTCDate() + index + 1);
+    const predictedValue = clampPercent(intercept + slope * (actuals.length + index));
+    return {
+      id: null,
+      deviceId: null,
+      metricType,
+      metricName: capacityRollupMetricName(metricType),
+      currentValue,
+      predictedValue,
+      predictionDate: predictionDate.toISOString(),
+      confidence: null,
+      growthRate: slope,
+      daysToThreshold: null,
+      thresholdType: null,
+      modelType: 'rollup_linear_projection',
+      trainingDataDays: actuals.length,
+      calculatedAt: new Date().toISOString(),
+    };
+  });
 }
 
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
@@ -133,14 +207,15 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'capacity_predictions') {
+        const metricType = typeof input.metricType === 'string' ? input.metricType.toLowerCase() : undefined;
         const conditions: SQL[] = [];
         const oc = orgWhere(auth, capacityPredictions.orgId);
         if (oc) conditions.push(oc);
         if (typeof input.deviceId === 'string') {
           conditions.push(eq(capacityPredictions.deviceId, input.deviceId));
         }
-        if (typeof input.metricType === 'string') {
-          conditions.push(eq(capacityPredictions.metricType, input.metricType));
+        if (metricType) {
+          conditions.push(eq(capacityPredictions.metricType, metricType));
         }
 
         // Site axis (app-layer only; RLS does NOT enforce it). capacityPredictions
@@ -181,7 +256,54 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           .orderBy(asc(capacityPredictions.daysToThreshold))
           .limit(limit);
 
-        return JSON.stringify({ capacityPredictions: rows, showing: rows.length });
+        if (rows.length > 0) {
+          return JSON.stringify({ capacityPredictions: rows, showing: rows.length });
+        }
+
+        const fallbackMetricType = metricType ?? 'disk';
+        const rangeStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const rollupConditions: SQL[] = [
+          eq(metricRollups.sourceTable, 'device_metrics'),
+          eq(metricRollups.bucketSeconds, 86400),
+          eq(metricRollups.metricName, capacityRollupMetricName(fallbackMetricType)),
+          gte(metricRollups.bucketStart, rangeStart),
+          sql`${metricRollups.sampleCount} > 0`,
+          sql`${metricRollups.avgValue} IS NOT NULL`,
+        ];
+
+        const rollupOrgCondition = orgWhere(auth, metricRollups.orgId);
+        if (rollupOrgCondition) rollupConditions.push(rollupOrgCondition);
+        if (typeof input.deviceId === 'string') {
+          rollupConditions.push(eq(metricRollups.deviceId, input.deviceId));
+        }
+        if (auth.allowedSiteIds && auth.canAccessSite) {
+          const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+          if (!queryOrgId) {
+            return JSON.stringify({ capacityPredictions: [], showing: 0 });
+          }
+          const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
+          if (!allowed || allowed.length === 0) {
+            return JSON.stringify({ capacityPredictions: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+          }
+          rollupConditions.push(inArray(metricRollups.deviceId, allowed));
+        }
+
+        const rollupRows = await db
+          .select({
+            timestamp: metricRollups.bucketStart,
+            value: sql<number>`sum(${metricRollups.avgValue} * ${metricRollups.sampleCount}) / nullif(sum(${metricRollups.sampleCount}), 0)`,
+          })
+          .from(metricRollups)
+          .where(and(...rollupConditions))
+          .groupBy(metricRollups.bucketStart)
+          .orderBy(metricRollups.bucketStart);
+
+        const fallbackRows = buildCapacityRollupForecast(rollupRows, fallbackMetricType, limit);
+        return JSON.stringify({
+          capacityPredictions: fallbackRows,
+          showing: fallbackRows.length,
+          source: fallbackRows.length > 0 ? 'metric_rollups' : 'capacity_predictions',
+        });
       }
 
       if (action === 'sla_definitions') {

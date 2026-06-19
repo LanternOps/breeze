@@ -13,17 +13,20 @@ import (
 )
 
 type HardwareInfo struct {
-	CPUModel     string `json:"cpuModel"`
-	CPUCores     int    `json:"cpuCores"`
-	CPUThreads   int    `json:"cpuThreads"`
-	RAMTotalMB   uint64 `json:"ramTotalMb"`
-	DiskTotalGB  uint64 `json:"diskTotalGb"`
-	GPUModel     string `json:"gpuModel,omitempty"`
-	SerialNumber string `json:"serialNumber,omitempty"`
-	Manufacturer string `json:"manufacturer,omitempty"`
-	Model        string `json:"model,omitempty"`
-	BIOSVersion  string `json:"biosVersion,omitempty"`
-	ChassisType  string `json:"chassisType,omitempty"`
+	CPUModel                string `json:"cpuModel"`
+	CPUCores                int    `json:"cpuCores"`
+	CPUThreads              int    `json:"cpuThreads"`
+	RAMTotalMB              uint64 `json:"ramTotalMb"`
+	DiskTotalGB             uint64 `json:"diskTotalGb"`
+	GPUModel                string `json:"gpuModel,omitempty"`
+	SerialNumber            string `json:"serialNumber,omitempty"`
+	Manufacturer            string `json:"manufacturer,omitempty"`
+	Model                   string `json:"model,omitempty"`
+	MotherboardManufacturer string `json:"motherboardManufacturer,omitempty"`
+	MotherboardProduct      string `json:"motherboardProduct,omitempty"`
+	MotherboardVersion      string `json:"motherboardVersion,omitempty"`
+	BIOSVersion             string `json:"biosVersion,omitempty"`
+	ChassisType             string `json:"chassisType,omitempty"`
 }
 
 type SystemInfo struct {
@@ -148,6 +151,52 @@ func extractWindowsBuild(v string) string {
 		return strings.TrimPrefix(v, "10.0.")
 	}
 	return v
+}
+
+func cleanHardwareIdentityValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	normalized := strings.ToLower(strings.Join(strings.Fields(value), " "))
+	normalized = strings.Trim(normalized, ".")
+	switch normalized {
+	case "0",
+		"00000000",
+		"000000000000000",
+		"123456789",
+		"default string",
+		"none",
+		"null",
+		"n/a",
+		"na",
+		"not applicable",
+		"not available",
+		"not specified",
+		"o.e.m",
+		"oem",
+		"serial number",
+		"system manufacturer",
+		"system product name",
+		"system serial number",
+		"unknown":
+		return ""
+	}
+	if strings.Contains(normalized, "to be filled by") {
+		return ""
+	}
+	return truncateCollectorString(value)
+}
+
+func firstCleanHardwareIdentityValue(values ...string) string {
+	for _, value := range values {
+		cleaned := cleanHardwareIdentityValue(value)
+		if cleaned != "" {
+			return cleaned
+		}
+	}
+	return ""
 }
 
 func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {

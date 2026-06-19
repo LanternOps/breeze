@@ -47,9 +47,16 @@ describe('Tenant cascade list contract', () => {
       FROM information_schema.columns c
       JOIN information_schema.tables t
         ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      JOIN pg_class cls
+        ON cls.relname = c.table_name
+      JOIN pg_namespace n
+        ON n.oid = cls.relnamespace AND n.nspname = c.table_schema
+      LEFT JOIN pg_inherits inh
+        ON inh.inhrelid = cls.oid
       WHERE c.table_schema = 'public'
         AND c.column_name = 'org_id'
         AND t.table_type = 'BASE TABLE'
+        AND inh.inhrelid IS NULL
       ORDER BY c.table_name;
     `)) as unknown as Array<{ table_name: string }>;
 

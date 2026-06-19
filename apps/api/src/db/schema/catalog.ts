@@ -42,6 +42,7 @@ export const catalogItems = pgTable('catalog_items', {
 }, (t) => [
   index('catalog_items_partner_type_idx').on(t.partnerId, t.itemType),
   index('catalog_items_partner_active_idx').on(t.partnerId, t.isActive),
+  uniqueIndex('catalog_items_id_partner_uq').on(t.id, t.partnerId),
   // partial: only enforce uniqueness when sku is present
   // (the real partial unique index is created in the SQL migration; drizzle-kit
   // only needs the predicate for drift detection)
@@ -76,4 +77,29 @@ export const catalogBundleComponents = pgTable('catalog_bundle_components', {
 }, (t) => [
   uniqueIndex('catalog_bundle_components_bundle_comp_uq').on(t.bundleItemId, t.componentItemId),
   index('catalog_bundle_components_partner_idx').on(t.partnerId)
+]);
+
+// Partner-axis (RLS shape 3). Holds TD SYNNEX Digital Bridge catalog API
+// configuration for a partner. Secret-bearing values live in credentials.
+export const tdSynnexDigitalBridgeIntegrations = pgTable('td_synnex_digital_bridge_integrations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  environment: varchar('environment', { length: 20 }).notNull().default('sandbox'),
+  region: varchar('region', { length: 50 }).notNull().default('US'),
+  baseUrl: text('base_url').notNull(),
+  authType: varchar('auth_type', { length: 20 }).notNull().default('api_key'),
+  credentials: jsonb('credentials').notNull().default({}),
+  settings: jsonb('settings').notNull().default({}),
+  enabled: boolean('enabled').notNull().default(false),
+  lastTestStatus: varchar('last_test_status', { length: 30 }),
+  lastTestAt: timestamp('last_test_at'),
+  lastTestError: text('last_test_error'),
+  lastSyncAt: timestamp('last_sync_at'),
+  lastError: text('last_error'),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('td_synnex_digital_bridge_partner_uq').on(t.partnerId),
+  index('td_synnex_digital_bridge_partner_enabled_idx').on(t.partnerId, t.enabled)
 ]);

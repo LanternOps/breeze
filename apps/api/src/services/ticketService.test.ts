@@ -5,12 +5,13 @@ const valuesMock = vi.fn();
 const setMock = vi.fn();
 const whereMock = vi.fn();
 
-const { emitMock, auditMock, allocateMock, dbMocks, configMocks } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, configMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
   return {
     emitMock: vi.fn().mockResolvedValue(undefined),
+    emitTriageFeedbackMock: vi.fn().mockResolvedValue(undefined),
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
     dbMocks: { insertReturning, updateReturning, selectResult },
@@ -24,6 +25,7 @@ const { emitMock, auditMock, allocateMock, dbMocks, configMocks } = vi.hoisted((
 });
 
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
+vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: emitTriageFeedbackMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
 vi.mock('./ticketConfigService', () => ({
@@ -505,6 +507,10 @@ describe('assignTicket', () => {
       type: 'ticket.assigned',
       payload: expect.objectContaining({ assigneeId: 'u-2' })
     }));
+    expect(emitTriageFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'ticket.assignee_changed',
+      dedupeKey: 'assignedTo:null:"u-2"',
+    }));
   });
 
   it('throws 409 on concurrent modification and does NOT write a feed entry or emit', async () => {
@@ -821,6 +827,10 @@ describe('updateTicketFields', () => {
       partnerId: 'p-1',
       actorUserId: 'u-1',
       payload: { changed: ['subject', 'priority'] }
+    }));
+    expect(emitTriageFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'ticket.priority_changed',
+      dedupeKey: 'priority:"normal":"high"',
     }));
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
       orgId: 'o-1',

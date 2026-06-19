@@ -11,14 +11,14 @@ import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
-import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
+import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
 import { authenticatorDevices } from '../db/schema/authenticatorDevices';
 import {
   assertionProofSchema,
   mobileHwKeyProofSchema,
-  approverPinSchema,
   type RiskTier,
   type ApprovalProof,
 } from '@breeze/shared';
@@ -228,23 +228,47 @@ approvalRoutes.post('/:id/assertion-challenge', async (c) => {
 });
 
 approvalRoutes.post('/:id/approve', async (c) => {
-  // Optional assertion proof (Phase 2 webauthn / Phase 3 mobile_hw_key) plus an
-  // optional approver PIN (Phase 3 L3 step-up). A malformed proof or PIN is a 400
-  // at validation; an absent proof keeps today's L1 session-tap behavior.
+  // Optional assertion proof (Phase 2 webauthn / Phase 3 mobile_hw_key). A
+  // malformed proof is a 400 at validation; an absent proof keeps today's L1
+  // session-tap behavior.
   let proof: ApprovalProof | undefined;
-  let pin: string | undefined;
   const raw = await c.req.json().catch(() => null);
   if (raw && raw.proof !== undefined) {
     const parsed = approveProofSchema.safeParse(raw.proof);
     if (!parsed.success) return c.json({ error: 'Invalid proof' }, 400);
     proof = parsed.data;
   }
-  if (raw && raw.pin !== undefined) {
-    const parsedPin = approverPinSchema.safeParse(raw.pin);
-    if (!parsedPin.success) return c.json({ error: 'Invalid PIN' }, 400);
-    pin = parsedPin.data;
+
+  // L4 (critical) re-auth: the client may include a fresh `reauthPassword` to
+  // satisfy the critical-tier re-authentication factor (spec §5). Verified
+  // server-side here — a bad/rate-limited password short-circuits with the
+  // helper's own 401/429/503; a valid one flips reauthVerified. Absent → false,
+  // which only matters for a critical approval (it then 401s 'reauth_required'
+  // so the client knows to collect the password and retry).
+  let reauthVerified = false;
+  if (raw && typeof raw.reauthPassword === 'string' && raw.reauthPassword.length > 0) {
+    const reauthError = await requireCurrentPasswordStepUp(
+      c,
+      c.get('auth').user.id,
+      raw.reauthPassword,
+      'approval:reauth'
+    );
+    if (reauthError) return reauthError;
+    reauthVerified = true;
+  } else if (raw && typeof raw.reauthMfaCode === 'string' && raw.reauthMfaCode.length > 0) {
+    // Login-MFA (TOTP) fallback for SSO-only / passwordless accounts that have
+    // no password to satisfy the password step-up above.
+    const reauthError = await requireFreshMfaStepUp(
+      c,
+      c.get('auth').user.id,
+      raw.reauthMfaCode,
+      'approval:reauth-mfa'
+    );
+    if (reauthError) return reauthError;
+    reauthVerified = true;
   }
-  return decideHandler(c, 'approved', undefined, proof, pin);
+
+  return decideHandler(c, 'approved', undefined, proof, reauthVerified);
 });
 
 approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
@@ -360,7 +384,7 @@ async function decideHandler(
   status: 'approved' | 'denied',
   reason?: string,
   proof?: ApprovalProof,
-  pin?: string
+  reauthVerified = false
 ) {
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
@@ -385,8 +409,11 @@ async function decideHandler(
     return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
   }
 
-  // Phase 2/3: verify an optional assertion proof + PIN. No proof → L1 session
-  // tap. A presented-but-invalid proof/PIN throws → 401 (never silently L1).
+  // Phase 2/3: verify an optional assertion proof. No proof → L1 session tap. A
+  // presented-but-invalid proof throws → 401 (never silently L1). The L3 recency
+  // clock is derived server-side from the consumed challenge (no param here);
+  // `reauthVerified` is the only decide-surface factor, supplied by the approve
+  // handler after a fresh password re-auth (required only for critical/L4).
   // Phase 4: an ENFORCING partner policy may reject an under-assured APPROVE
   // (StepUpRequiredError → 403). A deny is passed through with decision:'denied'
   // so it is never blocked.
@@ -397,13 +424,18 @@ async function decideHandler(
       userId,
       riskTier: existing.riskTier as RiskTier,
       proof,
-      pin,
       partnerId: c.get('auth').partnerId ?? null,
       decision: status,
+      reauthVerified,
     });
   } catch (err) {
     if (err instanceof StepUpRequiredError) {
       return c.json({ error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
+    }
+    if (err instanceof ReauthRequiredError) {
+      // Critical (L4) approve with a valid signature but no fresh re-auth — tell
+      // the client to re-collect the password and retry, not a generic failure.
+      return c.json({ error: 'reauth_required' }, 401);
     }
     console.error('[approvals] assertion verification failed:', err);
     return c.json({ error: 'assertion_failed' }, 401);
@@ -418,7 +450,6 @@ async function decideHandler(
       decidedAssuranceLevel: assurance.decidedAssuranceLevel,
       decidedVia: assurance.decidedVia,
       authenticatorDeviceId: assurance.authenticatorDeviceId,
-      pinVerified: assurance.pinVerified,
     })
     .where(
       and(

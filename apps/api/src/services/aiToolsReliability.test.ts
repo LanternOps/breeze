@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockListReliabilityDevices = vi.fn();
+const mockListUserRiskScores = vi.fn();
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -78,12 +79,19 @@ vi.mock('./reliabilityScoring', () => ({
   listReliabilityDevices: (...args: unknown[]) => mockListReliabilityDevices(...args),
 }));
 
+vi.mock('./userRiskScoring', () => ({
+  assignSecurityTraining: vi.fn(),
+  getUserRiskDetail: vi.fn(),
+  listUserRiskScores: (...args: unknown[]) => mockListUserRiskScores(...args),
+}));
+
 import { executeTool } from './aiTools';
 
 describe('aiTools get_fleet_health org scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockListReliabilityDevices.mockResolvedValue({ total: 0, rows: [] });
+    mockListUserRiskScores.mockResolvedValue({ total: 0, rows: [] });
   });
 
   it('returns org context error when accessibleOrgIds is empty', async () => {
@@ -128,5 +136,99 @@ describe('aiTools get_fleet_health org scoping', () => {
     );
     expect(parsed.total).toBe(1);
     expect(parsed.summary.averageScore).toBe(44);
+  });
+
+  it('narrows fleet health by allowed sites for site-restricted callers', async () => {
+    const auth = {
+      user: { id: 'user-1' },
+      orgId: 'org-1',
+      scope: 'organization',
+      accessibleOrgIds: ['org-1'],
+      allowedSiteIds: ['site-1', 'site-2'],
+      canAccessOrg: () => true,
+      canAccessSite: (siteId: string | null | undefined) => siteId === 'site-1' || siteId === 'site-2',
+      orgCondition: () => undefined,
+    } as any;
+
+    const result = await executeTool('get_fleet_health', {}, auth);
+    const parsed = JSON.parse(result);
+
+    expect(mockListReliabilityDevices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgIds: ['org-1'],
+        siteIds: ['site-1', 'site-2'],
+      }),
+    );
+    expect(parsed.total).toBe(0);
+  });
+
+  it('denies explicit fleet health site filters outside caller site access', async () => {
+    const auth = {
+      user: { id: 'user-1' },
+      orgId: 'org-1',
+      scope: 'organization',
+      accessibleOrgIds: ['org-1'],
+      allowedSiteIds: ['site-1'],
+      canAccessOrg: () => true,
+      canAccessSite: (siteId: string | null | undefined) => siteId === 'site-1',
+      orgCondition: () => undefined,
+    } as any;
+
+    const result = await executeTool('get_fleet_health', { siteId: 'site-2' }, auth);
+    const parsed = JSON.parse(result);
+
+    expect(parsed).toEqual({ error: 'Access denied to this site' });
+    expect(mockListReliabilityDevices).not.toHaveBeenCalled();
+  });
+});
+
+describe('aiTools get_user_risk_scores site scoping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListReliabilityDevices.mockResolvedValue({ total: 0, rows: [] });
+    mockListUserRiskScores.mockResolvedValue({ total: 0, rows: [] });
+  });
+
+  it('narrows user risk scores by allowed sites for site-restricted callers', async () => {
+    const auth = {
+      user: { id: 'user-1' },
+      orgId: 'org-1',
+      scope: 'organization',
+      accessibleOrgIds: ['org-1'],
+      allowedSiteIds: ['site-1', 'site-2'],
+      canAccessOrg: () => true,
+      canAccessSite: (siteId: string | null | undefined) => siteId === 'site-1' || siteId === 'site-2',
+      orgCondition: () => undefined,
+    } as any;
+
+    const result = await executeTool('get_user_risk_scores', {}, auth);
+    const parsed = JSON.parse(result);
+
+    expect(mockListUserRiskScores).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgIds: ['org-1'],
+        siteIds: ['site-1', 'site-2'],
+      }),
+    );
+    expect(parsed.total).toBe(0);
+  });
+
+  it('denies explicit user risk site filters outside caller site access', async () => {
+    const auth = {
+      user: { id: 'user-1' },
+      orgId: 'org-1',
+      scope: 'organization',
+      accessibleOrgIds: ['org-1'],
+      allowedSiteIds: ['site-1'],
+      canAccessOrg: () => true,
+      canAccessSite: (siteId: string | null | undefined) => siteId === 'site-1',
+      orgCondition: () => undefined,
+    } as any;
+
+    const result = await executeTool('get_user_risk_scores', { siteId: 'site-2' }, auth);
+    const parsed = JSON.parse(result);
+
+    expect(parsed).toEqual({ error: 'Access denied to this site' });
+    expect(mockListUserRiskScores).not.toHaveBeenCalled();
   });
 });

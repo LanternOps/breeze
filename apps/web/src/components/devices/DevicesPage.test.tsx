@@ -77,7 +77,34 @@ vi.mock('./filterUrl', () => ({
 }));
 
 // Presentational/heavy children — not under test.
-vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
+// ScriptPickerModal is stubbed to expose the real modal's select→close
+// sequence: it calls onSelect(...) and then onClose() (mirroring
+// ScriptPickerModal.handleSelect for a parameterless script). This is the
+// exact ordering that regressed multi-select run-script — onClose wiped the
+// target devices before the confirm dialog executed.
+vi.mock('./ScriptPickerModal', () => ({
+  default: ({
+    isOpen,
+    onSelect,
+    onClose,
+  }: {
+    isOpen: boolean;
+    onSelect: (script: { id: string; name: string }, runAs: string, parameters?: unknown) => void;
+    onClose: () => void;
+  }) =>
+    isOpen ? (
+      <button
+        type="button"
+        data-testid="pick-script"
+        onClick={() => {
+          onSelect({ id: 'script-1', name: 'Test Script' }, 'system', undefined);
+          onClose();
+        }}
+      >
+        pick
+      </button>
+    ) : null,
+}));
 vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
@@ -97,15 +124,16 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string };
+type StubDevice = { id: string; deviceClass?: string; hostname?: string; watchdogVersion?: string | null };
 vi.mock('./DeviceList', () => ({
   default: ({ devices, serverFilterIds, onBulkAction }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
+      data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
-      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot'].map(action => (
+      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script'].map(action => (
         <button
           key={action}
           type="button"
@@ -201,6 +229,20 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
     expect(list.getAttribute('data-device-count')).toBe('3');
   });
 
+  it('maps watchdogVersion from API rows into DeviceList', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), watchdogVersion: '0.70.1' },
+        { ...rawDevice(DEV_2, 'host-beta'), watchdogVersion: null },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-watchdog-versions')).toBe('0.70.1,');
+  });
+
   it('grid view shows all devices when no advanced filter is active', async () => {
     const { decodeFilterFromHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);
@@ -271,6 +313,56 @@ describe('DevicesPage — network-arm fetch failure handling (#1322)', () => {
     expect(await screen.findByTestId('device-list')).toBeTruthy();
     expect(screen.queryByText('Session expired')).toBeNull();
     expect(screen.queryByText('Failed to load')).toBeNull();
+  });
+});
+
+// Regression: multi-select "Run Script" sent an EMPTY deviceIds array → the API
+// rejected it with 400 "Array must contain at least one item". Root cause: the
+// ScriptPickerModal called onSelect() then onClose(), and onClose
+// (closeScriptPicker) reset scriptTargetDevices to [] BEFORE the confirm
+// dialog's doExecuteScript read it. The selected devices must be captured into
+// pendingScriptRun so execution is independent of the wiped state.
+describe('DevicesPage — multi-select run script keeps its target devices', () => {
+  async function renderAgentFleet() {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null); // no advanced filter
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('3'));
+    return list;
+  }
+
+  it('executes with the originally-selected device ids, not an empty array', async () => {
+    const { executeScript } = await import('../../services/deviceActions');
+    vi.mocked(executeScript).mockResolvedValue({
+      batchId: 'batch-1',
+      scriptId: 'script-1',
+      devicesTargeted: 3,
+      executions: [],
+      status: 'queued',
+    } as never);
+
+    await renderAgentFleet();
+
+    // Bulk "run script" over the full fleet → opens the (stubbed) picker.
+    fireEvent.click(screen.getByTestId('bulk-run-script'));
+    // Selecting a script fires onSelect + onClose, then the confirm dialog shows.
+    fireEvent.click(await screen.findByTestId('pick-script'));
+
+    // The scope-confirm message is computed from pendingScriptRun.devices too —
+    // a regression back to the wiped scriptTargetDevices would render
+    // "0 devices". Assert the real count is shown before confirming.
+    expect(await screen.findByText(/on 3 devices/i)).toBeTruthy();
+
+    // Confirm the scope-gated run.
+    fireEvent.click(await screen.findByTestId('confirm-fleet-action'));
+
+    await waitFor(() => {
+      expect(vi.mocked(executeScript)).toHaveBeenCalledTimes(1);
+    });
+    const [scriptId, deviceIds] = vi.mocked(executeScript).mock.calls[0];
+    expect(scriptId).toBe('script-1');
+    expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
   });
 });
 

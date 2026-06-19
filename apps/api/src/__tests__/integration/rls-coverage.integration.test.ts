@@ -1,7 +1,7 @@
 import { afterAll, describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, users, organizations, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods } from '../../db/schema';
+import { partners, users, organizations, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 import { automations, automationRuns } from '../../db/schema/automations';
@@ -108,6 +108,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['time_entries', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
+  ['pax8_integrations', 'partner_id'],
+  ['pax8_company_mappings', 'partner_id'],
+  ['pax8_subscription_snapshots', 'partner_id'],
+  ['pax8_product_mappings', 'partner_id'],
+  ['pax8_contract_line_links', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
   ['script_tags', 'partner_id'],
@@ -120,6 +125,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // as an ordinary shape-1 org-tenant table.
   ['catalog_items', 'partner_id'],
   ['catalog_bundle_components', 'partner_id'],
+  ['td_synnex_digital_bridge_integrations', 'partner_id'],
   // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
   // ticket_email_inbound (only system scope may write null-partner rows);
   // NOT NULL on partner_inbound_domains. Policy:
@@ -2037,6 +2043,84 @@ describe('invoice_documents RLS forge (shape 1, org-axis)', () => {
     });
     const visible = await withDbAccessContext(orgContext(orgBId), async () =>
       db.select({ id: invoiceDocuments.id }).from(invoiceDocuments).where(eq(invoiceDocuments.id, createdId))
+    );
+    expect(visible).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ml_feedback_events — shape 1 (direct org_id) forge test
+// ---------------------------------------------------------------------------
+// ml_feedback_events is the canonical append-only ML label table. It carries a
+// direct org_id and is auto-discovered by the coverage scan above; this block
+// proves hostile cross-org INSERT/SELECT attempts are blocked under breeze_app.
+describe('ml_feedback_events RLS forge (shape 1, org-axis)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let partnerId = '';
+  let orgAId = '';
+  let orgBId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS ML Feedback Partner ${runSuffix}`, slug: `rls-ml-feedback-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active'
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for ml_feedback_events forge');
+      partnerId = partner.id;
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { partnerId: partner.id, name: 'RLS ML Feedback Org A', slug: `rls-ml-feedback-a-${runSuffix}` },
+        { partnerId: partner.id, name: 'RLS ML Feedback Org B', slug: `rls-ml-feedback-b-${runSuffix}` }
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for ml_feedback_events forge');
+      orgAId = orgA.id; orgBId = orgB.id;
+    });
+  }
+
+  it.runIf(!!process.env.DATABASE_URL)('org B INSERT with org A org_id is rejected by WITH CHECK', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(mlFeedbackEvents).values({
+          orgId: orgAId,
+          sourceType: 'alert',
+          sourceId: `alert-${runSuffix}`,
+          eventType: 'alert.acknowledged',
+          outcome: 'acknowledged',
+          metadata: {},
+          occurredAt: new Date('2026-06-18T12:00:00.000Z'),
+        })
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "ml_feedback_events"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot SELECT org A's feedback event", async () => {
+    await ensureFixtures();
+    let createdId = '';
+    await withSystemDbAccessContext(async () => {
+      const [event] = await db.insert(mlFeedbackEvents).values({
+        orgId: orgAId,
+        sourceType: 'alert',
+        sourceId: `alert-visible-${runSuffix}`,
+        eventType: 'alert.resolved',
+        outcome: 'resolved',
+        metadata: {},
+        occurredAt: new Date('2026-06-18T12:01:00.000Z'),
+      }).returning({ id: mlFeedbackEvents.id });
+      createdId = event!.id;
+    });
+    const visible = await withDbAccessContext(orgContext(orgBId), async () =>
+      db.select({ id: mlFeedbackEvents.id }).from(mlFeedbackEvents).where(eq(mlFeedbackEvents.id, createdId))
     );
     expect(visible).toHaveLength(0);
   });

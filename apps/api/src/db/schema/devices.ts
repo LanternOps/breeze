@@ -96,6 +96,9 @@ export const deviceHardware = pgTable('device_hardware', {
   serialNumber: varchar('serial_number', { length: 100 }),
   manufacturer: varchar('manufacturer', { length: 255 }),
   model: varchar('model', { length: 255 }),
+  motherboardManufacturer: varchar('motherboard_manufacturer', { length: 255 }),
+  motherboardProduct: varchar('motherboard_product', { length: 255 }),
+  motherboardVersion: varchar('motherboard_version', { length: 255 }),
   biosVersion: varchar('bios_version', { length: 100 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

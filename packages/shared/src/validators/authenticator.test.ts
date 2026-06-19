@@ -4,6 +4,7 @@ import {
   mobileHwKeyProofSchema,
   approvalProofSchema,
   authenticatorPolicySchema,
+  mobileHwKeyRegisterSchema,
 } from './authenticator';
 
 describe('assertionProofSchema', () => {
@@ -82,6 +83,18 @@ describe('approvalProofSchema (discriminated union)', () => {
   });
   it('rejects an unknown discriminant', () => {
     expect(approvalProofSchema.safeParse({ type: 'totp', code: '123456' }).success).toBe(false);
+  });
+});
+
+describe('mobileHwKeyRegisterSchema (no password step-up)', () => {
+  it('accepts a registration body with no currentPassword', () => {
+    const parsed = mobileHwKeyRegisterSchema.safeParse({ publicKey: 'pk', label: 'My iPhone' });
+    expect(parsed.success).toBe(true);
+  });
+  it('rejects an unknown pin field', () => {
+    const parsed = mobileHwKeyRegisterSchema.safeParse({ publicKey: 'pk', label: 'x', pin: '1234' });
+    // strict schema strips or rejects — assert pin never survives
+    if (parsed.success) expect('pin' in parsed.data).toBe(false);
   });
 });
 

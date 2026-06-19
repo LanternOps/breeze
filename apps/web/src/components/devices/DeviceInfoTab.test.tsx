@@ -20,6 +20,15 @@ const showToastMock = vi.mocked(showToast);
 
 const deviceId = '11111111-1111-1111-1111-111111111111';
 
+const baseDeviceInfoPayload = {
+  hostname: 'TST-LAPTOP-01',
+  displayName: null,
+  osType: 'windows',
+  osVersion: '11',
+  tags: [],
+  status: 'online',
+};
+
 function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
   return {
     ok,
@@ -35,12 +44,8 @@ function mockInitialLoad(displayName: string | null) {
     const method = init?.method ?? 'GET';
     if (url === `/devices/${deviceId}` && method === 'GET') {
       return makeJsonResponse({
-        hostname: 'TST-LAPTOP-01',
+        ...baseDeviceInfoPayload,
         displayName,
-        osType: 'windows',
-        osVersion: '11',
-        tags: [],
-        status: 'online',
       });
     }
     if (url === '/custom-fields') {
@@ -108,6 +113,90 @@ describe('DeviceInfoTab — OS version display', () => {
     await screen.findByText('Operating System');
     expect(screen.getByText('Raspbian 13.5')).toBeInTheDocument();
     expect(screen.queryByText('raspbian 13.5')).toBeNull();
+  });
+});
+
+describe('DeviceInfoTab — hardware summary display', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders semicolon-delimited GPU models as a vertical list', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          hardware: {
+            gpuModel: 'SudoMaker Virtual Display Adapter; Intel(R) Graphics; NVIDIA GeForce RTX 5090',
+          },
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Hardware Summary');
+    expect(screen.getByText('SudoMaker Virtual Display Adapter')).toBeInTheDocument();
+    expect(screen.getByText('Intel(R) Graphics')).toBeInTheDocument();
+    expect(screen.getByText('NVIDIA GeForce RTX 5090')).toBeInTheDocument();
+    expect(
+      screen.queryByText('SudoMaker Virtual Display Adapter; Intel(R) Graphics; NVIDIA GeForce RTX 5090'),
+    ).toBeNull();
+  });
+
+  it('hides placeholder hardware identity values from custom Windows builds', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          hardware: {
+            serialNumber: 'System Serial Number',
+            manufacturer: 'ASUS',
+            model: 'System Product Name',
+          },
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Hardware Summary');
+    expect(screen.getByText('ASUS')).toBeInTheDocument();
+    expect(screen.queryByText('System Serial Number')).toBeNull();
+    expect(screen.queryByText('System Product Name')).toBeNull();
+  });
+
+  it('renders motherboard details in the hardware summary', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          hardware: {
+            motherboardManufacturer: 'ASUS',
+            motherboardProduct: 'ASUS ROG STRIX Z790-E GAMING WIFI',
+            motherboardVersion: 'Rev 1.xx',
+          },
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Hardware Summary');
+    expect(screen.getByText('Motherboard')).toBeInTheDocument();
+    expect(screen.getByText('ASUS ROG STRIX Z790-E GAMING WIFI Rev 1.xx')).toBeInTheDocument();
   });
 });
 
@@ -249,6 +338,55 @@ describe('DeviceInfoTab — display name inline edit', () => {
   });
 });
 
+describe('DeviceInfoTab — watchdog version display', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the watchdog version when the watchdog has reported one', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          agentVersion: '0.70.0',
+          watchdogVersion: '0.70.1',
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Watchdog Version');
+    expect(screen.getByText('0.70.1')).toBeInTheDocument();
+    expect(screen.queryByText('Not Installed')).not.toBeInTheDocument();
+  });
+
+  it('shows Not Installed when no watchdog version has ever been reported', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          agentVersion: '0.70.0',
+          watchdogVersion: null,
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Watchdog Version');
+    expect(screen.getByText('Not Installed')).toBeInTheDocument();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // runAction adoption on the other two mutating handlers in this file.
 // ---------------------------------------------------------------------------
@@ -265,13 +403,10 @@ describe('DeviceInfoTab — role + custom-field mutations also use runAction', (
       const method = init?.method ?? 'GET';
       if (url === `/devices/${deviceId}` && method === 'GET') {
         return makeJsonResponse({
-          hostname: 'TST-LAPTOP-01',
+          ...baseDeviceInfoPayload,
           displayName: null,
-          osType: 'windows',
           deviceRole: 'workstation',
           deviceRoleSource: 'auto',
-          tags: [],
-          status: 'online',
         });
       }
       if (url === '/custom-fields') return makeJsonResponse({ data: [] });

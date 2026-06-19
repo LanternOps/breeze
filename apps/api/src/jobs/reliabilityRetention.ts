@@ -6,10 +6,9 @@
  */
 
 import { Job, Queue, Worker } from 'bullmq';
-import { lt } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
-import { deviceReliabilityHistory } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 
@@ -22,14 +21,70 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const QUEUE_NAME = 'reliability-history-retention';
+const JOB_NAME = 'reliability-history-retention';
+const REPEAT_JOB_ID = 'reliability-history-retention';
 const DEFAULT_RETENTION_DAYS = Math.max(30, parseInt(process.env.RELIABILITY_HISTORY_RETENTION_DAYS || '120', 10));
+const BATCH_SIZE = Math.max(1, parseInt(process.env.RELIABILITY_HISTORY_RETENTION_BATCH_SIZE || '10000', 10));
+const MAX_BATCHES = Math.max(1, parseInt(process.env.RELIABILITY_HISTORY_RETENTION_MAX_BATCHES || '50', 10));
 
 type RetentionJobData = {
   retentionDays?: number;
+  batchSize?: number;
+  maxBatches?: number;
 };
 
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
+
+export function extractReliabilityRetentionRowCount(result: unknown): number {
+  const raw = result as { rowCount?: number; count?: number };
+  if (typeof raw.rowCount === 'number') return raw.rowCount;
+  if (typeof raw.count === 'number') return raw.count;
+  return Array.isArray(result) ? result.length : 0;
+}
+
+export async function pruneReliabilityHistory(options: {
+  retentionDays: number;
+  batchSize?: number;
+  maxBatches?: number;
+}) {
+  const retentionDays = Math.max(30, options.retentionDays);
+  const batchSize = Math.max(1, options.batchSize ?? BATCH_SIZE);
+  const maxBatches = Math.max(1, options.maxBatches ?? MAX_BATCHES);
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const startedAt = Date.now();
+
+  let deleted = 0;
+  let batches = 0;
+  let lastBatchDeleted = 0;
+
+  while (batches < maxBatches) {
+    const result = await db.execute(sql`
+      DELETE FROM device_reliability_history
+      WHERE ctid IN (
+        SELECT ctid
+        FROM device_reliability_history
+        WHERE collected_at < ${cutoff}::timestamptz
+        LIMIT ${batchSize}
+      )
+    `);
+    lastBatchDeleted = extractReliabilityRetentionRowCount(result);
+    deleted += lastBatchDeleted;
+    batches += 1;
+    if (lastBatchDeleted < batchSize) break;
+  }
+
+  const durationMs = Date.now() - startedAt;
+  return {
+    retentionDays,
+    deleted,
+    batches,
+    batchSize,
+    maxBatches,
+    hasMore: batches >= maxBatches && lastBatchDeleted >= batchSize,
+    durationMs,
+  };
+}
 
 export function getReliabilityRetentionQueue(): Queue<RetentionJobData> {
   if (!retentionQueue) {
@@ -45,17 +100,15 @@ export function createReliabilityRetentionWorker(): Worker<RetentionJobData> {
     QUEUE_NAME,
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
-        const retentionDays = Math.max(30, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS);
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
-        const startedAt = Date.now();
-
-        await db
-          .delete(deviceReliabilityHistory)
-          .where(lt(deviceReliabilityHistory.collectedAt, cutoff));
-
-        const durationMs = Date.now() - startedAt;
-        console.log(`[ReliabilityRetention] Pruned reliability history older than ${retentionDays} days in ${durationMs}ms`);
-        return { retentionDays, durationMs };
+        const result = await pruneReliabilityHistory({
+          retentionDays: job.data.retentionDays ?? DEFAULT_RETENTION_DAYS,
+          batchSize: job.data.batchSize,
+          maxBatches: job.data.maxBatches,
+        });
+        console.log(
+          `[ReliabilityRetention] Pruned ${result.deleted} reliability history rows older than ${result.retentionDays} days (batches=${result.batches}, hasMore=${result.hasMore}) in ${result.durationMs}ms`
+        );
+        return result;
       });
     },
     {
@@ -84,9 +137,10 @@ export async function initializeReliabilityRetention(): Promise<void> {
     }
 
     await queue.add(
-      'cleanup',
-      { retentionDays: DEFAULT_RETENTION_DAYS },
+      JOB_NAME,
+      { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
       {
+        jobId: REPEAT_JOB_ID,
         repeat: { every: 24 * 60 * 60 * 1000 },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 }
@@ -110,3 +164,12 @@ export async function shutdownReliabilityRetention(): Promise<void> {
     retentionQueue = null;
   }
 }
+
+export const __testOnly = {
+  QUEUE_NAME,
+  JOB_NAME,
+  REPEAT_JOB_ID,
+  BATCH_SIZE,
+  MAX_BATCHES,
+  DEFAULT_RETENTION_DAYS,
+};

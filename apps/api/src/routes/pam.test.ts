@@ -91,23 +91,37 @@ vi.mock('../services/authenticatorAssurance', () => ({
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   })),
   assertApprovalAssurance: vi.fn(async () => ({
     requiredLevel: 1,
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   })),
-  // Real error class so the route's `instanceof StepUpRequiredError` (Phase 4
-  // 403 mapping) resolves instead of throwing on `instanceof undefined`.
+  // Real error classes so the route's `instanceof` checks (Phase 4 403 step-up
+  // mapping + critical-tier 401 'reauth_required' mapping) resolve instead of
+  // throwing on `instanceof undefined`.
   StepUpRequiredError: class StepUpRequiredError extends Error {
     constructor(public requiredLevel: number, public achievedLevel: number) {
       super('step-up required');
       this.name = 'StepUpRequiredError';
     }
   },
+  ReauthRequiredError: class ReauthRequiredError extends Error {
+    constructor() {
+      super('fresh account re-authentication required for this approval');
+      this.name = 'ReauthRequiredError';
+    }
+  },
+}));
+
+// The respond route imports requireCurrentPasswordStepUp from ./auth/helpers
+// (L4 re-auth). Stub it so the heavy services barrel that helpers pulls in does
+// not load (it would drag the full ../db/schema graph into this suite's mock).
+// Default: password verification passes (returns null). Only invoked when a
+// reauthPassword is present in the body.
+vi.mock('./auth/helpers', () => ({
+  requireCurrentPasswordStepUp: vi.fn(async () => null),
 }));
 
 vi.mock('../services/approverWebAuthn', () => ({
@@ -130,7 +144,8 @@ vi.mock('./softwarePolicies', () => ({
 
 import { db } from '../db';
 import { pamRoutes } from './pam';
-import { assertApprovalAssurance, StepUpRequiredError } from '../services/authenticatorAssurance';
+import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
+import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 
 const ORG_ID = '7b41c9a2-0000-4000-8000-000000000001';
@@ -414,7 +429,6 @@ function resetAssuranceDefaults() {
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
     authenticatorDeviceId: null,
-    pinVerified: false,
   });
   vi.mocked(generateApprovalAssertionOptions).mockResolvedValue({
     challenge: 'chal-pam',
@@ -422,6 +436,8 @@ function resetAssuranceDefaults() {
     allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
     userVerification: 'required',
   } as any);
+  // default "password ok" (null = no error) after clearAllMocks wipes the factory
+  vi.mocked(requireCurrentPasswordStepUp).mockResolvedValue(null);
 }
 
 describe('POST /pam/elevation-requests/:id/respond', () => {
@@ -536,7 +552,6 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
       decidedVia: 'session_tap',
       decidedAssuranceLevel: 1,
       authenticatorDeviceId: null,
-      pinVerified: false,
     });
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 1, factor: 'session_tap' },
@@ -561,7 +576,6 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
       decidedVia: 'session_tap',
       decidedAssuranceLevel: 1,
       authenticatorDeviceId: null,
-      pinVerified: false,
     });
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 1, factor: 'session_tap' },
@@ -684,7 +698,6 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
       decidedAssuranceLevel: 2,
       decidedVia: 'webauthn_platform',
       authenticatorDeviceId: 'dev-1',
-      pinVerified: false,
     });
     const { updateSetCalls, auditInserts } = rigTransaction({
       row: { ...activeRow, riskTier: 3 },
@@ -712,7 +725,6 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
       decidedVia: 'webauthn_platform',
       decidedAssuranceLevel: 2,
       authenticatorDeviceId: 'dev-1',
-      pinVerified: false,
     });
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 2, factor: 'webauthn_platform' },
@@ -765,8 +777,8 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
     expect(busMocks.publishEvent).not.toHaveBeenCalled();
   });
 
-  // Phase 3: the respond body now also accepts the mobile_hw_key proof variant
-  // and an optional approver PIN, both threaded to assertApprovalAssurance.
+  // Phase 3: the respond body accepts the mobile_hw_key proof variant, threaded
+  // to assertApprovalAssurance.
   const mobileProof = {
     type: 'mobile_hw_key',
     credentialId: 'mobile-dev-1',
@@ -780,7 +792,6 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
       decidedAssuranceLevel: 2,
       decidedVia: 'mobile_hw_key',
       authenticatorDeviceId: 'mobile-dev-1',
-      pinVerified: false,
     });
     const { updateSetCalls } = rigTransaction({
       row: { ...activeRow, riskTier: 3 },
@@ -804,51 +815,89 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
     });
   });
 
-  it('threads an optional PIN alongside a proof (L3, pinVerified)', async () => {
+  // L4 re-auth wiring (the gap the assurance redesign fixes): the respond route
+  // must VERIFY a fresh password and thread reauthVerified into the guard — and
+  // must NOT thread a challengeIssuedAt (recency is server-derived). Without this
+  // a critical elevation approve with a valid signature would 401 forever.
+  it('verifies reauthPassword and threads reauthVerified:true (no challengeIssuedAt) into the guard', async () => {
+    vi.mocked(requireCurrentPasswordStepUp).mockResolvedValueOnce(null); // password ok
     vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
-      requiredLevel: 3,
-      decidedAssuranceLevel: 3,
+      requiredLevel: 4,
+      decidedAssuranceLevel: 4,
       decidedVia: 'mobile_hw_key',
       authenticatorDeviceId: 'mobile-dev-1',
-      pinVerified: true,
     });
-    const { updateSetCalls } = rigTransaction({
-      row: { ...activeRow, riskTier: 3 },
-      casWins: true,
-    });
+    rigTransaction({ row: { ...activeRow, riskTier: 4 }, casWins: true });
 
     const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'approve', proof: mobileProof, pin: '1234' }),
+      body: JSON.stringify({ decision: 'approve', proof: mobileProof, reauthPassword: 'hunter2' }),
     });
 
     expect(res.status).toBe(200);
-    expect(assertApprovalAssurance).toHaveBeenCalledWith(
-      expect.objectContaining({ proof: mobileProof, pin: '1234' }),
+    expect(requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+      expect.anything(),
+      USER_ID,
+      'hunter2',
+      'pam:reauth',
     );
-    expect(updateSetCalls[0]).toMatchObject({
-      decidedAssuranceLevel: 3,
-      pinVerified: true,
-    });
+    const call = vi.mocked(assertApprovalAssurance).mock.calls[0]![0];
+    expect(call.reauthVerified).toBe(true);
+    expect('challengeIssuedAt' in call).toBe(false);
   });
 
-  it('rejects a malformed PIN at validation (400, before any decision)', async () => {
-    const { updateSetCalls } = rigTransaction({
-      row: { ...activeRow, riskTier: 3 },
-      casWins: true,
+  it('defaults reauthVerified:false when no reauthPassword is supplied', async () => {
+    rigTransaction({ row: { ...activeRow, riskTier: 3 }, casWins: true });
+    await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof: mobileProof }),
     });
+    expect(requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+    expect(vi.mocked(assertApprovalAssurance).mock.calls[0]![0].reauthVerified).toBe(false);
+  });
+
+  it('401s reauth_required when the guard throws ReauthRequiredError (critical w/o re-auth)', async () => {
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(new ReauthRequiredError());
+    const { updateSetCalls } = rigTransaction({ row: { ...activeRow, riskTier: 4 }, casWins: true });
 
     const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'approve', proof: mobileProof, pin: 'abcd' }),
+      body: JSON.stringify({ decision: 'approve', proof: mobileProof }),
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe('reauth_required');
+    // re-auth required is NOT a silent downgrade — no decision is written.
+    expect(updateSetCalls.length).toBe(0);
+    expect(busMocks.publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits with the helper response when reauthPassword is rejected', async () => {
+    vi.mocked(requireCurrentPasswordStepUp).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { updateSetCalls } = rigTransaction({ row: { ...activeRow, riskTier: 4 }, casWins: true });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', proof: mobileProof, reauthPassword: 'wrong' }),
+    });
+
+    expect(res.status).toBe(401);
+    // the assurance guard + the transaction are never reached
     expect(assertApprovalAssurance).not.toHaveBeenCalled();
     expect(updateSetCalls.length).toBe(0);
   });
+
+  // PIN step-up cases removed: the static approver PIN was dropped in favor of
+  // the L3-recency / L4-reauth ladder (authenticator registration redesign).
 });
 
 describe('POST /pam/elevation-requests/:id/revoke', () => {

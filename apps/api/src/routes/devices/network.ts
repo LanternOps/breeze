@@ -186,7 +186,7 @@ networkRoutes.get(
 
     // Normalize into the shared unified-list projection. `deviceClass`
     // is the presentation discriminator; agent-only fields (cpu/ram,
-    // agentVersion, osBuild) are null so the web table renders "—".
+    // agentVersion, watchdogVersion, osBuild) are null so the web table renders "—".
     const data = rows.map((r) => ({
       id: r.id,
       deviceClass: 'network' as const,
@@ -212,6 +212,7 @@ networkRoutes.get(
       // Agent-only fields, null for network devices.
       agentId: null,
       agentVersion: null,
+      watchdogVersion: null,
       osType: null,
       osVersion: null,
       osBuild: null,

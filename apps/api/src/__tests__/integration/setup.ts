@@ -147,7 +147,11 @@ export async function setupIntegrationTests() {
   testClient = postgres(DATABASE_URL, {
     max: 10,
     idle_timeout: 20,
-    connect_timeout: 10
+    connect_timeout: 10,
+    // cleanupDatabase() intentionally uses TRUNCATE ... CASCADE on beforeEach.
+    // PostgreSQL emits one NOTICE per cascaded table, which can flood CI logs
+    // enough for the integration job to hit its wall-clock timeout.
+    onnotice: () => {}
   });
 
   testDb = drizzle(testClient, { schema });
@@ -194,6 +198,23 @@ export async function teardownIntegrationTests() {
   }
 }
 
+function isUndefinedTableError(error: unknown): boolean {
+  const code = (error as { code?: string; cause?: { code?: string } } | undefined)?.code
+    ?? (error as { cause?: { code?: string } } | undefined)?.cause?.code;
+  return code === '42P01';
+}
+
+async function cleanupAppendOnlyMlFeedbackEvents() {
+  try {
+    await testClient.begin(async (tx) => {
+      await tx`SET LOCAL breeze.allow_audit_retention = '1'`;
+      await tx`DELETE FROM ml_feedback_events`;
+    });
+  } catch (error) {
+    if (!isUndefinedTableError(error)) throw error;
+  }
+}
+
 export async function cleanupDatabase() {
   if (!testDb) return;
 
@@ -201,6 +222,11 @@ export async function cleanupDatabase() {
   // again here in case a future caller invokes cleanupDatabase outside the
   // normal beforeAll path. Wiping a prod/dev DB must require deliberate opt-in.
   assertTestDatabase(DATABASE_URL, 'cleanupDatabase');
+
+  // ml_feedback_events is append-only production data. Clean it explicitly
+  // through the retention/erasure bypass GUC instead of relying on an implicit
+  // organizations TRUNCATE CASCADE side effect.
+  await cleanupAppendOnlyMlFeedbackEvents();
 
   // Truncate all tables in reverse dependency order
   // This ensures we don't hit foreign key constraints

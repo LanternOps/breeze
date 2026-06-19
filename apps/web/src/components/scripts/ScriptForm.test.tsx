@@ -120,6 +120,73 @@ describe('ScriptForm Monaco lifecycle (issue #1186)', () => {
   });
 });
 
+describe('ScriptForm Monaco theme preservation across View-Transition swap (issue #1589)', () => {
+  afterEach(() => {
+    document.head.querySelectorAll('style.monaco-colors').forEach(el => el.remove());
+    vi.clearAllMocks();
+  });
+
+  // Monaco appends its theme colors (token colors, selection background) as a
+  // runtime <style class="monaco-colors"> in document.head — distinct from the
+  // structural editor.main.css link the #1186 fix made swap-safe. Astro rebuilds
+  // <head> from the new page's markup on a swap, dropping that runtime style, and
+  // Monaco's singleton theme service won't re-inject it for the recreated editor.
+  // ScriptForm must clone the live style into the incoming document so the colors
+  // survive the swap (otherwise: white text, invisible selection until refresh).
+  it('clones the live monaco-colors style into the incoming document on astro:before-swap', () => {
+    render(<ScriptForm />);
+    // Simulate Monaco's runtime theme injection into the current <head>.
+    const live = document.createElement('style');
+    live.className = 'monaco-colors';
+    live.textContent = '.monaco-editor { color: #d4d4d4; }';
+    document.head.appendChild(live);
+
+    const newDocument = document.implementation.createHTMLDocument('');
+    const event = Object.assign(new Event('astro:before-swap'), { newDocument });
+    act(() => {
+      document.dispatchEvent(event);
+    });
+
+    const cloned = newDocument.head.querySelector('style.monaco-colors');
+    expect(cloned).not.toBeNull();
+    expect(cloned?.textContent).toBe('.monaco-editor { color: #d4d4d4; }');
+  });
+
+  it('does not duplicate the style when the incoming document already carries one', () => {
+    render(<ScriptForm />);
+    const live = document.createElement('style');
+    live.className = 'monaco-colors';
+    live.textContent = '.monaco-editor { color: #d4d4d4; }';
+    document.head.appendChild(live);
+
+    const newDocument = document.implementation.createHTMLDocument('');
+    const carried = newDocument.createElement('style');
+    carried.className = 'monaco-colors';
+    carried.textContent = '/* already present */';
+    newDocument.head.appendChild(carried);
+
+    const event = Object.assign(new Event('astro:before-swap'), { newDocument });
+    act(() => {
+      document.dispatchEvent(event);
+    });
+
+    expect(newDocument.head.querySelectorAll('style.monaco-colors')).toHaveLength(1);
+    expect(newDocument.head.querySelector('style.monaco-colors')?.textContent).toBe('/* already present */');
+  });
+
+  it('no-ops when no monaco-colors style is present (editor never mounted)', () => {
+    render(<ScriptForm />);
+    const newDocument = document.implementation.createHTMLDocument('');
+    const event = Object.assign(new Event('astro:before-swap'), { newDocument });
+    expect(() => {
+      act(() => {
+        document.dispatchEvent(event);
+      });
+    }).not.toThrow();
+    expect(newDocument.head.querySelector('style.monaco-colors')).toBeNull();
+  });
+});
+
 describe('ScriptForm availability picker — partner-scope gate', () => {
   beforeEach(() => {
     editorInstances.length = 0;

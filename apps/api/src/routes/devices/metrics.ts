@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, gte, lte, sql, asc } from 'drizzle-orm';
+import { and, eq, gte, inArray, lte, sql, asc } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceMetrics, sites } from '../../db/schema';
+import { deviceMetrics, metricRollups, sites } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -12,28 +12,153 @@ export const metricsRoutes = new Hono();
 
 metricsRoutes.use('*', authMiddleware);
 
+type DeviceMetricBucket = {
+  bucket: Date;
+  avgCpuPercent: number;
+  avgRamPercent: number;
+  avgRamUsedMb: number;
+  avgDiskPercent: number;
+  avgDiskUsedGb: number;
+  diskActivityAvailable: boolean;
+  totalDiskReadBytes: bigint;
+  totalDiskWriteBytes: bigint;
+  avgDiskReadBps: number;
+  avgDiskWriteBps: number;
+  totalDiskReadOps: bigint;
+  totalDiskWriteOps: bigint;
+  totalNetworkIn: bigint;
+  totalNetworkOut: bigint;
+  avgBandwidthIn: number;
+  avgBandwidthOut: number;
+  avgProcessCount: number;
+};
+
+const ROLLUP_METRIC_NAMES = [
+  'cpu_percent',
+  'ram_percent',
+  'ram_used_mb',
+  'disk_percent',
+  'disk_used_gb',
+  'disk_read_bps',
+  'disk_write_bps',
+  'bandwidth_in_bps',
+  'bandwidth_out_bps',
+  'process_count',
+] as const;
+
+function rollupWeightedAvg(metricName: (typeof ROLLUP_METRIC_NAMES)[number]) {
+  return sql<number>`
+    sum(${metricRollups.avgValue} * ${metricRollups.sampleCount})
+      filter (where ${metricRollups.metricName} = ${metricName})
+    / nullif(
+      sum(${metricRollups.sampleCount})
+        filter (where ${metricRollups.metricName} = ${metricName}),
+      0
+    )
+  `;
+}
+
+function rollupBucketSeconds(interval: '1m' | '5m' | '1h' | '1d'): 3600 | 86400 | undefined {
+  if (interval === '1h') return 3600;
+  if (interval === '1d') return 86400;
+  return undefined;
+}
+
+async function queryMetricRollups(
+  orgId: string,
+  deviceId: string,
+  startDate: Date,
+  endDate: Date,
+  interval: '1m' | '5m' | '1h' | '1d'
+): Promise<DeviceMetricBucket[]> {
+  const bucketSeconds = rollupBucketSeconds(interval);
+  if (!bucketSeconds) return [];
+
+  return db
+    .select({
+      bucket: metricRollups.bucketStart,
+      avgCpuPercent: rollupWeightedAvg('cpu_percent'),
+      avgRamPercent: rollupWeightedAvg('ram_percent'),
+      avgRamUsedMb: rollupWeightedAvg('ram_used_mb'),
+      avgDiskPercent: rollupWeightedAvg('disk_percent'),
+      avgDiskUsedGb: rollupWeightedAvg('disk_used_gb'),
+      diskActivityAvailable: sql<boolean>`
+        coalesce(
+          sum(${metricRollups.sampleCount})
+            filter (where ${metricRollups.metricName} in ('disk_read_bps', 'disk_write_bps')),
+          0
+        ) > 0
+      `,
+      totalDiskReadBytes: sql<bigint>`0::bigint`,
+      totalDiskWriteBytes: sql<bigint>`0::bigint`,
+      avgDiskReadBps: rollupWeightedAvg('disk_read_bps'),
+      avgDiskWriteBps: rollupWeightedAvg('disk_write_bps'),
+      totalDiskReadOps: sql<bigint>`0::bigint`,
+      totalDiskWriteOps: sql<bigint>`0::bigint`,
+      totalNetworkIn: sql<bigint>`0::bigint`,
+      totalNetworkOut: sql<bigint>`0::bigint`,
+      avgBandwidthIn: rollupWeightedAvg('bandwidth_in_bps'),
+      avgBandwidthOut: rollupWeightedAvg('bandwidth_out_bps'),
+      avgProcessCount: rollupWeightedAvg('process_count'),
+    })
+    .from(metricRollups)
+    .where(
+      and(
+        eq(metricRollups.orgId, orgId),
+        eq(metricRollups.deviceId, deviceId),
+        eq(metricRollups.sourceTable, 'device_metrics'),
+        eq(metricRollups.bucketSeconds, bucketSeconds),
+        inArray(metricRollups.metricName, [...ROLLUP_METRIC_NAMES]),
+        sql`${metricRollups.sampleCount} > 0`,
+        gte(metricRollups.bucketStart, startDate),
+        lte(metricRollups.bucketStart, endDate)
+      )
+    )
+    .groupBy(metricRollups.bucketStart)
+    .orderBy(asc(metricRollups.bucketStart));
+}
+
+async function queryRawMetricBuckets(
+  deviceId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<DeviceMetricBucket[]> {
+  return db
+    .select({
+      bucket: sql<Date>`date_trunc('minute', ${deviceMetrics.timestamp})`,
+      avgCpuPercent: sql<number>`avg(${deviceMetrics.cpuPercent})`,
+      avgRamPercent: sql<number>`avg(${deviceMetrics.ramPercent})`,
+      avgRamUsedMb: sql<number>`avg(${deviceMetrics.ramUsedMb})`,
+      avgDiskPercent: sql<number>`avg(${deviceMetrics.diskPercent})`,
+      avgDiskUsedGb: sql<number>`avg(${deviceMetrics.diskUsedGb})`,
+      diskActivityAvailable: sql<boolean>`bool_or(coalesce(${deviceMetrics.diskActivityAvailable}, false))`,
+      totalDiskReadBytes: sql<bigint>`sum(${deviceMetrics.diskReadBytes})`,
+      totalDiskWriteBytes: sql<bigint>`sum(${deviceMetrics.diskWriteBytes})`,
+      avgDiskReadBps: sql<number>`avg(${deviceMetrics.diskReadBps})::float8`,
+      avgDiskWriteBps: sql<number>`avg(${deviceMetrics.diskWriteBps})::float8`,
+      totalDiskReadOps: sql<bigint>`sum(${deviceMetrics.diskReadOps})`,
+      totalDiskWriteOps: sql<bigint>`sum(${deviceMetrics.diskWriteOps})`,
+      totalNetworkIn: sql<bigint>`sum(${deviceMetrics.networkInBytes})`,
+      totalNetworkOut: sql<bigint>`sum(${deviceMetrics.networkOutBytes})`,
+      avgBandwidthIn: sql<number>`avg(${deviceMetrics.bandwidthInBps})::float8`,
+      avgBandwidthOut: sql<number>`avg(${deviceMetrics.bandwidthOutBps})::float8`,
+      avgProcessCount: sql<number>`avg(${deviceMetrics.processCount})`
+    })
+    .from(deviceMetrics)
+    .where(
+      and(
+        eq(deviceMetrics.deviceId, deviceId),
+        gte(deviceMetrics.timestamp, startDate),
+        lte(deviceMetrics.timestamp, endDate)
+      )
+    )
+    .groupBy(sql`date_trunc('minute', ${deviceMetrics.timestamp})`)
+    .orderBy(asc(sql`date_trunc('minute', ${deviceMetrics.timestamp})`));
+}
+
 // Helper function to aggregate metrics by interval
 function aggregateMetricsByInterval(
-  data: Array<{
-    bucket: Date;
-    avgCpuPercent: number;
-    avgRamPercent: number;
-    avgRamUsedMb: number;
-    avgDiskPercent: number;
-    avgDiskUsedGb: number;
-    diskActivityAvailable: boolean;
-    totalDiskReadBytes: bigint;
-    totalDiskWriteBytes: bigint;
-    avgDiskReadBps: number;
-    avgDiskWriteBps: number;
-    totalDiskReadOps: bigint;
-    totalDiskWriteOps: bigint;
-    totalNetworkIn: bigint;
-    totalNetworkOut: bigint;
-    avgBandwidthIn: number;
-    avgBandwidthOut: number;
-    avgProcessCount: number;
-  }>,
+  data: DeviceMetricBucket[],
   interval: string,
   bucketSeconds: number
 ): Array<{
@@ -231,38 +356,10 @@ metricsRoutes.get(
 
     const bucketSeconds = intervalSeconds[interval] ?? 300; // default to 5 minutes
 
-    // Query with time bucket aggregation
-    const metricsData = await db
-      .select({
-        bucket: sql<Date>`date_trunc('minute', ${deviceMetrics.timestamp})`,
-        avgCpuPercent: sql<number>`avg(${deviceMetrics.cpuPercent})`,
-        avgRamPercent: sql<number>`avg(${deviceMetrics.ramPercent})`,
-        avgRamUsedMb: sql<number>`avg(${deviceMetrics.ramUsedMb})`,
-        avgDiskPercent: sql<number>`avg(${deviceMetrics.diskPercent})`,
-        avgDiskUsedGb: sql<number>`avg(${deviceMetrics.diskUsedGb})`,
-        diskActivityAvailable: sql<boolean>`bool_or(coalesce(${deviceMetrics.diskActivityAvailable}, false))`,
-        totalDiskReadBytes: sql<bigint>`sum(${deviceMetrics.diskReadBytes})`,
-        totalDiskWriteBytes: sql<bigint>`sum(${deviceMetrics.diskWriteBytes})`,
-        avgDiskReadBps: sql<number>`avg(${deviceMetrics.diskReadBps})::float8`,
-        avgDiskWriteBps: sql<number>`avg(${deviceMetrics.diskWriteBps})::float8`,
-        totalDiskReadOps: sql<bigint>`sum(${deviceMetrics.diskReadOps})`,
-        totalDiskWriteOps: sql<bigint>`sum(${deviceMetrics.diskWriteOps})`,
-        totalNetworkIn: sql<bigint>`sum(${deviceMetrics.networkInBytes})`,
-        totalNetworkOut: sql<bigint>`sum(${deviceMetrics.networkOutBytes})`,
-        avgBandwidthIn: sql<number>`avg(${deviceMetrics.bandwidthInBps})::float8`,
-        avgBandwidthOut: sql<number>`avg(${deviceMetrics.bandwidthOutBps})::float8`,
-        avgProcessCount: sql<number>`avg(${deviceMetrics.processCount})`
-      })
-      .from(deviceMetrics)
-      .where(
-        and(
-          eq(deviceMetrics.deviceId, deviceId),
-          gte(deviceMetrics.timestamp, startDate),
-          lte(deviceMetrics.timestamp, endDate)
-        )
-      )
-      .groupBy(sql`date_trunc('minute', ${deviceMetrics.timestamp})`)
-      .orderBy(asc(sql`date_trunc('minute', ${deviceMetrics.timestamp})`));
+    let metricsData = await queryMetricRollups(device.orgId, deviceId, startDate, endDate, interval);
+    if (metricsData.length === 0) {
+      metricsData = await queryRawMetricBuckets(deviceId, startDate, endDate);
+    }
 
     // Further aggregate based on requested interval
     const aggregatedData = aggregateMetricsByInterval(metricsData, interval, bucketSeconds);

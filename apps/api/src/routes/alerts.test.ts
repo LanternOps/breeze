@@ -54,6 +54,11 @@ vi.mock('../services/eventBus', () => ({
   publishEvent: publishEventMock
 }));
 
+vi.mock('../services/mlFeedbackEmitters', () => ({
+  emitAlertStateFeedback: vi.fn(),
+  emitCorrelationFeedback: vi.fn(),
+}));
+
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: vi.fn().mockResolvedValue(undefined),
   markConfigPolicyRuleCooldown: vi.fn().mockResolvedValue(undefined)
@@ -93,6 +98,17 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  alertCorrelationGroups: {
+    id: 'alertCorrelationGroups.id',
+    status: 'alertCorrelationGroups.status',
+    memberCount: 'alertCorrelationGroups.memberCount',
+    noiseReductionPercent: 'alertCorrelationGroups.noiseReductionPercent',
+  },
+  alertCorrelationMembers: {
+    alertId: 'alertCorrelationMembers.alertId',
+    groupId: 'alertCorrelationMembers.groupId',
+    role: 'alertCorrelationMembers.role',
+  },
   alertRules: {},
   alertTemplates: {},
   alerts: {},
@@ -216,6 +232,18 @@ describe('alert routes', () => {
                           severity: 'high',
                           title: 'CPU usage high',
                           message: 'CPU over threshold',
+                          context: {
+                            source: 'metric_anomaly',
+                            anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                            metricName: 'cpu.usage',
+                            metricType: 'gauge',
+                            anomalyType: 'spike',
+                            observedValue: 97.3,
+                            baselineValue: 42.1,
+                            confidence: 0.92,
+                            score: 8.4,
+                            modelVersion: 'rollup-v0',
+                          },
                           deviceHostname: 'device-1',
                           ruleName: 'CPU Alert'
                         }
@@ -224,6 +252,20 @@ describe('alert routes', () => {
                   })
                 })
               })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{
+                alertId: 'alert-1',
+                groupId: 'group-1',
+                role: 'root',
+                groupStatus: 'open',
+                memberCount: 3,
+                noiseReductionPercent: 67
+              }])
             })
           })
         } as any);
@@ -237,6 +279,23 @@ describe('alert routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.data[0].severity).toBe('high');
+      expect(body.data[0].contextData).toEqual(expect.objectContaining({
+        source: 'metric_anomaly',
+        anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        metricName: 'cpu.usage',
+      }));
+      expect(body.data[0].anomalyContext).toEqual(expect.objectContaining({
+        source: 'metric_anomaly',
+        anomalyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        metricName: 'cpu.usage',
+        anomalyType: 'spike',
+        confidence: 0.92,
+      }));
+      expect(body.data[0]).toEqual(expect.objectContaining({
+        correlationGroupId: 'group-1',
+        correlationChildCount: 2,
+        noiseReductionPercent: 67
+      }));
       expect(body.pagination.total).toBe(1);
     });
 
@@ -269,6 +328,13 @@ describe('alert routes', () => {
                   })
                 })
               })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
             })
           })
         } as any);
@@ -1198,15 +1264,26 @@ describe('alert routes', () => {
       const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject: 'Custom subject', priority: 'urgent' })
+        body: JSON.stringify({ subject: 'Custom subject', description: 'RCA note draft', priority: 'urgent' })
       });
 
       expect(res.status).toBe(201);
       expect(createTicketFromAlertMock).toHaveBeenCalledWith(
         ALERT_ID,
         expect.objectContaining({ userId: 'user-123' }),
-        expect.objectContaining({ subject: 'Custom subject', priority: 'urgent' })
+        expect.objectContaining({ subject: 'Custom subject', description: 'RCA note draft', priority: 'urgent' })
       );
+    });
+
+    it('rejects overlong ticket descriptions', async () => {
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'x'.repeat(5001) })
+      });
+
+      expect(res.status).toBe(400);
+      expect(createTicketFromAlertMock).not.toHaveBeenCalled();
     });
 
     it('returns 404 for out-of-site alert devices (site-restricted caller)', async () => {

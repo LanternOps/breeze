@@ -3,8 +3,8 @@ import { Hono } from 'hono';
 
 // Regression test for #800 Layer C / #861 / #862 — the amber
 // "Agent silent (watchdog OK)" badge on the devices list relies on the API
-// returning `watchdogStatus` and `mainAgentSilentSince` in the GET /devices
-// response. Both fields are selected from the database in core.ts but
+// returning watchdog health fields in the GET /devices response. These fields
+// are selected from the database in core.ts but
 // were being dropped by the response mapper, so the UI never received them
 // and the badge never rendered.
 //
@@ -105,7 +105,7 @@ describe('GET /devices — response shape', () => {
     app.route('/devices', coreRoutes);
   });
 
-  it('includes watchdogStatus and mainAgentSilentSince in each list row (regression for #862 amber badge)', async () => {
+  it('includes watchdog health fields in each list row', async () => {
     const silentSince = new Date('2026-05-26T19:24:57.519Z');
     rigDeviceListRows([
       {
@@ -122,6 +122,7 @@ describe('GET /devices — response shape', () => {
         osBuild: null,
         architecture: 'x64',
         agentVersion: 'v0.67.0',
+        watchdogVersion: 'v0.67.1',
         status: 'offline',
         watchdogStatus: 'connected',
         mainAgentSilentSince: silentSince,
@@ -156,6 +157,7 @@ describe('GET /devices — response shape', () => {
     // The fields the response mapper was silently dropping.
     expect(row).toHaveProperty('watchdogStatus', 'connected');
     expect(row).toHaveProperty('mainAgentSilentSince', silentSince.toISOString());
+    expect(row).toHaveProperty('watchdogVersion', 'v0.67.1');
     // #1273 regression — pendingReboot must survive the mapper for the list badge.
     expect(row).toHaveProperty('pendingReboot', true);
   });
@@ -176,6 +178,7 @@ describe('GET /devices — response shape', () => {
         osBuild: null,
         architecture: 'arm64',
         agentVersion: 'v0.67.0',
+        watchdogVersion: null,
         status: 'online',
         watchdogStatus: null,
         mainAgentSilentSince: null,
@@ -211,9 +214,11 @@ describe('GET /devices — response shape', () => {
     // (healthy device on a new API).
     expect(Object.prototype.hasOwnProperty.call(row, 'watchdogStatus')).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(row, 'mainAgentSilentSince')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'watchdogVersion')).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(row, 'pendingReboot')).toBe(true);
     expect(row.watchdogStatus).toBeNull();
     expect(row.mainAgentSilentSince).toBeNull();
+    expect(row.watchdogVersion).toBeNull();
     expect(row.pendingReboot).toBe(false);
   });
 });

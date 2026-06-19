@@ -37,6 +37,7 @@ type DeviceInfo = {
   osBuild?: string | null;
   architecture?: string | null;
   agentVersion?: string | null;
+  watchdogVersion?: string | null;
   status?: string | null;
   lastSeenAt?: string | null;
   enrolledAt?: string | null;
@@ -59,6 +60,9 @@ type DeviceInfo = {
     cpuThreads?: number | null;
     ramTotalMb?: number | null;
     diskTotalGb?: number | null;
+    motherboardManufacturer?: string | null;
+    motherboardProduct?: string | null;
+    motherboardVersion?: string | null;
   } | null;
 };
 
@@ -98,6 +102,11 @@ function formatOsType(raw: string | null | undefined): string {
   return osTypeLabels[raw.toLowerCase()] ?? raw;
 }
 
+function formatWatchdogVersion(raw: string | null | undefined): string {
+  const version = raw?.trim();
+  return version ? version : 'Not Installed';
+}
+
 function formatDesktopAccessMode(mode: DesktopAccessState['mode'] | undefined): string {
   switch (mode) {
     case 'user_session':
@@ -135,6 +144,89 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between py-2">
       <dt className="text-sm text-muted-foreground">{label}</dt>
       <dd className="text-sm font-medium text-right">{value || '—'}</dd>
+    </div>
+  );
+}
+
+const hardwareIdentityPlaceholderValues = new Set([
+  '0',
+  '00000000',
+  '000000000000000',
+  '123456789',
+  'default string',
+  'none',
+  'null',
+  'n/a',
+  'na',
+  'not applicable',
+  'not available',
+  'not specified',
+  'o.e.m',
+  'oem',
+  'serial number',
+  'system manufacturer',
+  'system product name',
+  'system serial number',
+  'unknown',
+]);
+
+function formatHardwareIdentityValue(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed) return '—';
+
+  const normalized = trimmed.toLowerCase().replace(/\s+/g, ' ').replace(/\.+$/, '');
+  if (hardwareIdentityPlaceholderValues.has(normalized) || normalized.includes('to be filled by')) {
+    return '—';
+  }
+  return trimmed;
+}
+
+function formatMotherboard(hw: DeviceInfo['hardware']): string {
+  const values = [
+    formatHardwareIdentityValue(hw?.motherboardManufacturer),
+    formatHardwareIdentityValue(hw?.motherboardProduct),
+    formatHardwareIdentityValue(hw?.motherboardVersion),
+  ].filter((part) => part !== '—');
+
+  const parts: string[] = [];
+  for (const value of values) {
+    const valueLower = value.toLowerCase();
+    const containingIndex = parts.findIndex((part) => valueLower.startsWith(`${part.toLowerCase()} `));
+    if (containingIndex >= 0) {
+      parts.splice(containingIndex, 1);
+    }
+    const isDuplicate = parts.some((part) => {
+      const partLower = part.toLowerCase();
+      return partLower === valueLower || partLower.startsWith(`${valueLower} `);
+    });
+    if (!isDuplicate) {
+      parts.push(value);
+    }
+  }
+
+  if (parts.length === 0) return '—';
+
+  return parts.join(' ');
+}
+
+function splitGpuModels(value: string | null | undefined): string[] {
+  return (value ?? '')
+    .split(';')
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
+function GpuInfoRow({ value }: { value: string | null | undefined }) {
+  const gpuModels = splitGpuModels(value);
+
+  return (
+    <div className="flex justify-between gap-4 py-2">
+      <dt className="text-sm text-muted-foreground">GPU</dt>
+      <dd className="space-y-1 text-sm font-medium text-right">
+        {gpuModels.length > 0
+          ? gpuModels.map((model, index) => <div key={`${model}-${index}`}>{model}</div>)
+          : '—'}
+      </dd>
     </div>
   );
 }
@@ -494,9 +586,9 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             )}
           </dd>
         </div>
-        <InfoRow label="Serial Number" value={hw?.serialNumber ?? '—'} />
-        <InfoRow label="Manufacturer" value={hw?.manufacturer ?? '—'} />
-        <InfoRow label="Model" value={hw?.model ?? '—'} />
+        <InfoRow label="Serial Number" value={formatHardwareIdentityValue(hw?.serialNumber)} />
+        <InfoRow label="Manufacturer" value={formatHardwareIdentityValue(hw?.manufacturer)} />
+        <InfoRow label="Model" value={formatHardwareIdentityValue(hw?.model)} />
       </Section>
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -599,12 +691,14 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         } />
         <InfoRow label="RAM Total" value={formatRam(hw?.ramTotalMb)} />
         <InfoRow label="Disk Total" value={formatDisk(hw?.diskTotalGb)} />
-        <InfoRow label="GPU" value={hw?.gpuModel ?? '—'} />
+        <GpuInfoRow value={hw?.gpuModel} />
+        <InfoRow label="Motherboard" value={formatMotherboard(hw)} />
         <InfoRow label="BIOS Version" value={hw?.biosVersion ?? '—'} />
       </Section>
 
       <Section title="Agent" icon={<Shield className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="Agent Version" value={info?.agentVersion ?? '—'} />
+        <InfoRow label="Watchdog Version" value={formatWatchdogVersion(info?.watchdogVersion)} />
         <div className="flex justify-between py-2">
           <dt className="text-sm text-muted-foreground">Status</dt>
           <dd>

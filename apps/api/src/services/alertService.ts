@@ -13,19 +13,19 @@ import {
   alerts,
   alertRules,
   alertTemplates,
-  alertCorrelations,
   devices,
   deviceGroups,
   deviceGroupMemberships,
   sites,
   configPolicyAlertRules
 } from '../db/schema';
-import { eq, and, inArray, isNull, isNotNull, or, gte } from 'drizzle-orm';
+import { eq, and, inArray, isNull, isNotNull, or } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
 import { isCooldownActive, setCooldown, isConfigPolicyRuleCooling, markConfigPolicyRuleCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { resolveAlertRulesForDevice, resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 import { publishEvent } from './eventBus';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
+import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -147,8 +147,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
   // Set cooldown
   await setCooldown(ruleId, deviceId, cooldownMinutes);
 
-  // Phase 6b: Auto-correlate with other recent alerts on the same device
-  await autoCorrelateAlert(newAlert.id, deviceId, orgId);
+  enqueueAlertCorrelationForDevice(orgId, deviceId);
 
   // Publish event — attach the device's site so site-restricted users see it
   const siteId = await resolveDeviceSiteId(deviceId);
@@ -675,8 +674,7 @@ export async function evaluateDeviceAlertsFromPolicy(deviceId: string): Promise<
           // 10. Set cooldown
           await markConfigPolicyRuleCooldown(rule.id, deviceId, rule.cooldownMinutes);
 
-          // Phase 6b: Auto-correlate with other recent alerts on the same device
-          await autoCorrelateAlert(newAlert.id, deviceId, device.orgId);
+          enqueueAlertCorrelationForDevice(device.orgId, deviceId);
 
           // 11. Publish event — carry siteId so site-restricted users get it
           await publishEvent(
@@ -829,54 +827,13 @@ export async function checkAllAutoResolve(orgId?: string): Promise<number> {
   return resolvedCount;
 }
 
-/**
- * Phase 6b: Auto-correlate a new alert with other recent alerts on the same device.
- * Creates correlation links between alerts that occur close together in time.
- */
-async function autoCorrelateAlert(alertId: string, deviceId: string, orgId: string): Promise<void> {
-  try {
-    const windowStart = new Date(Date.now() - 30 * 60 * 1000); // 30 minutes
-
-    const recentAlerts = await db
-      .select({ id: alerts.id, triggeredAt: alerts.triggeredAt })
-      .from(alerts)
-      .where(
-        and(
-          eq(alerts.deviceId, deviceId),
-          eq(alerts.orgId, orgId),
-          gte(alerts.triggeredAt, windowStart),
-          inArray(alerts.status, ['active', 'acknowledged'])
-        )
-      );
-
-    // Correlate with each recent alert on the same device (excluding self)
-    for (const recentAlert of recentAlerts) {
-      if (recentAlert.id === alertId) continue;
-
-      // Confidence based on time proximity (closer = higher)
-      const timeDiffMs = Math.abs(Date.now() - recentAlert.triggeredAt.getTime());
-      const maxWindowMs = 30 * 60 * 1000;
-      const confidence = Math.round((1 - timeDiffMs / maxWindowMs) * 100) / 100;
-
-      if (confidence < 0.3) continue; // Skip very weak correlations
-
-      await db
-        .insert(alertCorrelations)
-        .values({
-          parentAlertId: recentAlert.id,
-          childAlertId: alertId,
-          correlationType: 'same_device_temporal',
-          confidence: String(confidence),
-          metadata: {
-            timeDiffMinutes: Math.round(timeDiffMs / 60000),
-            deviceId,
-          },
-        });
-    }
-  } catch (error) {
-    // Non-critical — don't block alert creation
-    console.error(`[AlertService] Auto-correlation failed for alert ${alertId}:`, error);
-  }
+function enqueueAlertCorrelationForDevice(orgId: string, deviceId: string): void {
+  void enqueueAlertCorrelation({ orgId, deviceId }).catch((error) => {
+    console.error(
+      `[AlertService] Failed to enqueue alert correlation for org=${orgId} device=${deviceId}:`,
+      error
+    );
+  });
 }
 
 /**

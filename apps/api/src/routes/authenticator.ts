@@ -10,15 +10,10 @@ import {
   generateApproverRegistrationOptions,
   verifyApproverRegistration,
 } from '../services/approverWebAuthn';
-import {
-  consumeMobileRegistrationNonce,
-  issueMobileRegistrationNonce,
-  verifyMobileSignature,
-} from '../services/mobileHwKey';
 import { loadPartnerPolicy, validateRaiseOnly } from '../services/authenticatorPolicy';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { requireCurrentPasswordStepUp, writeAuthAudit } from './auth/helpers';
-import { authenticatorPolicySchema } from '@breeze/shared';
+import { authenticatorPolicySchema, mobileHwKeyRegisterSchema } from '@breeze/shared';
 
 // Attestation payload is a large nested object validated structurally by
 // @simplewebauthn at the service layer; here we only require a string `id` so a
@@ -40,14 +35,23 @@ const registerVerifySchema = z.object({
   label: deviceLabelSchema.optional(),
 });
 
-// Mobile hardware-key registration: the client proves possession of a freshly
-// generated Secure Enclave / StrongBox key by signing the server-issued
-// registration nonce (RSA-SHA256 over the consumed nonce).
-const mobileRegisterVerifySchema = z.object({
-  publicKey: z.string().min(1).max(4096), // SPKI DER, base64
-  signature: z.string().min(1).max(4096), // RSA-SHA256 over the nonce, base64
-  label: deviceLabelSchema.optional(),
-});
+// Mobile hardware-key registration (passwordless, deferred proof-of-possession):
+// the phone POSTs only its freshly generated Secure-Enclave / Keystore SPKI
+// public key + a label. No password step-up and no registration-time signature —
+// the key is stored PENDING (last_used_at null) and ACTIVATES on its first
+// approval signature, which is verified in the assurance path.
+//
+// The wire body also carries client-asserted `kind` / `isPlatformBound`
+// discriminators (the mobile client sends them); we tolerate but do NOT trust
+// them — the server forces kind='mobile_hw_key' and is_platform_bound=true. The
+// authoritative `publicKey` + `label` are re-validated through the shared
+// `mobileHwKeyRegisterSchema` (`.strict()`) before insert.
+const mobileRegisterSchema = z
+  .object({
+    kind: z.literal('mobile_hw_key').optional(),
+    isPlatformBound: z.boolean().optional(),
+  })
+  .passthrough();
 const revokeSchema = z.object({
   reason: z.string().trim().max(255).optional(),
 });
@@ -181,54 +185,34 @@ authenticatorRoutes.post(
   }
 );
 
-// Mobile hardware-key registration mirrors the webauthn flow above: a
-// password step-up gates `options` (which issues a single-use registration
-// nonce), then `verify` proves possession by verifying an RSA-SHA256 signature
-// over that consumed nonce before inserting the device.
+// Mobile hardware-key registration — passwordless, single step. The phone POSTs
+// its Secure-Enclave / Keystore public key the moment it has one (right after
+// login); there is NO password step-up and NO registration-time proof-of-
+// possession. The row is inserted PENDING (`last_used_at` null) and is ACTIVATED
+// on its first real approval signature, verified in
+// `authenticatorAssurance.verifyMobileFactor` (which sets `last_used_at`). The
+// deferred-PoP design means a registered-but-never-used key can never satisfy an
+// approval until it has signed at least once.
 authenticatorRoutes.post(
-  '/devices/mobile-hw-key/options',
+  '/devices',
   authMiddleware,
-  zValidator('json', registerOptionsSchema),
+  zValidator('json', mobileRegisterSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { currentPassword } = c.req.valid('json');
+    const body = c.req.valid('json');
 
-    const passwordError = await requireCurrentPasswordStepUp(
-      c,
-      auth.user.id,
-      currentPassword,
-      'authenticator:pwd'
-    );
-    if (passwordError) return passwordError;
-
-    const nonce = await issueMobileRegistrationNonce(auth.user.id);
-    return c.json({ nonce });
-  }
-);
-
-authenticatorRoutes.post(
-  '/devices/mobile-hw-key/verify',
-  authMiddleware,
-  zValidator('json', mobileRegisterVerifySchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const { publicKey, signature, label } = c.req.valid('json');
-
-    // Consume the single-use nonce first; a missing/expired nonce is a 400 and
-    // the signature is never checked (no oracle).
-    const nonce = await consumeMobileRegistrationNonce(auth.user.id);
-    if (!nonce) {
-      return c.json({ error: 'Registration challenge expired or missing' }, 400);
-    }
-
-    const verified = verifyMobileSignature({
-      publicKeySpkiB64: publicKey,
-      payload: nonce,
-      signatureB64: signature,
+    // Re-validate the authoritative fields through the shared strict schema; the
+    // client-asserted kind/isPlatformBound discriminators are ignored (the server
+    // forces kind='mobile_hw_key' + is_platform_bound=true). A bad/missing
+    // publicKey or label is a 400 here, never an insert.
+    const parsed = mobileHwKeyRegisterSchema.safeParse({
+      publicKey: (body as { publicKey?: unknown }).publicKey,
+      label: (body as { label?: unknown }).label,
     });
-    if (!verified) {
-      return c.json({ error: 'Proof-of-possession signature verification failed' }, 400);
+    if (!parsed.success) {
+      return c.json({ error: 'invalid_registration', detail: parsed.error.issues }, 400);
     }
+    const { publicKey, label } = parsed.data;
 
     // Per-install device id is a UX/migration hint only (client-controlled,
     // SR-001) — null when the header is absent.
@@ -239,12 +223,14 @@ authenticatorRoutes.post(
       .values({
         userId: auth.user.id,
         kind: 'mobile_hw_key',
-        label: label ?? 'This phone',
+        label,
         publicKey,
         credentialId: null,
         signCount: 0,
         isPlatformBound: true,
         mobileDeviceId,
+        // last_used_at intentionally left at its null default — the PENDING
+        // marker. The first approval signature flips it active server-side.
       })
       .returning();
 
@@ -266,7 +252,7 @@ authenticatorRoutes.post(
       },
     });
 
-    return c.json({ success: true, device: toPublicDevice(inserted) });
+    return c.json({ success: true, device: toPublicDevice(inserted) }, 201);
   }
 );
 

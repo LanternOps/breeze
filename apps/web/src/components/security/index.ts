@@ -14,4 +14,5 @@ export { default as SecurityStatCard } from './SecurityStatCard';
 export { default as ThreatDetail } from './ThreatDetail';
 export { default as ThreatList } from './ThreatList';
 export { default as TrendsPage } from './TrendsPage';
+export { default as UserRiskPage } from './UserRiskPage';
 export { default as VulnerabilitiesPage } from './VulnerabilitiesPage';

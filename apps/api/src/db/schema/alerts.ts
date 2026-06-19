@@ -9,7 +9,8 @@ import {
   pgEnum,
   integer,
   index,
-  numeric
+  numeric,
+  uniqueIndex
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
@@ -94,6 +95,42 @@ export const alertCorrelations = pgTable('alert_correlations', {
 }, (table) => ({
   parentAlertIdIdx: index('alert_correlations_parent_alert_id_idx').on(table.parentAlertId),
   childAlertIdIdx: index('alert_correlations_child_alert_id_idx').on(table.childAlertId)
+}));
+
+export const alertCorrelationGroups = pgTable('alert_correlation_groups', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  groupKey: varchar('group_key', { length: 255 }).notNull(),
+  rootAlertId: uuid('root_alert_id').references(() => alerts.id, { onDelete: 'set null' }),
+  status: varchar('status', { length: 40 }).notNull().default('open'),
+  score: numeric('score', { precision: 3, scale: 2 }),
+  noiseReductionPercent: integer('noise_reduction_percent').notNull().default(0),
+  memberCount: integer('member_count').notNull().default(0),
+  firstSeenAt: timestamp('first_seen_at').notNull(),
+  lastSeenAt: timestamp('last_seen_at').notNull(),
+  metadata: jsonb('metadata').notNull().default({}),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  orgKeyUniq: uniqueIndex('alert_correlation_groups_org_key_uq').on(table.orgId, table.groupKey),
+  orgStatusSeenIdx: index('alert_correlation_groups_org_status_seen_idx').on(table.orgId, table.status, table.lastSeenAt),
+  rootAlertIdx: index('alert_correlation_groups_root_alert_idx').on(table.rootAlertId)
+}));
+
+export const alertCorrelationMembers = pgTable('alert_correlation_members', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  groupId: uuid('group_id').notNull().references(() => alertCorrelationGroups.id, { onDelete: 'cascade' }),
+  alertId: uuid('alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
+  role: varchar('role', { length: 40 }).notNull().default('related'),
+  confidence: numeric('confidence', { precision: 3, scale: 2 }),
+  evidence: jsonb('evidence').notNull().default({}),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  groupAlertUniq: uniqueIndex('alert_correlation_members_group_alert_uq').on(table.groupId, table.alertId),
+  orgAlertIdx: index('alert_correlation_members_org_alert_idx').on(table.orgId, table.alertId),
+  orgGroupIdx: index('alert_correlation_members_org_group_idx').on(table.orgId, table.groupId)
 }));
 
 export const notificationChannels = pgTable('notification_channels', {

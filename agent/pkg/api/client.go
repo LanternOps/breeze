@@ -44,16 +44,19 @@ type EnrollRequest struct {
 }
 
 type HardwareInfo struct {
-	CPUModel     string `json:"cpuModel,omitempty"`
-	CPUCores     int    `json:"cpuCores,omitempty"`
-	CPUThreads   int    `json:"cpuThreads,omitempty"`
-	RAMTotalMB   uint64 `json:"ramTotalMb,omitempty"`
-	DiskTotalGB  uint64 `json:"diskTotalGb,omitempty"`
-	GPUModel     string `json:"gpuModel,omitempty"`
-	SerialNumber string `json:"serialNumber,omitempty"`
-	Manufacturer string `json:"manufacturer,omitempty"`
-	Model        string `json:"model,omitempty"`
-	BIOSVersion  string `json:"biosVersion,omitempty"`
+	CPUModel                string `json:"cpuModel,omitempty"`
+	CPUCores                int    `json:"cpuCores,omitempty"`
+	CPUThreads              int    `json:"cpuThreads,omitempty"`
+	RAMTotalMB              uint64 `json:"ramTotalMb,omitempty"`
+	DiskTotalGB             uint64 `json:"diskTotalGb,omitempty"`
+	GPUModel                string `json:"gpuModel,omitempty"`
+	SerialNumber            string `json:"serialNumber,omitempty"`
+	Manufacturer            string `json:"manufacturer,omitempty"`
+	Model                   string `json:"model,omitempty"`
+	MotherboardManufacturer string `json:"motherboardManufacturer,omitempty"`
+	MotherboardProduct      string `json:"motherboardProduct,omitempty"`
+	MotherboardVersion      string `json:"motherboardVersion,omitempty"`
+	BIOSVersion             string `json:"biosVersion,omitempty"`
 }
 
 type MtlsCertData struct {

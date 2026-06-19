@@ -6,7 +6,7 @@
  * via streamingSessionManager.ts and aiAgentSdkTools.ts.
  */
 
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -245,6 +245,18 @@ export async function getSessionMessages(sessionId: string, auth: AuthContext) {
 /**
  * Wait for a tool execution to be approved or rejected.
  * Polls the DB with exponential backoff.
+ *
+ * Each query is wrapped in `withSystemDbAccessContext`. The AI Agent SDK runs
+ * its session OUTSIDE the request's AsyncLocalStorage DB context (the SDK
+ * query() is wrapped in runOutsideDbContext in streamingSessionManager.ts;
+ * aiAgentSdk.ts documents the same constraint), so a bare `db` query here
+ * resolves to the unprivileged `breeze_app` role with no RLS GUCs.
+ * `ai_tool_executions`
+ * has forced RLS, so that read matched 0 rows and the poll returned `false`
+ * on the first iteration — every approval-gated tool reported "rejected or
+ * timed out" even after the user approved it. System scope lets the internal
+ * poll resolve the row by its PK. Wrapping per-query (not the whole loop)
+ * keeps each txn short so we never hold a connection idle across the sleeps.
  */
 export async function waitForApproval(executionId: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
   const startTime = Date.now();
@@ -255,11 +267,13 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
     if (signal?.aborted) return false;
 
     try {
-      const [execution] = await db
-        .select({ status: aiToolExecutions.status })
-        .from(aiToolExecutions)
-        .where(eq(aiToolExecutions.id, executionId))
-        .limit(1);
+      const [execution] = await withSystemDbAccessContext(() =>
+        db
+          .select({ status: aiToolExecutions.status })
+          .from(aiToolExecutions)
+          .where(eq(aiToolExecutions.id, executionId))
+          .limit(1)
+      );
 
       consecutiveErrors = 0;
 
@@ -272,10 +286,12 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
       console.error(`[AI] Approval poll error (attempt ${consecutiveErrors}):`, err);
       if (consecutiveErrors >= 5) {
         try {
-          await db
-            .update(aiToolExecutions)
-            .set({ status: 'rejected', errorMessage: 'Polling failed' })
-            .where(eq(aiToolExecutions.id, executionId));
+          await withSystemDbAccessContext(() =>
+            db
+              .update(aiToolExecutions)
+              .set({ status: 'rejected', errorMessage: 'Polling failed' })
+              .where(eq(aiToolExecutions.id, executionId))
+          );
         } catch (cleanupErr) {
           console.error('[AI] Failed to cleanup polling-failed execution:', cleanupErr);
         }
@@ -289,10 +305,12 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
 
   // Timeout - mark as rejected
   try {
-    await db
-      .update(aiToolExecutions)
-      .set({ status: 'rejected', errorMessage: 'Approval timed out' })
-      .where(eq(aiToolExecutions.id, executionId));
+    await withSystemDbAccessContext(() =>
+      db
+        .update(aiToolExecutions)
+        .set({ status: 'rejected', errorMessage: 'Approval timed out' })
+        .where(eq(aiToolExecutions.id, executionId))
+    );
   } catch (err) {
     console.error('[AI] Failed to mark timed-out execution:', err);
   }

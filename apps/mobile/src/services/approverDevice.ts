@@ -6,11 +6,12 @@
  * Enclave / StrongBox; the server stores only the public key and verifies an
  * RSA-SHA256 signature over a one-time nonce (NOT WebAuthn — a raw signature).
  *
- * All functions are best-effort and FAIL OPEN for the approval path: a
- * technician with no registered device (or no biometric hardware) simply
- * approves without a proof (recorded as L1). Phase 3 is opt-in; enforcement is
- * Phase 4. Registration and PIN-set DO surface errors (they are deliberate
- * setup actions, not the hot approval path).
+ * All functions are best-effort and FAIL OPEN: a technician with no registered
+ * device (or no biometric hardware) simply approves without a proof (recorded
+ * as L1). Registration now happens silently at login via
+ * {@link ensureApproverDevice} — there is no manual setup step and no PIN. The
+ * key activates server-side on its first approval signature (deferred
+ * proof-of-possession).
  */
 import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
@@ -46,42 +47,35 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
 }
 
 /**
- * Register this device as a mobile_hw_key approver. Generates a hardware
- * keypair, proves possession by signing a server nonce, and persists the
- * server-issued credential id locally for later assertions. Throws on failure
- * (this is an explicit setup action).
+ * Idempotent: ensure this phone has a registered approver key. Called after
+ * auth lands (fresh login or restored session). FAILS OPEN — any error
+ * (no hardware, offline) leaves the device unregistered; it provisions on a
+ * later call. The biometric prompt is NOT triggered here (createKeys is
+ * silent); the first approval signature is the first prompt and also activates
+ * the device server-side.
  */
-export async function registerApproverDevice(
-  currentPassword: string,
-  label: string,
+export async function ensureApproverDevice(
   signer: HardwareSigner = getHardwareSigner(),
-): Promise<{ credentialId: string }> {
-  if (!(await signer.isAvailable())) {
-    throw new Error('This device has no biometric hardware key available.');
+): Promise<void> {
+  try {
+    if (await SecureStore.getItemAsync(CRED_ID_KEY)) return;       // already registered
+    if (!(await signer.isAvailable())) return;                      // no hardware → skip
+    const { publicKey } = await signer.createKeys();                // silent, no biometric
+    const res = await authedFetch('/api/v1/authenticator/devices', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'mobile_hw_key',
+        publicKey,
+        label: 'This device',
+        isPlatformBound: true,
+      }),
+    });
+    if (!res.ok) return;                                            // fail open, retry later
+    const { device } = await res.json();
+    if (device?.id) await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
+  } catch {
+    // fail open — never block login on approver provisioning
   }
-  const { publicKey } = await signer.createKeys();
-
-  // 1. Ask the server for a one-time proof-of-possession nonce (password step-up).
-  const optsRes = await authedFetch('/api/v1/authenticator/devices/mobile-hw-key/options', {
-    method: 'POST',
-    body: JSON.stringify({ currentPassword }),
-  });
-  if (!optsRes.ok) throw new Error(`Could not start device registration (${optsRes.status}).`);
-  const { nonce } = await optsRes.json();
-
-  // 2. Sign the nonce with the freshly minted key (biometric-gated).
-  const { signature } = await signer.sign(nonce, 'Register this device for approvals');
-
-  // 3. Submit the public key + PoP signature for verification + storage.
-  const verifyRes = await authedFetch('/api/v1/authenticator/devices/mobile-hw-key/verify', {
-    method: 'POST',
-    body: JSON.stringify({ publicKey, signature, label }),
-  });
-  if (!verifyRes.ok) throw new Error(`Device registration failed (${verifyRes.status}).`);
-  const { device } = await verifyRes.json();
-  const credentialId: string = device?.id ?? device?.credentialId;
-  if (credentialId) await SecureStore.setItemAsync(CRED_ID_KEY, credentialId);
-  return { credentialId };
 }
 
 /**
@@ -109,27 +103,6 @@ export async function gatherApprovalProof(
 
   const { signature } = await signer.sign(nonce, 'Approve this request');
   return { type: 'mobile_hw_key', credentialId, nonce, signature };
-}
-
-/** Set/replace the approver PIN (password step-up). Throws on failure. */
-export async function setApproverPin(currentPassword: string, newPin: string): Promise<void> {
-  const res = await authedFetch('/api/v1/auth/pin', {
-    method: 'PUT',
-    // The server setPinSchema expects `pin` (not `newPin`); the param is named
-    // newPin locally for clarity but must serialize to `pin`.
-    body: JSON.stringify({ currentPassword, pin: newPin }),
-  });
-  if (!res.ok) throw new Error(`Could not set PIN (${res.status}).`);
-}
-
-/** Verify a PIN for UX feedback (the authoritative check happens at decide time). */
-export async function verifyApproverPin(pin: string): Promise<{ verified: boolean; locked: boolean }> {
-  const res = await authedFetch('/api/v1/auth/pin/verify', {
-    method: 'POST',
-    body: JSON.stringify({ pin }),
-  });
-  if (!res.ok) return { verified: false, locked: false };
-  return res.json();
 }
 
 /** Whether this device has a locally-recorded approver credential. */

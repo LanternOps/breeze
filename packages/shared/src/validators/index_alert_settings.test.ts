@@ -307,6 +307,9 @@ describe('agentEnrollSchema', () => {
         serialNumber: 'SN123456',
         manufacturer: 'Dell',
         model: 'OptiPlex 7090',
+        motherboardManufacturer: 'Dell',
+        motherboardProduct: '0XJ8C4',
+        motherboardVersion: 'A01',
       },
     });
     expect(result.success).toBe(true);
