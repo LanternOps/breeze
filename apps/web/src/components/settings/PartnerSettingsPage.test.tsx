@@ -6,6 +6,7 @@ import PartnerSettingsPage, { runPartnerSave } from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
+import { getJwtClaims } from '../../lib/authScope';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -17,6 +18,14 @@ vi.mock('../../stores/orgStore', () => ({
 
 vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
+}));
+
+vi.mock('../../lib/authScope', () => ({
+  getJwtClaims: vi.fn(() => ({ scope: null, orgId: null, partnerId: null })),
+}));
+
+vi.mock('@/lib/navigation', () => ({
+  navigateTo: vi.fn(),
 }));
 
 // Stub the embedded ticketing sub-tab group — we only assert that the Partner
@@ -34,6 +43,7 @@ vi.mock('./TicketingSettingsTabs', () => ({
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
+const getJwtClaimsMock = vi.mocked(getJwtClaims);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -291,5 +301,89 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     render(<PartnerSettingsPage />);
 
     expect(await screen.findByTestId('stub-ticketing-settings-tabs')).not.toBeNull();
+  });
+});
+
+describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
+  const partnerResponse = {
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    // Default: token claims do NOT confirm partner scope. Individual tests
+    // override this as needed.
+    getJwtClaimsMock.mockReturnValue({ scope: null, orgId: null, partnerId: null });
+  });
+
+  it('shows the loading state (not access-denied) while the partner context is still resolving', () => {
+    // Store is still fetching: currentPartnerId not yet set, isLoading true.
+    useOrgStoreMock.mockReturnValue({
+      currentPartnerId: null,
+      isLoading: true,
+      setPartner: vi.fn(),
+    } as never);
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<PartnerSettingsPage />);
+
+    // Must NOT show the access-denied state during resolution...
+    expect(screen.queryByText('Partner Access Required')).toBeNull();
+    expect(
+      screen.queryByText('Partner settings are only available to partner-level users.')
+    ).toBeNull();
+    // ...it shows the loading affordance instead.
+    expect(screen.getByText('Loading partner settings...')).not.toBeNull();
+  });
+
+  it('renders the settings once a partner user resolves', async () => {
+    useOrgStoreMock.mockReturnValue({
+      currentPartnerId: 'partner-1',
+      isLoading: false,
+      setPartner: vi.fn(),
+    } as never);
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    expect(await screen.findByText('Partner Settings')).not.toBeNull();
+    expect(screen.queryByText('Partner Access Required')).toBeNull();
+  });
+
+  it('shows access-denied once resolution confirms a genuine non-partner user', async () => {
+    // Context finished resolving (isLoading false) with no partner, and the JWT
+    // confirms a non-partner scope — the genuine denied case.
+    useOrgStoreMock.mockReturnValue({
+      currentPartnerId: null,
+      isLoading: false,
+      setPartner: vi.fn(),
+    } as never);
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
+
+    render(<PartnerSettingsPage />);
+
+    // The mount effect runs setLoading(false) for the confirmed non-partner
+    // scope, after which the access-denied state must appear.
+    expect(await screen.findByText('Partner Access Required')).not.toBeNull();
+    expect(
+      screen.getByText('Partner settings are only available to partner-level users.')
+    ).not.toBeNull();
+    expect(screen.queryByText('Loading partner settings...')).toBeNull();
   });
 });

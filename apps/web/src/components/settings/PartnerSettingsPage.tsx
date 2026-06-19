@@ -324,6 +324,26 @@ export default function PartnerSettingsPage() {
     setCustomHours(prev => ({ ...prev, [day]: { ...prev[day], [field]: value } }));
   };
 
+  // Show a loading state while the partner context is still resolving, NOT the
+  // access-denied state. The partner store starts empty (currentPartnerId null)
+  // and only fills after the store fetch or the JWT-seed effect below runs, so
+  // gating "access denied" purely on `!currentPartnerId` flashes the denied UI
+  // for ~1-2s before self-correcting (cousin of the partners.length>0 gating
+  // class). The effect keeps local `loading` true until it has CONFIRMED a
+  // non-partner scope (it calls setLoading(false) only on that branch), so
+  // `loading || contextLoading` is the true "still resolving" signal. Only once
+  // resolution finishes and there is genuinely no partner do we deny access.
+  if (!currentPartnerId && (loading || contextLoading)) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading partner settings...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentPartnerId) {
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-950">
