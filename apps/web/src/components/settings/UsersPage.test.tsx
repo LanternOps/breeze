@@ -107,3 +107,36 @@ describe('UsersPage — handleEditSubmit role-change contract', () => {
     expect(roleCalls.length).toBe(0);
   });
 });
+
+// #1629 follow-up: a 403 on the users list is a permission denial, not a
+// transient "Failed to fetch users" error — it must render AccessDenied with
+// no misleading "Try again" retry.
+describe('UsersPage — 403 renders access-denied (not the retryable error)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('renders AccessDenied on a 403 from /users', async () => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/users') return jsonResponse({ error: 'forbidden' }, 403);
+      return jsonResponse({}, 404);
+    });
+    render(<UsersPage />);
+
+    await waitFor(() => expect(screen.getByTestId('access-denied')).toBeInTheDocument());
+    expect(screen.getByText('Access denied')).toBeInTheDocument();
+    expect(screen.getByText("You don't have permission to view users.")).toBeInTheDocument();
+    // No misleading retry on a permission denial, and no "session expired" copy.
+    expect(screen.queryByText('Try again')).not.toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch users')).not.toBeInTheDocument();
+  });
+
+  it('renders the retryable error (with Try again) on a non-403 load failure', async () => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/users') return jsonResponse({}, 500);
+      return jsonResponse({}, 404);
+    });
+    render(<UsersPage />);
+
+    await waitFor(() => expect(screen.getByText('Try again')).toBeInTheDocument());
+    expect(screen.queryByTestId('access-denied')).not.toBeInTheDocument();
+  });
+});

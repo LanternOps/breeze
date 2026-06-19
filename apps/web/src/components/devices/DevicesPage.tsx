@@ -21,7 +21,8 @@ import { useOrgStore } from '../../stores/orgStore';
 import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
-import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
+import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
+import AccessDenied from '../shared/AccessDenied';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
 import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
@@ -823,6 +824,12 @@ export default function DevicesPage() {
         </div>
       </div>
     );
+  }
+
+  // A 403 is a permission denial, not a transient load failure — render the
+  // access-denied state (no misleading "session expired / try again" UI).
+  if (error && isAccessDenied(error)) {
+    return <AccessDenied message="You don't have permission to view devices." />;
   }
 
   if (error) {

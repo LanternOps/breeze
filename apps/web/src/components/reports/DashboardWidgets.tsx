@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import AccessDenied from '../shared/AccessDenied';
 
 type DeviceStatusData = {
   total: number;
@@ -82,22 +83,41 @@ export default function DashboardWidgets({
   const [resources, setResources] = useState<ResourceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // Distinct from `error`: a 403 is a permission denial, not a transient load
+  // failure, so it renders the access-denied state (no misleading retry button).
+  const [forbidden, setForbidden] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
   const fetchData = useCallback(async () => {
     setError(undefined);
+    setForbidden(false);
+    // The per-widget fetches below swallow their own errors and degrade to
+    // empty data. A 403, however, means the user lacks permission for the
+    // dashboard data — surface it as the access-denied state instead of
+    // silently showing zeroes. `parseOrFlag403` records the denial and
+    // re-throws so the widget's own `.catch` still runs (no half state).
+    let sawForbidden = false;
+    const parseOrFlag403 = (res: Response): Promise<unknown> => {
+      if (res.status === 403) {
+        sawForbidden = true;
+        throw res;
+      }
+      return res.json();
+    };
     try {
       const promises: Promise<void>[] = [];
 
       if (showDeviceStatus) {
         promises.push(
           fetchWithAuth('/reports/data/device-inventory?limit=1')
-            .then(res => res.json())
-            .then(data => {
+            .then(parseOrFlag403)
+            .then((raw) => {
+              const data = raw as { total?: number };
               // Get status counts from devices endpoint
               return fetchWithAuth('/devices?limit=1')
-                .then(res => res.json())
-                .then(devData => {
+                .then(parseOrFlag403)
+                .then((rawDev) => {
+                  const devData = rawDev as { summary?: { online?: number; offline?: number; maintenance?: number } };
                   // Calculate from the data or use summary if available
                   setDeviceStatus({
                     total: data.total || 0,
@@ -117,8 +137,9 @@ export default function DashboardWidgets({
       if (showAlertCounts) {
         promises.push(
           fetchWithAuth('/reports/data/alerts-summary')
-            .then(res => res.json())
-            .then(data => {
+            .then(parseOrFlag403)
+            .then((raw) => {
+              const data = raw as { data?: { bySeverity?: Record<string, number> } };
               setAlertCounts({
                 critical: data.data?.bySeverity?.critical || 0,
                 high: data.data?.bySeverity?.high || 0,
@@ -136,12 +157,23 @@ export default function DashboardWidgets({
       if (showCompliance) {
         promises.push(
           fetchWithAuth('/reports/data/compliance')
-            .then(res => res.json())
-            .then(data => {
+            .then(parseOrFlag403)
+            .then((raw) => {
+              const data = raw as {
+                data?: {
+                  overview?: {
+                    complianceScore?: number;
+                    totalDevices?: number;
+                    onlineDevices?: number;
+                    maintenanceDevices?: number;
+                  };
+                  issues?: unknown[];
+                };
+              };
               setCompliance({
                 complianceScore: data.data?.overview?.complianceScore || 100,
                 totalDevices: data.data?.overview?.totalDevices || 0,
-                compliantDevices: data.data?.overview?.onlineDevices + data.data?.overview?.maintenanceDevices || 0,
+                compliantDevices: (data.data?.overview?.onlineDevices ?? 0) + (data.data?.overview?.maintenanceDevices ?? 0),
                 issueCount: data.data?.issues?.length || 0
               });
             })
@@ -154,8 +186,16 @@ export default function DashboardWidgets({
       if (showResources) {
         promises.push(
           fetchWithAuth('/reports/data/metrics')
-            .then(res => res.json())
-            .then(data => {
+            .then(parseOrFlag403)
+            .then((raw) => {
+              const data = raw as {
+                data?: {
+                  averages?: { cpu: number; ram: number; disk: number };
+                  topCpu?: TopResourceDevice[];
+                  topRam?: TopResourceDevice[];
+                  topDisk?: TopResourceDevice[];
+                };
+              };
               setResources({
                 averages: data.data?.averages || { cpu: 0, ram: 0, disk: 0 },
                 topCpu: data.data?.topCpu || [],
@@ -175,6 +215,7 @@ export default function DashboardWidgets({
       }
 
       await Promise.all(promises);
+      if (sawForbidden) setForbidden(true);
       setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
@@ -209,6 +250,12 @@ export default function DashboardWidgets({
         ))}
       </div>
     );
+  }
+
+  // A 403 is a permission denial, not a transient load failure — render the
+  // access-denied state (no misleading retry) instead of a generic error card.
+  if (forbidden) {
+    return <AccessDenied message="You don't have permission to view this dashboard data." />;
   }
 
   if (error) {
