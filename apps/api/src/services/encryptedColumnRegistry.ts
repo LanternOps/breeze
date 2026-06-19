@@ -57,6 +57,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'automations', column: 'trigger', kind: 'json', description: 'automation webhook trigger secret' },
   { table: 'psa_connections', column: 'credentials', kind: 'json', description: 'PSA connection credentials' },
   { table: 'stripe_connect_accounts', column: 'credentials', kind: 'json', description: 'Stripe Connect OAuth token (deauthorize use)' },
+  { table: 'stripe_connect_accounts', column: 'api_key', kind: 'text', description: 'Per-partner Stripe secret/restricted key (API-key billing model)' },
   { table: 'huntress_integrations', column: 'api_key_encrypted', kind: 'text', description: 'Huntress API key' },
   { table: 'huntress_integrations', column: 'webhook_secret_encrypted', kind: 'text', description: 'Huntress webhook secret' },
   { table: 'pax8_integrations', column: 'client_id_encrypted', kind: 'text', description: 'Pax8 OAuth client id' },

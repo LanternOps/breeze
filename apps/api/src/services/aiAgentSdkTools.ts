@@ -269,6 +269,13 @@ async function safePostToolUse(
   }
 }
 
+// The MCP CallToolResult shape that the SDK's `tool()` handler must return.
+// Derived from `tool` itself so we don't take a direct dependency on
+// @modelcontextprotocol/sdk's type entrypoint. As of claude-agent-sdk 0.3 the
+// handler signature is strictly `(args, extra) => Promise<CallToolResult>`,
+// so the per-handler return type below is now checked against this.
+type SdkToolResult = Awaited<ReturnType<Parameters<typeof tool>[3]>>;
+
 function makeHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -288,7 +295,7 @@ function makeHandler(
     // DB operations start with a clean context. Previously only executeTool was
     // wrapped, leaving preToolUse (approval DB writes) and postToolUse (tool_result
     // persistence) vulnerable to stale context hangs.
-    return runOutsideDbContext(async () => {
+    return runOutsideDbContext(async (): Promise<SdkToolResult> => {
     const startTime = Date.now();
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
@@ -339,7 +346,7 @@ function makeHandler(
             const durationMs = Date.now() - startTime;
             await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs);
             // MCP ImageContent format: { type: 'image', data: base64, mimeType: string }
-            const contentBlocks: Array<{ type: string; data?: string; mimeType?: string; text?: string }> = [
+            const contentBlocks: SdkToolResult['content'] = [
               {
                 type: 'image',
                 data: imageBase64,
@@ -436,7 +443,7 @@ function makeSessionAwareHandler(
     // See makeHandler: escape any inherited AsyncLocalStorage DB context so all
     // DB ops (preToolUse approval writes, the tool call, postToolUse persistence)
     // start with a clean transaction context.
-    return runOutsideDbContext(async () => {
+    return runOutsideDbContext(async (): Promise<SdkToolResult> => {
     const startTime = Date.now();
 
     // Resolve the active session up front. The no_active_session guard precedes

@@ -1,8 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
-import { getConnection } from './stripeConnectService';
-import { getStripe, getConnectedStripeOptions } from './stripeClient';
+import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess } from './invoiceService';
@@ -13,8 +12,8 @@ const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
 
 /**
  * Partner-initiated "Send payment link": open a Stripe Checkout session on the
- * partner's connected account for the invoice's outstanding balance and return
- * the hosted-checkout URL for the MSP to share with the customer. The webhook
+ * partner's OWN Stripe account (using their stored API key — no Connect) for the
+ * invoice's outstanding balance and return the hosted-checkout URL. The webhook
  * (routes/webhooks/stripe.ts → stripeReconcile) records the resulting payment
  * idempotently via the `invoice_stripe_payments` mapping, so this only creates
  * the session + a pending mapping row.
@@ -34,14 +33,25 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   const balanceMinor = toMinorUnits(inv.balance, inv.currencyCode);
   if (balanceMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
 
-  const conn = await getConnection(inv.partnerId).catch(() => null);
-  if (!conn || conn.status !== 'connected') {
-    throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
+  // The partner charges on their OWN Stripe account using their stored key (no
+  // platform/Connect). One read returns both the client and the account id (for the
+  // mapping row).
+  let stripe, stripeAccountId: string;
+  try {
+    ({ stripe, stripeAccountId } = await getPartnerStripeClient(inv.partnerId));
+  } catch (err) {
+    // Only "no key configured" is a benign 409. A decrypt/unreadable-key fault is an
+    // internal error — surface it as such (and let it be logged) instead of lying
+    // "connect Stripe first" when the key is actually corrupt/misconfigured.
+    if (err instanceof PartnerStripeError && err.code === 'NO_STRIPE_KEY') {
+      throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
+    }
+    throw new InvoiceServiceError('Could not initialize payment — please contact support', 500, 'STRIPE_INIT_FAILED');
   }
 
   const portalBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || 'http://localhost:4321').replace(/\/$/, '');
 
-  const session = await getStripe().checkout.sessions.create({
+  const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     payment_method_types: ['card'],
     line_items: [{
@@ -52,7 +62,10 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
       },
       quantity: 1,
     }],
-    success_url: `${portalBase}/portal/invoices/${inv.id}?paid=1`,
+    // {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect — the portal
+    // verify-on-return handler reads it to settle server-side (the API-key model
+    // has no inbound webhook).
+    success_url: `${portalBase}/portal/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${portalBase}/portal/invoices/${inv.id}`,
     metadata: {
       invoice_id: inv.id,
@@ -61,7 +74,6 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
       invoice_balance_cents: String(balanceMinor),
     },
   }, {
-    ...getConnectedStripeOptions(conn.stripeAccountId),
     // Identical (invoice, balance) reuses the session instead of creating a
     // second pending mapping — safe for repeated "send link" clicks.
     idempotencyKey: `inv_${inv.id}_${balanceMinor}`,
@@ -72,7 +84,7 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   await db.insert(invoiceStripePayments).values({
     orgId: inv.orgId,
     invoiceId: inv.id,
-    stripeAccountId: conn.stripeAccountId,
+    stripeAccountId,
     stripeObjectType: 'checkout_session',
     stripeObjectId: session.id,
     stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,

@@ -18,6 +18,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const analyticsRoutes = new Hono();
@@ -1670,19 +1671,13 @@ analyticsRoutes.get(
           metrics: [],
         },
       });
-    } catch {
-      return c.json({
-        data: {
-          devices: { total: 0, online: 0, offline: 0, pending: 0 },
-          totalDevices: 0,
-          onlineDevices: 0,
-          offlineDevices: 0,
-          pendingDevices: 0,
-          trendData: [],
-          highlights: [],
-          metrics: [],
-        },
-      });
+    } catch (err) {
+      // Previously this swallowed every error and returned a fully-zeroed body
+      // as HTTP 200, making a failed dashboard indistinguishable from a genuinely
+      // empty org (no alert, no log). Surface the failure instead (issue #1608).
+      captureException(err, c);
+      console.error('[Analytics] executive-summary failed for org %s:', auth?.orgId ?? 'unknown', err);
+      return c.json({ error: 'Failed to load executive summary' }, 500);
     }
   }
 );
@@ -1730,8 +1725,12 @@ analyticsRoutes.get(
       }
 
       return c.json([]);
-    } catch {
-      return c.json([]);
+    } catch (err) {
+      // The success path already returns [] for a genuinely-empty result, so this
+      // catch only ever masked real failures as an empty-but-OK 200 (issue #1608).
+      captureException(err, c);
+      console.error('[Analytics] os-distribution failed for org %s:', auth?.orgId ?? 'unknown', err);
+      return c.json({ error: 'Failed to load OS distribution' }, 500);
     }
   }
 );

@@ -95,6 +95,28 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
     expect(again.status).toBe(401);
   });
 
+  // Phase 3 read-time expiry guard on the public paths: a quote past its
+  // expiry_date can be neither accepted nor declined, even before the sweep runs.
+  runDb('POST accept on an expired quote → 410 QUOTE_EXPIRED, no conversion', async () => {
+    const { quoteId, token } = await seedQuote({ lines: [{ description: 'Setup', unitPrice: '250.00' }] });
+    await withSystemDbAccessContext(() => db.update(quotes).set({ expiryDate: '2000-01-01' }).where(eq(quotes.id, quoteId)));
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Late Larry' });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({ code: 'QUOTE_EXPIRED' });
+    const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q!.status).toBe('sent'); // unchanged — not converted
+  });
+
+  runDb('POST decline on an expired quote → 410 QUOTE_EXPIRED', async () => {
+    const { quoteId, token } = await seedQuote();
+    await withSystemDbAccessContext(() => db.update(quotes).set({ expiryDate: '2000-01-01' }).where(eq(quotes.id, quoteId)));
+    const res = await postJson(`/quotes/public/${token}/decline`, { reason: 'too late' });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({ code: 'QUOTE_EXPIRED' });
+    const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q!.status).toBe('sent'); // unchanged — not declined
+  });
+
   runDb('POST accept converts, then the single-use token can no longer view or accept', async () => {
     const { quoteId, token } = await seedQuote({ lines: [{ description: 'Setup', unitPrice: '250.00' }] });
     const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Prospect Pat' });

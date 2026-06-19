@@ -9,7 +9,9 @@ import {
   resolveApprovalAssurance,
   resolveElevationAssurance,
   assertApprovalAssurance,
+  assertDecisionConsistent,
 } from './authenticatorAssurance';
+import type { AssuranceDecision } from './authenticatorAssurance';
 
 vi.mock('../db', () => ({
   db: {
@@ -560,5 +562,115 @@ describe('assertApprovalAssurance — Phase 4 enforcement (partner policy, deny-
     const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: null, decision: 'approved' });
     expect(d.decidedAssuranceLevel).toBe(1);
     expect(d.graceDowngrade).toBe(true);
+  });
+});
+
+// #1373: AssuranceDecision is a discriminated union on `decidedVia`, so the
+// factor↔level↔device-id invariants are unrepresentable when illegal. These are
+// COMPILE-TIME assertions — the `@ts-expect-error` lines fail `tsc` (and so the
+// `test-api` typecheck/CI) if a future edit widens the type back into a flat
+// record that permits the contradictory shapes. The runtime body just proves the
+// legal shapes assign and the values round-trip.
+describe('AssuranceDecision type (compile-time invariants)', () => {
+  it('accepts the two legal factor shapes and rejects illegal combinations', () => {
+    // Legal: session tap is exactly L1 with no device id.
+    const sessionTap: AssuranceDecision = {
+      requiredLevel: 3,
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: null,
+    };
+    // Legal: a verified L2+ factor always carries a device id (here L4).
+    const l2Factor: AssuranceDecision = {
+      requiredLevel: 4,
+      decidedVia: 'webauthn_platform',
+      decidedAssuranceLevel: 4,
+      authenticatorDeviceId: 'dev-1',
+      graceDowngrade: false,
+    };
+    expect(sessionTap.decidedAssuranceLevel).toBe(1);
+    expect(l2Factor.authenticatorDeviceId).toBe('dev-1');
+
+    // Illegal: session_tap above L1.
+    // @ts-expect-error session_tap must be exactly L1
+    const badSessionLevel: AssuranceDecision = {
+      requiredLevel: 3,
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 3,
+      authenticatorDeviceId: null,
+    };
+    // Illegal: session_tap carrying a device id.
+    // @ts-expect-error session_tap must have no device id
+    const badSessionDevice: AssuranceDecision = {
+      requiredLevel: 1,
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: 'dev-1',
+    };
+    // Illegal: an L2+ factor with a null device id.
+    // @ts-expect-error an L2+ factor must record a device id
+    const badFactorNoDevice: AssuranceDecision = {
+      requiredLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      decidedAssuranceLevel: 2,
+      authenticatorDeviceId: null,
+    };
+    // Illegal: an L2+ factor recorded at L1.
+    // @ts-expect-error an L2+ factor is never level 1
+    const badFactorLevel1: AssuranceDecision = {
+      requiredLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      decidedAssuranceLevel: 1,
+      authenticatorDeviceId: 'dev-1',
+    };
+    // Reference the bindings so they aren't "unused" (the type errors above are
+    // the actual assertions; tsc verifies them).
+    expect([badSessionLevel, badSessionDevice, badFactorNoDevice, badFactorLevel1]).toHaveLength(4);
+  });
+});
+
+// #1373: the runtime `assertDecisionConsistent` backstop is now statically
+// unreachable from any typed construction site, so the only way to exercise its
+// fail-closed throw is to forge an inconsistent record via a cast — exactly the
+// `as`-cast / untyped-build path the backstop exists to catch. These lock in
+// that the belt-and-suspenders guard still fires.
+describe('assertDecisionConsistent — runtime backstop (as-cast / untyped builds)', () => {
+  it('throws on a session_tap recorded above L1', () => {
+    const forged = {
+      requiredLevel: 1,
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 3,
+      authenticatorDeviceId: null,
+    } as unknown as AssuranceDecision;
+    expect(() => assertDecisionConsistent(forged)).toThrow(/session_tap must be exactly L1/);
+  });
+
+  it('throws on an L2+ factor with a null device id', () => {
+    const forged = {
+      requiredLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      decidedAssuranceLevel: 2,
+      authenticatorDeviceId: null,
+    } as unknown as AssuranceDecision;
+    expect(() => assertDecisionConsistent(forged)).toThrow(/an L2\+ factor must record a device id/);
+  });
+
+  it('accepts the legal session-tap and L2+ shapes', () => {
+    expect(() =>
+      assertDecisionConsistent({
+        requiredLevel: 1,
+        decidedVia: 'session_tap',
+        decidedAssuranceLevel: 1,
+        authenticatorDeviceId: null,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertDecisionConsistent({
+        requiredLevel: 2,
+        decidedVia: 'webauthn_platform',
+        decidedAssuranceLevel: 2,
+        authenticatorDeviceId: 'dev-1',
+      }),
+    ).not.toThrow();
   });
 });

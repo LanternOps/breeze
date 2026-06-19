@@ -22,6 +22,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
   const [status, setStatus] = useState(initial?.quote.status ?? '');
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
+  const [payUrl, setPayUrl] = useState<string | null>(null);
 
   if (error || !initial) {
     return (
@@ -55,7 +56,16 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       return;
     }
     setStatus('converted');
-    setMsg('Thank you — your acceptance has been recorded.');
+    // Phase 3: the accept response carries a one-shot Stripe checkout URL (the accept
+    // token is now spent, so it can't be re-minted). payDeferred means a link was
+    // expected but couldn't be minted right now (e.g. a transient Stripe error) — tell
+    // the customer a link is coming rather than silently dropping the payment CTA.
+    setPayUrl(res.data?.data?.payUrl ?? null);
+    setMsg(
+      res.data?.data?.payDeferred
+        ? 'Thank you — your acceptance has been recorded. We’ll email you a payment link shortly.'
+        : 'Thank you — your acceptance has been recorded.'
+    );
   };
 
   const decline = async () => {
@@ -136,8 +146,17 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       )}
 
       {status === 'converted' && (
-        <div data-testid="public-quote-accepted" className="rounded-md bg-success/10 p-4 text-sm text-success">
-          {msg ?? 'This proposal has already been accepted.'}
+        <div data-testid="public-quote-accepted" className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success">
+          <p>{msg ?? 'This proposal has already been accepted.'}</p>
+          {payUrl && (
+            <a
+              href={payUrl}
+              data-testid="public-quote-pay"
+              className="inline-flex rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Pay now
+            </a>
+          )}
         </div>
       )}
       {status === 'declined' && msg && (

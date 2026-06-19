@@ -66,6 +66,20 @@ describe('quote lifecycle', () => {
     expect(declined.declinedAt).toBeTruthy();
   });
 
+  // Phase 3 read-time expiry guard: an expired quote is terminal — it can't be
+  // declined (nor accepted) even before the sweep flips its status.
+  runDb('declineQuoteByActor rejects a quote past its expiry_date', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    await withSystemDbAccessContext(() => db.update(quotes).set({ expiryDate: '2000-01-01' }).where(eq(quotes.id, created.id)));
+    await expect(
+      withDbAccessContext(ctx, () => declineQuoteByActor(created.id, 'too late', actor)),
+    ).rejects.toMatchObject({ status: 410, code: 'QUOTE_EXPIRED' });
+  });
+
   runDb('sendQuote rejects a non-draft', async () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id);
