@@ -515,6 +515,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// off Linux and when there's nothing recorded.
 	startReconcileFailureReporter()
 
+	// Self-heal ProgramData ACL drift on the logs/data trees and warn the fleet
+	// if the MSI HardenProgramDataAcl action was skipped or blocked (#1481).
+	// Runs here, after the shipper is up, so the drift warning actually reaches
+	// agent_logs — same constraint as the reconcile reporter above. No-op off
+	// Windows and when the dirs are already hardened.
+	config.EnforceProgramDataTreePermissions()
+
 	// Load mTLS client certificate if configured
 	var tlsCfg *tls.Config
 	if cfg.MtlsCertPEM != "" {
