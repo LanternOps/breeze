@@ -30,7 +30,7 @@ The Breeze MCP server uses the **SSE + HTTP POST** transport, which is the stand
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/mcp/sse` | `GET` | Opens a long-lived Server-Sent Events stream. The server sends an `endpoint` event containing the URL the client should POST messages to, then streams responses and keepalive pings. |
+| `/api/v1/mcp/sse` | `GET` | Opens a long-lived Server-Sent Events stream. The server sends an `endpoint` event containing the URL the client should POST messages to, then streams responses and keepalive pings. |
 | `/mcp/message` | `POST` | Receives JSON-RPC 2.0 requests from the client. If a `sessionId` query parameter is present and matches an active SSE session, the response is delivered over SSE (HTTP 202). Otherwise the response is returned inline. |
 
 The SSE stream sends keepalive pings every 30 seconds to prevent proxy timeouts. The client can also call `/mcp/message` without an SSE session for stateless, request-response usage.
