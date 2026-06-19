@@ -53,6 +53,7 @@ describe('reliability scoring feature flag gates', () => {
     await expect(computeAndPersistOrgReliability('org-1')).resolves.toEqual({
       orgId: 'org-1',
       devicesComputed: 0,
+      devicesFailed: 0,
     });
 
     expect(mocks.shouldProduceMlOutput).toHaveBeenCalledWith('org-1', 'ml.device_reliability.enabled');
