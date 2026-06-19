@@ -83,6 +83,18 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // quarantined Huntress orgs.
   'huntress_integrations',
   'huntress_org_mappings',
+  // Pax8 billing-sync tables are partner-axis (Shape 3) — a Pax8 integration
+  // belongs to a partner (MSP); the routes reject organization scope outright
+  // ("managed at partner scope") and gate on breeze_has_partner_access. The
+  // org_id column is a mapping target only (which Breeze org a Pax8 company /
+  // subscription / contract line resolves to), pinned to the same partner by
+  // the composite FK (org_id, partner_id) → organizations(id, partner_id), and
+  // is NULL until mapped on the snapshot/company tables. The RLS axis is
+  // partner_id (see PARTNER_TENANT_TABLES), not org. pax8_integrations and
+  // pax8_product_mappings carry no org_id and are not auto-discovered here.
+  'pax8_company_mappings',
+  'pax8_subscription_snapshots',
+  'pax8_contract_line_links',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
