@@ -234,36 +234,24 @@ function mapProfileToDisplay(profile: ApiDiscoveryProfile): DiscoveryProfile {
   };
 }
 
-function getTabFromURL(): DiscoveryTab {
+function getTabFromHash(): DiscoveryTab {
   if (typeof window === 'undefined') return 'assets';
-  const params = new URLSearchParams(window.location.search);
-  const tab = params.get('tab');
-  if (tab && (DISCOVERY_TABS as readonly string[]).includes(tab)) {
-    return tab as DiscoveryTab;
+  const hash = window.location.hash.replace('#', '');
+  if (hash && (DISCOVERY_TABS as readonly string[]).includes(hash)) {
+    return hash as DiscoveryTab;
   }
   return 'assets';
-}
-
-function pushTabToURL(tab: DiscoveryTab) {
-  if (typeof window === 'undefined') return;
-  const url = new URL(window.location.href);
-  if (tab === 'assets') {
-    url.searchParams.delete('tab');
-  } else {
-    url.searchParams.set('tab', tab);
-  }
-  window.history.pushState({ tab }, '', url.toString());
 }
 
 export default function DiscoveryPage() {
   const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
-  // Sync tab from URL after hydration + listen for back/forward
+  // Sync tab from the hash after hydration + listen for hash changes.
   useEffect(() => {
-    setActiveTab(getTabFromURL());
-    const onPopState = () => setActiveTab(getTabFromURL());
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    setActiveTab(getTabFromHash());
+    const onHashChange = () => setActiveTab(getTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
   const [profiles, setProfiles] = useState<ApiDiscoveryProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(true);
@@ -550,8 +538,8 @@ export default function DiscoveryPage() {
   };
 
   const navigateToTab = useCallback((tab: DiscoveryTab) => {
+    if (typeof window !== 'undefined') window.location.hash = tab;
     setActiveTab(tab);
-    pushTabToURL(tab);
   }, []);
 
   const handleNavigateToJobs = useCallback((profileId: string) => {

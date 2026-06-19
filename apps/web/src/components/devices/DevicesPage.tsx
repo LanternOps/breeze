@@ -434,7 +434,7 @@ export default function DevicesPage() {
     // (per-type overview pages are deferred to a #1322 follow-up). Route to
     // the existing Discovery asset view, deep-linked to this asset.
     if ((device.deviceClass ?? 'agent') === 'network') {
-      void navigateTo(`/discovery?tab=assets&asset=${device.id}`);
+      void navigateTo(`/discovery?asset=${device.id}#assets`);
       return;
     }
     void navigateTo(`/devices/${device.id}`);

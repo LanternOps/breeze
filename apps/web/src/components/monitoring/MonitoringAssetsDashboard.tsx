@@ -710,7 +710,7 @@ function EditMonitoringModal({
                   Add network check
                 </button>
                 <a
-                  href={`/monitoring?tab=checks&assetId=${encodeURIComponent(asset.id)}`}
+                  href={`/monitoring?assetId=${encodeURIComponent(asset.id)}#checks`}
                   className="inline-flex items-center h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                 >
                   Open checks

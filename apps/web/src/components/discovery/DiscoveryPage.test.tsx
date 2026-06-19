@@ -85,7 +85,38 @@ function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('DiscoveryPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    window.history.pushState({}, '', '/discovery?tab=profiles');
+    window.history.pushState({}, '', '/discovery#profiles');
+  });
+
+  it('derives the initial tab from window.location.hash', async () => {
+    window.history.pushState({}, '', '/discovery#topology');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+
+    expect(await screen.findByText('Topology tab')).toBeInTheDocument();
+  });
+
+  it('defaults to the Assets tab when there is no hash', async () => {
+    window.history.pushState({}, '', '/discovery');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+
+    expect(await screen.findByText('Assets tab')).toBeInTheDocument();
+  });
+
+  it('updates the hash when a tab is clicked', async () => {
+    window.history.pushState({}, '', '/discovery');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+    await screen.findByText('Assets tab');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Topology' }));
+
+    expect(window.location.hash).toBe('#topology');
+    expect(await screen.findByText('Topology tab')).toBeInTheDocument();
   });
 
   it('toasts and shows a per-profile loading state while queuing a scan', async () => {

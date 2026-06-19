@@ -7,38 +7,26 @@ import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
 const MONITORING_TABS = ['assets', 'checks', 'templates'] as const;
 type MonitoringTab = (typeof MONITORING_TABS)[number];
 
-function getTabFromURL(): MonitoringTab {
+function getTabFromHash(): MonitoringTab {
   if (typeof window === 'undefined') return 'assets';
-  const params = new URLSearchParams(window.location.search);
-  const tab = params.get('tab');
-  if (tab && (MONITORING_TABS as readonly string[]).includes(tab)) {
-    return tab as MonitoringTab;
+  const hash = window.location.hash.replace('#', '');
+  if (hash && (MONITORING_TABS as readonly string[]).includes(hash)) {
+    return hash as MonitoringTab;
   }
   return 'assets';
 }
 
-function pushTabToURL(tab: MonitoringTab) {
-  if (typeof window === 'undefined') return;
-  const url = new URL(window.location.href);
-  if (tab === 'assets') {
-    url.searchParams.delete('tab');
-  } else {
-    url.searchParams.set('tab', tab);
-  }
-  window.history.pushState({ tab }, '', url.toString());
-}
-
 export default function MonitoringPage() {
-  const [activeTab, setActiveTab] = useState<MonitoringTab>(getTabFromURL);
+  const [activeTab, setActiveTab] = useState<MonitoringTab>(getTabFromHash);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
   const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
   const [initialAssetId, setInitialAssetId] = useState<string | null>(null);
 
-  // Sync active tab when the user navigates back/forward.
+  // Sync active tab when the hash changes (e.g. back/forward navigation).
   useEffect(() => {
-    const onPopState = () => setActiveTab(getTabFromURL());
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    const onHashChange = () => setActiveTab(getTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   useEffect(() => {
@@ -61,8 +49,8 @@ export default function MonitoringPage() {
   const tabButtons = MONITORING_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
   const navigateToTab = useCallback((tab: MonitoringTab) => {
+    if (typeof window !== 'undefined') window.location.hash = tab;
     setActiveTab(tab);
-    pushTabToURL(tab);
   }, []);
 
   return (
