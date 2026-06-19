@@ -1,10 +1,7 @@
 import { getJwtClaims } from '../../lib/authScope';
 import CatalogItemsTab from './CatalogItemsTab';
-import TdSynnexCatalogPanel from './TdSynnexCatalogPanel';
-import { useState } from 'react';
 
 export default function CatalogSettingsPage() {
-  const [reloadKey, setReloadKey] = useState(0);
   // Catalog routes enforce requireScope('partner','system') server-side. Gate
   // the page client-side so org-scope users get a clear "partner accounts only"
   // message instead of a misleading load error. getJwtClaims returns null scope
@@ -34,10 +31,10 @@ export default function CatalogSettingsPage() {
         <h1 className="text-xl font-semibold">Product Catalog</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Manage hardware, software, and service items used across quotes, contracts, and invoices.
+          Connect distributors (Pax8, TD SYNNEX) under Integrations &rarr; Distributors.
         </p>
       </div>
-      <TdSynnexCatalogPanel onImported={() => setReloadKey((key) => key + 1)} />
-      <CatalogItemsTab reloadKey={reloadKey} />
+      <CatalogItemsTab />
     </div>
   );
 }

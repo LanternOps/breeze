@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   Activity,
+  Boxes,
   Plug,
   Shield,
   Users,
@@ -13,10 +14,14 @@ import HuntressIntegration from './HuntressIntegration';
 import MonitoringIntegration from './MonitoringIntegration';
 import GoogleWorkspaceIntegration from './GoogleWorkspaceIntegration';
 import M365Integration from './M365Integration';
+import Pax8Integration from './Pax8Integration';
+import TdSynnexCatalogPanel from '../settings/TdSynnexCatalogPanel';
+import { getJwtClaims } from '../../lib/authScope';
 
-type TabId = 'webhooks' | 'psa' | 'security' | 'monitoring' | 'identity';
+type TabId = 'webhooks' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors';
 type SecuritySubTab = 'sentinelone' | 'huntress';
 type IdentitySubTab = 'google' | 'm365';
+type DistributorSubTab = 'pax8' | 'tdsynnex';
 
 const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'webhooks', label: 'Webhooks', icon: Webhook },
@@ -24,6 +29,7 @@ const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
   { id: 'identity', label: 'Identity', icon: Users },
+  { id: 'distributors', label: 'Distributors', icon: Boxes },
 ];
 
 const securitySubTabs: { id: SecuritySubTab; label: string }[] = [
@@ -36,6 +42,11 @@ const identitySubTabs: { id: IdentitySubTab; label: string }[] = [
   { id: 'm365', label: 'Microsoft 365' },
 ];
 
+const distributorSubTabs: { id: DistributorSubTab; label: string }[] = [
+  { id: 'pax8', label: 'Pax8' },
+  { id: 'tdsynnex', label: 'TD SYNNEX' },
+];
+
 interface IntegrationsPageProps {
   initialTab?: TabId;
 }
@@ -44,6 +55,15 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>('sentinelone');
   const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>('google');
+  const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>('pax8');
+
+  // Pax8 and TD SYNNEX APIs both enforce requireScope('partner','system'). Gate
+  // the Distributors tab on the JWT scope (never on useOrgStore().partners.length,
+  // which is empty for real partner users — a known broken anti-pattern here) so
+  // org-scope users get a clear message instead of 403 errors. getJwtClaims returns
+  // null scope on a missing/undecodable token, so only a confirmed 'organization'
+  // scope is blocked; everything else falls through to the server's own check.
+  const isOrgScoped = getJwtClaims().scope === 'organization';
 
   return (
     <div className="space-y-6">
@@ -125,6 +145,29 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
         </div>
       )}
 
+      {/* Distributor sub-tabs (hidden for org-scope users, who can't use these APIs) */}
+      {activeTab === 'distributors' && !isOrgScoped && (
+        <div className="flex gap-2">
+          {distributorSubTabs.map((sub) => {
+            const isActive = sub.id === distributorSubTab;
+            return (
+              <button
+                key={sub.id}
+                type="button"
+                onClick={() => setDistributorSubTab(sub.id)}
+                className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
+                  isActive
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {sub.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Tab content */}
       {activeTab === 'webhooks' && <WebhooksPage />}
       {activeTab === 'psa' && <PsaConnectionsPage />}
@@ -133,6 +176,16 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
       {activeTab === 'monitoring' && <MonitoringIntegration />}
       {activeTab === 'identity' && identitySubTab === 'google' && <GoogleWorkspaceIntegration />}
       {activeTab === 'identity' && identitySubTab === 'm365' && <M365Integration />}
+      {activeTab === 'distributors' && isOrgScoped && (
+        <p
+          className="py-12 text-center text-sm text-muted-foreground"
+          data-testid="distributors-org-scope"
+        >
+          Distributor integrations (Pax8 and TD SYNNEX) are available to partner accounts only.
+        </p>
+      )}
+      {activeTab === 'distributors' && !isOrgScoped && distributorSubTab === 'pax8' && <Pax8Integration />}
+      {activeTab === 'distributors' && !isOrgScoped && distributorSubTab === 'tdsynnex' && <TdSynnexCatalogPanel />}
     </div>
   );
 }
