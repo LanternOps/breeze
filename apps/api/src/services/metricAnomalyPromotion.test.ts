@@ -19,6 +19,7 @@ const {
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
+  ne: (left: unknown, right: unknown) => ({ type: 'ne', left, right }),
 }));
 
 vi.mock('../db', () => ({
@@ -103,6 +104,7 @@ describe('metric anomaly promotion service', () => {
 
   it('creates an alert, links the anomaly, and publishes alert.triggered', async () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 
@@ -136,6 +138,50 @@ describe('metric anomaly promotion service', () => {
     );
   });
 
+  it('reuses a sibling anomaly alert instead of creating a duplicate incident', async () => {
+    // network_egress can be emitted twice for one event: once for
+    // bandwidth_out_bps (baseline) and once for top_process_net_bps_sum
+    // (process runaway). Promoting the second one must reuse the first alert.
+    const requested = {
+      ...anomaly,
+      id: '55555555-5555-4555-8555-555555555555',
+      metricName: 'top_process_net_bps_sum',
+      anomalyType: 'network_egress',
+      linkedAlertId: null,
+      status: 'open',
+    };
+    const promotedSibling = {
+      ...anomaly,
+      id: '66666666-6666-4666-8666-666666666666',
+      metricName: 'bandwidth_out_bps',
+      anomalyType: 'network_egress',
+      linkedAlertId: 'alert-from-sibling',
+      status: 'promoted',
+    };
+
+    selectMock.mockReturnValueOnce(chain([requested]));
+    selectMock.mockReturnValueOnce(chain([promotedSibling])); // dedupe siblings lookup
+    updateMock.mockReturnValueOnce(chain([{ ...requested, status: 'promoted', linkedAlertId: 'alert-from-sibling' }]));
+
+    const result = await promoteMetricAnomalyToAlert({
+      orgId: requested.orgId,
+      deviceId: requested.deviceId,
+      anomalyId: requested.id,
+      actorUserId: 'user-1',
+    });
+
+    expect(result).toMatchObject({
+      status: 'promoted',
+      alertId: 'alert-from-sibling',
+      created: false,
+    });
+    // No new alert and no second alert.triggered event for the duplicate row.
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(publishEventMock).not.toHaveBeenCalled();
+    // The duplicate row is still linked + marked promoted.
+    expect(updateMock).toHaveBeenCalledWith(expect.anything());
+  });
+
   it('is idempotent when the anomaly is already linked to an alert', async () => {
     selectMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: 'alert-existing' }]));
 
@@ -158,6 +204,7 @@ describe('metric anomaly promotion service', () => {
 
   it('suppresses alert creation when anomaly alert promotion is disabled', async () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     shouldProduceMlOutputMock.mockResolvedValue(false);
 
     const result = await promoteMetricAnomalyToAlert({
@@ -174,6 +221,7 @@ describe('metric anomaly promotion service', () => {
 
   it('allows explicit manual promotion even when automatic anomaly alert creation is disabled', async () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     shouldProduceMlOutputMock.mockResolvedValue(false);
     insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));

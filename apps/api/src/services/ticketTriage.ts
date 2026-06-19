@@ -124,7 +124,18 @@ export async function getTicketTriageSuggestion(ticket: TicketRow): Promise<Tick
   const category = chooseTicketCategory(text, categories);
   const suggestedPriority = category?.defaultPriority ?? prioritySuggestion.priority;
   const reasons = [prioritySuggestion.reason];
-  if (category) reasons.push(`matched ${category.name}`);
+  if (category) {
+    reasons.push(`matched ${category.name}`);
+  } else if (!ticket.partnerId) {
+    // No partner on the ticket means we never loaded any categories, so a
+    // category suggestion is structurally impossible. Record the skip so an
+    // empty/priority-only result is explained rather than silently empty.
+    reasons.push('no_partner_categories');
+  } else if (categories.length === 0) {
+    reasons.push('no_active_partner_categories');
+  } else {
+    reasons.push('no_category_keyword_match');
+  }
 
   const changesPriority = suggestedPriority !== ticket.priority;
   const changesCategory = Boolean(category && category.id !== ticket.categoryId);

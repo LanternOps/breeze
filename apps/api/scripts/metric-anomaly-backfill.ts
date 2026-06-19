@@ -25,7 +25,13 @@ async function main(): Promise<void> {
     })
   );
 
-  console.log('[metric-anomaly-backfill] Completed.');
+  if (result.skipped) {
+    // Feature flag off for this org — no anomalies were written. Warn loudly on stderr
+    // so an operator does not mistake a no-op for a completed backfill.
+    console.warn('[metric-anomaly-backfill] SKIPPED: metric anomaly detection is disabled for this org; nothing written.');
+  } else {
+    console.log('[metric-anomaly-backfill] Completed.');
+  }
   console.log(JSON.stringify(result, null, 2));
 }
 

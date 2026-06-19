@@ -528,6 +528,64 @@ describe('alert correlation RCA evidence builder', () => {
     expect(result.gaps).toEqual([]);
   });
 
+  it('keeps high-importance evidence over earlier low-weight noise when truncating', async () => {
+    // Flood the window with many low-weight device_context items that are EARLIER in time than
+    // the single high-weight device_change. An earliest-N truncation would keep the noise and
+    // drop the change; importance-first selection must retain the change.
+    state.correlations = [];
+    state.linkedLogCorrelations = [];
+    state.eventLogs = [];
+    state.agentLogs = [];
+    state.metricRollups = [];
+    state.context = Array.from({ length: 8 }, (_unused, index) => ({
+      id: `ctx-${index}`,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      contextType: 'issue',
+      summary: `Low-signal context ${index}`,
+      details: null,
+      // All earlier than the change below.
+      createdAt: new Date(`2026-06-18T10:0${index}:00Z`),
+      resolvedAt: null,
+    }));
+    state.changes = [{
+      id: 'change-late',
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      // Latest timestamp in the set — would be dropped by an earliest-N slice.
+      timestamp: new Date('2026-06-18T11:59:00Z'),
+      changeType: 'service',
+      changeAction: 'modified',
+      subject: 'Backup service schedule changed',
+    }];
+
+    const result = await buildAlertCorrelationRca({
+      orgId: ORG_ID,
+      groupId: 'group-1',
+      groupScore: 0.5,
+      windowHours: 4,
+      // Smallest allowed cap (clamped to 5): 1 alert + 1 change + 3 context. The high-weight
+      // change must survive even though 5 of the 8 context items are earlier in time.
+      maxEvidenceItems: 5,
+      alerts: [
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:00:00Z') },
+      ],
+    });
+
+    expect(result.timeline).toHaveLength(5);
+    const sources = result.timeline.map((item) => item.source);
+    expect(sources).toContain('alert');
+    expect(sources).toContain('device_change');
+    expect(result.timeline.find((item) => item.id === 'device_change:change-late')).toBeDefined();
+    // Timeline is still chronologically ordered for display.
+    const timestamps = result.timeline.map((item) => new Date(item.timestamp).getTime());
+    expect(timestamps).toEqual([...timestamps].sort((a, b) => a - b));
+    // The candidate heuristics still find the change in the truncated timeline.
+    expect(result.rootCauseCandidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ confidence: 0.58, supportingEvidenceIds: ['device_change:change-late'] }),
+    ]));
+  });
+
   it('caps RCA evidence windows relative to old incident time instead of now', async () => {
     state.eventLogs = [
       {

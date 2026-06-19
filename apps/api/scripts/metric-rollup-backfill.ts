@@ -27,7 +27,13 @@ async function main(): Promise<void> {
     })
   );
 
-  console.log('[metric-rollup-backfill] Completed.');
+  if (result.skipped) {
+    // Feature flag off for this org — no rollups were written. Warn loudly on stderr
+    // so an operator does not mistake a no-op for a completed backfill.
+    console.warn('[metric-rollup-backfill] SKIPPED: metric rollups are disabled for this org; nothing written.');
+  } else {
+    console.log('[metric-rollup-backfill] Completed.');
+  }
   console.log(JSON.stringify(result, null, 2));
 }
 

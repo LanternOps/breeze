@@ -342,6 +342,165 @@ describe('RemediationSuggestionsPanel', () => {
     expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
   });
 
+  it('rejects a suggestion through runAction', async () => {
+    const rejected = { ...suggestion, status: 'rejected' };
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [suggestion] }));
+      }
+      if (url === '/remediation-suggestions/suggestion-1' && method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({ data: rejected }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /reject/i }));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/remediation-suggestions/suggestion-1',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'rejected' }),
+        }),
+      );
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Suggested fix rejected' }));
+    expect(await screen.findByText('Status: rejected')).toBeTruthy();
+  });
+
+  it('toasts an error when generation fails (non-2xx)', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/remediation-suggestions/generate' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /generate/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('toasts an error when an update fails (non-2xx)', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [suggestion] }));
+      }
+      if (url === '/remediation-suggestions/suggestion-1' && method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /accept/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+  });
+
+  it('toasts an error when execution fails (non-2xx)', async () => {
+    const accepted = { ...suggestion, status: 'accepted' };
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [accepted] }));
+      }
+      if (url === '/remediation-suggestions/suggestion-1/execute' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /execute/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('toasts an error when an approval request fails (non-2xx)', async () => {
+    const accepted = { ...suggestion, status: 'accepted', riskTier: 'high', elevationRequestId: null };
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [accepted] }));
+      }
+      if (url === '/remediation-suggestions/suggestion-1/elevation-request' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /request approval/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('renders the empty state when no suggestions exist', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    expect(await screen.findByText('No suggested fixes yet.')).toBeTruthy();
+  });
+
+  it('shows an inline error when loading suggestions fails', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5') {
+        return Promise.resolve(makeJsonResponse({ error: 'down' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+
+    expect(await screen.findByText('Failed to load suggested fixes')).toBeTruthy();
+  });
+
   it('labels and disables generation when suggested fixes are disabled', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);

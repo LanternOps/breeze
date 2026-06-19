@@ -64,6 +64,10 @@ vi.mock('../services/mlFeatureFlags', () => ({
   shouldProduceMlOutput: vi.fn(),
 }));
 
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 import {
   buildUserRiskSignalEventJobId,
   createUserRiskWorker,
@@ -108,6 +112,7 @@ describe('triggerUserRiskRecompute', () => {
       skipped: false,
       appended: 0,
       deduped: 0,
+      failed: 0,
       candidates: {
         offHoursMassScripts: 0,
         remoteSessionBursts: 0,
@@ -183,7 +188,9 @@ describe('triggerUserRiskRecompute', () => {
     expect(queued.description).toHaveLength(1024);
     expect(queued.details).toBeUndefined();
     expect(addMock.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
-      jobId: expect.stringMatching(/^user-risk-signal:org-1:user-1:[a-f0-9]{24}$/),
+      // #1118: jobId uses hyphen separators (0 colons) so BullMQ does not drop
+      // the enqueue — a 3-colon id silently throws.
+      jobId: expect.stringMatching(/^user-risk-signal-org-1-user-1-[a-f0-9]{24}$/),
     }));
   });
 
@@ -206,6 +213,9 @@ describe('triggerUserRiskRecompute', () => {
     });
 
     expect(first).toBe(second);
+    // #1118: BullMQ drops enqueues whose jobId has 1 or 3+ colons. This id must
+    // contain zero colons (hyphen-separated).
+    expect(first).not.toContain(':');
     await enqueueUserRiskSignalEvent(input);
 
     expect(getJobMock).toHaveBeenCalledWith(first);
@@ -328,5 +338,136 @@ describe('triggerUserRiskRecompute', () => {
       publishedSpikes: 0,
       publishFailures: 0,
     });
+  });
+
+  it('computes org user risk and publishes when enabled (happy path)', async () => {
+    vi.mocked(shouldProduceMlOutput).mockResolvedValue(true);
+    vi.mocked(evaluateUserRiskSignalsForOrg).mockResolvedValue({
+      orgId: 'org-1',
+      skipped: false,
+      appended: 2,
+      deduped: 1,
+      failed: 0,
+      candidates: {
+        offHoursMassScripts: 1,
+        remoteSessionBursts: 1,
+        privilegeElevationBursts: 1,
+        newGeographyLogins: 0,
+      },
+    });
+    vi.mocked(computeAndPersistOrgUserRisk).mockResolvedValue({
+      usersProcessed: 5,
+      changedUsers: [{ userId: 'user-1' }],
+      autoTrainingAssigned: 2,
+      policy: { thresholds: { high: 70 }, interventions: {} },
+    } as never);
+    vi.mocked(publishUserRiskScoreEvents).mockResolvedValue({
+      publishedHigh: 1,
+      publishedSpikes: 0,
+      failed: 0,
+    });
+
+    createUserRiskWorker();
+    const result = await workerProcessors[0]!({
+      data: { type: 'compute-org', orgId: 'org-1', queuedAt: '2026-03-31T12:00:00.000Z' },
+    });
+
+    expect(evaluateUserRiskSignalsForOrg).toHaveBeenCalledWith('org-1');
+    expect(computeAndPersistOrgUserRisk).toHaveBeenCalledWith('org-1');
+    expect(publishUserRiskScoreEvents).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      orgId: 'org-1',
+      usersProcessed: 5,
+      changedUsers: 1,
+      autoTrainingAssigned: 2,
+      signalsAppended: 2,
+      signalsDeduped: 1,
+      publishedHigh: 1,
+      publishedSpikes: 0,
+      publishFailures: 0,
+    });
+  });
+
+  it('runs the org DB compute inside runOutsideDbContext, publishes after it closes (#1105)', async () => {
+    const dbModule = await import('../db');
+    const calls: string[] = [];
+    vi.mocked(dbModule.runOutsideDbContext).mockImplementation(((fn: () => unknown) => {
+      calls.push('runOutsideDbContext');
+      return fn();
+    }) as never);
+    vi.mocked(computeAndPersistOrgUserRisk).mockImplementation((async () => {
+      calls.push('computeAndPersistOrgUserRisk');
+      return {
+        usersProcessed: 1,
+        changedUsers: [],
+        autoTrainingAssigned: 0,
+        policy: { thresholds: {}, interventions: {} },
+      };
+    }) as never);
+    vi.mocked(publishUserRiskScoreEvents).mockImplementation((async () => {
+      calls.push('publishUserRiskScoreEvents');
+      return { publishedHigh: 0, publishedSpikes: 0, failed: 0 };
+    }) as never);
+
+    createUserRiskWorker();
+    await workerProcessors[0]!({
+      data: { type: 'compute-org', orgId: 'org-1', queuedAt: '2026-03-31T12:00:00.000Z' },
+    });
+
+    // The DB compute must be wrapped by runOutsideDbContext, and the Redis
+    // publish must happen AFTER (not inside) the held context.
+    expect(calls.indexOf('runOutsideDbContext')).toBeLessThan(calls.indexOf('computeAndPersistOrgUserRisk'));
+    expect(calls.indexOf('computeAndPersistOrgUserRisk')).toBeLessThan(calls.indexOf('publishUserRiskScoreEvents'));
+  });
+
+  it('throws when compute-org publishing partially fails (forces BullMQ retry)', async () => {
+    const { captureException } = await import('../services/sentry');
+    vi.mocked(captureException).mockClear();
+    vi.mocked(publishUserRiskScoreEvents).mockResolvedValue({
+      publishedHigh: 1,
+      publishedSpikes: 0,
+      failed: 2,
+    });
+
+    createUserRiskWorker();
+    await expect(
+      workerProcessors[0]!({
+        data: { type: 'compute-org', orgId: 'org-1', queuedAt: '2026-03-31T12:00:00.000Z' },
+      }),
+    ).rejects.toThrow(/failed to publish 2 risk event/);
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws when signal-event publishing partially fails (forces BullMQ retry)', async () => {
+    const { captureException } = await import('../services/sentry');
+    vi.mocked(captureException).mockClear();
+    vi.mocked(computeAndPersistUserRiskForUser).mockResolvedValue({
+      usersProcessed: 1,
+      changedUsers: [{ userId: 'user-1' }],
+      autoTrainingAssigned: 0,
+      policy: { thresholds: {}, interventions: {} },
+    } as never);
+    vi.mocked(publishUserRiskScoreEvents).mockResolvedValue({
+      publishedHigh: 0,
+      publishedSpikes: 0,
+      failed: 1,
+    });
+
+    createUserRiskWorker();
+    await expect(
+      workerProcessors[0]!({
+        data: {
+          type: 'process-signal-event',
+          orgId: 'org-1',
+          userId: 'user-1',
+          eventType: 'suspicious_login',
+          severity: 'high',
+          description: 'Suspicious login',
+          queuedAt: '2026-03-31T12:00:00.000Z',
+        },
+      }),
+    ).rejects.toThrow(/failed to publish 1 risk event/);
+    expect(appendUserRiskSignalEvent).toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

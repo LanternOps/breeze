@@ -31,6 +31,12 @@ export interface RemediationSuggestionGenerateResult {
   sourceId: string;
   orgId: string;
   skipped: boolean;
+  /**
+   * True when no real script/template/playbook matched and the only persisted
+   * suggestion is the canned "collect diagnostics" fallback nudge. Lets callers
+   * and eval distinguish "found a real fix" from "found nothing".
+   */
+  usedFallback: boolean;
   suggestions: Array<typeof remediationSuggestions.$inferSelect>;
 }
 
@@ -62,6 +68,8 @@ interface Candidate {
   confidence: number;
   expectedAction: string;
   matchedTerms: string[];
+  /** Set only on the canned diagnostic nudge pushed when nothing else matched. */
+  fallback?: boolean;
 }
 
 function sourceTextParts(...parts: Array<string | null | undefined>): string {
@@ -304,6 +312,7 @@ async function listCandidates(ctx: SourceContext, limit: number): Promise<Candid
       confidence: 0.35,
       expectedAction: 'Use existing diagnostic commands or playbooks to gather more evidence before changing the device.',
       matchedTerms: terms.slice(0, 3),
+      fallback: true,
     });
   }
 
@@ -333,6 +342,7 @@ export async function generateRemediationSuggestions(
       sourceId: input.sourceId,
       orgId: ctx.orgId,
       skipped: true,
+      usedFallback: false,
       suggestions: [],
     };
   }
@@ -347,6 +357,7 @@ export async function generateRemediationSuggestions(
     ));
 
   const candidates = await listCandidates(ctx, Math.min(Math.max(input.limit ?? 3, 1), 10));
+  const usedFallback = candidates.some((candidate) => candidate.fallback === true);
   const created: Array<typeof remediationSuggestions.$inferSelect> = [];
   for (const candidate of candidates) {
     const prior = existing.find((row) => sameTarget(row, candidate));
@@ -384,6 +395,9 @@ export async function generateRemediationSuggestions(
           category: candidate.category,
           metricName: ctx.metricName,
           anomalyType: ctx.anomalyType,
+          // Tag the canned "collect diagnostics" nudge so eval/consumers can tell
+          // it apart from a real script/template/playbook match.
+          ...(candidate.fallback ? { fallback: true, reason: 'no_term_match' } : {}),
         },
       })
       .returning();
@@ -395,6 +409,7 @@ export async function generateRemediationSuggestions(
     sourceId: input.sourceId,
     orgId: ctx.orgId,
     skipped: false,
+    usedFallback,
     suggestions: created,
   };
 }

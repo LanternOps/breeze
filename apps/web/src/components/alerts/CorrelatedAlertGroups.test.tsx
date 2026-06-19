@@ -275,6 +275,101 @@ describe('CorrelatedAlertGroups', () => {
     });
   });
 
+  it('toasts an error when acknowledging the group fails (non-2xx)', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(mlFlags(true)));
+      }
+      if (url === '/alerts/correlations' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ groups: [groupPayload] }));
+      }
+      if (url === `/alerts/correlations/${GROUP_ID}/acknowledge` && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<CorrelatedAlertGroups />);
+
+    const groupTitle = (await screen.findAllByText('High CPU on SRV-01'))[0];
+    const section = groupTitle.closest('section')!;
+    fireEvent.click(within(section).getByRole('button', { name: /Acknowledge group/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('toasts an error when resolving the group fails (non-2xx)', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(mlFlags(true)));
+      }
+      if (url === '/alerts/correlations' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ groups: [groupPayload] }));
+      }
+      if (url === `/alerts/correlations/${GROUP_ID}/resolve` && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<CorrelatedAlertGroups />);
+
+    const groupTitle = (await screen.findAllByText('High CPU on SRV-01'))[0];
+    const section = groupTitle.closest('section')!;
+    fireEvent.click(within(section).getByRole('button', { name: /Resolve group/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('shows the error state (not the empty state) when the groups envelope is malformed', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(mlFlags(true)));
+      }
+      if (url === '/alerts/correlations' && method === 'GET') {
+        // Malformed: neither groups nor data is an array.
+        return Promise.resolve(makeJsonResponse({ groups: { nope: true } }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<CorrelatedAlertGroups />);
+
+    expect(await screen.findByText('Failed to load alert groups')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText('No correlated alert groups found.')).toBeNull();
+  });
+
+  it('renders the empty state when the API returns zero groups', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse(mlFlags(true)));
+      }
+      if (url === '/alerts/correlations' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ groups: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<CorrelatedAlertGroups />);
+
+    expect(await screen.findByText('No correlated alert groups found.')).toBeInTheDocument();
+  });
+
   it('runs explicit RCA and records feedback', async () => {
     mockGroupsResponse();
 

@@ -21,6 +21,10 @@ vi.mock('../db', () => ({
   }
 }));
 
+vi.mock('./sentry', () => ({
+  captureException: vi.fn()
+}));
+
 import { publishEvent } from './eventBus';
 import { emitSystemMlFeedbackEvent } from './mlFeedback';
 import {

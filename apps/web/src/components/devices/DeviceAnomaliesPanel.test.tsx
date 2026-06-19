@@ -270,6 +270,123 @@ describe('DeviceAnomaliesPanel', () => {
     expect(screen.getByText('200.0 KB/s')).toBeTruthy();
   });
 
+  it('warns when a promote succeeds without an alert link', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
+        return Promise.resolve(makeJsonResponse({
+          data: [
+            {
+              id: 'anomaly-1',
+              metricType: 'system',
+              metricName: 'cpu_percent',
+              anomalyType: 'spike',
+              status: 'open',
+              windowStart: '2026-06-18T12:00:00.000Z',
+              windowEnd: '2026-06-18T12:05:00.000Z',
+              observedValue: 96.4,
+              baselineValue: 42.2,
+              score: 8.1,
+              confidence: 0.91,
+              sampleCount: 5,
+              linkedAlertId: null,
+              detectedAt: '2026-06-18T12:05:00.000Z',
+            },
+          ],
+        }));
+      }
+      if (url === '/devices/dev-1/anomalies/anomaly-1/status' && method === 'PATCH') {
+        // Promote succeeds but the backend returns no linkedAlertId.
+        return Promise.resolve(makeJsonResponse({
+          data: { id: 'anomaly-1', status: 'promoted', linkedAlertId: null },
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /promote/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: 'Anomaly promoted but no alert link returned',
+      }));
+    });
+    // No "promoted to alert" success banner, and the row is gone.
+    expect(screen.queryByText('Anomaly promoted to alert')).toBeNull();
+    await waitFor(() => expect(screen.queryByText('Spike')).toBeNull());
+  });
+
+  it('toasts an error when a status update fails (non-2xx)', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
+        return Promise.resolve(makeJsonResponse({
+          data: [
+            {
+              id: 'anomaly-1',
+              metricType: 'system',
+              metricName: 'cpu_percent',
+              anomalyType: 'spike',
+              status: 'open',
+              windowStart: '2026-06-18T12:00:00.000Z',
+              windowEnd: '2026-06-18T12:05:00.000Z',
+              observedValue: 96.4,
+              baselineValue: 42.2,
+              score: 8.1,
+              confidence: 0.91,
+              sampleCount: 5,
+              linkedAlertId: null,
+              detectedAt: '2026-06-18T12:05:00.000Z',
+            },
+          ],
+        }));
+      }
+      if (url === '/devices/dev-1/anomalies/anomaly-1/status' && method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /dismiss/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    // The row stays put because the mutation failed.
+    expect(screen.getByText('Spike')).toBeTruthy();
+  });
+
+  it('renders an error state with a working Retry when the load fails', async () => {
+    let attempt = 0;
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
+      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
+        attempt += 1;
+        if (attempt === 1) return Promise.resolve(makeJsonResponse({ error: 'down' }, false, 500));
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+
+    expect(await screen.findByText('Failed to load metric anomalies')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    await screen.findByText('No open anomalies');
+    expect(attempt).toBe(2);
+  });
+
   it('labels the panel disabled and does not load anomalies when anomaly output is disabled', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);

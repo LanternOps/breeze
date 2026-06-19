@@ -102,6 +102,8 @@ export default function UserRiskPage() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [labeling, setLabeling] = useState<'true_positive' | 'false_positive' | null>(null);
   const userRiskDisabled = mlFlags.isDisabled('ml.user_risk_v0.enabled');
 
@@ -149,15 +151,18 @@ export default function UserRiskPage() {
   useEffect(() => {
     if (userRiskDisabled) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
     if (!selected) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
 
     let active = true;
     setDetailLoading(true);
+    setDetailError(null);
     fetchWithAuth(`/user-risk/users/${selected.userId}?orgId=${selected.orgId}`)
       .then(async (response) => {
         if (!response.ok) throw new Error('Failed to load user risk detail');
@@ -165,7 +170,10 @@ export default function UserRiskPage() {
         if (active) setDetail(json?.data ?? null);
       })
       .catch((err) => {
-        if (active) setError(err instanceof Error ? err.message : 'Failed to load user risk detail');
+        if (active) {
+          setDetail(null);
+          setDetailError(err instanceof Error ? err.message : 'Failed to load user risk detail');
+        }
       })
       .finally(() => {
         if (active) setDetailLoading(false);
@@ -174,7 +182,7 @@ export default function UserRiskPage() {
     return () => {
       active = false;
     };
-  }, [selected, userRiskDisabled]);
+  }, [selected, userRiskDisabled, detailReloadKey]);
 
   const factors = useMemo(() => (
     Object.entries(detail?.latestScore.factors ?? selected?.factors ?? {})
@@ -317,6 +325,26 @@ export default function UserRiskPage() {
                   {detail?.latestScore.severity ?? 'score'} {detail?.latestScore.score ?? selected.score}
                 </span>
               </div>
+
+              {detailError && (
+                <div
+                  className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+                  data-testid="user-risk-detail-error"
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    <span>{detailError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDetailReloadKey((key) => key + 1)}
+                    className="mt-3 inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Retry
+                  </button>
+                </div>
+              )}
 
               <div className="flex flex-wrap gap-2">
                 <button

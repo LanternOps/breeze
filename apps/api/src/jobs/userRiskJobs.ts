@@ -15,11 +15,19 @@ import { evaluateUserRiskSignalsForOrg } from '../services/userRiskSignals';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+// #1105: withSystemDbAccessContext holds a DB transaction (pins a pooled
+// connection) for the whole callback. Wrap the DB compute in
+// runOutsideDbContext(() => withSystemDbAccessContext(...)) and do slow non-DB
+// work (Redis publishes) AFTER the context closes — never inside it.
+const runSystemDbCompute = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  const runOutside = dbModule.runOutsideDbContext;
+  if (typeof withSystem !== 'function') return fn();
+  if (typeof runOutside !== 'function') return withSystem(fn);
+  return runOutside(() => withSystem(fn));
 };
 
 const USER_RISK_QUEUE = 'user-risk-scoring';
@@ -120,7 +128,9 @@ export function buildUserRiskSignalEventJobId(input: Omit<ProcessSignalEventJobD
     .update(stableJson(sanitized))
     .digest('hex')
     .slice(0, 24);
-  return `user-risk-signal:${sanitized.orgId}:${sanitized.userId}:${fingerprint}`;
+  // #1118: BullMQ jobIds must contain 0 or exactly 2 colons — 3 colons makes
+  // queue.add() silently throw and the enqueue is dropped. Use hyphen separators.
+  return `user-risk-signal-${sanitized.orgId}-${sanitized.userId}-${fingerprint}`;
 }
 
 export function getUserRiskQueue(): Queue<UserRiskJobData> {
@@ -133,11 +143,17 @@ export function getUserRiskQueue(): Queue<UserRiskJobData> {
 }
 
 async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
-  const orgRows = await db
-    .select({ orgId: organizationUsers.orgId })
-    .from(organizationUsers)
-    .where(sql`${organizationUsers.orgId} is not null`)
-    .groupBy(organizationUsers.orgId);
+  // The org enumeration is a tenant-scoped read; run it under the system
+  // context so RLS lets us see every org (a bare breeze_app read would match
+  // 0 rows, #1375). The result returns before we touch Redis, so the context
+  // is closed by the time we enqueue (#1105).
+  const orgRows = await runSystemDbCompute(() =>
+    db
+      .select({ orgId: organizationUsers.orgId })
+      .from(organizationUsers)
+      .where(sql`${organizationUsers.orgId} is not null`)
+      .groupBy(organizationUsers.orgId)
+  );
 
   if (orgRows.length === 0) {
     return { queued: 0 };
@@ -193,14 +209,29 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
     };
   }
 
-  const signalEvaluation = await evaluateUserRiskSignalsForOrg(data.orgId);
-  const result = await computeAndPersistOrgUserRisk(data.orgId);
+  // #1105: do the DB compute inside the held system context, then RETURN and
+  // run the Redis publishes AFTER the context closes (below) so the open
+  // transaction never spans the per-user publishEvent round-trips.
+  const { signalEvaluation, result } = await runSystemDbCompute(async () => {
+    const signalEvaluation = await evaluateUserRiskSignalsForOrg(data.orgId);
+    const result = await computeAndPersistOrgUserRisk(data.orgId);
+    return { signalEvaluation, result };
+  });
+
   const published = await publishUserRiskScoreEvents({
     orgId: data.orgId,
     changedUsers: result.changedUsers,
     thresholds: result.policy.thresholds,
     interventions: result.policy.interventions
   });
+
+  if (published.failed > 0) {
+    const error = new Error(
+      `[UserRiskJobs] compute-org for org ${data.orgId} failed to publish ${published.failed} risk event(s)`
+    );
+    captureException(error);
+    throw error;
+  }
 
   return {
     orgId: data.orgId,
@@ -240,24 +271,37 @@ async function processSignalEvent(data: ProcessSignalEventJobData): Promise<{
     };
   }
 
-  const eventId = await appendUserRiskSignalEvent({
-    orgId: data.orgId,
-    userId: data.userId,
-    eventType: data.eventType,
-    severity: data.severity,
-    scoreImpact: data.scoreImpact,
-    description: data.description,
-    details: data.details,
-    occurredAt: data.occurredAt ? new Date(data.occurredAt) : undefined
+  // #1105: DB writes inside the held system context; publish after it closes.
+  const { eventId, result } = await runSystemDbCompute(async () => {
+    const eventId = await appendUserRiskSignalEvent({
+      orgId: data.orgId,
+      userId: data.userId,
+      eventType: data.eventType,
+      severity: data.severity,
+      scoreImpact: data.scoreImpact,
+      description: data.description,
+      details: data.details,
+      occurredAt: data.occurredAt ? new Date(data.occurredAt) : undefined
+    });
+
+    const result = await computeAndPersistUserRiskForUser(data.orgId, data.userId);
+    return { eventId, result };
   });
 
-  const result = await computeAndPersistUserRiskForUser(data.orgId, data.userId);
   const published = await publishUserRiskScoreEvents({
     orgId: data.orgId,
     changedUsers: result.changedUsers,
     thresholds: result.policy.thresholds,
     interventions: result.policy.interventions
   });
+
+  if (published.failed > 0) {
+    const error = new Error(
+      `[UserRiskJobs] process-signal-event for org ${data.orgId} user ${data.userId} failed to publish ${published.failed} risk event(s)`
+    );
+    captureException(error);
+    throw error;
+  }
 
   return {
     orgId: data.orgId,
@@ -275,15 +319,16 @@ export function createUserRiskWorker(): Worker<UserRiskJobData> {
   return new Worker<UserRiskJobData>(
     USER_RISK_QUEUE,
     async (job: Job<UserRiskJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        if (job.data.type === 'scan-orgs') {
-          return processScanOrgs(job.data);
-        }
-        if (job.data.type === 'compute-org') {
-          return processComputeOrg(job.data);
-        }
-        return processSignalEvent(job.data);
-      });
+      // Each handler manages its own DB context (#1105): compute inside a
+      // runOutsideDbContext(withSystemDbAccessContext(...)) block and publish
+      // to Redis after it closes. processScanOrgs only reads via the bare pool.
+      if (job.data.type === 'scan-orgs') {
+        return processScanOrgs(job.data);
+      }
+      if (job.data.type === 'compute-org') {
+        return processComputeOrg(job.data);
+      }
+      return processSignalEvent(job.data);
     },
     {
       connection: getBullMQConnection(),
@@ -316,6 +361,9 @@ async function scheduleUserRiskScan(): Promise<void> {
 
 export async function initializeUserRiskJobs(): Promise<void> {
   userRiskWorker = createUserRiskWorker();
+  // attachWorkerObservability already routes both 'error' and 'failed' to
+  // Sentry (#1379); the handlers below are console-only on purpose to avoid
+  // double-reporting (S5).
   attachWorkerObservability(userRiskWorker, 'userRiskWorker');
   userRiskWorker.on('error', (error) => {
     console.error('[UserRiskJobs] Worker error:', error);

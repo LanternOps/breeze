@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { and, asc, desc, eq, gt, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
@@ -9,6 +11,7 @@ import {
   type ReliabilityTopIssue,
 } from '../db/schema';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
+import { captureException } from './sentry';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RELIABILITY_FACTOR_WEIGHTS = {
@@ -632,7 +635,17 @@ function computeTopIssues(input: {
 function buildReliabilityDrivers(details: unknown): ReliabilityFactorDriver[] {
   const root = asObject(details);
   const factors = asObject(root?.factors);
-  if (!factors) return [];
+  if (!factors) {
+    // Distinguish a genuine "no factors" from a malformed/parse-failure payload:
+    // if `details` carried a `factors` key but it didn't parse as an object,
+    // that's a data-shape bug worth surfacing rather than silently returning [].
+    if (root && 'factors' in root) {
+      console.warn(
+        '[ReliabilityScoring] buildReliabilityDrivers: details.factors present but not an object — returning no drivers'
+      );
+    }
+    return [];
+  }
 
   const configs: Array<{ factor: ReliabilityFactorName; label: string }> = [
     { factor: 'uptime', label: 'Uptime' },
@@ -1002,16 +1015,24 @@ async function runConcurrently<T>(
         succeeded++;
       } else {
         failed++;
-        console.error('[ReliabilityScoring] device computation failed:', result.reason);
+        const errorId = randomUUID();
+        console.error(`[ReliabilityScoring] device computation failed (errorId=${errorId}):`, result.reason);
+        captureException(
+          result.reason instanceof Error
+            ? result.reason
+            : new Error(`[ReliabilityScoring] device computation failed (errorId=${errorId}): ${String(result.reason)}`)
+        );
       }
     }
   }
   return { succeeded, failed };
 }
 
-export async function computeAndPersistOrgReliability(orgId: string): Promise<{ orgId: string; devicesComputed: number }> {
+export async function computeAndPersistOrgReliability(
+  orgId: string
+): Promise<{ orgId: string; devicesComputed: number; devicesFailed: number }> {
   if (!(await shouldProduceMlOutput(orgId, 'ml.device_reliability.enabled'))) {
-    return { orgId, devicesComputed: 0 };
+    return { orgId, devicesComputed: 0, devicesFailed: 0 };
   }
 
   const orgDevices = await db
@@ -1019,15 +1040,15 @@ export async function computeAndPersistOrgReliability(orgId: string): Promise<{ 
     .from(devices)
     .where(and(eq(devices.orgId, orgId), sql`${devices.status} <> 'decommissioned'`));
 
-  if (orgDevices.length === 0) return { orgId, devicesComputed: 0 };
+  if (orgDevices.length === 0) return { orgId, devicesComputed: 0, devicesFailed: 0 };
 
-  const { succeeded } = await runConcurrently(
+  const { succeeded, failed } = await runConcurrently(
     orgDevices,
     10,
     (device) => computeAndPersistDeviceReliability(device.id).then(() => undefined)
   );
 
-  return { orgId, devicesComputed: succeeded };
+  return { orgId, devicesComputed: succeeded, devicesFailed: failed };
 }
 
 export async function listReliabilityDevices(filter: ReliabilityListFilter): Promise<{ total: number; rows: ReliabilityListItem[] }> {

@@ -79,4 +79,55 @@ describe('mlFeedbackEventSchema', () => {
     expect(() => mlFeedbackEventSchema.parse({ ...validEvent, confidence: 1.1 })).toThrow();
     expect(() => mlFeedbackEventSchema.parse({ ...validEvent, confidence: -0.1 })).toThrow();
   });
+
+  const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
+  describe('nil-UUID sentinel handling (.guid lenient, not strict-RFC .uuid)', () => {
+    it('accepts the nil-UUID sentinel for orgId so system labels are never silently 400-rejected', () => {
+      const parsed = mlFeedbackEventSchema.parse({ ...validEvent, orgId: NIL_UUID });
+      expect(parsed.orgId).toBe(NIL_UUID);
+    });
+
+    it('accepts the nil-UUID sentinel for actorUserId (system actor)', () => {
+      const parsed = mlFeedbackEventSchema.parse({ ...validEvent, actorUserId: NIL_UUID });
+      expect(parsed.actorUserId).toBe(NIL_UUID);
+    });
+
+    it('still rejects a non-UUID-shaped orgId', () => {
+      expect(() => mlFeedbackEventSchema.parse({ ...validEvent, orgId: 'not-a-uuid' })).toThrow();
+    });
+
+    it('still rejects a non-UUID-shaped actorUserId', () => {
+      expect(() => mlFeedbackEventSchema.parse({ ...validEvent, actorUserId: 'nope' })).toThrow();
+    });
+  });
+
+  describe('enum rejection', () => {
+    it('rejects an unknown sourceType', () => {
+      expect(() => mlFeedbackEventSchema.parse({ ...validEvent, sourceType: 'spaceship' })).toThrow();
+    });
+
+    it('rejects an unknown eventType', () => {
+      expect(() => mlFeedbackEventSchema.parse({ ...validEvent, eventType: 'alert.exploded' })).toThrow();
+    });
+
+    it('rejects an unknown outcome', () => {
+      expect(() => mlFeedbackEventSchema.parse({ ...validEvent, outcome: 'vaporized' })).toThrow();
+    });
+  });
+
+  describe('sourceId length boundaries', () => {
+    it('rejects an empty sourceId', () => {
+      expect(() => mlFeedbackEventSchema.parse({ ...validEvent, sourceId: '' })).toThrow();
+    });
+
+    it('accepts a sourceId at the 255-char ceiling', () => {
+      const parsed = mlFeedbackEventSchema.parse({ ...validEvent, sourceId: 'a'.repeat(255) });
+      expect(parsed.sourceId).toHaveLength(255);
+    });
+
+    it('rejects a sourceId one char over the ceiling', () => {
+      expect(() => mlFeedbackEventSchema.parse({ ...validEvent, sourceId: 'a'.repeat(256) })).toThrow();
+    });
+  });
 });

@@ -9,6 +9,7 @@ import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { buildAlertCorrelationRca } from '../../services/alertCorrelationRca';
 import { publishEvent } from '../../services/eventBus';
+import { captureException } from '../../services/sentry';
 import { emitAlertStateFeedback, emitCorrelationFeedback, emitRcaFeedback } from '../../services/mlFeedbackEmitters';
 import { shouldProduceMlOutput } from '../../services/mlFeatureFlags';
 import { PERMISSIONS } from '../../services/permissions';
@@ -529,11 +530,22 @@ async function getPersistedGroupAlerts(groupId: string, auth: AuthContext): Prom
   return db.select().from(alerts).where(and(eq(alerts.orgId, group.orgId), inArray(alerts.id, alertIds)));
 }
 
-async function updatePersistedGroupStatus(groupId: string, status: 'acknowledged' | 'resolved'): Promise<void> {
-  await db
+async function updatePersistedGroupStatus(
+  groupId: string,
+  orgId: string,
+  status: 'acknowledged' | 'resolved',
+): Promise<void> {
+  const updated = await db
     .update(alertCorrelationGroups)
     .set({ status, updatedAt: new Date() })
-    .where(eq(alertCorrelationGroups.id, groupId));
+    .where(and(eq(alertCorrelationGroups.id, groupId), eq(alertCorrelationGroups.orgId, orgId)))
+    .returning({ id: alertCorrelationGroups.id });
+
+  if (updated.length === 0) {
+    console.warn(
+      `[AlertCorrelationRoute] updatePersistedGroupStatus matched 0 rows for group ${groupId} in org ${orgId} (status=${status}); possible RLS scope mismatch or stale group.`
+    );
+  }
 }
 
 async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'resolve', userId: string) {
@@ -547,14 +559,29 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
   }
 
   const alertIds = eligible.map((alert) => alert.id);
-  await db
+  const returned = await db
     .update(alerts)
     .set(action === 'acknowledge'
       ? { status: 'acknowledged', acknowledgedAt: now, acknowledgedBy: userId }
       : { status: 'resolved', resolvedAt: now, resolvedBy: userId })
-    .where(inArray(alerts.id, alertIds));
+    .where(inArray(alerts.id, alertIds))
+    .returning({ id: alerts.id });
+
+  // Under breeze_app RLS a write that matches 0 rows throws no error. Emitting ML feedback
+  // for the pre-read `eligible` set would poison correlation-acceptance training with phantom
+  // acknowledgements. Only emit for alerts the UPDATE actually wrote.
+  const writtenIds = new Set(returned.map((row) => row.id));
+  if (writtenIds.size !== eligible.length) {
+    captureException(new Error(
+      `[AlertCorrelationRoute] mutateAlerts ${action} RLS scope mismatch: ` +
+      `${eligible.length} eligible alert(s) but only ${writtenIds.size} written; ` +
+      `suppressing feedback for ${eligible.length - writtenIds.size} unwritten alert(s).`
+    ));
+  }
 
   for (const alert of eligible) {
+    if (!writtenIds.has(alert.id)) continue;
+
     void publishEvent(
       action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
       alert.orgId,
@@ -584,7 +611,7 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
     });
   }
 
-  return { updated: eligible.length, skipped: alertRows.length - eligible.length };
+  return { updated: writtenIds.size, skipped: alertRows.length - writtenIds.size };
 }
 
 alertCorrelationRoutes.get(
@@ -793,8 +820,8 @@ alertCorrelationRoutes.post(
     const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
     const groupAlerts = persistedGroupAlerts ?? await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
     const result = await mutateAlerts(groupAlerts, 'acknowledge', auth.user.id);
-    if (persistedGroupAlerts !== null) {
-      await updatePersistedGroupStatus(groupId, 'acknowledged');
+    if (persistedGroupAlerts !== null && groupAlerts[0]) {
+      await updatePersistedGroupStatus(groupId, groupAlerts[0].orgId, 'acknowledged');
     }
 
     writeRouteAudit(c, {
@@ -844,8 +871,8 @@ alertCorrelationRoutes.post(
     const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
     const groupAlerts = persistedGroupAlerts ?? await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
     const result = await mutateAlerts(groupAlerts, 'resolve', auth.user.id);
-    if (persistedGroupAlerts !== null) {
-      await updatePersistedGroupStatus(groupId, 'resolved');
+    if (persistedGroupAlerts !== null && groupAlerts[0]) {
+      await updatePersistedGroupStatus(groupId, groupAlerts[0].orgId, 'resolved');
     }
 
     writeRouteAudit(c, {

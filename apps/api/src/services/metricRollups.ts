@@ -104,7 +104,12 @@ export interface MetricRollupResult {
 
 function bucketStartSql(timestampSql: SQL, bucketSeconds: number): SQL<Date> {
   const bucketSecondsSql = sql.raw(String(bucketSeconds));
-  return sql<Date>`to_timestamp(floor(extract(epoch from ${timestampSql}) / ${bucketSecondsSql}) * ${bucketSecondsSql})::timestamp`;
+  // Bucket entirely in timestamp-without-tz space via date_bin (Postgres 14+).
+  // The previous to_timestamp(...)::timestamp round-trip shifted buckets by the
+  // session TZ offset on any non-UTC DB session, diverging from the raw path
+  // (generate_series over ::timestamp). date_bin never converts to/from timestamptz,
+  // so it stays aligned with the raw grid regardless of the session timezone.
+  return sql<Date>`date_bin(make_interval(secs => ${bucketSecondsSql}), ${timestampSql}, timestamp 'epoch')`;
 }
 
 function upsertAssignments(): SQL {

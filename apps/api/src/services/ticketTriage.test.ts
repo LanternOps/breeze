@@ -1,7 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+// Categories returned by the mocked db.select chain; mutated per-test.
+let categoryRows: Array<{ id: string; name: string; defaultPriority: string | null }> = [];
 
 vi.mock('../db', () => ({
-  db: {},
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve(categoryRows),
+      }),
+    }),
+  },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -14,7 +23,45 @@ vi.mock('./mlFeatureFlags', () => ({
   resolveMlFeatureFlagForOrg: vi.fn(),
 }));
 
-import { ticketTriageInternals } from './ticketTriage';
+import { getTicketTriageSuggestion, ticketTriageInternals } from './ticketTriage';
+import { resolveMlFeatureFlagForOrg } from './mlFeatureFlags';
+
+const baseTicket = {
+  id: 'ticket-1',
+  orgId: 'org-1',
+  partnerId: 'partner-1',
+  subject: 'VPN is down for the whole office',
+  description: 'Nobody can connect to the VPN',
+  source: 'email',
+  priority: 'normal',
+  categoryId: null,
+} as unknown as Parameters<typeof getTicketTriageSuggestion>[0];
+
+describe('getTicketTriageSuggestion — empty-category explanation', () => {
+  beforeEach(() => {
+    categoryRows = [];
+    vi.mocked(resolveMlFeatureFlagForOrg).mockResolvedValue({ enabled: true, source: 'test' } as never);
+  });
+
+  it('records no_partner_categories when the ticket has no partner', async () => {
+    const result = await getTicketTriageSuggestion({ ...baseTicket, partnerId: null } as never);
+    expect(result.suggestion).not.toBeNull();
+    expect(result.suggestion?.reasons).toContain('no_partner_categories');
+    expect(result.suggestion?.categoryId).toBeNull();
+  });
+
+  it('records no_active_partner_categories when the partner has no active categories', async () => {
+    categoryRows = [];
+    const result = await getTicketTriageSuggestion(baseTicket);
+    expect(result.suggestion?.reasons).toContain('no_active_partner_categories');
+  });
+
+  it('records no_category_keyword_match when categories exist but none match', async () => {
+    categoryRows = [{ id: 'cat-backup', name: 'Backup', defaultPriority: null }];
+    const result = await getTicketTriageSuggestion(baseTicket);
+    expect(result.suggestion?.reasons).toContain('no_category_keyword_match');
+  });
+});
 
 describe('ticketTriageInternals', () => {
   it('suggests urgent priority for outage/security language', () => {

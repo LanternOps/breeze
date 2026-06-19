@@ -38,6 +38,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   db: {
     select: selectMock,
   },

@@ -53,6 +53,11 @@ function anomalyUpsertAssignments(): SQL {
 
 async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
+  // bucket_start is timestamp-without-tz; bind ISO strings + ::timestamp so the
+  // comparison stays in tz-free space (matches the rollup writer) and postgres.js
+  // does not bind a raw Date as timestamptz.
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
 
   await db.execute(sql`
     WITH recent AS (
@@ -70,8 +75,8 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
       WHERE mr.org_id = ${options.orgId}
         AND mr.source_table = 'device_metrics'
         AND mr.bucket_seconds = ${RAW_BUCKET_SECONDS}
-        AND mr.bucket_start >= ${from}
-        AND mr.bucket_start < ${to}
+        AND mr.bucket_start >= ${fromIso}::timestamp
+        AND mr.bucket_start < ${toIso}::timestamp
         AND mr.avg_value IS NOT NULL
         AND mr.sample_count > 0
     ),
@@ -183,9 +188,9 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
       least(0.99, greatest(0.5, 0.5 + (s.score / 10)))::double precision,
       s.sample_count,
       jsonb_build_object(
-        'modelVersion', ${METRIC_ANOMALY_VERSION},
-        'baselineHours', ${BASELINE_LOOKBACK_HOURS},
-        'baselineGapMinutes', ${BASELINE_GAP_MINUTES},
+        'modelVersion', ${METRIC_ANOMALY_VERSION}::text,
+        'baselineHours', ${BASELINE_LOOKBACK_HOURS}::integer,
+        'baselineGapMinutes', ${BASELINE_GAP_MINUTES}::integer,
         'baselineBuckets', s.baseline_count,
         'baselineStddev', s.baseline_stddev
       ),
@@ -205,9 +210,16 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
 
 async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
 
   await db.execute(sql`
-    WITH recent AS (
+    WITH anchors AS (
+      -- Every raw bucket in [from, to) is a potential trend-window anchor (the
+      -- window end). Evaluating per-anchor — like detectBaselineDeviations — means
+      -- a wide backfill/catch-up range scans every interior MIN_TREND_BUCKETS slice
+      -- instead of only the single window ending at \`to\`, which silently skipped
+      -- everything before to - MIN_TREND_BUCKETS*RAW_BUCKET_SECONDS.
       SELECT
         mr.org_id,
         mr.device_id,
@@ -215,30 +227,53 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
         mr.metric_type,
         mr.metric_name,
         mr.bucket_seconds,
-        min(mr.bucket_start) AS window_start,
-        max(mr.bucket_start) AS last_bucket_start,
-        count(*)::integer AS bucket_count,
-        (array_agg(mr.avg_value ORDER BY mr.bucket_start ASC))[1]::double precision AS first_value,
-        (array_agg(mr.avg_value ORDER BY mr.bucket_start DESC))[1]::double precision AS last_value,
-        min(mr.avg_value)::double precision AS min_value,
-        max(mr.avg_value)::double precision AS max_value,
-        sum(mr.sample_count)::integer AS sample_count
+        mr.bucket_start AS anchor_bucket_start
       FROM metric_rollups mr
       WHERE mr.org_id = ${options.orgId}
         AND mr.source_table = 'device_metrics'
         AND mr.bucket_seconds = ${RAW_BUCKET_SECONDS}
-        AND mr.bucket_start >= (${to}::timestamp - (${MIN_TREND_BUCKETS} * ${RAW_BUCKET_SECONDS} * interval '1 second'))
-        AND mr.bucket_start < ${to}
+        AND mr.bucket_start >= ${fromIso}::timestamp
+        AND mr.bucket_start < ${toIso}::timestamp
         AND mr.metric_name IN ('ram_percent', 'ram_used_mb', 'disk_percent', 'disk_used_gb')
         AND mr.avg_value IS NOT NULL
         AND mr.sample_count > 0
+    ),
+    recent AS (
+      SELECT
+        a.org_id,
+        a.device_id,
+        a.source_table,
+        a.metric_type,
+        a.metric_name,
+        a.bucket_seconds,
+        min(w.bucket_start) AS window_start,
+        max(w.bucket_start) AS last_bucket_start,
+        count(*)::integer AS bucket_count,
+        (array_agg(w.avg_value ORDER BY w.bucket_start ASC))[1]::double precision AS first_value,
+        (array_agg(w.avg_value ORDER BY w.bucket_start DESC))[1]::double precision AS last_value,
+        min(w.avg_value)::double precision AS min_value,
+        max(w.avg_value)::double precision AS max_value,
+        sum(w.sample_count)::integer AS sample_count
+      FROM anchors a
+      JOIN metric_rollups w
+        ON w.org_id = a.org_id
+       AND w.device_id = a.device_id
+       AND w.source_table = a.source_table
+       AND w.metric_type = a.metric_type
+       AND w.metric_name = a.metric_name
+       AND w.bucket_seconds = a.bucket_seconds
+       AND w.avg_value IS NOT NULL
+       AND w.sample_count > 0
+       AND w.bucket_start > a.anchor_bucket_start - (${MIN_TREND_BUCKETS}::integer * ${RAW_BUCKET_SECONDS}::integer * interval '1 second')
+       AND w.bucket_start <= a.anchor_bucket_start
       GROUP BY
-        mr.org_id,
-        mr.device_id,
-        mr.source_table,
-        mr.metric_type,
-        mr.metric_name,
-        mr.bucket_seconds
+        a.org_id,
+        a.device_id,
+        a.source_table,
+        a.metric_type,
+        a.metric_name,
+        a.bucket_seconds,
+        a.anchor_bucket_start
     ),
     trend AS (
       SELECT
@@ -298,7 +333,7 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
       least(0.98, greatest(0.55, 0.55 + (t.score / 100)))::double precision,
       t.sample_count,
       jsonb_build_object(
-        'modelVersion', ${METRIC_ANOMALY_VERSION},
+        'modelVersion', ${METRIC_ANOMALY_VERSION}::text,
         'trendBuckets', t.bucket_count,
         'firstValue', t.first_value,
         'lastValue', t.last_value
@@ -318,6 +353,8 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
 
 async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
 
   await db.execute(sql`
     WITH recent AS (
@@ -336,8 +373,8 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
       WHERE mr.org_id = ${options.orgId}
         AND mr.source_table = 'device_process_samples'
         AND mr.bucket_seconds = ${RAW_BUCKET_SECONDS}
-        AND mr.bucket_start >= ${from}
-        AND mr.bucket_start < ${to}
+        AND mr.bucket_start >= ${fromIso}::timestamp
+        AND mr.bucket_start < ${toIso}::timestamp
         AND mr.metric_name IN (
           'top_process_cpu_percent_sum',
           'top_process_cpu_percent_max',
@@ -469,9 +506,9 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
       least(0.99, greatest(0.55, 0.55 + (s.score / 10)))::double precision,
       s.sample_count,
       jsonb_build_object(
-        'modelVersion', ${METRIC_ANOMALY_VERSION},
-        'baselineHours', ${BASELINE_LOOKBACK_HOURS},
-        'baselineGapMinutes', ${BASELINE_GAP_MINUTES},
+        'modelVersion', ${METRIC_ANOMALY_VERSION}::text,
+        'baselineHours', ${BASELINE_LOOKBACK_HOURS}::integer,
+        'baselineGapMinutes', ${BASELINE_GAP_MINUTES}::integer,
         'baselineBuckets', s.baseline_count,
         'baselineStddev', s.baseline_stddev,
         'sourceTable', s.source_table

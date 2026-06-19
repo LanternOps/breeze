@@ -187,6 +187,8 @@ export function createMlOutputRetentionWorker(): Worker<RetentionJobData> {
 
 export async function initializeMlOutputRetention(): Promise<void> {
   retentionWorker = createMlOutputRetentionWorker();
+  // attachWorkerObservability already routes 'error'/'failed' to Sentry
+  // (#1379); the handlers below stay console-only to avoid double-reporting (S5).
   attachWorkerObservability(retentionWorker, 'mlOutputRetention');
   retentionWorker.on('error', (error) => {
     console.error('[MlOutputRetention] Worker error:', error);

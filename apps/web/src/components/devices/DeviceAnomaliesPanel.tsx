@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle, ExternalLink, RefreshCw, TrendingUp, XCircl
 
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
@@ -165,12 +166,19 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
             ? 'Anomaly promoted'
             : 'Anomaly resolved',
       });
-      if (status === 'promoted' && result.data?.linkedAlertId) {
-        setPromotedAlert({
-          alertId: result.data.linkedAlertId,
-          metricName: anomaly.metricName,
-          anomalyType: anomaly.anomalyType,
-        });
+      if (status === 'promoted') {
+        if (result.data?.linkedAlertId) {
+          setPromotedAlert({
+            alertId: result.data.linkedAlertId,
+            metricName: anomaly.metricName,
+            anomalyType: anomaly.anomalyType,
+          });
+        } else {
+          // The promote succeeded but the backend returned no alert link, so the
+          // row is about to disappear with no way to reach the created alert.
+          // Surface a distinct warning so this is not mistaken for a clean promote.
+          showToast({ message: 'Anomaly promoted but no alert link returned', type: 'warning' });
+        }
       }
       setAnomalies((current) => current.filter((item) => item.id !== anomaly.id));
     } catch (err) {

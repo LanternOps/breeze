@@ -43,6 +43,11 @@ export type UserRiskSignalEvaluationResult = {
   skipped: boolean;
   appended: number;
   deduped: number;
+  /** Signals whose append threw and were skipped (S4 — distinct from deduped). */
+  failed: number;
+  // NOTE: `candidates` are DETECTION counts (how many rows each query matched),
+  // NOT persisted counts. The persisted total is `appended`; `appended + deduped
+  // + failed` should equal the sum of candidate counts.
   candidates: {
     offHoursMassScripts: number;
     remoteSessionBursts: number;
@@ -135,6 +140,7 @@ export async function evaluateUserRiskSignalsForOrg(
       skipped: true,
       appended: 0,
       deduped: 0,
+      failed: 0,
       candidates: {
         offHoursMassScripts: 0,
         remoteSessionBursts: 0,
@@ -225,15 +231,25 @@ export async function evaluateUserRiskSignalsForOrg(
 
   let appended = 0;
   let deduped = 0;
-  const record = async (result: 'appended' | 'deduped') => {
-    if (result === 'appended') appended += 1;
-    else deduped += 1;
+  let failed = 0;
+  // S4: a single signal append failing must not abort evaluation of the rest of
+  // the org's candidates. Count the failure and continue; the count is surfaced
+  // in the result (and `appended` stays an honest persisted count).
+  const recordSignal = async (build: () => Promise<'appended' | 'deduped'>): Promise<void> => {
+    try {
+      const result = await build();
+      if (result === 'appended') appended += 1;
+      else deduped += 1;
+    } catch (error) {
+      failed += 1;
+      console.error(`[UserRiskSignals] Failed to append signal for org ${orgId}:`, error);
+    }
   };
 
   for (const row of scriptRows) {
     const devicesTargeted = toInt(row.devices_targeted);
     const occurredAt = toDate(row.created_at);
-    await record(await appendDedupedSignal({
+    await recordSignal(() => appendDedupedSignal({
       orgId,
       userId: row.user_id,
       eventType: 'script.off_hours_mass_execution',
@@ -257,7 +273,7 @@ export async function evaluateUserRiskSignalsForOrg(
     const count = toInt(row.session_count);
     const latestAt = toDate(row.latest_at);
     const key = windowKey(latestAt, lookbackHours);
-    await record(await appendDedupedSignal({
+    await recordSignal(() => appendDedupedSignal({
       orgId,
       userId: row.user_id,
       eventType: 'remote_session_burst',
@@ -280,7 +296,7 @@ export async function evaluateUserRiskSignalsForOrg(
     const approvedCount = toInt(row.approved_count);
     const latestAt = toDate(row.latest_at);
     const key = windowKey(latestAt, lookbackHours);
-    await record(await appendDedupedSignal({
+    await recordSignal(() => appendDedupedSignal({
       orgId,
       userId: row.user_id,
       eventType: 'privilege_elevation_burst',
@@ -308,7 +324,7 @@ export async function evaluateUserRiskSignalsForOrg(
       : typeof row.previous_countries === 'string'
         ? row.previous_countries.replace(/[{}"]/g, '').split(',').filter(Boolean)
         : [];
-    await record(await appendDedupedSignal({
+    await recordSignal(() => appendDedupedSignal({
       orgId,
       userId: row.user_id,
       eventType: 'auth.login.new_geography',
@@ -334,6 +350,7 @@ export async function evaluateUserRiskSignalsForOrg(
     skipped: false,
     appended,
     deduped,
+    failed,
     candidates: {
       offHoursMassScripts: scriptRows.length,
       remoteSessionBursts: remoteRows.length,

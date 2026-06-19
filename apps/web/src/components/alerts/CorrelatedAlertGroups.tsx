@@ -371,7 +371,11 @@ export default function CorrelatedAlertGroups() {
       }
 
       const data = await response.json();
-      const nextGroups = (data.groups ?? data.data ?? []) as AlertGroup[];
+      const rawGroups = data?.groups ?? data?.data;
+      if (!Array.isArray(rawGroups)) {
+        throw new Error('Failed to load alert groups');
+      }
+      const nextGroups = rawGroups as AlertGroup[];
       setGroups(nextGroups);
       setExpandedGroups((previous) => {
         const stillValid = new Set([...previous].filter((id) => nextGroups.some((group) => group.id === id)));

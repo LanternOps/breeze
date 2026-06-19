@@ -317,21 +317,37 @@ function buildAlertMetadata(
   };
 }
 
-function rankEvidence(items: RcaEvidenceItem[]): RcaEvidenceItem[] {
-  const sourceWeight: Record<RcaEvidenceItem['source'], number> = {
-    alert: 100,
-    correlation: 80,
-    device_change: 75,
-    event_log: 70,
-    agent_log: 65,
-    metric_rollup: 55,
-    device_context: 45,
-  };
+const RCA_SOURCE_WEIGHT: Record<RcaEvidenceItem['source'], number> = {
+  alert: 100,
+  correlation: 80,
+  device_change: 75,
+  event_log: 70,
+  agent_log: 65,
+  metric_rollup: 55,
+  device_context: 45,
+};
 
-  return [...items].sort((a, b) => {
+/**
+ * Select the top-N evidence items by importance (sourceWeight), then return those survivors
+ * in chronological order for display. Selecting by importance FIRST (instead of sorting purely
+ * by time and slicing) ensures high-signal evidence — e.g. the alerts and correlation edges —
+ * is not dropped on busy windows where low-weight log/metric noise would otherwise crowd out
+ * the earliest-N. Ties in weight are broken by recency so the most recent high-signal item wins.
+ */
+function rankEvidence(items: RcaEvidenceItem[], maxItems: number): RcaEvidenceItem[] {
+  const byImportance = [...items].sort((a, b) => {
+    const weightDiff = RCA_SOURCE_WEIGHT[b.source] - RCA_SOURCE_WEIGHT[a.source];
+    if (weightDiff !== 0) return weightDiff;
+    // Same source weight: prefer the more recent item.
+    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+  });
+
+  const survivors = byImportance.slice(0, Math.max(maxItems, 0));
+
+  return survivors.sort((a, b) => {
     const timeDiff = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
     if (timeDiff !== 0) return timeDiff;
-    return sourceWeight[b.source] - sourceWeight[a.source];
+    return RCA_SOURCE_WEIGHT[b.source] - RCA_SOURCE_WEIGHT[a.source];
   });
 }
 
@@ -811,7 +827,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
       })),
   ];
 
-  const timeline = rankEvidence(evidence).slice(0, maxEvidenceItems);
+  const timeline = rankEvidence(evidence, maxEvidenceItems);
   const candidates = [
     buildPrimaryAlertCandidate(alertRows, options.groupScore),
     buildCorrelationMetadataCandidate(timeline),

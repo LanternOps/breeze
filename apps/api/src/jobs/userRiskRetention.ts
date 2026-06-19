@@ -142,6 +142,8 @@ export function createUserRiskRetentionWorker(): Worker<RetentionJobData> {
 
 export async function initializeUserRiskRetention(): Promise<void> {
   retentionWorker = createUserRiskRetentionWorker();
+  // attachWorkerObservability already routes 'error'/'failed' to Sentry
+  // (#1379); the handlers below stay console-only to avoid double-reporting (S5).
   attachWorkerObservability(retentionWorker, 'userRiskRetention');
   retentionWorker.on('error', (error) => {
     console.error('[UserRiskRetention] Worker error:', error);

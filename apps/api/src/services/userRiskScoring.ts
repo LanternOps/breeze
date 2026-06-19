@@ -34,6 +34,7 @@ import {
 } from '../db/schema';
 import { publishEvent } from './eventBus';
 import { emitSystemMlFeedbackEvent } from './mlFeedback';
+import { captureException } from './sentry';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HIGH_EVENT_TYPE = 'user.risk_score_high';
@@ -844,16 +845,33 @@ function buildChangedUsers(
 
 async function persistUserRiskSnapshots(computedRows: ComputedUserRisk[], calculatedAt: Date): Promise<void> {
   if (computedRows.length === 0) return;
-  await db.insert(userRiskScores).values(
-    computedRows.map((row) => ({
-      orgId: row.orgId,
-      userId: row.userId,
-      score: row.score,
-      factors: row.factors,
-      trendDirection: row.trendDirection,
-      calculatedAt
-    }))
-  );
+  // Verify the write actually landed. Under forced RLS a context/policy gap
+  // makes an INSERT match 0 rows with NO error (#1375 silent-write class), so
+  // we must compare returned rows to what we intended to persist rather than
+  // trust the call succeeded.
+  const inserted = await db
+    .insert(userRiskScores)
+    .values(
+      computedRows.map((row) => ({
+        orgId: row.orgId,
+        userId: row.userId,
+        score: row.score,
+        factors: row.factors,
+        trendDirection: row.trendDirection,
+        calculatedAt
+      }))
+    )
+    .returning({ userId: userRiskScores.userId });
+
+  if (inserted.length !== computedRows.length) {
+    const orgId = computedRows[0]?.orgId;
+    const error = new Error(
+      `[UserRiskScoring] persistUserRiskSnapshots persisted ${inserted.length} of ${computedRows.length} ` +
+        `user risk snapshots for org ${orgId ?? 'unknown'} — possible RLS context/policy gap (#1375)`
+    );
+    captureException(error);
+    throw error;
+  }
 }
 
 export async function computeAndPersistOrgUserRisk(orgId: string): Promise<UserRiskRecomputeResult> {

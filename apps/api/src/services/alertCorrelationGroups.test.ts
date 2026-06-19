@@ -42,7 +42,7 @@ const { dbMock, state, tables } = vi.hoisted(() => {
     select: vi.fn(() => ({
       from: (table: unknown) => new SelectQuery(table),
     })),
-    execute: vi.fn(async () => [{ id: '99999999-9999-4999-8999-999999999999' }]),
+    execute: vi.fn(async (_query?: { strings?: TemplateStringsArray; values?: unknown[] }) => [{ id: '99999999-9999-4999-8999-999999999999' }]),
   };
 
   return { dbMock, state, tables };
@@ -95,6 +95,33 @@ describe('alert correlation group materializer', () => {
     expect(result).toEqual({ scanned: 2, groupsWritten: 1, membersWritten: 2 });
     expect(dbMock.execute).toHaveBeenCalledTimes(3);
     expect(JSON.stringify(dbMock.execute.mock.calls)).toContain('ON CONFLICT');
+  });
+
+  it('floors noiseReductionPercent so the suppression claim never overstates (3 members => 66)', async () => {
+    const ALERT_4 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    state.alerts = [
+      { id: ALERT_1, orgId: ORG_1, deviceId: 'device-1', ruleId: 'rule-1', status: 'active', severity: 'critical', title: 'CPU high', triggeredAt: new Date('2026-06-18T12:00:00Z'), createdAt: new Date('2026-06-18T12:00:00Z') },
+      { id: ALERT_2, orgId: ORG_1, deviceId: 'device-1', ruleId: 'rule-2', status: 'active', severity: 'high', title: 'Memory high', triggeredAt: new Date('2026-06-18T12:01:00Z'), createdAt: new Date('2026-06-18T12:01:00Z') },
+      { id: ALERT_4, orgId: ORG_1, deviceId: 'device-1', ruleId: 'rule-4', status: 'active', severity: 'medium', title: 'Disk high', triggeredAt: new Date('2026-06-18T12:02:00Z'), createdAt: new Date('2026-06-18T12:02:00Z') },
+    ];
+    state.correlations = [
+      { parentAlertId: ALERT_1, childAlertId: ALERT_2, correlationType: 'same_device_temporal', confidence: '0.91', createdAt: new Date('2026-06-18T12:03:00Z') },
+      { parentAlertId: ALERT_2, childAlertId: ALERT_4, correlationType: 'same_device_temporal', confidence: '0.85', createdAt: new Date('2026-06-18T12:04:00Z') },
+    ];
+
+    const result = await persistAlertCorrelationGroupsForAlerts({
+      orgId: ORG_1,
+      alertIds: [ALERT_1, ALERT_2, ALERT_4],
+    });
+
+    expect(result).toEqual({ scanned: 3, groupsWritten: 1, membersWritten: 3 });
+    // The group upsert is the first execute call; its bound values carry noiseReductionPercent.
+    const groupInsert = dbMock.execute.mock.calls.find((call) =>
+      JSON.stringify(call[0]?.strings ?? []).includes('noise_reduction_percent')
+    );
+    expect(groupInsert).toBeDefined();
+    // (3 - 1) / 3 * 100 = 66.66...; floor => 66 (Math.round would overstate to 67).
+    expect(groupInsert![0]?.values).toContain(66);
   });
 
   it('skips materialization when fewer than two alerts are in scope', async () => {

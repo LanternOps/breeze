@@ -98,7 +98,11 @@ function confidenceForAlert(alertId: string, component: Component): number {
 async function upsertGroup(orgId: string, component: Component): Promise<string> {
   const memberCount = component.alerts.length;
   const score = averageConfidence(component.correlations);
-  const noiseReductionPercent = Math.round(((memberCount - 1) / memberCount) * 100);
+  // Floor (never round up) so the customer-facing noise-reduction claim never overstates
+  // the actual suppression (e.g. 3 members => 66%, not 67%). Guard against a 0-member divide.
+  const noiseReductionPercent = memberCount > 0
+    ? Math.floor(((memberCount - 1) / memberCount) * 100)
+    : 0;
   const firstSeenAt = component.alerts[0]!.triggeredAt;
   const lastSeenAt = component.alerts[memberCount - 1]!.triggeredAt;
   const correlationTypes = [...new Set(component.correlations.map((link) => link.correlationType))];

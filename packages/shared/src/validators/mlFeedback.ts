@@ -95,12 +95,18 @@ export const mlFeedbackMetadataSchema = z.record(z.string(), z.unknown()).refine
 );
 
 export const mlFeedbackEventSchema = z.object({
-  orgId: z.string().uuid(),
+  // `.guid()` (lenient) rather than `.uuid()` (strict-RFC): Zod v4's strict UUID
+  // check can reject the all-zero nil sentinel `00000000-0000-0000-0000-000000000000`
+  // across minor versions. orgId is always a real tenant UUID and actorUserId is
+  // normalized to null for system actors (see actorUserIdOrNull in
+  // mlFeedbackEmitters.ts), but emitting a nil sentinel must never be silently
+  // 400-rejected here. `.guid()` accepts any well-formed UUID-shaped string.
+  orgId: z.string().guid(),
   sourceType: z.enum(ML_FEEDBACK_SOURCE_TYPES),
   sourceId: z.string().min(1).max(255),
   eventType: z.enum(ML_FEEDBACK_EVENT_TYPES),
   dedupeKey: z.string().trim().min(1).max(255).nullable().optional(),
-  actorUserId: z.string().uuid().nullable().optional(),
+  actorUserId: z.string().guid().nullable().optional(),
   outcome: z.enum(ML_FEEDBACK_OUTCOMES),
   confidence: z.number().min(0).max(1).nullable().optional(),
   metadata: mlFeedbackMetadataSchema.default({}),

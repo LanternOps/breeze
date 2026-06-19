@@ -9,6 +9,7 @@ const {
   emitCorrelationFeedbackMock,
   emitRcaFeedbackMock,
   shouldProduceMlOutputMock,
+  captureExceptionMock,
   state,
   tables,
   dbMock,
@@ -61,6 +62,10 @@ const {
     members: [] as Array<Record<string, any>>,
     feedback: [] as Array<Record<string, any>>,
     devices: [] as Array<Record<string, any>>,
+    // Alert ids whose UPDATE should match 0 rows (simulating an RLS-scoped write that the
+    // breeze_app connection silently drops). They still appear in SELECTs so they are read as
+    // "eligible" pre-write, exposing the eligible-vs-written mismatch path.
+    unwritableAlertIds: new Set<string>(),
   };
 
   class SelectQuery {
@@ -102,20 +107,36 @@ const {
     })),
     update: vi.fn((table: unknown) => ({
       set: (values: Record<string, unknown>) => ({
-        where: async (predicate: Predicate) => {
+        where: (predicate: Predicate) => {
           const source = table === tables.alerts
             ? state.alerts
             : table === tables.alertCorrelationGroups
               ? state.groups
               : [];
-          let updated = 0;
+          const written: Array<Record<string, unknown>> = [];
           for (const row of source) {
-            if (evalPredicate(row, predicate)) {
-              Object.assign(row, values);
-              updated += 1;
-            }
+            if (!evalPredicate(row, predicate)) continue;
+            // Simulate an RLS-scoped write silently matching 0 rows for flagged alert ids.
+            if (table === tables.alerts && state.unwritableAlertIds.has(row.id as string)) continue;
+            Object.assign(row, values);
+            written.push(row);
           }
-          return Array.from({ length: updated }, () => ({}));
+          const result = written.map(() => ({}));
+          // Support both `await db.update(...).set(...).where(...)` (returns row stubs) and
+          // `.where(...).returning({ id })` (returns the written ids), matching Drizzle.
+          return {
+            returning: (projection?: Record<string, unknown>) =>
+              Promise.resolve(written.map((row) => {
+                if (!projection) return row;
+                const out: Record<string, unknown> = {};
+                for (const key of Object.keys(projection)) {
+                  out[key] = row[columnKey(projection[key])];
+                }
+                return out;
+              })),
+            then: (resolve: (value: unknown[]) => void, reject?: (reason: unknown) => void) =>
+              Promise.resolve(result).then(resolve, reject),
+          };
         },
       }),
     })),
@@ -129,6 +150,7 @@ const {
     emitCorrelationFeedbackMock: vi.fn(),
     emitRcaFeedbackMock: vi.fn(),
     shouldProduceMlOutputMock: vi.fn(),
+    captureExceptionMock: vi.fn(),
     state,
     tables,
     dbMock,
@@ -170,6 +192,7 @@ vi.mock('../../services/alertCorrelationRca', () => ({
   buildAlertCorrelationRca: buildAlertCorrelationRcaMock,
 }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
+vi.mock('../../services/sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('../../services/mlFeedbackEmitters', () => ({
   emitAlertStateFeedback: emitAlertStateFeedbackMock,
   emitCorrelationFeedback: emitCorrelationFeedbackMock,
@@ -216,6 +239,7 @@ function seed() {
   state.members = [];
   state.feedback = [];
   state.devices = [{ id: DEVICE_1, hostname: 'server-1' }];
+  state.unwritableAlertIds = new Set();
 }
 
 function seedPersistedGroup() {
@@ -750,5 +774,46 @@ describe('/alerts correlation routes', () => {
       outcome: 'accepted',
       actorUserId: '99999999-9999-4999-8999-999999999999',
     }));
+  });
+
+  it('does not emit alert-state feedback for alerts the UPDATE did not return (RLS 0-row write)', async () => {
+    seedPersistedGroup();
+    // ALERT_2 is read as eligible (still in state) but its UPDATE matches 0 rows, simulating
+    // an RLS-scoped write the breeze_app connection silently drops.
+    state.unwritableAlertIds = new Set([ALERT_2]);
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/acknowledge`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Only the written alert is counted and gets feedback; the phantom one is suppressed.
+    expect(body.updated).toBe(1);
+    expect(emitAlertStateFeedbackMock).toHaveBeenCalledTimes(1);
+    expect(emitAlertStateFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({ alertId: ALERT_1 }));
+    expect(emitAlertStateFeedbackMock).not.toHaveBeenCalledWith(expect.objectContaining({ alertId: ALERT_2 }));
+    // The eligible-vs-written mismatch is surfaced to Sentry, not silently swallowed.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits feedback for every alert and reports no mismatch when all writes land', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/acknowledge`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.updated).toBe(2);
+    expect(emitAlertStateFeedbackMock).toHaveBeenCalledTimes(2);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('scopes persisted group status updates to the resolving org', async () => {
+    seedPersistedGroup();
+
+    await makeApp().request(`/alerts/correlations/${GROUP_1}/resolve`, { method: 'POST' });
+
+    const updateCalls = dbMock.update.mock.calls;
+    expect(updateCalls).toContainEqual([tables.alertCorrelationGroups]);
+    expect(state.groups.find((group) => group.id === GROUP_1)?.status).toBe('resolved');
   });
 });

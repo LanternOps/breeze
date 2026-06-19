@@ -130,6 +130,53 @@ describe('DeviceReliabilityPanel', () => {
     }));
   });
 
+  it('toasts an error when feedback submission fails (non-2xx)', async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          snapshot: {
+            deviceId: 'dev-1',
+            reliabilityScore: 65,
+            trendDirection: 'stable',
+            trendConfidence: 0.4,
+            uptime30d: 99.1,
+            crashCount30d: 0,
+            hangCount30d: 1,
+            serviceFailureCount30d: 0,
+            hardwareErrorCount30d: 0,
+            mtbfHours: null,
+            topIssues: [],
+            drivers: [],
+            computedAt: '2026-06-18T12:00:00.000Z',
+          },
+          history: [],
+        }),
+      )
+      .mockResolvedValueOnce(makeJsonResponse({ error: 'boom' }, false, 500));
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /false alarm/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('renders an error state with a working Retry when the load fails', async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ error: 'down' }, false, 500))
+      .mockResolvedValueOnce(makeJsonResponse({ error: 'No snapshot' }, false, 404));
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+
+    expect(await screen.findByText('Failed to load reliability score')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    await screen.findByText('No reliability snapshot available yet.');
+  });
+
   it('renders an empty state when no snapshot exists yet', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ error: 'No snapshot' }, false, 404));
 

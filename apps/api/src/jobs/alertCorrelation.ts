@@ -504,7 +504,7 @@ export async function runAlertCorrelationForDevice(options: {
       const confidence = evidence.confidence;
       if (confidence < 0.3) continue;
 
-      await db
+      const inserted = await db
         .insert(alertCorrelations)
         .values({
           parentAlertId: older.id,
@@ -512,10 +512,15 @@ export async function runAlertCorrelationForDevice(options: {
           correlationType: evidence.correlationType,
           confidence: String(confidence),
           metadata: evidence.metadata,
-        });
+        })
+        .returning({ id: alertCorrelations.id });
 
       linkedPairs.add(pairKey);
-      created += 1;
+      // Under breeze_app RLS a write that matches no rows throws no error; only count
+      // correlations that were actually persisted so `created` cannot overstate the result.
+      if (inserted.length > 0) {
+        created += 1;
+      }
     }
   }
 
