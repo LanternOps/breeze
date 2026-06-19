@@ -1,11 +1,16 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../db/schema/quotes';
 import { invoices, invoiceLines } from '../db/schema/invoices';
+import { partners } from '../db/schema/orgs';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
 import { computeLineTotal, computeInvoiceTotals } from './invoiceMath';
+import { formatInvoiceNumber } from './invoiceNumbers';
+import { isQuoteExpired } from './quoteExpiry';
+import { emitInvoiceEvent } from './invoiceEvents';
+import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 
 export interface AcceptQuoteParams {
   quoteId: string;
@@ -38,7 +43,7 @@ type QuoteRow = typeof quotes.$inferSelect;
  */
 export async function acceptQuote(
   params: AcceptQuoteParams
-): Promise<{ quote: QuoteRow; acceptanceId: string; invoiceId: string }> {
+): Promise<{ quote: QuoteRow; acceptanceId: string; invoiceId: string; invoiceIssued: boolean }> {
   // FOR UPDATE: serialize concurrent accepts on the same quote (we're already in
   // the caller's transaction). Without the row lock two READ COMMITTED accepts
   // both pass the status guard and each create an invoice (atom-1/C2).
@@ -46,6 +51,12 @@ export async function acceptQuote(
   if (!quote) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+  // Read-time expiry guard (Phase 3): a quote past its expiry_date can't be accepted
+  // even if the sweep hasn't flipped it to 'expired' yet — closes the gap between
+  // expiry and the next sweep tick. Shares the date-only definition with the sweep.
+  if (isQuoteExpired(quote.expiryDate)) {
+    throw new QuoteServiceError('This quote has expired and can no longer be accepted', 410, 'QUOTE_EXPIRED');
   }
 
   const blocks = await db
@@ -130,16 +141,54 @@ export async function acceptQuote(
     totalsLines.push({ lineTotal, taxable: l.taxable, customerVisible: true });
   }
   const totals = computeInvoiceTotals(totalsLines, quote.taxRate ?? null);
-  await db
-    .update(invoices)
-    .set({
-      subtotal: totals.subtotal,
-      taxTotal: totals.taxTotal,
-      total: totals.total,
-      balance: totals.total,
-      updatedAt: now,
-    })
-    .where(eq(invoices.id, invoice!.id));
+
+  // Auto-issue on accept (Phase 3): if the converted invoice has payable (one-time)
+  // lines, ISSUE it now — allocate a gapless invoice number and flip to 'sent' — so
+  // the customer can pay immediately via createInvoicePayLink (PAYABLE excludes
+  // 'draft'). We deliberately KEEP the quote's snapshotted totals/taxRate (computed
+  // above) rather than re-resolving org/partner tax like issueInvoice does: the
+  // charge must equal the accepted quote. A degenerate recurring-only quote ($0, no
+  // one-time lines) stays draft — there's nothing to collect. The counter upsert is
+  // inlined (no runOutsideDbContext) to stay atomic inside the caller's accept
+  // transaction; the quote row lock above already serializes concurrent accepts, so
+  // there's no double-allocation.
+  // Partial<$inferInsert> (not Record<string, unknown>) so a typo'd column or a
+  // wrong value type (e.g. money-string vs number) is a compile error, not a silent
+  // no-op on the update.
+  const issueFields: Partial<typeof invoices.$inferInsert> = {
+    subtotal: totals.subtotal,
+    taxTotal: totals.taxTotal,
+    total: totals.total,
+    balance: totals.total,
+    updatedAt: now,
+  };
+  if (oneTime.length > 0) {
+    const [partner] = await db
+      .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays })
+      .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+    const year = now.getUTCFullYear();
+    const counterRows = await db.execute(sql`
+      INSERT INTO partner_invoice_sequences (partner_id, year, counter)
+      VALUES (${quote.partnerId}, ${year}, 1)
+      ON CONFLICT (partner_id, year)
+      DO UPDATE SET counter = partner_invoice_sequences.counter + 1
+      RETURNING counter
+    `);
+    const counter = Number((counterRows as unknown as Array<{ counter: number }>)[0]?.counter
+      ?? (counterRows as unknown as { rows?: Array<{ counter: number }> }).rows?.[0]?.counter);
+    if (!Number.isFinite(counter) || counter < 1) {
+      throw new QuoteServiceError('Failed to allocate invoice number', 500, 'INVALID_STATE');
+    }
+    const dueDate = new Date(now.getTime() + (partner?.termsDays ?? 30) * 86400000);
+    issueFields.status = 'sent';
+    issueFields.invoiceNumber = formatInvoiceNumber(partner?.prefix ?? 'INV', year, counter);
+    issueFields.issueDate = now.toISOString().slice(0, 10);
+    issueFields.dueDate = dueDate.toISOString().slice(0, 10);
+    issueFields.billToName = quote.billToName ?? null;
+    issueFields.billToAddress = quote.billToAddress ?? null;
+    issueFields.billToTaxId = quote.billToTaxId ?? null;
+  }
+  await db.update(invoices).set(issueFields).where(eq(invoices.id, invoice!.id));
 
   // 3. Transition the quote to converted.
   await db
@@ -157,5 +206,36 @@ export async function acceptQuote(
   // commits (atom-2) — revoking here would fire even if the txn later rolled back.
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, quote.id)).limit(1);
-  return { quote: updated!, acceptanceId: acceptance!.id, invoiceId: invoice!.id };
+  // invoiceIssued mirrors the `oneTime.length > 0` branch above that flips the
+  // invoice to status='sent' with a real number; a $0/no-one-time accept leaves
+  // the invoice unissued. The caller emits lifecycle side effects post-commit.
+  return { quote: updated!, acceptanceId: acceptance!.id, invoiceId: invoice!.id, invoiceIssued: oneTime.length > 0 };
+}
+
+/**
+ * Fire-and-forget lifecycle side effects for an accept that issued an invoice:
+ * the `invoice.issued` event + the async PDF render. MUST be called AFTER the
+ * accept transaction commits — both are Redis/BullMQ ops, and emitting inside the
+ * transaction would fire even on a later rollback (the same reason the public
+ * token's jti revoke is deferred to the caller). No-op when no invoice was issued.
+ * Mirrors the post-commit tail of invoiceService.issueInvoice so quote-originated
+ * invoices land on the events bus and get a cached PDF like any other.
+ */
+export async function emitAcceptInvoiceIssued(
+  res: { invoiceId: string; invoiceIssued: boolean; quote: QuoteRow },
+  actorUserId: string | null,
+): Promise<void> {
+  if (!res.invoiceIssued) return;
+  await emitInvoiceEvent({
+    type: 'invoice.issued',
+    invoiceId: res.invoiceId,
+    orgId: res.quote.orgId,
+    partnerId: res.quote.partnerId,
+    actorUserId,
+  });
+  try {
+    await enqueueInvoicePdfRender(res.invoiceId);
+  } catch (err) {
+    console.error('[quoteAccept] enqueueInvoicePdfRender failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+  }
 }

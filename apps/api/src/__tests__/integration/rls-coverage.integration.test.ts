@@ -83,12 +83,14 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // quarantined Huntress orgs.
   'huntress_integrations',
   'huntress_org_mappings',
-  // Pax8 mappings/snapshots are partner-axis (Shape 3) — RLS uses
-  // breeze_has_partner_access(partner_id). The nullable org_id is a dual-axis FK
-  // into organizations(id, partner_id) for referential integrity + filtering, not
-  // the RLS axis (analogous to huntress_org_mappings). They're registered in
-  // PARTNER_TENANT_TABLES; without this exemption the org-tenant auto-discovery
-  // (which keys purely on org_id presence) wrongly demands org policies.
+  // Pax8 sync tables: partner-axis (Shape 3). The MSP partner owns the Pax8
+  // integration; org_id is denormalized (nullable on mappings/snapshots, for the
+  // resolved customer) for FK joins + filtering only — the RLS axis is partner_id
+  // (breeze_has_partner_access, asserted via PARTNER_TENANT_TABLES). Without these
+  // the org_id column makes auto-discovery treat them as shape-1 org-tenant and
+  // demand breeze_has_org_access they intentionally don't have (#1594 added them
+  // to PARTNER_TENANT_TABLES but missed this set). pax8_integrations /
+  // pax8_product_mappings have no org_id, so they're never auto-discovered here.
   'pax8_company_mappings',
   'pax8_subscription_snapshots',
   'pax8_contract_line_links',

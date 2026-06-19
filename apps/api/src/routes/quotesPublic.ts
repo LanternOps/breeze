@@ -9,9 +9,13 @@ import { portalBranding } from '../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
-import { acceptQuote } from '../services/quoteAcceptService';
+import { acceptQuote, emitAcceptInvoiceIssued } from '../services/quoteAcceptService';
 import { readQuoteImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
+import { InvoiceServiceError } from '../services/invoiceTypes';
+import { isQuoteExpired } from '../services/quoteExpiry';
+import { createQuotePayLink } from '../services/quotePay';
+import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 /**
@@ -79,8 +83,35 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
       acceptanceTokenJti: claims.jti, actorUserId: null,
     })));
     // Post-commit (atom-2): consume the single-use token so the link can't be replayed.
-    try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null } });
+    // A failed revoke leaves the accept link replayable (security-relevant) → capture.
+    try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
+    // Post-commit: emit invoice.issued + enqueue the PDF render (matches issueInvoice).
+    // Fire-and-forget; a public accepter has no user id.
+    await emitAcceptInvoiceIssued(res, null);
+    // Phase 3 accept→pay: mint a Stripe checkout link for the just-issued invoice and
+    // return it (the accept token is now revoked, so the URL must come back in THIS
+    // response). Runs in its own context AFTER the accept committed — it must never
+    // fail (or roll back) the accept. Distinguish EXPECTED no-pay outcomes (a $0 quote
+    // → NOTHING_TO_PAY/NOT_PAYABLE, or the partner hasn't connected Stripe) — surfaced
+    // quietly as payUrl:null — from an UNEXPECTED failure (Stripe outage, DB), which we
+    // flag as payDeferred + capture so a silently-lost payment CTA is observable rather
+    // than looking identical to "nothing to pay".
+    let payUrl: string | null = null;
+    let payDeferred = false;
+    try {
+      const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        createQuotePayLink(claims.quoteId, { userId: null, partnerId: null, accessibleOrgIds: [claims.orgId] })));
+      payUrl = link.url;
+    } catch (err) {
+      const benign = err instanceof InvoiceServiceError
+        && (err.code === 'NOT_PAYABLE' || err.code === 'NOTHING_TO_PAY' || err.code === 'STRIPE_NOT_CONNECTED');
+      if (!benign) {
+        payDeferred = true;
+        console.error('[quotesPublic] pay-link mint failed after accept', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });
 
@@ -88,15 +119,20 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
 quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zValidator('json', declineQuoteSchema), async (c) => {
   const claims = await resolve(c); const { reason } = c.req.valid('json');
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
-  const ok = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const result = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
-    if (!quote || (quote.status !== 'sent' && quote.status !== 'viewed')) return false;
+    if (!quote || (quote.status !== 'sent' && quote.status !== 'viewed')) return 'bad_state' as const;
+    // Read-time expiry guard (Phase 3): an expired quote is terminal — mirror the
+    // acceptQuote / declineQuoteByActor 410 so the sub-sweep window is covered here too.
+    if (isQuoteExpired(quote.expiryDate)) return 'expired' as const;
     const now = new Date();
     await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, quote.id));
-    return true;
+    return 'ok' as const;
   }));
-  if (!ok) return c.json({ error: 'This quote can no longer be declined' }, 409);
+  if (result === 'expired') return c.json({ error: 'This quote has expired', code: 'QUOTE_EXPIRED' }, 410);
+  if (result !== 'ok') return c.json({ error: 'This quote can no longer be declined' }, 409);
   // Consume the single-use token post-commit so a declined link can't be replayed.
-  try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); }
+  // A failed revoke leaves the link replayable (security-relevant) → capture.
+  try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
   return c.json({ data: { status: 'declined' } });
 });
