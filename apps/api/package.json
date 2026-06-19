@@ -61,7 +61,7 @@
     "jose": "^6.2.3",
     "nanoid": "^5.1.11",
     "node-stream-zip": "^1.15.0",
-    "nodemailer": "^8.0.4",
+    "nodemailer": "^9.0.1",
     "oidc-provider": "^9",
     "otplib": "^13.4.1",
     "pdfkit": "^0.19.1",
