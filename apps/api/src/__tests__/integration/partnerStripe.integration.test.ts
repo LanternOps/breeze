@@ -111,6 +111,22 @@ describe('partner Stripe API-key credentials (breeze_app, real DB)', () => {
     expect(client._key).toBe(keyB); // the new key, not the old one
   });
 
+  // Two partners cannot both claim the same Stripe account (acct_uq). The second
+  // gets a friendly key error, not a raw 500, and persists no row.
+  runDb('save rejects a key whose Stripe account is already claimed by another partner', async () => {
+    const [a, b] = await withSystemDbAccessContext(async () => [await createPartner(), await createPartner()]);
+    const keyA = ['sk', 'test', '51SHAREDaaaa1111'].join('_');
+    const keyB = ['sk', 'test', '51SHAREDbbbb2222'].join('_');
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_shared', charges_enabled: true });
+    await withSystemDbAccessContext(() => savePartnerStripeKey({ partnerId: a.id, apiKey: keyA, userId: null }));
+
+    // partner B pastes a (different) key that maps to the SAME Stripe account
+    await expect(withSystemDbAccessContext(() => savePartnerStripeKey({ partnerId: b.id, apiKey: keyB, userId: null })))
+      .rejects.toMatchObject({ code: 'INVALID_STRIPE_KEY' });
+    const rows = await withSystemDbAccessContext(() => db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, b.id)));
+    expect(rows).toHaveLength(0); // acct_uq violation rolled back — nothing persisted for B
+  });
+
   // A live key (rk_live/sk_live) flips livemode — drives the test/live badge in the UI.
   runDb('a live-mode key sets livemode=true', async () => {
     const partner = await withSystemDbAccessContext(() => createPartner());

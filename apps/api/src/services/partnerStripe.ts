@@ -80,23 +80,11 @@ export async function savePartnerStripeKey(input: {
   const encrypted = encryptSecret(apiKey);
   const now = new Date();
 
-  await db
-    .insert(stripeConnectAccounts)
-    .values({
-      partnerId: input.partnerId,
-      stripeAccountId: accountId,
-      apiKey: encrypted,
-      keyLast4: last4,
-      livemode,
-      status: 'connected',
-      connectedBy: input.userId,
-      connectedAt: now,
-      disconnectedAt: null,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: stripeConnectAccounts.partnerId,
-      set: {
+  try {
+    await db
+      .insert(stripeConnectAccounts)
+      .values({
+        partnerId: input.partnerId,
         stripeAccountId: accountId,
         apiKey: encrypted,
         keyLast4: last4,
@@ -106,8 +94,37 @@ export async function savePartnerStripeKey(input: {
         connectedAt: now,
         disconnectedAt: null,
         updatedAt: now,
-      },
-    });
+      })
+      .onConflictDoUpdate({
+        target: stripeConnectAccounts.partnerId,
+        set: {
+          stripeAccountId: accountId,
+          apiKey: encrypted,
+          keyLast4: last4,
+          livemode,
+          status: 'connected',
+          connectedBy: input.userId,
+          connectedAt: now,
+          disconnectedAt: null,
+          updatedAt: now,
+        },
+      });
+  } catch (err) {
+    // The upsert resolves conflicts on partner_id, but a second unique index
+    // (stripe_connect_accounts_acct_uq) guards stripe_account_id. If this key
+    // belongs to a Stripe account already claimed by ANOTHER partner, the row is
+    // a fresh INSERT that trips acct_uq (23505). Surface it as a key problem the
+    // partner can act on, not a raw 500.
+    const code = (err as { code?: string })?.code;
+    const constraint = (err as { constraint_name?: string })?.constraint_name ?? '';
+    if (code === '23505' && constraint.includes('acct')) {
+      throw new PartnerStripeError(
+        'That Stripe account is already connected to another partner. Use a key for a different Stripe account.',
+        'INVALID_STRIPE_KEY',
+      );
+    }
+    throw err;
+  }
 
   return { stripeAccountId: accountId, last4, livemode };
 }
