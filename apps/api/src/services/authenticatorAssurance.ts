@@ -104,8 +104,11 @@ export type AssuranceDecision = DecidedFactor & AssuranceDecisionShared;
  * at the audit-write boundary rather than recording a self-contradictory
  * forensic row. (#1373: type makes it statically unrepresentable; this keeps the
  * shipped runtime mitigation as belt-and-suspenders.)
+ *
+ * Exported only so the retained backstop keeps direct negative coverage — no
+ * typed caller can drive it to throw now that the union is in place (#1373).
  */
-function assertDecisionConsistent(d: AssuranceDecision): void {
+export function assertDecisionConsistent(d: AssuranceDecision): void {
   const isSession = d.decidedVia === 'session_tap';
   const violations: string[] = [];
   if (isSession !== (d.decidedAssuranceLevel === 1)) violations.push('session_tap must be exactly L1');

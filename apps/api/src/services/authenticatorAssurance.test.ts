@@ -9,6 +9,7 @@ import {
   resolveApprovalAssurance,
   resolveElevationAssurance,
   assertApprovalAssurance,
+  assertDecisionConsistent,
 } from './authenticatorAssurance';
 import type { AssuranceDecision } from './authenticatorAssurance';
 
@@ -625,5 +626,51 @@ describe('AssuranceDecision type (compile-time invariants)', () => {
     // Reference the bindings so they aren't "unused" (the type errors above are
     // the actual assertions; tsc verifies them).
     expect([badSessionLevel, badSessionDevice, badFactorNoDevice, badFactorLevel1]).toHaveLength(4);
+  });
+});
+
+// #1373: the runtime `assertDecisionConsistent` backstop is now statically
+// unreachable from any typed construction site, so the only way to exercise its
+// fail-closed throw is to forge an inconsistent record via a cast — exactly the
+// `as`-cast / untyped-build path the backstop exists to catch. These lock in
+// that the belt-and-suspenders guard still fires.
+describe('assertDecisionConsistent — runtime backstop (as-cast / untyped builds)', () => {
+  it('throws on a session_tap recorded above L1', () => {
+    const forged = {
+      requiredLevel: 1,
+      decidedVia: 'session_tap',
+      decidedAssuranceLevel: 3,
+      authenticatorDeviceId: null,
+    } as unknown as AssuranceDecision;
+    expect(() => assertDecisionConsistent(forged)).toThrow(/session_tap must be exactly L1/);
+  });
+
+  it('throws on an L2+ factor with a null device id', () => {
+    const forged = {
+      requiredLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      decidedAssuranceLevel: 2,
+      authenticatorDeviceId: null,
+    } as unknown as AssuranceDecision;
+    expect(() => assertDecisionConsistent(forged)).toThrow(/an L2\+ factor must record a device id/);
+  });
+
+  it('accepts the legal session-tap and L2+ shapes', () => {
+    expect(() =>
+      assertDecisionConsistent({
+        requiredLevel: 1,
+        decidedVia: 'session_tap',
+        decidedAssuranceLevel: 1,
+        authenticatorDeviceId: null,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertDecisionConsistent({
+        requiredLevel: 2,
+        decidedVia: 'webauthn_platform',
+        decidedAssuranceLevel: 2,
+        authenticatorDeviceId: 'dev-1',
+      }),
+    ).not.toThrow();
   });
 });
