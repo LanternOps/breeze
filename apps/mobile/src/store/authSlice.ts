@@ -1,4 +1,5 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
+import * as Sentry from '@sentry/react-native';
 
 import {
   login as apiLogin,
@@ -77,6 +78,10 @@ export const logoutAsync = createAsyncThunk(
       await apiLogout();
     } catch (error: unknown) {
       apiErrorMessage = (error as { message?: string }).message || 'Logout failed';
+      // A failed server-side logout may leave the session token live on the
+      // backend — security-relevant, and the rejected reducer discards the
+      // message (state.error is reset), so report it to telemetry here.
+      Sentry.captureException(error, { tags: { area: 'auth-logout-api' } });
     }
 
     // Local secure wipe runs exactly once. `clearAuthData` now throws a

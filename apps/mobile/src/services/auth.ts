@@ -34,17 +34,6 @@ export async function getStoredToken(): Promise<string | null> {
 }
 
 /**
- * Remove the stored authentication token
- */
-export async function removeToken(): Promise<void> {
-  try {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
-  } catch (error) {
-    console.error('Error removing token:', error);
-  }
-}
-
-/**
  * Store user data securely
  */
 export async function storeUser(user: User): Promise<void> {
@@ -75,31 +64,26 @@ export async function getStoredUser(): Promise<User | null> {
 }
 
 /**
- * Remove the stored user data
- */
-export async function removeUser(): Promise<void> {
-  try {
-    await SecureStore.deleteItemAsync(USER_KEY);
-  } catch (error) {
-    console.error('Error removing user:', error);
-  }
-}
-
-/**
  * Error thrown when one or more sensitive entries could not be wiped during
  * `clearAuthData`. Carries the list of keys that survived so callers / Sentry
  * can see exactly what leaked.
+ *
+ * Only ever constructed for a non-empty failure set — the `[string, ...string[]]`
+ * parameter type makes `new SecureWipeError([])` a compile error, so an
+ * "empty failure" instance is unrepresentable. We branch on `.name` rather than
+ * `instanceof` at call sites because subclass `instanceof` is unreliable across
+ * RN/Hermes bundles; `.name` is set explicitly here to keep that contract sound.
  */
 export class SecureWipeError extends Error {
-  readonly failedKeys: string[];
+  readonly failedKeys: readonly string[];
 
-  constructor(failedKeys: string[], cause?: unknown) {
-    super(`Failed to wipe sensitive SecureStore entries: ${failedKeys.join(', ')}`);
+  constructor(failedKeys: readonly [string, ...string[]], cause?: unknown) {
+    super(
+      `Failed to wipe sensitive SecureStore entries: ${failedKeys.join(', ')}`,
+      cause !== undefined ? { cause } : undefined
+    );
     this.name = 'SecureWipeError';
-    this.failedKeys = failedKeys;
-    if (cause !== undefined) {
-      (this as { cause?: unknown }).cause = cause;
-    }
+    this.failedKeys = [...failedKeys]; // defensive snapshot — not shared with the Sentry payload
   }
 }
 
@@ -140,11 +124,16 @@ export async function clearAuthData(): Promise<void> {
         entry.result.status === 'rejected'
     );
 
-  if (failures.length === 0) return;
+  const [firstFailure, ...restFailures] = failures;
+  if (firstFailure === undefined) return;
 
-  const failedKeys = failures.map((f) => f.key);
-  const firstReason = failures[0].result.reason;
-  const error = new SecureWipeError(failedKeys, firstReason);
+  // Non-empty by construction (firstFailure is defined), so this satisfies the
+  // SecureWipeError `[string, ...string[]]` non-empty tuple contract.
+  const failedKeys: [string, ...string[]] = [
+    firstFailure.key,
+    ...restFailures.map((f) => f.key),
+  ];
+  const error = new SecureWipeError(failedKeys, firstFailure.result.reason);
 
   // Surface to telemetry — on a production RN build the per-helper console.*
   // logs go nowhere a developer sees, so without this the partial wipe is

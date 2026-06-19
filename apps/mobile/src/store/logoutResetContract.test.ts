@@ -11,6 +11,12 @@ vi.mock('expo-secure-store', () => ({
   setItemAsync: vi.fn(),
   deleteItemAsync: vi.fn(),
 }));
+// authSlice now also imports @sentry/react-native (logout telemetry); mock it
+// so importing the slice doesn't pull the react-native runtime into the
+// node-only vitest environment.
+vi.mock('@sentry/react-native', () => ({
+  captureException: vi.fn(),
+}));
 
 import { LOGOUT_ACTION_TYPES } from './resettable';
 import { logout, logoutAsync } from './authSlice';
