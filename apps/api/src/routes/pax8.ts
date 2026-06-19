@@ -41,16 +41,20 @@ function resolvePartnerId(auth: RouteAuth, requested?: string): { partnerId: str
   return { partnerId: requested };
 }
 
+// Read endpoints require billing:manage intentionally: there is no separate
+// billing-read permission, and Pax8 config/subscription data (vendor cost,
+// credentials presence) is partner-sensitive, so we gate reads at the same
+// level as writes rather than exposing it to broader billing-view roles.
 const readPerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const writePerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const partnerScopes = requireScope('partner', 'system');
 
 const integrationQuerySchema = z.object({
-  partnerId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
 });
 
 const upsertIntegrationSchema = z.object({
-  partnerId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   clientId: z.string().min(1).max(5000).optional(),
   clientSecret: z.string().min(1).max(5000).optional(),
@@ -61,36 +65,53 @@ const upsertIntegrationSchema = z.object({
 });
 
 const syncSchema = z.object({
-  partnerId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
 });
 
 const companyQuerySchema = z.object({
-  partnerId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
 });
 
 const companyMapSchema = z.object({
-  integrationId: z.string().uuid(),
+  integrationId: z.string().guid(),
   pax8CompanyId: z.string().min(1).max(64),
-  orgId: z.string().uuid().nullable(),
+  orgId: z.string().guid().nullable(),
   ignored: z.boolean().optional(),
 });
 
 const subscriptionQuerySchema = z.object({
-  partnerId: z.string().uuid().optional(),
-  integrationId: z.string().uuid().optional(),
-  orgId: z.string().uuid().optional(),
+  partnerId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
   unmappedOnly: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
 
 const linkSchema = z.object({
-  integrationId: z.string().uuid(),
-  subscriptionSnapshotId: z.string().uuid(),
-  contractLineId: z.string().uuid(),
+  integrationId: z.string().guid(),
+  subscriptionSnapshotId: z.string().guid(),
+  contractLineId: z.string().guid(),
   syncEnabled: z.boolean().default(false),
 });
+
+// Defense-in-depth partner scoping for the integration-id lookups in
+// /companies/map and /subscriptions/link. Forced RLS already filters a foreign
+// partner's row to 0 rows for partner-scope callers, but we also pin the
+// partner_id in the query so a future contextless refactor (cf. the silent
+// 0-row read class, #1375/#1591) can't turn these into cross-partner reads.
+// System scope intentionally omits the filter (cross-partner is allowed there).
+function integrationScopeConditions(auth: RouteAuth, integrationId: string): SQL[] {
+  const conditions: SQL[] = [
+    eq(pax8Integrations.id, integrationId),
+    eq(pax8Integrations.isActive, true),
+  ];
+  if (auth.scope === 'partner' && auth.partnerId) {
+    conditions.push(eq(pax8Integrations.partnerId, auth.partnerId));
+  }
+  return conditions;
+}
 
 async function findActiveIntegration(partnerId: string, integrationId?: string) {
   const conditions: SQL[] = [
@@ -289,7 +310,7 @@ pax8Routes.post('/companies/map', partnerScopes, writePerm, requireMfa(), zValid
   const [integration] = await db
     .select({ id: pax8Integrations.id, partnerId: pax8Integrations.partnerId, name: pax8Integrations.name })
     .from(pax8Integrations)
-    .where(and(eq(pax8Integrations.id, body.integrationId), eq(pax8Integrations.isActive, true)))
+    .where(and(...integrationScopeConditions(auth, body.integrationId)))
     .limit(1);
   if (!integration) return c.json({ error: 'Pax8 integration not found' }, 404);
   const partner = resolvePartnerId(auth, integration.partnerId);
@@ -374,7 +395,7 @@ pax8Routes.post('/subscriptions/link', partnerScopes, writePerm, requireMfa(), z
   const [integration] = await db
     .select({ id: pax8Integrations.id, partnerId: pax8Integrations.partnerId, name: pax8Integrations.name })
     .from(pax8Integrations)
-    .where(and(eq(pax8Integrations.id, body.integrationId), eq(pax8Integrations.isActive, true)))
+    .where(and(...integrationScopeConditions(auth, body.integrationId)))
     .limit(1);
   if (!integration) return c.json({ error: 'Pax8 integration not found' }, 404);
   const partner = resolvePartnerId(auth, integration.partnerId);

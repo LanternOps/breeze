@@ -29,6 +29,9 @@ export const pax8Integrations = pgTable('pax8_integrations', {
   accessTokenExpiresAt: timestamp('access_token_expires_at', { withTimezone: true }),
   apiBaseUrl: varchar('api_base_url', { length: 300 }).notNull().default('https://api.pax8.com/v1'),
   tokenUrl: varchar('token_url', { length: 300 }).notNull(),
+  // Reserved for a future inbound Pax8 webhook handler. No consumer exists yet;
+  // any handler that reads this MUST HMAC-verify the Pax8 signature before
+  // trusting the payload. Stored encrypted (see encryptedColumnRegistry).
   webhookSecretEncrypted: text('webhook_secret_encrypted'),
   isActive: boolean('is_active').notNull().default(true),
   lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),

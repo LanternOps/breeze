@@ -141,6 +141,7 @@ describe('pax8SyncService', () => {
   it('writes orgId on Pax8 link upsert conflicts', async () => {
     selectRowsOnce([{ id: 'snapshot-1', orgId: 'org-1', partnerId: 'partner-1', integrationId: 'integration-1' }]);
     selectRowsOnce([{ id: 'line-1', orgId: 'org-1', lineType: 'manual' }]);
+    selectRowsOnce([]); // pre-check: contract line not yet linked to another subscription
 
     const returning = vi.fn(async () => [{ id: 'link-1', orgId: 'org-1' }]);
     const onConflictDoUpdate = vi.fn(() => ({ returning }));

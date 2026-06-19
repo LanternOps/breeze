@@ -5,7 +5,8 @@ const { permissionGate, authState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   authState: {
     canAccessOrg: true,
-    partnerId: '11111111-1111-1111-1111-111111111111',
+    partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
+    scope: 'partner' as 'partner' | 'organization' | 'system',
   },
 }));
 
@@ -89,9 +90,9 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      scope: 'partner',
+      scope: authState.scope,
       partnerId: authState.partnerId,
-      orgId: null,
+      orgId: authState.scope === 'organization' ? '22222222-2222-2222-2222-222222222222' : null,
       accessibleOrgIds: ['22222222-2222-2222-2222-222222222222'],
       canAccessOrg: vi.fn(() => authState.canAccessOrg),
       user: { id: '33333333-3333-3333-3333-333333333333', email: 'admin@example.com' },
@@ -151,6 +152,7 @@ describe('pax8 routes', () => {
     permissionGate.deny = false;
     authState.canAccessOrg = true;
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
+    authState.scope = 'partner';
     app = new Hono();
     app.route('/pax8', pax8Routes);
   });
@@ -204,5 +206,104 @@ describe('pax8 routes', () => {
     await expect(res.json()).resolves.toMatchObject({
       error: 'Access to target organization denied',
     });
+  });
+
+  it('maps an unmap (orgId null) request without an org access check', async () => {
+    mockSelectOnce([{
+      id: '44444444-4444-4444-4444-444444444444',
+      partnerId: authState.partnerId,
+      name: 'Pax8',
+    }]);
+
+    const res = await app.request('/pax8/companies/map', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        pax8CompanyId: 'company-1',
+        orgId: null,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an organization-scope caller (Pax8 is partner-scoped)', async () => {
+    authState.scope = 'organization';
+
+    const res = await app.request('/pax8/integration', { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining('partner scope'),
+    });
+  });
+
+  it('rejects a partner caller requesting another partner via ?partnerId', async () => {
+    const res = await app.request('/pax8/integration?partnerId=99999999-9999-9999-9999-999999999999', {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining('denied'),
+    });
+  });
+
+  it('requires partnerId for a system-scope caller', async () => {
+    authState.scope = 'system';
+    authState.partnerId = null;
+
+    const res = await app.request('/pax8/integration', { method: 'GET' });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining('partnerId is required'),
+    });
+  });
+
+  it('rejects linking a subscription to a contract line the caller cannot access (IDOR)', async () => {
+    authState.canAccessOrg = false;
+    // 1) integration lookup → belongs to caller's partner
+    mockSelectOnce([{
+      id: '44444444-4444-4444-4444-444444444444',
+      partnerId: authState.partnerId,
+      name: 'Pax8',
+    }]);
+    // 2) contract line lookup → an org the caller cannot access
+    mockSelectOnce([{ orgId: '55555555-5555-5555-5555-555555555555' }]);
+
+    const res = await app.request('/pax8/subscriptions/link', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+        contractLineId: '77777777-7777-7777-7777-777777777777',
+        syncEnabled: true,
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error: 'Access to contract line denied',
+    });
+  });
+
+  it('returns 404 when the integration is not visible to the caller (partner-scoped lookup)', async () => {
+    mockSelectOnce([]); // RLS / partner predicate filtered it out
+
+    const res = await app.request('/pax8/subscriptions/link', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+        contractLineId: '77777777-7777-7777-7777-777777777777',
+        syncEnabled: false,
+      }),
+    });
+
+    expect(res.status).toBe(404);
   });
 });

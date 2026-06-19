@@ -1,8 +1,9 @@
-import { Queue, Worker } from 'bullmq';
+import { type JobsOptions, Queue, Worker } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { pax8Integrations } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
 import { syncPax8Integration } from '../services/pax8SyncService';
 
@@ -23,19 +24,46 @@ export function getPax8SyncQueue(): Queue<Pax8SyncJobData> {
   return pax8Queue;
 }
 
+/**
+ * Add a job with a fixed jobId, re-adding it if a prior job with that id has
+ * already settled. BullMQ dedups on jobId and `removeOnComplete: { count }`
+ * retains completed jobs, so a plain `queue.add` with this jobId would be a
+ * silent no-op on every call after the first — the nightly fan-out and manual
+ * `POST /sync` would run once and then never again. We reuse a job that is
+ * still pending and remove a settled one before re-adding. Mirrors the
+ * Huntress sync worker's `addUniqueJob`.
+ */
+async function addUniquePax8Job(
+  jobId: string,
+  data: Pax8SyncJobData,
+  opts: Omit<JobsOptions, 'jobId'>,
+): Promise<string> {
+  const queue = getPax8SyncQueue();
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((err) => {
+      console.warn(`[Pax8SyncWorker] Failed to remove stale job ${jobId}, proceeding with re-add:`, err);
+    });
+  }
+  const created = await queue.add('sync-integration', data, { jobId, ...opts });
+  return String(created.id);
+}
+
 export async function enqueuePax8Sync(integrationId: string): Promise<string> {
-  const job = await getPax8SyncQueue().add(
-    'sync-integration',
+  return addUniquePax8Job(
+    `pax8-sync-${integrationId}`,
     { type: 'sync-integration', integrationId },
     {
-      jobId: `pax8-sync-${integrationId}`,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 500 },
       attempts: 3,
       backoff: { type: 'exponential', delay: 5000 },
     },
   );
-  return String(job.id);
 }
 
 export async function processPax8SyncIntegration(integrationId: string) {

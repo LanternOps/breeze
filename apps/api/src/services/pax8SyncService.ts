@@ -9,7 +9,7 @@ import {
   pax8ProductMappings,
   pax8SubscriptionSnapshots,
 } from '../db/schema';
-import { decryptSecret, encryptSecret } from './secretCrypto';
+import { decryptForColumn, encryptSecret } from './secretCrypto';
 import { DEFAULT_PAX8_API_BASE_URL, DEFAULT_PAX8_TOKEN_URL, Pax8Client, type Pax8CompanyRecord, type Pax8SubscriptionRecord } from './pax8Client';
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -26,6 +26,29 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Detect a Postgres unique-violation (23505) for a specific constraint. Drizzle
+ * wraps the driver error, carrying the original `{ code, constraint_name }` on
+ * `cause` (sometimes nested), so we walk the whole cause chain and also fall
+ * back to matching the constraint name in any message.
+ */
+function isUniqueViolation(err: unknown, constraint: string): boolean {
+  let candidate: unknown = err;
+  for (let depth = 0; candidate && depth < 5; depth++) {
+    if (typeof candidate === 'object') {
+      const e = candidate as { code?: unknown; constraint_name?: unknown; message?: unknown; cause?: unknown };
+      if (e.code === '23505' && (e.constraint_name === constraint || typeof e.constraint_name !== 'string')) {
+        return true;
+      }
+      if (typeof e.message === 'string' && e.message.includes(constraint)) return true;
+      candidate = e.cause;
+    } else {
+      break;
+    }
+  }
+  return false;
+}
+
 export async function createPax8ClientForIntegration(integrationId: string, fetchImpl?: typeof fetch): Promise<{
   integration: typeof pax8Integrations.$inferSelect;
   client: Pax8Client;
@@ -38,8 +61,8 @@ export async function createPax8ClientForIntegration(integrationId: string, fetc
   if (!integration) throw new Error('Pax8 integration not found');
   if (!integration.isActive) throw new Error('Pax8 integration is inactive');
 
-  const clientId = decryptSecret(integration.clientIdEncrypted);
-  const clientSecret = decryptSecret(integration.clientSecretEncrypted);
+  const clientId = decryptForColumn('pax8_integrations', 'client_id_encrypted', integration.clientIdEncrypted);
+  const clientSecret = decryptForColumn('pax8_integrations', 'client_secret_encrypted', integration.clientSecretEncrypted);
   if (!clientId || !clientSecret) throw new Error('Pax8 integration credentials could not be decrypted');
 
   const client = new Pax8Client({
@@ -48,7 +71,7 @@ export async function createPax8ClientForIntegration(integrationId: string, fetc
     credentials: {
       clientId,
       clientSecret,
-      accessToken: decryptSecret(integration.accessTokenEncrypted),
+      accessToken: decryptForColumn('pax8_integrations', 'access_token_encrypted', integration.accessTokenEncrypted),
       accessTokenExpiresAt: integration.accessTokenExpiresAt,
     },
     fetch: fetchImpl,
@@ -372,24 +395,51 @@ export async function linkPax8SubscriptionToContractLine(input: {
   if (!line || line.orgId !== snapshot.orgId) throw new Error('Contract line does not belong to the mapped organization');
   if (line.lineType !== 'manual') throw new Error('Pax8 license sync requires a manual contract line');
 
-  const [link] = await db.insert(pax8ContractLineLinks).values({
-    integrationId: input.integrationId,
-    partnerId: input.partnerId,
-    orgId: snapshot.orgId,
-    subscriptionSnapshotId: input.subscriptionSnapshotId,
-    contractLineId: input.contractLineId,
-    syncEnabled: input.syncEnabled,
-  }).onConflictDoUpdate({
-    target: pax8ContractLineLinks.subscriptionSnapshotId,
-    set: {
-      partnerId: sql`excluded.partner_id`,
-      integrationId: sql`excluded.integration_id`,
-      orgId: sql`excluded.org_id`,
-      contractLineId: sql`excluded.contract_line_id`,
-      syncEnabled: sql`excluded.sync_enabled`,
-      updatedAt: sql`excluded.updated_at`,
-    },
-  }).returning();
+  // Deterministic guard: a contract line can be linked to at most one
+  // subscription (unique index on contract_line_id). Detect a conflicting link
+  // up front so the caller gets a clear message instead of a raw constraint
+  // error surfacing from inside the request transaction. The unique index below
+  // remains the backstop for the race between this check and the insert.
+  const [existingForLine] = await db
+    .select({ subscriptionSnapshotId: pax8ContractLineLinks.subscriptionSnapshotId })
+    .from(pax8ContractLineLinks)
+    .where(eq(pax8ContractLineLinks.contractLineId, input.contractLineId))
+    .limit(1);
+  if (existingForLine && existingForLine.subscriptionSnapshotId !== input.subscriptionSnapshotId) {
+    throw new Error('This contract line is already linked to another Pax8 subscription.');
+  }
+
+  // The upsert resolves a conflict on subscription_snapshot_id (re-linking the
+  // same subscription). It does NOT cover the separate unique index on
+  // contract_line_id, so linking a *different* subscription to an
+  // already-linked contract line raises a raw 23505. Map it to a clear message
+  // instead of surfacing the opaque Postgres constraint error to the caller.
+  let link: typeof pax8ContractLineLinks.$inferSelect | undefined;
+  try {
+    [link] = await db.insert(pax8ContractLineLinks).values({
+      integrationId: input.integrationId,
+      partnerId: input.partnerId,
+      orgId: snapshot.orgId,
+      subscriptionSnapshotId: input.subscriptionSnapshotId,
+      contractLineId: input.contractLineId,
+      syncEnabled: input.syncEnabled,
+    }).onConflictDoUpdate({
+      target: pax8ContractLineLinks.subscriptionSnapshotId,
+      set: {
+        partnerId: sql`excluded.partner_id`,
+        integrationId: sql`excluded.integration_id`,
+        orgId: sql`excluded.org_id`,
+        contractLineId: sql`excluded.contract_line_id`,
+        syncEnabled: sql`excluded.sync_enabled`,
+        updatedAt: sql`excluded.updated_at`,
+      },
+    }).returning();
+  } catch (err) {
+    if (isUniqueViolation(err, 'pax8_contract_line_links_contract_line_uq')) {
+      throw new Error('This contract line is already linked to another Pax8 subscription.');
+    }
+    throw err;
+  }
   if (!link) throw new Error('Failed to link Pax8 subscription to contract line');
   return link;
 }
