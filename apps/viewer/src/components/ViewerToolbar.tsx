@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
 import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal } from 'lucide-react';
 import type { TransportCapabilities } from '../lib/transports/types';
+import { transportHasQualityControls } from '../lib/transportTuning';
 
 interface MonitorInfo {
   index: number;
@@ -328,8 +329,7 @@ export default function ViewerToolbar({
 
   // Whether the active transport exposes any stream-tuning controls (grouped
   // into the Quality popover so the bar isn't a row of loose sliders/selects).
-  const hasQualityControls =
-    (capabilities?.bitrateControl && transport === 'webrtc') || transport === 'websocket';
+  const hasQualityControls = transportHasQualityControls(transport, capabilities);
 
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-800 border-b border-gray-700 text-sm select-none">

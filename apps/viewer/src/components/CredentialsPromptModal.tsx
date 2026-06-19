@@ -12,8 +12,8 @@ export default function CredentialsPromptModal({ requiresUsername, onSubmit, onC
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
-  // Focus the first field on open, and return focus to wherever it was (the
-  // remote surface) when the prompt closes.
+  // Focus the first field on open, and restore focus to whatever held it
+  // before the prompt opened when the prompt closes.
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     firstInputRef.current?.focus();
@@ -35,7 +35,13 @@ export default function CredentialsPromptModal({ requiresUsername, onSubmit, onC
     const focusable = Array.from(
       formRef.current.querySelectorAll<HTMLElement>('input, button')
     ).filter((el) => !el.hasAttribute('disabled'));
-    if (focusable.length === 0) return;
+    // Unreachable today (the password input is always present and enabled), but
+    // a future refactor that disables every field would silently drop the trap
+    // and let Tab escape to the obscured viewer — make that loud instead.
+    if (focusable.length === 0) {
+      console.warn('Credentials modal has no focusable elements; focus trap disabled');
+      return;
+    }
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
     if (e.shiftKey && document.activeElement === first) {
