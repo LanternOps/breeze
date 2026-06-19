@@ -4,13 +4,13 @@
 **Issue:** #1105 — *Mass agent reconnect can poison the Postgres pool (idle-in-transaction timeouts on `config_policy_assignments`) → heartbeat 500s + login outage*
 **Author:** Claude (Opus 4.8) for @ToddHebebrand
 **Date:** 2026-06-16
-**Already shipped (do not re-propose):** #1116 (heartbeat releases its RLS txn before the trust-keyset fetch), #1313 (patch scheduler enqueues outside the system txn)
+**Already shipped (do not re-propose):** #1116 (heartbeat releases its RLS txn before the trust-keyset fetch), #1313 (patch scheduler enqueues outside the system txn), #1441 (Phase-1 tripwire *scaffolding*: held-context duration warn + the `assertOutsideHeldDbContext` helper + the `runOutsideDbContext` escape hatch — all warn-only, **not yet wired** into the slow-work primitives and not yet throwing in CI). Phase 1 below is now "wire #1441's helper in + flip CI to throw," not "build the tripwire."
 
 ---
 
 ## 1. Problem
 
-The API connects to Postgres as the unprivileged, forced-RLS role `breeze_app`. To make per-request RLS policies work, `withDbAccessContext` (`apps/api/src/db/index.ts:114`) sets six `breeze.*` GUCs and runs the caller's whole callback **inside a single transaction**:
+The API connects to Postgres as the unprivileged, forced-RLS role `breeze_app`. To make per-request RLS policies work, `withDbAccessContext` (`apps/api/src/db/index.ts:138`) sets six `breeze.*` GUCs and runs the caller's whole callback **inside a single transaction**:
 
 ```ts
 return baseDb.transaction(async (tx) => {
@@ -38,12 +38,13 @@ This is a **txn-around-slow-work** foot-gun: any code path that runs slow non-DB
 
 ## 2. What is already shipped (and why the issue is still open)
 
-Two **targeted** fixes landed and are the template for the pattern, but neither removes the foot-gun class:
+Three PRs have landed — two **targeted** fixes (#1116/#1313) that are the template for the pattern, plus #1441's **detection scaffolding** — but none removes the foot-gun class:
 
 | PR | What it did | Pattern established |
 |----|-------------|---------------------|
 | **#1116** | Heartbeat now opts out of the request-long wrap and self-manages a **short-lived** `withDbAccessContext` that is **released before** `getActiveTrustKeyset()` (which needs its own second connection). | *DB work in a short bracket; second-connection / slow work strictly after the bracket closes.* |
 | **#1313** | `patchSchedulerWorker.scanAndCreateJobs` collects job IDs inside the system context and does the BullMQ enqueue **after** the context returns. | *Collect inside; enqueue (Redis/remote) outside.* |
+| **#1441** | Shipped the Phase-1 tripwire **scaffolding** in `db/index.ts`: a held-context duration warn in `withDbAccessContext`'s `finally` (`getHeldContextWarnMs`, ~`:158`), the `assertOutsideHeldDbContext(operation)` guard (`:304`, warn-only; throws only when `DB_CONTEXT_TRIPWIRE_STRICT` is set), and the `runOutsideDbContext` escape hatch (`:212`). | *Detection scaffolding — but `assertOutsideHeldDbContext` has **no callers yet** and CI doesn't throw, so it surfaces nothing until Phase 1 wires it into the slow-work primitives.* |
 
 The agent middleware encodes the heartbeat carve-out explicitly (`apps/api/src/middleware/agentAuth.ts`):
 
@@ -73,7 +74,7 @@ So the issue stays open not because a specific worker is unfixed, but because th
    - A naive "one short transaction per statement" model would silently break these (a crash between the two deletes leaves an orphan).
 3. **Hot paths can't afford per-statement overhead.** Heartbeat issues many statements; opening a transaction + 6×`set_config` per statement is a large round-trip tax. Whatever the model, the GUC setup cost must be amortized across a handler's statements, not paid per statement.
 4. **Driver:** postgres-js (`postgres` npm), pool `max` from `DB_POOL_MAX`. Reserved connections are available via `sql.reserve()` but not currently used.
-5. **Forced RLS means failures are silent.** A write with no/!wrong context matches 0 rows under `breeze_app` with no error (the #1375 trap). The existing `proxiedDb` contextless-write guard (`db/index.ts:173`) warns on this; any redesign must keep that tripwire working.
+5. **Forced RLS means failures are silent.** A write with no/!wrong context matches 0 rows under `breeze_app` with no error (the #1375 trap). The existing `proxiedDb` contextless-write guard (`reportContextlessWrite`, `db/index.ts:245`) warns on this; any redesign must keep that tripwire working.
 
 ---
 
@@ -114,15 +115,14 @@ Make handlers **bracket their DB work** in a short `withDbAccessContext` and kee
 
 Keep the GUC mechanism (`SET LOCAL` in a transaction) — it is correct and isolation-safe. The bug is *how long the transaction is held*, not how GUCs are set. Fix the **default** and make violations **loud**.
 
-### Phase 1 — Tripwire (highest leverage, low risk)
-The single most valuable step, because it converts an invisible foot-gun into a CI failure.
+### Phase 1 — Wire in the tripwire (highest leverage, low risk)
+The single most valuable step, because it converts an invisible foot-gun into a CI failure. **#1441 already built the machinery** (the held-context marker, the duration warn, the `assertOutsideHeldDbContext` guard, and the `runOutsideDbContext` escape hatch — see §2); what's left is to actually *use* it, since the guard has no callers and never throws by default today.
 
-- Add a "context held" marker when `withDbAccessContext` opens its transaction (store a flag + a started-at timestamp in the ALS store alongside the `tx`).
-- Wrap the two slow-work primitives so they check that marker:
+- Call `assertOutsideHeldDbContext(<op>)` from the two slow-work primitives:
   - the BullMQ/Redis enqueue helpers (`enqueue*`, the queue `add` wrappers),
   - the outbound HTTP/`fetch` helper(s) and `getActiveTrustKeyset`-style second-connection acquirers.
-- When called while a context transaction is held: `console.warn` + `captureMessage` in prod (warn-only, like the existing `proxiedDb` guard), and **throw in `NODE_ENV=test`** so CI catches new instances. Provide an explicit `runOutsideDbContext(...)` escape hatch that silences it (already exists).
-- Optionally also flag *duration*: if a held context exceeds N ms before commit, sample a Sentry breadcrumb — catches slow loops that aren't a single tagged primitive.
+- Make CI fail on a hit: either default `DB_CONTEXT_TRIPWIRE_STRICT` on under `NODE_ENV=test`, or have the guard throw in test directly. Prod stays warn-only (`console.warn` + `captureMessage`, like the existing `proxiedDb` guard). The `runOutsideDbContext(...)` escape hatch already silences intentional cases.
+- The *duration* warn (`getHeldContextWarnMs`) already exists from #1441 and catches slow loops that aren't a single tagged primitive — confirm a sensible default `DB_CONTEXT_TRIPWIRE_WARN_MS` is set where it matters.
 
 **Deliverable:** every current txn-around-slow-work site lights up in one CI run. Triage that list; each becomes a Phase-2 bracket.
 
@@ -156,7 +156,7 @@ If Phase 1 shows the foot-gun is rare on web routes, leave the convenient reques
 
 ## 7. Suggested sequencing
 
-1. **PR 1 (Phase 1):** tripwire + escape hatch + unit tests. Warn-only in prod, throw in CI. *Ships the detection; merges fast.*
+1. **PR 1 (Phase 1):** wire #1441's `assertOutsideHeldDbContext` into the enqueue/HTTP primitives + flip CI to throw (default-strict under `NODE_ENV=test`) + unit tests. The guard, duration warn, and escape hatch already shipped in #1441 — this is the wiring that makes them bite. Warn-only in prod, throw in CI. *Ships the detection; merges fast.*
 2. **PR 2 (Phase 4a):** real-DB GUC-isolation integration test. *Unblocks safe changes.*
 3. **PR 3 (Phase 2):** agent middleware default flip + migrate the Phase-1-flagged agent routes (start with heartbeat's residual enqueues) + per-route call-order tests.
 4. **PR 4 (Phase 3, conditional):** web-route decision; Option C only if the data warrants it.
