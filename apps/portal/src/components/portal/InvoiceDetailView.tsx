@@ -2,6 +2,7 @@ import { withBase } from '@/lib/basePath';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { sellerLines } from '@/lib/sellerLines';
 import { cn } from '@/lib/utils';
 
 // Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
@@ -110,6 +111,9 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
   const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0;
+
+  const seller = invoice.sellerSnapshot ?? null;
+  const sellerAddressLines = sellerLines(seller?.address ?? null);
 
   const payInvoice = async () => {
     if (paying) return;
@@ -225,12 +229,25 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{downloadError}</div>
       )}
 
-      {invoice.billToName && (
-        <div className="rounded-lg border p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bill to</p>
-          <p className="mt-1 text-sm">{invoice.billToName}</p>
-        </div>
-      )}
+      <div className="flex flex-wrap gap-4">
+        {invoice.billToName && (
+          <div className="flex-1 rounded-lg border p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bill to</p>
+            <p className="mt-1 text-sm">{invoice.billToName}</p>
+          </div>
+        )}
+
+        {seller?.name && (
+          <div className="flex-1 rounded-lg border p-4" data-testid="invoice-from">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">From</p>
+            <p className="mt-1 text-sm font-medium">{seller.name}</p>
+            {sellerAddressLines.map((l, i) => <p key={i} className="text-sm text-muted-foreground">{l}</p>)}
+            {seller.phone && <p className="text-sm text-muted-foreground">{seller.phone}</p>}
+            {seller.email && <p className="text-sm text-muted-foreground">{seller.email}</p>}
+            {seller.website && <p className="text-sm text-muted-foreground">{seller.website}</p>}
+          </div>
+        )}
+      </div>
 
       <div className="overflow-hidden rounded-lg border">
         <table className="w-full">
@@ -267,6 +284,13 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         <div className="rounded-lg border p-4">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Notes</p>
           <p className="mt-1 whitespace-pre-wrap text-sm">{invoice.notes}</p>
+        </div>
+      )}
+
+      {invoice.termsAndConditions && (
+        <div className="rounded-lg border p-4" data-testid="invoice-terms-conditions">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terms &amp; Conditions</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm">{invoice.termsAndConditions}</p>
         </div>
       )}
     </div>
