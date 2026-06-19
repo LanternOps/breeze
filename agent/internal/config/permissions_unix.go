@@ -28,3 +28,10 @@ func enforceSecretFilePermissionsImpl(path string) error {
 // failure to verify that SaveTo propagates it as a fatal error. Production
 // code always routes through enforceSecretFilePermissionsImpl.
 var enforceSecretFilePermissions = enforceSecretFilePermissionsImpl
+
+// ProgramData ACL drift is a Windows-only concern (the MSI HardenProgramDataAcl
+// DACL hardening has no Unix analog), so detection always reports "clean" and
+// re-application is a no-op here. See permissions_drift.go.
+func programDataDirACLDrifted(string) (bool, error) { return false, nil }
+
+func enforceProgramDataDirPermissions(string) error { return nil }
