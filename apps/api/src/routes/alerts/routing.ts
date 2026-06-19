@@ -3,10 +3,55 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { db } from '../../db';
 import { notificationRoutingRules } from '../../db/schema';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, inArray, type SQL } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
+import { ensureOrgAccess } from './helpers';
+
+const listRoutingRulesSchema = z.object({
+  orgId: z.string().guid().optional(),
+});
+
+type RoutingAuth = {
+  scope: string;
+  orgId: string | null;
+  accessibleOrgIds: string[] | null;
+  canAccessOrg: (orgId: string) => boolean;
+};
+
+// Resolve the single org a write (create/update/delete) targets, scope-aware.
+// Mirrors the escalation-policies route (policies.ts) so partner-scoped users —
+// whose auth.orgId is null and who select an org per request — can manage routing
+// rules via the ?orgId query param instead of always 400ing (issue #1633).
+// RLS still backstops tenant isolation; this just resolves a valid orgId to write.
+function resolveWriteOrgId(
+  auth: RoutingAuth,
+  requestedOrgId: string | undefined,
+): { orgId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required', status: 403 };
+    return { orgId: auth.orgId };
+  }
+  if (auth.scope === 'partner') {
+    let orgId = requestedOrgId;
+    if (!orgId) {
+      const orgs = auth.accessibleOrgIds ?? [];
+      if (orgs.length === 1 && orgs[0]) {
+        orgId = orgs[0];
+      } else {
+        return { error: 'orgId is required when partner has multiple organizations', status: 400 };
+      }
+    }
+    if (!ensureOrgAccess(orgId, auth)) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId };
+  }
+  // system
+  if (!requestedOrgId) return { error: 'orgId is required', status: 400 };
+  return { orgId: requestedOrgId };
+}
 
 const createRoutingRuleSchema = z.object({
   name: z.string().min(1).max(255),
@@ -41,18 +86,44 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 routingRoutes.get(
   '/routing-rules',
   requireScope('organization', 'partner', 'system'),
+  zValidator('query', listRoutingRulesSchema),
   async (c) => {
     try {
-      const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const auth = c.get('auth') as RoutingAuth;
+      const query = c.req.valid('query');
+
+      // Build the org filter the same way the policies list does, so partner-scoped
+      // users (auth.orgId null) can list by the selected ?orgId or across all their
+      // accessible orgs, instead of always 400ing (issue #1633).
+      const conditions: SQL[] = [];
+      if (auth.scope === 'organization') {
+        if (!auth.orgId) {
+          return c.json({ error: 'Organization context required' }, 403);
+        }
+        conditions.push(eq(notificationRoutingRules.orgId, auth.orgId));
+      } else if (auth.scope === 'partner') {
+        if (query.orgId) {
+          if (!ensureOrgAccess(query.orgId, auth)) {
+            return c.json({ error: 'Access to this organization denied' }, 403);
+          }
+          conditions.push(eq(notificationRoutingRules.orgId, query.orgId));
+        } else {
+          const orgIds = auth.accessibleOrgIds ?? [];
+          if (orgIds.length === 0) {
+            return c.json({ data: [] });
+          }
+          conditions.push(inArray(notificationRoutingRules.orgId, orgIds));
+        }
+      } else if (auth.scope === 'system' && query.orgId) {
+        conditions.push(eq(notificationRoutingRules.orgId, query.orgId));
       }
+
+      const whereCondition = conditions.length === 1 ? conditions[0] : and(...conditions);
 
       const rules = await db
         .select()
         .from(notificationRoutingRules)
-        .where(eq(notificationRoutingRules.orgId, orgId))
+        .where(whereCondition)
         .orderBy(asc(notificationRoutingRules.priority));
 
       return c.json({ data: rules });
@@ -71,11 +142,12 @@ routingRoutes.post(
   zValidator('json', createRoutingRuleSchema),
   async (c) => {
     try {
-      const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const auth = c.get('auth') as RoutingAuth;
+      const resolved = resolveWriteOrgId(auth, c.req.query('orgId') || undefined);
+      if ('error' in resolved) {
+        return c.json({ error: resolved.error }, resolved.status);
       }
+      const orgId = resolved.orgId;
 
       const data = c.req.valid('json');
 
@@ -116,11 +188,12 @@ routingRoutes.patch(
   zValidator('json', updateRoutingRuleSchema),
   async (c) => {
     try {
-      const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const auth = c.get('auth') as RoutingAuth;
+      const resolved = resolveWriteOrgId(auth, c.req.query('orgId') || undefined);
+      if ('error' in resolved) {
+        return c.json({ error: resolved.error }, resolved.status);
       }
+      const orgId = resolved.orgId;
 
       const ruleId = c.req.param('id')!;
       const updates = c.req.valid('json');
@@ -172,11 +245,12 @@ routingRoutes.delete(
   requireMfa(),
   async (c) => {
     try {
-      const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const auth = c.get('auth') as RoutingAuth;
+      const resolved = resolveWriteOrgId(auth, c.req.query('orgId') || undefined);
+      if ('error' in resolved) {
+        return c.json({ error: resolved.error }, resolved.status);
       }
+      const orgId = resolved.orgId;
 
       const ruleId = c.req.param('id')!;
 
