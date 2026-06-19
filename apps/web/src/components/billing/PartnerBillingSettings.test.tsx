@@ -16,6 +16,23 @@ const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 describe('PartnerBillingSettings', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('loads and shows the seller company name', async () => {
+    fetchMock.mockResolvedValue(json({
+      currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV',
+      invoiceTermsDays: 30, invoiceFooter: null,
+      billingCompanyName: 'Acme MSP LLC',
+      billingPhone: null, billingWebsite: null,
+      billingAddressLine1: null, billingAddressLine2: null,
+      billingAddressCity: null, billingAddressRegion: null,
+      billingAddressPostalCode: null, billingAddressCountry: null,
+      billingTermsAndConditions: null,
+    }));
+    render(<PartnerBillingSettings />);
+    await waitFor(() =>
+      expect((screen.getByTestId('partner-billing-company-name') as HTMLInputElement).value).toBe('Acme MSP LLC'),
+    );
+  });
+
   it('loads partner billing and shows the tax rate as a percentage', async () => {
     fetchMock.mockResolvedValue(json({
       currencyCode: 'EUR', defaultTaxRate: '0.085', invoiceNumberPrefix: 'EU',
