@@ -115,4 +115,20 @@ describe('InvoicesPage', () => {
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-new'));
   });
+
+  it('renders the access-denied state (not the retryable error) on a 403', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) return json({ error: 'forbidden' }, false, 403);
+      return json({}, false, 404);
+    });
+    render(<InvoicesPage />);
+
+    await waitFor(() => expect(screen.getByTestId('access-denied')).toBeInTheDocument());
+    expect(screen.getByText('Access denied')).toBeInTheDocument();
+    expect(screen.getByText("You don't have permission to view invoices.")).toBeInTheDocument();
+    // The generic data-load-failure UI must NOT appear for a 403.
+    expect(screen.queryByTestId('invoices-error')).not.toBeInTheDocument();
+    expect(screen.queryByText('Try again')).not.toBeInTheDocument();
+  });
 });

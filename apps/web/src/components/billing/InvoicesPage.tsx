@@ -4,6 +4,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { Dialog } from '../shared/Dialog';
+import AccessDenied from '../shared/AccessDenied';
 import {
   type InvoiceStatus,
   type InvoiceSummary,
@@ -77,6 +78,9 @@ export default function InvoicesPage() {
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // A 403 from the invoices route is a permission denial, not a load failure,
+  // so it renders the access-denied state rather than the retryable error.
+  const [forbidden, setForbidden] = useState(false);
   const [filters, setFilters] = useState<Filters>(() => readFilters());
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
@@ -108,6 +112,7 @@ export default function InvoicesPage() {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const params = new URLSearchParams();
       if (f.orgId) params.set('orgId', f.orgId);
       if (f.status) params.set('status', f.status);
@@ -116,6 +121,7 @@ export default function InvoicesPage() {
       const qs = params.toString();
       const res = await fetchWithAuth(`/invoices${qs ? `?${qs}` : ''}`);
       if (res.status === 401) return UNAUTHORIZED();
+      if (res.status === 403) { setForbidden(true); return; }
       if (!res.ok) throw new Error('Failed to load invoices');
       const body = (await res.json()) as { data: InvoiceSummary[] };
       setInvoices(body.data ?? []);
@@ -253,6 +259,14 @@ export default function InvoicesPage() {
       </button>
     </th>
   );
+
+  if (forbidden) {
+    return (
+      <div className="space-y-5" data-testid="invoices-page">
+        <AccessDenied message="You don't have permission to view invoices." />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5" data-testid="invoices-page">
