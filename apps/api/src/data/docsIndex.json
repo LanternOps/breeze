@@ -632,7 +632,8 @@
       "Docker Deployment",
       "MSI Installer Signing",
       "Billing",
-      "AI"
+      "AI",
+      "Self-hosted: alternative Anthropic-compatible backends"
     ],
     "section": "deploy"
   },
@@ -1752,6 +1753,29 @@
     "section": "features"
   },
   {
+    "path": "/features/ml-insights/",
+    "title": "AI Insights",
+    "description": "Machine-learning features that surface metric anomalies, group correlated alerts into incidents, explain root causes, suggest remediations, and forecast capacity.",
+    "headings": [
+      "Availability and enabling",
+      "Default state",
+      "Enabling a feature for an organization",
+      "Global kill switches",
+      "Anomaly Detection",
+      "Where to find it",
+      "Acting on an anomaly",
+      "Alert Correlation and Root Cause Analysis",
+      "The Correlations view",
+      "Root Cause Analysis",
+      "Remediation Suggestions",
+      "Acting on a suggestion",
+      "Capacity Forecasting",
+      "Feedback improves the models",
+      "Related features"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/mobile/",
     "title": "Mobile App",
     "description": "Monitor and manage your fleet on the go with the Breeze mobile app for iOS and Android.",
@@ -2179,6 +2203,7 @@
     "title": "Customer Portal",
     "description": "Self-service portal for end-users to view devices, submit tickets, and check out assets.",
     "headings": [
+      "Accessing the Portal",
       "Key Concepts",
       "Portal Feature Toggles",
       "Ticket Statuses",

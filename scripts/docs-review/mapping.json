@@ -1078,6 +1078,38 @@
       "docs": [
         "features/ticketing.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/mlFeatureFlags.ts",
+      "docs": [
+        "features/ml-insights.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/metricAnomalies.ts",
+      "docs": [
+        "features/ml-insights.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/alertCorrelationGroups.ts",
+      "docs": [
+        "features/ml-insights.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/alertCorrelationRca.ts",
+      "docs": [
+        "features/ml-insights.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/remediationSuggestions.ts",
+      "docs": [
+        "features/ml-insights.mdx"
+      ]
     }
   ]
 }

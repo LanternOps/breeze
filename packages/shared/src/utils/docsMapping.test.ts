@@ -15,6 +15,18 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/alerts/');
     });
 
+    it('/alerts/correlations maps to AI Insights docs', () => {
+      const result = getDocsForPath('/alerts/correlations');
+      expect(result.label).toBe('Alert Correlations');
+      expect(result.url).toContain('/features/ml-insights/');
+    });
+
+    it('/security/user-risk maps to user-risk docs (not generic security)', () => {
+      const result = getDocsForPath('/security/user-risk');
+      expect(result.label).toBe('User Risk');
+      expect(result.url).toContain('/features/user-risk/');
+    });
+
     it('/scripts maps to scripts docs', () => {
       const result = getDocsForPath('/scripts');
       expect(result.label).toBe('Scripts');
