@@ -795,6 +795,7 @@ cisHardeningRoutes.post(
         deviceId: cisRemediationActions.deviceId,
         status: cisRemediationActions.status,
         approvalStatus: cisRemediationActions.approvalStatus,
+        requestedBy: cisRemediationActions.requestedBy,
       })
       .from(cisRemediationActions)
       .where(and(...conditions));
@@ -850,6 +851,23 @@ cisHardeningRoutes.post(
         error: 'No pending remediation actions eligible for approval update',
         skippedIds,
       }, 400);
+    }
+
+    // Maker/checker: the requester cannot approve their own pending actions.
+    // CIS remediation queues hardening/rollback commands to endpoints, so the
+    // pending_approval → approved transition is a separation-of-duties control.
+    // Mirror the auditBaselines apply-approval guard. (Denials are skipped on
+    // an approval; an explicit rejection by the requester is still allowed.)
+    if (body.approved) {
+      const selfApprovedIds = actions
+        .filter((action) => pendingIds.includes(action.id) && action.requestedBy === auth.user.id)
+        .map((action) => action.id);
+      if (selfApprovedIds.length > 0) {
+        return c.json({
+          error: 'Requester cannot approve their own remediation actions',
+          selfApprovedIds,
+        }, 403);
+      }
     }
 
     const now = new Date();

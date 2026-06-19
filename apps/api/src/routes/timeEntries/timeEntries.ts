@@ -101,7 +101,13 @@ timeEntriesApiRoutes.get('/', scopes, readPerm, zValidator('query', listTimeEntr
   const q = c.req.valid('query');
   const actor = timeActorFrom(c);
   // D5: non-admins see only their own entries through the standalone list.
-  const filters = { ...q, userId: actor.manageAll ? q.userId : actor.userId };
+  // Org-axis allowlist confines partner-scope admins to granted orgs (the
+  // partner-axis time_entries RLS does not). (#sec-review-1)
+  const filters = {
+    ...q,
+    userId: actor.manageAll ? q.userId : actor.userId,
+    accessibleOrgIds: actor.accessibleOrgIds,
+  };
   const { entries, total } = await listTimeEntries(filters);
   return c.json({ data: entries, total, limit: q.limit, offset: q.offset });
 });

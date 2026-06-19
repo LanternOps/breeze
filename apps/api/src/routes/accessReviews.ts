@@ -15,7 +15,7 @@ import {
   organizationUsers,
   organizations
 } from '../db/schema';
-import { authMiddleware, requirePermission } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
@@ -123,6 +123,7 @@ accessReviewRoutes.get(
 accessReviewRoutes.post(
   '/',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', createReviewSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -303,6 +304,7 @@ accessReviewRoutes.get(
 accessReviewRoutes.patch(
   '/:id/items/:itemId',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateItemSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -392,6 +394,7 @@ accessReviewRoutes.patch(
 accessReviewRoutes.post(
   '/:id/complete',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);

@@ -164,7 +164,7 @@ filterRoutes.post(
       for (const orgId of orgIds) {
         const result = await evaluateFilter(
           conditions as unknown as FilterConditionGroup,
-          { orgId }
+          { orgId, allowedSiteIds: auth.allowedSiteIds }
         );
         deviceIds.push(...result.deviceIds);
       }
@@ -196,7 +196,7 @@ filterRoutes.post(
     for (const orgId of orgIds) {
       const preview = await evaluateFilterWithPreview(
         conditions as unknown as FilterConditionGroup,
-        { orgId, previewLimit: limit }
+        { orgId, previewLimit: limit, allowedSiteIds: auth.allowedSiteIds }
       );
       totalCount += preview.totalCount;
       allDevices.push(...preview.devices);
@@ -452,7 +452,7 @@ filterRoutes.post(
 
     const preview = await evaluateFilterWithPreview(
       filter.conditions as FilterConditionGroup,
-      { orgId: filter.orgId, previewLimit: query.limit }
+      { orgId: filter.orgId, previewLimit: query.limit, allowedSiteIds: auth.allowedSiteIds }
     );
 
     writeRouteAudit(c, {

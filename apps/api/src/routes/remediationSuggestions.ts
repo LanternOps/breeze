@@ -86,6 +86,26 @@ function requiresExecutionApproval(riskTier: string | null | undefined): boolean
   return riskTier === 'high' || riskTier === 'critical';
 }
 
+const RISK_TIER_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+/**
+ * Resolve the riskTier to persist on a PATCH. A caller may RAISE the tier
+ * (asking for more approval) but must never LOWER it: the /execute approval
+ * gate (validateRemediationExecutionApproval) reads the STORED riskTier, so a
+ * downgrade (e.g. critical→low) on a non-MFA PATCH would let a SCRIPTS_EXECUTE
+ * user skip the elevation-approval rail entirely. Clamp to the higher of the
+ * stored and requested tiers so the gate can never be weakened from the client.
+ */
+export function resolvePatchedRiskTier(
+  existing: string,
+  requested: string | null | undefined
+): string {
+  if (requested == null) return existing;
+  const existingRank = RISK_TIER_RANK[existing] ?? -1;
+  const requestedRank = RISK_TIER_RANK[requested] ?? -1;
+  return requestedRank >= existingRank ? requested : existing;
+}
+
 function remediationApprovalRiskTier(riskTier: string | null | undefined): number | null {
   if (riskTier === 'high') return 3;
   if (riskTier === 'critical') return 4;
@@ -978,7 +998,7 @@ remediationSuggestionRoutes.patch(
         title: input.title ?? existing.title,
         rationale: input.rationale ?? existing.rationale,
         expectedAction: input.expectedAction ?? existing.expectedAction,
-        riskTier: input.riskTier ?? existing.riskTier,
+        riskTier: resolvePatchedRiskTier(existing.riskTier, input.riskTier),
         parameters: input.parameters ?? existing.parameters,
         elevationRequestId: input.elevationRequestId === undefined ? existing.elevationRequestId : input.elevationRequestId,
         toolExecutionId: input.toolExecutionId === undefined ? existing.toolExecutionId : input.toolExecutionId,

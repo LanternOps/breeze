@@ -95,11 +95,12 @@ async function requireMonitorAccess(auth: AuthContext, monitorId: string, permis
   return { monitor } as const;
 }
 
-async function requireAlertRuleAccess(auth: AuthContext, ruleId: string) {
+async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permissions?: UserPermissions) {
   const [row] = await db
     .select({
       rule: networkMonitorAlertRules,
-      monitorOrgId: networkMonitors.orgId
+      monitorOrgId: networkMonitors.orgId,
+      monitorAssetId: networkMonitors.assetId
     })
     .from(networkMonitorAlertRules)
     .innerJoin(networkMonitors, eq(networkMonitorAlertRules.monitorId, networkMonitors.id))
@@ -113,6 +114,15 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string) {
     if (row.monitorOrgId !== auth.orgId) return { error: 'Alert rule not found.', status: 404 } as const;
   } else {
     if (!auth.canAccessOrg(row.monitorOrgId)) return { error: 'Access denied', status: 403 } as const;
+  }
+
+  // Site-axis re-check: RLS only defends the org axis. A site-restricted user
+  // could otherwise edit/delete alert rules on a monitor in a site outside
+  // their allowlist (same org). Mirror requireMonitorAccess's site gate — the
+  // create path (POST /alerts) already goes through it. Empty/unset allowlist
+  // (partner/system scope) = full access.
+  if (!(await hasMonitorSiteAccess({ orgId: row.monitorOrgId, assetId: row.monitorAssetId }, permissions))) {
+    return { error: 'Access to this site denied', status: 403 } as const;
   }
 
   return row;
@@ -812,7 +822,7 @@ monitorRoutes.patch(
     const auth = c.get('auth') as AuthContext;
     const { id: ruleId } = c.req.valid('param');
     const payload = c.req.valid('json');
-    const accessResult = await requireAlertRuleAccess(auth, ruleId);
+    const accessResult = await requireAlertRuleAccess(auth, ruleId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
 
     const [updated] = await db.update(networkMonitorAlertRules)
@@ -844,7 +854,7 @@ monitorRoutes.delete(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id: ruleId } = c.req.valid('param');
-    const accessResult = await requireAlertRuleAccess(auth, ruleId);
+    const accessResult = await requireAlertRuleAccess(auth, ruleId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
 
     const [removed] = await db.delete(networkMonitorAlertRules)
