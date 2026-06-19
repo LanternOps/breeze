@@ -164,12 +164,13 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   const balanceMinor = toMinorUnits(inv.balance, inv.currencyCode);
   if (balanceMinor <= 0) return c.json({ error: 'Nothing to pay' }, 409);
 
-  // partner_stripe_credentials is a partner-axis table. This handler runs with NO
-  // ambient DB context (#1448 opt-out), and even when it did it ran under the portal
-  // user's ORGANIZATION scope, where breeze_has_partner_access is false — a bare read
-  // would be silently RLS-filtered to 0 rows with no error (the #1375 class), making
-  // the pay route always 409. Read the partner's key + build their client in a short
-  // system-scoped context (a no-op nest if a context is somehow already active).
+  // stripe_connect_accounts is a partner-axis table (reused by the #1610 API-key
+  // model). This handler runs with NO ambient DB context (#1448 opt-out), and even
+  // when it did it ran under the portal user's ORGANIZATION scope, where
+  // breeze_has_partner_access is false — a bare read would be silently RLS-filtered
+  // to 0 rows with no error (the #1375 class), making the pay route always 409. Read
+  // the partner's key + build their client in a short system-scoped context (a no-op
+  // nest if a context is somehow already active).
   let stripe: Awaited<ReturnType<typeof getPartnerStripeClient>>['stripe'];
   let stripeAccountId: string;
   try {
@@ -185,6 +186,9 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     if (err instanceof PartnerStripeError) {
       return c.json({ error: 'Could not initialize payment — please contact support' }, 500);
     }
+    // Unexpected (non-PartnerStripeError) — e.g. a DB/context failure from the
+    // wrapping read. Log it before rethrowing so it isn't an opaque 500.
+    console.error('[portal/invoices] failed to initialize partner Stripe client', { partnerId: inv.partnerId, err });
     throw err;
   }
 

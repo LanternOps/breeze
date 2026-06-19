@@ -43,9 +43,10 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   if (balanceMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
 
   // The partner charges on their OWN Stripe account using their stored key (no
-  // platform/Connect). partner_stripe_credentials is a partner-axis table, so read
-  // it in a short system-scoped context (#1448 — there is no ambient request tx
-  // here). One read returns both the client and the account id (for the mapping row).
+  // platform/Connect). stripe_connect_accounts is a partner-axis table (reused by
+  // the #1610 API-key model), so read it in a short system-scoped context (#1448 —
+  // there is no ambient request tx here). One read returns both the client and the
+  // account id (for the mapping row).
   let stripe, stripeAccountId: string;
   try {
     ({ stripe, stripeAccountId } = await withSystemDbAccessContext(() =>
@@ -57,6 +58,10 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
     if (err instanceof PartnerStripeError && err.code === 'NO_STRIPE_KEY') {
       throw new InvoiceServiceError('Online payment is not available — connect Stripe first', 409, 'STRIPE_NOT_CONNECTED');
     }
+    // Log at this layer too: a non-NO_STRIPE_KEY error here may be an unreadable key
+    // (already logged in partnerStripe) OR an unexpected DB/context failure from the
+    // wrapping read — don't let the latter collapse into a generic 500 with no trace.
+    console.error('[invoiceCheckout] failed to initialize partner Stripe client', { partnerId: inv.partnerId, err });
     throw new InvoiceServiceError('Could not initialize payment — please contact support', 500, 'STRIPE_INIT_FAILED');
   }
 
