@@ -4,6 +4,7 @@ import UserInviteForm, { type RoleOption } from './UserInviteForm';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
+import AccessDenied from '../shared/AccessDenied';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
 
@@ -29,6 +30,9 @@ export default function UsersPage() {
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // Distinct from `error`: a 403 is a permission denial, not a transient load
+  // failure, so it renders the access-denied state (no misleading retry button).
+  const [forbidden, setForbidden] = useState(false);
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -46,10 +50,15 @@ export default function UsersPage() {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const response = await fetchWithAuth('/users');
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
+          return;
+        }
+        if (response.status === 403) {
+          setForbidden(true);
           return;
         }
         throw new Error('Failed to fetch users');
@@ -264,6 +273,10 @@ export default function UsersPage() {
         </div>
       </div>
     );
+  }
+
+  if (forbidden) {
+    return <AccessDenied message="You don't have permission to view users." />;
   }
 
   if (error && users.length === 0) {

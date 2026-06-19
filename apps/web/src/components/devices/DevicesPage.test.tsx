@@ -316,6 +316,29 @@ describe('DevicesPage — network-arm fetch failure handling (#1322)', () => {
   });
 });
 
+// #1629 follow-up: a 403 on the devices load is a permission denial, not an
+// expired session. The web fetcher throws the raw Response on a non-OK status,
+// so DevicesPage catches a 403 Response and must render the access-denied state
+// (no misleading "session expired / try again"), not the generic error banner.
+describe('DevicesPage — 403 renders access-denied (not session expired)', () => {
+  it('renders AccessDenied when the devices fetch returns 403', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);
+    // fetchAllDevices throws the raw Response on a non-OK status (its contract).
+    vi.mocked(fetchAllDevices).mockRejectedValueOnce(new Response(null, { status: 403 }));
+
+    render(<DevicesPage />);
+
+    expect(await screen.findByTestId('access-denied')).toBeTruthy();
+    expect(screen.getByText('Access denied')).toBeTruthy();
+    expect(screen.getByText("You don't have permission to view devices.")).toBeTruthy();
+    // Must NOT show the session-expired copy or a retry on a permission denial.
+    expect(screen.queryByText('Session expired')).toBeNull();
+    expect(screen.queryByText('Try again')).toBeNull();
+    expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
+  });
+});
+
 // Regression: multi-select "Run Script" sent an EMPTY deviceIds array → the API
 // rejected it with 400 "Array must contain at least one item". Root cause: the
 // ScriptPickerModal called onSelect() then onClose(), and onClose

@@ -472,18 +472,28 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const deletionRequestsCount = useDeletionRequestsBadge(isPlatformAdmin);
 
   // --- Render a single nav item -------------------------------------------
-  const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
-    if (item.requiresAiForOffice && !aiForOfficeEnabled) return null;
-    if (item.platformAdminOnly && !isPlatformAdmin) return null;
+  // Whether a nav item passes all visibility gates (feature flag, platform
+  // admin, partner scope, permission). Kept in sync with the early returns in
+  // `renderNavItem` below so section-header visibility (renderCollapsibleSection)
+  // matches what actually renders — a section whose items are all filtered out
+  // must not show an empty header that expands to nothing.
+  const isNavItemVisible = (item: NavItem): boolean => {
+    if (item.requiresAiForOffice && !aiForOfficeEnabled) return false;
+    if (item.platformAdminOnly && !isPlatformAdmin) return false;
     if (item.partnerScopeOnly) {
       const { scope } = getJwtClaims();
-      if (scope !== null && scope !== 'partner') return null;
+      if (scope !== null && scope !== 'partner') return false;
     }
     if (item.requiredPermission) {
       if (!hasPermission(permissions, item.requiredPermission.resource, item.requiredPermission.action)) {
-        return null;
+        return false;
       }
     }
+    return true;
+  };
+
+  const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
+    if (!isNavItemVisible(item)) return null;
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;
     const narrow = forMobileOverlay ? false : isNarrow;
@@ -518,6 +528,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   // --- Render a collapsible section ----------------------------------------
   const renderCollapsibleSection = (section: NavSection, forMobileOverlay = false) => {
+    // Hide the whole section (header + divider) when every item is filtered out
+    // by permissions/scope/flags — otherwise a permission-limited user sees an
+    // empty group header that expands to nothing (#1629 follow-up).
+    if (!section.items.some(isNavItemVisible)) return null;
+
     const expanded = isSectionExpanded(section.id);
     const labels = forMobileOverlay ? true : showLabels;
 

@@ -53,6 +53,13 @@ function has(container: HTMLElement, href: string): boolean {
   return container.querySelector(`a[href="${href}"]`) !== null;
 }
 
+// A collapsible section header is a <button> whose first <span> is the label.
+function hasSectionHeader(container: HTMLElement, label: string): boolean {
+  return [...container.querySelectorAll('button')].some(
+    (b) => b.querySelector('span')?.textContent === label,
+  );
+}
+
 beforeEach(() => {
   fetchWithAuthMock.mockReset();
   fetchWithAuthMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) } as Response);
@@ -95,6 +102,19 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/scripts')).toBe(false);
     expect(has(container, '/backup')).toBe(false);
     expect(has(container, '/reports')).toBe(false);
+
+    // #1629 follow-up: a section whose items are ALL permission-filtered out
+    // must hide its header entirely — no empty "Monitoring/Security/Backup/
+    // Reporting" group that expands to nothing.
+    expect(hasSectionHeader(container, 'Monitoring')).toBe(false);
+    expect(hasSectionHeader(container, 'Security')).toBe(false);
+    expect(hasSectionHeader(container, 'Backup')).toBe(false);
+    expect(hasSectionHeader(container, 'Reporting')).toBe(false);
+    // Sections that still have at least one visible item keep their header:
+    // Operations holds the billing items it can access, and AI & Fleet has the
+    // always-visible Fleet landing item.
+    expect(hasSectionHeader(container, 'Operations')).toBe(true);
+    expect(hasSectionHeader(container, 'AI & Fleet')).toBe(true);
   });
 
   it('Partner Technician sees fleet/ops items but no billing and no user/role admin', async () => {
@@ -134,6 +154,12 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/security')).toBe(true);
     expect(has(container, '/reports')).toBe(true);
     expect(has(container, '/backup')).toBe(true);
+
+    // Admin sees every section header (nothing filtered out).
+    expect(hasSectionHeader(container, 'Monitoring')).toBe(true);
+    expect(hasSectionHeader(container, 'Security')).toBe(true);
+    expect(hasSectionHeader(container, 'Backup')).toBe(true);
+    expect(hasSectionHeader(container, 'Reporting')).toBe(true);
   });
 
   it('Dashboard stays visible regardless of permissions (ungated landing page)', async () => {
