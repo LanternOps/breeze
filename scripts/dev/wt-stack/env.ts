@@ -14,6 +14,7 @@ const DEV_ENV: Record<string, string> = {
   ENABLE_REGISTRATION: 'true',
   BINARY_SOURCE: 'github',
   CADDY_SITE_ADDRESS: ':80',
+  BREEZE_PORTAL_IMAGE_REF: 'breeze-portal:dev',
   // Caddy/postgres/redis images are digest-pinned in base compose; reuse the
   // values already present in the developer's root .env via compose interpolation.
 };

@@ -4,21 +4,21 @@
 # Adds a code-mounted Portal dev service so the worktree's portal code runs.
 services:
   postgres:
-    container_name: null
+    container_name: !reset null
   redis:
-    container_name: null
+    container_name: !reset null
   api:
-    container_name: null
+    container_name: !reset null
   web:
-    container_name: null
+    container_name: !reset null
   caddy:
-    container_name: null
+    container_name: !reset null
     environment:
       CADDY_SITE_ADDRESS: ":80"
 
   portal:
     image: breeze-portal:dev
-    container_name: null
+    container_name: !reset null
     build:
       context: .
       dockerfile: docker/Dockerfile.portal.dev

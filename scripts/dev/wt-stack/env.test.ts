@@ -14,7 +14,7 @@ describe('writeEnvStack', () => {
     const env = readFileSync(p, 'utf8');
     for (const key of [
       'POSTGRES_PASSWORD', 'ENROLLMENT_KEY_PEPPER', 'MFA_RECOVERY_CODE_PEPPER',
-      'TURN_SECRET', 'IS_HOSTED', 'CADDY_SITE_ADDRESS',
+      'TURN_SECRET', 'IS_HOSTED', 'CADDY_SITE_ADDRESS', 'BREEZE_PORTAL_IMAGE_REF',
     ]) {
       expect(env).toContain(`${key}=`);
     }
