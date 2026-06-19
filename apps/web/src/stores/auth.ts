@@ -421,6 +421,11 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
   return true;
 }
 
+// Default request timeout for JSON API calls. Uploads get a much longer ceiling
+// (see UPLOAD_TIMEOUT_MS) because large installer files take far longer to send.
+const DEFAULT_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
 export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
@@ -457,10 +462,15 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     headers.set('Content-Type', 'application/json');
   }
 
-  // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
+  // Use caller-provided signal or create a default timeout to prevent indefinite hangs.
+  // FormData bodies are file uploads (software installers can be hundreds of MB); a 30s
+  // cap aborts an in-flight upload the server then completes anyway, surfacing the
+  // confusing "signal is aborted without reason" DOMException even though the file
+  // landed (issue #1601). Give uploads a much longer ceiling while keeping it bounded.
   const externalSignal = options.signal;
+  const timeoutMs = options.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
   const controller = !externalSignal ? new AbortController() : null;
-  const timeout = controller ? setTimeout(() => controller.abort(), 30_000) : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const signal = externalSignal ?? controller!.signal;
 
   let response: Response;
