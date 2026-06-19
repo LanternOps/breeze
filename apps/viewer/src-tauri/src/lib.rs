@@ -879,6 +879,10 @@ mod tests {
             first_deep_link_arg(&["--url=breeze://x".to_string()]),
             None
         );
+        // The colon is part of the prefix: a token starting with "breeze" but
+        // not "breeze:" (e.g. the helper binary name) must not match.
+        assert_eq!(first_deep_link_arg(&["breeze-helper".to_string()]), None);
+        assert_eq!(first_deep_link_arg(&["breezed".to_string()]), None);
     }
 
     #[test]
