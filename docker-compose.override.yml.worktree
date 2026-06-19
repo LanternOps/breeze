@@ -44,6 +44,7 @@ services:
   portal:
     image: breeze-portal:dev
     container_name: !reset null
+    ports: !reset []
     build:
       context: .
       dockerfile: docker/Dockerfile.portal.dev
