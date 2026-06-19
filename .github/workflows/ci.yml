@@ -484,6 +484,12 @@ jobs:
       - name: Build Web
         run: pnpm build --filter=@breeze/web
 
+      - name: Install Chromium for CSP guard
+        run: pnpm --filter @breeze/web exec playwright install --with-deps chromium
+
+      - name: CSP drift guard (real-browser)
+        run: pnpm --filter @breeze/web run csp:guard
+
       - name: Upload Web artifact
         uses: actions/upload-artifact@v7
         with:
