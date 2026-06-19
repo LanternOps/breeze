@@ -83,6 +83,15 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // quarantined Huntress orgs.
   'huntress_integrations',
   'huntress_org_mappings',
+  // Pax8 mappings/snapshots are partner-axis (Shape 3) — RLS uses
+  // breeze_has_partner_access(partner_id). The nullable org_id is a dual-axis FK
+  // into organizations(id, partner_id) for referential integrity + filtering, not
+  // the RLS axis (analogous to huntress_org_mappings). They're registered in
+  // PARTNER_TENANT_TABLES; without this exemption the org-tenant auto-discovery
+  // (which keys purely on org_id presence) wrongly demands org policies.
+  'pax8_company_mappings',
+  'pax8_subscription_snapshots',
+  'pax8_contract_line_links',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
