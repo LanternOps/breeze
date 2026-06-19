@@ -20,6 +20,7 @@ export * from './authenticator';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
+export * from './mlFeedback';
 export * from './quotes';
 
 // ============================================
@@ -350,7 +351,10 @@ export const agentEnrollSchema = z.object({
     ramTotalMb: z.number().optional(),
     serialNumber: z.string().optional(),
     manufacturer: z.string().optional(),
-    model: z.string().optional()
+    model: z.string().optional(),
+    motherboardManufacturer: z.string().optional(),
+    motherboardProduct: z.string().optional(),
+    motherboardVersion: z.string().optional()
   }).optional()
 });
 

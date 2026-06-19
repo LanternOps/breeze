@@ -35,6 +35,9 @@ func collectPlatformHardware(hw *HardwareInfo) {
 	hw.SerialNumber = readDMI("product_serial")
 	hw.Manufacturer = readDMI("sys_vendor")
 	hw.Model = readDMI("product_name")
+	hw.MotherboardManufacturer = cleanHardwareIdentityValue(readDMI("board_vendor"))
+	hw.MotherboardProduct = cleanHardwareIdentityValue(readDMI("board_name"))
+	hw.MotherboardVersion = cleanHardwareIdentityValue(readDMI("board_version"))
 	hw.BIOSVersion = readDMI("bios_version")
 
 	// GPU via lspci (with timeout)

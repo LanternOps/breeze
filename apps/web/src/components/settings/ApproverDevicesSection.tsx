@@ -140,9 +140,10 @@ export default function ApproverDevicesSection() {
       <div className="space-y-1">
         <h2 className="text-lg font-semibold">Approval security</h2>
         <p className="text-sm text-muted-foreground">
-          Register this browser with Windows Hello or Touch ID so you can confirm high-risk approvals
-          (privileged access, AI actions) with a biometric. This is optional — approvals still work
-          without it.
+          These devices can confirm high-risk approvals (privileged access, AI actions) with a
+          biometric. Your phone registers itself automatically when you sign in to the Breeze mobile
+          app; you can also register this browser with Windows Hello or Touch ID. All of this is
+          optional — approvals still work without it.
         </p>
       </div>
 
@@ -171,7 +172,8 @@ export default function ApproverDevicesSection() {
             data-testid="approver-devices-empty"
             className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground"
           >
-            No approver devices registered. Register this device below to approve with a biometric.
+            No approver devices registered yet. Sign in to the Breeze mobile app on your phone and it
+            appears here automatically, or register this browser below to approve with a biometric.
           </div>
         ) : (
           activeDevices.map((device) => {
@@ -280,9 +282,11 @@ export default function ApproverDevicesSection() {
 
       <div className="space-y-4 rounded-md border p-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-medium">Register this device</h3>
+          <h3 className="text-sm font-medium">Register this browser</h3>
           <p className="text-xs text-muted-foreground">
-            You'll be prompted for Windows Hello, Touch ID, or your device's biometric.
+            Optional — your phone is already an approver once you sign in to the mobile app. Register
+            this browser too and you'll be prompted for Windows Hello, Touch ID, or your device's
+            biometric.
           </p>
         </div>
         <div className="space-y-2">

@@ -12,10 +12,30 @@ import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 import { runAction, ActionError } from '../../lib/runAction';
+import { normalizeMetricAnomalyContext } from './alertMlContext';
+import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type Device = { id: string; name: string };
 
+function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
+  return rows.map((row) => {
+    const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? 'Unknown device';
+    const contextData = row.contextData ?? row.context;
+    const anomalyContext = row.anomalyContext ?? normalizeMetricAnomalyContext(contextData);
+    return {
+      ...row,
+      deviceName: String(deviceName),
+      contextData,
+      anomalyContext,
+      correlationMemberCount: Number(row.correlationMemberCount ?? 0),
+      correlationChildCount: Number(row.correlationChildCount ?? 0),
+      noiseReductionPercent: row.noiseReductionPercent == null ? null : Number(row.noiseReductionPercent),
+    } as Alert;
+  });
+}
+
 export default function AlertsPage() {
+  const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,6 +57,7 @@ export default function AlertsPage() {
   // null (global route); this just makes the page refetch instead of showing
   // the previous scope.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
 
   const fetchAlerts = useCallback(async () => {
     try {
@@ -51,7 +72,8 @@ export default function AlertsPage() {
         throw new Error('Failed to fetch alerts');
       }
       const data = await response.json();
-      setAlerts(data.data ?? data.alerts ?? (Array.isArray(data) ? data : []));
+      const raw: Record<string, unknown>[] = data.data ?? data.alerts ?? (Array.isArray(data) ? data : []);
+      setAlerts(normalizeAlertRows(raw));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -422,6 +444,7 @@ export default function AlertsPage() {
           onSuppress={handleSuppress}
           onBulkAction={handleBulkAction}
           submittingId={submittingId}
+          alertCorrelationDisabled={alertCorrelationDisabled}
         />
       )}
 

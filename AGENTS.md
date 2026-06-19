@@ -304,6 +304,14 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.local-build 
 - Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
 - This is the normal workflow — do not wait for branch protection rules to be satisfied
 
+### GitHub Naming
+- Do not use the `codex/` branch prefix for Breeze work. This applies even when Codex creates the branch or PR.
+- Follow the existing GitHub branch patterns: `fix/<issue>-<short-slug>`, `feat/<issue>-<short-slug>`, `docs/<short-slug>`, `chore/<short-slug>`, `ops/<short-slug>`, `hotfix/<short-slug>`, or `integration/<short-slug>`.
+- If there is no issue number, use the same prefix with a concise slug, e.g. `fix/<short-slug>` or `feat/<short-slug>`.
+- Use `pr-####` or `pr-####-review` only when the branch is specifically for inspecting or reviewing an existing PR.
+- Keep branch slugs lowercase, kebab-case, and specific to the work. Avoid agent/tool/vendor prefixes such as `codex/`, `claude/`, or similar.
+- PR titles should follow the existing convention where useful: `fix(scope): summary`, `feat(scope): summary`, `docs(scope): summary`, or `chore(scope): summary`. Include issue references such as `(#1234)`, `refs #1234`, or `closes #1234` when the work is tied to an issue.
+
 ### Production Deploy
 
 Production hosts pull from `/opt/breeze` and use mutable image tags driven by `BREEZE_VERSION` in `/opt/breeze/.env`. Keep hostnames, regions, and internal mappings out of tracked files; use placeholders in docs and examples.

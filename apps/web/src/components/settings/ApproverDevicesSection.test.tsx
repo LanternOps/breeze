@@ -83,6 +83,33 @@ describe('ApproverDevicesSection', () => {
     await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
   });
 
+  it('lists a registered mobile_hw_key phone alongside the register-this-browser action', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({
+        id: 'd1',
+        kind: 'mobile_hw_key',
+        label: 'iPhone 16 Pro',
+        isPlatformBound: true,
+        lastUsedAt: null,
+      }),
+    ]);
+    render(<ApproverDevicesSection />);
+
+    await waitFor(() => screen.getByText('iPhone 16 Pro'));
+    expect(screen.getByTestId('approver-device-d1')).toBeTruthy();
+    // The browser-registration affordance is reframed as an additive, optional
+    // path below the list (not the only way to get an approver device).
+    expect(screen.getByRole('heading', { name: /register this browser/i })).toBeTruthy();
+  });
+
+  it('points unregistered users to the mobile app in the empty state', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([]);
+    render(<ApproverDevicesSection />);
+
+    const empty = await screen.findByTestId('approver-devices-empty');
+    expect(empty.textContent).toMatch(/mobile app/i);
+  });
+
   it('revokes a device after confirming in the dialog', async () => {
     render(<ApproverDevicesSection />);
     await screen.findByTestId('approver-device-dev-1');

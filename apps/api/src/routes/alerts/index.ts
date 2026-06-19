@@ -5,6 +5,7 @@ import { alertsRoutes } from './alerts';
 import { channelsRoutes } from './channels';
 import { policiesRoutes } from './policies';
 import { routingRoutes } from './routing';
+import { alertCorrelationRoutes } from './correlations';
 
 export const alertRoutes = new Hono();
 
@@ -16,5 +17,6 @@ alertRoutes.route('/', rulesRoutes);
 alertRoutes.route('/', channelsRoutes);
 alertRoutes.route('/', policiesRoutes);
 alertRoutes.route('/', routingRoutes);
+alertRoutes.route('/', alertCorrelationRoutes);
 alertRoutes.route('/', alertsRoutes);
 

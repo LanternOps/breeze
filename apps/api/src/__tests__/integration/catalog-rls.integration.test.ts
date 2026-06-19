@@ -49,6 +49,7 @@ import {
   catalogItems,
   catalogItemOrgPricing,
   catalogBundleComponents,
+  tdSynnexDigitalBridgeIntegrations,
   organizations,
   partners,
 } from '../../db/schema';
@@ -69,6 +70,7 @@ interface Fixture {
   itemA: { id: string };
   componentA: { id: string };
   pricingA: { id: string };
+  tdSynnexA: { id: string };
   partnerBContext: DbAccessContext;
   orgBContext: DbAccessContext;
 }
@@ -124,6 +126,21 @@ async function seedFixture(): Promise<Fixture> {
       .returning({ id: catalogItemOrgPricing.id });
     if (!pricingA) throw new Error('failed to seed org-pricing override A');
 
+    const [tdSynnexA] = await db
+      .insert(tdSynnexDigitalBridgeIntegrations)
+      .values({
+        partnerId: partnerA.id,
+        environment: 'sandbox',
+        region: 'US',
+        baseUrl: 'https://digitalbridge.example.test',
+        authType: 'api_key',
+        credentials: {},
+        settings: {},
+        enabled: true,
+      })
+      .returning({ id: tdSynnexDigitalBridgeIntegrations.id });
+    if (!tdSynnexA) throw new Error('failed to seed TD SYNNEX integration A');
+
     // Partner-scoped context for partner B (mirrors authMiddleware partner scope).
     const partnerBContext: DbAccessContext = {
       scope: 'partner',
@@ -150,6 +167,7 @@ async function seedFixture(): Promise<Fixture> {
       itemA: { id: itemA.id },
       componentA: { id: componentA.id },
       pricingA: { id: pricingA.id },
+      tdSynnexA: { id: tdSynnexA.id },
       partnerBContext,
       orgBContext,
     };
@@ -175,6 +193,9 @@ afterAll(async () => {
     await db
       .delete(catalogItems)
       .where(sql`${catalogItems.partnerId} IN (${partnerList})`);
+    await db
+      .delete(tdSynnexDigitalBridgeIntegrations)
+      .where(sql`${tdSynnexDigitalBridgeIntegrations.partnerId} IN (${partnerList})`);
     await db
       .delete(organizations)
       .where(sql`${organizations.partnerId} IN (${partnerList})`);
@@ -291,5 +312,65 @@ describe('catalog RLS isolation (breeze_app)', () => {
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  runDb('partner B context cannot read partner A TD SYNNEX integration', async () => {
+    const { tdSynnexA, partnerBContext } = await seedFixture();
+
+    const rowsB = await withDbAccessContext(partnerBContext, () =>
+      db
+        .select({ id: tdSynnexDigitalBridgeIntegrations.id })
+        .from(tdSynnexDigitalBridgeIntegrations)
+        .where(eq(tdSynnexDigitalBridgeIntegrations.id, tdSynnexA.id))
+    );
+    expect(rowsB).toHaveLength(0);
+  });
+
+  runDb('a forged cross-partner TD SYNNEX integration insert is rejected by RLS', async () => {
+    const { partnerA, partnerBContext } = await seedFixture();
+
+    await expect(
+      withDbAccessContext(partnerBContext, () =>
+        db.insert(tdSynnexDigitalBridgeIntegrations).values({
+          partnerId: partnerA.id,
+          environment: 'sandbox',
+          region: 'US',
+          baseUrl: 'https://digitalbridge.example.test',
+          authType: 'api_key',
+          credentials: {},
+          settings: {},
+          enabled: true,
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  runDb('partner B context UPDATE/DELETE on partner A TD SYNNEX integration affects 0 rows; row survives', async () => {
+    const { tdSynnexA, partnerBContext } = await seedFixture();
+
+    const updateRows = await withDbAccessContext(partnerBContext, () =>
+      db
+        .update(tdSynnexDigitalBridgeIntegrations)
+        .set({ enabled: false, updatedAt: new Date() })
+        .where(eq(tdSynnexDigitalBridgeIntegrations.id, tdSynnexA.id))
+        .returning({ id: tdSynnexDigitalBridgeIntegrations.id })
+    );
+    expect(updateRows).toHaveLength(0);
+
+    const deleteRows = await withDbAccessContext(partnerBContext, () =>
+      db
+        .delete(tdSynnexDigitalBridgeIntegrations)
+        .where(eq(tdSynnexDigitalBridgeIntegrations.id, tdSynnexA.id))
+        .returning({ id: tdSynnexDigitalBridgeIntegrations.id })
+    );
+    expect(deleteRows).toHaveLength(0);
+
+    const surviving = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: tdSynnexDigitalBridgeIntegrations.id, enabled: tdSynnexDigitalBridgeIntegrations.enabled })
+        .from(tdSynnexDigitalBridgeIntegrations)
+        .where(eq(tdSynnexDigitalBridgeIntegrations.id, tdSynnexA.id))
+    );
+    expect(surviving).toEqual([{ id: tdSynnexA.id, enabled: true }]);
   });
 });

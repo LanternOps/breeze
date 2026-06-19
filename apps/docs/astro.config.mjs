@@ -11,6 +11,10 @@ export default defineConfig({
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],
+      components: {
+        // Site-wide CTA that points docs readers back to the product.
+        Banner: './src/components/DocsCTABanner.astro',
+      },
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/LanternOps/breeze' },
       ],

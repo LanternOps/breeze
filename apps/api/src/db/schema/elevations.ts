@@ -1,5 +1,4 @@
 import {
-  boolean,
   foreignKey,
   index,
   inet,
@@ -147,7 +146,6 @@ export const elevationRequests = pgTable(
     decidedAssuranceLevel: smallint('decided_assurance_level').$type<AssuranceLevel>(),
     decidedVia: approvalFactorEnum('decided_via'),
     authenticatorDeviceId: uuid('authenticator_device_id'),
-    pinVerified: boolean('pin_verified').notNull().default(false),
 
     // Session info, set by the agent once the grant is exercised.
     sessionStartedAt: timestamp('session_started_at', { withTimezone: true }),

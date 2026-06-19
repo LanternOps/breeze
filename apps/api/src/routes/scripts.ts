@@ -8,19 +8,13 @@ import { db } from '../db';
 import {
   scripts,
   scriptExecutions,
-  scriptExecutionBatches,
   devices,
   deviceCommands
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
-import { sendCommandToAgent } from './agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
-import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
-import {
-  claimPendingCommandForDelivery,
-  releaseClaimedCommandDelivery,
-} from '../services/commandDispatch';
+import { executeScriptOnDevices } from '../services/scriptExecution';
 
 export const scriptRoutes = new Hono();
 
@@ -634,201 +628,47 @@ scriptRoutes.post(
     const { id: scriptId } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    const script = await getScriptWithOrgCheck(scriptId, auth);
-    if (!script) {
-      return c.json({ error: 'Script not found' }, 404);
-    }
+    const result = await executeScriptOnDevices({
+      scriptId,
+      deviceIds: data.deviceIds,
+      parameters: data.parameters,
+      triggerType: data.triggerType,
+      runAs: data.runAs,
+      auth,
+      permissions: c.get('permissions') as UserPermissions | undefined,
+    });
 
-    // Validate device access
-    const deviceRecords = await db
-      .select()
-      .from(devices)
-      .where(inArray(devices.id, data.deviceIds));
-
-    if (deviceRecords.length === 0) {
-      return c.json({ error: 'No valid devices found' }, 400);
-    }
-
-    // Check access to each device's org
-    const validDevices: typeof deviceRecords = [];
-    const siteDeniedDeviceIds: string[] = [];
-    for (const device of deviceRecords) {
-      const hasAccess = ensureOrgAccess(device.orgId, auth);
-      if (hasAccess) {
-        if (!canAccessDeviceSite(device.siteId, c.get('permissions') as UserPermissions | undefined)) {
-          siteDeniedDeviceIds.push(device.id);
-          continue;
-        }
-        // Also check OS compatibility
-        if (script.osTypes.includes(device.osType)) {
-          // Don't execute on decommissioned devices
-          if (device.status !== 'decommissioned') {
-            validDevices.push(device);
-          }
-        }
-      }
-    }
-
-    if (siteDeniedDeviceIds.length > 0) {
-      return c.json({ error: 'Access to one or more device sites denied' }, 403);
-    }
-
-    if (validDevices.length === 0) {
-      return c.json({ error: 'No accessible or compatible devices found' }, 400);
-    }
-
-    // Filter out devices where script execution is suppressed by a maintenance window
-    const maintenanceSuppressedDeviceIds: string[] = [];
-    const executableDevices: typeof validDevices = [];
-    for (const device of validDevices) {
-      const maintenanceStatus = await checkDeviceMaintenanceWindow(device.id);
-      if (maintenanceStatus.active && maintenanceStatus.suppressScripts) {
-        maintenanceSuppressedDeviceIds.push(device.id);
-      } else {
-        executableDevices.push(device);
-      }
-    }
-
-    if (executableDevices.length === 0) {
+    if (!result.ok) {
       return c.json({
-        error: 'All target devices are in a maintenance window with script execution suppressed',
-        maintenanceSuppressedDeviceIds,
-      }, 409);
-    }
-
-    const triggerType = data.triggerType ?? 'manual';
-    const parameters = data.parameters ?? {};
-    const runAs = data.runAs ?? script.runAs;
-
-    // Create batch if multiple devices
-    let batchId: string | null = null;
-    if (executableDevices.length > 1) {
-      // Denormalize the executing org onto the batch (RLS tenant axis). All
-      // executableDevices passed ensureOrgAccess above; for a built-in/system
-      // script (scripts.org_id is NULL) this is the only tenant linkage.
-      const batchOrgId = executableDevices[0]!.orgId;
-      const [batch] = await db
-        .insert(scriptExecutionBatches)
-        .values({
-          scriptId,
-          orgId: batchOrgId,
-          triggeredBy: auth.user.id,
-          triggerType,
-          parameters,
-          devicesTargeted: executableDevices.length,
-          status: 'pending'
-        })
-        .returning();
-      if (!batch) {
-        throw new Error('Failed to create batch');
-      }
-      batchId = batch.id;
-    }
-
-    // Create executions and queue commands for each device
-    const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
-
-    for (const device of executableDevices) {
-      // Create execution record
-      const [execution] = await db
-        .insert(scriptExecutions)
-        .values({
-          scriptId,
-          deviceId: device.id,
-          orgId: device.orgId,
-          triggeredBy: auth.user.id,
-          triggerType,
-          parameters,
-          status: 'pending'
-        })
-        .returning();
-
-      if (!execution) {
-        throw new Error('Failed to create execution');
-      }
-
-      // Queue command for device
-      const [command] = await db
-        .insert(deviceCommands)
-        .values({
-          deviceId: device.id,
-          type: 'script',
-          payload: {
-            scriptId,
-            executionId: execution.id,
-            batchId,
-            language: script.language,
-            content: script.content,
-            parameters,
-            timeoutSeconds: script.timeoutSeconds,
-            runAs
-          },
-          status: 'pending',
-          createdBy: auth.user.id
-        })
-        .returning();
-
-      if (!command) {
-        throw new Error('Failed to create command');
-      }
-
-      // Push command via WebSocket for immediate execution
-      if (device.agentId) {
-        const claimed = await claimPendingCommandForDelivery(command.id);
-        if (claimed) {
-          const sent = sendCommandToAgent(device.agentId, {
-            id: command.id,
-            type: 'script',
-            payload: command.payload as Record<string, unknown>
-          });
-          if (sent) {
-            await db
-              .update(scriptExecutions)
-              .set({ status: 'running', startedAt: claimed.executedAt })
-              .where(eq(scriptExecutions.id, execution.id));
-          } else {
-            await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-          }
-        }
-      }
-
-      executions.push({
-        executionId: execution.id,
-        deviceId: device.id,
-        commandId: command.id
-      });
-    }
-
-    // Update batch status to queued
-    if (batchId) {
-      await db
-        .update(scriptExecutionBatches)
-        .set({ status: 'queued' })
-        .where(eq(scriptExecutionBatches.id, batchId));
+        error: result.error,
+        maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
+      }, result.status);
     }
 
     writeRouteAudit(c, {
-      orgId: resolveScriptAuditOrgId(auth, script.orgId, executableDevices[0]?.orgId ?? null),
+      orgId: result.auditOrgId,
       action: 'script.execute',
       resourceType: 'script',
-      resourceId: script.id,
-      resourceName: script.name,
+      resourceId: result.script.id,
+      resourceName: result.script.name,
       details: {
-        batchId,
-        devicesTargeted: executableDevices.length,
-        maintenanceSuppressedDeviceIds,
-        triggerType,
-        runAs
+        batchId: result.batchId,
+        devicesTargeted: result.devicesTargeted,
+        maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
+        triggerType: result.triggerType,
+        runAs: result.runAs,
       }
     });
 
     return c.json({
-      batchId,
+      batchId: result.batchId,
       scriptId,
-      devicesTargeted: executableDevices.length,
-      maintenanceSuppressedDeviceIds: maintenanceSuppressedDeviceIds.length > 0 ? maintenanceSuppressedDeviceIds : undefined,
-      executions,
-      status: 'queued'
+      devicesTargeted: result.devicesTargeted,
+      maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds.length > 0
+        ? result.maintenanceSuppressedDeviceIds
+        : undefined,
+      executions: result.executions,
+      status: result.status,
     }, 201);
   }
 );

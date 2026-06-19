@@ -13,6 +13,7 @@ import {
 } from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
+import { verifyMFAToken } from '../../services/mfa';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
@@ -103,6 +104,59 @@ export async function requireCurrentPasswordStepUp(
   }
 
   const valid = await verifyPassword(user.passwordHash, currentPassword);
+  if (!valid) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  return null;
+}
+
+/**
+ * L4 (critical) re-auth fallback for SSO-only / passwordless accounts that have
+ * no password to satisfy {@link requireCurrentPasswordStepUp}. Verifies a fresh
+ * TOTP code against the user's enrolled MFA secret. Mirrors the password
+ * step-up's shape (rate limit → lookup → verify) and returns the same opaque
+ * 401/429/503 responses so callers can `if (err) return err` uniformly. Only
+ * TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
+ */
+export async function requireFreshMfaStepUp(
+  c: Context,
+  userId: string,
+  code: string,
+  keyPrefix = 'auth:mfa-stepup',
+): Promise<Response | null> {
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
+
+  const [user] = await db
+    .select({ mfaEnabled: users.mfaEnabled, mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  // Only TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
+  // Allowlist on the method (not a denylist) so any non-TOTP/unset method is
+  // rejected even if a stale secret lingers — defense-in-depth for the auth path.
+  if (!user?.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const secret = decryptMfaTotpSecret(user.mfaSecret);
+  if (!secret) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const valid = await verifyMFAToken(secret, code);
   if (!valid) {
     return c.json({ error: 'Invalid credentials' }, 401);
   }

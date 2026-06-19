@@ -672,6 +672,9 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             serialNumber: data.hardwareInfo.serialNumber,
             manufacturer: data.hardwareInfo.manufacturer,
             model: data.hardwareInfo.model,
+            motherboardManufacturer: data.hardwareInfo.motherboardManufacturer,
+            motherboardProduct: data.hardwareInfo.motherboardProduct,
+            motherboardVersion: data.hardwareInfo.motherboardVersion,
             biosVersion: data.hardwareInfo.biosVersion
           })
           .onConflictDoUpdate({
@@ -686,6 +689,9 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
               serialNumber: data.hardwareInfo.serialNumber,
               manufacturer: data.hardwareInfo.manufacturer,
               model: data.hardwareInfo.model,
+              motherboardManufacturer: data.hardwareInfo.motherboardManufacturer,
+              motherboardProduct: data.hardwareInfo.motherboardProduct,
+              motherboardVersion: data.hardwareInfo.motherboardVersion,
               biosVersion: data.hardwareInfo.biosVersion,
               updatedAt: new Date()
             }
@@ -825,4 +831,3 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     }, 201);
   });
 });
-

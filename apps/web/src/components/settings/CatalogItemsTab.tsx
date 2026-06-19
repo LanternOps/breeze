@@ -29,7 +29,7 @@ interface ExpandState {
   economics: BundleEconomics | null;
 }
 
-export default function CatalogItemsTab() {
+export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number }) {
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -71,7 +71,7 @@ export default function CatalogItemsTab() {
     }
   }, []);
 
-  useEffect(() => { void load(view); }, [load, view]);
+  useEffect(() => { void load(view); }, [load, view, reloadKey]);
 
   const openCreate = () => { setEditItem(null); setDrawerOpen(true); };
   const openEdit = (it: CatalogItem) => { setEditItem(it); setDrawerOpen(true); };

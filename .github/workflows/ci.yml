@@ -654,7 +654,7 @@ jobs:
   rust-check:
     name: Rust Check (Tauri apps)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -662,8 +662,31 @@ jobs:
 
       - name: Install Tauri system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
+          # degraded and can crawl at 1-4 min/package, blowing this job's
+          # timeout before Rust ever compiles — a transient infra flake that
+          # reds `main` and fires main-red-alert with zero code signal (#1605).
+          # Switch to the canonical mirror and retry update+install with
+          # backoff so a slow mirror doesn't masquerade as a build failure.
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          install_deps() {
+            sudo apt-get update && \
+            sudo apt-get install -y --no-install-recommends \
+              libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          }
+          for attempt in 1 2 3; do
+            if install_deps; then
+              echo "Tauri system dependencies installed (attempt ${attempt})."
+              exit 0
+            fi
+            echo "::warning::apt install failed (attempt ${attempt}/3); retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+          done
+          echo "::error::Failed to install Tauri system dependencies after 3 attempts."
+          exit 1
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -744,13 +767,14 @@ jobs:
   # without mocks). BLOCKING on PRs and main — it lived inside the
   # non-blocking smoke-test job until 2026-06, which let two breakages
   # (#1042's RBAC gate, #1092's org-scope lockout) merge "green" and keep
-  # main red for 8 days. ~2-3 min: no Docker image builds, just the
-  # docker-compose.test.yml stack (postgres + redis pulls).
+  # main red for 8 days. No Docker image builds, but the real-DB suite plus
+  # RLS coverage regularly needs more than 15 minutes as the migration/test
+  # surface grows.
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: [lint, typecheck]
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout

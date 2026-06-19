@@ -108,17 +108,20 @@ describe('generateApprovalAssertionOptions', () => {
         allowCredentials: [{ id: 'cred-1', transports: ['internal'] }],
       })
     );
-    expect(redisMock.setex).toHaveBeenCalledWith(
-      'approval-assertion:a1:u1',
-      120,
-      'assert-c'
-    );
+    // The assertion challenge value now carries the issued-at prefix
+    // (`<epochMs>:<challenge>`) so the L3/L4 recency gate has a server-side age.
+    const [key, ttl, stored] = redisMock.setex.mock.calls[0]!;
+    expect(key).toBe('approval-assertion:a1:u1');
+    expect(ttl).toBe(120);
+    expect(stored).toMatch(/^\d+:assert-c$/);
   });
 });
 
 describe('verifyApprovalAssertion', () => {
-  it('consumes the challenge via getdel, verifies, and returns verified + newSignCount', async () => {
-    redisMock.getdel.mockResolvedValueOnce('assert-c');
+  it('consumes the challenge via getdel, verifies, and returns verified + newSignCount + challengeIssuedAt', async () => {
+    // stored value carries the issued-at prefix; verify decodes it for the
+    // recency clock and verifies against the bare challenge.
+    redisMock.getdel.mockResolvedValueOnce('1781000000000:assert-c');
     webauthnMocks.verifyAuthenticationResponse.mockResolvedValue({
       verified: true,
       authenticationInfo: { newCounter: 7 },
@@ -138,7 +141,7 @@ describe('verifyApprovalAssertion', () => {
         requireUserVerification: true,
       })
     );
-    expect(result).toEqual({ verified: true, newSignCount: 7 });
+    expect(result).toEqual({ verified: true, newSignCount: 7, challengeIssuedAt: 1781000000000 });
   });
 
   it('rejects a second call once the challenge is consumed (getdel returns null)', async () => {

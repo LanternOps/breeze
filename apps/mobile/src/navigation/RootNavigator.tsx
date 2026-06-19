@@ -13,6 +13,7 @@ import {
   getOnboardingCompleted,
   setOnboardingCompleted,
 } from '../services/onboarding';
+import { ensureApproverDevice } from '../services/approverDevice';
 import { AuthNavigator } from './AuthNavigator';
 import { MainNavigator } from './MainNavigator';
 import { ApprovalGate } from './ApprovalGate';
@@ -56,6 +57,16 @@ export function RootNavigator() {
       analyticsReset();
     }
   }, [user]);
+
+  // Once we're authenticated (fresh login or restored session), silently make
+  // this phone an approver. Idempotent + fails open — never blocks the UI and
+  // never prompts for biometrics here (the first real approval is the first
+  // Face ID, which also activates the key server-side).
+  useEffect(() => {
+    if (token && user) {
+      void ensureApproverDevice();
+    }
+  }, [token, user]);
 
   useEffect(() => {
     async function checkAuth() {

@@ -34,6 +34,32 @@ vi.mock('../middleware/auth', () => ({
 
 import { authMiddleware } from '../middleware/auth';
 
+function mockRollupTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[]) {
+  selectMock.mockReturnValueOnce({
+    from: () => ({
+      where: () => ({
+        groupBy: () => ({
+          orderBy: () => Promise.resolve(rows),
+        }),
+      }),
+    }),
+  });
+}
+
+function mockRawTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[]) {
+  selectMock.mockReturnValueOnce({
+    from: () => ({
+      innerJoin: () => ({
+        where: () => ({
+          groupBy: () => ({
+            orderBy: () => Promise.resolve(rows),
+          }),
+        }),
+      }),
+    }),
+  });
+}
+
 function getMetricLine(metrics: string, name: string, labels?: Record<string, string>): string | undefined {
   const labelText = labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '';
   return metrics
@@ -99,6 +125,47 @@ describe('metrics routes', () => {
   it('requires auth for metrics endpoints', async () => {
     const res = await app.request('/metrics');
     expect(res.status).toBe(401);
+  });
+
+  it('uses daily metric rollups for trend metrics when available', async () => {
+    const { db } = await import('../db');
+    const selectMock = vi.mocked(db.select);
+    mockRollupTrendRows(selectMock, [
+      { bucket: new Date('2026-06-17T00:00:00.000Z'), metricName: 'cpu_percent', value: 12.4 },
+      { bucket: new Date('2026-06-17T00:00:00.000Z'), metricName: 'ram_percent', value: 66.6 },
+      { bucket: new Date('2026-06-18T00:00:00.000Z'), metricName: 'cpu_percent', value: 20 },
+      { bucket: new Date('2026-06-18T00:00:00.000Z'), metricName: 'ram_percent', value: 70 },
+    ]);
+
+    const res = await app.request('/trends?range=7d', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { timestamp: '2026-06-17T00:00:00.000Z', cpu: 12, memory: 67 },
+      { timestamp: '2026-06-18T00:00:00.000Z', cpu: 20, memory: 70 },
+    ]);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to raw device metrics for trend metrics when rollups are empty', async () => {
+    const { db } = await import('../db');
+    const selectMock = vi.mocked(db.select);
+    mockRollupTrendRows(selectMock, []);
+    mockRawTrendRows(selectMock, [
+      { bucket: '2026-06-18T00:00:00.000Z', cpu: 21.2, memory: 75.8 },
+    ]);
+
+    const res = await app.request('/trends?range=7d', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { timestamp: '2026-06-18T00:00:00.000Z', cpu: 21, memory: 76 },
+    ]);
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
   it('requires scrape token for /scrape endpoint', async () => {

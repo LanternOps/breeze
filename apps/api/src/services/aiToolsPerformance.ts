@@ -10,8 +10,8 @@
  */
 
 import { db } from '../db';
-import { devices, deviceMetrics, deviceSessions, deviceBootMetrics } from '../db/schema';
-import { eq, and, desc, gte, SQL } from 'drizzle-orm';
+import { devices, deviceMetrics, deviceSessions, deviceBootMetrics, metricRollups } from '../db/schema';
+import { eq, and, desc, gte, inArray, SQL, sql } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
@@ -24,6 +24,23 @@ import {
 } from './startupItems';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+type MetricPoint = {
+  timestamp: Date;
+  cpuPercent: number;
+  ramPercent: number;
+  diskPercent: number;
+  ramUsedMb: number;
+  diskUsedGb: number;
+  sampleCount?: number;
+};
+
+const PERFORMANCE_ROLLUP_METRICS = [
+  'cpu_percent',
+  'ram_percent',
+  'ram_used_mb',
+  'disk_percent',
+  'disk_used_gb',
+] as const;
 
 async function verifyDeviceAccess(
   deviceId: string,
@@ -58,7 +75,7 @@ function computeStats(values: number[]): { min: number; max: number; avg: number
 }
 
 function aggregateMetrics(
-  metrics: Array<{ timestamp: Date; cpuPercent: number; ramPercent: number; diskPercent: number; ramUsedMb: number; diskUsedGb: number }>,
+  metrics: MetricPoint[],
   level: 'hourly' | 'daily'
 ): Array<{ period: string; cpu: number; ram: number; disk: number; count: number }> {
   const bucketMap = new Map<string, { cpu: number[]; ram: number[]; disk: number[]; count: number }>();
@@ -86,6 +103,87 @@ function aggregateMetrics(
     disk: Math.round((b.disk.reduce((a, v) => a + v, 0) / b.disk.length) * 100) / 100,
     count: b.count
   }));
+}
+
+function periodForTimestamp(timestamp: Date, level: 'hourly' | 'daily'): string {
+  const d = new Date(timestamp);
+  return level === 'hourly'
+    ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}T${String(d.getUTCHours()).padStart(2, '0')}:00`
+    : `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+function summarizeMetrics(metrics: MetricPoint[]) {
+  return {
+    dataPoints: metrics.reduce((sum, metric) => sum + (metric.sampleCount ?? 1), 0),
+    timeRange: { from: metrics[metrics.length - 1]!.timestamp, to: metrics[0]!.timestamp },
+    cpu: computeStats(metrics.map(m => m.cpuPercent)),
+    ram: computeStats(metrics.map(m => m.ramPercent)),
+    disk: computeStats(metrics.map(m => m.diskPercent)),
+    ramUsedMb: computeStats(metrics.map(m => m.ramUsedMb)),
+    diskUsedGb: computeStats(metrics.map(m => m.diskUsedGb))
+  };
+}
+
+function rollupWeightedAvg(metricName: (typeof PERFORMANCE_ROLLUP_METRICS)[number]) {
+  return sql<number>`
+    coalesce(
+      sum(${metricRollups.avgValue} * ${metricRollups.sampleCount})
+        filter (where ${metricRollups.metricName} = ${metricName})
+      / nullif(
+        sum(${metricRollups.sampleCount})
+          filter (where ${metricRollups.metricName} = ${metricName}),
+        0
+      ),
+      0
+    )
+  `;
+}
+
+function rollupSampleCountSql() {
+  return sql<number>`
+    greatest(
+      coalesce(max(${metricRollups.sampleCount}) filter (where ${metricRollups.metricName} = 'cpu_percent'), 0),
+      coalesce(max(${metricRollups.sampleCount}) filter (where ${metricRollups.metricName} = 'ram_percent'), 0),
+      coalesce(max(${metricRollups.sampleCount}) filter (where ${metricRollups.metricName} = 'disk_percent'), 0)
+    )
+  `;
+}
+
+function rollupBucketSeconds(aggregation: 'hourly' | 'daily'): 3600 | 86400 {
+  return aggregation === 'hourly' ? 3600 : 86400;
+}
+
+async function queryMetricRollupsForAnalysis(
+  orgId: string,
+  deviceId: string,
+  since: Date,
+  aggregation: 'hourly' | 'daily'
+): Promise<MetricPoint[]> {
+  return db
+    .select({
+      timestamp: metricRollups.bucketStart,
+      cpuPercent: rollupWeightedAvg('cpu_percent'),
+      ramPercent: rollupWeightedAvg('ram_percent'),
+      ramUsedMb: rollupWeightedAvg('ram_used_mb'),
+      diskPercent: rollupWeightedAvg('disk_percent'),
+      diskUsedGb: rollupWeightedAvg('disk_used_gb'),
+      sampleCount: rollupSampleCountSql(),
+    })
+    .from(metricRollups)
+    .where(
+      and(
+        eq(metricRollups.orgId, orgId),
+        eq(metricRollups.deviceId, deviceId),
+        eq(metricRollups.sourceTable, 'device_metrics'),
+        eq(metricRollups.bucketSeconds, rollupBucketSeconds(aggregation)),
+        inArray(metricRollups.metricName, [...PERFORMANCE_ROLLUP_METRICS]),
+        sql`${metricRollups.sampleCount} > 0`,
+        gte(metricRollups.bucketStart, since)
+      )
+    )
+    .groupBy(metricRollups.bucketStart)
+    .orderBy(desc(metricRollups.bucketStart))
+    .limit(500);
 }
 
 export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
@@ -123,6 +221,28 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
       const hoursBack = Math.min(Math.max(1, Number(input.hoursBack) || 24), 168);
       const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+      const aggregation = input.aggregation || (hoursBack <= 24 ? 'raw' : 'hourly');
+
+      if (aggregation === 'hourly' || aggregation === 'daily') {
+        const rollupMetrics = await queryMetricRollupsForAnalysis(access.device.orgId, deviceId, since, aggregation);
+        if (rollupMetrics.length > 0) {
+          const summary = summarizeMetrics(rollupMetrics);
+          const buckets = rollupMetrics.map((metric) => ({
+            period: periodForTimestamp(metric.timestamp, aggregation),
+            cpu: Math.round(metric.cpuPercent * 100) / 100,
+            ram: Math.round(metric.ramPercent * 100) / 100,
+            disk: Math.round(metric.diskPercent * 100) / 100,
+            count: metric.sampleCount ?? 0,
+          }));
+
+          return JSON.stringify({
+            summary,
+            aggregation,
+            source: 'metric_rollups',
+            buckets
+          }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
+        }
+      }
 
       const metrics = await db
         .select()
@@ -141,19 +261,9 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       }
 
       // Compute summary statistics
-      const summary = {
-        dataPoints: metrics.length,
-        timeRange: { from: metrics[metrics.length - 1]!.timestamp, to: metrics[0]!.timestamp },
-        cpu: computeStats(metrics.map(m => m.cpuPercent)),
-        ram: computeStats(metrics.map(m => m.ramPercent)),
-        disk: computeStats(metrics.map(m => m.diskPercent)),
-        ramUsedMb: computeStats(metrics.map(m => m.ramUsedMb)),
-        diskUsedGb: computeStats(metrics.map(m => m.diskUsedGb))
-      };
+      const summary = summarizeMetrics(metrics);
 
       // For raw mode, return recent data points (limited to prevent huge responses)
-      const aggregation = input.aggregation || (hoursBack <= 24 ? 'raw' : 'hourly');
-
       if (aggregation === 'raw') {
         return JSON.stringify({
           summary,
@@ -167,6 +277,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       return JSON.stringify({
         summary,
         aggregation,
+        source: 'device_metrics',
         buckets
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     }

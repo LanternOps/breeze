@@ -77,7 +77,7 @@ export default function DevicesPage() {
   });
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
-  type PendingScriptRun = { script: Script; runAs: ScriptRunAsSelection; parameters?: Record<string, unknown> };
+  type PendingScriptRun = { script: Script; runAs: ScriptRunAsSelection; parameters?: Record<string, unknown>; devices: Device[] };
   const [pendingScriptRun, setPendingScriptRun] = useState<PendingScriptRun | null>(null);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
@@ -250,6 +250,7 @@ export default function DevicesPage() {
           siteId: (d.siteId ?? '') as string,
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
+          watchdogVersion: (d.watchdogVersion ?? null) as string | null,
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
           deviceRoleSource: d.deviceRoleSource as string | undefined,
@@ -291,6 +292,7 @@ export default function DevicesPage() {
         siteId: (d.siteId ?? '') as string,
         siteName: '',
         agentVersion: '',
+        watchdogVersion: null,
         tags: (d.tags ?? []) as string[],
         manufacturer: (d.manufacturer ?? null) as string | null,
         model: (d.model ?? null) as string | null,
@@ -403,6 +405,11 @@ export default function DevicesPage() {
             : d
         ));
       }
+      // NOTE: no live watchdogVersion handler — the heartbeat path only
+      // publishes `device.updated` with fields:['agentVersion'], never
+      // 'watchdogVersion'. The watchdog version refreshes on the next list
+      // fetch / device-detail load. Wire a producer in the watchdog heartbeat
+      // branch before adding a consumer here.
     } else if (type === 'device.enrolled' || type === 'device.decommissioned') {
       fetchDevices();
     }
@@ -447,20 +454,24 @@ export default function DevicesPage() {
   };
 
   const handleScriptSelect = (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => {
-    // Gate script execution behind a scope-naming confirm dialog.
-    setPendingScriptRun({ script, runAs, parameters });
+    // Gate script execution behind a scope-naming confirm dialog. Capture the
+    // target devices now: ScriptPickerModal calls onClose() right after
+    // onSelect(), and closeScriptPicker() resets scriptTargetDevices to [] —
+    // so doExecuteScript can't read that state later or it sends an empty
+    // deviceIds array (API 400 "Array must contain at least one item").
+    setPendingScriptRun({ script, runAs, parameters, devices: scriptTargetDevices });
   };
 
   const doExecuteScript = async (pending: PendingScriptRun) => {
     if (actionInProgress) return;
     try {
       setActionInProgress(true);
-      const { script, runAs, parameters } = pending;
-      const deviceIds = scriptTargetDevices.map(d => d.id);
+      const { script, runAs, parameters, devices } = pending;
+      const deviceIds = devices.map(d => d.id);
       const result = await executeScript(script.id, deviceIds, parameters, runAs);
 
-      if (scriptTargetDevices.length === 1) {
-        showToast({ type: 'success', message: `Script "${script.name}" queued for ${scriptTargetDevices[0].hostname}` });
+      if (devices.length === 1) {
+        showToast({ type: 'success', message: `Script "${script.name}" queued for ${devices[0].hostname}` });
       } else {
         showToast({ type: 'success', message: `Script "${script.name}" queued for ${result.devicesTargeted} devices` });
       }
@@ -981,7 +992,7 @@ export default function DevicesPage() {
       />
 
       {pendingScriptRun && (() => {
-        const distinctOrgIds = [...new Set(scriptTargetDevices.map(d => d.orgId).filter(Boolean))];
+        const distinctOrgIds = [...new Set(pendingScriptRun.devices.map(d => d.orgId).filter(Boolean))];
         const scriptOrgNames = distinctOrgIds.length > 0
           ? distinctOrgIds.map(id => orgStoreOrgs.find(o => o.id === id)?.name ?? id)
           : ['the selected organization'];
@@ -1000,7 +1011,7 @@ export default function DevicesPage() {
             confirmTestId="confirm-fleet-action"
             message={scopeConfirmMessage({
               action: `Run ${pendingScriptRun.script.name}`,
-              deviceCount: scriptTargetDevices.length,
+              deviceCount: pendingScriptRun.devices.length,
               orgNames: scriptOrgNames,
             })}
             isLoading={actionInProgress}

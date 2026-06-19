@@ -7,6 +7,7 @@ import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
 import { resolveSlaTargets } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
+import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -54,6 +55,8 @@ export interface TicketActor {
   userId: string;
   name?: string;
   email?: string;
+  triageFeedbackSource?: 'manual' | 'suggestion';
+  triageFeedbackMetadata?: Record<string, unknown>;
 }
 
 // Legacy display identifier (NOT NULL UNIQUE), retry loop dropped when creation
@@ -524,6 +527,20 @@ function ticketFieldChanged(key: keyof UpdateTicketFieldsInput, oldValue: unknow
   return (oldValue ?? null) !== (newValue ?? null);
 }
 
+function ticketTriageFeedbackMetadata(actor: TicketActor, extra: Record<string, unknown>): Record<string, unknown> {
+  const acceptedSuggestion = actor.triageFeedbackSource === 'suggestion';
+  return {
+    source: acceptedSuggestion ? 'ticket_triage_v0' : 'manual_update',
+    acceptedSuggestion,
+    ...(acceptedSuggestion ? actor.triageFeedbackMetadata ?? {} : {}),
+    ...extra,
+  };
+}
+
+function ticketTriageDedupeKey(field: string, oldValue: unknown, newValue: unknown): string {
+  return `${field}:${JSON.stringify(oldValue ?? null)}:${JSON.stringify(newValue ?? null)}`;
+}
+
 export async function updateTicketFields(
   ticketId: string,
   fields: UpdateTicketFieldsInput,
@@ -604,6 +621,34 @@ export async function updateTicketFields(
     details: { changed },
     result: 'success'
   });
+  if (changed.includes('categoryId')) {
+    await emitTicketTriageFeedback({
+      orgId: ticket.orgId,
+      ticketId,
+      eventType: 'ticket.category_changed',
+      dedupeKey: ticketTriageDedupeKey('categoryId', ticket.categoryId ?? null, updated[0]?.categoryId ?? null),
+      outcome: 'category_changed',
+      actorUserId: actor.userId,
+      metadata: ticketTriageFeedbackMetadata(actor, {
+        oldValue: ticket.categoryId ?? null,
+        newValue: updated[0]?.categoryId ?? null,
+      }),
+    });
+  }
+  if (changed.includes('priority')) {
+    await emitTicketTriageFeedback({
+      orgId: ticket.orgId,
+      ticketId,
+      eventType: 'ticket.priority_changed',
+      dedupeKey: ticketTriageDedupeKey('priority', ticket.priority, updated[0]?.priority ?? null),
+      outcome: 'priority_changed',
+      actorUserId: actor.userId,
+      metadata: ticketTriageFeedbackMetadata(actor, {
+        oldValue: ticket.priority,
+        newValue: updated[0]?.priority ?? null,
+      }),
+    });
+  }
   return updated[0];
 }
 
@@ -660,6 +705,18 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     resourceId: ticketId,
     details: { from: prevAssignedTo ?? null, to: assigneeId },
     result: 'success'
+  });
+  await emitTicketTriageFeedback({
+    orgId: ticket.orgId,
+    ticketId,
+    eventType: 'ticket.assignee_changed',
+    dedupeKey: ticketTriageDedupeKey('assignedTo', prevAssignedTo ?? null, assigneeId),
+    outcome: 'assignee_changed',
+    actorUserId: actor.userId,
+    metadata: ticketTriageFeedbackMetadata(actor, {
+      oldValue: prevAssignedTo ?? null,
+      newValue: assigneeId,
+    }),
   });
   return updated[0];
 }

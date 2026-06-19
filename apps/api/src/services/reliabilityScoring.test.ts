@@ -233,3 +233,87 @@ describe('computeTopIssues', () => {
     expect(issues.length).toBeLessThanOrEqual(5);
   });
 });
+
+describe('reliability explanation drivers', () => {
+  it('orders drivers by weighted lost points and keeps numeric evidence only', () => {
+    const drivers = reliabilityScoringInternals.buildReliabilityDrivers({
+      factors: {
+        uptime: { score: 90, weight: 30, uptime30d: 99.2, ignored: 'not-number' },
+        crashes: { score: 20, weight: 25, crashCount30d: 4 },
+        hangs: { score: 100, weight: 15, hangCount30d: 0 },
+      },
+    });
+
+    expect(drivers.map((driver) => driver.factor)).toEqual(['crashes', 'uptime', 'hangs']);
+    expect(drivers[0]).toEqual(expect.objectContaining({
+      factor: 'crashes',
+      label: 'Crashes',
+      lostPoints: 20,
+      evidence: { crashCount30d: 4 },
+    }));
+    expect(drivers[1]?.evidence).toEqual({ uptime30d: 99.2 });
+  });
+});
+
+describe('computeReliabilityEvaluationSummary', () => {
+  const devices = [
+    {
+      deviceId: 'device-a',
+      orgId: 'org-1',
+      siteId: 'site-1',
+      hostname: 'alpha',
+      reliabilityScore: 45,
+      computedAt: new Date('2026-06-18T12:00:00.000Z'),
+    },
+    {
+      deviceId: 'device-b',
+      orgId: 'org-1',
+      siteId: 'site-1',
+      hostname: 'beta',
+      reliabilityScore: 62,
+      computedAt: new Date('2026-06-18T12:00:00.000Z'),
+    },
+    {
+      deviceId: 'device-c',
+      orgId: 'org-1',
+      siteId: 'site-2',
+      hostname: 'gamma',
+      reliabilityScore: 91,
+      computedAt: new Date('2026-06-18T12:00:00.000Z'),
+    },
+  ];
+
+  it('computes precision from labeled at-risk devices and reports missed failures', () => {
+    const summary = reliabilityScoringInternals.computeReliabilityEvaluationSummary(devices, [
+      { deviceId: 'device-a', outcome: 'failure_confirmed', occurredAt: new Date('2026-06-18T13:00:00.000Z') },
+      { deviceId: 'device-b', outcome: 'false_alarm', occurredAt: new Date('2026-06-18T13:00:00.000Z') },
+      { deviceId: 'device-c', outcome: 'replaced', occurredAt: new Date('2026-06-18T13:00:00.000Z') },
+    ], { atRiskMaxScore: 70, labelWindowDays: 90 });
+
+    expect(summary).toEqual(expect.objectContaining({
+      evaluatedDevices: 3,
+      atRiskDevices: 2,
+      labeledAtRiskDevices: 2,
+      truePositiveDevices: 1,
+      falsePositiveDevices: 1,
+      missedFailureDevices: 1,
+      unlabeledAtRiskDevices: 0,
+      confirmedFailureLabels: 1,
+      replacementLabels: 1,
+      falseAlarmLabels: 1,
+      precision: 0.5,
+    }));
+  });
+
+  it('uses the latest label per device for prediction outcome scoring', () => {
+    const summary = reliabilityScoringInternals.computeReliabilityEvaluationSummary(devices, [
+      { deviceId: 'device-a', outcome: 'false_alarm', occurredAt: new Date('2026-06-18T12:00:00.000Z') },
+      { deviceId: 'device-a', outcome: 'failure_confirmed', occurredAt: new Date('2026-06-18T13:00:00.000Z') },
+    ], { atRiskMaxScore: 70, labelWindowDays: 90 });
+
+    expect(summary.truePositiveDevices).toBe(1);
+    expect(summary.falsePositiveDevices).toBe(0);
+    expect(summary.unlabeledAtRiskDevices).toBe(1);
+    expect(summary.precision).toBe(1);
+  });
+});

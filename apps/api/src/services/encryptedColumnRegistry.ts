@@ -60,6 +60,10 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'stripe_connect_accounts', column: 'api_key', kind: 'text', description: 'Per-partner Stripe secret/restricted key (API-key billing model)' },
   { table: 'huntress_integrations', column: 'api_key_encrypted', kind: 'text', description: 'Huntress API key' },
   { table: 'huntress_integrations', column: 'webhook_secret_encrypted', kind: 'text', description: 'Huntress webhook secret' },
+  { table: 'pax8_integrations', column: 'client_id_encrypted', kind: 'text', description: 'Pax8 OAuth client id' },
+  { table: 'pax8_integrations', column: 'client_secret_encrypted', kind: 'text', description: 'Pax8 OAuth client secret' },
+  { table: 'pax8_integrations', column: 'access_token_encrypted', kind: 'text', description: 'Pax8 OAuth access token cache' },
+  { table: 'pax8_integrations', column: 'webhook_secret_encrypted', kind: 'text', description: 'Pax8 webhook secret' },
   { table: 's1_integrations', column: 'api_token_encrypted', kind: 'text', description: 'SentinelOne API token' },
   { table: 'dns_filter_integrations', column: 'api_key', kind: 'text', description: 'DNS filter API key' },
   { table: 'dns_filter_integrations', column: 'api_secret', kind: 'text', description: 'DNS filter API secret' },
@@ -67,6 +71,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'organizations', column: 'settings', kind: 'json', description: 'organization settings with encrypted log-forwarding secrets' },
   { table: 'partners', column: 'settings', kind: 'json', description: 'partner settings with encrypted remote-access launcher passwords (#716)' },
   { table: 'sites', column: 'settings', kind: 'json', description: 'site-level settings with encrypted overrides' },
+  { table: 'td_synnex_digital_bridge_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX Digital Bridge API credentials' },
 ];
 
 const SECRET_JSON_KEYS = new Set([

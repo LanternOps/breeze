@@ -120,6 +120,11 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
         `DEVICE_CASCADE_DELETE_TABLES and DEVICE_DETACH_DEVICE_ID_TABLES.`,
     ).toEqual([]);
   });
+
+  it('includes ML output tables so device moves do not strand old-org rows', () => {
+    expect(DEVICE_ORG_DENORMALIZED_TABLES).toContain('metric_anomalies');
+    expect(DEVICE_ORG_DENORMALIZED_TABLES).toContain('remediation_suggestions');
+  });
 });
 
 /**

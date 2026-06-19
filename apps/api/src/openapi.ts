@@ -251,6 +251,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           osVersion: { type: 'string' },
           architecture: { type: 'string' },
           agentVersion: { type: 'string' },
+          watchdogVersion: { type: 'string', nullable: true },
           status: { type: 'string', enum: ['online', 'offline', 'maintenance', 'decommissioned'] },
           lastSeenAt: { type: 'string', format: 'date-time', nullable: true },
           enrolledAt: { type: 'string', format: 'date-time' },
@@ -267,7 +268,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           diskTotalGb: { type: 'integer', nullable: true },
           serialNumber: { type: 'string', nullable: true },
           manufacturer: { type: 'string', nullable: true },
-          model: { type: 'string', nullable: true }
+          model: { type: 'string', nullable: true },
+          motherboardManufacturer: { type: 'string', nullable: true },
+          motherboardProduct: { type: 'string', nullable: true },
+          motherboardVersion: { type: 'string', nullable: true }
         }
       },
       DeviceMetrics: {

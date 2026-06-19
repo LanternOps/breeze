@@ -41,12 +41,38 @@ export type ApproverRegistrationStoreFields = PasskeyRegistrationStoreFields & {
   isPlatformBound: boolean;
 };
 
+// The assertion challenge value carries the epoch-ms it was ISSUED (`<ms>:<chal>`)
+// so the L3/L4 recency gate has an exact server-side age. Registration
+// challenges keep the bare value (no recency gate on registration).
+function encodeChallenge(challenge: string, issuedAt: number): string {
+  return `${issuedAt}:${challenge}`;
+}
+function decodeChallenge(stored: string): { challenge: string; issuedAt: number } {
+  const sep = stored.indexOf(':');
+  // Legacy/raw value (no issued-at prefix): treat as issued "now" — it was alive
+  // in Redis so it is within TTL; this keeps pre-change challenges verifiable.
+  if (sep === -1) return { challenge: stored, issuedAt: Date.now() };
+  const issuedAt = Number(stored.slice(0, sep));
+  return {
+    challenge: stored.slice(sep + 1),
+    issuedAt: Number.isFinite(issuedAt) ? issuedAt : Date.now(),
+  };
+}
+
 async function storeChallenge(key: string, challenge: string, ttlSeconds: number): Promise<void> {
   const redis = getRedis();
   if (!redis) {
     throw new PasskeyChallengeError('Redis unavailable while storing approver challenge');
   }
   await redis.setex(key, ttlSeconds, challenge);
+}
+
+async function storeAssertionChallenge(key: string, challenge: string, ttlSeconds: number): Promise<void> {
+  const redis = getRedis();
+  if (!redis) {
+    throw new PasskeyChallengeError('Redis unavailable while storing approver challenge');
+  }
+  await redis.setex(key, ttlSeconds, encodeChallenge(challenge, Date.now()));
 }
 
 async function consumeChallenge(key: string): Promise<string | null> {
@@ -57,6 +83,13 @@ async function consumeChallenge(key: string): Promise<string | null> {
   // Atomic read-and-delete (mirrors services/passkeys.ts): a single-use
   // challenge prevents replay and a TOCTOU race between concurrent verifies.
   return redis.getdel(key);
+}
+
+async function consumeAssertionChallenge(
+  key: string,
+): Promise<{ challenge: string; issuedAt: number } | null> {
+  const stored = await consumeChallenge(key);
+  return stored == null ? null : decodeChallenge(stored);
 }
 
 export async function generateApproverRegistrationOptions(input: {
@@ -131,7 +164,7 @@ export async function generateApprovalAssertionOptions(input: {
     allowCredentials: allowCredentials.length > 0 ? allowCredentials : undefined
   } satisfies GenerateAuthenticationOptionsOpts);
 
-  await storeChallenge(assertionKey(input.approvalId, input.userId), options.challenge, ASSERTION_TTL_SECONDS);
+  await storeAssertionChallenge(assertionKey(input.approvalId, input.userId), options.challenge, ASSERTION_TTL_SECONDS);
   return options;
 }
 
@@ -140,16 +173,16 @@ export async function verifyApprovalAssertion(input: {
   userId: string;
   response: VerifyAuthenticationResponseOpts['response'];
   device: StoredPasskeyCredential;
-}): Promise<{ verified: boolean; newSignCount: number }> {
+}): Promise<{ verified: boolean; newSignCount: number; challengeIssuedAt: number }> {
   const cfg = resolveWebAuthnConfig();
-  const expectedChallenge = await consumeChallenge(assertionKey(input.approvalId, input.userId));
-  if (!expectedChallenge) {
+  const consumed = await consumeAssertionChallenge(assertionKey(input.approvalId, input.userId));
+  if (!consumed) {
     throw new Error('approval assertion challenge expired or already used');
   }
 
   const verification: VerifiedAuthenticationResponse = await verifyAuthenticationResponse({
     response: input.response,
-    expectedChallenge,
+    expectedChallenge: consumed.challenge,
     expectedOrigin: cfg.origin,
     expectedRPID: cfg.rpID,
     credential: passkeyToWebAuthnCredential(input.device),
@@ -163,6 +196,8 @@ export async function verifyApprovalAssertion(input: {
   // (rejects newCounter <= oldCounter for non-zero counters).
   return {
     verified: verification.verified,
-    newSignCount: verification.authenticationInfo.newCounter
+    newSignCount: verification.authenticationInfo.newCounter,
+    // Epoch-ms the assertion challenge was issued — the L3/L4 recency clock.
+    challengeIssuedAt: consumed.issuedAt
   };
 }

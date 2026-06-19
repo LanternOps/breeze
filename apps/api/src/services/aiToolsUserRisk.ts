@@ -87,6 +87,14 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Organization context required' });
         }
 
+        const requestedSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+        if (requestedSiteId && auth.allowedSiteIds && auth.canAccessSite && !auth.canAccessSite(requestedSiteId)) {
+          return JSON.stringify({ error: 'Access denied to this site' });
+        }
+        const siteIds = !requestedSiteId && auth.allowedSiteIds && auth.canAccessSite
+          ? auth.allowedSiteIds
+          : undefined;
+
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
         const scoreRange = (typeof input.scoreRange === 'string' && ['critical', 'poor', 'fair', 'good'].includes(input.scoreRange))
           ? input.scoreRange as 'critical' | 'poor' | 'fair' | 'good'
@@ -100,7 +108,8 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
 
         const { total, rows } = await listReliabilityDevices({
           orgIds,
-          siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
+          siteId: requestedSiteId,
+          siteIds,
           scoreRange,
           trendDirection,
           issueType,
@@ -169,10 +178,19 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Organization context required' });
       }
 
+      const requestedSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+      if (requestedSiteId && auth.allowedSiteIds && auth.canAccessSite && !auth.canAccessSite(requestedSiteId)) {
+        return JSON.stringify({ error: 'Access denied to this site' });
+      }
+      const siteIds = !requestedSiteId && auth.allowedSiteIds && auth.canAccessSite
+        ? auth.allowedSiteIds
+        : undefined;
+
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 200);
       const result = await listUserRiskScores({
         orgIds,
-        siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
+        siteId: requestedSiteId,
+        siteIds,
         minScore: typeof input.minScore === 'number' ? input.minScore : undefined,
         maxScore: typeof input.maxScore === 'number' ? input.maxScore : undefined,
         trendDirection: (typeof input.trendDirection === 'string'

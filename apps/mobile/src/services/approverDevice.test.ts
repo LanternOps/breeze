@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ensureApproverDevice,
   gatherApprovalProof,
-  registerApproverDevice,
-  setApproverPin,
   type MobileApprovalProof,
 } from './approverDevice';
 import type { HardwareSigner } from './hardwareSigner';
@@ -60,34 +59,62 @@ function fakeSigner(overrides: Partial<HardwareSigner> = {}): HardwareSigner {
   };
 }
 
-describe('registerApproverDevice', () => {
-  it('creates a key, signs the PoP nonce, posts the public key, and stores the credential id', async () => {
+describe('ensureApproverDevice', () => {
+  it('mints + registers a key when none exists, stores the credential id', async () => {
     const signer = fakeSigner();
-    fetchMock
-      .mockResolvedValueOnce(json({ nonce: 'reg-nonce' })) // options
-      .mockResolvedValueOnce(json({ device: { id: 'cred-99' } })); // verify
+    // No stored credential id yet; auth token present for authedFetch.
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-1' } }));
 
-    const result = await registerApproverDevice('pw', 'My iPhone', signer);
+    await ensureApproverDevice(signer);
 
-    expect(result.credentialId).toBe('cred-99');
-    // signed the server nonce, not anything else
-    expect(signer.sign).toHaveBeenCalledWith('reg-nonce', expect.any(String));
-    // options request carried the password step-up
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ currentPassword: 'pw' });
-    // verify request carried the public key + signature
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+    // No password step-up — passwordless registration body.
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      kind: 'mobile_hw_key',
       publicKey: 'SPKI-PUBKEY-B64',
-      signature: 'SIG-B64',
-      label: 'My iPhone',
+      isPlatformBound: true,
     });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty('currentPassword');
+    expect(signer.createKeys).toHaveBeenCalledTimes(1);
     // credential id persisted for later assertions
-    expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_credential_id', 'cred-99');
+    expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_credential_id', 'dev-1');
   });
 
-  it('throws (does not register) when the device has no hardware key', async () => {
-    const signer = fakeSigner({ isAvailable: vi.fn().mockResolvedValue(false) });
-    await expect(registerApproverDevice('pw', 'X', signer)).rejects.toThrow(/no biometric hardware/i);
+  it('is a no-op when a credential id already exists', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? 'dev-1' : 'test-token',
+    );
+
+    await ensureApproverDevice(signer);
+
+    expect(signer.createKeys).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('no-ops silently when no biometric hardware (no throw on the login path)', async () => {
+    const signer = fakeSigner({ isAvailable: vi.fn().mockResolvedValue(false) });
+    secureStore.getItemAsync.mockResolvedValue(null);
+
+    await expect(ensureApproverDevice(signer)).resolves.toBeUndefined();
+    expect(signer.createKeys).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fails open (no throw) when registration POST fails; nothing persisted', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    fetchMock.mockResolvedValueOnce(json({ error: 'nope' }, 500));
+
+    await expect(ensureApproverDevice(signer)).resolves.toBeUndefined();
+    expect(secureStore.setItemAsync).not.toHaveBeenCalledWith(
+      'breeze_approver_credential_id',
+      expect.anything(),
+    );
   });
 });
 
@@ -142,21 +169,5 @@ describe('gatherApprovalProof (non-blocking)', () => {
     );
     fetchMock.mockResolvedValueOnce(json({ mobileNonce: 'approval-nonce' }));
     await expect(gatherApprovalProof('appr-1', signer)).rejects.toThrow(/cancelled/i);
-  });
-});
-
-describe('setApproverPin', () => {
-  it('PUTs the PIN with the password step-up using the server field name `pin`', async () => {
-    fetchMock.mockResolvedValueOnce(json({ success: true }));
-    await setApproverPin('pw', '1234');
-    expect(fetchMock.mock.calls[0][0]).toContain('/api/v1/auth/pin');
-    expect(fetchMock.mock.calls[0][1].method).toBe('PUT');
-    // Must serialize to `pin` (the server setPinSchema field), NOT `newPin`.
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ currentPassword: 'pw', pin: '1234' });
-  });
-
-  it('throws on a server rejection', async () => {
-    fetchMock.mockResolvedValueOnce(json({ error: 'weak' }, 400));
-    await expect(setApproverPin('pw', '12')).rejects.toThrow(/Could not set PIN/i);
   });
 });

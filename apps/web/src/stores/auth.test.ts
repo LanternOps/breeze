@@ -81,6 +81,59 @@ describe('auth store fetchWithAuth', () => {
     expect(headers.get('Content-Type')).toBeNull();
   });
 
+  it('aborts a JSON request at the 30s default timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      let captured: AbortSignal | undefined;
+      const fetchMock = vi.fn().mockImplementation((_url: string, opts: RequestInit) => {
+        captured = opts.signal as AbortSignal;
+        return new Promise<Response>(() => {}); // never resolves so the timeout stays pending
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      void fetchWithAuth('/devices', { method: 'GET' });
+      await Promise.resolve();
+      expect(captured?.aborted).toBe(false);
+
+      vi.advanceTimersByTime(30_000);
+      expect(captured?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives FormData uploads a 10-minute ceiling, not the 30s default (issue #1601)', async () => {
+    // A large installer (hundreds of MB) takes far longer than 30s to send. The
+    // old blanket 30s timeout aborted the in-flight upload — surfacing "signal is
+    // aborted without reason" — even though the server received the file. Uploads
+    // must survive well past 30s.
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      let captured: AbortSignal | undefined;
+      const fetchMock = vi.fn().mockImplementation((_url: string, opts: RequestInit) => {
+        captured = opts.signal as AbortSignal;
+        return new Promise<Response>(() => {});
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const form = new FormData();
+      form.append('file', new Blob(['x'], { type: 'application/octet-stream' }), 'big.msi');
+      void fetchWithAuth('/software/catalog/c1/versions/upload', { method: 'POST', body: form });
+      await Promise.resolve();
+      expect(captured?.aborted).toBe(false);
+
+      vi.advanceTimersByTime(30_000);
+      expect(captured?.aborted).toBe(false); // still alive past the JSON cap
+
+      vi.advanceTimersByTime(10 * 60_000);
+      expect(captured?.aborted).toBe(true); // aborts only at the upload ceiling
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('strips only exact /api prefix while preserving /api-* routes', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const fetchMock = vi

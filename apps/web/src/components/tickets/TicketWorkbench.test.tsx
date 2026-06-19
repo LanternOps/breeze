@@ -338,6 +338,171 @@ describe('TicketWorkbench assignee picker', () => {
   });
 });
 
+describe('TicketWorkbench ML triage suggestions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders suggested priority/category and applies it through runAction', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', priority: 'normal', categoryId: null }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({
+          enabled: true,
+          flagSource: 'org_settings',
+          suggestion: {
+            modelVersion: 'ticket-triage-rules-v0',
+            confidence: 0.72,
+            priority: 'high',
+            categoryId: 'cat-hardware',
+            categoryName: 'Hardware',
+            reasons: ['high-impact keywords', 'matched Hardware'],
+          },
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(
+      <TicketWorkbench
+        ticketId="tk-1"
+        assignees={[]}
+        categories={[{ id: 'cat-hardware', name: 'Hardware' }]}
+      />,
+    );
+
+    await screen.findByTestId('ticket-triage-suggestion');
+    expect(screen.getByText(/Priority: High/i)).toBeInTheDocument();
+    expect(screen.getByText(/Category: Hardware/i)).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-triage-reasons')).toBeInTheDocument();
+    expect(screen.getByText('high-impact keywords')).toBeInTheDocument();
+    expect(screen.getByText('matched Hardware')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('ticket-triage-apply'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/triage-suggestion/apply',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ categoryId: 'cat-hardware', priority: 'high' }),
+        }),
+      );
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      message: 'Ticket triage suggestion applied',
+    }));
+  });
+
+  it('lets a tech override the ticket category from the workbench', async () => {
+    mockTicketApi({
+      'tk-1': makeTicket({ id: 'tk-1', categoryId: 'cat-hardware' }),
+    });
+
+    render(
+      <TicketWorkbench
+        ticketId="tk-1"
+        assignees={[]}
+        categories={[
+          { id: 'cat-hardware', name: 'Hardware' },
+          { id: 'cat-network', name: 'Network' },
+        ]}
+      />,
+    );
+
+    const categorySelect = await screen.findByTestId('ticket-workbench-category');
+    expect(categorySelect).toHaveValue('cat-hardware');
+
+    fireEvent.change(categorySelect, { target: { value: 'cat-network' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ categoryId: 'cat-network' }),
+        }),
+      );
+    });
+  });
+
+  it('records explicit rejection feedback for a triage suggestion', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', priority: 'normal', categoryId: null }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({
+          enabled: true,
+          flagSource: 'org_settings',
+          suggestion: {
+            modelVersion: 'ticket-triage-rules-v0',
+            confidence: 0.72,
+            priority: 'high',
+            categoryId: 'cat-hardware',
+            categoryName: 'Hardware',
+            reasons: ['matched Hardware'],
+          },
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(
+      <TicketWorkbench
+        ticketId="tk-1"
+        assignees={[]}
+        categories={[{ id: 'cat-hardware', name: 'Hardware' }]}
+      />,
+    );
+
+    await screen.findByTestId('ticket-triage-suggestion');
+    fireEvent.click(screen.getByTestId('ticket-triage-reject'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/triage-suggestion/reject',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({}),
+        }),
+      );
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      message: 'Ticket triage feedback saved',
+    }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-triage-suggestion')).toBeNull();
+    });
+  });
+
+  it('hides the suggestion strip when triage is disabled', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-triage-suggestion')).toBeNull();
+    });
+  });
+});
+
 describe('TicketWorkbench pending/on_hold prompt', () => {
   beforeEach(() => {
     vi.clearAllMocks();
