@@ -13,7 +13,8 @@
     "db:seed": "turbo run db:seed --filter=@breeze/api",
     "db:studio": "turbo run db:studio --filter=@breeze/api",
     "clean": "turbo run clean && rm -rf node_modules",
-    "demo:test": "bash scripts/demo-mcp-test.sh"
+    "demo:test": "bash scripts/demo-mcp-test.sh",
+    "wt-stack": "node_modules/.pnpm/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts"
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.57.1",
