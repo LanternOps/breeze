@@ -65,14 +65,16 @@ target/
 # impeccable design-critique plugin artifacts
 .impeccable/
 
-# Claude Code
-CLAUDE.md
+# Claude Code — CLAUDE.md + curated .claude/ config (skills, commands, agents)
+# are committed. Machine-local, scratch, and sensitive files stay ignored.
 .claude/plans/
-.claude/skills/
-.claude/agents/
+.claude/settings.local.json
 .claude/settings.example.json
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+# Sensitive gh-queue data: internal triage/security log + private contributor notes
+.claude/skills/gh-queue/queue.md
+.claude/skills/gh-queue/contributors.md
 
 # Internal docs (not for public repo). Use /internal/* (not /internal) so
 # selective re-inclusion below works — once a directory itself is ignored,
