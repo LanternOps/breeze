@@ -48,6 +48,8 @@ export const invoices = pgTable('invoices', {
   billToTaxExempt: boolean('bill_to_tax_exempt').notNull().default(false),
   notes: text('notes'),
   terms: text('terms'),
+  sellerSnapshot: jsonb('seller_snapshot'),
+  termsAndConditions: text('terms_and_conditions'),
   sentAt: timestamp('sent_at'),
   firstViewedAt: timestamp('first_viewed_at'),
   viewedAt: timestamp('viewed_at'),

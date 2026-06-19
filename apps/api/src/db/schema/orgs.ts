@@ -38,6 +38,16 @@ export const partners = pgTable('partners', {
   invoiceNumberPrefix: varchar('invoice_number_prefix', { length: 12 }).notNull().default('INV'),
   invoiceTermsDays: integer('invoice_terms_days').notNull().default(30),
   invoiceFooter: text('invoice_footer'),
+  billingCompanyName: varchar('billing_company_name', { length: 255 }),
+  billingPhone: varchar('billing_phone', { length: 40 }),
+  billingWebsite: varchar('billing_website', { length: 255 }),
+  billingAddressLine1: varchar('billing_address_line1', { length: 255 }),
+  billingAddressLine2: varchar('billing_address_line2', { length: 255 }),
+  billingAddressCity: varchar('billing_address_city', { length: 120 }),
+  billingAddressRegion: varchar('billing_address_region', { length: 120 }),
+  billingAddressPostalCode: varchar('billing_address_postal_code', { length: 40 }),
+  billingAddressCountry: char('billing_address_country', { length: 2 }),
+  billingTermsAndConditions: text('billing_terms_and_conditions'),
   // AI for Office is a per-partner entitlement the platform operator grants
   // (off by default). The session-minting exchange and the /client-ai/admin
   // surface gate on this; it is NOT in settings JSONB because that is
