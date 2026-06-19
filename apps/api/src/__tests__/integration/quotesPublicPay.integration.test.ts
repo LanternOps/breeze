@@ -101,4 +101,23 @@ describe('public accept → pay', () => {
     const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
     expect(q!.status).toBe('converted'); // accept committed despite the Stripe failure
   });
+
+  // A corrupt/undecryptable partner key (STRIPE_KEY_UNREADABLE → 500 STRIPE_INIT_FAILED)
+  // is NOT a benign no-pay outcome like STRIPE_NOT_CONNECTED — the route must flag it
+  // payDeferred so a silently-lost CTA is observable. Guards the benign-vs-deferred
+  // discrimination at quotesPublic.ts:106-107 (the two PartnerStripeError codes must
+  // NOT be collapsed into one bucket).
+  runDb('accept still succeeds (payUrl null, payDeferred true) when the stored Stripe key is unreadable', async () => {
+    getPartnerStripeClientMock.mockRejectedValue(new PartnerStripeError('stored key unreadable', 'STRIPE_KEY_UNREADABLE'));
+    const { quoteId, token } = await seedSentQuote();
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: { status: string; payUrl: string | null; payDeferred?: boolean } };
+    expect(body.data.status).toBe('converted');
+    expect(body.data.payUrl).toBeNull();
+    expect(body.data.payDeferred).toBe(true);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q!.status).toBe('converted');
+  });
 });

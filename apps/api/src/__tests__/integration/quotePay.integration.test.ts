@@ -89,4 +89,21 @@ describe('createQuotePayLink (breeze_app, real DB)', () => {
       .rejects.toMatchObject({ status: 409, code: 'NOT_PAYABLE' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
+
+  runDb('a corrupt/undecryptable partner key → STRIPE_INIT_FAILED (500), not the 409 "connect Stripe" lie', async () => {
+    // #1610 forks the connection lookup: NO_STRIPE_KEY is a benign 409, but a
+    // STRIPE_KEY_UNREADABLE (decrypt fault / KEK rotated away) must surface as an
+    // internal 500 — not "connect Stripe first". Guards invoiceCheckout.ts:42-50.
+    getPartnerStripeClientMock.mockRejectedValue(new PartnerStripeError('stored key unreadable', 'STRIPE_KEY_UNREADABLE'));
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, qActor(org.id, partner.id)));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, qActor(org.id, partner.id)));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, qActor(org.id, partner.id)));
+    await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }));
+
+    await expect(withSystemDbAccessContext(() => createQuotePayLink(created.id, iActor(org.id, partner.id))))
+      .rejects.toMatchObject({ status: 500, code: 'STRIPE_INIT_FAILED' });
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
 });
