@@ -3,10 +3,15 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { db } from '../../db';
 import { notificationRoutingRules } from '../../db/schema';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, inArray } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { ensureOrgAccess } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
+
+const listRoutingRulesSchema = z.object({
+  orgId: z.string().guid().optional(),
+});
 
 const createRoutingRuleSchema = z.object({
   name: z.string().min(1).max(255),
@@ -41,18 +46,42 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 routingRoutes.get(
   '/routing-rules',
   requireScope('organization', 'partner', 'system'),
+  zValidator('query', listRoutingRulesSchema),
   async (c) => {
     try {
       const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const query = c.req.valid('query');
+
+      // Scope the listing the same way GET /alerts/channels does so the page
+      // can load without a specific org selected. Org-scoped users are pinned to
+      // their own org; partner/system users honour an explicit ?orgId= and
+      // otherwise fall back to all accessible orgs. A clean tenant with no rules
+      // (or a partner with no accessible orgs) returns an empty list — never 400.
+      let orgFilter;
+      if (auth.scope === 'organization') {
+        if (!auth.orgId) {
+          return c.json({ error: 'Organization context required' }, 403);
+        }
+        orgFilter = eq(notificationRoutingRules.orgId, auth.orgId);
+      } else if (query.orgId) {
+        if (!ensureOrgAccess(query.orgId, auth)) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+        orgFilter = eq(notificationRoutingRules.orgId, query.orgId);
+      } else if (auth.scope === 'partner') {
+        const orgIds = auth.accessibleOrgIds ?? [];
+        if (orgIds.length === 0) {
+          return c.json({ data: [] });
+        }
+        orgFilter = inArray(notificationRoutingRules.orgId, orgIds);
       }
+      // system scope with no orgId falls through to no filter (sees all rules);
+      // RLS still constrains what breeze_app can read.
 
       const rules = await db
         .select()
         .from(notificationRoutingRules)
-        .where(eq(notificationRoutingRules.orgId, orgId))
+        .where(orgFilter)
         .orderBy(asc(notificationRoutingRules.priority));
 
       return c.json({ data: rules });
