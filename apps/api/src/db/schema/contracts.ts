@@ -56,7 +56,8 @@ export const contractLines = pgTable('contract_lines', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   index('contract_lines_contract_sort_idx').on(t.contractId, t.sortOrder),
-  index('contract_lines_org_idx').on(t.orgId)
+  index('contract_lines_org_idx').on(t.orgId),
+  uniqueIndex('contract_lines_id_org_uq').on(t.id, t.orgId)
 ]);
 
 export const contractBillingPeriods = pgTable('contract_billing_periods', {
