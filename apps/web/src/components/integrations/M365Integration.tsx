@@ -25,6 +25,7 @@ type SaveState = { status: 'idle' | 'saving' | 'saved' | 'error'; message?: stri
 export default function M365Integration() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [notEnabled, setNotEnabled] = useState(false);
   const [connection, setConnection] = useState<Connection | null>(null);
 
   const [tenantId, setTenantId] = useState('');
@@ -45,6 +46,14 @@ export default function M365Integration() {
       const res = await fetchWithAuth('/m365/connection');
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
+        const errorText = String((json as Record<string, unknown>).error ?? '');
+        // A disabled feature flag (M365_ENABLED off) darks the whole /m365 route
+        // group with a 404 "...is not enabled" body. That is a normal state, not
+        // a failure — render a calm empty state, not a red error.
+        if (res.status === 404 && /not enabled/i.test(errorText)) {
+          setNotEnabled(true);
+          return;
+        }
         setLoadError(
           `Failed to load connection (${res.status}): ${(json as Record<string, unknown>).error ?? res.statusText}`
         );
@@ -123,6 +132,38 @@ export default function M365Integration() {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (notEnabled) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Building2 className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold">Microsoft 365</h1>
+            <p className="text-sm text-muted-foreground">
+              Connect an Entra (Azure AD) app registration so the AI assistant can manage users and
+              groups for this organization's tenant.
+            </p>
+          </div>
+        </div>
+        <div
+          className="rounded-lg border bg-card p-6 text-sm text-muted-foreground"
+          data-testid="m365-not-enabled"
+        >
+          <p className="font-medium text-foreground">
+            Microsoft 365 integration is not enabled on this instance.
+          </p>
+          <p className="mt-1">
+            An administrator enables it by setting{' '}
+            <code className="rounded bg-muted px-1">M365_ENABLED</code> on the API server, then
+            reloading this page.
+          </p>
+        </div>
       </div>
     );
   }
