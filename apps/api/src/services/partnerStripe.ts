@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { stripeConnectAccounts } from '../db/schema/stripePayments';
 import { encryptSecret, decryptSecret } from './secretCrypto';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 // Pinned API version — do not rely on the SDK default (it moves on upgrade).
 const API_VERSION = '2026-03-25.dahlia';
@@ -114,10 +115,9 @@ export async function savePartnerStripeKey(input: {
     // (stripe_connect_accounts_acct_uq) guards stripe_account_id. If this key
     // belongs to a Stripe account already claimed by ANOTHER partner, the row is
     // a fresh INSERT that trips acct_uq (23505). Surface it as a key problem the
-    // partner can act on, not a raw 500.
-    const code = (err as { code?: string })?.code;
-    const constraint = (err as { constraint_name?: string })?.constraint_name ?? '';
-    if (code === '23505' && constraint.includes('acct')) {
+    // partner can act on, not a raw 500. Drizzle wraps the postgres.js error, so
+    // the pg code/constraint live on `.cause` — isPgUniqueViolation walks the chain.
+    if (isPgUniqueViolation(err, 'stripe_connect_accounts_acct_uq')) {
       throw new PartnerStripeError(
         'That Stripe account is already connected to another partner. Use a key for a different Stripe account.',
         'INVALID_STRIPE_KEY',
