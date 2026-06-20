@@ -113,6 +113,12 @@ describe('agent event log routes', () => {
     vi.setSystemTime(new Date('2026-05-02T12:00:00.000Z'));
 
     app = new Hono();
+    // Simulate agentAuthMiddleware setting the main-agent credential so the
+    // requireAgentRole guard on eventLogsRoutes lets ingest tests through.
+    app.use('*', async (c, next) => {
+      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', role: 'agent' } as never);
+      return next();
+    });
     app.route('/agents', eventLogsRoutes);
 
     mocks.getDeviceEventLogSettings.mockResolvedValue({
@@ -168,5 +174,20 @@ describe('agent event log routes', () => {
         ],
       })
     );
+  });
+});
+
+describe('eventlogs ingest — requireAgentRole gate (F8)', () => {
+  it('rejects a watchdog-role token with 403', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', role: 'watchdog' } as never);
+      return next();
+    });
+    app.route('/agents', eventLogsRoutes);
+    const res = await app.request('/agents/dev-1/eventlogs', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(403);
   });
 });

@@ -10,8 +10,12 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { computeAndPersistDeviceReliability } from '../../services/reliabilityScoring';
 import { captureException } from '../../services/sentry';
 import { sanitizeTimestamp } from './helpers';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const reliabilityRoutes = new Hono();
+// Reliability-metric ingest is the main agent's job; reject watchdog-role
+// tokens so a weaker credential can't falsify operator-facing device posture (F8).
+reliabilityRoutes.use('*', requireAgentRole);
 
 reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetricsSchema), async (c) => {
   const agentId = c.req.param('id');

@@ -69,3 +69,18 @@ describe('POST /:id/process-sample', () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe('process-sample ingest — requireAgentRole gate (F8)', () => {
+  it('rejects a watchdog-role token with 403', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', role: 'watchdog' } as never);
+      return next();
+    });
+    app.route('/', processSampleRoutes);
+    const res = await app.request('/dev-1/process-sample', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(403);
+  });
+});

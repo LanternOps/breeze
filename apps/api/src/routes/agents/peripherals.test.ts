@@ -86,7 +86,7 @@ describe('agent peripheral ingest', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.use('*', async (c: any, next: any) => {
-      c.set('agent', { orgId: 'org-1', agentId: 'agent-1' });
+      c.set('agent', { orgId: 'org-1', agentId: 'agent-1', role: 'agent' });
       await next();
     });
     app.route('/agents', peripheralRoutes);
@@ -190,7 +190,7 @@ describe('agent peripheral ingest', () => {
     // Agent has orgId 'org-A' but device belongs to 'org-B'
     const orgMismatchApp = new Hono();
     orgMismatchApp.use('*', async (c: any, next: any) => {
-      c.set('agent', { orgId: 'org-A', agentId: 'agent-1' });
+      c.set('agent', { orgId: 'org-A', agentId: 'agent-1', role: 'agent' });
       await next();
     });
     orgMismatchApp.route('/agents', peripheralRoutes);
@@ -295,5 +295,20 @@ describe('agent peripheral ingest', () => {
         blockedPublishFailures: 0,
       },
     });
+  });
+});
+
+describe('peripheral-event ingest — requireAgentRole gate (F8)', () => {
+  it('rejects a watchdog-role token with 403', async () => {
+    const app = new Hono();
+    app.use('*', async (c: any, next: any) => {
+      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', role: 'watchdog' });
+      await next();
+    });
+    app.route('/agents', peripheralRoutes);
+    const res = await app.request('/agents/dev-1/peripherals/events', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(403);
   });
 });

@@ -10,6 +10,7 @@ import { submitEventLogsSchema } from './schemas';
 import { getDeviceEventLogSettings, EVENT_LOG_DEFAULTS, sanitizeTimestamp, type EventLogSettings } from './helpers';
 import { enqueueLogForwarding } from '../../jobs/logForwardingWorker';
 import { getOrgForwardingConfig } from '../../services/logForwarding';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 const LEVEL_ORDER: Record<string, number> = {
   info: 0,
@@ -58,6 +59,9 @@ function mergeEventDetails(
 }
 
 export const eventLogsRoutes = new Hono();
+// Event-log ingest is the main agent's job; reject watchdog-role tokens so a
+// weaker credential can't falsify operator-facing event-log posture (F8).
+eventLogsRoutes.use('*', requireAgentRole);
 
 eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema), async (c) => {
   const agentId = c.req.param('id');

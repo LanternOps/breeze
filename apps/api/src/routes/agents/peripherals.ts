@@ -11,6 +11,7 @@ import {
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 const submitPeripheralEventsSchema = z.object({
   events: z.array(z.object({
@@ -27,6 +28,9 @@ const submitPeripheralEventsSchema = z.object({
 });
 
 export const peripheralRoutes = new Hono();
+// Peripheral-event ingest is the main agent's job; reject watchdog-role tokens
+// so a weaker credential can't falsify operator-facing peripheral/USB posture (F8).
+peripheralRoutes.use('*', requireAgentRole);
 
 peripheralRoutes.put('/:id/peripherals/events', zValidator('json', submitPeripheralEventsSchema), async (c) => {
   const agentId = c.req.param('id');

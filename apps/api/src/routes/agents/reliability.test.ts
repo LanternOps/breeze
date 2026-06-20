@@ -178,3 +178,18 @@ describe('agent reliability ingestion route', () => {
     expect(body).toEqual({ success: true, status: 'received' });
   });
 });
+
+describe('reliability ingest — requireAgentRole gate (F8)', () => {
+  it('rejects a watchdog-role token with 403', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', role: 'watchdog' } as never);
+      return next();
+    });
+    app.route('/agents', reliabilityRoutes);
+    const res = await app.request('/agents/dev-1/reliability', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(403);
+  });
+});

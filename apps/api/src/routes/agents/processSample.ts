@@ -4,9 +4,13 @@ import { bodyLimit } from 'hono/body-limit';
 import { db } from '../../db';
 import { deviceProcessSamples } from '../../db/schema';
 import { type AgentAuthContext } from '../../middleware/agentAuth';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { processSampleSchema } from './schemas';
 
 export const processSampleRoutes = new Hono();
+// Process-sample ingest is the main agent's job; reject watchdog-role tokens so
+// a weaker credential can't falsify operator-facing process posture (F8).
+processSampleRoutes.use('*', requireAgentRole);
 
 processSampleRoutes.post(
   '/:id/process-sample',

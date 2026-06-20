@@ -4,8 +4,12 @@ import { db } from '../../db';
 import { devices, deviceBootMetrics } from '../../db/schema';
 import { normalizeStartupItems } from '../../services/startupItems';
 import { sanitizeTimestamp } from './helpers';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const bootPerformanceRoutes = new Hono();
+// Boot-performance ingest is the main agent's job; reject watchdog-role tokens
+// so a weaker credential can't falsify operator-facing boot posture (F8).
+bootPerformanceRoutes.use('*', requireAgentRole);
 
 const MAX_BOOT_RECORDS_PER_DEVICE = 30;
 
