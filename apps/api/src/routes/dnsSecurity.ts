@@ -844,6 +844,11 @@ dnsSecurityRoutes.get(
 dnsSecurityRoutes.get(
   '/top-blocked',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` in context (site-scope narrowing below depends on
+  // it) and gates device-telemetry reads behind DEVICES_READ. Mirrors /events
+  // and /stats — without this the org-wide ranking + per-domain distinct-device
+  // counts would leak across sites for a site-restricted caller.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', topBlockedQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -864,16 +869,31 @@ dnsSecurityRoutes.get(
       return c.json({ error: windowError }, 400);
     }
 
+    // Site-scope narrowing (app-layer authz axis — RLS does not defend it).
+    // Resolved once and applied to both the raw and aggregation code paths.
+    // deviceId is NULLABLE, so provider-level (null-device) rows stay visible.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    let allowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && auth.orgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+    }
+
     const conditions: SQL[] = [eq(dnsSecurityEvents.action, 'blocked')];
     withOrgCondition(conditions, auth.orgCondition(dnsSecurityEvents.orgId));
     if (start) conditions.push(gte(dnsSecurityEvents.timestamp, start));
     if (end) conditions.push(lte(dnsSecurityEvents.timestamp, end));
+    if (allowedDeviceIds !== null) {
+      conditions.push(siteNarrowCondition(dnsSecurityEvents.deviceId, allowedDeviceIds));
+    }
 
     if (shouldUseAggregations(start, end)) {
       const aggConditions: SQL[] = [];
       withOrgCondition(aggConditions, auth.orgCondition(dnsEventAggregations.orgId));
       if (start) aggConditions.push(gte(dnsEventAggregations.date, toDateKey(start)));
       if (end) aggConditions.push(lte(dnsEventAggregations.date, toDateKey(end)));
+      if (allowedDeviceIds !== null) {
+        aggConditions.push(siteNarrowCondition(dnsEventAggregations.deviceId, allowedDeviceIds));
+      }
 
       const [aggCountRow] = await db
         .select({ count: sql<number>`count(*)::int` })

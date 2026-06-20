@@ -331,6 +331,77 @@ describe('dns security routes', () => {
     });
   });
 
+  describe('GET /top-blocked — site scope + permission gate', () => {
+    // Mirrors /events and /stats: gated by requirePermission(devices.read) and
+    // site-narrowed so a site-restricted caller's top-blocked ranking + the
+    // per-domain distinct-device counts only span devices in their allowed
+    // sites. Provider-level (null-device) rows stay visible.
+    it('returns 403 when the caller lacks devices.read', async () => {
+      setSiteScopedAuth(undefined);
+      permissionGate.deny = true;
+
+      const res = await app.request('/dns-security/top-blocked');
+      expect(res.status).toBe(403);
+    });
+
+    it('narrows the raw top-blocked query for a restricted caller (200)', async () => {
+      setSiteScopedAuth([SITE_ALLOWED]);
+      // 1) device-resolution select, 2) the grouped top-blocked select
+      mockDeviceResolution([{ id: DEVICE_ALLOWED, siteId: SITE_ALLOWED }]);
+
+      const whereSpy = vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { domain: 'bad.example', category: 'malware', count: 4, devices: 1 }
+            ])
+          })
+        })
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: whereSpy })
+      } as any);
+
+      const res = await app.request('/dns-security/top-blocked');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.source).toBe('raw');
+      expect(body.data).toHaveLength(1);
+      // The grouped query must have received a (site-narrowing) where clause —
+      // an unnarrowed handler would still pass conditions, but the presence of
+      // the device-resolution select above proves the narrowing path ran.
+      expect(whereSpy).toHaveBeenCalled();
+    });
+
+    it('does not run device resolution for unrestricted callers (200)', async () => {
+      setSiteScopedAuth(undefined);
+      // For an unrestricted caller the FIRST (and only) select is the grouped
+      // top-blocked query — there is no device-resolution select. If the handler
+      // wrongly ran site narrowing, this mock would be consumed by the device
+      // resolution and the grouped query would blow up.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            groupBy: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  { domain: 'bad.example', category: 'malware', count: 9, devices: 3 }
+                ])
+              })
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request('/dns-security/top-blocked');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.source).toBe('raw');
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].devices).toBe(3);
+    });
+  });
+
   describe('GET /stats — site scope', () => {
     it('denies an explicit deviceId outside the caller site allowlist (403)', async () => {
       setSiteScopedAuth([SITE_ALLOWED]);
