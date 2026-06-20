@@ -115,6 +115,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'client_ai_tenant_mappings',
   'client_ai_usage',
   'config_policy_backup_settings',
+  'config_policy_onedrive_libraries',
   'config_policy_onedrive_settings',
   'configuration_policies',
   'contract_billing_periods',

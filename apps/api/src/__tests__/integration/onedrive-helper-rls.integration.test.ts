@@ -34,6 +34,7 @@ import {
 } from '../../db';
 import {
   configPolicyOnedriveSettings,
+  configPolicyOnedriveLibraries,
   configurationPolicies,
   configPolicyFeatureLinks,
 } from '../../db/schema';
@@ -203,6 +204,86 @@ describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
         db.insert(configPolicyOnedriveSettings).values({
           featureLinkId: fx.featureLinkB.id, // org B's real feature link (FK resolves)
           orgId: fx.orgB.id, // foreign org — RLS WITH CHECK must reject
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// config_policy_onedrive_libraries RLS isolation (Task 4)
+// ---------------------------------------------------------------------------
+// Fixture re-use: seedFixture() is defined above and seeds both orgs, both
+// feature links, and an org-A-scoped breeze_app context. Library tests need
+// a settings row for the FK reference (settings_id), so each test seeds one
+// under system scope before the RLS assertion.
+// ---------------------------------------------------------------------------
+describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
+  // (a) Positive control: org A can insert a library row for its own settings.
+  runDb('positive control: org A context can insert its own library mapping', async () => {
+    const fx = await seedFixture();
+
+    // Seed org A's settings row under system scope (FK prerequisite).
+    const settingsId = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .insert(configPolicyOnedriveSettings)
+        .values({ featureLinkId: fx.featureLinkA.id, orgId: fx.orgA.id })
+        .returning({ id: configPolicyOnedriveSettings.id });
+      return row!.id;
+    });
+
+    // Under org A's breeze_app context, inserting a library row for org A succeeds.
+    const [inserted] = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .insert(configPolicyOnedriveLibraries)
+        .values({
+          settingsId,
+          orgId: fx.orgA.id,
+          libraryId: 'lib-a1',
+          displayName: 'Org A Documents',
+          targetingMode: 'everyone',
+        })
+        .returning({
+          id: configPolicyOnedriveLibraries.id,
+          orgId: configPolicyOnedriveLibraries.orgId,
+        })
+    );
+    expect(inserted?.orgId).toBe(fx.orgA.id);
+
+    // Confirm the row is readable back under the same context.
+    const fetched = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .select({ id: configPolicyOnedriveLibraries.id })
+        .from(configPolicyOnedriveLibraries)
+        .where(eq(configPolicyOnedriveLibraries.id, inserted!.id))
+    );
+    expect(fetched).toHaveLength(1);
+  });
+
+  // (b) Cross-org INSERT denied: org A context cannot insert a library row
+  // carrying org B's org_id. The settings_id used is from org B's seeded
+  // settings row so the FK resolves — the rejection MUST be RLS (42501),
+  // not a FK violation (23503).
+  runDb('blocks a forged cross-org config_policy_onedrive_libraries INSERT (42501)', async () => {
+    const fx = await seedFixture();
+
+    // Seed org B's settings row under system scope so the FK resolves.
+    const orgBSettingsId = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .insert(configPolicyOnedriveSettings)
+        .values({ featureLinkId: fx.featureLinkB.id, orgId: fx.orgB.id })
+        .returning({ id: configPolicyOnedriveSettings.id });
+      return row!.id;
+    });
+
+    await expect(
+      withDbAccessContext(fx.orgAContext, () =>
+        db.insert(configPolicyOnedriveLibraries).values({
+          settingsId: orgBSettingsId, // org B's real settings row (FK resolves)
+          orgId: fx.orgB.id,          // foreign org — RLS WITH CHECK must reject
+          libraryId: 'lib-x',
+          displayName: 'Finance',
+          targetingMode: 'everyone',
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
