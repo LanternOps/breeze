@@ -354,7 +354,7 @@ describe('connections routes', () => {
         return fn(tx);
       });
 
-      // 12 columns/row × 10,000 rows = 120,000 bind params — far over the
+      // 11 columns/row × 10,000 rows = 110,000 bind params — far over the
       // 65534 limit if sent as one statement. The schema cap is 10,000.
       const COUNT = 10000;
       const connections = Array.from({ length: COUNT }, (_, i) => ({
@@ -375,13 +375,15 @@ describe('connections routes', () => {
 
       // Must have split into multiple batches (old code inserted in one shot).
       expect(insertedBatches.length).toBeGreaterThan(1);
-      // No batch may exceed the chunk size (5000 rows × 12 cols = 60k params).
+      // No batch may exceed the chunk size (5000 rows × 11 cols = 55k params).
       for (const batch of insertedBatches) {
         expect(batch.length).toBeLessThanOrEqual(5000);
       }
-      // No rows lost or duplicated across batches.
-      const total = insertedBatches.reduce((n, b) => n + b.length, 0);
-      expect(total).toBe(COUNT);
+      // Concatenated batches must equal the original rows IN ORDER — guards
+      // against a chunk() off-by-one that drops/duplicates a specific row while
+      // keeping the total count correct (localPort is the unique per-row marker).
+      const flatPorts = insertedBatches.flat().map((r: { localPort: number }) => r.localPort);
+      expect(flatPorts).toEqual(connections.map((c) => c.localPort));
     });
   });
 
