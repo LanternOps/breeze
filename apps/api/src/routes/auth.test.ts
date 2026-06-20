@@ -1076,7 +1076,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-1'
+        jti: 'refresh-jti-1',
+        fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -1183,7 +1184,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-2'
+        jti: 'refresh-jti-2',
+        fam: 'family-id-mock'
       });
 
       const res = await app.request('/auth/refresh', {
@@ -1214,7 +1216,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-race'
+        jti: 'refresh-jti-race',
+        fam: 'family-id-mock'
       });
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -1264,7 +1267,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-graced'
+        jti: 'refresh-jti-graced',
+        fam: 'family-id-mock'
       });
 
       const res = await app.request('/auth/refresh', {
@@ -1301,7 +1305,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-stolen'
+        jti: 'refresh-jti-stolen',
+        fam: 'fam-attacked'
       });
 
       const res = await app.request('/auth/refresh', {
@@ -1331,7 +1336,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-winner'
+        jti: 'refresh-jti-winner',
+        fam: 'family-id-mock'
       });
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -1376,7 +1382,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-3'
+        jti: 'refresh-jti-3',
+        fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -1450,7 +1457,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-tenant'
+        jti: 'refresh-jti-tenant',
+        fam: 'family-id-mock'
       });
       vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Partner is not active'));
       vi.mocked(db.select)
@@ -2086,7 +2094,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-sec'
+        jti: 'refresh-jti-sec',
+        fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -2139,7 +2148,8 @@ describe('auth routes', () => {
         type: 'refresh',
         mfa: false,
         iat: 123456,
-        jti: 'refresh-jti-no-sec'
+        jti: 'refresh-jti-no-sec',
+        fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
