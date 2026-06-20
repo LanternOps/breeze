@@ -239,6 +239,11 @@ describe('aiToolsPam handlers', () => {
       partnerId: PARTNER_ID,
       deviceId: DEVICE_ID,
       flowType: 'tech_jit_admin',
+      // tech_jit_admin requires subject_user_id IS NOT NULL (DB CHECK
+      // elevation_requests_flow_shape_chk); the AI path must populate the
+      // operator as the subject so the insert satisfies the constraint AND
+      // the maker/checker self-approval guard in routes/pam.ts applies.
+      subjectUserId: 'user-1',
       subjectUsername: 'localadmin',
       reason: 'Install driver',
       status: 'pending',

@@ -216,7 +216,12 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           partnerId: device.partnerId ?? auth.partnerId ?? null,
           deviceId: device.id,
           flowType: 'tech_jit_admin',
-          subjectUserId: null,
+          // tech_jit_admin requires subject_user_id IS NOT NULL (DB CHECK
+          // elevation_requests_flow_shape_chk). The subject is the operator on
+          // whose behalf the elevation is requested, so use the authenticated
+          // user — this satisfies the constraint AND brings the request under
+          // the maker/checker self-approval guard in routes/pam.ts.
+          subjectUserId: auth.user.id,
           subjectUsername,
           reason,
           status: decision.status,
