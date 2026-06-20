@@ -68,6 +68,25 @@ func TestParseBitrateOverride(t *testing.T) {
 	}
 }
 
+func TestViewerHardCap(t *testing.T) {
+	tests := []struct {
+		name     string
+		override int
+		want     int
+	}{
+		{"no override defaults to 4K ceiling", 0, defaultBitrate4K},
+		{"override takes precedence", 35_000_000, 35_000_000},
+		{"override below default still wins", 10_000_000, 10_000_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := viewerHardCap(tt.override); got != tt.want {
+				t.Errorf("viewerHardCap(%d) = %d, want %d", tt.override, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestViewerHardCapAboveLegacy(t *testing.T) {
 	// The viewer set_bitrate control path was previously hard-capped at 20 Mbps,
 	// silently truncating higher 4K quality requests (#1410). The default cap

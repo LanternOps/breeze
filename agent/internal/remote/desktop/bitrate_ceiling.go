@@ -16,17 +16,21 @@ import (
 // hardware encoders (AMF/NVENC/VideoToolbox sustain these without stalling) —
 // CapForSoftwareEncoder() separately clamps software backends to 4 Mbps.
 //
-// Defaults were raised for #1410: the previous 15 Mbps ceiling above 1080p was
-// the limiting factor for sharpness on 1440p/4K screen content well before the
-// network was. The numbers below track typical "good" H.264 screen-content
-// rates: ~8 Mbps @ 1080p, ~30 Mbps @ 1440p, ~50 Mbps @ 4K.
+// Defaults were raised for #1410: the previous flat 15 Mbps ceiling above 1080p
+// throttled 1440p/4K screen content. The numbers below track typical "good"
+// H.264 screen-content rates: ~8 Mbps @ 1080p, ~30 Mbps @ 1440p, ~50 Mbps @ 4K.
+//
+// Tiers are selected by TOTAL PIXEL COUNT (w*h), not by width/height, so the
+// "≤ …px" annotations below are area bounds — a non-16:9 resolution such as
+// 2048×1080 (DCI 2K, 2,211,840 px) lands in the 1440p tier, not the 1080p one.
 const (
-	defaultBitrate1080p = 8_000_000  // ≤ 1920×1080
-	defaultBitrate1440p = 30_000_000 // ≤ 2560×1440
-	defaultBitrate4K    = 50_000_000 // > 1440p (4K and beyond)
+	defaultBitrate1080p = 8_000_000  // ≤ 2,073,600 px (1920×1080)
+	defaultBitrate1440p = 30_000_000 // ≤ 3,686,400 px (2560×1440)
+	defaultBitrate4K    = 50_000_000 // larger (4K and beyond)
 
 	// pixels1080p / pixels1440p are the inclusive upper pixel-count bounds for
-	// each tier. A resolution at or below the bound uses that tier's ceiling.
+	// each tier. A resolution whose w*h is at or below the bound uses that
+	// tier's ceiling.
 	pixels1080p = 1920 * 1080
 	pixels1440p = 2560 * 1440
 
@@ -114,13 +118,20 @@ func ceilingForResolution(w, h, override int) int {
 }
 
 // viewerBitrateHardCap is the absolute ceiling the viewer's `set_bitrate`
-// control message may request. It honors the operator override when set so a
-// quality slider in the viewer can climb to whatever the operator allows;
-// otherwise it defaults to the 4K ceiling. Keeping this in sync with
-// resolutionBitrateCeiling means a viewer can request the full 4K rate (the
-// previous hard 20 Mbps cap silently truncated 4K requests — #1410).
+// control message may request. It defaults to the top tier (defaultBitrate4K)
+// so the viewer slider is never itself the limiting factor, and honors the
+// operator override identically to resolutionBitrateCeiling so a quality slider
+// can climb to whatever the operator allows. The previous hard 20 Mbps cap
+// silently truncated higher 4K requests (#1410).
 func viewerBitrateHardCap() int {
-	if override := loadBitrateOverride(); override > 0 {
+	return viewerHardCap(loadBitrateOverride())
+}
+
+// viewerHardCap is the pure core of viewerBitrateHardCap, split out so the
+// override branch is testable without the process env / sync.Once cache (mirrors
+// the ceilingForResolution split).
+func viewerHardCap(override int) int {
+	if override > 0 {
 		return override
 	}
 	return defaultBitrate4K

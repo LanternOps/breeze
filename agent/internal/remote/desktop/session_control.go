@@ -172,18 +172,30 @@ func (s *Session) handleControlMessage(data []byte) {
 	maxBitrateCap := viewerBitrateHardCap()
 	switch msg.Type {
 	case "set_bitrate":
-		if msg.Value > 0 && msg.Value <= maxBitrateCap {
+		if msg.Value > 0 {
+			// Clamp to the hard cap rather than silently dropping an
+			// above-cap request — silently ignoring higher requests is the
+			// exact truncation #1410 set out to fix. A request below the cap
+			// is honored as-is; one above it is honored at the cap.
+			bitrate := msg.Value
+			if bitrate > maxBitrateCap {
+				slog.Debug("Clamping requested bitrate to hard cap",
+					"session", s.id, "requested", msg.Value, "cap", maxBitrateCap)
+				bitrate = maxBitrateCap
+			}
 			// Update the adaptive controller's ceiling so it ramps up to
 			// the user-chosen max rather than bypassing adaptive entirely.
 			if s.adaptive != nil {
-				s.adaptive.SetMaxBitrate(msg.Value)
+				s.adaptive.SetMaxBitrate(bitrate)
 			} else {
 				if enc := s.encoder.Load(); enc != nil {
-					if err := enc.SetBitrate(msg.Value); err != nil {
-						slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err.Error())
+					if err := enc.SetBitrate(bitrate); err != nil {
+						slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", bitrate, "error", err.Error())
 					}
 				}
 			}
+		} else {
+			slog.Debug("Ignoring non-positive set_bitrate request", "session", s.id, "value", msg.Value)
 		}
 	case "set_fps":
 		if msg.Value > 0 && msg.Value <= maxFrameRate {
