@@ -356,13 +356,11 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		session.fps = maxFrameRate
 	}
 
-	// Create adaptive bitrate controller — ceiling scales with resolution.
-	// Hardware encoders (AMF, NVENC) sustain high bitrate without stalling;
-	// CapForSoftwareEncoder() clamps to 4Mbps when the backend is software.
-	maxAdaptiveBitrate := 8_000_000
-	if w*h > 1920*1080 {
-		maxAdaptiveBitrate = 15_000_000
-	}
+	// Create adaptive bitrate controller — ceiling scales with resolution and
+	// honors the BREEZE_REMOTE_MAX_BITRATE_BPS override. Hardware encoders
+	// (AMF, NVENC) sustain high bitrate without stalling; CapForSoftwareEncoder()
+	// clamps to 4Mbps when the backend is software.
+	maxAdaptiveBitrate := resolutionBitrateCeiling(w, h)
 	adaptive, err := NewAdaptiveBitrate(AdaptiveConfig{
 		Encoder:        enc,
 		InitialBitrate: initBitrate,

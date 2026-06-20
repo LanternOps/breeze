@@ -165,7 +165,11 @@ func (s *Session) handleControlMessage(data []byte) {
 		return
 	}
 
-	const maxBitrateCap = 20_000_000 // 20 Mbps hard cap
+	// Absolute ceiling a viewer-requested bitrate may reach. Tracks the 4K
+	// resolution ceiling (and the BREEZE_REMOTE_MAX_BITRATE_BPS override) so a
+	// viewer quality slider can climb to the full 4K rate — the previous hard
+	// 20 Mbps cap silently truncated higher 4K requests (#1410).
+	maxBitrateCap := viewerBitrateHardCap()
 	switch msg.Type {
 	case "set_bitrate":
 		if msg.Value > 0 && msg.Value <= maxBitrateCap {

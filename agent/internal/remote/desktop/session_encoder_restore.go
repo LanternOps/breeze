@@ -168,11 +168,7 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 	// Mirror the resolution-based ceiling used in StartSession.
 	if s.adaptive != nil {
 		s.adaptive.SetEncoder(newEnc)
-		hwMaxBitrate := 8_000_000
-		if w*h > 1920*1080 {
-			hwMaxBitrate = 15_000_000
-		}
-		s.adaptive.SetMaxBitrate(hwMaxBitrate)
+		s.adaptive.SetMaxBitrate(resolutionBitrateCeiling(w, h))
 	}
 
 	s.hwRestore.onRestored()
