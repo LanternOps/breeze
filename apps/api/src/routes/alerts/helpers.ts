@@ -92,7 +92,7 @@ export function resolveWriteOrgId(
     return { orgId: auth.accessibleOrgIds[0] };
   }
 
-  return { error: 'orgId is required when partner has multiple organizations', status: 400 };
+  return { error: 'orgId is required when the caller can access multiple organizations', status: 400 };
 }
 
 export async function getAlertRuleWithOrgCheck(ruleId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {

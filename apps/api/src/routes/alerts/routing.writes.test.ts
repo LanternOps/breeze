@@ -177,4 +177,51 @@ describe('routing-rule writes — partner org resolution (#1633)', () => {
     expect(res.status).toBe(201);
     expect(insertedRef.current?.orgId).toBe('org-1');
   });
+
+  it('org-scoped user: an explicit ?orgId= matching their own org still succeeds', async () => {
+    authRef.current = {
+      scope: 'organization',
+      user: { id: 'u-2', name: 'Olive', email: 'olive@org.example' },
+      partnerId: null, orgId: 'org-1', accessibleOrgIds: null, canAccessOrg: () => true,
+    } as typeof authRef.current;
+    const res = await makeApp().request('/alerts/routing-rules?orgId=org-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(201);
+    expect(insertedRef.current?.orgId).toBe('org-1');
+  });
+
+  it('org-scoped user: smuggling a different ?orgId= is 403 (cannot redirect the write cross-org)', async () => {
+    authRef.current = {
+      scope: 'organization',
+      user: { id: 'u-2', name: 'Olive', email: 'olive@org.example' },
+      // canAccessOrg returns true even for the other org — the org-scope pin must
+      // reject the mismatch on its own, not lean on canAccessOrg.
+      partnerId: null, orgId: 'org-1', accessibleOrgIds: null, canAccessOrg: () => true,
+    } as typeof authRef.current;
+    const res = await makeApp().request('/alerts/routing-rules?orgId=org-2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(403);
+    expect(insertedRef.current).toBeUndefined();
+  });
+
+  it('system-scoped caller with ?orgId= writes against that org', async () => {
+    authRef.current = {
+      scope: 'system',
+      user: { id: 'u-3', name: 'Sys', email: 'sys@breeze.local' },
+      partnerId: null, orgId: null, accessibleOrgIds: null, canAccessOrg: () => true,
+    } as typeof authRef.current;
+    const res = await makeApp().request('/alerts/routing-rules?orgId=org-x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(201);
+    expect(insertedRef.current?.orgId).toBe('org-x');
+  });
 });
