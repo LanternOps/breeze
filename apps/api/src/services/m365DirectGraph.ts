@@ -58,7 +58,7 @@ function generateTempPassword(): string {
   return `Mz9!${raw.slice(0, 18)}`;
 }
 
-async function getToken(orgId: string): Promise<{ token: string } | DirectInvokeResult> {
+export async function getToken(orgId: string): Promise<{ token: string } | DirectInvokeResult> {
   const [row] = await db
     .select()
     .from(m365Connections)
@@ -89,7 +89,7 @@ async function getToken(orgId: string): Promise<{ token: string } | DirectInvoke
   }
 }
 
-async function graphFetch(
+export async function graphFetch(
   token: string,
   method: 'GET' | 'PATCH' | 'POST' | 'DELETE',
   path: string,
