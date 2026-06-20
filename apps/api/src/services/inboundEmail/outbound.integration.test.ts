@@ -468,6 +468,7 @@ describe('outbound threading + autoresponder + Reply-To + leak (real DB, capture
       messageId: customerMessageId,
       attachments: [],
       raw: { recipient: `${fx.partner.slug}@${INBOUND_DOMAIN}` },
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
       ...overrides
     });
 
@@ -580,6 +581,7 @@ describe('outbound threading + autoresponder + Reply-To + leak (real DB, capture
       messageId: customerMessageId,
       attachments: [],
       raw: { recipient: `${fx.partner.slug}@${INBOUND_DOMAIN}` },
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
       ...overrides
     });
 
