@@ -13,6 +13,7 @@ import { captureException } from '../../services/sentry';
 import { emitAlertStateFeedback, emitCorrelationFeedback, emitRcaFeedback } from '../../services/mlFeedbackEmitters';
 import { shouldProduceMlOutput } from '../../services/mlFeatureFlags';
 import { PERMISSIONS } from '../../services/permissions';
+import { deviceInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
 
 export const alertCorrelationRoutes = new Hono();
 
@@ -87,6 +88,9 @@ type AuthContext = {
   accessibleOrgIds?: string[] | null;
   user: { id: string };
   canAccessOrg: (orgId: string) => boolean;
+  // Site-axis allowlist (sub-org restriction). Undefined = unrestricted. RLS
+  // does NOT enforce this axis, so every alert read/mutation below narrows by it.
+  allowedSiteIds?: string[];
 };
 
 type AlertRow = typeof alerts.$inferSelect;
@@ -144,6 +148,13 @@ async function getAccessibleAlert(alertId: string, auth: AuthContext): Promise<A
     return null;
   }
 
+  // Site axis: a site-restricted caller must not see/act on an alert whose
+  // device is outside their allowed sites. Out-of-site → not found (no oracle),
+  // matching the alerts.ts by-id paths. Deviceless alerts stay visible.
+  if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
+    return null;
+  }
+
   return alert;
 }
 
@@ -152,10 +163,12 @@ async function listAccessibleAlerts(auth: AuthContext): Promise<AlertRow[]> {
   if (orgConditions === null) {
     return [];
   }
-  if (orgConditions.length === 0) {
-    return db.select().from(alerts);
-  }
-  return db.select().from(alerts).where(and(...orgConditions));
+  const rows = orgConditions.length === 0
+    ? await db.select().from(alerts)
+    : await db.select().from(alerts).where(and(...orgConditions));
+  // Site axis (RLS does NOT enforce it): drop alerts on out-of-site devices so
+  // correlation grouping/listing/evaluation never expose another site's alerts.
+  return filterAlertsBySiteScope(auth, rows);
 }
 
 function alertDisplayDevice(alert: AlertRow & { deviceHostname?: string | null }) {
@@ -321,9 +334,11 @@ async function buildPersistedCorrelationGroups(auth: AuthContext, groupId?: stri
     .where(inArray(alertCorrelationMembers.groupId, groupIds));
 
   const alertIds = [...new Set(members.map((member) => member.alertId))];
-  const memberAlerts = alertIds.length > 0
+  const memberAlertsRaw = alertIds.length > 0
     ? await db.select().from(alerts).where(inArray(alerts.id, alertIds))
     : [];
+  // Site axis: hide member alerts on out-of-site devices from a restricted caller.
+  const memberAlerts = await filterAlertsBySiteScope(auth, memberAlertsRaw);
   const alertById = new Map(memberAlerts.map((alert) => [alert.id, alert]));
 
   const deviceIds = [...new Set(memberAlerts.map((alert) => alert.deviceId))];
@@ -527,7 +542,13 @@ async function getPersistedGroupAlerts(groupId: string, auth: AuthContext): Prom
   if (members.length === 0) return [];
 
   const alertIds = members.map((member) => member.alertId);
-  return db.select().from(alerts).where(and(eq(alerts.orgId, group.orgId), inArray(alerts.id, alertIds)));
+  const groupAlerts = await db
+    .select()
+    .from(alerts)
+    .where(and(eq(alerts.orgId, group.orgId), inArray(alerts.id, alertIds)));
+  // Site axis: a restricted caller acking/resolving a group must not mutate
+  // members on out-of-site devices.
+  return filterAlertsBySiteScope(auth, groupAlerts);
 }
 
 async function updatePersistedGroupStatus(
@@ -932,9 +953,11 @@ alertCorrelationRoutes.get(
     const relatedIds = [...new Set(links.map((link) =>
       link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId
     ))];
-    const relatedAlerts = relatedIds.length > 0
+    const relatedAlertsRaw = relatedIds.length > 0
       ? await db.select().from(alerts).where(and(eq(alerts.orgId, alert.orgId), inArray(alerts.id, relatedIds)))
       : [];
+    // Site axis: drop related alerts on out-of-site devices from a restricted caller.
+    const relatedAlerts = await filterAlertsBySiteScope(auth, relatedAlertsRaw);
     const relatedById = new Map(relatedAlerts.map((relatedAlert) => [relatedAlert.id, relatedAlert]));
 
     const visibleLinks: CorrelationRow[] = [];
@@ -996,9 +1019,12 @@ alertCorrelationRoutes.post(
       .from(alertCorrelations)
       .where(or(eq(alertCorrelations.parentAlertId, alertId), eq(alertCorrelations.childAlertId, alertId)));
     const relatedIdsForMutation = links.map((link) => link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId);
-    const relatedAlerts = relatedIdsForMutation.length > 0
+    const relatedAlertsRaw = relatedIdsForMutation.length > 0
       ? await db.select().from(alerts).where(and(eq(alerts.orgId, alert.orgId), inArray(alerts.id, relatedIdsForMutation)))
       : [];
+    // Site axis: a restricted caller must not acknowledge related alerts on
+    // out-of-site devices via the correlation fan-out.
+    const relatedAlerts = await filterAlertsBySiteScope(auth, relatedAlertsRaw);
     const result = await mutateAlerts([alert, ...relatedAlerts], 'acknowledge', auth.user.id);
 
     writeRouteAudit(c, {

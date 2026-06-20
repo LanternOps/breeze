@@ -40,7 +40,7 @@ const {
       sourceId: 'ml_feedback_events.sourceId', eventType: 'ml_feedback_events.eventType',
       outcome: 'ml_feedback_events.outcome', occurredAt: 'ml_feedback_events.occurredAt',
     },
-    devices: { id: 'devices.id', hostname: 'devices.hostname' },
+    devices: { id: 'devices.id', hostname: 'devices.hostname', siteId: 'devices.siteId' },
   };
 
   type Predicate = { op: string; col?: unknown; val?: unknown; vals?: unknown[]; args?: Predicate[] } | undefined;
@@ -176,6 +176,12 @@ vi.mock('../../middleware/auth', () => ({
     if (!grantedRef.current.has(`${resource}:${action}`)) return _c.json({ error: 'Forbidden' }, 403);
     await next();
   },
+  // Used by filterAlertsBySiteScope / deviceInSiteScope (real ../tickets/siteScope).
+  siteAccessCheck: (allowedSiteIds?: string[]) => (siteId: string | null | undefined) => {
+    if (!allowedSiteIds) return true;
+    if (!siteId) return false;
+    return allowedSiteIds.includes(siteId);
+  },
 }));
 
 vi.mock('../../db', () => ({ db: dbMock }));
@@ -186,6 +192,8 @@ vi.mock('../../db/schema', () => ({
   alertCorrelations: tables.alertCorrelations,
   devices: tables.devices,
   mlFeedbackEvents: tables.mlFeedbackEvents,
+  // Referenced by the real ../tickets/siteScope module (ticketSiteScopeCondition).
+  tickets: { id: 'tickets.id', deviceId: 'tickets.deviceId' },
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/alertCorrelationRca', () => ({
@@ -218,6 +226,11 @@ const ALERT_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ALERT_3 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_1 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const GROUP_1 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+// Site-axis (T2 #1051 class) fixtures: two devices in two sites within ORG_1.
+const SITE_A = '5a5a5a5a-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SITE_B = '5b5b5b5b-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const DEVICE_2 = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd';
+const ALERT_4 = 'a4a4a4a4-4444-4444-8444-444444444444';
 
 function makeApp() {
   const app = new Hono();
@@ -238,7 +251,10 @@ function seed() {
   state.groups = [];
   state.members = [];
   state.feedback = [];
-  state.devices = [{ id: DEVICE_1, hostname: 'server-1' }];
+  state.devices = [
+    { id: DEVICE_1, hostname: 'server-1', siteId: SITE_A },
+    { id: DEVICE_2, hostname: 'server-2', siteId: SITE_B },
+  ];
   state.unwritableAlertIds = new Set();
 }
 
@@ -815,5 +831,124 @@ describe('/alerts correlation routes', () => {
     const updateCalls = dbMock.update.mock.calls;
     expect(updateCalls).toContainEqual([tables.alertCorrelationGroups]);
     expect(state.groups.find((group) => group.id === GROUP_1)?.status).toBe('resolved');
+  });
+
+  // Site-axis enforcement (T2, #1051 class). Site scope is an app-layer-only
+  // authz axis RLS does NOT enforce; a SITE_A-restricted ORG_1 user must not
+  // read or mutate alert/correlation state for SITE_B devices in the same org.
+  describe('site-axis scope (T2)', () => {
+    // Persisted group spanning a SITE_A alert (ALERT_1/DEVICE_1) and a SITE_B
+    // alert (ALERT_4/DEVICE_2), both in ORG_1, linked under GROUP_1.
+    function seedSiteScopedGroup() {
+      state.alerts.push({
+        id: ALERT_4, orgId: ORG_1, deviceId: DEVICE_2, status: 'active', severity: 'high',
+        title: 'Other site', ruleId: 'rule-4',
+        triggeredAt: new Date('2026-06-18T12:05:00Z'), createdAt: new Date('2026-06-18T12:05:00Z'),
+      });
+      state.correlations.push({
+        id: '44444444-aaaa-4aaa-8aaa-444444444444',
+        parentAlertId: ALERT_1, childAlertId: ALERT_4,
+        correlationType: 'same_device_temporal', confidence: '0.80',
+        createdAt: new Date('2026-06-18T12:06:00Z'),
+      });
+      state.groups = [{
+        id: GROUP_1, orgId: ORG_1, groupKey: `root:${ALERT_1}`, rootAlertId: ALERT_1,
+        status: 'open', score: '0.90', noiseReductionPercent: 50, memberCount: 2,
+        firstSeenAt: new Date('2026-06-18T12:00:00Z'), lastSeenAt: new Date('2026-06-18T12:05:00Z'),
+        metadata: {}, createdAt: new Date('2026-06-18T12:06:00Z'),
+      }];
+      state.members = [
+        { id: 'eeeeeeee-0001-4eee-8eee-eeeeeeeeeeee', orgId: ORG_1, groupId: GROUP_1, alertId: ALERT_1, role: 'root', confidence: '1.00', createdAt: new Date('2026-06-18T12:06:00Z') },
+        { id: 'eeeeeeee-0004-4eee-8eee-eeeeeeeeeeee', orgId: ORG_1, groupId: GROUP_1, alertId: ALERT_4, role: 'related', confidence: '0.80', createdAt: new Date('2026-06-18T12:06:00Z') },
+      ];
+    }
+
+    function restrictToSiteA() {
+      authRef.current = { ...authRef.current, allowedSiteIds: [SITE_A] };
+    }
+
+    it('filters out a SITE_B alert from a persisted group detail for a SITE_A-restricted user', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const res = await makeApp().request(`/alerts/correlations/${GROUP_1}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const ids = body.group.alerts.map((a: { id: string }) => a.id);
+      expect(ids).toContain(ALERT_1);
+      expect(ids).not.toContain(ALERT_4);
+    });
+
+    it('does not acknowledge a SITE_B alert when a SITE_A-restricted user acks the group', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/acknowledge`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(state.alerts.find((a) => a.id === ALERT_1)?.status).toBe('acknowledged');
+      expect(state.alerts.find((a) => a.id === ALERT_4)?.status).toBe('active');
+    });
+
+    it('does not resolve a SITE_B alert when a SITE_A-restricted user resolves the group', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/resolve`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(state.alerts.find((a) => a.id === ALERT_1)?.status).toBe('resolved');
+      expect(state.alerts.find((a) => a.id === ALERT_4)?.status).toBe('active');
+    });
+
+    it('returns 404 on GET /:alertId/correlations for a SITE_B alert to a SITE_A-restricted user', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const res = await makeApp().request(`/alerts/${ALERT_4}/correlations`);
+      expect(res.status).toBe(404);
+    });
+
+    it('filters SITE_B related alerts out of GET /:alertId/correlations for a SITE_A-restricted user', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const res = await makeApp().request(`/alerts/${ALERT_1}/correlations`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const relatedIds = body.relatedAlerts.map((a: { id: string }) => a.id);
+      expect(relatedIds).not.toContain(ALERT_4);
+    });
+
+    it('does not acknowledge a SITE_B related alert via POST /:alertId/correlations/acknowledge', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const res = await makeApp().request(`/alerts/${ALERT_1}/correlations/acknowledge`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(state.alerts.find((a) => a.id === ALERT_1)?.status).toBe('acknowledged');
+      expect(state.alerts.find((a) => a.id === ALERT_4)?.status).toBe('active');
+    });
+
+    it('returns 404 on POST /:alertId/correlations/acknowledge for a SITE_B alert to a SITE_A-restricted user', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const res = await makeApp().request(`/alerts/${ALERT_4}/correlations/acknowledge`, { method: 'POST' });
+      expect(res.status).toBe(404);
+    });
+
+    it('leaves an unrestricted user able to see and acknowledge the whole group (no regression)', async () => {
+      seedSiteScopedGroup();
+      // No allowedSiteIds → unrestricted.
+
+      const detail = await makeApp().request(`/alerts/correlations/${GROUP_1}`);
+      const detailBody = await detail.json();
+      const ids = detailBody.group.alerts.map((a: { id: string }) => a.id);
+      expect(ids).toEqual(expect.arrayContaining([ALERT_1, ALERT_4]));
+
+      const ack = await makeApp().request(`/alerts/correlations/${GROUP_1}/acknowledge`, { method: 'POST' });
+      expect(ack.status).toBe(200);
+      expect(state.alerts.find((a) => a.id === ALERT_1)?.status).toBe('acknowledged');
+      expect(state.alerts.find((a) => a.id === ALERT_4)?.status).toBe('acknowledged');
+    });
   });
 });

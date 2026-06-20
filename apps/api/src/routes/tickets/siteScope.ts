@@ -14,7 +14,10 @@ import type { AuthContext } from '../../middleware/auth';
  * denied for restricted callers but passes for unrestricted ones — device
  * existence is enforced in the service layer.
  */
-export async function deviceInSiteScope(auth: AuthContext, deviceId: string): Promise<boolean> {
+export async function deviceInSiteScope(
+  auth: Pick<AuthContext, 'allowedSiteIds'>,
+  deviceId: string,
+): Promise<boolean> {
   if (!auth.allowedSiteIds) return true;
   const rows = await db
     .select({ siteId: devices.siteId })
@@ -22,6 +25,47 @@ export async function deviceInSiteScope(auth: AuthContext, deviceId: string): Pr
     .where(eq(devices.id, deviceId))
     .limit(1);
   return siteAccessCheck(auth.allowedSiteIds)(rows[0]?.siteId);
+}
+
+/**
+ * Site-axis filter for a batch of alert-like rows. Mirrors the alert list
+ * narrowing (`alerts.ts` GET /): a site-restricted caller sees deviceless
+ * (org-wide) alerts plus alerts whose device is in their allowed sites; alerts
+ * on out-of-site devices (or devices that no longer exist) are dropped.
+ * Unrestricted callers (partner/system scope, or org users with no site
+ * restriction) get the input back unchanged.
+ *
+ * Uses a single batched device→site lookup rather than an IN-subquery so the
+ * same JS predicate is reused by the in-memory correlation grouping and the
+ * bulk endpoint, and so it evaluates the site axis (which RLS does NOT enforce)
+ * uniformly across both call sites.
+ */
+export async function filterAlertsBySiteScope<T extends { deviceId: string | null }>(
+  auth: Pick<AuthContext, 'allowedSiteIds'>,
+  rows: T[],
+): Promise<T[]> {
+  const allowed = auth.allowedSiteIds;
+  if (!allowed) return rows;
+
+  const deviceIds = [...new Set(rows.map((row) => row.deviceId).filter((id): id is string => Boolean(id)))];
+  const deviceSites = new Map<string, string | null>();
+  if (deviceIds.length > 0) {
+    const deviceRows = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(inArray(devices.id, deviceIds));
+    for (const device of deviceRows) {
+      deviceSites.set(device.id, device.siteId ?? null);
+    }
+  }
+
+  const allowSite = siteAccessCheck(allowed);
+  return rows.filter((row) => {
+    // Deviceless (org-wide) alerts are not site-bound — keep them visible,
+    // matching the GET /alerts narrowing.
+    if (!row.deviceId) return true;
+    return allowSite(deviceSites.get(row.deviceId) ?? null);
+  });
 }
 
 /**

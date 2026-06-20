@@ -24,7 +24,7 @@ import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertAct
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
-import { deviceInSiteScope } from '../tickets/siteScope';
+import { deviceInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
 
 export const alertsRoutes = new Hono();
 
@@ -393,7 +393,7 @@ alertsRoutes.post(
           ? inArray(alerts.orgId, auth.accessibleOrgIds)
           : undefined;
 
-    const accessible = await db
+    const orgScoped = await db
       .select()
       .from(alerts)
       .where(
@@ -401,6 +401,11 @@ alertsRoutes.post(
           ? and(inArray(alerts.id, alertIds), orgCondition)
           : inArray(alerts.id, alertIds)
       );
+
+    // Site axis (RLS does NOT enforce it): drop alerts on devices outside the
+    // caller's allowed sites before mutating. Deviceless (org-wide) alerts stay,
+    // matching the GET /alerts narrowing. No-op for unrestricted callers.
+    const accessible = await filterAlertsBySiteScope(auth, orgScoped);
 
     if (accessible.length === 0) {
       return c.json({ error: 'No accessible alerts found' }, 404);
