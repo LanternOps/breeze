@@ -8,6 +8,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { enrichFromCatalog } from '../../services/thirdPartyEnrichment';
 import { submitPatchesSchema } from './schemas';
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 // Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
 function deriveVendor(packageId: string | null | undefined, fallback: string | null | undefined): string | null {
@@ -50,6 +51,7 @@ export async function pruneStaleTombstones(
 }
 
 export const patchesRoutes = new Hono();
+patchesRoutes.use('*', requireAgentRole);
 
 patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (c) => {
   const agentId = c.req.param('id');

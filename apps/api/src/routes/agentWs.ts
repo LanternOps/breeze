@@ -488,6 +488,7 @@ const agentPingStates = new Map<string, AgentPingState>();
 const AGENT_PING_INTERVAL_MS = 30_000;
 const AGENT_PONG_TIMEOUT_MS = 10_000;
 const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
+const BACKUP_RESULT_EXPECTATION_TTL_MS = 24 * 60 * 60 * 1000;
 const MONITOR_COMMAND_TYPES = new Set(['network_ping', 'network_tcp_check', 'network_http_check', 'network_dns_check']);
 
 type OrphanedResultExpectation =
@@ -500,6 +501,18 @@ type OrphanedResultExpectation =
   | {
       agentId: string;
       kind: 'monitor';
+      targetId: string;
+      expiresAt: number;
+    }
+  | {
+      agentId: string;
+      kind: 'backup';
+      targetId: string;
+      expiresAt: number;
+    }
+  | {
+      agentId: string;
+      kind: 'vault';
       targetId: string;
       expiresAt: number;
     };
@@ -539,7 +552,29 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
       targetId: monitorId,
       expiresAt,
     });
+    return;
   }
+
+  if (command.type === 'backup_run' || PROVIDER_BACKED_BACKUP_COMMAND_TYPES.has(command.type)) {
+    const jobId = typeof payload.jobId === 'string' ? payload.jobId : command.id;
+    if (!jobId) return;
+    orphanedResultExpectations.set(command.id, {
+      agentId,
+      kind: 'backup',
+      targetId: jobId,
+      expiresAt: Date.now() + BACKUP_RESULT_EXPECTATION_TTL_MS,
+    });
+  }
+}
+
+function recordVaultAutoSyncExpectation(agentId: string, snapshotId: string): void {
+  if (!snapshotId) return;
+  orphanedResultExpectations.set(`vault-auto-sync-${snapshotId}`, {
+    agentId,
+    kind: 'vault',
+    targetId: snapshotId,
+    expiresAt: Date.now() + ORPHANED_RESULT_EXPECTATION_TTL_MS,
+  });
 }
 
 function consumeOrphanedResultExpectation(agentId: string, commandId: string): OrphanedResultExpectation | null {
@@ -946,6 +981,15 @@ async function processOrphanedCommandResult(
 
   if (result.commandId.startsWith('vault-auto-sync-')) {
     try {
+      const expectedSnapshotId = result.commandId.slice('vault-auto-sync-'.length);
+      const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+      if (!expectation || expectation.kind !== 'vault' || expectation.targetId !== expectedSnapshotId) {
+        console.warn(
+          `[AgentWs] Rejecting unexpected vault auto-sync result ${result.commandId} from agent ${agentId}: ` +
+          `expected=${expectation?.kind === 'vault' ? expectation.targetId : 'none'}`
+        );
+        return;
+      }
       const { normalizedResult, stdout, validationError } = normalizeCriticalResultIfNeeded('vault_sync', result);
       if (validationError) {
         console.warn(`[AgentWs] ${validationError} for orphaned auto-sync ${result.commandId}`);
@@ -955,6 +999,20 @@ async function processOrphanedCommandResult(
           resultStatus: 'failed',
           error: validationError,
         });
+        return;
+      }
+      const structured = normalizedResult.result && typeof normalizedResult.result === 'object'
+        ? normalizedResult.result as Record<string, unknown>
+        : {};
+      if (
+        normalizedResult.status === 'completed' &&
+        typeof structured.snapshotId === 'string' &&
+        structured.snapshotId !== expectedSnapshotId
+      ) {
+        console.warn(
+          `[AgentWs] Rejecting vault auto-sync result ${result.commandId} with mismatched snapshotId ` +
+          `${structured.snapshotId} from agent ${agentId}`
+        );
         return;
       }
       await applyVaultSyncCommandResult({
@@ -1151,6 +1209,14 @@ async function processOrphanedCommandResult(
       console.warn(`[AgentWs] Rejecting backup result for job ${backupJob.id} from unexpected agent ${agentId}`);
       return;
     }
+    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    if (!expectation || expectation.kind !== 'backup' || expectation.targetId !== backupJob.id) {
+      console.warn(
+        `[AgentWs] Rejecting unexpected backup result ${result.commandId} from agent ${agentId}: ` +
+        `expected=${expectation?.kind === 'backup' ? expectation.targetId : 'none'}`
+      );
+      return;
+    }
     console.log(`[AgentWs] Processing backup result for job ${backupJob.id} from agent ${agentId}`);
     try {
       const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
@@ -1194,6 +1260,10 @@ async function processOrphanedCommandResult(
         if (!persisted.applied) {
           console.warn(`[AgentWs] Ignoring stale inline backup result for job ${backupJob.id} from agent ${agentId}`);
         }
+      }
+      const snapshotId = backupData?.snapshot?.id ?? backupData?.snapshotId;
+      if (result.status === 'completed' && snapshotId) {
+        recordVaultAutoSyncExpectation(agentId, snapshotId);
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);

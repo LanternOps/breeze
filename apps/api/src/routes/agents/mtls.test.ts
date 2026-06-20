@@ -169,6 +169,10 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
   TEARDOWN_FAILED: -1,
 }));
 
+vi.mock('../../services/tenantStatus', () => ({
+  isAgentTenantActive: vi.fn(async () => true),
+}));
+
 // Use the real rate-limit helper with the stub above.
 
 // -------------------------------------------------------------------
@@ -177,6 +181,7 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
 
 import { mtlsRoutes } from './mtls';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
+import { isAgentTenantActive } from '../../services/tenantStatus';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -211,6 +216,7 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
     issueCertMock.mockReset();
     revokeCertMock.mockReset();
     mockDbUpdateOk();
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
   });
 
   it('returns 429 with Retry-After on the 2nd attempt within 30s', async () => {
@@ -264,6 +270,32 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
     });
     expect(resp.status).toBe(401);
   });
+
+  it('rejects inactive tenants before issuing a certificate', async () => {
+    vi.mocked(isAgentTenantActive).mockResolvedValue(false);
+    mockDeviceLookup({
+      id: DEVICE_ID,
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      hostname: 'host-1',
+      status: 'online',
+      agentTokenHash: TOKEN_HASH,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
+      mtlsCertExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      mtlsCertCfId: null,
+    });
+
+    const resp = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(resp.status).toBe(401);
+    expect(issueCertMock).not.toHaveBeenCalled();
+    expect(isAgentTenantActive).toHaveBeenCalledWith(ORG_ID);
+  });
 });
 
 describe('remote-session teardown wiring on quarantine / deny', () => {
@@ -273,6 +305,7 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     issueCertMock.mockReset();
     revokeCertMock.mockReset();
     mockDbUpdateOk();
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
   });
 
   it('POST /renew-cert quarantine branch tears down live remote sessions', async () => {

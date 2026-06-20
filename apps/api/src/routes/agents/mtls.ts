@@ -18,6 +18,7 @@ import { rateLimiter } from '../../services/rate-limit';
 import { encryptSecret } from '../../services/secretCrypto';
 import { isPrivateIp } from '../../services/urlSafety';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { isAgentTenantActive } from '../../services/tenantStatus';
 
 export const mtlsRoutes = new Hono();
 
@@ -155,6 +156,10 @@ mtlsRoutes.post('/renew-cert', async (c) => {
 
   if (device.status === 'quarantined') {
     return c.json({ error: 'Device quarantined', quarantined: true }, 403);
+  }
+
+  if (!(await isAgentTenantActive(device.orgId))) {
+    return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 
   // E4: per-device renewal cooldowns (defense against leaked tokens spamming

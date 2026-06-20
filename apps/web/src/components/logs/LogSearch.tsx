@@ -48,8 +48,11 @@ function toDatetimeLocalInput(date: Date): string {
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
-function escapeCsv(value: string): string {
-  const escaped = value.replaceAll('"', '""');
+const FORMULA_PREFIXES = new Set(['=', '+', '-', '@', '\t', '\r', '\n']);
+
+export function escapeLogCsv(value: string): string {
+  const safeValue = value.length > 0 && FORMULA_PREFIXES.has(value[0]!) ? `'${value}` : value;
+  const escaped = safeValue.replaceAll('"', '""');
   return `"${escaped}"`;
 }
 
@@ -204,7 +207,7 @@ export default function LogSearch() {
     ]);
 
     const csv = [header, ...rows]
-      .map((line) => line.map((value) => escapeCsv(String(value))).join(','))
+      .map((line) => line.map((value) => escapeLogCsv(String(value))).join(','))
       .join('\n');
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });

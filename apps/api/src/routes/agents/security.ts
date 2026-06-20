@@ -6,8 +6,10 @@ import { devices } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
 import { upsertSecurityStatusForDevice } from './helpers';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const agentSecurityRoutes = new Hono();
+agentSecurityRoutes.use('*', requireAgentRole);
 
 agentSecurityRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestSchema), async (c) => {
   const agentId = c.req.param('id');

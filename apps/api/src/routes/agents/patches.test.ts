@@ -129,6 +129,10 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     patchRows = [];
     patchUpsertSet = undefined;
     app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { role: 'agent', deviceId: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      return next();
+    });
     app.route('/agents', patchesRoutes);
 
     vi.mocked(db.select).mockImplementation(() => ({
@@ -220,6 +224,19 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     }));
   });
 
+  it('rejects requests without the main agent credential context', async () => {
+    const guardedApp = new Hono();
+    guardedApp.route('/agents', patchesRoutes);
+
+    const res = await guardedApp.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patches: [] }),
+    });
+
+    expect(res.status).toBe(403);
+  });
+
   it('uses enriched title/vendor/severity from catalog in the upsert', async () => {
     vi.mocked(enrichmentModule.enrichFromCatalog).mockResolvedValue({
       title: 'Mozilla Firefox',
@@ -302,6 +319,10 @@ describe('PUT /agents/:id/patches - ENABLE_AI_PATCH_TESTING gating', () => {
       alreadyExisted: false,
     });
     app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { role: 'agent', deviceId: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      return next();
+    });
     app.route('/agents', patchesRoutes);
 
     vi.mocked(db.select).mockImplementation(() => ({

@@ -64,7 +64,12 @@ vi.mock('../db/schema', () => ({
     devicesCompleted: 'scriptExecutionBatches.devicesCompleted',
     devicesFailed: 'scriptExecutionBatches.devicesFailed',
   },
-  backupJobs: {},
+  backupJobs: {
+    id: 'backupJobs.id',
+    orgId: 'backupJobs.orgId',
+    deviceId: 'backupJobs.deviceId',
+    status: 'backupJobs.status',
+  },
   restoreJobs: {
     id: 'restoreJobs.id',
     commandId: 'restoreJobs.commandId',
@@ -114,6 +119,10 @@ vi.mock('../jobs/monitorWorker', () => ({
   recordMonitorCheckResult: vi.fn()
 }));
 
+vi.mock('../jobs/backupWorker', () => ({
+  enqueueBackupResults: vi.fn(),
+}));
+
 vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false),
   getRedis: vi.fn(() => null)
@@ -140,6 +149,10 @@ vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobFromResult: vi.fn((...args: unknown[]) => updateRestoreJobFromResultMock(...(args as []))),
 }));
 
+vi.mock('../services/vaultSyncPersistence', () => ({
+  applyVaultSyncCommandResult: vi.fn(),
+}));
+
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: vi.fn().mockResolvedValue(undefined),
   createAuditLog: vi.fn().mockResolvedValue(undefined),
@@ -158,6 +171,7 @@ import { db } from '../db';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
+  sendCommandToAgent,
   validateAgentToken,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
@@ -166,12 +180,16 @@ import { isAgentTenantActive } from '../services/tenantStatus';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
+import { enqueueBackupResults } from '../jobs/backupWorker';
 import { getActiveTerminalSession, handleTerminalOutput } from './terminalWs';
 import { registerTunnelOwnership } from './tunnelWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
+import { isRedisAvailable } from '../services/redis';
+import { publishEvent } from '../services/eventBus';
 
 function wsMock() {
   return {
@@ -324,6 +342,8 @@ describe('agent websocket handshake', () => {
 describe('agent websocket command results', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(isRedisAvailable).mockReturnValue(false);
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
   });
 
   it('rejects cross-device command result updates', async () => {
@@ -515,6 +535,149 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.select).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('rejects orphaned backup results without a dispatch expectation', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const backupJobId = '44444444-4444-4444-8444-444444444444';
+
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([
+        {
+          id: backupJobId,
+          orgId: 'org-123',
+          deviceId: 'device-123',
+          agentId: 'agent-123',
+        }
+      ]) as any)
+      // onClose: status lookup before marking offline
+      .mockReturnValueOnce(selectAgentDevice([
+        {
+          id: 'device-123',
+          siteId: 'site-123',
+          status: 'online',
+          hostname: 'host-123',
+        }
+      ]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: backupJobId,
+        status: 'completed',
+        result: {
+          snapshotId: 'snap-forged',
+          filesBackedUp: 1,
+          bytesBackedUp: 1,
+        }
+      })
+    } as any, ws as any);
+
+    expect(enqueueBackupResults).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('accepts orphaned backup results only after dispatch records an expectation', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const backupJobId = '55555555-5555-4555-8555-555555555555';
+
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select)
+      // onOpen: pending commands
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      // onOpen: device.online event lookup
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      // command result: device_commands lookup
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      // command result: discovery job lookup
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      // command result: backup job lookup
+      .mockReturnValueOnce(selectWithInnerJoin([
+        {
+          id: backupJobId,
+          orgId: 'org-123',
+          deviceId: 'device-123',
+          agentId: 'agent-123',
+        }
+      ]) as any)
+      // onClose: status lookup before marking offline
+      .mockReturnValueOnce(selectAgentDevice([
+        {
+          id: 'device-123',
+          siteId: 'site-123',
+          status: 'online',
+          hostname: 'host-123',
+        }
+      ]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onOpen({}, ws as any);
+    expect(sendCommandToAgent('agent-123', {
+      id: backupJobId,
+      type: 'backup_run',
+      payload: { jobId: backupJobId },
+    })).toBe(true);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: backupJobId,
+        status: 'completed',
+        result: {
+          snapshotId: 'snap-real',
+          filesBackedUp: 1,
+          bytesBackedUp: 1,
+        }
+      })
+    } as any, ws as any);
+
+    expect(enqueueBackupResults).toHaveBeenCalledWith(
+      backupJobId,
+      'org-123',
+      'device-123',
+      expect.objectContaining({
+        status: 'completed',
+        snapshotId: 'snap-real',
+      }),
+      expect.objectContaining({
+        actorType: 'agent',
+        actorId: 'agent-123',
+      })
+    );
+
+    await handlers.onClose({}, ws as any);
+  });
+
+  it('rejects vault auto-sync results without a backup-created expectation', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'vault-auto-sync-snap-forged',
+        status: 'completed',
+        result: {
+          snapshotId: 'snap-forged',
+          vaultPath: '/vault',
+          manifestVerified: true,
+        }
+      })
+    } as any, ws as any);
+
+    expect(applyVaultSyncCommandResult).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
