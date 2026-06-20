@@ -46,6 +46,7 @@ vi.mock('../db/schema', () => ({
     approvedAt: 'approvedAt',
     expiresAt: 'expiresAt',
     executionId: 'executionId',
+    subjectUserId: 'subjectUserId',
     approvedByUserId: 'approvedByUserId',
     deniedByUserId: 'deniedByUserId',
     revokedByUserId: 'revokedByUserId',
@@ -580,6 +581,60 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     expect(auditInserts[0]).toMatchObject({
       details: { assurance_level: 1, factor: 'session_tap' },
     });
+  });
+
+  // Separation-of-duties (maker/checker): the subject who requested a
+  // tech_jit_admin elevation cannot approve their own request. Mirrors the
+  // auditBaselines apply-approval and cisHardening remediation guards (self
+  // APPROVE blocked, self DENY allowed since a denial grants nothing).
+  it('403s when the requester (subject) approves their own elevation', async () => {
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, flowType: 'tech_jit_admin', subjectUserId: USER_ID },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', durationMinutes: 30 }),
+    });
+
+    expect(res.status).toBe(403);
+    // No status flip / approval occurred.
+    expect(updateSetCalls.length).toBe(0);
+    expect(busMocks.publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('lets a DIFFERENT user approve the request (no regression)', async () => {
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, flowType: 'tech_jit_admin', subjectUserId: 'some-other-user' },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', durationMinutes: 30 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((updateSetCalls[0] as { status: string }).status).toBe('approved');
+  });
+
+  it('lets the requester (subject) DENY their own elevation (deny grants nothing)', async () => {
+    const { updateSetCalls } = rigTransaction({
+      row: { ...activeRow, flowType: 'tech_jit_admin', subjectUserId: USER_ID },
+      casWins: true,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'deny', reason: 'changed my mind' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((updateSetCalls[0] as { status: string }).status).toBe('denied');
   });
 });
 

@@ -431,6 +431,7 @@ pamRoutes.post(
     let result:
       | { kind: 'not_found' }
       | { kind: 'forbidden' }
+      | { kind: 'self_approval' }
       | { kind: 'conflict'; currentStatus: string }
       | {
           kind: 'ok';
@@ -449,6 +450,7 @@ pamRoutes.post(
             status: elevationRequests.status,
             executionId: elevationRequests.executionId,
             riskTier: elevationRequests.riskTier,
+            subjectUserId: elevationRequests.subjectUserId,
           })
           .from(elevationRequests)
           .where(eq(elevationRequests.id, id))
@@ -458,6 +460,17 @@ pamRoutes.post(
         if (!auth.canAccessOrg(row.orgId)) return { kind: 'not_found' as const };
         if (perms && row.siteId && !canAccessSite(perms, row.siteId)) {
           return { kind: 'forbidden' as const };
+        }
+
+        // Separation-of-duties (maker/checker): the subject who requested the
+        // elevation cannot APPROVE their own request. tech_jit_admin sets
+        // subjectUserId to the requesting technician, so without this they could
+        // self-grant JIT admin. Mirrors the auditBaselines apply-approval and
+        // cisHardening remediation guards: only APPROVE is blocked — a self-DENY
+        // grants nothing and stays allowed. uac_intercept rows have a NULL
+        // subjectUserId (end-user OS account), so the guard never fires there.
+        if (approve && row.subjectUserId && row.subjectUserId === auth.user.id) {
+          return { kind: 'self_approval' as const };
         }
 
         // Phase 2/3: verify an optional assertion proof. No proof → L1 session
@@ -585,6 +598,12 @@ pamRoutes.post(
     }
     if (result.kind === 'forbidden') {
       return c.json({ error: 'Site access denied' }, 403);
+    }
+    if (result.kind === 'self_approval') {
+      return c.json(
+        { success: false, error: 'Requester cannot approve their own elevation request' },
+        403,
+      );
     }
     if (result.kind === 'conflict') {
       return c.json(
