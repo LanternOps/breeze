@@ -401,7 +401,10 @@ describe('passkey MFA auth routes', () => {
   it('returns passkey MFA state after password login for passkey-enrolled users', async () => {
     authState.requireAuthorizationHeader = false;
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
-    dbState.selectQueue.push([user]);
+    // [user] = the login user lookup; the partner-membership row lets
+    // resolveCurrentUserTokenContext resolve a partner scope rather than the
+    // (now-rejected) membership-less system default. (security review #2)
+    dbState.selectQueue.push([user], [{ partnerId: 'partner-1', roleId: 'role-1' }]);
 
     const res = await app.request('/auth/login', {
       method: 'POST',
