@@ -588,7 +588,7 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
   // auditBaselines apply-approval and cisHardening remediation guards (self
   // APPROVE blocked, self DENY allowed since a denial grants nothing).
   it('403s when the requester (subject) approves their own elevation', async () => {
-    const { updateSetCalls } = rigTransaction({
+    const { updateSetCalls, auditInserts } = rigTransaction({
       row: { ...activeRow, flowType: 'tech_jit_admin', subjectUserId: USER_ID },
       casWins: true,
     });
@@ -603,6 +603,10 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     // No status flip / approval occurred.
     expect(updateSetCalls.length).toBe(0);
     expect(busMocks.publishEvent).not.toHaveBeenCalled();
+    // Guard must run BEFORE any audit write — a regression that moved the
+    // self-approval check below the audit insert would write a spurious
+    // `approved`-typed row yet still satisfy the assertions above.
+    expect(auditInserts.length).toBe(0);
   });
 
   it('lets a DIFFERENT user approve the request (no regression)', async () => {
