@@ -35,10 +35,12 @@ import {
 import {
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
+  onedriveDeviceState,
   configurationPolicies,
   configPolicyFeatureLinks,
+  devices,
 } from '../../db/schema';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createSite } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -284,6 +286,140 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
           libraryId: 'lib-x',
           displayName: 'Finance',
           targetingMode: 'everyone',
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onedrive_device_state RLS isolation (Task 5)
+// ---------------------------------------------------------------------------
+// This table is device-keyed (PK = device_id) with a denormalized org_id
+// (Shape 5). Policies are the same breeze_has_org_access(org_id) form as
+// the prior tables, so one row per device and cross-tenant isolation is
+// enforced at the org boundary.
+//
+// Each test seeds its own device (+ site) under system scope to satisfy
+// the device_id FK. Fixtures are re-seeded per test (same rationale as
+// prior suites — beforeEach cleanupDatabase() TRUNCATE wipes everything).
+// ---------------------------------------------------------------------------
+
+let deviceAgentCounter = 0;
+
+/** Insert a device under system scope and return its id. */
+async function seedDevice(orgId: string, siteId: string): Promise<string> {
+  deviceAgentCounter++;
+  const [row] = await db
+    .insert(devices)
+    .values({
+      orgId,
+      siteId,
+      agentId: `onedrive-state-test-${deviceAgentCounter}-${Date.now()}`,
+      hostname: `host-${deviceAgentCounter}`,
+      osType: 'windows',
+      osVersion: '11',
+      architecture: 'x86_64',
+      agentVersion: '0.0.0-test',
+      status: 'online',
+      enrolledAt: new Date(),
+    })
+    .returning({ id: devices.id });
+  if (!row) throw new Error('seedDevice: insert returned no row');
+  return row.id;
+}
+
+describe('onedrive_device_state RLS isolation (breeze_app)', () => {
+  // (a) Positive control: under org A's context, upsert state for org A's
+  // own device succeeds and reads back correctly.
+  runDb('positive control: org A context can upsert state for its own device', async () => {
+    const fx = await seedFixture();
+
+    const { deviceId } = await withSystemDbAccessContext(async () => {
+      const siteA = await createSite({ orgId: fx.orgA.id });
+      const devId = await seedDevice(fx.orgA.id, siteA.id);
+      return { deviceId: devId };
+    });
+
+    const [inserted] = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .insert(onedriveDeviceState)
+        .values({
+          deviceId,
+          orgId: fx.orgA.id,
+          signedIn: true,
+        })
+        .returning({
+          deviceId: onedriveDeviceState.deviceId,
+          orgId: onedriveDeviceState.orgId,
+        })
+    );
+    expect(inserted?.orgId).toBe(fx.orgA.id);
+    expect(inserted?.deviceId).toBe(deviceId);
+
+    // Confirm the row is readable back under the same context.
+    const fetched = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .select({ deviceId: onedriveDeviceState.deviceId })
+        .from(onedriveDeviceState)
+        .where(eq(onedriveDeviceState.deviceId, deviceId))
+    );
+    expect(fetched).toHaveLength(1);
+  });
+
+  // (b) Cross-org SELECT hidden: a state row seeded for org B's device is
+  // invisible to an org A caller. System-scope probe first confirms the row
+  // really exists so the 0-row read under org A is meaningfully "RLS hid it".
+  runDb('hides org B device state from org A SELECT (system probe confirms it exists)', async () => {
+    const fx = await seedFixture();
+
+    const orgBDeviceId = await withSystemDbAccessContext(async () => {
+      const siteB = await createSite({ orgId: fx.orgB.id });
+      const devId = await seedDevice(fx.orgB.id, siteB.id);
+      await db
+        .insert(onedriveDeviceState)
+        .values({ deviceId: devId, orgId: fx.orgB.id, signedIn: false });
+      return devId;
+    });
+
+    // Probe: under system scope the row really exists.
+    const existsUnderSystem = await withSystemDbAccessContext(() =>
+      db
+        .select({ deviceId: onedriveDeviceState.deviceId })
+        .from(onedriveDeviceState)
+        .where(eq(onedriveDeviceState.deviceId, orgBDeviceId))
+    );
+    expect(existsUnderSystem).toHaveLength(1);
+
+    // Under org A breeze_app context the same device returns 0 rows — RLS hides it.
+    const visibleToA = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .select({ deviceId: onedriveDeviceState.deviceId })
+        .from(onedriveDeviceState)
+        .where(eq(onedriveDeviceState.deviceId, orgBDeviceId))
+    );
+    expect(visibleToA).toHaveLength(0);
+  });
+
+  // (c) Cross-org INSERT denied: under org A's context, inserting state
+  // carrying org B's device_id + org_id is rejected by the INSERT WITH CHECK
+  // policy. Both the device row and org row are real (FKs resolve), so the
+  // failure MUST be RLS (42501), not a FK violation (23503).
+  runDb('blocks a forged cross-org onedrive_device_state INSERT (42501)', async () => {
+    const fx = await seedFixture();
+
+    // Seed org B's device under system scope so the FK resolves.
+    const orgBDeviceId = await withSystemDbAccessContext(async () => {
+      const siteB = await createSite({ orgId: fx.orgB.id });
+      return seedDevice(fx.orgB.id, siteB.id);
+    });
+
+    await expect(
+      withDbAccessContext(fx.orgAContext, () =>
+        db.insert(onedriveDeviceState).values({
+          deviceId: orgBDeviceId, // org B's real device (FK resolves)
+          orgId: fx.orgB.id,     // foreign org — RLS WITH CHECK must reject
+          signedIn: false,
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });

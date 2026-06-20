@@ -201,6 +201,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_client_blocks',
   'oauth_grants',
   'oauth_refresh_tokens',
+  'onedrive_device_state',
   'org_ticket_settings',
   'organization_users',
   'pam_rules',

@@ -11,6 +11,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { configPolicyFeatureLinks } from './configurationPolicies';
+import { devices } from './devices';
 
 export const configPolicyOnedriveSettings = pgTable('config_policy_onedrive_settings', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -52,4 +53,20 @@ export const configPolicyOnedriveLibraries = pgTable('config_policy_onedrive_lib
 }, (t) => ({
   settingsIdx: index('onedrive_libraries_settings_idx').on(t.settingsId),
   orgIdx: index('onedrive_libraries_org_idx').on(t.orgId),
+}));
+
+export const onedriveDeviceState = pgTable('onedrive_device_state', {
+  deviceId: uuid('device_id').primaryKey().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  signedIn: boolean('signed_in').notNull().default(false),
+  oneDriveVersion: varchar('onedrive_version', { length: 64 }),
+  filesOnDemandOn: boolean('files_on_demand_on').notNull().default(false),
+  kfmFolderStates: jsonb('kfm_folder_states').notNull().default({}),
+  mountedLibraries: jsonb('mounted_libraries').notNull().default([]),
+  entitledLibraries: jsonb('entitled_libraries').notNull().default([]),
+  driftEntries: jsonb('drift_entries').notNull().default([]),
+  lastReportedAt: timestamp('last_reported_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (t) => ({
+  orgIdx: index('onedrive_device_state_org_idx').on(t.orgId),
 }));
