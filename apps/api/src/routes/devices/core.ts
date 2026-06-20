@@ -216,6 +216,8 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   // Provisioning one-time credential handles (FK device_id → devices.id ON DELETE CASCADE;
   // listed for the explicit-cascade coverage contract — leaf table, no children)
   'provision_credential_handles',
+  // OneDrive helper — persisted device state (PK = device_id; leaf table, no children)
+  'onedrive_device_state',
 ] as const;
 
 export const coreRoutes = new Hono();

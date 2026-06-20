@@ -492,6 +492,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       });
     } catch (err) {
       console.error(`[agents] failed to upsert onedrive device state for ${agentId}:`, err);
+      captureException(err);
     }
   }
 
@@ -674,6 +675,7 @@ if (latestHelper) {
     onedriveSettings = await buildOnedriveHelperConfigUpdate(device.id);
   } catch (err) {
     console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
+    captureException(err);
   }
 
   let mergedConfigUpdate: Record<string, unknown> | null = null;

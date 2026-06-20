@@ -48,7 +48,7 @@ describe('resolveUserGroupMembership', () => {
     ] } });
     const res = await resolveUserGroupMembership('org-1', "user@contoso.com");
     expect((res as any).data.groupIds).toEqual(['g-1', 'g-2']);
-    // verify the OData id was single-quote-escaped into the path
+    // verify the upn was encodeURIComponent-encoded into the path segment
     const calledPath = (graphFetch as any).mock.calls[0][2] as string;
     expect(calledPath).toContain('/users/');
     expect(calledPath).toContain('transitiveMemberOf');
