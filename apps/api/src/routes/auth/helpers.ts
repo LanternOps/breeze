@@ -13,7 +13,7 @@ import {
 } from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
-import { verifyMFAToken } from '../../services/mfa';
+import { consumeMFAToken } from '../../services/mfa';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
@@ -156,7 +156,10 @@ export async function requireFreshMfaStepUp(
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
-  const valid = await verifyMFAToken(secret, code);
+  // consumeMFAToken (not verifyMFAToken): enforce single-use of the TOTP step
+  // so a sniffed live code cannot re-authorize multiple critical actions within
+  // its validity window. This L4 path had no other single-use binding. (sec review #2)
+  const valid = await consumeMFAToken(secret, code, userId);
   if (!valid) {
     return c.json({ error: 'Invalid credentials' }, 401);
   }

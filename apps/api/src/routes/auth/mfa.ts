@@ -8,6 +8,7 @@ import {
   createTokenPair,
   generateMFASecret,
   verifyMFAToken,
+  consumeMFAToken,
   generateOTPAuthURL,
   generateQRCode,
   generateRecoveryCodes,
@@ -192,7 +193,9 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         return c.json({ error: 'Invalid MFA configuration' }, 400);
       }
       migratedMfaSecret = decrypted.migratedSecret;
-      valid = await verifyMFAToken(decryptedMfaSecret, code);
+      // consumeMFAToken: single-use per (user, step) so a live code can't be
+      // replayed into a second login session. (security review #2)
+      valid = await consumeMFAToken(decryptedMfaSecret, code, user.id);
     }
 
     if (!valid) {
@@ -414,7 +417,8 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     if (!decryptedMfaSecret) {
       return c.json({ error: 'Invalid MFA configuration' }, 400);
     }
-    const valid = await verifyMFAToken(decryptedMfaSecret, code);
+    // consumeMFAToken: a replayed live code must not disable MFA. (sec review #2)
+    const valid = await consumeMFAToken(decryptedMfaSecret, code, auth.user.id);
     if (!valid) {
       writeAuthAudit(c, {
         orgId: auth.orgId ?? undefined,

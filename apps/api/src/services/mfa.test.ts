@@ -1,5 +1,21 @@
-import { describe, it, expect } from 'vitest';
-import { generateMFASecret, generateOTPAuthURL, generateRecoveryCodes } from './mfa';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { generate } from 'otplib';
+import { generateMFASecret, generateOTPAuthURL, generateRecoveryCodes, consumeMFAToken } from './mfa';
+
+// In-memory stand-in for the Redis single-use store. `eval` mirrors the Lua in
+// consumeMFAToken: accept (and record) only when the step is newer than the
+// last consumed step for that key.
+const redisState = vi.hoisted(() => ({ store: new Map<string, string>(), available: true }));
+vi.mock('./redis', () => ({
+  getRedis: () => redisState.available ? {
+    eval: async (_script: string, _numKeys: number, key: string, step: string) => {
+      const cur = redisState.store.get(key);
+      if (cur && Number(step) <= Number(cur)) return 0;
+      redisState.store.set(key, step);
+      return 1;
+    }
+  } : null,
+}));
 
 describe('mfa service', () => {
   describe('generateMFASecret', () => {
@@ -71,6 +87,46 @@ describe('mfa service', () => {
       // With random generation, there's a tiny chance of collision
       // but with 100 codes it should be extremely rare
       expect(uniqueCodes.size).toBe(codes.length);
+    });
+  });
+
+  // security review #2: TOTP replay protection (RFC 6238 §5.2)
+  describe('consumeMFAToken (single-use per user+step)', () => {
+    beforeEach(() => {
+      redisState.store.clear();
+      redisState.available = true;
+    });
+
+    it('accepts a valid code once, then rejects a replay of the same step', async () => {
+      const secret = generateMFASecret();
+      const code = await generate({ secret });
+
+      expect(await consumeMFAToken(secret, code, 'user-1')).toBe(true);
+      // Same live code, same time-step → replay → rejected.
+      expect(await consumeMFAToken(secret, code, 'user-1')).toBe(false);
+    });
+
+    it('rejects an invalid code', async () => {
+      const secret = generateMFASecret();
+      expect(await consumeMFAToken(secret, '000000', 'user-1')).toBe(false);
+    });
+
+    it('scopes single-use per user (the same code is consumable once per user)', async () => {
+      const secret = generateMFASecret();
+      const code = await generate({ secret });
+
+      expect(await consumeMFAToken(secret, code, 'user-A')).toBe(true);
+      expect(await consumeMFAToken(secret, code, 'user-B')).toBe(true);
+      // user-A already consumed this step.
+      expect(await consumeMFAToken(secret, code, 'user-A')).toBe(false);
+    });
+
+    it('fails closed when Redis is unavailable (cannot guarantee single-use)', async () => {
+      redisState.available = false;
+      const secret = generateMFASecret();
+      const code = await generate({ secret });
+
+      expect(await consumeMFAToken(secret, code, 'user-1')).toBe(false);
     });
   });
 });
