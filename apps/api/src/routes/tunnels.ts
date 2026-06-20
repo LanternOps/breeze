@@ -10,6 +10,8 @@ import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 import { getTrustedClientIp } from '../services/clientIp';
+import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -25,6 +27,8 @@ const idParamSchema = z.object({ id: z.string().guid() });
 const listQuerySchema = z.object({ siteId: z.string().guid().optional().nullable() });
 const allowlistIdParamSchema = idParamSchema;
 const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'] as const;
+const VNC_EXCHANGE_RATE_LIMIT = 20;
+const VNC_EXCHANGE_RATE_WINDOW_SECONDS = 60;
 
 const createTunnelSchema = z.discriminatedUnion('type', [
   z.object({ deviceId: z.string().guid(), type: z.literal('vnc') }),
@@ -776,6 +780,18 @@ const vncExchangeSchema = z.object({
 vncExchangeRoutes.post(
   '/:code',
   async (c) => {
+    const ip = getTrustedClientIp(c, 'unknown');
+    const rate = await rateLimiter(
+      getRedis(),
+      `vnc-exchange:${ip}`,
+      VNC_EXCHANGE_RATE_LIMIT,
+      VNC_EXCHANGE_RATE_WINDOW_SECONDS,
+    );
+    if (!rate.allowed) {
+      c.header('Retry-After', String(Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000)));
+      return c.json({ error: 'Too Many Requests' }, 429);
+    }
+
     const code = c.req.param('code')!;
 
     const record = await consumeVncConnectCode(code);

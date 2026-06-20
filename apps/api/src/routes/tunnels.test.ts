@@ -9,6 +9,14 @@ const USER_ID   = 'uuuuuuuu-uuuu-4uuu-8uuu-uuuuuuuuuuuu';
 const SESSION_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const PARTNER_ID = 'pppppppp-pppp-4ppp-8ppp-pppppppppppp';
 
+const { rateLimiterMock } = vi.hoisted(() => ({
+  rateLimiterMock: vi.fn(async () => ({
+    allowed: true,
+    remaining: 19,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
+
 // --- DB mock ---
 vi.mock('../db', () => ({
   db: {
@@ -120,6 +128,14 @@ vi.mock('../services/redis', () => ({
     set: vi.fn(async () => 'OK'),
     get: vi.fn(async () => null),
   })),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: rateLimiterMock,
+}));
+
+vi.mock('../services/clientIp', () => ({
+  getTrustedClientIp: vi.fn(() => '127.0.0.1'),
 }));
 
 // --- Viewer token revocation ---
@@ -571,6 +587,11 @@ describe('POST /vnc-exchange/:code', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    rateLimiterMock.mockResolvedValue({
+      allowed: true,
+      remaining: 19,
+      resetAt: new Date(Date.now() + 60_000),
+    });
     app = new Hono();
     app.route('/vnc-exchange', vncExchangeRoutes);
   });
@@ -632,6 +653,19 @@ describe('POST /vnc-exchange/:code', () => {
       status: 'disconnected',
     }));
     expect(createViewerAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('rate limits VNC exchange attempts before consuming the code', async () => {
+    rateLimiterMock.mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
+
+    expect(res.status).toBe(429);
+    expect(consumeVncConnectCode).not.toHaveBeenCalled();
   });
 });
 
