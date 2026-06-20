@@ -52,6 +52,8 @@ interface LibrarySeed {
   groupName?: string;
   hiveScope?: string;
   enabled?: boolean;
+  /** Explicit sort_order; defaults to the array index when omitted. */
+  sortOrder?: number;
 }
 
 interface SeedResult {
@@ -60,6 +62,7 @@ interface SeedResult {
   agentId: string;
   agentToken: string;
   orgId: string;
+  siteId: string;
 }
 
 /**
@@ -137,7 +140,7 @@ async function seedDeviceWithOnedrivePolicy(options: {
 
     if (options.base === null) {
       // No policy — test the null path
-      return { deviceId: device.id, settingsId: null, agentId, agentToken, orgId: org.id };
+      return { deviceId: device.id, settingsId: null, agentId, agentToken, orgId: org.id, siteId: site.id };
     }
 
     // 5. Configuration policy (active)
@@ -181,7 +184,7 @@ async function seedDeviceWithOnedrivePolicy(options: {
         groupId: lib.groupId ?? null,
         groupName: lib.groupName ?? null,
         hiveScope: lib.hiveScope ?? 'hkcu',
-        sortOrder: i,
+        sortOrder: lib.sortOrder ?? i,
         enabled: lib.enabled ?? true,
       });
     }
@@ -194,7 +197,63 @@ async function seedDeviceWithOnedrivePolicy(options: {
       priority: 10,
     });
 
-    return { deviceId: device.id, settingsId: settings.id, agentId, agentToken, orgId: org.id };
+    return { deviceId: device.id, settingsId: settings.id, agentId, agentToken, orgId: org.id, siteId: site.id };
+  });
+}
+
+/**
+ * Attaches an *additional* onedrive_helper policy (policy → feature link →
+ * settings + one marker library → assignment) to an existing org, at a given
+ * assignment level/target/priority. Used to set up competing assignments so
+ * the closest-level-wins resolution and same-level priority tiebreak can be
+ * exercised. The marker library id identifies which policy won.
+ */
+async function attachOnedrivePolicy(opts: {
+  orgId: string;
+  level: 'organization' | 'site' | 'device' | 'device_group' | 'partner';
+  targetId: string;
+  priority: number;
+  /** Distinguishing library id, so the delivered config reveals which policy won. */
+  marker: string;
+  kfmSilentOptIn?: boolean;
+}): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    const ts = Date.now();
+    const [policy] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: opts.orgId, name: `OD Policy ${opts.level} ${ts}-${opts.marker}`, status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    if (!policy) throw new Error('attachOnedrivePolicy: failed to insert policy');
+
+    const [featureLink] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: policy.id, featureType: 'onedrive_helper' })
+      .returning({ id: configPolicyFeatureLinks.id });
+    if (!featureLink) throw new Error('attachOnedrivePolicy: failed to insert feature link');
+
+    const [settings] = await db
+      .insert(configPolicyOnedriveSettings)
+      .values({ featureLinkId: featureLink.id, orgId: opts.orgId, kfmSilentOptIn: opts.kfmSilentOptIn ?? false })
+      .returning({ id: configPolicyOnedriveSettings.id });
+    if (!settings) throw new Error('attachOnedrivePolicy: failed to insert settings');
+
+    await db.insert(configPolicyOnedriveLibraries).values({
+      settingsId: settings.id,
+      orgId: opts.orgId,
+      libraryId: opts.marker,
+      displayName: opts.marker,
+      targetingMode: 'everyone',
+      hiveScope: 'hkcu',
+      sortOrder: 0,
+      enabled: true,
+    });
+
+    await db.insert(configPolicyAssignments).values({
+      configPolicyId: policy.id,
+      level: opts.level,
+      targetId: opts.targetId,
+      priority: opts.priority,
+    });
   });
 }
 
@@ -263,6 +322,48 @@ describe('buildOnedriveHelperConfigUpdate', () => {
     expect(cfg).not.toBeNull();
     expect(cfg!.libraries).toHaveLength(1);
     expect(cfg!.libraries[0]!.libraryId).toBe('lib-on');
+  });
+
+  runDb('closest-level-wins: a device-level assignment beats an organization-level one', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({ base: null, libraries: [] });
+    // Two competing policies for the same device: org-level vs device-level.
+    // Device is the closer level, so its config must win regardless of priority.
+    await attachOnedrivePolicy({ orgId, level: 'organization', targetId: orgId, priority: 1, marker: 'org-loses', kfmSilentOptIn: false });
+    await attachOnedrivePolicy({ orgId, level: 'device', targetId: deviceId, priority: 99, marker: 'device-wins', kfmSilentOptIn: true });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+    expect(cfg).not.toBeNull();
+    expect(cfg!.libraries.map((l) => l.libraryId)).toEqual(['device-wins']);
+    expect(cfg!.base.kfmSilentOptIn).toBe(true);
+  });
+
+  runDb('same-level tiebreak: the lower priority number wins', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({ base: null, libraries: [] });
+    // Two org-level assignments at the same level — the lower priority number wins.
+    await attachOnedrivePolicy({ orgId, level: 'organization', targetId: orgId, priority: 50, marker: 'high-number-loses', kfmSilentOptIn: false });
+    await attachOnedrivePolicy({ orgId, level: 'organization', targetId: orgId, priority: 1, marker: 'low-number-wins', kfmSilentOptIn: true });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+    expect(cfg).not.toBeNull();
+    expect(cfg!.libraries.map((l) => l.libraryId)).toEqual(['low-number-wins']);
+    expect(cfg!.base.kfmSilentOptIn).toBe(true);
+  });
+
+  runDb('delivers enabled libraries ordered by sortOrder, not insertion order', async () => {
+    // Insert order deliberately differs from sortOrder so a dropped ORDER BY
+    // would surface as a mismatch rather than passing by accident.
+    const { deviceId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-third', displayName: 'Third', sortOrder: 2 },
+        { libraryId: 'lib-first', displayName: 'First', sortOrder: 0 },
+        { libraryId: 'lib-second', displayName: 'Second', sortOrder: 1 },
+      ],
+    });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+    expect(cfg).not.toBeNull();
+    expect(cfg!.libraries.map((l) => l.libraryId)).toEqual(['lib-first', 'lib-second', 'lib-third']);
   });
 
   runDb('returns correct base defaults when minimal settings seeded', async () => {
@@ -383,5 +484,51 @@ describe('heartbeat ingest: onedriveDeviceState', () => {
     expect(rows[0]!.signedIn).toBe(false);
     expect(rows[0]!.filesOnDemandOn).toBe(true);
     expect(rows[0]!.mountedLibraries).toEqual(['lib-v2']);
+  });
+
+  runDb('heartbeat without an onedriveDeviceState field creates no state row', async () => {
+    const { deviceId, agentId, agentToken } = await seedDeviceWithOnedrivePolicy({
+      base: null,
+      libraries: [],
+    });
+
+    const app = buildHeartbeatApp();
+    const res = await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'ok', agentVersion: '1.0.0-test' }),
+    });
+    expect(res.status, `heartbeat returned ${res.status}: ${await res.text()}`).toBe(200);
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(onedriveDeviceState).where(eq(onedriveDeviceState.deviceId, deviceId))
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  runDb('malformed onedriveDeviceState is dropped — heartbeat still 200, no row written', async () => {
+    const { deviceId, agentId, agentToken } = await seedDeviceWithOnedrivePolicy({
+      base: null,
+      libraries: [],
+    });
+
+    const app = buildHeartbeatApp();
+    const res = await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'ok',
+        agentVersion: '1.0.0-test',
+        // signedIn must be a boolean — this fails the inner object schema, which
+        // is `.catch(undefined)`, so the field is dropped rather than 400-ing.
+        onedriveDeviceState: { signedIn: 'yes-please', filesOnDemandOn: true },
+      }),
+    });
+    expect(res.status, `heartbeat returned ${res.status}: ${await res.text()}`).toBe(200);
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(onedriveDeviceState).where(eq(onedriveDeviceState.deviceId, deviceId))
+    );
+    expect(rows).toHaveLength(0);
   });
 });

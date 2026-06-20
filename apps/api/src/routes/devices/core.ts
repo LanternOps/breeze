@@ -110,6 +110,7 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
+  'onedrive_device_state',
   'peripheral_events', 'playbook_executions', 'provision_credential_handles',
   'recovery_readiness', 'recovery_tokens', 'remediation_suggestions', 'remote_sessions', 'restore_jobs',
   's1_actions', 's1_agents', 's1_threats',

@@ -5,7 +5,10 @@ vi.mock('./m365DirectGraph', () => ({
   graphFetch: vi.fn(),
 }));
 
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
 import { getToken, graphFetch } from './m365DirectGraph';
+import { captureException } from './sentry';
 import { listSharePointLibraries, resolveUserGroupMembership } from './onedriveGraph';
 
 describe('listSharePointLibraries', () => {
@@ -36,6 +39,59 @@ describe('listSharePointLibraries', () => {
     (getToken as any).mockResolvedValueOnce({ kind: 'error', code: 'no_connection', message: 'x' });
     const res = await listSharePointLibraries('org-1');
     expect(res.kind).toBe('error');
+  });
+
+  it('skips an unreadable site (5xx/throttle) but still returns readable sites and records the skip', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'siteA', displayName: 'A', webUrl: 'https://c/a' },
+        { id: 'siteB', displayName: 'B', webUrl: 'https://c/b' },
+      ] } }) // /sites
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'drA', name: 'Docs', list: { id: 'lA' } },
+      ] } }) // siteA /drives
+      .mockResolvedValueOnce({ kind: 'error', code: 'graph_unavailable', message: 'boom' }); // siteB /drives
+
+    const res = await listSharePointLibraries('org-1');
+    expect(res.kind).toBe('ok');
+    expect((res as any).data.libraries).toHaveLength(1);
+    expect((res as any).data.libraries[0].driveId).toBe('drA');
+    expect((res as any).data.skippedSites).toEqual([{ siteId: 'siteB', code: 'graph_unavailable' }]);
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips a forbidden (403) site quietly — not recorded, not alerted', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'siteA', displayName: 'A', webUrl: 'https://c/a' },
+        { id: 'siteB', displayName: 'B', webUrl: 'https://c/b' },
+      ] } }) // /sites
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'drA', name: 'Docs', list: { id: 'lA' } },
+      ] } }) // siteA /drives
+      .mockResolvedValueOnce({ kind: 'error', code: 'forbidden', message: 'no access' }); // siteB /drives
+
+    const res = await listSharePointLibraries('org-1');
+    expect(res.kind).toBe('ok');
+    expect((res as any).data.libraries).toHaveLength(1);
+    expect((res as any).data.skippedSites).toEqual([]);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('drops a malformed drive row with no string id rather than emitting an empty driveId', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'siteA', displayName: 'A', webUrl: 'https://c/a' },
+      ] } }) // /sites
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'drA', name: 'Docs', list: { id: 'lA' } },
+        { name: 'Broken', list: { id: 'lB' } }, // no id — must be dropped
+      ] } }); // siteA /drives
+
+    const res = await listSharePointLibraries('org-1');
+    expect(res.kind).toBe('ok');
+    expect((res as any).data.libraries).toHaveLength(1);
+    expect((res as any).data.libraries[0].driveId).toBe('drA');
   });
 });
 

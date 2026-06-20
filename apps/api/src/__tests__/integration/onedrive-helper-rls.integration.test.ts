@@ -210,6 +210,59 @@ describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
+
+  // (d) Cross-org UPDATE WITH CHECK denied: org A owns a settings row and tries
+  // to reassign its org_id to org B → 42501 (covers the UPDATE WITH CHECK policy).
+  runDb('blocks org A re-homing its own settings row to org B (42501)', async () => {
+    const fx = await seedFixture();
+
+    const settingsId = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .insert(configPolicyOnedriveSettings)
+        .values({ featureLinkId: fx.featureLinkA.id, orgId: fx.orgA.id })
+        .returning({ id: configPolicyOnedriveSettings.id });
+      return row!.id;
+    });
+
+    await expect(
+      withDbAccessContext(fx.orgAContext, () =>
+        db
+          .update(configPolicyOnedriveSettings)
+          .set({ orgId: fx.orgB.id })
+          .where(eq(configPolicyOnedriveSettings.id, settingsId))
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (e) Cross-org DELETE hidden (USING): org A cannot delete org B's settings
+  // row — 0 rows affected, and a system probe confirms it survives.
+  runDb('org A DELETE of org B settings affects 0 rows and leaves it intact', async () => {
+    const fx = await seedFixture();
+
+    const orgBSettingsId = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .insert(configPolicyOnedriveSettings)
+        .values({ featureLinkId: fx.featureLinkB.id, orgId: fx.orgB.id })
+        .returning({ id: configPolicyOnedriveSettings.id });
+      return row!.id;
+    });
+
+    const deleted = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .delete(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.id, orgBSettingsId))
+        .returning({ id: configPolicyOnedriveSettings.id })
+    );
+    expect(deleted).toHaveLength(0);
+
+    const survivors = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: configPolicyOnedriveSettings.id })
+        .from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.id, orgBSettingsId))
+    );
+    expect(survivors).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -289,6 +342,79 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (c) Cross-org UPDATE WITH CHECK denied: org A owns a library row and tries
+  // to reassign its org_id to org B → 42501 (covers the UPDATE WITH CHECK policy).
+  runDb('blocks org A re-homing its own library row to org B (42501)', async () => {
+    const fx = await seedFixture();
+
+    const libraryId = await withSystemDbAccessContext(async () => {
+      const [settings] = await db
+        .insert(configPolicyOnedriveSettings)
+        .values({ featureLinkId: fx.featureLinkA.id, orgId: fx.orgA.id })
+        .returning({ id: configPolicyOnedriveSettings.id });
+      const [lib] = await db
+        .insert(configPolicyOnedriveLibraries)
+        .values({
+          settingsId: settings!.id,
+          orgId: fx.orgA.id,
+          libraryId: 'lib-a-own',
+          displayName: 'Own',
+          targetingMode: 'everyone',
+        })
+        .returning({ id: configPolicyOnedriveLibraries.id });
+      return lib!.id;
+    });
+
+    await expect(
+      withDbAccessContext(fx.orgAContext, () =>
+        db
+          .update(configPolicyOnedriveLibraries)
+          .set({ orgId: fx.orgB.id })
+          .where(eq(configPolicyOnedriveLibraries.id, libraryId))
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (d) Cross-org DELETE hidden (USING): org A cannot delete org B's library row
+  // — 0 rows affected, and a system probe confirms it survives.
+  runDb('org A DELETE of org B library affects 0 rows and leaves it intact', async () => {
+    const fx = await seedFixture();
+
+    const orgBLibraryId = await withSystemDbAccessContext(async () => {
+      const [settings] = await db
+        .insert(configPolicyOnedriveSettings)
+        .values({ featureLinkId: fx.featureLinkB.id, orgId: fx.orgB.id })
+        .returning({ id: configPolicyOnedriveSettings.id });
+      const [lib] = await db
+        .insert(configPolicyOnedriveLibraries)
+        .values({
+          settingsId: settings!.id,
+          orgId: fx.orgB.id,
+          libraryId: 'lib-b-own',
+          displayName: 'Org B',
+          targetingMode: 'everyone',
+        })
+        .returning({ id: configPolicyOnedriveLibraries.id });
+      return lib!.id;
+    });
+
+    const deleted = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .delete(configPolicyOnedriveLibraries)
+        .where(eq(configPolicyOnedriveLibraries.id, orgBLibraryId))
+        .returning({ id: configPolicyOnedriveLibraries.id })
+    );
+    expect(deleted).toHaveLength(0);
+
+    const survivors = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: configPolicyOnedriveLibraries.id })
+        .from(configPolicyOnedriveLibraries)
+        .where(eq(configPolicyOnedriveLibraries.id, orgBLibraryId))
+    );
+    expect(survivors).toHaveLength(1);
   });
 });
 
@@ -423,5 +549,89 @@ describe('onedrive_device_state RLS isolation (breeze_app)', () => {
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (d) Cross-org UPDATE hidden (USING): org A cannot update org B's existing
+  // state row. The row is invisible under org A's context, so the UPDATE matches
+  // 0 rows (no error) and a system-scope probe confirms it is untouched.
+  runDb('org A UPDATE of org B device state affects 0 rows and leaves it unchanged', async () => {
+    const fx = await seedFixture();
+
+    const orgBDeviceId = await withSystemDbAccessContext(async () => {
+      const siteB = await createSite({ orgId: fx.orgB.id });
+      const devId = await seedDevice(fx.orgB.id, siteB.id);
+      await db.insert(onedriveDeviceState).values({ deviceId: devId, orgId: fx.orgB.id, signedIn: true });
+      return devId;
+    });
+
+    const updated = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .update(onedriveDeviceState)
+        .set({ signedIn: false })
+        .where(eq(onedriveDeviceState.deviceId, orgBDeviceId))
+        .returning({ deviceId: onedriveDeviceState.deviceId })
+    );
+    expect(updated).toHaveLength(0);
+
+    // System-scope probe: org B's row is intact (still signedIn = true).
+    const [survivor] = await withSystemDbAccessContext(() =>
+      db
+        .select({ signedIn: onedriveDeviceState.signedIn })
+        .from(onedriveDeviceState)
+        .where(eq(onedriveDeviceState.deviceId, orgBDeviceId))
+    );
+    expect(survivor?.signedIn).toBe(true);
+  });
+
+  // (e) Cross-org UPDATE WITH CHECK denied: org A owns a state row and tries to
+  // reassign its org_id to org B. USING passes (its own row) but the new org_id
+  // violates the UPDATE WITH CHECK policy → 42501.
+  runDb('blocks org A re-homing its own device state to org B (42501)', async () => {
+    const fx = await seedFixture();
+
+    const orgADeviceId = await withSystemDbAccessContext(async () => {
+      const siteA = await createSite({ orgId: fx.orgA.id });
+      const devId = await seedDevice(fx.orgA.id, siteA.id);
+      await db.insert(onedriveDeviceState).values({ deviceId: devId, orgId: fx.orgA.id, signedIn: true });
+      return devId;
+    });
+
+    await expect(
+      withDbAccessContext(fx.orgAContext, () =>
+        db
+          .update(onedriveDeviceState)
+          .set({ orgId: fx.orgB.id }) // foreign org — UPDATE WITH CHECK must reject
+          .where(eq(onedriveDeviceState.deviceId, orgADeviceId))
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  // (f) Cross-org DELETE hidden (USING): org A cannot delete org B's state row.
+  // The DELETE matches 0 rows and a system-scope probe confirms it survives.
+  runDb('org A DELETE of org B device state affects 0 rows and leaves it intact', async () => {
+    const fx = await seedFixture();
+
+    const orgBDeviceId = await withSystemDbAccessContext(async () => {
+      const siteB = await createSite({ orgId: fx.orgB.id });
+      const devId = await seedDevice(fx.orgB.id, siteB.id);
+      await db.insert(onedriveDeviceState).values({ deviceId: devId, orgId: fx.orgB.id, signedIn: true });
+      return devId;
+    });
+
+    const deleted = await withDbAccessContext(fx.orgAContext, () =>
+      db
+        .delete(onedriveDeviceState)
+        .where(eq(onedriveDeviceState.deviceId, orgBDeviceId))
+        .returning({ deviceId: onedriveDeviceState.deviceId })
+    );
+    expect(deleted).toHaveLength(0);
+
+    const survivors = await withSystemDbAccessContext(() =>
+      db
+        .select({ deviceId: onedriveDeviceState.deviceId })
+        .from(onedriveDeviceState)
+        .where(eq(onedriveDeviceState.deviceId, orgBDeviceId))
+    );
+    expect(survivors).toHaveLength(1);
   });
 });
