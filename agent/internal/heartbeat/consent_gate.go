@@ -79,7 +79,7 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt) 
 	if h.sessionBroker == nil {
 		return "", false, false
 	}
-	session := h.sessionBroker.PreferredSessionWithScope("notify")
+	session := h.sessionBroker.PreferredSessionWithScope("consent_ui")
 	if session == nil {
 		return "", false, false
 	}
@@ -150,15 +150,15 @@ func (h *Heartbeat) sendSessionNotify(body string) {
 	}
 }
 
-// sendBannerShow tells the desktop helper to display the on-screen session
+// sendBannerShow tells the assist helper to display the on-screen session
 // indicator banner. Fire-and-forget; the helper renders it.
 func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt) {
 	if h.sessionBroker == nil {
 		return
 	}
-	session := h.sessionBroker.PreferredSessionWithScope("notify")
+	session := h.sessionBroker.PreferredSessionWithScope("consent_ui")
 	if session == nil {
-		log.Warn("no notify-capable helper for session banner", "sessionId", sessionID)
+		log.Warn("no consent_ui-capable helper for session banner", "sessionId", sessionID)
 		return
 	}
 	req := ipc.BannerShowRequest{
@@ -171,12 +171,12 @@ func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt) 
 	}
 }
 
-// sendBannerHide tells the desktop helper to remove the session banner.
+// sendBannerHide tells the assist helper to remove the session banner.
 func (h *Heartbeat) sendBannerHide(sessionID string) {
 	if h.sessionBroker == nil {
 		return
 	}
-	session := h.sessionBroker.PreferredSessionWithScope("notify")
+	session := h.sessionBroker.PreferredSessionWithScope("consent_ui")
 	if session == nil {
 		return
 	}

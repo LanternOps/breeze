@@ -139,7 +139,7 @@ func TestConsentGate_UserDenies_EndToEnd(t *testing.T) {
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
 
-	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-deny", []string{"notify"})
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-deny", []string{"consent_ui"})
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
 	done := make(chan struct{})
@@ -190,7 +190,7 @@ func TestConsentGate_Timeout_Block(t *testing.T) {
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
 
-	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-timeout-block", []string{"notify"})
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-timeout-block", []string{"consent_ui"})
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
 	// Close the client side immediately — the service sees an IPC error which
@@ -221,7 +221,7 @@ func TestConsentGate_RequestConsent_Allow(t *testing.T) {
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
 
-	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-allow", []string{"notify"})
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-allow", []string{"consent_ui"})
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
 	done := make(chan struct{})
@@ -280,7 +280,7 @@ func TestConsentGate_RequestConsent_Timeout_Proceed(t *testing.T) {
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
 
-	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-timeout-proceed", []string{"notify"})
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-timeout-proceed", []string{"consent_ui"})
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
 	// Close the client side immediately to simulate IPC failure / timeout.

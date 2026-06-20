@@ -97,4 +97,7 @@ func TestPamDialogMessagesRoundTrip(t *testing.T) {
 	if ScopePam != "pam" {
 		t.Fatalf("ScopePam = %q, want pam", ScopePam)
 	}
+	if ScopeConsentUI != "consent_ui" {
+		t.Fatalf("ScopeConsentUI = %q, want consent_ui", ScopeConsentUI)
+	}
 }

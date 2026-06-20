@@ -128,8 +128,9 @@ const (
 
 // Scope constants identify the capabilities granted to a helper session.
 const (
-	ScopeAssist = "assist" // IPC scope granted to the assist helper
-	ScopePam    = "pam"    // IPC scope granted to the user helper for PAM dialogs
+	ScopeAssist    = "assist"     // IPC scope granted to the assist helper
+	ScopePam       = "pam"        // IPC scope granted to the user helper for PAM dialogs
+	ScopeConsentUI = "consent_ui" // narrow IPC scope: lets the assist helper receive remote-session consent prompt + active-session banner messages (UI only; NOT desktop/clipboard/notify)
 )
 
 const (
