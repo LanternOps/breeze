@@ -108,6 +108,15 @@ vi.mock('../db/schema', () => ({
     jwksUrl: 'jwksUrl'
   },
   ssoSessions: {},
+  ssoVerifiedDomains: {
+    id: 'id',
+    orgId: 'orgId',
+    domain: 'domain',
+    verificationToken: 'verificationToken',
+    verifiedAt: 'verifiedAt',
+    lastCheckedAt: 'lastCheckedAt',
+    createdAt: 'createdAt',
+  },
   userSsoIdentities: {
     id: 'id',
     userId: 'userId',
@@ -127,6 +136,13 @@ vi.mock('../db/schema', () => ({
     name: 'name',
     scope: 'scope'
   }
+}));
+
+vi.mock('../services/ssoDomainVerification', () => ({
+  createPendingDomain: vi.fn(),
+  verifyDomain: vi.fn(),
+  recordNameFor: vi.fn((domain: string) => `_breeze-verify.${domain}`),
+  recordValueFor: vi.fn((token: string) => `breeze-domain-verify=${token}`),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -175,6 +191,7 @@ import {
   mapUserAttributes,
   verifyIdTokenSignature,
 } from '../services/sso';
+import { createPendingDomain, verifyDomain } from '../services/ssoDomainVerification';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -1171,6 +1188,205 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+  });
+
+  describe('SSO Domain Verification Routes', () => {
+    const DOMAIN_UUID = '00000000-0000-4000-8000-000000000050';
+    const DOMAIN_TOKEN = 'abc123def456';
+
+    it('POST /domains returns 201 with recordName and recordValue for an authorized sso:admin caller', async () => {
+      vi.mocked(createPendingDomain).mockResolvedValue({
+        id: DOMAIN_UUID,
+        orgId: ORG_UUID,
+        domain: 'example.com',
+        verificationToken: DOMAIN_TOKEN,
+        recordName: `_breeze-verify.example.com`,
+        recordValue: `breeze-domain-verify=${DOMAIN_TOKEN}`,
+        verifiedAt: null,
+      });
+
+      const res = await app.request('/sso/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: 'example.com' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.id).toBe(DOMAIN_UUID);
+      expect(body.data.domain).toBe('example.com');
+      expect(body.data.recordName).toBe('_breeze-verify.example.com');
+      expect(body.data.recordValue).toBe(`breeze-domain-verify=${DOMAIN_TOKEN}`);
+      expect(body.data.verified).toBe(false);
+      expect(createPendingDomain).toHaveBeenCalledWith({
+        orgId: ORG_UUID,
+        domain: 'example.com',
+        createdBy: USER_UUID,
+      });
+    });
+
+    it('POST /domains returns 403 for a caller without sso:admin permission', async () => {
+      permissionGate.deny = true;
+
+      const res = await app.request('/sso/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: 'example.com' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(createPendingDomain).not.toHaveBeenCalled();
+    });
+
+    it('POST /domains returns 400 when the service throws (invalid domain)', async () => {
+      vi.mocked(createPendingDomain).mockRejectedValue(new Error('Invalid domain: not-a-real-domain'));
+
+      const res = await app.request('/sso/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: 'not-a-real-domain' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid domain');
+    });
+
+    it('POST /domains/:id/verify returns {data:{verified:true}} when the domain exists and DNS check passes', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      vi.mocked(verifyDomain).mockResolvedValue({ verified: true });
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}/verify`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.verified).toBe(true);
+      expect(verifyDomain).toHaveBeenCalledWith({ orgId: ORG_UUID, domain: 'example.com' });
+    });
+
+    it('POST /domains/:id/verify returns 404 when the domain row does not exist', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}/verify`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(404);
+      expect(verifyDomain).not.toHaveBeenCalled();
+    });
+
+    it('POST /domains/:id/verify returns 403 when canAccessOrg is false', async () => {
+      setAuthContext({ canAccessOrg: () => false });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID_OTHER,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}/verify`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(403);
+      expect(verifyDomain).not.toHaveBeenCalled();
+    });
+
+    it('DELETE /domains/:id returns {data:{deleted:true}} on success', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      vi.mocked(db.delete).mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: DOMAIN_UUID }]),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.deleted).toBe(true);
+    });
+
+    it('DELETE /domains/:id returns 404 when the domain row does not exist', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('GET /domains lists domains with recordName and recordValue for the org', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            id: DOMAIN_UUID,
+            domain: 'example.com',
+            verificationToken: DOMAIN_TOKEN,
+            verifiedAt: null,
+            lastCheckedAt: null,
+            createdAt: '2024-01-01T00:00:00.000Z',
+          }]),
+        }),
+      } as any);
+
+      const res = await app.request('/sso/domains', {
+        method: 'GET',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].domain).toBe('example.com');
+      expect(body.data[0].verified).toBe(false);
+      expect(body.data[0].recordName).toBeDefined();
+      expect(body.data[0].recordValue).toBeDefined();
     });
   });
 });

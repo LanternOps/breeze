@@ -8,12 +8,14 @@ import { db, withSystemDbAccessContext } from '../db';
 import {
   ssoProviders,
   ssoSessions,
+  ssoVerifiedDomains,
   userSsoIdentities,
   users,
   organizations,
   organizationUsers,
   roles
 } from '../db/schema';
+import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor } from '../services/ssoDomainVerification';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   generateState,
@@ -737,6 +739,160 @@ ssoRoutes.post(
       error: error.message || 'Configuration test failed'
     }, 400);
   }
+  }
+);
+
+// ====  SSO Domain Verification Routes (Admin)  ====
+
+const createDomainSchema = z.object({
+  domain: z.string().min(1).max(253),
+  orgId: z.string().guid().optional(),
+});
+const domainIdParamSchema = z.object({ id: z.string().guid() });
+
+// List domains (verified + pending) for an org
+ssoRoutes.get('/domains', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth') as AuthContext;
+  const orgResult = resolveOrgIdForProviderRoute(auth, c.req.query('orgId'));
+  if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+  const rows = await db
+    .select({
+      id: ssoVerifiedDomains.id,
+      domain: ssoVerifiedDomains.domain,
+      verificationToken: ssoVerifiedDomains.verificationToken,
+      verifiedAt: ssoVerifiedDomains.verifiedAt,
+      lastCheckedAt: ssoVerifiedDomains.lastCheckedAt,
+      createdAt: ssoVerifiedDomains.createdAt,
+    })
+    .from(ssoVerifiedDomains)
+    .where(eq(ssoVerifiedDomains.orgId, orgResult.orgId));
+
+  return c.json({
+    data: rows.map(r => ({
+      id: r.id,
+      domain: r.domain,
+      verified: !!r.verifiedAt,
+      verifiedAt: r.verifiedAt,
+      lastCheckedAt: r.lastCheckedAt,
+      createdAt: r.createdAt,
+      recordName: recordNameFor(r.domain),
+      recordValue: recordValueFor(r.verificationToken),
+    })),
+  });
+});
+
+// Create a pending domain — returns the DNS TXT instructions
+ssoRoutes.post(
+  '/domains',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SSO_ADMIN.resource, PERMISSIONS.SSO_ADMIN.action),
+  requireMfa(),
+  zValidator('json', createDomainSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    let pending;
+    try {
+      pending = await createPendingDomain({ orgId: orgResult.orgId, domain: body.domain, createdBy: auth.user.id });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Invalid domain' }, 400);
+    }
+
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId,
+      action: 'sso.domain.create',
+      resourceType: 'sso_verified_domain',
+      resourceId: pending.id,
+      resourceName: pending.domain,
+      details: { domain: pending.domain },
+    });
+
+    return c.json({
+      data: {
+        id: pending.id,
+        domain: pending.domain,
+        verified: !!pending.verifiedAt,
+        recordName: pending.recordName,
+        recordValue: pending.recordValue,
+      },
+    }, 201);
+  }
+);
+
+// Trigger a DNS TXT verification check for a domain
+ssoRoutes.post(
+  '/domains/:id/verify',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SSO_ADMIN.resource, PERMISSIONS.SSO_ADMIN.action),
+  requireMfa(),
+  zValidator('param', domainIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { id } = c.req.valid('param');
+
+    const [row] = await db
+      .select({ id: ssoVerifiedDomains.id, orgId: ssoVerifiedDomains.orgId, domain: ssoVerifiedDomains.domain })
+      .from(ssoVerifiedDomains)
+      .where(eq(ssoVerifiedDomains.id, id))
+      .limit(1);
+    if (!row) return c.json({ error: 'Domain not found' }, 404);
+    if (!auth.canAccessOrg(row.orgId)) return c.json({ error: 'Access denied' }, 403);
+
+    const result = await verifyDomain({ orgId: row.orgId, domain: row.domain });
+
+    writeRouteAudit(c, {
+      orgId: row.orgId,
+      action: 'sso.domain.verify',
+      resourceType: 'sso_verified_domain',
+      resourceId: row.id,
+      resourceName: row.domain,
+      details: { verified: result.verified, reason: result.reason },
+    });
+
+    return c.json({ data: { verified: result.verified, reason: result.reason } });
+  }
+);
+
+// Delete a domain
+ssoRoutes.delete(
+  '/domains/:id',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SSO_ADMIN.resource, PERMISSIONS.SSO_ADMIN.action),
+  requireMfa(),
+  zValidator('param', domainIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { id } = c.req.valid('param');
+
+    const [row] = await db
+      .select({ id: ssoVerifiedDomains.id, orgId: ssoVerifiedDomains.orgId, domain: ssoVerifiedDomains.domain })
+      .from(ssoVerifiedDomains)
+      .where(eq(ssoVerifiedDomains.id, id))
+      .limit(1);
+    if (!row) return c.json({ error: 'Domain not found' }, 404);
+    if (!auth.canAccessOrg(row.orgId)) return c.json({ error: 'Access denied' }, 403);
+
+    const [deleted] = await db
+      .delete(ssoVerifiedDomains)
+      .where(and(eq(ssoVerifiedDomains.id, id), eq(ssoVerifiedDomains.orgId, row.orgId)))
+      .returning({ id: ssoVerifiedDomains.id });
+
+    writeRouteAudit(c, {
+      orgId: row.orgId,
+      action: 'sso.domain.delete',
+      resourceType: 'sso_verified_domain',
+      resourceId: row.id,
+      resourceName: row.domain,
+    });
+
+    return c.json({ data: { deleted: !!deleted } });
   }
 );
 
