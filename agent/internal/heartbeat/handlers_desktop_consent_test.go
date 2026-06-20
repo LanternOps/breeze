@@ -262,6 +262,55 @@ func TestConsentGate_HelperErrorReply_FailsClosed_Proceed(t *testing.T) {
 	assertConsentDenied(t, result, "no_user")
 }
 
+// TestConsentGate_HelperUndecodablePayload_FailsClosed_Proceed is the sibling
+// regression guard to the error-envelope case: a PRESENT helper that replies
+// with a payload that does not decode into ipc.ConsentResult (here a JSON array
+// instead of the expected object) yielded no usable decision. requestConsent
+// swallows the unmarshal error and leaves the verdict empty, so even under the
+// "proceed" unavailable-behavior the session MUST be denied (reason "no_user").
+func TestConsentGate_HelperUndecodablePayload_FailsClosed_Proceed(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-baddata", []string{"consent_ui"})
+	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			t.Errorf("helper recv: %v", err)
+			return
+		}
+		// A JSON array can't unmarshal into the ConsentResult struct, forcing the
+		// json.Unmarshal failure branch in requestConsent.
+		if err := clientIPC.Send(&ipc.Envelope{
+			ID:      env.ID,
+			Type:    ipc.TypeConsentResult,
+			Payload: json.RawMessage("[1,2,3]"),
+		}); err != nil {
+			t.Errorf("helper send: %v", err)
+		}
+	}()
+
+	broker := newTestBrokerWithSessions(t, session)
+	h := &Heartbeat{
+		sessionBroker: broker,
+		desktopMgr:    desktop.NewSessionManager(),
+	}
+
+	result := handleStartDesktop(h, startDesktopCmd("sess-baddata", consentModePrompt("proceed", 5000)))
+
+	<-done
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	assertConsentDenied(t, result, "no_user")
+}
+
 // TestConsentGate_RequestConsent_Allow verifies that requestConsent returns
 // verdict "allow" when the helper responds with an allow decision, and that
 // decideConsent maps that to proceed=true. This exercises the seam for the
