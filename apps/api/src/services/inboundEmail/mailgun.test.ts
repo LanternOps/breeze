@@ -138,6 +138,22 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n.senderAuth!.verified).toBe(true);
   });
 
+  it('does NOT trust a forged Authentication-Results header with a foreign authserv-id', async () => {
+    // An external sender stuffs their own Authentication-Results header claiming a
+    // DMARC/SPF/DKIM pass. The authserv-id ("evil.example") is NOT Mailgun's receiving
+    // host, and there is no genuine Mailgun-authoritative verdict (no X-Mailgun-* field,
+    // no mx.mailgun.org Authentication-Results). The forged header must be ignored, so
+    // the sender stays unverified -> quarantined.
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'evil.example; dmarc=pass; spf=pass; dkim=pass'],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.dmarc).not.toBe('pass');
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
   it('treats absent verdicts as NOT verified (fail closed)', async () => {
     const n = await provider.parse({ parseBody: async () => ({
       recipient: 'acme@tickets.example.com',
