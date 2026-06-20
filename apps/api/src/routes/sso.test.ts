@@ -143,6 +143,7 @@ vi.mock('../services/ssoDomainVerification', () => ({
   verifyDomain: vi.fn(),
   recordNameFor: vi.fn((domain: string) => `_breeze-verify.${domain}`),
   recordValueFor: vi.fn((token: string) => `breeze-domain-verify=${token}`),
+  isSsoProvisioningBlocked: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -191,7 +192,7 @@ import {
   mapUserAttributes,
   verifyIdTokenSignature,
 } from '../services/sso';
-import { createPendingDomain, verifyDomain } from '../services/ssoDomainVerification';
+import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -1188,6 +1189,52 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    // ── security review #2 (H-2): SSO domain-verification gate wiring
+    // These tests verify that the gate (isSsoProvisioningBlocked) is correctly
+    // wired into the callback handler. The decision logic is unit-tested
+    // exhaustively in ssoDomainVerification.test.ts; here we only test the
+    // wiring: that a blocked domain redirects correctly and doesn't provision,
+    // and that an already-linked identity bypasses the gate entirely.
+    it('redirects to sso_domain_unverified when isSsoProvisioningBlocked returns true for an unmatched identity', async () => {
+      primeCallback();
+      vi.mocked(isSsoProvisioningBlocked).mockResolvedValue(true);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([])) // no (provider, sub) link → user is null → gate is evaluated
+        .mockReturnValueOnce(sel([])); // user-by-id lookup for the identity-first block (the second withSystemDbAccessContext call for users)
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_domain_unverified');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke the gate (and succeeds) when the identity is already linked by provider+sub', async () => {
+      // Already-linked users resolve in the identity-first lookup, so user is non-null
+      // before the gate. The gate is inside `if (!user)` and must not fire.
+      vi.mocked(isSsoProvisioningBlocked).mockResolvedValue(true); // would block if called
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link found → user resolved
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Linked' }]))
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      // Succeeds — gate was not reached
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalled();
+      // isSsoProvisioningBlocked is still called in the mock infrastructure
+      // but the gate block is inside `if (!user)` which is false here — so
+      // the callback must NOT have redirected to sso_domain_unverified.
+      expect(res.headers.get('location') ?? '').not.toContain('sso_domain_unverified');
     });
   });
 

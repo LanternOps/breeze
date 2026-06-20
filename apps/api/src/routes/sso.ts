@@ -15,7 +15,7 @@ import {
   organizationUsers,
   roles
 } from '../db/schema';
-import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor } from '../services/ssoDomainVerification';
+import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   generateState,
@@ -1150,6 +1150,28 @@ ssoRoutes.get('/callback', async (c) => {
       const [linkedUser] = await db.select().from(users).where(eq(users.id, link.userId)).limit(1);
       return linkedUser ?? null;
     });
+
+    // ── SSO domain-verification gate (security review #2, H-2 / Plan B) ──────
+    // Before JIT-linking-by-email or provisioning a NEW account, require the
+    // asserted email's domain to be one the org proved it owns (DNS TXT). Blocks
+    // a malicious/compromised org-admin from pointing the org at an attacker IdP
+    // and claiming emails in a domain the org doesn't control. Already-linked
+    // identities (resolved above by provider+sub) are intentionally exempt, so
+    // turning enforcement on never locks out existing SSO users. System scope:
+    // the public callback is unauthenticated.
+    if (!user) {
+      const assertedEmailDomain = attrs.email.split('@')[1]?.toLowerCase() ?? null;
+      const domainBlocked = await withSystemDbAccessContext(() =>
+        isSsoProvisioningBlocked(provider.orgId, assertedEmailDomain)
+      );
+      if (domainBlocked) {
+        console.warn(
+          `[sso/callback] domain verification blocked link/provision: org=${provider.orgId} provider=${provider.id} emailDomain=${assertedEmailDomain ?? 'none'}`
+        );
+        clearStateCookie();
+        return c.redirect('/login?error=sso_domain_unverified');
+      }
+    }
 
     if (!user) {
       // No link yet for this provider+sub. Try to match an existing user by the

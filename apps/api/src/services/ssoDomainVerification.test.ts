@@ -51,6 +51,7 @@ import {
   isDomainVerifiedForOrg,
   orgHasAnyVerifiedDomain,
   isSsoDomainVerificationStrict,
+  isSsoProvisioningBlocked,
   TXT_RECORD_HOST_PREFIX,
   TXT_RECORD_VALUE_PREFIX,
 } from './ssoDomainVerification';
@@ -400,5 +401,114 @@ describe('isSsoDomainVerificationStrict', () => {
   it('returns false when env var is "1" (literal "true" only)', () => {
     process.env.SSO_DOMAIN_VERIFICATION_STRICT = '1';
     expect(isSsoDomainVerificationStrict()).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isSsoProvisioningBlocked
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('isSsoProvisioningBlocked', () => {
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    originalEnv = process.env.SSO_DOMAIN_VERIFICATION_STRICT;
+    delete process.env.SSO_DOMAIN_VERIFICATION_STRICT;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.SSO_DOMAIN_VERIFICATION_STRICT;
+    } else {
+      process.env.SSO_DOMAIN_VERIFICATION_STRICT = originalEnv;
+    }
+  });
+
+  it('returns false (not blocked) when not strict and org has NO verified domains', async () => {
+    // orgHasAnyVerifiedDomain → empty (org has no verified domains)
+    setupSelect([]); // first db.select call → orgHasAnyVerifiedDomain returns false
+
+    const result = await isSsoProvisioningBlocked('org-1', 'acme.com');
+
+    expect(result).toBe(false);
+    // Short-circuits before calling isDomainVerifiedForOrg — only one select call made
+    expect(dbSelectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false (not blocked) when not strict, org HAS a verified domain, and asserted domain IS verified', async () => {
+    // orgHasAnyVerifiedDomain → returns a row (org has verified domains)
+    // isDomainVerifiedForOrg → returns a row (domain is verified)
+    // Two sequential db.select calls — use mockReturnValueOnce to chain them.
+    const makeSelectChain = (rows: unknown[]) => {
+      const limit = vi.fn().mockResolvedValue(rows);
+      const where = vi.fn().mockReturnValue({ limit });
+      const from = vi.fn().mockReturnValue({ where });
+      return { from };
+    };
+    dbSelectMock
+      .mockReturnValueOnce(makeSelectChain([{ id: 'row-1' }]))
+      .mockReturnValueOnce(makeSelectChain([{ verifiedAt: new Date() }]));
+
+    const result = await isSsoProvisioningBlocked('org-1', 'acme.com');
+
+    expect(result).toBe(false);
+    expect(dbSelectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns true (blocked) when not strict, org HAS a verified domain, but asserted domain NOT verified', async () => {
+    // orgHasAnyVerifiedDomain → returns a row (org has verified domains → enforcing)
+    // isDomainVerifiedForOrg → empty (domain not verified)
+    // Two sequential db.select calls — use mockReturnValueOnce to chain them.
+    const makeSelectChain = (rows: unknown[]) => {
+      const limit = vi.fn().mockResolvedValue(rows);
+      const where = vi.fn().mockReturnValue({ limit });
+      const from = vi.fn().mockReturnValue({ where });
+      return { from };
+    };
+    dbSelectMock
+      .mockReturnValueOnce(makeSelectChain([{ id: 'row-1' }]))
+      .mockReturnValueOnce(makeSelectChain([]));
+
+    const result = await isSsoProvisioningBlocked('org-1', 'attacker.com');
+
+    expect(result).toBe(true);
+    expect(dbSelectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns true (blocked) when strict, org has no verified domains, and asserted domain not verified', async () => {
+    process.env.SSO_DOMAIN_VERIFICATION_STRICT = 'true';
+    // orgHasAnyVerifiedDomain is STILL called (even if strict, the short-circuit is on
+    // the enforcing flag which is already true from strict; but isDomainVerifiedForOrg
+    // is what gates). With strict=true, enforcing=true immediately.
+    // The call sequence: isSsoDomainVerificationStrict() → true → skip orgHasAnyVerifiedDomain
+    // via short-circuit OR (JS || short-circuits left); isDomainVerifiedForOrg → empty
+    setupSelect([]); // isDomainVerifiedForOrg → not verified
+
+    const result = await isSsoProvisioningBlocked('org-1', 'example.com');
+
+    expect(result).toBe(true);
+    // orgHasAnyVerifiedDomain is NOT called when strict=true (short-circuit)
+    expect(dbSelectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false (not blocked) when strict and asserted domain IS verified', async () => {
+    process.env.SSO_DOMAIN_VERIFICATION_STRICT = 'true';
+    // isDomainVerifiedForOrg → verified
+    setupSelect([{ verifiedAt: new Date() }]);
+
+    const result = await isSsoProvisioningBlocked('org-1', 'acme.com');
+
+    expect(result).toBe(false);
+    expect(dbSelectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns true (blocked) when enforcing and emailDomain is null', async () => {
+    process.env.SSO_DOMAIN_VERIFICATION_STRICT = 'true';
+    // No db call needed — emailDomain null skips isDomainVerifiedForOrg entirely
+
+    const result = await isSsoProvisioningBlocked('org-1', null);
+
+    expect(result).toBe(true);
+    expect(dbSelectMock).not.toHaveBeenCalled();
   });
 });

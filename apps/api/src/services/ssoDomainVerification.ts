@@ -125,3 +125,19 @@ export async function orgHasAnyVerifiedDomain(orgId: string): Promise<boolean> {
 export function isSsoDomainVerificationStrict(): boolean {
   return (process.env.SSO_DOMAIN_VERIFICATION_STRICT ?? '').toLowerCase() === 'true';
 }
+
+/**
+ * Should the SSO callback REFUSE to JIT-link/provision for this org + asserted
+ * email domain? (security review #2 H-2 / Plan B.) Enforcement is global when
+ * SSO_DOMAIN_VERIFICATION_STRICT is set, otherwise per-org: an org becomes gated
+ * once it has ≥1 verified domain (gradual rollout). When enforcing, the asserted
+ * email's domain must be a verified domain for the org. Uses ambient db context —
+ * callers without a request context (the SSO callback) must wrap in
+ * withSystemDbAccessContext.
+ */
+export async function isSsoProvisioningBlocked(orgId: string, emailDomain: string | null): Promise<boolean> {
+  const enforcing = isSsoDomainVerificationStrict() || (await orgHasAnyVerifiedDomain(orgId));
+  if (!enforcing) return false;
+  const verified = emailDomain ? await isDomainVerifiedForOrg(orgId, emailDomain) : false;
+  return !verified;
+}
