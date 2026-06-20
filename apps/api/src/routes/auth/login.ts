@@ -16,7 +16,6 @@ import {
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
-  getFamilyForJti,
   revokeFamily,
   isFamilyRevoked,
   touchFamilyLastUsed,
@@ -583,6 +582,18 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
+  // #917 L-1: hard-reject refresh tokens minted before the family/reuse-detection
+  // rollout (Task 7). A token without a `fam` claim pre-dates families and would
+  // silently skip family-wide reuse-detection — an attacker replaying a stolen
+  // legacy token could keep refreshing undetected. The backwards-compat window
+  // was time-gated to one refresh-token TTL (7d) past the rollout; that window
+  // has now elapsed, so every still-valid refresh token carries a `fam`. Reject
+  // the claimless remainder rather than fall through to the legacy per-jti path.
+  if (!payload.fam) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
   // Rate limit per user — 10 refreshes per minute
   const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
   if (!e2eMode) {
@@ -600,17 +611,11 @@ loginRoutes.post('/refresh', async (c) => {
     }
   }
 
-  // Task 7: resolve the family for this jti. Prefer the verified JWT claim
-  // (`fam`) — it's cryptographically signed and can't be tampered with. Fall
-  // back to the Redis jti→family map for tokens that pre-date this rollout
-  // (legacy: claim absent → only `refresh-jti-fam:<jti>` may know the
-  // family). When BOTH are missing we treat the token as legacy and skip the
-  // family-revocation checks — backwards-compat for sessions issued before
-  // this PR. The per-jti revocation check below still gates those.
-  let familyId: string | null = payload.fam ?? null;
-  if (!familyId) {
-    familyId = await getFamilyForJti(payload.jti);
-  }
+  // Task 7: the family id comes from the verified JWT claim (`fam`) — it's
+  // cryptographically signed and can't be tampered with. The claimless legacy
+  // path was retired in #917 L-1 (rejected above), so every token reaching here
+  // carries a family and the Redis jti→family fallback is no longer needed.
+  const familyId: string = payload.fam;
 
   // Reuse detection: if this jti has already been revoked AND we have a
   // family id, this is a replay of an old (rotated) refresh token. Kill the
@@ -632,24 +637,22 @@ loginRoutes.post('/refresh', async (c) => {
     if (await wasRefreshTokenJtiRecentlyRotated(payload.jti)) {
       return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
     }
-    if (familyId) {
-      await revokeFamily(familyId, 'reuse-detected');
-      createAuditLogAsync({
-        actorType: 'user',
-        actorId: payload.sub,
-        actorEmail: payload.email,
-        action: 'auth.refresh.reuse_detected',
-        resourceType: 'refresh_token_family',
-        resourceId: familyId,
-        details: {
-          replayedJti: payload.jti,
-          reason: 'Revoked refresh-token JTI replayed — entire family revoked',
-        },
-        ipAddress: getClientIP(c),
-        userAgent: c.req.header('user-agent'),
-        result: 'denied',
-      });
-    }
+    await revokeFamily(familyId, 'reuse-detected');
+    createAuditLogAsync({
+      actorType: 'user',
+      actorId: payload.sub,
+      actorEmail: payload.email,
+      action: 'auth.refresh.reuse_detected',
+      resourceType: 'refresh_token_family',
+      resourceId: familyId,
+      details: {
+        replayedJti: payload.jti,
+        reason: 'Revoked refresh-token JTI replayed — entire family revoked',
+      },
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'denied',
+    });
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
@@ -657,7 +660,7 @@ loginRoutes.post('/refresh', async (c) => {
   // Family-revoked sentinel check: covers the descendant case. If a sibling
   // refresh on this family already triggered reuse-detection, this token —
   // although its own jti hasn't been revoked — must also fail.
-  if (familyId && (await isFamilyRevoked(familyId))) {
+  if (await isFamilyRevoked(familyId)) {
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
@@ -720,9 +723,8 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
   }
 
-  // Create new token pair. Inherit the family from the verified claim (or
-  // the looked-up familyId from Redis for legacy tokens that didn't carry
-  // the claim but we still know the family for).
+  // Create new token pair. The rotated refresh token inherits the family from
+  // the verified `fam` claim so reuse-detection follows the whole chain.
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
@@ -735,17 +737,15 @@ loginRoutes.post('/refresh', async (c) => {
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.
     mdid: carryForwardBinding(payload)
-  }, familyId ? { refreshFam: familyId } : {});
+  }, { refreshFam: familyId });
 
-  if (familyId) {
-    // Map the newly-minted jti to the same family so a future replay of THIS
-    // jti can also be detected via Redis. Best-effort; the JWT `fam` claim
-    // is the primary record.
-    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
-    // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
-    // blocks the refresh.
-    void touchFamilyLastUsed(familyId);
-  }
+  // Map the newly-minted jti to the same family so a future replay of THIS
+  // jti can also be detected via Redis. Best-effort; the JWT `fam` claim
+  // is the primary record.
+  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+  // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
+  // blocks the refresh.
+  void touchFamilyLastUsed(familyId);
 
   setRefreshTokenCookie(c, tokens.refreshToken);
   return c.json({ tokens: toPublicTokens(tokens) });

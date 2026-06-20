@@ -38,7 +38,8 @@ vi.mock('../../services', () => ({
   isRefreshTokenJtiRevoked: vi.fn(async () => false),
   revokeAllUserTokens: vi.fn(async () => undefined),
   revokeRefreshTokenJti: vi.fn(async () => true),
-  getFamilyForJti: vi.fn(async () => null),
+  markRefreshTokenJtiRotated: vi.fn(async () => undefined),
+  wasRefreshTokenJtiRecentlyRotated: vi.fn(async () => false),
   revokeFamily: vi.fn(async () => undefined),
   isFamilyRevoked: vi.fn(async () => false),
   touchFamilyLastUsed: vi.fn(async () => undefined),
@@ -139,11 +140,23 @@ vi.mock('../../services/sentry', () => ({
 
 import { loginRoutes } from './login';
 import { db, withSystemDbAccessContext } from '../../db';
-import { createTokenPair } from '../../services';
+import {
+  createTokenPair,
+  verifyToken,
+  isRefreshTokenJtiRevoked,
+  revokeFamily,
+  revokeRefreshTokenJti,
+  bindRefreshJtiToFamily,
+} from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
-import { resolveCurrentUserTokenContext } from './helpers';
+import {
+  resolveCurrentUserTokenContext,
+  resolveRefreshToken,
+  validateCookieCsrfRequest,
+  clearRefreshTokenCookie,
+} from './helpers';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -373,5 +386,75 @@ describe('POST /login — last_login_at write runs under system DB context (#137
     expect(res.status).toBe(200);
     expect(db.update).toHaveBeenCalled();
     expect(updateRanInsideContext).toBe(true);
+  });
+});
+
+describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () => {
+  async function postRefresh() {
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true'; // skip the Redis rate-limit branch
+    // A valid refresh cookie + passing CSRF so execution reaches the fam check.
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    // Active user for the success path.
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+  });
+
+  it('rejects a verified refresh token that has no fam claim with 401 and clears the cookie', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-legacy',
+      // no `fam` — pre-rollout token
+    } as any);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'Invalid refresh token' });
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    // Must bail before reuse-detection / minting — no family work, no new pair.
+    expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('accepts a refresh token carrying a fam claim and mints a new pair under that family', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+    } as any);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledTimes(1);
+    // Family propagates into the rotated token and the jti→family binding.
+    expect(vi.mocked(createTokenPair).mock.calls[0]?.[1]).toEqual({ refreshFam: 'family-42' });
+    expect(bindRefreshJtiToFamily).toHaveBeenCalledWith('refresh-jti', 'family-42');
+    expect(revokeFamily).not.toHaveBeenCalled();
   });
 });
