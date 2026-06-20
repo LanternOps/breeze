@@ -28,8 +28,12 @@ END $$;
 DO $$
 DECLARE n integer;
 BEGIN
+  -- Built-in token (pgcrypto's gen_random_bytes is NOT installed — only pg_trgm
+  -- is; gen_random_uuid is PG core). Two dash-stripped UUIDs = 64 hex chars.
+  -- Seeded pending rows only; the app mints real tokens via crypto.randomBytes.
   INSERT INTO sso_verified_domains (org_id, domain, verification_token)
-  SELECT DISTINCT p.org_id, lower(trim(d.domain)), encode(gen_random_bytes(24), 'hex')
+  SELECT DISTINCT p.org_id, lower(trim(d.domain)),
+    replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')
   FROM sso_providers p
   CROSS JOIN LATERAL unnest(string_to_array(coalesce(p.allowed_domains, ''), ',')) AS d(domain)
   WHERE trim(d.domain) <> ''
