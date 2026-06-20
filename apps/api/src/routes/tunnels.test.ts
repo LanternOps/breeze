@@ -36,6 +36,12 @@ vi.mock('../db/schema', () => ({
   users: {},
   remoteSessions: {},
   sites: { id: 'sites.id', orgId: 'sites.orgId' },
+  auditLogs: {},
+}));
+
+// --- Sentry (audit-write failures escalate here) ---
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
 }));
 
 // --- Auth middleware ---
@@ -150,6 +156,7 @@ import { db } from '../db';
 import { sendCommandToAgent } from './agentWs';
 import { createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { captureException } from '../services/sentry';
 
 // Reusable device fixture (online, agent connected)
 const onlineDevice = {
@@ -212,6 +219,36 @@ function makeInsertChain(rows: any[]) {
       returning: vi.fn().mockResolvedValue(rows),
     }),
   };
+}
+
+// Audit inserts call `db.insert(auditLogs).values({...})` and await the result
+// directly (no `.returning()`). This chain supports BOTH that and the
+// `.values().returning()` shape used for the primary row insert, so a single
+// mock can stand in for every db.insert call a handler makes.
+function makeAuditAwareInsertChain(returningRows: any[]) {
+  const values = vi.fn().mockImplementation(() => {
+    const p: any = Promise.resolve(undefined);
+    p.returning = vi.fn().mockResolvedValue(returningRows);
+    return p;
+  });
+  return { values };
+}
+
+// Pull the audit-row payload out of the db.insert(...).values(...) calls.
+// Returns every values() arg whose object carries an `action` field.
+function auditCalls(insertMock: any): any[] {
+  const calls: any[] = [];
+  const seen = new Set<any>();
+  for (const result of insertMock.mock.results) {
+    const chain = result.value;
+    if (!chain?.values?.mock || seen.has(chain)) continue;
+    seen.add(chain);
+    for (const call of chain.values.mock.calls) {
+      const arg = call[0];
+      if (arg && typeof arg === 'object' && 'action' in arg) calls.push(arg);
+    }
+  }
+  return calls;
 }
 
 describe('POST /tunnels (VNC)', () => {
@@ -763,7 +800,9 @@ describe('Allowlist routes — partner-scope org resolution', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(valuesSpy).toHaveBeenCalledTimes(1);
+    // Two values() calls now: the rule insert (first) + the additive audit_logs
+    // write. The first carries the resolved org.
+    expect(valuesSpy).toHaveBeenCalledTimes(2);
     expect(valuesSpy.mock.calls[0]![0]).toEqual(expect.objectContaining({ orgId: ORG_A }));
   });
 
@@ -978,7 +1017,8 @@ describe('Allowlist mutation routes — DEVICES_EXECUTE gate', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    // Rule insert + additive audit_logs write.
+    expect(db.insert).toHaveBeenCalledTimes(2);
   });
 
   it('PUT /allowlist/:id returns 403 when caller lacks DEVICES_EXECUTE', async () => {
@@ -1084,7 +1124,8 @@ describe('POST /allowlist — siteId belongs-to-org validation', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    // Rule insert + additive audit_logs write.
+    expect(db.insert).toHaveBeenCalledTimes(2);
   });
 
   it('skips the site lookup entirely when no siteId is provided (201)', async () => {
@@ -1098,6 +1139,187 @@ describe('POST /allowlist — siteId belongs-to-org validation', () => {
 
     expect(res.status).toBe(201);
     expect(db.select).not.toHaveBeenCalled();
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    // Rule insert + additive audit_logs write.
+    expect(db.insert).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── Audit logging on mutating tunnel endpoints (Finding R1) ─────────────────
+// Every mutating tunnel handler must write an audit_logs row so tunnel opens,
+// closes, and allowlist changes are attributable. Sibling remote/sessions.ts
+// audits its lifecycle via logSessionAudit; tunnels.ts did not.
+
+describe('Audit logging — mutating tunnel endpoints', () => {
+  let app: Hono;
+  const RULE_ID = 'f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('POST /tunnels writes a tunnel.open audit row with actor/resource/details', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any) // device lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any);            // source-IP allowlist
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([sessionRecord]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    expect(res.status).toBe(201);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.open',
+      resourceType: 'tunnel_session',
+      resourceId: SESSION_ID,
+      orgId: ORG_ID,
+      actorId: USER_ID,
+      result: 'success',
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({
+      deviceId: DEVICE_ID,
+      type: 'vnc',
+    }));
+  });
+
+  it('DELETE /tunnels/:id writes a tunnel.close audit row including the closed session owner', async () => {
+    const otherOwnerSession = { ...sessionRecord, userId: 'owner-9999' };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([otherOwnerSession]) as any) // session lookup
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any);     // device lookup
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-test-scope': 'partner', 'x-test-accessible-orgs': ORG_ID },
+    });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.close',
+      resourceType: 'tunnel_session',
+      resourceId: SESSION_ID,
+      actorId: USER_ID,
+    }));
+    // The session owner must be attributable when a partner tears down someone
+    // else's tunnel.
+    expect(audits[0].details).toEqual(expect.objectContaining({ sessionUserId: 'owner-9999' }));
+  });
+
+  it('POST /allowlist writes a tunnel.allowlist.create audit row with the rule', async () => {
+    const insertMock = vi.fn().mockReturnValue(
+      makeAuditAwareInsertChain([{ id: RULE_ID, orgId: ORG_ID }])
+    );
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction: 'destination', pattern: '10.0.0.0/8:*' }),
+    });
+
+    expect(res.status).toBe(201);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.allowlist.create',
+      resourceType: 'tunnel_allowlist',
+      resourceId: RULE_ID,
+      actorId: USER_ID,
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({
+      direction: 'destination',
+      pattern: '10.0.0.0/8:*',
+    }));
+  });
+
+  it('PUT /allowlist/:id writes a tunnel.allowlist.update audit row', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(
+      makeSelectChain([{ id: RULE_ID, orgId: ORG_ID, pattern: '10.0.0.0/8:*' }]) as any
+    );
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: RULE_ID, pattern: '192.168.0.0/16:*' }]),
+        }),
+      }),
+    } as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pattern: '192.168.0.0/16:*' }),
+    });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.allowlist.update',
+      resourceType: 'tunnel_allowlist',
+      resourceId: RULE_ID,
+      actorId: USER_ID,
+    }));
+  });
+
+  it('DELETE /allowlist/:id writes a tunnel.allowlist.delete audit row', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(
+      makeSelectChain([{ id: RULE_ID, orgId: ORG_ID, direction: 'destination', pattern: '10.0.0.0/8:*' }]) as any
+    );
+    vi.mocked(db.delete).mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) } as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.allowlist.delete',
+      resourceType: 'tunnel_allowlist',
+      resourceId: RULE_ID,
+      actorId: USER_ID,
+    }));
+  });
+
+  it('an audit-insert failure escalates to captureException without failing the operation', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any);
+    // Primary session insert succeeds; the audit insert throws.
+    let call = 0;
+    vi.mocked(db.insert).mockImplementation((() => {
+      call += 1;
+      if (call === 1) return makeInsertChain([sessionRecord]) as any;
+      return { values: vi.fn().mockImplementation(() => { throw new Error('audit boom'); }) } as any;
+    }) as any);
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    // Primary operation still succeeds.
+    expect(res.status).toBe(201);
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

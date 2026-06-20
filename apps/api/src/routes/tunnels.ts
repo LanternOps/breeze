@@ -2,8 +2,9 @@ import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, desc, inArray, isNull, or } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
-import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions, sites } from '../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions, sites, auditLogs } from '../db/schema';
+import { captureException } from '../services/sentry';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
@@ -243,6 +244,45 @@ async function siteBelongsToOrg(siteId: string, orgId: string): Promise<boolean>
   return !!site;
 }
 
+// Write an audit_logs row for a mutating tunnel action. Mirrors the
+// logSessionAudit helper in remote/helpers.ts:
+//   1. Runs OUTSIDE the caller's request transaction (runOutsideDbContext →
+//      withSystemDbAccessContext) so an audit-write failure can't abort and
+//      silently roll back the caller's real work, and so RLS is satisfied on
+//      paths (viewer-token downgrade) that establish no DB context of their own.
+//   2. Failures escalate to Sentry (captureException) rather than being
+//      swallowed to stdout, and never break the primary operation.
+async function logTunnelAudit(
+  action: string,
+  resourceType: 'tunnel_session' | 'tunnel_allowlist',
+  resourceId: string,
+  actorId: string,
+  orgId: string,
+  details: Record<string, unknown>,
+  ipAddress?: string,
+) {
+  try {
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        await db.insert(auditLogs).values({
+          orgId,
+          actorType: 'user',
+          actorId,
+          action,
+          resourceType,
+          resourceId,
+          details,
+          ipAddress,
+          result: 'success',
+        });
+      })
+    );
+  } catch (error) {
+    console.error('Failed to log tunnel audit:', error);
+    captureException(error);
+  }
+}
+
 async function getActiveAllowlistPatterns(orgId: string): Promise<string[]> {
   const rules = await db
     .select({ pattern: tunnelAllowlists.pattern })
@@ -352,6 +392,16 @@ tunnelRoutes.post(
         .where(eq(tunnelSessions.id, session!.id));
       return c.json({ error: 'Agent disconnected before tunnel could be opened' }, 503);
     }
+
+    await logTunnelAudit(
+      'tunnel.open',
+      'tunnel_session',
+      session!.id,
+      auth.user.id,
+      device.orgId,
+      { deviceId: device.id, type: body.type, targetHost, targetPort },
+      sourceIp,
+    );
 
     return c.json(session, 201);
   }
@@ -484,6 +534,16 @@ tunnelRoutes.post(
       })
       .returning();
 
+    await logTunnelAudit(
+      'tunnel.allowlist.create',
+      'tunnel_allowlist',
+      rule!.id,
+      auth.user.id,
+      orgId,
+      { direction: body.direction, pattern: body.pattern, siteId: body.siteId || null },
+      getClientIp(c),
+    );
+
     return c.json(rule, 201);
   }
 );
@@ -526,6 +586,21 @@ tunnelRoutes.put(
       .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, orgId)))
       .returning();
 
+    await logTunnelAudit(
+      'tunnel.allowlist.update',
+      'tunnel_allowlist',
+      id,
+      auth.user.id,
+      orgId,
+      {
+        direction: existing.direction,
+        siteId: existing.siteId,
+        before: { pattern: existing.pattern, description: existing.description, enabled: existing.enabled },
+        after: { pattern: updated?.pattern, description: updated?.description, enabled: updated?.enabled },
+      },
+      getClientIp(c),
+    );
+
     return c.json(updated);
   }
 );
@@ -557,6 +632,16 @@ tunnelRoutes.delete(
     await db
       .delete(tunnelAllowlists)
       .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, orgId)));
+
+    await logTunnelAudit(
+      'tunnel.allowlist.delete',
+      'tunnel_allowlist',
+      id,
+      auth.user.id,
+      orgId,
+      { direction: existing.direction, pattern: existing.pattern, siteId: existing.siteId },
+      getClientIp(c),
+    );
 
     return c.json({ deleted: true });
   }
@@ -656,6 +741,18 @@ tunnelRoutes.delete(
     // Revoke any viewer JWTs minted for this tunnel. The service logs if Redis
     // is unavailable; the check path (requireViewerToken) fails closed.
     await revokeViewerSession(id);
+
+    await logTunnelAudit(
+      'tunnel.close',
+      'tunnel_session',
+      id,
+      auth.user.id,
+      session.orgId,
+      // Record the CLOSED session's owner so a partner/system teardown of
+      // someone else's tunnel is attributable to both actor and owner.
+      { deviceId: session.deviceId, type: session.type, sessionUserId: session.userId },
+      getClientIp(c),
+    );
 
     return c.json({ closed: true });
   }
