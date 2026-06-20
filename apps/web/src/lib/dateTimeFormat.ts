@@ -1,6 +1,5 @@
 import type { TimeFormat } from '@breeze/shared';
 import { normalizeTimeFormat, readTimeFormatPreference } from './appearance';
-import { useAuthStore } from '../stores/auth';
 
 type DateInput = string | number | Date | null | undefined;
 type FormatMode = 'date' | 'time' | 'dateTime';
@@ -40,11 +39,7 @@ function fallbackFor(value: DateInput, fallback?: string): string {
 }
 
 export function getEffectiveTimeFormat(explicit?: TimeFormat | null): TimeFormat | undefined {
-  return (
-    normalizeTimeFormat(explicit)
-    ?? normalizeTimeFormat(useAuthStore.getState().user?.preferences?.timeFormat)
-    ?? readTimeFormatPreference()
-  );
+  return normalizeTimeFormat(explicit) ?? readTimeFormatPreference();
 }
 
 function formatIncludesTime(options: Intl.DateTimeFormatOptions, mode: FormatMode): boolean {

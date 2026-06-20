@@ -1,20 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { writeTimeFormatPreference } from './appearance';
 import { formatDateTime, formatTime, withUserTimeFormatOptions } from './dateTimeFormat';
-
-let authState: { user: { preferences?: { timeFormat?: '12h' | '24h' } } | null } = { user: null };
-
-vi.mock('../stores/auth', () => ({
-  useAuthStore: {
-    getState: () => authState,
-  },
-}));
-
-const baseUser = {
-  id: 'user-1',
-  email: 'user@example.com',
-  name: 'User One',
-  mfaEnabled: false,
-};
 
 function makeMemoryStorage(): Storage {
   const data = new Map<string, string>();
@@ -47,7 +33,6 @@ describe('dateTimeFormat', () => {
       writable: true,
       configurable: true,
     });
-    authState = { user: null };
     window.localStorage.clear();
   });
 
@@ -74,10 +59,8 @@ describe('dateTimeFormat', () => {
     })).toBe('3:45 PM');
   });
 
-  it('uses the authenticated user preference when no explicit timeFormat is provided', () => {
-    authState = {
-      user: { ...baseUser, preferences: { timeFormat: '24h' } },
-    };
+  it('uses the saved appearance preference when no explicit timeFormat is provided', () => {
+    writeTimeFormatPreference('24h');
 
     expect(formatDateTime('2026-01-01T15:45:00.000Z', {
       locale: 'en-US',
