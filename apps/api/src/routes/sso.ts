@@ -22,8 +22,6 @@ import {
   buildAuthorizationUrl,
   exchangeCodeForTokens,
   getUserInfo,
-  decodeIdToken,
-  verifyIdTokenClaims,
   verifyIdTokenSignature,
   assertEmailVerified,
   mapUserAttributes,
@@ -907,30 +905,54 @@ ssoRoutes.get('/callback', async (c) => {
       codeVerifier: session.codeVerifier || undefined
     });
 
-    // Verify ID token if present. When the provider has a JWKS URL (populated
-    // from OIDC discovery), cryptographically verify the id_token signature
-    // against the IdP's JWKS — a forged/tampered token is rejected — and
-    // enforce email_verified before trusting any id_token email. Without a
-    // JWKS URL we fall back to the legacy claim-only checks; identity still
-    // flows from the server-to-server userinfo call, so this remains hardening.
-    if (tokens.id_token) {
-      if (config.jwksUrl) {
-        const claims = await verifyIdTokenSignature(tokens.id_token, config, session.nonce);
-        if (claims.email) {
-          assertEmailVerified(claims);
-        }
-      } else {
-        const claims = decodeIdToken(tokens.id_token);
-        verifyIdTokenClaims(claims, config, session.nonce);
-      }
+    // SSO is an account-takeover-critical entry point, so the id_token MUST be
+    // cryptographically verified and the identity used for account linking must
+    // be bound to that verified token — never the old unsigned claim-decode
+    // path. (security review #2: C-1/C-2)
+    //
+    // 1) An id_token is required, and a JWKS URL is required to verify it. The
+    //    previous code fell back to decode-only (NO signature check) when
+    //    `jwksUrl` was null — accepting an attacker-crafted/`alg:none` token.
+    //    We now refuse rather than accept an unverifiable token; a provider
+    //    whose discovery/jwks_uri is missing must be fixed to re-enable SSO.
+    if (!tokens.id_token) {
+      clearStateCookie();
+      return c.redirect('/login?error=sso_no_id_token');
+    }
+    if (!config.jwksUrl) {
+      clearStateCookie();
+      return c.redirect('/login?error=sso_provider_unverified');
+    }
+    const idClaims = await verifyIdTokenSignature(tokens.id_token, config, session.nonce);
+    if (idClaims.email) {
+      assertEmailVerified(idClaims);
     }
 
-    // Get user info
+    // Get user info (display attributes). Bind it to the signed token: per OIDC
+    // Core §5.3.2 the userinfo `sub` MUST equal the id_token `sub`; otherwise
+    // the userinfo response describes a different subject than the one we
+    // cryptographically verified, which is exactly the substitution the
+    // userinfo-only linking allowed.
     const userInfo = await getUserInfo(config, tokens.access_token);
+    const userInfoSub = (userInfo as { sub?: unknown }).sub;
+    if (idClaims.sub && typeof userInfoSub === 'string' && userInfoSub !== idClaims.sub) {
+      clearStateCookie();
+      return c.redirect('/login?error=sso_subject_mismatch');
+    }
 
     // Map attributes
     const mapping = (provider.attributeMapping as any) || { email: 'email', name: 'name' };
     const attrs = mapUserAttributes(userInfo, mapping);
+
+    // Identity (email) for account lookup/provisioning is taken from the
+    // signature-verified id_token when present, not the raw userinfo body, so
+    // the linked account is bound to the verified assertion. userinfo is still
+    // used for display name. (If the id_token omits email — some IdPs only
+    // return it from userinfo — we fall back to the userinfo email, which is
+    // still bound to the verified subject via the `sub` check above.)
+    if (idClaims.email) {
+      attrs.email = String(idClaims.email).toLowerCase();
+    }
 
     // Check allowed domains
     if (provider.allowedDomains) {

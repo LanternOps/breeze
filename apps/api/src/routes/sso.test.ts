@@ -160,6 +160,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { createTokenPair } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import {
   discoverOIDCConfig,
@@ -220,6 +221,12 @@ describe('sso routes', () => {
     process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
     permissionGate.deny = false;
     mfaGate.deny = false;
+    // security review #2: the callback now requires a signature-verified id_token
+    // (jwksUrl + id_token mandatory; the unsigned decode path was removed).
+    // Default the verifier to "passes" with minimal claims so flows that don't
+    // assert subject/email binding keep linking via userinfo as before; tests
+    // that exercise binding/rejection override this.
+    vi.mocked(verifyIdTokenSignature).mockResolvedValue({ nonce: 'nonce' } as any);
     setAuthContext();
     app = new Hono();
     app.route('/sso', ssoRoutes);
@@ -549,7 +556,8 @@ describe('sso routes', () => {
     vi.mocked(exchangeCodeForTokens).mockResolvedValue({
       access_token: 'idp-access-token',
       refresh_token: 'idp-refresh-token',
-      expires_in: 3600
+      expires_in: 3600,
+      id_token: 'header.payload.sig'
     } as any);
     vi.mocked(getUserInfo).mockResolvedValue({
       sub: 'external-user-1',
@@ -679,7 +687,8 @@ describe('sso routes', () => {
     vi.mocked(exchangeCodeForTokens).mockResolvedValue({
       access_token: 'idp-access-token',
       refresh_token: 'idp-refresh-token',
-      expires_in: 3600
+      expires_in: 3600,
+      id_token: 'header.payload.sig'
     } as any);
     vi.mocked(getUserInfo).mockResolvedValue({
       sub: 'external-user-1',
@@ -716,6 +725,7 @@ describe('sso routes', () => {
               authorizationUrl: 'https://issuer.example.com/auth',
               tokenUrl: 'https://issuer.example.com/token',
               userInfoUrl: 'https://issuer.example.com/userinfo',
+              jwksUrl: 'https://issuer.example.com/jwks',
               clientId: 'client-id',
               clientSecret: 'client-secret',
               scopes: 'openid profile email',
@@ -785,7 +795,8 @@ describe('sso routes', () => {
       vi.mocked(exchangeCodeForTokens).mockResolvedValue({
         access_token: 'idp-access-token',
         refresh_token: 'idp-refresh-token',
-        expires_in: 3600
+        expires_in: 3600,
+        id_token: 'header.payload.sig'
       } as any);
       vi.mocked(getUserInfo).mockResolvedValue({
         sub: 'external-user-1',
@@ -957,6 +968,49 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('/login?error=sso_error');
       expect(verifyIdTokenSignature).toHaveBeenCalled();
+    });
+
+    // security review #2 (C-2): a token response with no id_token must be
+    // rejected — the callback no longer accepts an unsigned/absent id_token.
+    it('rejects a callback whose token response has no id_token', async () => {
+      wireHappyPathDb();
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+        access_token: 'idp-access-token',
+        refresh_token: 'idp-refresh-token',
+        expires_in: 3600
+        // no id_token
+      } as any);
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') }
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_no_id_token');
+      // No userinfo lookup / account linking happened.
+      expect(getUserInfo).not.toHaveBeenCalled();
+    });
+
+    // security review #2 (C-1): userinfo identity must be bound to the
+    // signature-verified id_token. A userinfo `sub` that differs from the
+    // verified id_token `sub` is the substitution the old userinfo-only linking
+    // allowed — reject it.
+    it('rejects when the userinfo subject does not match the verified id_token subject', async () => {
+      wireHappyPathDb(); // getUserInfo sub = 'external-user-1'
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({
+        sub: 'attacker-controlled-sub',
+        nonce: 'nonce'
+      } as any);
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') }
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_subject_mismatch');
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
   });
 });

@@ -27,6 +27,7 @@ import {
   auditUserLoginFailure,
   getClientIP,
   resolveCurrentUserTokenContext,
+  NoTenantMembershipError,
   setRefreshTokenCookie,
   toPublicTokens,
   userRequiresSetup,
@@ -122,12 +123,15 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
   try {
     context = await resolveCurrentUserTokenContext(user.id);
   } catch (err) {
-    if (!(err instanceof TenantInactiveError)) throw err;
+    // Membership-less / non-admin user: don't authenticate via CF-Access (it
+    // would mint a system-scope token). Fall through to password auth, which
+    // also fails closed for this user. (security review #2)
+    if (!(err instanceof TenantInactiveError) && !(err instanceof NoTenantMembershipError)) throw err;
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
       name: user.name,
-      reason: 'tenant_inactive',
+      reason: err instanceof NoTenantMembershipError ? 'no_membership' : 'tenant_inactive',
       result: 'denied',
       details: { method: 'cf_access_jwt' },
     });

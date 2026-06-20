@@ -47,6 +47,7 @@ import {
   isTokenRevokedForUser,
   revokeCurrentRefreshTokenJti,
   resolveCurrentUserTokenContext,
+  NoTenantMembershipError,
   auditUserLoginFailure,
   auditLogin,
   userRequiresSetup
@@ -355,7 +356,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     context = await resolveCurrentUserTokenContext(user.id);
     await assertPasswordAuthAllowedBySso(context);
   } catch (err) {
-    if (!(err instanceof TenantInactiveError) && !(err instanceof SsoPasswordAuthRequiredError)) throw err;
+    if (
+      !(err instanceof TenantInactiveError) &&
+      !(err instanceof SsoPasswordAuthRequiredError) &&
+      !(err instanceof NoTenantMembershipError)
+    ) throw err;
     // #719 residual 2: auditUserLoginFailure feeds the anomaly metric
     // (recordFailedLogin) internally, so a sudden spike in inactive-tenant
     // denials (e.g. a billing-state change trapping a cohort of users) is
@@ -685,7 +690,9 @@ loginRoutes.post('/refresh', async (c) => {
   try {
     context = await resolveCurrentUserTokenContext(user.id);
   } catch (err) {
-    if (!(err instanceof TenantInactiveError)) throw err;
+    // A membership-less / non-admin user (membership revoked mid-session) must
+    // not be able to refresh into a system-scope token. Fail closed. (sec review #2)
+    if (!(err instanceof TenantInactiveError) && !(err instanceof NoTenantMembershipError)) throw err;
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }

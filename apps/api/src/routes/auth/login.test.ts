@@ -103,6 +103,7 @@ vi.mock('./helpers', () => ({
     orgId: null,
     scope: 'partner',
   })),
+  NoTenantMembershipError: class NoTenantMembershipError extends Error {},
   auditUserLoginFailure: vi.fn(
     async (_c: unknown, opts: { reason: string }) => {
       // Faithful stand-in for the real helper's single internal emission.
@@ -143,7 +144,7 @@ import { createTokenPair } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
-import { resolveCurrentUserTokenContext } from './helpers';
+import { resolveCurrentUserTokenContext, NoTenantMembershipError } from './helpers';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -319,6 +320,29 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     // The metric is emitted ONLY via auditUserLoginFailure's internal
     // recordFailedLogin call; login.ts must not add its own (#719 regression).
     expect(recordFailedLogin).toHaveBeenCalledTimes(1);
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  // security review #2: a membership-less, non-platform-admin user must NOT be
+  // issued a token. resolveCurrentUserTokenContext throws NoTenantMembershipError
+  // (instead of defaulting to scope:'system'); /login maps it to a generic 401
+  // and mints nothing.
+  it('rejects a membership-less non-admin user with a generic 401 (no token)', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'orphan-1', email: 'orphan@nowhere.com', name: 'Orphan',
+      passwordHash: 'password-hash', status: 'active',
+      mfaEnabled: false, mfaSecret: null, mfaMethod: null,
+      phoneNumber: null, avatarUrl: null,
+    }]) as any);
+    vi.mocked(resolveCurrentUserTokenContext).mockRejectedValueOnce(
+      new NoTenantMembershipError('User orphan-1 has no tenant membership and is not a platform admin'),
+    );
+
+    const res = await postLogin({ email: 'orphan@nowhere.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ error: 'Invalid email or password' });
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 });

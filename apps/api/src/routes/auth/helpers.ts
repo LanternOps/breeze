@@ -463,6 +463,20 @@ export async function revokeCurrentRefreshTokenJti(c: Context, expectedUserId?: 
 // User context helpers
 // ============================================
 
+/**
+ * Thrown by resolveCurrentUserTokenContext when a user has no partner or org
+ * membership and is NOT a platform admin. Such a principal must never be issued
+ * a token (it would otherwise default to scope:'system', which short-circuits
+ * RLS to full cross-tenant access). Login entry points map this to a generic
+ * 401. (security review #2)
+ */
+export class NoTenantMembershipError extends Error {
+  constructor(userId: string) {
+    super(`User ${userId} has no tenant membership and is not a platform admin`);
+    this.name = 'NoTenantMembershipError';
+  }
+}
+
 export async function resolveCurrentUserTokenContext(userId: string): Promise<UserTokenContext> {
   return runWithSystemDbAccess(async () => {
     let roleId: string | null = null;
@@ -540,6 +554,24 @@ export async function resolveCurrentUserTokenContext(userId: string): Promise<Us
           partnerId,
           orgId
         });
+      }
+    }
+
+    // No partner or org membership resolved. The ONLY legitimate membership-less
+    // system-scope principal is a platform admin; every other such user is an
+    // orphaned / partially-provisioned account (e.g. the #1367 class). Handing
+    // them the default scope:'system' grants full cross-tenant access because
+    // the RLS helpers (breeze_has_org_access/_partner_access) short-circuit TRUE
+    // for system scope. Fail closed unless the user is a platform admin.
+    // (security review #2)
+    if (scope === 'system') {
+      const [u] = await db
+        .select({ isPlatformAdmin: users.isPlatformAdmin })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      if (u?.isPlatformAdmin !== true) {
+        throw new NoTenantMembershipError(userId);
       }
     }
 

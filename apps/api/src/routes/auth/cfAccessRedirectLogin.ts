@@ -29,6 +29,7 @@ import {
   clearRefreshTokenCookie,
   getClientIP,
   resolveCurrentUserTokenContext,
+  NoTenantMembershipError,
   resolveRefreshToken,
   setRefreshTokenCookie,
 } from './helpers';
@@ -142,16 +143,18 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
   try {
     context = await resolveCurrentUserTokenContext(user.id);
   } catch (err) {
-    if (!(err instanceof TenantInactiveError)) throw err;
+    // A membership-less / non-admin user must not be issued a system-scope
+    // token via the CF-Access path either. Fail closed. (security review #2)
+    if (!(err instanceof TenantInactiveError) && !(err instanceof NoTenantMembershipError)) throw err;
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
       name: user.name,
-      reason: 'tenant_inactive',
+      reason: err instanceof NoTenantMembershipError ? 'no_membership' : 'tenant_inactive',
       result: 'denied',
       details: { method: 'cf_access_jwt_redirect' },
     });
-    return loginErrorRedirect('tenant-inactive');
+    return loginErrorRedirect(err instanceof NoTenantMembershipError ? 'inactive' : 'tenant-inactive');
   }
 
   const trustsMfa = cfAccessTrustsMfa();
