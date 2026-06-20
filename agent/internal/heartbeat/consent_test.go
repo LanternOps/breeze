@@ -11,6 +11,8 @@ func TestDecideConsent(t *testing.T) {
 		{"timeout-block", "", true, true, "block", false, "timeout"},
 		{"noHelper-proceed", "", false, false, "proceed", true, "helper_absent"},
 		{"noHelper-block", "", false, false, "block", false, "helper_absent"},
+		{"noUser-proceed", "", true, false, "proceed", true, "no_user"},
+		{"noUser-block", "", true, false, "block", false, "no_user"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
