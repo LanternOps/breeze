@@ -214,6 +214,7 @@ import { initializeDrExecutionWorker, shutdownDrExecutionWorker } from './jobs/d
 import { initializeRecoveryMediaWorker, shutdownRecoveryMediaWorker } from './jobs/recoveryMediaWorker';
 import { initializeRecoveryBootMediaWorker, shutdownRecoveryBootMediaWorker } from './jobs/recoveryBootMediaWorker';
 import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
+import { initializeSsoDomainRecheckWorker, shutdownSsoDomainRecheckWorker } from './services/ssoDomainRecheckWorker';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import {
   initializeIncidentCorrelationWorker,
@@ -1127,6 +1128,7 @@ async function initializeWorkers(): Promise<void> {
     ['recoveryMediaWorker', initializeRecoveryMediaWorker],
     ['recoveryBootMediaWorker', initializeRecoveryBootMediaWorker],
     ['warrantyWorker', initializeWarrantyWorker],
+    ['ssoDomainRecheckWorker', initializeSsoDomainRecheckWorker],
     ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
@@ -1251,6 +1253,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownSensitiveDataWorkers,
     shutdownPeripheralJobs,
     shutdownWarrantyWorker,
+    shutdownSsoDomainRecheckWorker,
     shutdownBrowserSecurityJobs,
     shutdownIncidentSlaMonitor,
     shutdownIncidentTimelineEnricher,

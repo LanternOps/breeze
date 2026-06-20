@@ -52,6 +52,7 @@ import {
   orgHasAnyVerifiedDomain,
   isSsoDomainVerificationStrict,
   isSsoProvisioningBlocked,
+  recheckAllDomains,
   TXT_RECORD_HOST_PREFIX,
   TXT_RECORD_VALUE_PREFIX,
 } from './ssoDomainVerification';
@@ -510,5 +511,111 @@ describe('isSsoProvisioningBlocked', () => {
 
     expect(result).toBe(true);
     expect(dbSelectMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// recheckAllDomains
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('recheckAllDomains', () => {
+  /**
+   * Build a chainable db.select mock: select().from() resolves to rows.
+   * Used for the top-level list query inside recheckAllDomains.
+   */
+  function setupListSelect(rows: unknown[]) {
+    const from = vi.fn().mockResolvedValue(rows);
+    dbSelectMock.mockReturnValueOnce({ from });
+    return { from };
+  }
+
+  /**
+   * Build a chainable db.select mock for verifyDomain's internal row fetch:
+   * select().from().where().limit() resolves to rows.
+   */
+  function setupRowSelect(rows: unknown[]) {
+    const limit = vi.fn().mockResolvedValue(rows);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    dbSelectMock.mockReturnValueOnce({ from });
+    return { from, where, limit };
+  }
+
+  it('returns {checked:0, verified:0} when no domains exist', async () => {
+    // The list select returns an empty array — verifyDomain is never called.
+    setupListSelect([]);
+
+    const result = await recheckAllDomains();
+
+    expect(result).toEqual({ checked: 0, verified: 0 });
+    // Only the list select was called; no per-domain selects or updates.
+    expect(dbSelectMock).toHaveBeenCalledTimes(1);
+    expect(dbUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it('returns {checked:2, verified:1} when 2 domains exist and DNS matches only 1', async () => {
+    const TOKEN_A = 'tokenAAAAAAAAAAAAAAAAAAAA';
+    const TOKEN_B = 'tokenBBBBBBBBBBBBBBBBBBBB';
+
+    // 1) List select → two domain rows
+    setupListSelect([
+      { orgId: 'org-1', domain: 'acme.com' },
+      { orgId: 'org-2', domain: 'widgets.com' },
+    ]);
+
+    // 2) verifyDomain for acme.com: row select → full row with TOKEN_A
+    setupRowSelect([{
+      id: 'row-a',
+      orgId: 'org-1',
+      domain: 'acme.com',
+      verificationToken: TOKEN_A,
+      verifiedAt: null,
+    }]);
+    // update for acme.com (DNS matches → verified)
+    setupUpdate();
+
+    // 3) verifyDomain for widgets.com: row select → full row with TOKEN_B
+    setupRowSelect([{
+      id: 'row-b',
+      orgId: 'org-2',
+      domain: 'widgets.com',
+      verificationToken: TOKEN_B,
+      verifiedAt: null,
+    }]);
+    // update for widgets.com (DNS mismatches → lastCheckedAt only)
+    setupUpdate();
+
+    // DNS: acme.com matches, widgets.com does not
+    resolveTxtMock
+      .mockResolvedValueOnce([[`breeze-domain-verify=${TOKEN_A}`]] as any)
+      .mockResolvedValueOnce([[`breeze-domain-verify=WRONG`]] as any);
+
+    const result = await recheckAllDomains();
+
+    expect(result).toEqual({ checked: 2, verified: 1 });
+    // 1 list select + 2 per-domain selects
+    expect(dbSelectMock).toHaveBeenCalledTimes(3);
+    // 2 per-domain updates
+    expect(dbUpdateMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns {checked:1, verified:1} for a single domain where DNS matches', async () => {
+    const TOKEN = 'singletoken123456789abcde';
+
+    setupListSelect([{ orgId: 'org-1', domain: 'example.com' }]);
+    setupRowSelect([{
+      id: 'row-1',
+      orgId: 'org-1',
+      domain: 'example.com',
+      verificationToken: TOKEN,
+      verifiedAt: null,
+    }]);
+    setupUpdate();
+
+    resolveTxtMock.mockResolvedValueOnce([[`breeze-domain-verify=${TOKEN}`]] as any);
+
+    const result = await recheckAllDomains();
+
+    expect(result).toEqual({ checked: 1, verified: 1 });
   });
 });

@@ -141,3 +141,21 @@ export async function isSsoProvisioningBlocked(orgId: string, emailDomain: strin
   const verified = emailDomain ? await isDomainVerifiedForOrg(orgId, emailDomain) : false;
   return !verified;
 }
+
+/**
+ * Re-run DNS TXT verification for EVERY SSO domain. Sticky: never un-verifies
+ * (delegates to verifyDomain, which only sets verifiedAt and never clears it);
+ * flips pending→verified once DNS propagates and refreshes lastCheckedAt.
+ * Ambient db context — the re-check worker wraps this in withSystemDbAccessContext.
+ */
+export async function recheckAllDomains(): Promise<{ checked: number; verified: number }> {
+  const rows = await db
+    .select({ orgId: ssoVerifiedDomains.orgId, domain: ssoVerifiedDomains.domain })
+    .from(ssoVerifiedDomains);
+  let verified = 0;
+  for (const row of rows) {
+    const result = await verifyDomain({ orgId: row.orgId, domain: row.domain });
+    if (result.verified) verified++;
+  }
+  return { checked: rows.length, verified };
+}
