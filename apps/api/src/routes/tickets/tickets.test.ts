@@ -31,7 +31,7 @@ const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, l
         user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
         partnerId: 'p-1' as string | null,
         orgId: null as string | null,
-        accessibleOrgIds: null as string[] | null,
+        accessibleOrgIds: ['org-1', '3f2f1d8e-1111-4222-8333-444455556666'] as string[] | null,
         orgCondition: () => undefined,
         canAccessOrg: (_id: string) => true as boolean
       }
@@ -201,7 +201,7 @@ const DEFAULT_AUTH = {
   user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
   partnerId: 'p-1' as string | null,
   orgId: null as string | null,
-  accessibleOrgIds: null as string[] | null,
+  accessibleOrgIds: ['org-1', ORG_ID] as string[] | null,
   orgCondition: () => undefined,
   canAccessOrg: (_id: string) => true as boolean
 };
@@ -323,6 +323,15 @@ describe('GET /tickets', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).toHaveProperty('error', 'Partner context required');
+  });
+
+  it('rejects an explicit orgId outside the partner user org allowlist', async () => {
+    authRef.current = { ...DEFAULT_AUTH, canAccessOrg: () => false };
+
+    const res = await makeApp().request(`/tickets?orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(dbSelectMock).not.toHaveBeenCalled();
   });
 
   it('scoped org query includes a WHERE arg (org scope adds condition)', async () => {
@@ -458,6 +467,17 @@ describe('GET /tickets/stats', () => {
 
 describe('GET /tickets/:id — scoped pre-check', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('constrains partner ticket lookup to the user accessible org ids', async () => {
+    authRef.current = { ...DEFAULT_AUTH, accessibleOrgIds: ['org-visible'] };
+    dbSelectMock.mockResolvedValue([]);
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+
+    expect(res.status).toBe(404);
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    expect(JSON.stringify(lastWhereArgs[0]!.conditions)).toContain('org-visible');
+  });
 
   it('returns 404 when getScopedTicketOr404 finds no row even if service would succeed', async () => {
     // The scoped SELECT returns nothing (out-of-scope or missing ticket)

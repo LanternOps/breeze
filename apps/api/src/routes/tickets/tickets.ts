@@ -117,6 +117,9 @@ export async function getScopedTicketOr404(
   } else if (auth.scope === 'partner') {
     if (!auth.partnerId) return null;
     conditions.push(eq(tickets.partnerId, auth.partnerId));
+    const orgIds = auth.accessibleOrgIds ?? [];
+    if (orgIds.length === 0) return null;
+    conditions.push(inArray(tickets.orgId, orgIds));
   }
   // system scope: no extra condition
 
@@ -160,6 +163,8 @@ function buildScopeConditions(auth: AuthContext): SQL[] | typeof SCOPE_MISSING {
   } else if (auth.scope === 'partner') {
     if (!auth.partnerId) return SCOPE_MISSING;
     conditions.push(eq(tickets.partnerId, auth.partnerId));
+    const orgIds = auth.accessibleOrgIds ?? [];
+    conditions.push(orgIds.length > 0 ? inArray(tickets.orgId, orgIds) : sql`false`);
   }
   return conditions;
 }
@@ -270,7 +275,12 @@ ticketsRoutes.get(
       if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
       conditions.push(eq(tickets.partnerId, auth.partnerId));
     }
-    if (q.orgId) conditions.push(eq(tickets.orgId, q.orgId));
+    if (q.orgId) {
+      if (auth.scope !== 'system' && !auth.canAccessOrg(q.orgId)) {
+        return c.json({ error: 'Organization not found or access denied' }, 403);
+      }
+      conditions.push(eq(tickets.orgId, q.orgId));
+    }
     if (q.deviceId) {
       // Site gate on the explicit device filter (alerts pattern): a restricted
       // caller asking for a device outside their sites gets a hard 403, not an
