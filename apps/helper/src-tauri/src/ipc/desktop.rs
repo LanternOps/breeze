@@ -244,10 +244,8 @@ pub fn show_banner_window(app: &AppHandle, req: &BannerShowRequest) {
     .resizable(false);
 
     // `transparent`/`shadow(false)` give the banner its floating pill look.
-    // On macOS `transparent` is gated behind the `macos-private-api` Tauri
-    // feature (not enabled here), so the banner falls back to an opaque
-    // borderless window there — still always-on-top and correctly sized.
-    #[cfg(not(target_os = "macos"))]
+    // `macos-private-api` is enabled in Cargo.toml + tauri.conf.json so
+    // transparency works on macOS too (Helper is self-distributed, not App Store).
     let builder = builder.transparent(true).shadow(false);
 
     let builder = match primary_top_center(app, BANNER_W, BANNER_H) {
