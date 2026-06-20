@@ -40,3 +40,22 @@ export async function listSharePointLibraries(orgId: string): Promise<DirectInvo
 
   return { kind: 'ok', data: { libraries } };
 }
+
+export async function resolveUserGroupMembership(orgId: string, upn: string): Promise<DirectInvokeResult> {
+  if (!upn || typeof upn !== 'string') {
+    return { kind: 'error', code: 'bad_request', message: 'upn is required.' };
+  }
+  const tok = await getToken(orgId);
+  if ('kind' in tok) return tok;
+
+  // transitiveMemberOf so nested group membership counts; only group objects, ids only.
+  const res = await graphFetch(
+    tok.token, 'GET',
+    `/users/${encodeURIComponent(upn)}/transitiveMemberOf/microsoft.graph.group?$select=id&$top=200`,
+  );
+  if (res.kind === 'error') return res;
+
+  const rows = Array.isArray((res.data as any)?.value) ? (res.data as any).value : [];
+  const groupIds = rows.map((g: any) => g.id).filter((id: unknown): id is string => typeof id === 'string');
+  return { kind: 'ok', data: { groupIds } };
+}

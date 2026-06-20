@@ -6,7 +6,7 @@ vi.mock('./m365DirectGraph', () => ({
 }));
 
 import { getToken, graphFetch } from './m365DirectGraph';
-import { listSharePointLibraries } from './onedriveGraph';
+import { listSharePointLibraries, resolveUserGroupMembership } from './onedriveGraph';
 
 describe('listSharePointLibraries', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -36,5 +36,27 @@ describe('listSharePointLibraries', () => {
     (getToken as any).mockResolvedValueOnce({ kind: 'error', code: 'no_connection', message: 'x' });
     const res = await listSharePointLibraries('org-1');
     expect(res.kind).toBe('error');
+  });
+});
+
+describe('resolveUserGroupMembership', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns transitive group ids for the user', async () => {
+    (graphFetch as any).mockResolvedValueOnce({ kind: 'ok', data: { value: [
+      { id: 'g-1' }, { id: 'g-2' },
+    ] } });
+    const res = await resolveUserGroupMembership('org-1', "user@contoso.com");
+    expect((res as any).data.groupIds).toEqual(['g-1', 'g-2']);
+    // verify the OData id was single-quote-escaped into the path
+    const calledPath = (graphFetch as any).mock.calls[0][2] as string;
+    expect(calledPath).toContain('/users/');
+    expect(calledPath).toContain('transitiveMemberOf');
+  });
+
+  it('rejects an empty upn before calling Graph', async () => {
+    const res = await resolveUserGroupMembership('org-1', '');
+    expect(res.kind).toBe('error');
+    expect((graphFetch as any)).not.toHaveBeenCalled();
   });
 });
