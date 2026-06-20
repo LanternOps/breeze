@@ -147,9 +147,20 @@ async function getDeviceWithOrgCheck(
   return device;
 }
 
+// Resolve an alert and enforce BOTH tenancy axes (mirrors the web helper in
+// routes/alerts/helpers.ts):
+//  - org axis (RLS-backed) via ensureOrgAccess.
+//  - site axis (app-layer ONLY — RLS does NOT enforce it): a site-restricted
+//    org user (`perms.allowedSiteIds` set) must not read/act on an alert whose
+//    device lives in a site outside their allowlist. Deviceless (org-wide)
+//    alerts stay visible; out-of-site alerts return null so the handler surfaces
+//    a 404 (no oracle distinguishing "absent" from "forbidden"). Unrestricted
+//    callers (partner/system scope, or org users with no site restriction —
+//    `allowedSiteIds` undefined) are unaffected.
 async function getAlertWithOrgCheck(
   alertId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
+  perms?: UserPermissions
 ) {
   const [alert] = await db
     .select()
@@ -164,6 +175,19 @@ async function getAlertWithOrgCheck(
   const hasAccess = await ensureOrgAccess(alert.orgId, auth);
   if (!hasAccess) {
     return null;
+  }
+
+  // Site-axis gate. Only restricted callers (allowedSiteIds set) are narrowed.
+  // Deviceless alerts are org-wide and not site-bound, so they pass.
+  if (perms?.allowedSiteIds && alert.deviceId) {
+    const [device] = await db
+      .select({ siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, alert.deviceId))
+      .limit(1);
+    if (typeof device?.siteId !== 'string' || !canAccessSite(perms, device.siteId)) {
+      return null;
+    }
   }
 
   return alert;
@@ -661,8 +685,9 @@ mobileRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const alertId = c.req.param('id')!;
+    const perms = c.get('permissions') as UserPermissions | undefined;
 
-    const alert = await getAlertWithOrgCheck(alertId, auth);
+    const alert = await getAlertWithOrgCheck(alertId, auth, perms);
     if (!alert) {
       return c.json({ error: 'Alert not found' }, 404);
     }
@@ -734,8 +759,9 @@ mobileRoutes.post(
     const auth = c.get('auth');
     const alertId = c.req.param('id')!;
     const data = c.req.valid('json');
+    const perms = c.get('permissions') as UserPermissions | undefined;
 
-    const alert = await getAlertWithOrgCheck(alertId, auth);
+    const alert = await getAlertWithOrgCheck(alertId, auth, perms);
     if (!alert) {
       return c.json({ error: 'Alert not found' }, 404);
     }

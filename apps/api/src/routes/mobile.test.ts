@@ -663,6 +663,89 @@ describe('mobile routes', () => {
         },
       }));
     });
+
+    const SITE_A = 'aaaaaaaa-0000-0000-0000-00000000000a';
+    const SITE_B = 'bbbbbbbb-0000-0000-0000-00000000000b';
+
+    it('should 404 and not mutate when site-restricted caller targets an out-of-site alert', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_A] };
+      vi.mocked(db.select)
+        // alert lookup
+        .mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'alert-1', status: 'active', orgId: 'org-123', ruleId: 'rule-1', deviceId: 'device-b' }
+          ]) as any
+        )
+        // device site lookup -> device lives in SITE_B (outside allowlist)
+        .mockReturnValueOnce(mockSelectLimitChain([{ siteId: SITE_B }]) as any);
+
+      const res = await app.request('/mobile/alerts/alert-1/acknowledge', {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
+    });
+
+    it('should allow a same-site restricted caller to acknowledge', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_A] };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'alert-1', status: 'active', orgId: 'org-123', ruleId: 'rule-1', deviceId: 'device-a' }
+          ]) as any
+        )
+        // device site lookup -> device lives in SITE_A (in allowlist)
+        .mockReturnValueOnce(mockSelectLimitChain([{ siteId: SITE_A }]) as any);
+      vi.mocked(db.update).mockReturnValue(
+        mockUpdateReturning([{ id: 'alert-1', status: 'acknowledged' }]) as any
+      );
+
+      const res = await app.request('/mobile/alerts/alert-1/acknowledge', {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('should leave deviceless alert visible to a site-restricted caller', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_A] };
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: 'alert-1', status: 'active', orgId: 'org-123', ruleId: 'rule-1', deviceId: null }
+        ]) as any
+      );
+      vi.mocked(db.update).mockReturnValue(
+        mockUpdateReturning([{ id: 'alert-1', status: 'acknowledged' }]) as any
+      );
+
+      const res = await app.request('/mobile/alerts/alert-1/acknowledge', {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('should not narrow an unrestricted caller (allowedSiteIds undefined)', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: 'alert-1', status: 'active', orgId: 'org-123', ruleId: 'rule-1', deviceId: 'device-b' }
+        ]) as any
+      );
+      vi.mocked(db.update).mockReturnValue(
+        mockUpdateReturning([{ id: 'alert-1', status: 'acknowledged' }]) as any
+      );
+
+      const res = await app.request('/mobile/alerts/alert-1/acknowledge', {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
   });
 
   describe('POST /mobile/alerts/:id/resolve', () => {
@@ -729,6 +812,97 @@ describe('mobile routes', () => {
           hasResolutionNote: true,
         },
       }));
+    });
+
+    const SITE_A = 'aaaaaaaa-0000-0000-0000-00000000000a';
+    const SITE_B = 'bbbbbbbb-0000-0000-0000-00000000000b';
+
+    it('should 404 and not mutate when site-restricted caller targets an out-of-site alert', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_A] };
+      vi.mocked(db.select)
+        // alert lookup
+        .mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'alert-1', status: 'acknowledged', orgId: 'org-123', deviceId: 'device-b' }
+          ]) as any
+        )
+        // device site lookup -> device lives in SITE_B (outside allowlist)
+        .mockReturnValueOnce(mockSelectLimitChain([{ siteId: SITE_B }]) as any);
+
+      const res = await app.request('/mobile/alerts/alert-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: 'done' })
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
+    });
+
+    it('should allow a same-site restricted caller to resolve', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_A] };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'alert-1', status: 'acknowledged', orgId: 'org-123', deviceId: 'device-a' }
+          ]) as any
+        )
+        // device site lookup -> device lives in SITE_A (in allowlist)
+        .mockReturnValueOnce(mockSelectLimitChain([{ siteId: SITE_A }]) as any);
+      vi.mocked(db.update).mockReturnValue(
+        mockUpdateReturning([{ id: 'alert-1', status: 'resolved', resolutionNote: 'done' }]) as any
+      );
+
+      const res = await app.request('/mobile/alerts/alert-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: 'done' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('should leave deviceless alert visible to a site-restricted caller', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_A] };
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: 'alert-1', status: 'acknowledged', orgId: 'org-123', deviceId: null }
+        ]) as any
+      );
+      vi.mocked(db.update).mockReturnValue(
+        mockUpdateReturning([{ id: 'alert-1', status: 'resolved', resolutionNote: 'done' }]) as any
+      );
+
+      const res = await app.request('/mobile/alerts/alert-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: 'done' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('should not narrow an unrestricted caller (allowedSiteIds undefined)', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: 'alert-1', status: 'acknowledged', orgId: 'org-123', deviceId: 'device-b' }
+        ]) as any
+      );
+      vi.mocked(db.update).mockReturnValue(
+        mockUpdateReturning([{ id: 'alert-1', status: 'resolved', resolutionNote: 'done' }]) as any
+      );
+
+      const res = await app.request('/mobile/alerts/alert-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: 'done' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
     });
   });
 
