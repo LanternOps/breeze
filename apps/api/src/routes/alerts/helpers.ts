@@ -46,6 +46,55 @@ export function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: str
   return auth.canAccessOrg(orgId);
 }
 
+/**
+ * Resolve the org a mutating alerts request should write to, honouring an
+ * explicit (query-param) orgId for partner/system callers.
+ *
+ * Org-scoped callers are pinned to their own org (an explicit orgId that
+ * disagrees is rejected). Partner/system callers select via the request orgId,
+ * which is access-checked; with no orgId, a partner with exactly one accessible
+ * org is disambiguated to it, otherwise the request is genuinely ambiguous (400)
+ * — and an org-scoped caller with no org context is 403. Tenant isolation is
+ * unchanged: the resolved orgId is always canAccessOrg-checked and RLS still
+ * backstops.
+ */
+export function resolveWriteOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    accessibleOrgIds: string[] | null;
+    canAccessOrg: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string
+): { orgId?: string; error?: string; status?: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) {
+      return { error: 'Organization context required', status: 403 };
+    }
+    if (requestedOrgId && requestedOrgId !== auth.orgId) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId: auth.orgId };
+  }
+
+  if (requestedOrgId) {
+    if (!ensureOrgAccess(requestedOrgId, auth)) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId: requestedOrgId };
+  }
+
+  if (auth.orgId) {
+    return { orgId: auth.orgId };
+  }
+
+  if (auth.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
+    return { orgId: auth.accessibleOrgIds[0] };
+  }
+
+  return { error: 'orgId is required when partner has multiple organizations', status: 400 };
+}
+
 export async function getAlertRuleWithOrgCheck(ruleId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [rule] = await db
     .select()

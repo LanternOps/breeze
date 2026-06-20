@@ -6,7 +6,7 @@ import { notificationRoutingRules } from '../../db/schema';
 import { eq, and, asc, inArray } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { ensureOrgAccess } from './helpers';
+import { ensureOrgAccess, resolveWriteOrgId } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
 
 const listRoutingRulesSchema = z.object({
@@ -101,10 +101,11 @@ routingRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
+      if (resolved.error) {
+        return c.json({ error: resolved.error }, resolved.status ?? 400);
       }
+      const orgId = resolved.orgId!;
 
       const data = c.req.valid('json');
 
@@ -146,10 +147,11 @@ routingRoutes.patch(
   async (c) => {
     try {
       const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
+      if (resolved.error) {
+        return c.json({ error: resolved.error }, resolved.status ?? 400);
       }
+      const orgId = resolved.orgId!;
 
       const ruleId = c.req.param('id')!;
       const updates = c.req.valid('json');
@@ -202,10 +204,11 @@ routingRoutes.delete(
   async (c) => {
     try {
       const auth = c.get('auth');
-      const orgId = auth.orgId;
-      if (!orgId) {
-        return c.json({ error: 'orgId is required' }, 400);
+      const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
+      if (resolved.error) {
+        return c.json({ error: resolved.error }, resolved.status ?? 400);
       }
+      const orgId = resolved.orgId!;
 
       const ruleId = c.req.param('id')!;
 
