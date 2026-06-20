@@ -53,7 +53,7 @@ export const pamInlineSettingsSchema = z
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access' | 'pam';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access' | 'pam' | 'onedrive_helper';
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -1344,8 +1344,8 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  if (featureType === 'monitoring' || featureType === 'event_log') {
-    // Monitoring and event_log have no policy table — requires inlineSettings
+  if (featureType === 'monitoring' || featureType === 'event_log' || featureType === 'onedrive_helper') {
+    // Monitoring, event_log, and onedrive_helper have no policy table — requires inlineSettings
     if (featurePolicyId) {
       return { valid: false, error: `${featureType} feature type does not support featurePolicyId; use inlineSettings instead` };
     }
