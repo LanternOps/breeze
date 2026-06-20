@@ -46,14 +46,18 @@ vi.mock('../db', () => {
   };
 });
 
-const { recompute, emit, capture } = vi.hoisted(() => ({ recompute: vi.fn(), emit: vi.fn(), capture: vi.fn() }));
+const { recompute, emit, capture, audit } = vi.hoisted(() => ({ recompute: vi.fn(), emit: vi.fn(), capture: vi.fn(), audit: vi.fn() }));
 vi.mock('./invoiceService', () => ({ recomputeInvoiceStatus: recompute }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: emit }));
 vi.mock('./sentry', () => ({ captureException: capture }));
+vi.mock('./auditEvents', () => ({
+  writeAuditEvent: audit,
+  requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
+}));
 
 import { recordStripePayment, reflectStripeRefund } from './stripeReconcile';
 
-beforeEach(() => { results.length = 0; recompute.mockReset(); emit.mockReset(); capture.mockReset(); setAmount.calls.length = 0; deleteWhereArgs.calls.length = 0; setMapping.calls.length = 0; insertValues.calls.length = 0; });
+beforeEach(() => { results.length = 0; recompute.mockReset(); emit.mockReset(); capture.mockReset(); audit.mockReset(); setAmount.calls.length = 0; deleteWhereArgs.calls.length = 0; setMapping.calls.length = 0; insertValues.calls.length = 0; });
 
 describe('recordStripePayment', () => {
   it('inserts a card payment, links the mapping, recomputes, emits payment.recorded', async () => {
@@ -205,9 +209,11 @@ describe('recordStripePayment', () => {
 
 describe('reflectStripeRefund', () => {
   it('full refund voids the linked payment (delete, NOT update) and recomputes', async () => {
-    // db call order: select mapping → delete payment → update mapping →
-    // (recompute, mocked) → invoicePartnerId: select invoice → (emit, mocked)
+    // db call order: select mapping → select payment (pre-delete audit snapshot) →
+    // delete payment → update mapping → (recompute, mocked) →
+    // invoicePartnerId: select invoice → (emit, mocked)
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '100.00', method: 'card', recordedBy: null }]); // payment snapshot
     queueResult([]); // delete payment
     queueResult([]); // update mapping → refunded
     queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
@@ -221,6 +227,48 @@ describe('reflectStripeRefund', () => {
     expect(setAmount.calls).not.toContain('10000.00');
     expect(recompute).toHaveBeenCalledWith('inv1');
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided', invoiceId: 'inv1' }));
+  });
+
+  it('full refund writes a durable audit event capturing the destroyed payment pre-delete', async () => {
+    // The Stripe-webhook-initiated void deletes the financial record, so the audit
+    // entry must be written from a snapshot read BEFORE the delete (mirrors the
+    // manual void route's pre-destroy capture, R2). System-scope writer (no req ctx).
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '100.00', method: 'card', recordedBy: 'usr1' }]); // payment snapshot
+    queueResult([]); // delete payment
+    queueResult([]); // update mapping → refunded
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+
+    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 10000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
+
+    expect(audit).toHaveBeenCalledTimes(1);
+    const [, event] = audit.mock.calls[0] as [unknown, Record<string, any>];
+    expect(event).toMatchObject({
+      orgId: 'org1',
+      action: 'invoice.payment.voided',
+      resourceType: 'invoice_payment',
+      resourceId: 'pay1',
+      actorType: 'system',
+    });
+    // Financial details captured from the snapshot read before db.delete destroyed it.
+    expect(event.details).toMatchObject({
+      amount: '100.00',
+      method: 'card',
+      recordedBy: 'usr1',
+      invoiceId: 'inv1',
+      reason: 'stripe_refund',
+    });
+  });
+
+  it('partial refund does NOT write a void audit event (the row survives, only reduced)', async () => {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([]); // update payment amount
+    queueResult([]); // update mapping → partially_refunded
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+
+    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
+
+    expect(audit).not.toHaveBeenCalled();
   });
 
   it('partial refund reduces the payment amount (update, NOT delete) and recomputes', async () => {
