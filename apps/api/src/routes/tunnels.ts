@@ -776,7 +776,7 @@ const vncExchangeSchema = z.object({
 });
 
 // POST /vnc-exchange/:code — Redeem a short-lived VNC connect code for credentials + tunnel info.
-// No bearer auth: the one-time code proves identity. Rate-limited at mount point.
+// No bearer auth: the one-time code proves identity. Fail-closed per-IP rate limit applied in-handler.
 vncExchangeRoutes.post(
   '/:code',
   async (c) => {
