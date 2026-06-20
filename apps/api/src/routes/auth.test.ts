@@ -201,6 +201,12 @@ describe('auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears call history but NOT a mockReturnValue base, so a
+    // base set inside one test would otherwise bleed into the next. Reset
+    // db.select to an empty-resolving default each test (mirrors sso.test.ts).
+    vi.mocked(db.select).mockReset().mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) }))
+    } as any);
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
     vi.mocked(assertPasswordAuthAllowedBySso).mockResolvedValue(undefined);
     vi.mocked(getPasswordResetEligibility).mockResolvedValue({ allowed: false, reason: 'unknown_user' });
@@ -409,7 +415,13 @@ describe('auth routes', () => {
               name: 'Test User',
               passwordHash: '$argon2id$hash',
               status: 'active',
-              mfaEnabled: false
+              mfaEnabled: false,
+              // security review #2: a provisioned user has a partner membership.
+              // The blanket mock returns this row for the partnerUsers lookup too,
+              // so resolveCurrentUserTokenContext resolves to partner scope rather
+              // than the (now-rejected) membership-less system default.
+              partnerId: 'partner-1',
+              roleId: 'role-1'
             }])
           })
         })
@@ -699,7 +711,10 @@ describe('auth routes', () => {
               passwordHash: '$argon2id$hash',
               status: 'active',
               mfaEnabled: true,
-              mfaSecret: 'secret123'
+              mfaSecret: 'secret123',
+              // security review #2: provisioned user → partner membership.
+              partnerId: 'partner-1',
+              roleId: 'role-1'
             }])
           })
         })
@@ -890,7 +905,10 @@ describe('auth routes', () => {
               name: 'Recover User',
               passwordHash: '$argon2id$hash',
               status: 'active',
-              mfaEnabled: false
+              mfaEnabled: false,
+              // security review #2: provisioned user → partner membership.
+              partnerId: 'partner-1',
+              roleId: 'role-1'
             }])
           })
         })
@@ -951,7 +969,10 @@ describe('auth routes', () => {
               passwordHash: '$argon2id$hash',
               status: 'active',
               mfaEnabled: true,
-              mfaSecret: 'secret'
+              mfaSecret: 'secret',
+              // security review #2: provisioned user → partner membership.
+              partnerId: 'partner-1',
+              roleId: 'role-1'
             }])
           })
         })
@@ -1104,6 +1125,16 @@ describe('auth routes', () => {
             })
           })
         } as any);
+      // security review #2: the trailing users.isPlatformAdmin lookup resolves a
+      // platform admin, so this membership-less token legitimately re-derives to
+      // system scope (a non-admin membership-less token is now rejected).
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: true }])
+          })
+        })
+      } as any);
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
@@ -1199,6 +1230,46 @@ describe('auth routes', () => {
       expect(createTokenPair).not.toHaveBeenCalled();
     });
 
+    // security review #2: a membership-less, non-platform-admin user (membership
+    // revoked mid-session — the #1367 orphan class) must NOT be able to refresh
+    // into a system-scope token. resolveCurrentUserTokenContext throws and the
+    // handler fails closed with a 401, minting nothing.
+    it('rejects a refresh from a membership-less non-admin user (no system-scope token)', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
+        partnerId: null, scope: 'system', type: 'refresh', mfa: false,
+        iat: 123456, jti: 'refresh-jti-orphan'
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com', status: 'active' }]) }) })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
+        } as any);
+      // 4th lookup (users.isPlatformAdmin) → NOT an admin → fail closed.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: false }]) }) })
+      } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=orphan-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
     it('rejects when a concurrent /refresh already claimed the jti (SET NX miss)', async () => {
       // revokeRefreshTokenJti returning false means another caller won the
       // atomic claim. The losing /refresh MUST NOT mint a new pair — exactly
@@ -1224,6 +1295,15 @@ describe('auth routes', () => {
               email: 'test@example.com',
               status: 'active'
             }])
+          })
+        })
+      } as any);
+      // security review #2: membership lookups + users.isPlatformAdmin resolve a
+      // platform admin so this membership-less token re-derives to system scope.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: true }])
           })
         })
       } as any);
@@ -1341,6 +1421,15 @@ describe('auth routes', () => {
               email: 'test@example.com',
               status: 'active'
             }])
+          })
+        })
+      } as any);
+      // security review #2: membership lookups + users.isPlatformAdmin resolve a
+      // platform admin so this membership-less token re-derives to system scope.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: true }])
           })
         })
       } as any);
@@ -2114,6 +2203,15 @@ describe('auth routes', () => {
             })
           })
         } as any);
+      // security review #2: trailing users.isPlatformAdmin lookup → platform
+      // admin, so the membership-less token re-derives to system scope.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: true }])
+          })
+        })
+      } as any);
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
@@ -2167,6 +2265,16 @@ describe('auth routes', () => {
             })
           })
         } as any);
+      // security review #2: the trailing users.isPlatformAdmin lookup resolves a
+      // platform admin, so this membership-less token legitimately re-derives to
+      // system scope (a non-admin membership-less token is now rejected).
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: true }])
+          })
+        })
+      } as any);
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
