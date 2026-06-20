@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and, gt } from 'drizzle-orm';
+import { eq, and, gt, ne } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
@@ -964,16 +964,64 @@ ssoRoutes.get('/callback', async (c) => {
       }
     }
 
-    // Find or create user.
-    // Pre-auth lookup — wrap in system scope so the `users` RLS policy
-    // doesn't deny the read before the real request scope is applied.
-    let [user] = await withSystemDbAccessContext(async () =>
-      db
-        .select()
-        .from(users)
-        .where(eq(users.email, attrs.email.toLowerCase()))
-        .limit(1)
-    );
+    // ── Identity resolution (security review #2: identity-first + safe JIT link)
+    // The authoritative key is the (provider, external subject) pair recorded in
+    // user_sso_identities — NOT the global-unique email. Once a user is linked to
+    // a provider, only that provider asserting that exact `sub` can authenticate
+    // as them; a different (or re-pointed, attacker-controlled) IdP cannot
+    // impersonate them by asserting their email. Pre-auth lookups run under
+    // system scope (RLS would otherwise deny before the request scope is set).
+    const externalSub = idClaims.sub;
+    if (typeof externalSub !== 'string' || externalSub.length === 0) {
+      clearStateCookie();
+      return c.redirect('/login?error=sso_no_subject');
+    }
+
+    let user = await withSystemDbAccessContext(async () => {
+      const [link] = await db
+        .select({ userId: userSsoIdentities.userId })
+        .from(userSsoIdentities)
+        .where(and(
+          eq(userSsoIdentities.providerId, provider.id),
+          eq(userSsoIdentities.externalId, externalSub)
+        ))
+        .limit(1);
+      if (!link) return null;
+      const [linkedUser] = await db.select().from(users).where(eq(users.id, link.userId)).limit(1);
+      return linkedUser ?? null;
+    });
+
+    if (!user) {
+      // No link yet for this provider+sub. Try to match an existing user by the
+      // verified email — but JIT-linking an SSO assertion to a pre-existing
+      // account is the account-takeover surface (a malicious/misconfigured IdP
+      // can assert a victim's email). Only auto-link when it is SAFE: the
+      // account has no password AND no link to a DIFFERENT provider. Otherwise
+      // the user must opt into SSO linking from an authenticated session.
+      const [byEmail] = await withSystemDbAccessContext(async () =>
+        db.select().from(users).where(eq(users.email, attrs.email.toLowerCase())).limit(1)
+      );
+
+      if (byEmail) {
+        const hasPassword = byEmail.passwordHash != null;
+        const [otherProviderLink] = await withSystemDbAccessContext(async () =>
+          db
+            .select({ id: userSsoIdentities.id })
+            .from(userSsoIdentities)
+            .where(and(
+              eq(userSsoIdentities.userId, byEmail.id),
+              ne(userSsoIdentities.providerId, provider.id)
+            ))
+            .limit(1)
+        );
+        if (hasPassword || otherProviderLink) {
+          clearStateCookie();
+          return c.redirect('/login?error=sso_link_required');
+        }
+        // Safe: an SSO-only account with no conflicting credential.
+        user = byEmail;
+      }
+    }
 
     if (!user) {
       if (!provider.autoProvision) {
@@ -1095,7 +1143,7 @@ ssoRoutes.get('/callback', async (c) => {
         await db.insert(userSsoIdentities).values({
           userId: user.id,
           providerId: provider.id,
-          externalId: userInfo.sub,
+          externalId: externalSub,
           email: attrs.email,
           profile: userInfo,
           accessToken: encryptSecret(tokens.access_token),

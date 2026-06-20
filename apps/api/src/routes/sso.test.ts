@@ -226,7 +226,9 @@ describe('sso routes', () => {
     // Default the verifier to "passes" with minimal claims so flows that don't
     // assert subject/email binding keep linking via userinfo as before; tests
     // that exercise binding/rejection override this.
-    vi.mocked(verifyIdTokenSignature).mockResolvedValue({ nonce: 'nonce' } as any);
+    // sub matches getUserInfo's sub so the verified-subject binding (security
+    // review #2) and the identity-first lookup resolve cleanly by default.
+    vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
     setAuthContext();
     app = new Hono();
     app.route('/sso', ssoRoutes);
@@ -607,6 +609,14 @@ describe('sso routes', () => {
           })
         })
       } as any)
+      // security review #2: identity-first — (provider, sub) link → user by id.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ userId: USER_UUID }])
+          })
+        })
+      } as any)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -736,6 +746,14 @@ describe('sso routes', () => {
           })
         })
       } as any)
+      // security review #2: identity-first — (provider, sub) link → user by id.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ userId: USER_UUID }])
+          })
+        })
+      } as any)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -844,6 +862,15 @@ describe('sso routes', () => {
                 allowedDomains: null,
                 defaultRoleId: null
               }])
+            })
+          })
+        } as any)
+        // security review #2: identity-first — a returning user is resolved by
+        // the (provider, external sub) link, then loaded by id.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ userId: USER_UUID }])
             })
           })
         } as any)
@@ -1011,6 +1038,91 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=sso_subject_mismatch');
       expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    // ── security review #2: identity-first lookup (1A) + safe JIT linking (1B)
+    const sel = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+    const selJoin = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }) })
+    } as any);
+    const PROVIDER_ROW = [{
+      id: PROVIDER_UUID, orgId: ORG_UUID, type: 'oidc',
+      issuer: 'https://issuer.example.com', authorizationUrl: 'https://issuer.example.com/auth',
+      tokenUrl: 'https://issuer.example.com/token', userInfoUrl: 'https://issuer.example.com/userinfo',
+      jwksUrl: 'https://issuer.example.com/jwks', clientId: 'client-id', clientSecret: 'client-secret',
+      scopes: 'openid profile email', attributeMapping: { email: 'email', name: 'name' },
+      autoProvision: false, allowedDomains: null, defaultRoleId: null
+    }];
+    const primeCallback = () => {
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'test@example.com', name: 'Test User' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'test@example.com', name: 'Test User' } as any);
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-z', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/dashboard' }]) })
+      } as any);
+    };
+    const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
+
+    it('resolves the user by the (provider, sub) link regardless of the asserted email (1A)', async () => {
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link by (provider, sub)
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'someone-else@corp.com', name: 'Linked' }])) // user by id — email DIFFERS from asserted
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      // The session is the LINKED user — proving the email was not the lookup key.
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ sub: USER_UUID }), expect.any(Object));
+    });
+
+    it('refuses to JIT-link an SSO assertion to an existing PASSWORD account (1B)', async () => {
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([])) // no (provider, sub) link yet
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Pw', passwordHash: '$argon2id$hash' }]))
+        .mockReturnValueOnce(sel([])); // no other-provider link (still denied — has a password)
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_link_required');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('refuses to JIT-link when the account is linked to a DIFFERENT provider (1B)', async () => {
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([])) // no link for THIS provider
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'SsoOnly', passwordHash: null }]))
+        .mockReturnValueOnce(sel([{ id: 'other-provider-link' }])); // linked to another provider
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_link_required');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('auto-links an existing SSO-only account with no conflicting credential (1B safe path)', async () => {
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([])) // no link yet
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'SsoOnly', passwordHash: null }]))
+        .mockReturnValueOnce(sel([])) // no other-provider link → safe to link
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([])); // existingIdentity none → insert the new link
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalled();
     });
   });
 });
