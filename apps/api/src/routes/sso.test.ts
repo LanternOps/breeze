@@ -108,6 +108,15 @@ vi.mock('../db/schema', () => ({
     jwksUrl: 'jwksUrl'
   },
   ssoSessions: {},
+  ssoVerifiedDomains: {
+    id: 'id',
+    orgId: 'orgId',
+    domain: 'domain',
+    verificationToken: 'verificationToken',
+    verifiedAt: 'verifiedAt',
+    lastCheckedAt: 'lastCheckedAt',
+    createdAt: 'createdAt',
+  },
   userSsoIdentities: {
     id: 'id',
     userId: 'userId',
@@ -127,6 +136,14 @@ vi.mock('../db/schema', () => ({
     name: 'name',
     scope: 'scope'
   }
+}));
+
+vi.mock('../services/ssoDomainVerification', () => ({
+  createPendingDomain: vi.fn(),
+  verifyDomain: vi.fn(),
+  recordNameFor: vi.fn((domain: string) => `_breeze-verify.${domain}`),
+  recordValueFor: vi.fn((token: string) => `breeze-domain-verify=${token}`),
+  isSsoProvisioningBlocked: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -175,6 +192,7 @@ import {
   mapUserAttributes,
   verifyIdTokenSignature,
 } from '../services/sso';
+import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -1171,6 +1189,274 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    // ── security review #2 (H-2): SSO domain-verification gate wiring
+    // These tests verify that the gate (isSsoProvisioningBlocked) is correctly
+    // wired into the callback handler. The decision logic is unit-tested
+    // exhaustively in ssoDomainVerification.test.ts; here we only test the
+    // wiring: that a blocked domain redirects correctly and doesn't provision,
+    // and that an already-linked identity bypasses the gate entirely.
+    it('redirects to sso_domain_unverified when isSsoProvisioningBlocked returns true for an unmatched identity', async () => {
+      primeCallback();
+      vi.mocked(isSsoProvisioningBlocked).mockResolvedValue(true);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([])) // no (provider, sub) link → user is null → gate is evaluated
+        .mockReturnValueOnce(sel([])); // user-by-id lookup for the identity-first block (the second withSystemDbAccessContext call for users)
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_domain_unverified');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke the gate (and succeeds) when the identity is already linked by provider+sub', async () => {
+      // Already-linked users resolve in the identity-first lookup, so user is non-null
+      // before the gate. The gate is inside `if (!user)` and must not fire.
+      vi.mocked(isSsoProvisioningBlocked).mockResolvedValue(true); // would block if called
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link found → user resolved
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Linked' }]))
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      // Succeeds — gate was not reached
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalled();
+      // isSsoProvisioningBlocked is still called in the mock infrastructure
+      // but the gate block is inside `if (!user)` which is false here — so
+      // the callback must NOT have redirected to sso_domain_unverified.
+      expect(res.headers.get('location') ?? '').not.toContain('sso_domain_unverified');
+    });
+  });
+
+  describe('SSO Domain Verification Routes', () => {
+    const DOMAIN_UUID = '00000000-0000-4000-8000-000000000050';
+    const DOMAIN_TOKEN = 'abc123def456';
+
+    it('POST /domains returns 201 with recordName and recordValue for an authorized sso:admin caller', async () => {
+      vi.mocked(createPendingDomain).mockResolvedValue({
+        id: DOMAIN_UUID,
+        orgId: ORG_UUID,
+        domain: 'example.com',
+        verificationToken: DOMAIN_TOKEN,
+        recordName: `_breeze-verify.example.com`,
+        recordValue: `breeze-domain-verify=${DOMAIN_TOKEN}`,
+        verifiedAt: null,
+      });
+
+      const res = await app.request('/sso/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: 'example.com' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.id).toBe(DOMAIN_UUID);
+      expect(body.data.domain).toBe('example.com');
+      expect(body.data.recordName).toBe('_breeze-verify.example.com');
+      expect(body.data.recordValue).toBe(`breeze-domain-verify=${DOMAIN_TOKEN}`);
+      expect(body.data.verified).toBe(false);
+      expect(createPendingDomain).toHaveBeenCalledWith({
+        orgId: ORG_UUID,
+        domain: 'example.com',
+        createdBy: USER_UUID,
+      });
+    });
+
+    it('POST /domains returns 403 for a caller without sso:admin permission', async () => {
+      permissionGate.deny = true;
+
+      const res = await app.request('/sso/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: 'example.com' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(createPendingDomain).not.toHaveBeenCalled();
+    });
+
+    it('POST /domains returns 400 when the service throws (invalid domain)', async () => {
+      vi.mocked(createPendingDomain).mockRejectedValue(new Error('Invalid domain: not-a-real-domain'));
+
+      const res = await app.request('/sso/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: 'not-a-real-domain' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid domain');
+    });
+
+    it('POST /domains/:id/verify returns {data:{verified:true}} when the domain exists and DNS check passes', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      vi.mocked(verifyDomain).mockResolvedValue({ verified: true });
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}/verify`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.verified).toBe(true);
+      expect(verifyDomain).toHaveBeenCalledWith({ orgId: ORG_UUID, domain: 'example.com' });
+    });
+
+    it('POST /domains/:id/verify returns 404 when the domain row does not exist', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}/verify`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(404);
+      expect(verifyDomain).not.toHaveBeenCalled();
+    });
+
+    it('POST /domains/:id/verify returns 403 when canAccessOrg is false', async () => {
+      setAuthContext({ canAccessOrg: () => false });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID_OTHER,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}/verify`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(403);
+      expect(verifyDomain).not.toHaveBeenCalled();
+    });
+
+    it('DELETE /domains/:id returns 403 when canAccessOrg is false', async () => {
+      setAuthContext({ canAccessOrg: () => false });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID_OTHER,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('DELETE /domains/:id returns {data:{deleted:true}} on success', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      vi.mocked(db.delete).mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: DOMAIN_UUID }]),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.deleted).toBe(true);
+    });
+
+    it('DELETE /domains/:id returns 404 when the domain row does not exist', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('GET /domains lists domains with recordName and recordValue for the org', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            id: DOMAIN_UUID,
+            domain: 'example.com',
+            verificationToken: DOMAIN_TOKEN,
+            verifiedAt: null,
+            lastCheckedAt: null,
+            createdAt: '2024-01-01T00:00:00.000Z',
+          }]),
+        }),
+      } as any);
+
+      const res = await app.request('/sso/domains', {
+        method: 'GET',
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].domain).toBe('example.com');
+      expect(body.data[0].verified).toBe(false);
+      expect(body.data[0].recordName).toBeDefined();
+      expect(body.data[0].recordValue).toBeDefined();
     });
   });
 });
