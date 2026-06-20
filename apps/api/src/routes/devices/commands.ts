@@ -6,8 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { getPagination, getDeviceWithOrgCheck } from './helpers';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
@@ -19,11 +19,6 @@ export const commandsRoutes = new Hono();
 commandsRoutes.use('*', authMiddleware);
 
 const COMMAND_SET_AUTO_UPDATE = 'set_auto_update';
-
-function canAccessDeviceSite(device: { siteId?: string | null }, userPerms: UserPermissions | undefined): boolean {
-  if (!userPerms?.allowedSiteIds) return true;
-  return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
-}
 
 // POST /devices/bulk/commands - Queue a command for multiple devices
 commandsRoutes.post(

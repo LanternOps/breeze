@@ -47,21 +47,26 @@ vi.mock('../../middleware/auth', () => ({
     if (resource === 'scripts' && action === 'read' && c.req.header('x-deny-scripts-read') === 'true') {
       return c.json({ error: 'Permission denied' }, 403);
     }
-    if (c.req.header('x-site-restricted') === 'true') {
-      c.set('permissions', {
-        permissions: [{ resource, action }],
-        partnerId: null,
-        orgId: 'org-123',
-        roleId: 'role-123',
-        scope: 'organization',
-        allowedSiteIds: ['site-allowed']
-      });
-    }
+    // Production `requirePermission` ALWAYS populates `permissions`; the
+    // canAccessDeviceSite helper fails closed when it is absent (T10), so the
+    // mock must mirror that — set an unrestricted context by default, and add
+    // a site restriction only when the test asks for one.
+    c.set('permissions', {
+      permissions: [{ resource, action }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-123',
+      scope: 'organization',
+      ...(c.req.header('x-site-restricted') === 'true'
+        ? { allowedSiteIds: ['site-allowed'] }
+        : {}),
+    });
     return next();
   })
 }));
 
-vi.mock('./helpers', () => ({
+vi.mock('./helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./helpers')>()),
   getDeviceWithOrgCheck: vi.fn()
 }));
 

@@ -9,7 +9,19 @@ const {
 } = vi.hoisted(() => ({
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
+  // Production `requirePermission` ALWAYS populates `permissions`; the
+  // canAccessDeviceSite helper fails closed when it is absent (T10), so the
+  // mock must mirror that with an unrestricted context.
+  requirePermissionMock: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    c.set('permissions', {
+      permissions: [{ resource, action }],
+      partnerId: null,
+      orgId: ORG_ID,
+      roleId: 'role-1',
+      scope: 'organization',
+    });
+    return next();
+  }),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -31,7 +43,8 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: requireMfaMock,
 }));
 
-vi.mock('./helpers', () => ({
+vi.mock('./helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./helpers')>()),
   getDeviceWithOrgCheck: vi.fn(),
 }));
 

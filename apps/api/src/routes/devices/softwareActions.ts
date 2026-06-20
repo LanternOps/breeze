@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { getDeviceWithOrgCheck } from './helpers';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails } from '../../services/commandAudit';
@@ -11,14 +11,6 @@ import { commandAuditDetails } from '../../services/commandAudit';
 export const softwareActionsRoutes = new Hono();
 
 softwareActionsRoutes.use('*', authMiddleware);
-
-function canAccessDeviceSite(
-  device: { siteId?: string | null },
-  userPerms: UserPermissions | undefined
-): boolean {
-  if (!userPerms?.allowedSiteIds) return true;
-  return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
-}
 
 // Same name/version constraints as the agent's validateSoftwareName /
 // validateSoftwareVersion. Keeping these synchronized prevents a request

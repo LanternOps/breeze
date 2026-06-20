@@ -3,17 +3,12 @@ import { eq, desc } from 'drizzle-orm';
 import { db } from '../../db';
 import { scriptExecutions, scripts } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { getDeviceWithOrgCheck } from './helpers';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
 
 export const scriptsRoutes = new Hono();
 
 scriptsRoutes.use('*', authMiddleware);
-
-function canAccessDeviceSite(device: { siteId?: string | null }, userPerms: UserPermissions | undefined): boolean {
-  if (!userPerms?.allowedSiteIds) return true;
-  return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
-}
 
 // GET /devices/:id/scripts - Get script execution history for a device
 scriptsRoutes.get(

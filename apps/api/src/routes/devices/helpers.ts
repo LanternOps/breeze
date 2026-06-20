@@ -35,6 +35,34 @@ export function stripSensitiveDeviceFields<T extends Record<string, unknown>>(
   return clone;
 }
 
+/**
+ * Per-device site-scope check shared by the high-power, MFA-gated device
+ * routes (commands, scripts, actuate-elevation, software actions).
+ *
+ * Fails CLOSED on an absent permissions context (T10, defense-in-depth):
+ *   - `userPerms === undefined` → DENY. A missing permissions object means
+ *     `requirePermission` middleware did not run (a dropped/reordered gate).
+ *     We must not silently grant cross-site access in that state. This mirrors
+ *     the fail-loud behavior of {@link getDeviceWithOrgAndSiteCheck}; here we
+ *     return `false` (the caller already maps that to a 403) rather than throw,
+ *     so the boolean contract these routes rely on is preserved.
+ *   - permissions present but `allowedSiteIds` undefined → ALLOW (the user has
+ *     no site restriction; the org check has already passed upstream).
+ *   - permissions present with a site restriction → ALLOW only when the
+ *     device's site is in the allowlist.
+ */
+export function canAccessDeviceSite(
+  device: { siteId?: string | null },
+  userPerms: UserPermissions | undefined
+): boolean {
+  // Fail closed: an absent permissions context means requirePermission did
+  // not run. Deny rather than fall through to "no site restriction → allow".
+  if (!userPerms) return false;
+  // Permissions present but no site restriction → org check already passed.
+  if (!userPerms.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
+}
+
 export async function ensureOrgAccess(
   orgId: string,
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>

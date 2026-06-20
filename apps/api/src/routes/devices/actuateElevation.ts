@@ -17,8 +17,8 @@ import {
 } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { canAccessSite, type UserPermissions } from '../../services/permissions';
-import { getDeviceWithOrgCheck } from './helpers';
+import { type UserPermissions } from '../../services/permissions';
+import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
 
 export const actuateElevationRoutes = new Hono();
 
@@ -74,14 +74,6 @@ const actuateElevationSchema = z.object({
   password: z.string().min(1).max(1024).optional(),
   timeoutMs: z.number().int().min(1000).max(60000).optional(),
 });
-
-function canAccessDeviceSite(
-  device: { siteId?: string | null },
-  userPerms: UserPermissions | undefined,
-): boolean {
-  if (!userPerms?.allowedSiteIds) return true;
-  return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
-}
 
 actuateElevationRoutes.post(
   '/:id/actuate-elevation',
