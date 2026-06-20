@@ -442,4 +442,61 @@ export function SessionBanner({ label, startedAt }: { label: string; startedAt: 
 - End-user "End session" control from the banner.
 - Native-OS notification fallback when the Helper is absent.
 - Mobile / Breeze Authenticator integration for remote-session consent.
+
+## 14. Implementation notes (deviations discovered during build)
+
+### 14.1 Helper topology / routing
+
+The spec described a single "Breeze Helper" surface. During build, the helper
+layer splits into two distinct processes with separate IPC scopes:
+
+- **Go user-helper** (`notify` scope) — handles native OS notifications.
+  Connected-notice and session-ended notice are delivered here via the existing
+  `PreferredSessionWithScope("notify")` call.
+- **Tauri assist helper** (`assist` scope + new `consent_ui` scope) — renders
+  React UI. The rich consent dialog and the active-session banner route to this
+  process via `PreferredSessionWithScope("consent_ui")`. A narrow `consent_ui`
+  scope was added and granted to the assist role so that the agent can target the
+  Tauri helper specifically without conflating it with the notify channel.
+
+### 14.2 Verdict transport
+
+The spec left the deny-verdict transport open. During build, the consent verdict
+is reported over the **desk-start COMMAND-RESULT channel** already used to relay
+the WebRTC answer in `agentWs.ts`:
+
+- **Denied:** the agent emits a COMPLETED result carrying
+  `{event: "consent_denied", reason}` as a marker. `agentWs.ts` detects this
+  marker and triggers the denied→teardown→`denied` status path.
+- **Granted:** the agent emits a success result with `consentReason: "user"` so
+  the audit log can record that the user explicitly allowed the session.
+
+The JWT-authenticated `/answer` and `/deny` HTTP routes considered in the spec
+are NOT used for the agent consent path. `POST /sessions/:id/deny` exists and is
+used for the operator/web deny path (e.g. the RMM technician or an admin
+revoking an in-flight session).
+
+### 14.3 macOS banner transparency
+
+The active-session banner requires a transparent window so only the pill is
+visible (no opaque background frame). On macOS this requires Tauri's
+`macos-private-api` feature:
+
+- Enabled in `src-tauri/Cargo.toml` under `[features]`.
+- `macOSPrivateApi: true` in `tauri.conf.json`.
+
+This is safe because the Breeze Helper is self-distributed (not App Store), so
+the App Store prohibition on private API usage does not apply.
+
+### 14.4 Helper component unit tests
+
+The spec's §11 testing plan included component tests for `ConsentDialog` and
+`SessionBanner`. These are deferred: `apps/helper` has no test runner configured
+(no Vitest, no Jest). The components were verified via:
+
+1. `tsc --noEmit` (zero type errors).
+2. Design review against the spec UI spec.
+3. The manual in-Helper gate (Tauri `dev` mode, local agent IPC).
+
+Component tests will be added when a test runner is wired to `apps/helper`.
 - Light theme for the Helper surfaces (Helper is dark-only today).
