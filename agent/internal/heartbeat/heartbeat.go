@@ -661,6 +661,13 @@ func (h *Heartbeat) sendUpdateStatus(targetVersion string) {
 // connection dropped so it can mark the session as disconnected and allow
 // the viewer to reconnect.
 func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
+	// Fire the end-of-session UX (banner hide + ended notice) for any session
+	// that carried a consent/notify prompt. Runs on every disconnect path
+	// (direct OnSessionStopped, IPC peer-disconnect, darwin handoff) and is a
+	// no-op for un-prompted sessions. Done before the wsClient guard so the
+	// local UX still tears down even if the WS link is gone.
+	h.handleConsentSessionEnd(sessionID)
+
 	if h.wsClient == nil {
 		return
 	}

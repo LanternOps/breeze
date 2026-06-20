@@ -195,11 +195,31 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	policy := parseDesktopSessionPolicy(cmd.Payload)
 
+	// Consent gate (Task 9): when the API attached a `prompt` block in mode
+	// "consent", ask the end user BEFORE starting any capture. A denial (or a
+	// policy-driven block when no user can answer) short-circuits with a
+	// `consent_denied` marker the API ingests to finalize the session as
+	// `denied`. An older API that sends no prompt leaves this path untouched.
+	prompt := parseDesktopPrompt(cmd.Payload)
+	if prompt != nil && prompt.Mode == "consent" {
+		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt)
+		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
+		if !proceed {
+			log.Info("remote session denied by consent gate",
+				"sessionId", sessionID, "reason", reason)
+			return consentDeniedResult(sessionID, reason, time.Since(start).Milliseconds())
+		}
+	}
+
 	// Route through IPC helper when running headless (no display access).
 	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
 	// cannot capture the screen directly even with TCC permission.
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
+		if result.Status == "completed" && prompt != nil {
+			h.afterDesktopStart(sessionID, prompt)
+			result = withConsentGranted(result, prompt)
+		}
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result
 	}
@@ -209,10 +229,17 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
-	return tools.NewSuccessResult(map[string]any{
+	resultData := map[string]any{
 		"sessionId": sessionID,
 		"answer":    answer,
-	}, time.Since(start).Milliseconds())
+	}
+	if prompt != nil {
+		h.afterDesktopStart(sessionID, prompt)
+		if prompt.Mode == "consent" {
+			resultData["consentReason"] = "user"
+		}
+	}
+	return tools.NewSuccessResult(resultData, time.Since(start).Milliseconds())
 }
 
 // parseDesktopSessionPolicy extracts the agent-enforced session policy from a
