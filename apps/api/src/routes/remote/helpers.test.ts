@@ -41,7 +41,41 @@ vi.mock('../../services/sentry', () => ({
   captureException
 }));
 
-import { generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit } from './helpers';
+import { buildTechnicianDisplay, generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit } from './helpers';
+
+describe('buildTechnicianDisplay', () => {
+  it('returns name + email + orgName at name_email level', () => {
+    expect(buildTechnicianDisplay('name_email', 'Jordan Lee', 'j@acme.com', 'Acme')).toEqual({
+      name: 'Jordan Lee',
+      email: 'j@acme.com',
+      orgName: 'Acme',
+    });
+  });
+
+  it('drops the email at name level, keeping name + orgName', () => {
+    expect(buildTechnicianDisplay('name', 'Jordan Lee', 'j@acme.com', 'Acme')).toEqual({
+      name: 'Jordan Lee',
+      email: null,
+      orgName: 'Acme',
+    });
+  });
+
+  it('redacts name + email at generic level, keeping only orgName', () => {
+    expect(buildTechnicianDisplay('generic', 'Jordan Lee', 'j@acme.com', 'Acme')).toEqual({
+      name: null,
+      email: null,
+      orgName: 'Acme',
+    });
+  });
+
+  it('passes through null inputs without inventing values', () => {
+    expect(buildTechnicianDisplay('name_email', null, null, null)).toEqual({
+      name: null,
+      email: null,
+      orgName: null,
+    });
+  });
+});
 
 describe('logSessionAudit', () => {
   beforeEach(() => {
