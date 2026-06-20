@@ -106,6 +106,24 @@ async function getBaselineWithAccess(
   return baseline ?? null;
 }
 
+/**
+ * Site-axis (sub-org) gate for a single baseline. Site scope is app-layer-only
+ * (RLS does NOT enforce it) and the by-id handlers (unlike GET /, POST /)
+ * historically skipped it, so a site-restricted org user could read/update/
+ * scan/delete baselines outside their allowed sites. Mirrors the GET /
+ * narrowing (`inArray(networkBaselines.siteId, allowedSiteIds)`): a restricted
+ * caller is denied for a baseline in a site outside the allowlist. No-op for
+ * unrestricted callers (`perms` undefined / `allowedSiteIds` unset). Returns
+ * true when access is permitted.
+ */
+function baselineInSiteScope(
+  perms: UserPermissions | undefined,
+  baseline: typeof networkBaselines.$inferSelect
+): boolean {
+  if (!perms?.allowedSiteIds) return true;
+  return canAccessSite(perms, baseline.siteId);
+}
+
 networkBaselineRoutes.use('*', authMiddleware);
 
 networkBaselineRoutes.get(
@@ -321,10 +339,11 @@ networkBaselineRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const baselineId = c.req.param('id')!;
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
-    if (!baseline) {
+    if (!baseline || !baselineInSiteScope(perms, baseline)) {
       return c.json({ error: 'Baseline not found' }, 404);
     }
 
@@ -339,11 +358,12 @@ networkBaselineRoutes.patch(
   zValidator('json', updateBaselineSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const baselineId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
-    if (!baseline) {
+    if (!baseline || !baselineInSiteScope(perms, baseline)) {
       return c.json({ error: 'Baseline not found' }, 404);
     }
 
@@ -395,10 +415,11 @@ networkBaselineRoutes.post(
   requirePermission('devices', 'write'),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const baselineId = c.req.param('id')!;
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
-    if (!baseline) {
+    if (!baseline || !baselineInSiteScope(perms, baseline)) {
       return c.json({ error: 'Baseline not found' }, 404);
     }
 
@@ -438,11 +459,12 @@ networkBaselineRoutes.get(
   zValidator('query', baselineChangesQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const baselineId = c.req.param('id')!;
     const query = c.req.valid('query');
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
-    if (!baseline) {
+    if (!baseline || !baselineInSiteScope(perms, baseline)) {
       return c.json({ error: 'Baseline not found' }, 404);
     }
 
@@ -491,11 +513,12 @@ networkBaselineRoutes.delete(
   zValidator('query', deleteBaselineQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const baselineId = c.req.param('id')!;
     const query = c.req.valid('query');
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
-    if (!baseline) {
+    if (!baseline || !baselineInSiteScope(perms, baseline)) {
       return c.json({ error: 'Baseline not found' }, 404);
     }
 

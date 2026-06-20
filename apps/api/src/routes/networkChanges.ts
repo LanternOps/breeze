@@ -66,6 +66,25 @@ async function getChangeEventWithAccess(
   return event ?? null;
 }
 
+/**
+ * Site-axis (sub-org) gate for a single change event. Site scope is an
+ * app-layer-only authz axis — RLS does NOT enforce it — and the by-id handlers
+ * (unlike GET /) historically skipped it, so a site-restricted org user could
+ * read/acknowledge/link events outside their allowed sites. Mirrors the GET /
+ * narrowing (`inArray(networkChangeEvents.siteId, allowedSiteIds)`): a
+ * restricted caller is denied for an event in a site outside the allowlist (or
+ * with no siteId). No-op for unrestricted callers (`perms` undefined or
+ * `allowedSiteIds` unset — partner/system scope, or org users with no
+ * restriction). Returns true when access is permitted.
+ */
+function changeEventInSiteScope(
+  perms: UserPermissions | undefined,
+  event: { siteId: string }
+): boolean {
+  if (!perms?.allowedSiteIds) return true;
+  return canAccessSite(perms, event.siteId);
+}
+
 networkChangeRoutes.use('*', authMiddleware);
 
 networkChangeRoutes.get(
@@ -199,10 +218,11 @@ networkChangeRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const eventId = c.req.param('id')!;
 
     const event = await getChangeEventWithAccess(eventId, auth);
-    if (!event) {
+    if (!event || !changeEventInSiteScope(perms, event)) {
       return c.json({ error: 'Network change event not found' }, 404);
     }
 
@@ -226,11 +246,12 @@ networkChangeRoutes.post(
   zValidator('json', acknowledgeChangeSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const eventId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const event = await getChangeEventWithAccess(eventId, auth);
-    if (!event) {
+    if (!event || !changeEventInSiteScope(perms, event)) {
       return c.json({ error: 'Network change event not found' }, 404);
     }
 
@@ -276,11 +297,12 @@ networkChangeRoutes.post(
   zValidator('json', linkDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const eventId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const event = await getChangeEventWithAccess(eventId, auth);
-    if (!event) {
+    if (!event || !changeEventInSiteScope(perms, event)) {
       return c.json({ error: 'Network change event not found' }, 404);
     }
 
@@ -345,6 +367,7 @@ networkChangeRoutes.post(
   zValidator('json', bulkAcknowledgeSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const body = c.req.valid('json');
 
     const conditions: SQL[] = [inArray(networkChangeEvents.id, body.eventIds)];
@@ -354,9 +377,13 @@ networkChangeRoutes.post(
     }
 
     const accessibleEvents = await db
-      .select({ id: networkChangeEvents.id, orgId: networkChangeEvents.orgId })
+      .select({ id: networkChangeEvents.id, orgId: networkChangeEvents.orgId, siteId: networkChangeEvents.siteId })
       .from(networkChangeEvents)
-      .where(and(...conditions));
+      .where(and(...conditions))
+      // Site-axis filter (RLS does not enforce site scope): drop events whose
+      // site is outside a restricted caller's allowlist before mutating. No-op
+      // for unrestricted callers (perms undefined / allowedSiteIds unset).
+      .then((events) => events.filter((event) => changeEventInSiteScope(perms, event)));
 
     if (accessibleEvents.length === 0) {
       return c.json({ error: 'No accessible network change events found' }, 404);

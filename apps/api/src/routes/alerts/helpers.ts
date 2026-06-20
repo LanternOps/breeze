@@ -5,11 +5,13 @@ import {
   alertRules,
   alertTemplates,
   alerts,
+  devices,
   notificationChannels,
   escalationPolicies,
   organizations,
   partners,
 } from '../../db/schema';
+import { siteAccessCheck } from '../../middleware/auth';
 import {
   validateEmailConfig,
   validateWebhookConfig,
@@ -114,7 +116,26 @@ export async function getAlertRuleWithOrgCheck(ruleId: string, auth: { canAccess
   return rule;
 }
 
-export async function getAlertWithOrgCheck(alertId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+/**
+ * Resolve an alert and enforce BOTH tenancy axes:
+ *  - org axis (RLS-backed): the caller must be able to access the alert's org.
+ *  - site axis (app-layer ONLY — RLS does NOT enforce it): a site-restricted
+ *    org user (`auth.allowedSiteIds` set) must not read/act on an alert whose
+ *    device lives in a site outside their allowlist.
+ *
+ * The site axis mirrors the alert-list narrowing (`alerts.ts` GET /) and the
+ * create-ticket gate (`deviceInSiteScope`): deviceless (org-wide) alerts stay
+ * visible; out-of-site alerts return null so the caller surfaces a 404 (no
+ * oracle distinguishing "absent" from "forbidden"). Unrestricted callers
+ * (partner/system scope, or org users with no site restriction — i.e.
+ * `allowedSiteIds` undefined) are unaffected. Centralizing the site check here
+ * covers every by-id path uniformly (GET /:id, acknowledge, resolve, suppress,
+ * create-ticket, tickets) rather than per-handler.
+ */
+export async function getAlertWithOrgCheck(
+  alertId: string,
+  auth: { canAccessOrg: (orgId: string) => boolean; allowedSiteIds?: string[] }
+) {
   const [alert] = await db
     .select()
     .from(alerts)
@@ -128,6 +149,19 @@ export async function getAlertWithOrgCheck(alertId: string, auth: { canAccessOrg
   const hasAccess = ensureOrgAccess(alert.orgId, auth);
   if (!hasAccess) {
     return null;
+  }
+
+  // Site-axis gate. Only restricted callers (allowedSiteIds set) are narrowed.
+  // Deviceless alerts are org-wide and not site-bound, so they pass.
+  if (auth.allowedSiteIds && alert.deviceId) {
+    const [device] = await db
+      .select({ siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, alert.deviceId))
+      .limit(1);
+    if (!siteAccessCheck(auth.allowedSiteIds)(device?.siteId ?? null)) {
+      return null;
+    }
   }
 
   return alert;

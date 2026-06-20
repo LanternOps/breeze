@@ -24,7 +24,7 @@ import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertAct
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
-import { deviceInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
+import { filterAlertsBySiteScope } from '../tickets/siteScope';
 
 export const alertsRoutes = new Hono();
 
@@ -854,15 +854,13 @@ alertsRoutes.post(
 
     // Verify the alert is visible to the caller before calling the service
     // (defense-in-depth: service also re-checks via createTicket org access).
+    // getAlertWithOrgCheck now enforces BOTH axes: org (RLS-backed) and site
+    // (app-layer-only). A site-restricted caller therefore cannot create a
+    // ticket from an alert whose device is outside their allowed sites — the
+    // alert resolves null and surfaces as 404 (no oracle), same shape as the
+    // ticket-side gate. No separate deviceInSiteScope call is needed.
     const alert = await getAlertWithOrgCheck(id, auth);
     if (!alert) {
-      return c.json({ error: 'Alert not found' }, 404);
-    }
-
-    // Site-axis gate (R2): a site-restricted caller must not create tickets
-    // from alerts whose device is outside their allowed sites. Out-of-site
-    // alerts are invisible, not forbidden — same shape as the ticket-side gate.
-    if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
       return c.json({ error: 'Alert not found' }, 404);
     }
 
