@@ -114,3 +114,14 @@ export async function orgHasAnyVerifiedDomain(orgId: string): Promise<boolean> {
     .limit(1);
   return !!row;
 }
+
+/**
+ * When true, the SSO callback enforces domain verification for EVERY org
+ * (refuses to provision/JIT-link an email whose domain isn't verified).
+ * When false (default), enforcement is per-org: only orgs that already have at
+ * least one verified domain are gated (gradual rollout). Read at call time so
+ * it can be toggled without a redeploy in dev.
+ */
+export function isSsoDomainVerificationStrict(): boolean {
+  return (process.env.SSO_DOMAIN_VERIFICATION_STRICT ?? '').toLowerCase() === 'true';
+}

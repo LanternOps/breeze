@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ── db mock (mirrors apiKeys.test.ts / clientAiUsage.test.ts pattern) ───────
 // We hoist the individual mock functions so that vi.mock factory can close
@@ -50,6 +50,7 @@ import {
   verifyDomain,
   isDomainVerifiedForOrg,
   orgHasAnyVerifiedDomain,
+  isSsoDomainVerificationStrict,
   TXT_RECORD_HOST_PREFIX,
   TXT_RECORD_VALUE_PREFIX,
 } from './ssoDomainVerification';
@@ -352,5 +353,52 @@ describe('orgHasAnyVerifiedDomain', () => {
   it('returns false when no verified domains exist', async () => {
     setupSelect([]);
     await expect(orgHasAnyVerifiedDomain('org-1')).resolves.toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isSsoDomainVerificationStrict
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('isSsoDomainVerificationStrict', () => {
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    // Save the current value of the env var so we can restore it after each test
+    originalEnv = process.env.SSO_DOMAIN_VERIFICATION_STRICT;
+  });
+
+  afterEach(() => {
+    // Restore the original value (or clear it if it wasn't set)
+    if (originalEnv === undefined) {
+      delete process.env.SSO_DOMAIN_VERIFICATION_STRICT;
+    } else {
+      process.env.SSO_DOMAIN_VERIFICATION_STRICT = originalEnv;
+    }
+  });
+
+  it('returns false when env var is unset', () => {
+    delete process.env.SSO_DOMAIN_VERIFICATION_STRICT;
+    expect(isSsoDomainVerificationStrict()).toBe(false);
+  });
+
+  it('returns true when env var is "true"', () => {
+    process.env.SSO_DOMAIN_VERIFICATION_STRICT = 'true';
+    expect(isSsoDomainVerificationStrict()).toBe(true);
+  });
+
+  it('returns true when env var is "TRUE" (case-insensitive)', () => {
+    process.env.SSO_DOMAIN_VERIFICATION_STRICT = 'TRUE';
+    expect(isSsoDomainVerificationStrict()).toBe(true);
+  });
+
+  it('returns false when env var is "false"', () => {
+    process.env.SSO_DOMAIN_VERIFICATION_STRICT = 'false';
+    expect(isSsoDomainVerificationStrict()).toBe(false);
+  });
+
+  it('returns false when env var is "1" (literal "true" only)', () => {
+    process.env.SSO_DOMAIN_VERIFICATION_STRICT = '1';
+    expect(isSsoDomainVerificationStrict()).toBe(false);
   });
 });

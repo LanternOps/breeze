@@ -407,6 +407,11 @@ const envSchema = z
     // self-hosted operator may deliberately run 2FA-off).
     ENABLE_2FA: z.string().optional(),
 
+    // SSO domain verification enforcement. When 'true', EVERY org is required to
+    // verify its domain before SSO login is allowed. When unset or 'false', enforcement
+    // is gradual: only orgs that already have a verified domain are gated.
+    SSO_DOMAIN_VERIFICATION_STRICT: z.string().optional(),
+
     // OAuth Dynamic Client Registration (DCR) hardening. Both default OFF.
     // See env.ts and provider.ts for the runtime read-paths; the
     // production-only validation in superRefine refuses boot when
