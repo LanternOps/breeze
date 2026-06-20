@@ -330,6 +330,11 @@ peripheralControlRoutes.get(
 
 peripheralControlRoutes.get(
   '/policies',
+  // Gate peripheral-policy reads behind DEVICES_READ, matching `/activity`.
+  // Without this, any in-org user of any role could read the org's USB/
+  // peripheral security posture (RLS contains it to their org, but intra-tenant
+  // RBAC must still apply).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listPoliciesQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -378,9 +383,12 @@ peripheralControlRoutes.get(
 
 peripheralControlRoutes.get(
   '/policies/:id',
+  // Gate peripheral-policy reads behind DEVICES_READ, matching `/activity`.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', disablePolicyParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id');
+    const { id } = c.req.valid('param');
     const policy = await getPolicyWithAccess(id, auth);
     if (!policy) return c.json({ error: 'Policy not found' }, 404);
     return c.json({ data: policy });

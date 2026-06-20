@@ -656,6 +656,22 @@ describe('peripheralControl routes', () => {
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
     });
 
+    it('returns 403 on GET /policies when caller lacks devices.read', async () => {
+      permissionGate.deny = true;
+
+      const res = await app.request('/peripherals/policies', { method: 'GET' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 403 on GET /policies/:id when caller lacks devices.read', async () => {
+      permissionGate.deny = true;
+
+      const res = await app.request(`/peripherals/policies/${policyId}`, { method: 'GET' });
+
+      expect(res.status).toBe(403);
+    });
+
     it('does not narrow for an unrestricted caller (no allowedSiteIds)', async () => {
       // No perms set -> unrestricted. Only count + rows selects run (no device resolution).
       vi.mocked(db.select).mockReset();
@@ -684,6 +700,53 @@ describe('peripheralControl routes', () => {
       expect(body.data).toHaveLength(1);
       // Unrestricted: exactly 2 selects (count + rows), no device-resolution query.
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('policy read RBAC (devices.read)', () => {
+    it('allows GET /policies when caller has devices.read', async () => {
+      // permissionGate.deny defaults to false -> requirePermission passes.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([basePolicy])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/peripherals/policies', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].id).toBe(policyId);
+    });
+
+    it('allows GET /policies/:id when caller has devices.read', async () => {
+      // getPolicyWithAccess: db.select().from().where().limit()
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([basePolicy])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/peripherals/policies/${policyId}`, { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.id).toBe(policyId);
     });
   });
 });
