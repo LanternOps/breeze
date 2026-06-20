@@ -21,7 +21,9 @@ import {
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
+  buildOnedriveHelperConfigUpdate,
   getOrgAgentUpdatePolicy,
+  type OnedriveConfigUpdate,
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
@@ -632,14 +634,24 @@ if (latestHelper) {
     captureException(err);
   }
 
+  let onedriveSettings: OnedriveConfigUpdate | null = null;
+  try {
+    onedriveSettings = await buildOnedriveHelperConfigUpdate(device.id);
+  } catch (err) {
+    console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
+  }
+
   let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (configUpdate || eventLogSettings || monitoringSettings) {
+  if (configUpdate || eventLogSettings || monitoringSettings || onedriveSettings) {
     mergedConfigUpdate = { ...(configUpdate ?? {}) };
     if (eventLogSettings) {
       mergedConfigUpdate.event_log_settings = eventLogSettings;
     }
     if (monitoringSettings) {
       mergedConfigUpdate.monitoring_settings = monitoringSettings;
+    }
+    if (onedriveSettings) {
+      mergedConfigUpdate.onedrive_helper_settings = onedriveSettings;
     }
   }
 
