@@ -12,6 +12,8 @@ const BASELINE_GAP_MINUTES = 15;
 const SEASONAL_LOOKBACK_DAYS = 28;
 const SEASONAL_GAP_MINUTES = 60;
 const SEASONAL_WINDOW_HOURS = 1;
+const SEASONAL_MIN_BASELINE_SPAN_DAYS = 14;
+const SEASONAL_MIN_BASELINE_ACTIVE_DAYS = 3;
 const MIN_BASELINE_BUCKETS = 12;
 const MIN_SEASONAL_BASELINE_BUCKETS = 8;
 const MIN_TREND_BUCKETS = 6;
@@ -606,6 +608,7 @@ async function detectSeasonalRobustCandidates(options: MetricAnomalyRange): Prom
         r.bucket_seconds,
         r.avg_value AS observed_value,
         r.sample_count AS observed_sample_count,
+        b.bucket_start AS baseline_bucket_start,
         b.avg_value AS baseline_sample_value,
         b.sample_count AS baseline_sample_count
       FROM recent r
@@ -641,6 +644,9 @@ async function detectSeasonalRobustCandidates(options: MetricAnomalyRange): Prom
         (percentile_cont(0.75) WITHIN GROUP (ORDER BY bv.baseline_sample_value))::double precision AS q3_value,
         min(bv.baseline_sample_value)::double precision AS baseline_min,
         max(bv.baseline_sample_value)::double precision AS baseline_max,
+        min(bv.baseline_bucket_start) AS baseline_first_bucket,
+        max(bv.baseline_bucket_start) AS baseline_last_bucket,
+        count(DISTINCT bv.baseline_bucket_start::date)::integer AS baseline_active_days,
         count(*)::integer AS baseline_count,
         sum(bv.baseline_sample_count)::integer AS baseline_sample_count
       FROM baseline_values bv
@@ -699,6 +705,9 @@ async function detectSeasonalRobustCandidates(options: MetricAnomalyRange): Prom
       SELECT
         bs.*,
         bm.mad_value,
+        (
+          extract(epoch from (bs.baseline_last_bucket - bs.baseline_first_bucket)) / 86400.0
+        )::double precision AS baseline_span_days,
         greatest(
           coalesce(bm.mad_value, 0) * 1.4826,
           coalesce((bs.q3_value - bs.q1_value) / 1.349, 0),
@@ -714,6 +723,8 @@ async function detectSeasonalRobustCandidates(options: MetricAnomalyRange): Prom
        AND bm.bucket_start = bs.bucket_start
        AND bm.bucket_seconds = bs.bucket_seconds
       WHERE bs.baseline_count >= ${MIN_SEASONAL_BASELINE_BUCKETS}
+        AND bs.baseline_active_days >= ${SEASONAL_MIN_BASELINE_ACTIVE_DAYS}
+        AND bs.baseline_first_bucket <= bs.bucket_start - (${SEASONAL_MIN_BASELINE_SPAN_DAYS}::integer * interval '1 day')
     ),
     scored AS (
       SELECT
@@ -800,7 +811,14 @@ async function detectSeasonalRobustCandidates(options: MetricAnomalyRange): Prom
         'baselineDays', ${SEASONAL_LOOKBACK_DAYS}::integer,
         'baselineGapMinutes', ${SEASONAL_GAP_MINUTES}::integer,
         'seasonalWindowHours', ${SEASONAL_WINDOW_HOURS}::integer,
+        'readinessState', 'ready',
+        'minBaselineSpanDays', ${SEASONAL_MIN_BASELINE_SPAN_DAYS}::integer,
+        'minBaselineActiveDays', ${SEASONAL_MIN_BASELINE_ACTIVE_DAYS}::integer,
         'baselineBuckets', c.baseline_count,
+        'baselineActiveDays', c.baseline_active_days,
+        'baselineSpanDays', c.baseline_span_days,
+        'baselineFirstBucket', c.baseline_first_bucket,
+        'baselineLastBucket', c.baseline_last_bucket,
         'baselineSampleCount', c.baseline_sample_count,
         'median', c.median_value,
         'q1', c.q1_value,
