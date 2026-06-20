@@ -1,4 +1,5 @@
 import { PSACompany, PSAConnectionTest, PSAProvider, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import { psaFetch } from './http';
 
 export interface ConnectWiseCredentials {
   baseUrl: string;
@@ -51,7 +52,7 @@ export class ConnectWiseProvider implements PSAProvider {
     body?: unknown,
     contentType = 'application/json'
   ): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await psaFetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
         'Authorization': this.getAuthHeader(),

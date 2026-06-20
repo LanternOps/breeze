@@ -3,6 +3,7 @@
  *
  * Supports both Jira Cloud and Jira Server/Data Center
  */
+import { psaFetch } from './http';
 
 export interface JiraCredentials {
   type: 'cloud' | 'server';
@@ -100,7 +101,7 @@ class JiraClient {
   ): Promise<T> {
     const url = `${this.credentials.baseUrl}/rest/api/3${path}`;
 
-    const response = await fetch(url, {
+    const response = await psaFetch(url, {
       method,
       headers: {
         'Authorization': this.getAuthHeader(),

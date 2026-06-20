@@ -1,4 +1,5 @@
 import { PSACompany, PSAConnectionTest, PSAProvider, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import { psaFetch } from './http';
 
 export interface FreshserviceCredentials {
   baseUrl: string;
@@ -42,7 +43,7 @@ export class FreshserviceProvider implements PSAProvider {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await psaFetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
         'Authorization': this.getAuthHeader(),

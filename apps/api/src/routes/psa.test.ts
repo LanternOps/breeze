@@ -192,6 +192,27 @@ describe('psa route security gates', () => {
     expect(insertMock).toHaveBeenCalled();
   });
 
+  it('rejects unsafe PSA credential base URLs before storing credentials', async () => {
+    const res = await app.request('/psa/connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'jira',
+        name: 'Metadata PSA',
+        credentials: {
+          baseUrl: 'https://169.254.169.254/latest/meta-data',
+          apiKey: 'secret',
+        },
+        settings: {},
+      }),
+    });
+
+    const body = await res.json();
+    expect(res.status).toBe(400);
+    expect(body.error).toContain('credentials.baseUrl rejected');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
   it('requires MFA before testing or deleting existing PSA credentials', async () => {
     mfaGate.deny = true;
 

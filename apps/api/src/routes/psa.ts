@@ -7,6 +7,7 @@ import { db } from '../db';
 import { devices, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { validatePsaBaseUrl } from '../services/psa/http';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 
 export const psaRoutes = new Hono();
@@ -76,6 +77,17 @@ async function ensureOrgAccess(
 
 function encryptCredentials(credentials: Record<string, unknown>): string | null {
   return encryptSecret(JSON.stringify(credentials));
+}
+
+function validatePsaCredentialBaseUrl(credentials: Record<string, unknown>): string | null {
+  const baseUrl = credentials.baseUrl;
+  if (baseUrl === undefined) return null;
+  if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
+    return 'credentials.baseUrl must be a non-empty URL';
+  }
+
+  const rejectionReason = validatePsaBaseUrl(baseUrl.trim());
+  return rejectionReason ? `credentials.baseUrl rejected: ${rejectionReason}` : null;
 }
 
 function decryptCredentials(value: unknown): Record<string, unknown> | null {
@@ -349,6 +361,11 @@ psaRoutes.post(
       return c.json({ error: 'orgId is required for system scope' }, 400);
     }
 
+    const baseUrlError = validatePsaCredentialBaseUrl(data.credentials);
+    if (baseUrlError) {
+      return c.json({ error: baseUrlError }, 400);
+    }
+
     const credentialsEncrypted = encryptCredentials(data.credentials);
     if (!credentialsEncrypted) {
       return c.json({ error: 'Failed to encrypt credentials' }, 500);
@@ -452,6 +469,11 @@ psaRoutes.patch(
     }
 
     if (data.credentials !== undefined) {
+      const baseUrlError = validatePsaCredentialBaseUrl(data.credentials);
+      if (baseUrlError) {
+        return c.json({ error: baseUrlError }, 400);
+      }
+
       const encrypted = encryptCredentials(data.credentials);
       if (!encrypted) {
         return c.json({ error: 'Failed to encrypt credentials' }, 500);
