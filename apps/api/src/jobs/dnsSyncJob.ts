@@ -688,19 +688,26 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
     // Pi-hole puts the API key in the URL query string (?auth=<key>) and an
     // upstream body could echo arbitrary public-host content (SSRF read
     // oracle) — neither may land in dnsFilterIntegrations.lastSyncError.
-    // Record on a FRESH transaction so it survives Phase 3's rollback.
-    await dbModule.runOutsideDbContext(() =>
-      runWithSystemDbAccess(() =>
-        db
-          .update(dnsFilterIntegrations)
-          .set({
-            lastSyncStatus: 'error',
-            lastSyncError: tenantVisibleSyncError(error),
-            updatedAt: new Date()
-          })
-          .where(eq(dnsFilterIntegrations.id, integration.id))
-      )
-    );
+    // Record on a FRESH transaction so it survives Phase 3's rollback. Guard the
+    // write itself so a failure to record the status can't mask the original
+    // sync error (which is re-thrown below regardless).
+    try {
+      await dbModule.runOutsideDbContext(() =>
+        runWithSystemDbAccess(() =>
+          db
+            .update(dnsFilterIntegrations)
+            .set({
+              lastSyncStatus: 'error',
+              lastSyncError: tenantVisibleSyncError(error),
+              updatedAt: new Date()
+            })
+            .where(eq(dnsFilterIntegrations.id, integration.id))
+        )
+      );
+    } catch (dbErr) {
+      console.error(`[DnsSyncJob] Failed to record sync error for integration ${integration.id}:`, dbErr);
+      captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
+    }
     throw error;
   }
 }
@@ -784,20 +791,27 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
   } catch (error) {
     // Full detail (including the upstream response body, redacted) goes to the
     // SERVER-SIDE log only; the tenant-visible column gets a body-free message.
-    // Record on a FRESH transaction so it survives any Phase 3 rollback.
+    // Record on a FRESH transaction so it survives any Phase 3 rollback. Guard
+    // the write itself so a failure to record the status can't mask the original
+    // sync error (which is re-thrown below regardless).
     logSyncFailureServerSide({ policyId: row.policy.id, orgId: row.integration.orgId }, error);
-    await dbModule.runOutsideDbContext(() =>
-      runWithSystemDbAccess(() =>
-        db
-          .update(dnsPolicies)
-          .set({
-            syncStatus: 'error',
-            syncError: tenantVisibleSyncError(error),
-            updatedAt: new Date()
-          })
-          .where(eq(dnsPolicies.id, row.policy.id))
-      )
-    );
+    try {
+      await dbModule.runOutsideDbContext(() =>
+        runWithSystemDbAccess(() =>
+          db
+            .update(dnsPolicies)
+            .set({
+              syncStatus: 'error',
+              syncError: tenantVisibleSyncError(error),
+              updatedAt: new Date()
+            })
+            .where(eq(dnsPolicies.id, row.policy.id))
+        )
+      );
+    } catch (dbErr) {
+      console.error(`[DnsSyncJob] Failed to record sync error for policy ${row.policy.id}:`, dbErr);
+      captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
+    }
     throw error;
   }
 }

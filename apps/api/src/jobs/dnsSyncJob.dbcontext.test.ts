@@ -13,15 +13,21 @@ let contextDepth = 0;
 const fetchDepths: number[] = [];
 const dbCallDepths: number[] = [];
 let selectResults: unknown[][] = [];
+// `.set(payload)` calls (update writes) with the context depth at call time.
+const updatePayloads: Array<{ depth: number; payload: Record<string, unknown> }> = [];
 
 function chain(result: unknown) {
   const c: Record<string, unknown> = {};
   for (const m of [
-    'from', 'where', 'limit', 'set', 'values', 'returning',
+    'from', 'where', 'limit', 'values', 'returning',
     'onConflictDoNothing', 'onConflictDoUpdate', 'innerJoin', 'leftJoin',
   ]) {
     c[m] = vi.fn(() => c);
   }
+  c.set = vi.fn((payload: Record<string, unknown>) => {
+    updatePayloads.push({ depth: contextDepth, payload });
+    return c;
+  });
   (c as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
     Promise.resolve(result).then(resolve, reject);
   return c;
@@ -92,6 +98,7 @@ describe('dnsSyncJob — DB context boundaries (#1697)', () => {
     fetchDepths.length = 0;
     dbCallDepths.length = 0;
     selectResults = [];
+    updatePayloads.length = 0;
   });
 
   it('processSyncIntegration: fetches events with no DB context held, persists inside one', async () => {
@@ -141,5 +148,39 @@ describe('dnsSyncJob — DB context boundaries (#1697)', () => {
       expect(depth).toBeGreaterThan(0);
     }
     expect(result.added).toBe(1);
+  });
+
+  it('processSyncIntegration: on fetch failure records error status on a fresh context and re-throws the ORIGINAL error', async () => {
+    selectResults = [
+      [{ id: 'int-1', orgId: 'org-1', provider: 'pihole', apiKey: 'k', apiSecret: null, isActive: true, config: {}, lastSync: null }],
+    ];
+    const boom = new Error('dns fetch exploded');
+    createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn().mockRejectedValue(boom) });
+
+    await expect(
+      processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' }),
+    ).rejects.toBe(boom);
+
+    const errorWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'error');
+    expect(errorWrite).toBeDefined();
+    expect(errorWrite!.depth).toBeGreaterThan(0);
+  });
+
+  it('processSyncIntegration: a failing error-status write does not mask the original sync error', async () => {
+    selectResults = [
+      [{ id: 'int-1', orgId: 'org-1', provider: 'pihole', apiKey: 'k', apiSecret: null, isActive: true, config: {}, lastSync: null }],
+    ];
+    const boom = new Error('dns fetch exploded');
+    createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn().mockRejectedValue(boom) });
+    const dbm = await import('../db');
+    // Make the error-status bookkeeping write itself throw (e.g. pool exhausted).
+    (dbm.db.update as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error('pool exhausted');
+    });
+
+    // The ORIGINAL provider error must still propagate, not the bookkeeping failure.
+    await expect(
+      processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' }),
+    ).rejects.toBe(boom);
   });
 });
