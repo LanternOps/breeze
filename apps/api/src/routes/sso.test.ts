@@ -13,9 +13,10 @@ function ssoStateCookieHeader(state: string): string {
   return `breeze_sso_state=${encodeURIComponent(value)}`;
 }
 
-const { permissionGate, mfaGate } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, recordedPermissionGuards } = vi.hoisted(() => ({
   permissionGate: { deny: false },
-  mfaGate: { deny: false }
+  mfaGate: { deny: false },
+  recordedPermissionGuards: [] as Array<[string, string]>
 }));
 
 vi.mock('../services/sso', () => ({
@@ -147,11 +148,14 @@ vi.mock('../middleware/auth', () => ({
     }
     return next();
   }),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (permissionGate.deny) {
-      return c.json({ error: 'Forbidden' }, 403);
-    }
-    return next();
+  requirePermission: vi.fn((resource: string, action: string) => {
+    recordedPermissionGuards.push([resource, action]);
+    return async (c: any, next: any) => {
+      if (permissionGate.deny) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      return next();
+    };
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
     if (mfaGate.deny) {
@@ -234,6 +238,13 @@ describe('sso routes', () => {
     setAuthContext();
     app = new Hono();
     app.route('/sso', ssoRoutes);
+  });
+
+  it('gates provider mutations on sso:admin, not organizations:write', () => {
+    // recordedPermissionGuards is populated at module load when sso.ts registers
+    // its routes — before any beforeEach/clearAllMocks runs, so it survives resets.
+    expect(recordedPermissionGuards).toContainEqual(['sso', 'admin']);
+    expect(recordedPermissionGuards).not.toContainEqual(['organizations', 'write']);
   });
 
   it('returns providers for the organization', async () => {

@@ -27,7 +27,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   catalog: 'Product Catalog',
   quotes: 'Quotes',
   invoices: 'Invoices',
-  contracts: 'Contracts'
+  contracts: 'Contracts',
+  sso: 'Single Sign-On'
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -40,7 +41,8 @@ const ACTION_LABELS: Record<string, string> = {
   access: 'Access',
   export: 'Export',
   manage: 'Manage',
-  send: 'Send'
+  send: 'Send',
+  admin: 'Administer'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

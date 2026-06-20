@@ -496,4 +496,16 @@ describe('permissions service', () => {
       expect(isKnownPermission({ resource: 'not-real', action: 'write' })).toBe(false);
     });
   });
+
+  describe('sso:admin permission (security review #2 H-2)', () => {
+    it('is defined in the catalog as resource=sso action=admin', () => {
+      expect(PERMISSIONS.SSO_ADMIN).toEqual({ resource: 'sso', action: 'admin' });
+    });
+
+    it('is a known, assignable permission', () => {
+      const p = { resource: 'sso', action: 'admin' };
+      expect(isKnownPermission(p)).toBe(true);
+      expect(isAssignablePermission(p)).toBe(true);
+    });
+  });
 });
