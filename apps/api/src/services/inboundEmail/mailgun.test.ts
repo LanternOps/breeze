@@ -99,6 +99,56 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n.providerMessageId).toBe('<msg-2@customer.com>');
   });
 
+  it('reads Mailgun SPF/DKIM/DMARC verdicts and marks an aligned-pass sender verified', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'X-Mailgun-Spf': 'Pass',
+      'message-headers': JSON.stringify([
+        ['Auto-Submitted', 'no'],
+        ['Authentication-Results', 'mx.mailgun.org; dkim=pass header.d=customer.com; dmarc=pass'],
+      ])
+    }) } as any);
+    expect(n.senderAuth).toBeDefined();
+    expect(n.senderAuth!.spf).toBe('pass');
+    expect(n.senderAuth!.dkim).toBe('pass');
+    expect(n.senderAuth!.dmarc).toBe('pass');
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
+  it('marks a sender NOT verified when SPF fails and there is no DMARC pass', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'X-Mailgun-Spf': 'Fail',
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'mx.mailgun.org; dkim=fail; dmarc=fail'],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  it('verifies on a DMARC pass even when SPF/DKIM are not both present', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'X-Mailgun-Spf': 'Neutral',
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'mx.mailgun.org; dmarc=pass policy.published-domain-policy=reject'],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.dmarc).toBe('pass');
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
+  it('treats absent verdicts as NOT verified (fail closed)', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      recipient: 'acme@tickets.example.com',
+      sender: 'jane@customer.com',
+      from: 'Jane Doe <jane@customer.com>',
+      subject: 'no auth headers',
+      'stripped-text': 'hi'
+    }) } as any);
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
   it('derives a STABLE providerMessageId fallback across retries when Message-Id is absent', async () => {
     // Same envelope, different signing `timestamp` (provider retry), no Message-Id.
     const base = {

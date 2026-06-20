@@ -180,6 +180,9 @@ function email(overrides: Partial<NormalizedInboundEmail> = {}): NormalizedInbou
     subject: 'printer is down',
     text: 'It is broken.',
     messageId: '<msg-1@customer.com>',
+    // Default to a VERIFIED sender so the existing happy-path assertions (which all
+    // predate sender-auth gating) keep exercising the trusted match/create paths.
+    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
     attachments: [],
     raw: { recipient: 'acme@tickets.example.com' },
     ...overrides
@@ -622,5 +625,109 @@ describe('processInboundEmail', () => {
     expect(log[0]!.partnerId).toBe('p-suspended');
     // The error note mentions the status.
     expect(String(log[0]!.error)).toContain('suspended');
+  });
+
+  // SENDER-AUTH GATE (R4): the From header is spoofable. Before trusting it for any
+  // identity/state action — appending a PUBLIC comment, reopening a ticket, or
+  // creating a ticket as a trusted portal user — the sender domain MUST be
+  // authenticated (aligned SPF+DKIM, or DMARC pass). An UNVERIFIED sender is routed
+  // to the existing quarantine/review path instead of auto-acting. Mail is never
+  // hard-dropped.
+  it('R4: unverified sender with a valid thread match is QUARANTINED, not appended/reopened', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no dup
+    // A real, matchable resolved ticket exists — but the sender is unauthenticated.
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe' }];
+
+    await processInboundEmail(email({
+      inReplyTo: '<msg-1@tickets.example.com>',
+      senderAuth: { spf: 'fail', dkim: 'none', dmarc: 'fail', verified: false }
+    }));
+
+    // NO public comment appended, NO reopen.
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    expect(createTicketMock).not.toHaveBeenCalled();
+
+    // Routed to quarantine for human review.
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.partnerId).toBe('p-1');
+    expect(log[0]!.ticketId).toBeNull();
+  });
+
+  it('R4: unverified known portal-user sender is QUARANTINED, not created-as-trusted', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = []; // no thread/token match
+    // Sender email DOES map to a portal user — but the From header is unauthenticated,
+    // so it must NOT be trusted to stamp submittedBy / skip quarantine.
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+
+    await processInboundEmail(email({
+      subject: 'brand new issue',
+      senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false }
+    }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.partnerId).toBe('p-1');
+    expect(log[0]!.ticketId).toBeNull();
+  });
+
+  it('R4: a missing senderAuth verdict is treated as NOT verified (quarantine)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+
+    // No senderAuth field at all (provider omitted verdicts) -> fail closed.
+    const e = email({ subject: 'no verdict' });
+    delete (e as { senderAuth?: unknown }).senderAuth;
+    await processInboundEmail(e);
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('R4: a VERIFIED sender still appends/reopens, and stamps authorName from the stored portal-user name', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane Stored-Name' }];
+
+    await processInboundEmail(email({
+      // Spoofable display name in the header — must NOT win over the stored name.
+      fromName: 'Spoofed Name',
+      inReplyTo: '<msg-1@tickets.example.com>',
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true }
+    }));
+
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.isPublic).toBe(true);
+    // authorName comes from the verified portal user's stored name, not the raw header.
+    expect(comments[0]!.authorName).toBe('Jane Stored-Name');
+
+    const ticketUpdates = state.updates.filter((u) => u.table === 'tickets');
+    expect(ticketUpdates.some((u) => u.set.status === 'open')).toBe(true);
+
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).toBe('matched');
+    expect(log[0]!.ticketId).toBe('t-1');
   });
 });

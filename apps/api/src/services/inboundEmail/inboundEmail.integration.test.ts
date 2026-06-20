@@ -84,6 +84,10 @@ function buildEmail(overrides: Partial<NormalizedInboundEmail> & { to: string; f
     providerMessageId: `<msg-${uniqueSuffix()}@customer.test>`,
     subject: 'Hello support',
     text: 'I need help with my printer.',
+    // Default to a sender-authenticated message (R4) so these cross-partner isolation
+    // cases keep exercising the trusted match/create paths. An unverified sender is now
+    // routed to quarantine before any identity/state action.
+    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
     attachments: [],
     raw: {},
     ...overrides

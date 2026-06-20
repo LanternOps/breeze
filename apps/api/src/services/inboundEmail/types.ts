@@ -10,6 +10,25 @@ export type InboundParseStatus = 'matched' | 'created' | 'quarantined' | 'failed
 // reserved for the planned second provider.
 export type InboundProviderName = 'mailgun' | 'resend';
 
+// A single sender-authentication verdict, normalized to lowercase. 'pass'/'fail'
+// are the meaningful states; 'none'/'neutral'/'unknown' are all treated as NOT a
+// pass. The provider reports these from SPF / DKIM / DMARC evaluation it already
+// performed at the MX boundary — the API never re-runs DNS auth.
+export type SenderAuthVerdict = 'pass' | 'fail' | 'neutral' | 'none' | 'unknown';
+
+// Sender-authentication summary for the From domain (R4). The From header is
+// spoofable, so identity/state actions (treating a sender as a known portal user,
+// or threading a reply by ticket token) must gate on `verified`. `verified` is the
+// derived trust decision: aligned SPF+DKIM pass, OR a DMARC pass. When the provider
+// omits all verdicts, `verified` is false (fail closed) — mail is quarantined for
+// human review, never auto-trusted and never hard-dropped.
+export interface SenderAuth {
+  spf: SenderAuthVerdict;
+  dkim: SenderAuthVerdict;
+  dmarc: SenderAuthVerdict;
+  verified: boolean;
+}
+
 export interface NormalizedInboundEmail {
   provider: InboundProviderName;
   providerMessageId: string;
@@ -24,6 +43,9 @@ export interface NormalizedInboundEmail {
   references?: string[];
   autoSubmitted?: string; // for loop-prevention (used in PR3)
   precedence?: string;
+  // Sender-authentication verdicts for the From domain (R4). Absent => caller must
+  // treat the sender as NOT verified (fail closed).
+  senderAuth?: SenderAuth;
   attachments: { filename: string; contentType: string; size: number }[]; // metadata only
   raw: Record<string, unknown>;
 }

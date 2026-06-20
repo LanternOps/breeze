@@ -1,7 +1,12 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
 import { getConfig } from '../../config/validate';
-import type { InboundEmailProvider, NormalizedInboundEmail } from './types';
+import type {
+  InboundEmailProvider,
+  NormalizedInboundEmail,
+  SenderAuth,
+  SenderAuthVerdict
+} from './types';
 
 export class MailgunInboundProvider implements InboundEmailProvider {
   readonly name = 'mailgun';
@@ -53,9 +58,52 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       references: refs ? refs.split(/\s+/) : undefined,
       autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
       precedence: parseHeader(b['message-headers'], 'Precedence'),
+      senderAuth: extractSenderAuth(b),
       attachments: [],
       raw: b
     };
+  }
+}
+
+// Read Mailgun's already-computed sender-authentication verdicts (R4). Mailgun
+// evaluates SPF/DKIM/DMARC at its MX boundary and surfaces them via:
+//   - X-Mailgun-Spf            top-level form field ('Pass'/'Neutral'/'Fail'/...)
+//   - Authentication-Results   header (in message-headers) carrying dkim= / dmarc=
+// We do NOT re-run DNS auth here; we only normalize what the provider reported.
+// `verified` is the trust decision used to gate identity/state actions: aligned
+// SPF+DKIM pass, OR a DMARC pass. Any absent verdict is NOT a pass (fail closed).
+function extractSenderAuth(b: Record<string, string>): SenderAuth {
+  const authResults = parseHeader(b['message-headers'], 'Authentication-Results') ?? '';
+  const spf = normalizeVerdict(b['X-Mailgun-Spf'] ?? extractMechanism(authResults, 'spf'));
+  const dkim = normalizeVerdict(
+    b['X-Mailgun-Dkim-Check-Result'] ?? extractMechanism(authResults, 'dkim')
+  );
+  const dmarc = normalizeVerdict(extractMechanism(authResults, 'dmarc'));
+  // Aligned SPF+DKIM pass, OR an explicit DMARC pass.
+  const verified = (spf === 'pass' && dkim === 'pass') || dmarc === 'pass';
+  return { spf, dkim, dmarc, verified };
+}
+
+// Pull `<mechanism>=<result>` out of an Authentication-Results header value, e.g.
+// "mx.mailgun.org; dkim=pass header.d=x.com; dmarc=fail" -> for 'dkim' returns 'pass'.
+function extractMechanism(authResults: string, mechanism: string): string | undefined {
+  const m = new RegExp(`\\b${mechanism}\\s*=\\s*([a-zA-Z]+)`, 'i').exec(authResults);
+  return m?.[1];
+}
+
+// Normalize a raw verdict token to the SenderAuthVerdict union. Anything we don't
+// recognize (or undefined) collapses to 'unknown', which is never a pass.
+function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {
+  switch ((raw ?? '').trim().toLowerCase()) {
+    case 'pass': return 'pass';
+    case 'fail':
+    case 'softfail':
+    case 'permerror':
+    case 'temperror':
+      return 'fail';
+    case 'neutral': return 'neutral';
+    case 'none': return 'none';
+    default: return 'unknown';
   }
 }
 

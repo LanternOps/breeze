@@ -162,6 +162,18 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
       .limit(1);
     if (dup[0]) return;
 
+    // (R4) Sender authentication gate. The From header is spoofable and the per-partner
+    // ticket token (T-YYYY-NNNN) is enumerable, so a token/thread match or a
+    // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
+    // ticket, or create a ticket as a trusted sender unless the sender's domain is
+    // authenticated. We rely on the verdicts the provider already computed at its MX
+    // boundary (aligned SPF+DKIM, or DMARC pass). When NOT verified, route the message to
+    // the EXISTING quarantine/review path instead of auto-acting — mail is never dropped.
+    if (!n.senderAuth?.verified) {
+      await logInbound(n, partnerId, 'quarantined', null, 'unverified sender (SPF/DKIM/DMARC)');
+      return;
+    }
+
     const matched = await findTicketInPartner(n, partnerId);
     if (matched) {
       // GUARD (spec §6 layer 2): never act across partners. A partner-scoped match query
@@ -332,9 +344,9 @@ async function findClosedTicketInPartner(n: NormalizedInboundEmail, partnerId: s
 
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
-async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string } | null> {
+async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null } | null> {
   const rows = await db
-    .select({ id: portalUsers.id, orgId: portalUsers.orgId })
+    .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name })
     .from(portalUsers)
     .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
     .where(and(eq(portalUsers.email, email.toLowerCase()), eq(organizations.partnerId, partnerId)))
@@ -458,11 +470,16 @@ async function appendInboundComment(ticketId: string, n: NormalizedInboundEmail,
   // user_id=actor). Under system scope the ticket_comments INSERT policy permits user_id IS
   // NULL. Email-sourced comments are ALWAYS public (spec §4: email can never create an internal note).
   const sender = await findPortalUserInPartner(n.from, partnerId);
+  // appendInboundComment is only reached on the verified-sender match path (R4 gate
+  // upstream), so a matched portal user is an authenticated identity: prefer their
+  // STORED name over the spoofable From display name. Fall back to the header only
+  // when the sender isn't a known portal user (still verified by SPF/DKIM/DMARC).
+  const authorName = sender?.name ?? n.fromName ?? n.from;
   const inserted = await db.insert(ticketComments).values({
     ticketId,
     userId: null,
     portalUserId: sender?.id ?? null,
-    authorName: n.fromName ?? n.from,
+    authorName,
     authorType: 'email',
     commentType: 'comment',
     content: n.text,
