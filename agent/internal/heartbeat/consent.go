@@ -1,9 +1,15 @@
 package heartbeat
 
-// decideConsent encodes the spec decision matrix. An explicit "deny" always
-// blocks (reason "user"). Otherwise (no helper / no response) the configured
-// unavailable-behavior decides, and the reason records why we couldn't get a
-// positive answer.
+// decideConsent encodes the spec decision matrix. An explicit "allow"/"deny"
+// from the user is honored directly (reason "user"). When no explicit decision
+// is obtained, the configured unavailable-behavior governs ONLY the two cases
+// where consent genuinely could not be solicited — no consent-capable helper
+// ("helper_absent") or the helper never answered within the deadline
+// ("timeout"). A present helper that replies with no recognizable decision
+// ("no_user") fails CLOSED regardless of policy: the consent dialog always
+// submits an explicit allow/deny, so an empty/garbled/errored reply is a
+// malfunction, never a real "couldn't ask" outcome, and must not silently
+// grant a session under a "proceed" default.
 func decideConsent(verdict string, helperPresent, timedOut bool, unavailableBehavior string) (bool, string) {
 	switch verdict {
 	case "allow":
@@ -11,14 +17,14 @@ func decideConsent(verdict string, helperPresent, timedOut bool, unavailableBeha
 	case "deny":
 		return false, "user"
 	}
-	var reason string
 	switch {
 	case !helperPresent:
-		reason = "helper_absent"
+		return unavailableBehavior == "proceed", "helper_absent"
 	case timedOut:
-		reason = "timeout"
+		return unavailableBehavior == "proceed", "timeout"
 	default:
-		reason = "no_user"
+		// Helper present and responsive, but no valid allow/deny decision. Fail
+		// closed — do not consult unavailable-behavior. See doc comment above.
+		return false, "no_user"
 	}
-	return unavailableBehavior == "proceed", reason
 }

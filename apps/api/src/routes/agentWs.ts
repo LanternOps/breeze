@@ -30,7 +30,7 @@ import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../serv
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
-import { logSessionAudit } from './remote/helpers';
+import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
@@ -1750,10 +1750,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             const resultSessionId = typeof fastResult.sessionId === 'string' && fastResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
               ? fastResult.sessionId
               : null;
-            const sessionId =
-              expectedSessionId && (!resultSessionId || resultSessionId === expectedSessionId)
-                ? expectedSessionId
-                : null;
+            const sessionId = resolveConsentMarkerSessionId(expectedSessionId, resultSessionId);
             const reason = typeof fastResult.reason === 'string' ? fastResult.reason : 'no_user';
             if (sessionId) {
               try {
@@ -1775,11 +1772,11 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     // a denied session via /viewer/offer.
                     await revokeViewerSession(sessionId);
                     // A genuine user denial or a consent timeout is a "denied"
-                    // decision; any other reason (no user present, helper absent)
-                    // is a bypass/unavailable path, audited distinctly.
-                    const action = reason === 'user' || reason === 'timeout'
-                      ? 'session_consent_denied'
-                      : 'session_consent_bypassed';
+                    // decision; any other reason (no user present, helper absent,
+                    // malformed reply) is a bypass/unavailable path, audited
+                    // distinctly. Shared classifier keeps this in lockstep with
+                    // the operator deny route (remote/sessions.ts).
+                    const action = classifyConsentDenyAction(reason);
                     await logSessionAudit(
                       action,
                       updated.userId,
@@ -1806,10 +1803,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             const resultSessionId = typeof fastResult.sessionId === 'string' && fastResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
               ? fastResult.sessionId
               : null;
-            const sessionId =
-              expectedSessionId && (!resultSessionId || resultSessionId === expectedSessionId)
-                ? expectedSessionId
-                : null;
+            const sessionId = resolveConsentMarkerSessionId(expectedSessionId, resultSessionId);
             const answer = typeof fastResult.answer === 'string' ? fastResult.answer : null;
             if (sessionId && answer && answer.length < 65536) {
               try {

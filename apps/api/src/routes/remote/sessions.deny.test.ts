@@ -67,6 +67,10 @@ vi.mock('./helpers', () => ({
   checkSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
   checkUserSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
   logSessionAudit,
+  // Pure classifier — mirror the real impl so the deny route resolves the audit
+  // action; its taxonomy is unit-tested against the real fn in helpers.test.ts.
+  classifyConsentDenyAction: (reason: string) =>
+    reason === 'user' || reason === 'timeout' ? 'session_consent_denied' : 'session_consent_bypassed',
   resolveRemoteSessionPromptConfig: vi.fn(() =>
     Promise.resolve({
       mode: 'consent',

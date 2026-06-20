@@ -340,6 +340,39 @@ export async function logSessionAudit(
 // REMOTE SESSION CONSENT / NOTIFICATION PROMPT POLICY
 // ============================================
 
+/** The two audit actions a consent-denied outcome can be recorded under. */
+export type ConsentDenyAuditAction = 'session_consent_denied' | 'session_consent_bypassed';
+
+/**
+ * Classify a consent-deny `reason` into its audit action. A genuine user denial
+ * or a consent timeout is a real "denied" decision; any other reason (no user
+ * present, helper absent, a malformed helper reply, or an operator policy
+ * choosing proceed-then-block) is a bypass/unavailable outcome, audited
+ * distinctly. Single source of truth shared by the agent's WS command-result
+ * path (agentWs.ts) and the operator deny route (sessions.ts) so the two cannot
+ * drift on how the same reason is classified.
+ */
+export function classifyConsentDenyAction(reason: string): ConsentDenyAuditAction {
+  return reason === 'user' || reason === 'timeout'
+    ? 'session_consent_denied'
+    : 'session_consent_bypassed';
+}
+
+/**
+ * Resolve the desktop session id carried by an agent consent marker. The command
+ * id is authoritative (`expected`); when the result body also carries a session
+ * id it must match, otherwise the marker is rejected (returns null) rather than
+ * trusting a mismatched/forged value. Returns null when no id can be trusted.
+ */
+export function resolveConsentMarkerSessionId(
+  expected: string | null,
+  fromResult: string | null
+): string | null {
+  if (!expected) return null;
+  if (fromResult && fromResult !== expected) return null;
+  return expected;
+}
+
 export type SessionPromptMode = 'off' | 'notify' | 'consent';
 export type ConsentUnavailableBehavior = 'proceed' | 'block';
 export type TechnicianIdentityLevel = 'name_email' | 'name' | 'generic';

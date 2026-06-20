@@ -212,6 +212,56 @@ func TestConsentGate_Timeout_Block(t *testing.T) {
 	assertConsentDenied(t, result, "timeout")
 }
 
+// TestConsentGate_HelperErrorReply_FailsClosed_Proceed is the regression guard
+// for the consent-gate fail-open finding: a PRESENT helper that replies with an
+// application-level error envelope (e.g. it could not build/show the dialog)
+// yielded no user decision. Even under the "proceed" unavailable-behavior the
+// session MUST be denied (reason "no_user") — a broken/garbled helper reply must
+// never silently grant a session.
+func TestConsentGate_HelperErrorReply_FailsClosed_Proceed(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-err", []string{"consent_ui"})
+	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			t.Errorf("helper recv: %v", err)
+			return
+		}
+		// Reply with an error envelope and no decision payload — the helper is
+		// present and responsive but could not obtain a consent decision.
+		if err := clientIPC.Send(&ipc.Envelope{
+			ID:    env.ID,
+			Type:  ipc.TypeConsentResult,
+			Error: "failed to show consent dialog",
+		}); err != nil {
+			t.Errorf("helper send: %v", err)
+		}
+	}()
+
+	broker := newTestBrokerWithSessions(t, session)
+	h := &Heartbeat{
+		sessionBroker: broker,
+		desktopMgr:    desktop.NewSessionManager(),
+	}
+
+	// "proceed" policy — the fail-closed behavior must override it.
+	result := handleStartDesktop(h, startDesktopCmd("sess-err", consentModePrompt("proceed", 5000)))
+
+	<-done
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	assertConsentDenied(t, result, "no_user")
+}
+
 // TestConsentGate_RequestConsent_Allow verifies that requestConsent returns
 // verdict "allow" when the helper responds with an allow decision, and that
 // decideConsent maps that to proceed=true. This exercises the seam for the

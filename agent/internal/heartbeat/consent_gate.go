@@ -69,12 +69,16 @@ func parseDesktopPrompt(payload map[string]any) *ipc.DesktopPrompt {
 // requestConsent asks the local user (via the consent_ui-capable helper) to
 // allow or deny a remote session. It uses PreferredSessionWithScope("consent_ui")
 // to locate the assist helper. Returns (verdict, helperPresent, timedOut):
-//   - no consent_ui-capable helper connected -> ("", false, false)
-//   - helper present but IPC timed out       -> ("", true, true)
-//   - helper replied                         -> (result.Decision, true, false)
+//   - no consent_ui-capable helper connected -> ("", false, false)  [helper_absent]
+//   - helper present but IPC timed out        -> ("", true, true)   [timeout]
+//   - helper replied with a valid decision    -> (result.Decision, true, false)
+//   - helper present but replied with an error envelope or an undecodable
+//     payload                                 -> ("", true, false)  [no_user, fails closed]
 //
 // The verdict is fed to decideConsent, which applies the unavailable-behavior
-// policy. requestConsent itself does not decide whether to proceed.
+// policy for the helper_absent/timeout cases and fails closed for an
+// invalid reply from a present helper. requestConsent itself does not decide
+// whether to proceed.
 func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt) (verdict string, helperPresent, timedOut bool) {
 	if h.sessionBroker == nil {
 		return "", false, false
@@ -103,8 +107,19 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt) 
 		return "", true, true
 	}
 
+	// A present helper that signals an application-level error (e.g. it could not
+	// build or show the dialog) yielded no user decision. Mirror RequestPamApproval:
+	// surface it as an invalid reply (verdict "") so decideConsent fails closed
+	// rather than letting a "proceed" default grant the session.
+	if resp != nil && resp.Error != "" {
+		log.Warn("consent helper returned an error", "sessionId", sessionID, "error", resp.Error)
+		return "", true, false
+	}
+
 	var result ipc.ConsentResult
 	if resp != nil && resp.Payload != nil {
+		// An undecodable payload from a present helper is treated the same way:
+		// verdict "" -> decideConsent fails closed.
 		if err := json.Unmarshal(resp.Payload, &result); err != nil {
 			log.Warn("failed to unmarshal consent result", "sessionId", sessionID, "error", err.Error())
 		}

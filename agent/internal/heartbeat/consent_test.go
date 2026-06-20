@@ -11,8 +11,12 @@ func TestDecideConsent(t *testing.T) {
 		{"timeout-block", "", true, true, "block", false, "timeout"},
 		{"noHelper-proceed", "", false, false, "proceed", true, "helper_absent"},
 		{"noHelper-block", "", false, false, "block", false, "helper_absent"},
-		{"noUser-proceed", "", true, false, "proceed", true, "no_user"},
+		// A present, responsive helper with no valid decision fails CLOSED
+		// regardless of unavailable-behavior — "proceed" must NOT grant here.
+		{"noUser-proceedIgnored", "", true, false, "proceed", false, "no_user"},
 		{"noUser-block", "", true, false, "block", false, "no_user"},
+		// An unrecognized verdict from a present helper is likewise fail-closed.
+		{"invalidVerdict-proceedIgnored", "maybe", true, false, "proceed", false, "no_user"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

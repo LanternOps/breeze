@@ -33,6 +33,7 @@ import {
   checkSessionRateLimit,
   checkUserSessionRateLimit,
   logSessionAudit,
+  classifyConsentDenyAction,
   resolveRemoteSessionPromptConfig,
   buildTechnicianDisplay,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
@@ -1111,10 +1112,9 @@ sessionRoutes.post(
 
     // A genuine user denial or consent timeout is a "denied" decision; any other
     // reason (no user present, helper absent, policy chose proceed-then-block)
-    // is a bypass/unavailable path, audited distinctly.
-    const action = reason === 'user' || reason === 'timeout'
-      ? 'session_consent_denied'
-      : 'session_consent_bypassed';
+    // is a bypass/unavailable path, audited distinctly. Shared classifier keeps
+    // this in lockstep with the agent WS command-result path (agentWs.ts).
+    const action = classifyConsentDenyAction(reason);
     await logSessionAudit(
       action,
       session.userId,
