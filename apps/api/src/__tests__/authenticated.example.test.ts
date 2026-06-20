@@ -76,6 +76,7 @@ vi.mock('../services/tenantStatus', () => ({
 vi.mock('../services/tokenRevocation', () => ({
   isUserTokenRevoked: vi.fn(async () => false),
   revokeUserTokens: vi.fn(async () => {}),
+  isTokenIssuedBeforePasswordChange: vi.fn(() => false),
 }));
 
 import { db } from '../db';

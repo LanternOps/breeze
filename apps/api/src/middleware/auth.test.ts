@@ -110,7 +110,7 @@ const activeUser = {
   email: 'test@example.com',
   name: 'Test User',
   status: 'active',
-  passwordChangedAt: null,
+  passwordChangedAt: null as Date | null,
   // Default to enrolled so existing tests don't pick up the new role-MFA
   // gate; the gate-specific tests below override this explicitly.
   mfaEnabled: true,
