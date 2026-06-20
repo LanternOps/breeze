@@ -311,6 +311,23 @@ export interface InvoiceSummary {
   balance: string;
 }
 
+// Intentional duplicate of SellerSnapshot in apps/api/src/services/sellerSnapshot.ts
+// and apps/web/src/components/billing/invoiceTypes.ts — api/web/portal can't share a package; keep in sync.
+export interface SellerSnapshot {
+  name: string | null;
+  address: {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    region: string | null;
+    postalCode: string | null;
+    country: string | null;
+  } | null;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+}
+
 export interface InvoiceLine {
   id: string;
   description: string;
@@ -327,6 +344,8 @@ export interface InvoiceDetail {
     taxRate: string | null;
     billToName: string | null;
     notes: string | null;
+    sellerSnapshot?: SellerSnapshot | null;
+    termsAndConditions?: string | null;
   };
   lines: InvoiceLine[];
 }
@@ -380,6 +399,8 @@ export interface QuoteHeader extends QuoteSummary {
   /** Amount invoiced on accept (one-time + one-time tax); derived server-side. */
   dueOnAcceptanceTotal?: string;
   billToName?: string | null;
+  sellerSnapshot?: SellerSnapshot | null;
+  termsAndConditions?: string | null;
 }
 
 export interface QuoteDetail {

@@ -43,6 +43,32 @@ describe('quote accept → convert', () => {
     expect(inv!.total).toBe('250.00');
   });
 
+  // The auto-issued invoice must carry the quote's frozen seller snapshot, T&C, and
+  // terms footer — the customer signed against a proposal that showed this info;
+  // the invoice they receive must match.
+  runDb('auto-issued invoice carries seller snapshot, termsAndConditions, and terms from the quote', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Onboarding', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    // Overwrite the snapshot AFTER send — sendQuote unconditionally stamps
+    // buildSellerSnapshot(partnerRow), so we must patch it post-send to simulate
+    // a quote whose frozen seller info differs from the partner's live values.
+    const sellerSnap = { name: 'Acme MSP LLC', address: null, phone: null, email: null, website: null };
+    await withSystemDbAccessContext(() => db.update(quotes).set({
+      sellerSnapshot: sellerSnap,
+      termsAndConditions: 'Net 30 terms',
+      terms: 'Footer line',
+    }).where(eq(quotes.id, created.id)));
+
+    const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane Buyer' }));
+    const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
+    expect((inv!.sellerSnapshot as { name: string } | null)?.name).toBe('Acme MSP LLC');
+    expect(inv!.termsAndConditions).toBe('Net 30 terms');
+    expect(inv!.terms).toBe('Footer line');
+  });
+
   // Phase 3 (auto-issue on accept): the converted invoice is ISSUED (status=sent,
   // invoice number, balance = quote one-time total) so the customer can pay it
   // immediately via the existing pay-link — using the accepted quote's locked

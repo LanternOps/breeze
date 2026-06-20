@@ -14,6 +14,7 @@ import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
+import { buildSellerSnapshot } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
@@ -39,12 +40,12 @@ function assertDraft(inv: { status: string }): void {
   if (inv.status !== 'draft') throw new InvoiceServiceError('Invoice is not a draft', 409, 'NOT_A_DRAFT');
 }
 
-export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string }, actor: InvoiceActor) {
+export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string }, actor: InvoiceActor) {
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   const rows = await db.insert(invoices).values({
     partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
-    notes: input.notes ?? null, createdBy: actor.userId
+    notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null, createdBy: actor.userId
   }).returning();
   return rows[0]!;
 }
@@ -237,12 +238,12 @@ export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor)
   await db.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
 }
 
-/** Draft-only header edit (notes/site/dueDate). Only provided fields are written;
+/** Draft-only header edit (notes/site/dueDate/termsAndConditions). Only provided fields are written;
  *  siteId can be explicitly set to null to clear it. issue() overwrites dueDate
  *  with issueDate + partner terms, so a draft dueDate is advisory until then. */
 export async function updateInvoice(
   invoiceId: string,
-  patch: { notes?: string; siteId?: string | null; dueDate?: string },
+  patch: { notes?: string; siteId?: string | null; dueDate?: string; termsAndConditions?: string | null },
   actor: InvoiceActor
 ) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
@@ -252,6 +253,7 @@ export async function updateInvoice(
   if (patch.notes !== undefined) set.notes = patch.notes;
   if (patch.siteId !== undefined) set.siteId = patch.siteId;     // null clears it
   if (patch.dueDate !== undefined) set.dueDate = patch.dueDate;  // date string
+  if (patch.termsAndConditions !== undefined) set.termsAndConditions = patch.termsAndConditions;
   await db.update(invoices).set(set).where(eq(invoices.id, invoiceId));
   return getOwnedInvoiceOr404(invoiceId);
 }
@@ -304,6 +306,10 @@ export async function updatePartnerBillingSettings(
   patch: {
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
     invoiceTermsDays: number; invoiceFooter?: string | null;
+    billingCompanyName?: string | null; billingPhone?: string | null; billingWebsite?: string | null;
+    billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
+    billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
+    billingTermsAndConditions?: string | null;
   },
   actor: InvoiceActor
 ) {
@@ -318,6 +324,13 @@ export async function updatePartnerBillingSettings(
     set.defaultTaxRate = patch.defaultTaxRate === null ? null : Number(patch.defaultTaxRate).toFixed(3);
   }
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
+  for (const key of [
+    'billingCompanyName', 'billingPhone', 'billingWebsite', 'billingAddressLine1', 'billingAddressLine2',
+    'billingAddressCity', 'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
+    'billingTermsAndConditions',
+  ] as const) {
+    if (patch[key] !== undefined) set[key] = patch[key];
+  }
   const [row] = await db.update(partners).set(set).where(eq(partners.id, partnerId)).returning({
     currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
@@ -471,7 +484,13 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       issueDate: issueDate.toISOString().slice(0, 10), dueDate: dueDate.toISOString().slice(0, 10),
       taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
-      billToTaxExempt: org?.taxExempt ?? false, terms: partner?.invoiceFooter ?? null, updatedAt: issueDate
+      billToTaxExempt: org?.taxExempt ?? false,
+      // `terms` is the small footer line (from partner.invoiceFooter); `termsAndConditions`
+      // is the labeled Terms & Conditions block (from partner.billingTermsAndConditions).
+      terms: partner?.invoiceFooter ?? null,
+      sellerSnapshot: buildSellerSnapshot(partner),
+      termsAndConditions: inv.termsAndConditions ?? partner?.billingTermsAndConditions ?? null,
+      updatedAt: issueDate
     }).where(eq(invoices.id, invoiceId));
 
     // A since-deleted source row makes its `billed` flip a harmless no-op; the

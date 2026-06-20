@@ -15,6 +15,7 @@ import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
+import { buildSellerSnapshot } from '../../services/sellerSnapshot';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
 export const quoteRoutes = new Hono();
@@ -53,13 +54,37 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
   const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
-  const [partner] = await db.select({ name: partners.name, footer: partners.invoiceFooter, currency: partners.currencyCode }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+  // partners is a partner-axis RLS table — the portal request runs in ORG scope,
+  // where breeze_has_partner_access is false. A bare read returns 0 rows with NO
+  // error (the #1375 class), causing buildSellerSnapshot(undefined) to produce an
+  // all-null From block on legacy quotes whose seller_snapshot is NULL. Read under
+  // SYSTEM scope, exactly like the sibling portal/invoices.ts pay/settle paths do.
+  const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select({
+      name: partners.name,
+      billingCompanyName: partners.billingCompanyName,
+      billingEmail: partners.billingEmail,
+      billingPhone: partners.billingPhone,
+      billingWebsite: partners.billingWebsite,
+      billingAddressLine1: partners.billingAddressLine1,
+      billingAddressLine2: partners.billingAddressLine2,
+      billingAddressCity: partners.billingAddressCity,
+      billingAddressRegion: partners.billingAddressRegion,
+      billingAddressPostalCode: partners.billingAddressPostalCode,
+      billingAddressCountry: partners.billingAddressCountry,
+      invoiceFooter: partners.invoiceFooter,
+      currencyCode: partners.currencyCode,
+    }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)
+  ));
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   const loadImage = async (imageId: string) => { const img = await readQuoteImage(imageId, id); return img ? { data: img.data } : null; };
   const { renderQuotePdf } = await import('../../services/quotePdf');
-  const pdf = await renderQuotePdf(quote, blocks, lines, loadImage, {
+  // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
+  // the From block still renders (issued docs use the frozen column).
+  const quoteForRender = { ...quote, sellerSnapshot: quote.sellerSnapshot ?? (partner ? buildSellerSnapshot(partner) : null) };
+  const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, {
     partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-    footer: quote.terms ?? partner?.footer ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currency ?? 'USD',
+    footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
   });
   const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
   return new Response(new Uint8Array(pdf), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Content-Length': String(pdf.length) } });

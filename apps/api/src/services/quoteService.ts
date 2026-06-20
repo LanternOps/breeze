@@ -98,6 +98,7 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
     expiryDate: input.expiryDate ?? null,
     introNotes: input.introNotes ?? null,
     terms: input.terms ?? null,
+    termsAndConditions: input.termsAndConditions ?? null,
     createdBy: actor.userId,
   }).returning();
   return row!;
@@ -148,6 +149,7 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   if (input.expiryDate !== undefined) set.expiryDate = input.expiryDate;
   if (input.introNotes !== undefined) set.introNotes = input.introNotes;
   if (input.terms !== undefined) set.terms = input.terms;
+  if (input.termsAndConditions !== undefined) set.termsAndConditions = input.termsAndConditions;
   if (input.billToName !== undefined) set.billToName = input.billToName;
   // Numeric tax_rate takes a fixed-string value; null clears it.
   if (input.taxRate !== undefined) set.taxRate = input.taxRate === null ? null : Number(input.taxRate).toFixed(3);

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createQuoteSchema, quoteLineInputSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   acceptQuoteSchema, declineQuoteSchema,
+  updateQuoteSchema,
 } from './quotes';
 
 describe('quote validators', () => {
@@ -44,5 +45,16 @@ describe('declineQuoteSchema', () => {
     expect(declineQuoteSchema.safeParse({}).success).toBe(true);
     expect(declineQuoteSchema.safeParse({ reason: 'Too expensive' }).success).toBe(true);
     expect(declineQuoteSchema.safeParse({ reason: 'x'.repeat(5001) }).success).toBe(false);
+  });
+});
+
+
+describe('quote T&C field', () => {
+  it('create accepts termsAndConditions', () => {
+    const p = createQuoteSchema.parse({ orgId: '00000000-0000-0000-0000-000000000000', termsAndConditions: 'Valid 30 days' });
+    expect(p.termsAndConditions).toBe('Valid 30 days');
+  });
+  it('update accepts termsAndConditions (nullable to clear)', () => {
+    expect(updateQuoteSchema.parse({ termsAndConditions: null }).termsAndConditions).toBeNull();
   });
 });

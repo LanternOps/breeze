@@ -42,7 +42,7 @@ const draft: InvoiceDetail = {
     id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status: 'draft',
     currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '100.00', taxRate: null,
     taxTotal: '0.00', total: '100.00', amountPaid: '0.00', balance: '100.00', billToName: 'Acme',
-    notes: '', createdAt: '2026-06-01T00:00:00Z',
+    notes: '', termsAndConditions: null, sellerSnapshot: null, createdAt: '2026-06-01T00:00:00Z',
   },
   lines: [visibleLine],
 };

@@ -34,6 +34,8 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const [issuing, setIssuing] = useState(false);
   const [notes, setNotes] = useState(invoice.notes ?? '');
   const [notesDirty, setNotesDirty] = useState(false);
+  const [terms, setTerms] = useState(invoice.termsAndConditions ?? '');
+  const [termsDirty, setTermsDirty] = useState(false);
 
   // Add-line form
   const [addMode, setAddMode] = useState<AddMode>('catalog');
@@ -46,6 +48,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const [pickQty, setPickQty] = useState('1');
 
   useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
+  useEffect(() => { setTerms(invoice.termsAndConditions ?? ''); setTermsDirty(false); }, [invoice.termsAndConditions]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -174,6 +177,27 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       setBusy(false);
     }
   }, [busy, notesDirty, notes, invoice.id, refresh]);
+
+  const saveTerms = useCallback(async () => {
+    if (busy || !termsDirty) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}`, {
+          method: 'PATCH', body: JSON.stringify({ termsAndConditions: terms }),
+        }),
+        errorFallback: 'Could not save terms.',
+        successMessage: 'Terms saved',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setTermsDirty(false);
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not save terms.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, termsDirty, terms, invoice.id, refresh]);
 
   const issue = useCallback(async (alsoSend: boolean) => {
     if (busy) return;
@@ -387,6 +411,20 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               rows={3}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
               placeholder="Internal or customer notes…"
+            />
+          </div>
+
+          <div className="rounded-lg border bg-card p-4 shadow-sm">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+            <textarea
+              value={terms}
+              onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
+              onBlur={() => { if (canWrite) void saveTerms(); }}
+              disabled={!canWrite}
+              data-testid="invoice-terms"
+              rows={3}
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              placeholder="Payment terms, warranty clauses, etc."
             />
           </div>
 

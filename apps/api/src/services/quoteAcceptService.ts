@@ -187,6 +187,9 @@ export async function acceptQuote(
     issueFields.billToName = quote.billToName ?? null;
     issueFields.billToAddress = quote.billToAddress ?? null;
     issueFields.billToTaxId = quote.billToTaxId ?? null;
+    issueFields.sellerSnapshot = quote.sellerSnapshot ?? null;
+    issueFields.termsAndConditions = quote.termsAndConditions ?? null;
+    issueFields.terms = quote.terms ?? null;
   }
   await db.update(invoices).set(issueFields).where(eq(invoices.id, invoice!.id));
 

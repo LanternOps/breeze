@@ -57,6 +57,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   const [busy, setBusy] = useState(false);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
+  const [termsDirty, setTermsDirty] = useState(false);
 
   // ---- add-block form ------------------------------------------------------
   const [addType, setAddType] = useState<AddableBlockType>('heading');
@@ -66,7 +68,30 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imageCaption, setImageCaption] = useState('');
 
+  useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
+
   const refresh = useCallback(() => onChanged(), [onChanged]);
+
+  const saveTerms = useCallback(async () => {
+    if (busy || !termsDirty) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify({ termsAndConditions: terms }),
+        }),
+        errorFallback: 'Could not save terms.',
+        successMessage: 'Terms saved',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setTermsDirty(false);
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not save terms.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, termsDirty, terms, quote.id, refresh]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -395,7 +420,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           )}
         </div>
 
-        {/* ── live totals ────────────────────────────────────────────── */}
+        {/* ── live totals + terms ────────────────────────────────────── */}
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-live-totals">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live totals</h3>
@@ -436,6 +461,20 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 </p>
               </>
             )}
+          </div>
+
+          <div className="rounded-lg border bg-card p-4 shadow-sm">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+            <textarea
+              value={terms}
+              onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
+              onBlur={() => { if (canWrite) void saveTerms(); }}
+              disabled={!canWrite}
+              data-testid="quote-terms"
+              rows={3}
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              placeholder="Payment terms, warranty clauses, etc."
+            />
           </div>
         </div>
       </div>

@@ -11,6 +11,7 @@ import { buildQuoteTemplate } from './quoteEmail';
 import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
+import { buildSellerSnapshot } from './sellerSnapshot';
 
 type QuoteRow = typeof quotes.$inferSelect;
 
@@ -97,9 +98,15 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
   // Conditional on status='draft' so two concurrent sends can't both flip the
   // quote (the second matches 0 rows and 409s). Counter gaps from the losing
   // send are acceptable, per allocateQuoteCounter's contract (C3).
+  const [partnerRow] = await db.select().from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
   const claimed = await db
     .update(quotes)
-    .set({ status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now })
+    .set({
+      status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now,
+      sellerSnapshot: buildSellerSnapshot(partnerRow),
+      termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
+      terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
+    })
     .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
   if (claimed.length === 0) {
@@ -139,10 +146,12 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
         return img?.data ? { data: img.data } : null;
       };
       const { renderQuotePdf } = await import('./quotePdf');
-      const pdf = await renderQuotePdf({ ...quote, status: 'sent', quoteNumber }, blocks, lines, loadImage, {
-        partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-        footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
-      });
+      const pdf = await renderQuotePdf(
+        { ...quote, status: 'sent', quoteNumber, sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow) },
+        blocks, lines, loadImage, {
+          partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+          footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
+        });
       const template = buildQuoteTemplate({
         quoteNumber, partnerName: partner?.name ?? 'your provider',
         total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,

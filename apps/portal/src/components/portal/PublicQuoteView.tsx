@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { portalApi, buildPortalApiUrl, type PublicQuoteDetail } from '@/lib/api';
+import { sellerLines } from '@/lib/sellerLines';
 import { cn } from '@/lib/utils';
 import { QuoteBlocks, money } from './quoteBlocks';
 
@@ -37,6 +38,9 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
   const open = status === 'sent' || status === 'viewed';
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
+
+  const seller = quote.sellerSnapshot ?? null;
+  const sellerAddressLines = sellerLines(seller?.address ?? null);
 
   const accept = async () => {
     if (busy) return;
@@ -106,6 +110,17 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{quote.introNotes}</p>
       )}
 
+      {seller?.name && (
+        <div className="rounded-lg border p-4" data-testid="public-quote-from">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">From</p>
+          <p className="mt-1 text-sm font-medium">{seller.name}</p>
+          {sellerAddressLines.map((l, i) => <p key={i} className="text-sm text-muted-foreground">{l}</p>)}
+          {seller.phone && <p className="text-sm text-muted-foreground">{seller.phone}</p>}
+          {seller.email && <p className="text-sm text-muted-foreground">{seller.email}</p>}
+          {seller.website && <p className="text-sm text-muted-foreground">{seller.website}</p>}
+        </div>
+      )}
+
       <QuoteBlocks
         blocks={blocks}
         lines={lines}
@@ -153,6 +168,13 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
         <div className="rounded-lg border p-4">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terms</p>
           <p className="mt-1 whitespace-pre-wrap text-sm">{quote.terms}</p>
+        </div>
+      )}
+
+      {quote.termsAndConditions && (
+        <div className="rounded-lg border p-4" data-testid="public-quote-terms-conditions">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terms &amp; Conditions</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm">{quote.termsAndConditions}</p>
         </div>
       )}
 

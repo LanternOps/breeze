@@ -13,6 +13,16 @@ interface PartnerBilling {
   invoiceNumberPrefix: string;
   invoiceTermsDays: number;
   invoiceFooter: string | null;
+  billingCompanyName: string | null;
+  billingPhone: string | null;
+  billingWebsite: string | null;
+  billingAddressLine1: string | null;
+  billingAddressLine2: string | null;
+  billingAddressCity: string | null;
+  billingAddressRegion: string | null;
+  billingAddressPostalCode: string | null;
+  billingAddressCountry: string | null;
+  billingTermsAndConditions: string | null;
 }
 
 export default function PartnerBillingSettings() {
@@ -26,6 +36,16 @@ export default function PartnerBillingSettings() {
   const [prefix, setPrefix] = useState('INV');
   const [termsDays, setTermsDays] = useState('30');
   const [footer, setFooter] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [website, setWebsite] = useState('');
+  const [addr1, setAddr1] = useState('');
+  const [addr2, setAddr2] = useState('');
+  const [city, setCity] = useState('');
+  const [region, setRegion] = useState('');
+  const [postal, setPostal] = useState('');
+  const [country, setCountry] = useState('');
+  const [terms, setTerms] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -40,6 +60,16 @@ export default function PartnerBillingSettings() {
       setPrefix(p.invoiceNumberPrefix ?? 'INV');
       setTermsDays(String(p.invoiceTermsDays ?? 30));
       setFooter(p.invoiceFooter ?? '');
+      setCompanyName(p.billingCompanyName ?? '');
+      setPhone(p.billingPhone ?? '');
+      setWebsite(p.billingWebsite ?? '');
+      setAddr1(p.billingAddressLine1 ?? '');
+      setAddr2(p.billingAddressLine2 ?? '');
+      setCity(p.billingAddressCity ?? '');
+      setRegion(p.billingAddressRegion ?? '');
+      setPostal(p.billingAddressPostalCode ?? '');
+      setCountry(p.billingAddressCountry ?? '');
+      setTerms(p.billingTermsAndConditions ?? '');
     } catch {
       setLoadError(true);
     } finally {
@@ -64,6 +94,16 @@ export default function PartnerBillingSettings() {
             invoiceNumberPrefix: prefix.trim(),
             invoiceTermsDays: Number(termsDays),
             invoiceFooter: footer.trim() === '' ? null : footer,
+            billingCompanyName: companyName.trim() === '' ? null : companyName.trim(),
+            billingPhone: phone.trim() === '' ? null : phone.trim(),
+            billingWebsite: website.trim() === '' ? null : website.trim(),
+            billingAddressLine1: addr1.trim() === '' ? null : addr1.trim(),
+            billingAddressLine2: addr2.trim() === '' ? null : addr2.trim(),
+            billingAddressCity: city.trim() === '' ? null : city.trim(),
+            billingAddressRegion: region.trim() === '' ? null : region.trim(),
+            billingAddressPostalCode: postal.trim() === '' ? null : postal.trim(),
+            billingAddressCountry: country.trim() === '' ? null : country.trim().toUpperCase(),
+            billingTermsAndConditions: terms.trim() === '' ? null : terms,
           }),
         }),
         errorFallback: 'Failed to save billing settings.',
@@ -76,7 +116,8 @@ export default function PartnerBillingSettings() {
     } finally {
       setSaving(false);
     }
-  }, [saving, currencyCode, taxPercent, prefix, termsDays, footer, load]);
+  }, [saving, currencyCode, taxPercent, prefix, termsDays, footer,
+      companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading billing settings…</p>;
   if (loadError) {
@@ -124,11 +165,11 @@ export default function PartnerBillingSettings() {
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-terms">Payment terms (days)</label>
+            <label className="text-sm font-medium" htmlFor="pb-terms-days">Payment terms (days)</label>
             <input
-              id="pb-terms" type="number" min={0} max={365} step="1" value={termsDays}
+              id="pb-terms-days" type="number" min={0} max={365} step="1" value={termsDays}
               onChange={(e) => setTermsDays(e.target.value)}
-              data-testid="partner-billing-terms"
+              data-testid="partner-billing-terms-days"
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             />
           </div>
@@ -139,6 +180,108 @@ export default function PartnerBillingSettings() {
             id="pb-footer" rows={3} value={footer}
             onChange={(e) => setFooter(e.target.value)} placeholder="Payment instructions, thank-you note, etc."
             data-testid="partner-billing-footer"
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <h2 className="text-lg font-semibold">Company contact</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Shown as the seller on quotes and invoices.
+        </p>
+        <div className="mt-4">
+          <label className="text-sm font-medium" htmlFor="pb-company">Company name</label>
+          <input
+            id="pb-company" type="text" value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            data-testid="partner-billing-company-name"
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="text-sm font-medium" htmlFor="pb-phone">Phone</label>
+            <input
+              id="pb-phone" type="text" value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              data-testid="partner-billing-phone"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="pb-website">Website</label>
+            <input
+              id="pb-website" type="text" value={website}
+              onChange={(e) => setWebsite(e.target.value)}
+              data-testid="partner-billing-website"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4">
+          <label className="text-sm font-medium" htmlFor="pb-addr1">Address line 1</label>
+          <input
+            id="pb-addr1" type="text" value={addr1}
+            onChange={(e) => setAddr1(e.target.value)}
+            data-testid="partner-billing-addr1"
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="mt-4">
+          <label className="text-sm font-medium" htmlFor="pb-addr2">Address line 2</label>
+          <input
+            id="pb-addr2" type="text" value={addr2}
+            onChange={(e) => setAddr2(e.target.value)}
+            data-testid="partner-billing-addr2"
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="lg:col-span-2">
+            <label className="text-sm font-medium" htmlFor="pb-city">City</label>
+            <input
+              id="pb-city" type="text" value={city}
+              onChange={(e) => setCity(e.target.value)}
+              data-testid="partner-billing-city"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="pb-region">State / region</label>
+            <input
+              id="pb-region" type="text" value={region}
+              onChange={(e) => setRegion(e.target.value)}
+              data-testid="partner-billing-region"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="pb-postal">Postal code</label>
+            <input
+              id="pb-postal" type="text" value={postal}
+              onChange={(e) => setPostal(e.target.value)}
+              data-testid="partner-billing-postal"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4 sm:w-24">
+          <label className="text-sm font-medium" htmlFor="pb-country">Country (2-letter)</label>
+          <input
+            id="pb-country" type="text" maxLength={2} value={country}
+            onChange={(e) => setCountry(e.target.value.toUpperCase())}
+            data-testid="partner-billing-country"
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm uppercase"
+          />
+        </div>
+        <div className="mt-4">
+          <label className="text-sm font-medium" htmlFor="pb-tc">Default terms &amp; conditions</label>
+          <textarea
+            id="pb-tc" rows={4} value={terms}
+            onChange={(e) => setTerms(e.target.value)}
+            placeholder="Payment terms, disclaimers, warranty language, etc."
+            data-testid="partner-billing-terms"
             className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
           />
         </div>

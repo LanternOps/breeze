@@ -31,13 +31,13 @@ const INVOICES = [
     id: 'inv-1', invoiceNumber: 'INV-0001', orgId: 'org-1', siteId: null, status: 'overdue',
     currencyCode: 'USD', issueDate: '2026-05-01', dueDate: '2026-05-31', sentAt: null, subtotal: '100.00',
     taxRate: '0.000', taxTotal: '0.00', total: '100.00', amountPaid: '0.00', balance: '100.00',
-    billToName: 'Acme', notes: null, createdAt: '2026-05-01T00:00:00Z',
+    billToName: 'Acme', notes: null, termsAndConditions: null, sellerSnapshot: null, createdAt: '2026-05-01T00:00:00Z',
   },
   {
     id: 'inv-2', invoiceNumber: null, orgId: 'org-2', siteId: null, status: 'draft',
     currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '0.00',
     taxRate: null, taxTotal: '0.00', total: '0.00', amountPaid: '0.00', balance: '0.00',
-    billToName: null, notes: null, createdAt: '2026-06-01T00:00:00Z',
+    billToName: null, notes: null, termsAndConditions: null, sellerSnapshot: null, createdAt: '2026-06-01T00:00:00Z',
   },
 ];
 

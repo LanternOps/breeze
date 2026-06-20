@@ -16,6 +16,23 @@ const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 describe('PartnerBillingSettings', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('loads and shows the seller company name', async () => {
+    fetchMock.mockResolvedValue(json({
+      currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV',
+      invoiceTermsDays: 30, invoiceFooter: null,
+      billingCompanyName: 'Acme MSP LLC',
+      billingPhone: null, billingWebsite: null,
+      billingAddressLine1: null, billingAddressLine2: null,
+      billingAddressCity: null, billingAddressRegion: null,
+      billingAddressPostalCode: null, billingAddressCountry: null,
+      billingTermsAndConditions: null,
+    }));
+    render(<PartnerBillingSettings />);
+    await waitFor(() =>
+      expect((screen.getByTestId('partner-billing-company-name') as HTMLInputElement).value).toBe('Acme MSP LLC'),
+    );
+  });
+
   it('loads partner billing and shows the tax rate as a percentage', async () => {
     fetchMock.mockResolvedValue(json({
       currencyCode: 'EUR', defaultTaxRate: '0.085', invoiceNumberPrefix: 'EU',
@@ -44,6 +61,33 @@ describe('PartnerBillingSettings', () => {
       const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
       expect(patch).toBeTruthy();
       expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({ defaultTaxRate: 0.07, currencyCode: 'USD' });
+    });
+  });
+
+  it('uppercases billingAddressCountry and normalizes whitespace-only address fields to null on save', async () => {
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return json({ data: {} });
+      return json({
+        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+        invoiceFooter: null, billingCompanyName: null, billingPhone: null, billingWebsite: null,
+        billingAddressLine1: '1 Main St', billingAddressLine2: null,
+        billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null,
+        billingAddressCountry: 'us', billingTermsAndConditions: null,
+      });
+    });
+    render(<PartnerBillingSettings />);
+    await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+
+    // Clear addr1 to whitespace-only (should serialize as null); country is uppercased on change
+    fireEvent.change(screen.getByTestId('partner-billing-addr1'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByTestId('partner-billing-save'));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      expect(patch).toBeTruthy();
+      const body = JSON.parse((patch![1] as RequestInit).body as string);
+      expect(body).toMatchObject({ billingAddressCountry: 'US' });
+      expect(body.billingAddressLine1).toBeNull();
     });
   });
 });

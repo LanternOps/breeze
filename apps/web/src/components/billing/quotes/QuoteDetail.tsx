@@ -13,6 +13,7 @@ import {
   formatDate,
   formatMoney,
   formatRecurrence,
+  sellerLines,
 } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -170,6 +171,38 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
               </>
             )}
           </div>
+
+          {/* Seller From block */}
+          {quote.sellerSnapshot && (
+            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-detail-from">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</h3>
+              <div className="space-y-0.5 text-sm">
+                {quote.sellerSnapshot.name && (
+                  <p className="font-medium" data-testid="quote-detail-from-name">{quote.sellerSnapshot.name}</p>
+                )}
+                {sellerLines(quote.sellerSnapshot.address).map((line, i) => (
+                  <p key={i} className="text-muted-foreground">{line}</p>
+                ))}
+                {quote.sellerSnapshot.phone && (
+                  <p className="text-muted-foreground" data-testid="quote-detail-from-phone">{quote.sellerSnapshot.phone}</p>
+                )}
+                {quote.sellerSnapshot.email && (
+                  <p className="text-muted-foreground" data-testid="quote-detail-from-email">{quote.sellerSnapshot.email}</p>
+                )}
+                {quote.sellerSnapshot.website && (
+                  <p className="text-muted-foreground" data-testid="quote-detail-from-website">{quote.sellerSnapshot.website}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Terms & Conditions */}
+          {quote.termsAndConditions && (
+            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-detail-terms">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <p className="whitespace-pre-wrap text-sm text-muted-foreground">{quote.termsAndConditions}</p>
+            </div>
+          )}
 
           {/* Actions */}
           <div className="space-y-2">

@@ -15,6 +15,7 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  sellerLines,
 } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -283,6 +284,38 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
               </span>
             </div>
           </div>
+
+          {/* Seller From block */}
+          {invoice.sellerSnapshot && (
+            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-from">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</h3>
+              <div className="space-y-0.5 text-sm">
+                {invoice.sellerSnapshot.name && (
+                  <p className="font-medium" data-testid="invoice-detail-from-name">{invoice.sellerSnapshot.name}</p>
+                )}
+                {sellerLines(invoice.sellerSnapshot.address).map((line, i) => (
+                  <p key={i} className="text-muted-foreground">{line}</p>
+                ))}
+                {invoice.sellerSnapshot.phone && (
+                  <p className="text-muted-foreground" data-testid="invoice-detail-from-phone">{invoice.sellerSnapshot.phone}</p>
+                )}
+                {invoice.sellerSnapshot.email && (
+                  <p className="text-muted-foreground" data-testid="invoice-detail-from-email">{invoice.sellerSnapshot.email}</p>
+                )}
+                {invoice.sellerSnapshot.website && (
+                  <p className="text-muted-foreground" data-testid="invoice-detail-from-website">{invoice.sellerSnapshot.website}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Terms & Conditions */}
+          {invoice.termsAndConditions && (
+            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-terms">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <p className="whitespace-pre-wrap text-sm text-muted-foreground">{invoice.termsAndConditions}</p>
+            </div>
+          )}
 
           {/* PDF + void */}
           <div className="space-y-2">

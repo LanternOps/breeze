@@ -38,6 +38,30 @@ what diff-only review misses). For a focused diff review, fan out one sub-agent 
 
 Emit findings in the SKILL.md severity taxonomy. Over-produce here — Pass 2 is the filter.
 
+### (EXPERIMENTAL) Index-assisted enumeration for the generation pass
+
+Status: experimental — use it, but do not trust it unverified. When the `codebase-memory-mcp`
+index is available, it is strong at the *enumeration* half of Pass 1: building the exhaustive
+candidate worklist cheaply (e.g. "every sibling of the one exporter the diff fixed," "every agent
+route lacking middleware X"). Hand that worklist to the Pass-2 verifiers so they skip discovery and
+spend their budget on the verdict. This is most valuable for **absent-control** classes where the
+patch fixed one instance and you need its siblings.
+
+It does NOT replace the verifiers — the index can enumerate "all CSV exporters" but cannot judge
+"is this field attacker-influenced." That stays agent reasoning.
+
+Observed failure modes (all hit in a real run — design around them, do not trust blindly):
+- **The index can be stale or mid-drift.** `/Users/toddhebebrand/breeze` is a SHARED checkout other
+  sessions switch branches in; `list_projects`/`index_status` reported a `head_sha` that the live
+  tree then moved away from mid-review, so a verifier reviewed a *different* commit than the diff
+  implied. ALWAYS ground-truth a contradiction against the actual file on disk (`git status`,
+  `git rev-parse HEAD`, read the file) before reporting. Prefer an isolated `git worktree` pinned to
+  the commit under review so a parallel session cannot move HEAD under you.
+- **Schema gaps:** framework route registration (Hono method chaining) is not modeled as `Route`
+  nodes — graph queries for routes come back empty. Fall back to `search_code`/grep.
+- **The MCP server is a stateful process that can drop its connection** mid-session. grep/Read
+  agents are unaffected; don't build the pass so it can't proceed without the index.
+
 ## Pass 2 — Adversarial verification (one PARALLEL sub-agent per finding)
 
 For EACH Pass-1 finding, launch a separate sub-agent with the prompt below, then **drop any finding
@@ -88,3 +112,7 @@ The upstream tool excludes these; **for Breeze, do NOT exclude them**:
   inputs yield variable results.
 - **Never run the reviewer where prod DB creds are reachable** — the verification pass is read-only by
   design for this reason.
+- **Verify the tree you're actually standing on.** In a shared checkout HEAD can move under a
+  long-running review (a parallel session switching branches). If a verifier's account of a file
+  contradicts your diff, ground-truth the file before believing either — the contradiction is usually
+  drift, not a wrong verifier. An isolated worktree pinned to the reviewed commit prevents it.
