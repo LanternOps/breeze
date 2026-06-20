@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { users } from './users';
 
@@ -94,3 +94,20 @@ export const ssoSessions = pgTable('sso_sessions', {
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
+
+// SSO Verified Domains — org proves DNS ownership before JIT-provisioning is
+// allowed for addresses in the domain (security review #2, H-2, Plan B).
+// RLS shape 1: direct org_id, breeze_has_org_access(org_id).
+export const ssoVerifiedDomains = pgTable('sso_verified_domains', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  domain: varchar('domain', { length: 253 }).notNull(),
+  verificationToken: varchar('verification_token', { length: 128 }).notNull(),
+  verifiedAt: timestamp('verified_at'),
+  lastCheckedAt: timestamp('last_checked_at'),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (t) => ({
+  orgDomainUnique: uniqueIndex('sso_verified_domains_org_domain_idx').on(t.orgId, t.domain),
+}));
