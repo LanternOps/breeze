@@ -33,6 +33,8 @@ vi.mock('../services/sso', () => ({
   verifyIdTokenClaims: vi.fn(),
   verifyIdTokenSignature: vi.fn(),
   assertEmailVerified: vi.fn(),
+  // Real logic (not a stub) so the IdP-MFA tests exercise the amr check.
+  idpAssertedMfa: (claims: { amr?: unknown }) => Array.isArray(claims?.amr) && claims.amr.includes('mfa'),
   mapUserAttributes: vi.fn(),
   discoverOIDCConfig: vi.fn(),
   PROVIDER_PRESETS: {
@@ -1123,6 +1125,41 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       expect(createTokenPair).toHaveBeenCalled();
+    });
+
+    // ── security review #2 (H-1): IdP-asserted MFA signal
+    // Wire a returning linked user (identity-first happy path) for a provider
+    // whose trustsIdpMfa is set as given, with the verified id_token amr set.
+    const wireLinkedLogin = (opts: { trustsIdpMfa: boolean; amr?: string[] }) => {
+      primeCallback();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([{ ...PROVIDER_ROW[0], trustsIdpMfa: opts.trustsIdpMfa }]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Linked' }]))
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+    };
+
+    it('mints mfa:true when the provider trusts IdP MFA and amr attests it', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true }), expect.any(Object));
+    });
+
+    it('mints mfa:false when the provider trusts IdP MFA but amr does NOT attest it', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    it('mints mfa:false when the provider does NOT trust IdP MFA even if amr attests it', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, amr: ['mfa'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
     });
   });
 });

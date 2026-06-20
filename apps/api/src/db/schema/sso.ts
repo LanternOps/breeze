@@ -47,6 +47,10 @@ export const ssoProviders = pgTable('sso_providers', {
   defaultRoleId: uuid('default_role_id'),
   allowedDomains: varchar('allowed_domains', { length: 1000 }), // comma-separated
   enforceSSO: boolean('enforce_sso').notNull().default(false), // disable password login
+  // security review #2 (H-1): when true AND the verified id_token's `amr`
+  // attests multi-factor, SSO logins mint mfa:true (so the org can satisfy
+  // Breeze MFA-gated routes via their IdP). Off by default — fail-safe.
+  trustsIdpMfa: boolean('trusts_idp_mfa').notNull().default(false),
 
   // Metadata
   createdBy: uuid('created_by').references(() => users.id),

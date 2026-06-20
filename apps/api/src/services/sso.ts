@@ -208,7 +208,22 @@ export interface IDTokenClaims {
   email?: string;
   email_verified?: boolean | string;
   name?: string;
+  // OIDC authentication context (RFC 8176 / OIDC Core §2). `amr` lists the
+  // authentication methods the IdP used; `mfa` means multi-factor was performed.
+  amr?: string[];
+  acr?: string;
   [key: string]: unknown;
+}
+
+/**
+ * True when the IdP's id_token attests that multi-factor authentication was
+ * performed — `amr` contains the RFC 8176 `mfa` method reference. This is only
+ * trusted when the provider opts in via `trustsIdpMfa`; an org that does not
+ * opt in always gets `mfa:false` (fail-safe). Never used to satisfy the L4
+ * step-up, which independently re-verifies a Breeze-held factor.
+ */
+export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
+  return Array.isArray(claims.amr) && claims.amr.includes('mfa');
 }
 
 export function decodeIdToken(idToken: string): IDTokenClaims {

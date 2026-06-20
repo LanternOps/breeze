@@ -24,6 +24,7 @@ import {
   getUserInfo,
   verifyIdTokenSignature,
   assertEmailVerified,
+  idpAssertedMfa,
   mapUserAttributes,
   discoverOIDCConfig,
   PROVIDER_PRESETS,
@@ -138,7 +139,8 @@ const createProviderSchema = z.object({
   autoProvision: z.boolean().optional(),
   defaultRoleId: z.string().guid().optional(),
   allowedDomains: z.string().optional(),
-  enforceSSO: z.boolean().optional()
+  enforceSSO: z.boolean().optional(),
+  trustsIdpMfa: z.boolean().optional()
 });
 
 const updateProviderSchema = createProviderSchema.omit({ orgId: true }).partial();
@@ -385,6 +387,7 @@ ssoRoutes.get('/providers', authMiddleware, requireScope('organization', 'partne
       issuer: ssoProviders.issuer,
       autoProvision: ssoProviders.autoProvision,
       enforceSSO: ssoProviders.enforceSSO,
+      trustsIdpMfa: ssoProviders.trustsIdpMfa,
       createdAt: ssoProviders.createdAt
     })
     .from(ssoProviders)
@@ -479,6 +482,7 @@ ssoRoutes.post(
       defaultRoleId: body.defaultRoleId,
       allowedDomains: body.allowedDomains,
       enforceSSO: body.enforceSSO ?? false,
+      trustsIdpMfa: body.trustsIdpMfa ?? false,
       createdBy: auth.user.id,
       status: 'inactive'
     })
@@ -1169,6 +1173,14 @@ ssoRoutes.get('/callback', async (c) => {
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
 
+    // IdP-asserted MFA (security review #2 H-1): when the org opts in via
+    // `trustsIdpMfa` AND the verified id_token's `amr` attests multi-factor,
+    // propagate mfa:true so the org can satisfy Breeze's MFA-gated routes via
+    // their IdP. Fail-safe: any provider that hasn't opted in, or an assertion
+    // without the `mfa` amr, yields mfa:false. This claim never satisfies the
+    // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
+    const ssoMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
+
     const tokenPayload = {
       sub: user.id,
       email: user.email,
@@ -1176,9 +1188,7 @@ ssoRoutes.get('/callback', async (c) => {
       orgId: provider.orgId,
       partnerId: null,
       scope: 'organization' as const,
-      // SSO does not currently propagate an MFA signal into the Breeze JWT.
-      // Treat as non-MFA unless explicitly modeled from IdP claims.
-      mfa: false
+      mfa: ssoMfa
     };
 
     // Mint a fresh refresh-token family for the SSO-completed session so

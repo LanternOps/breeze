@@ -4,12 +4,28 @@ import {
   verifyIdTokenClaims,
   verifyIdTokenSignature,
   assertEmailVerified,
+  idpAssertedMfa,
   discoverOIDCConfig,
   type OIDCConfig,
   PROVIDER_PRESETS,
   SAML_PROVIDER_PRESETS,
   ALL_SSO_PRESETS
 } from './sso';
+
+describe('idpAssertedMfa (security review #2 H-1)', () => {
+  it('is true only when amr contains the RFC 8176 "mfa" reference', () => {
+    expect(idpAssertedMfa({ amr: ['mfa'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['pwd', 'otp', 'mfa'] })).toBe(true);
+  });
+
+  it('is false for single-factor or missing amr', () => {
+    expect(idpAssertedMfa({ amr: ['pwd'] })).toBe(false);
+    expect(idpAssertedMfa({ amr: [] })).toBe(false);
+    expect(idpAssertedMfa({})).toBe(false);
+    // A non-array amr (malformed) must not be trusted.
+    expect(idpAssertedMfa({ amr: 'mfa' as unknown as string[] })).toBe(false);
+  });
+});
 
 vi.mock('dns/promises', () => ({
   lookup: vi.fn()
