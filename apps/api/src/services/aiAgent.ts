@@ -15,6 +15,7 @@ import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { AI_SYSTEM_PROMPT_BASE } from './aiAgentSystemPrompt';
 import { getActiveDeviceContext } from './brainDeviceContext';
+import { sanitizePageContext } from './aiInputSanitizer';
 
 // Current model id so the Claude Agent SDK can price it natively. A stale id makes the
 // SDK report total_cost_usd: 0 → $0.00 cost tracking (issue #1326). Successor to the
@@ -56,6 +57,8 @@ export async function createSession(
     approvalMode?: AiApprovalMode;
   }
 ): Promise<{ id: string; orgId: string; delegantM365ConnectionId: string | null }> {
+  const sanitizedPageContext = options.pageContext ? sanitizePageContext(options.pageContext) : undefined;
+
   // A device-scoped task ("Fix with AI") anchors the session to the device's
   // org. Resolve the device up front so its org can drive org selection for
   // partner / multi-org callers who have no home orgId — otherwise the session
@@ -131,11 +134,11 @@ export async function createSession(
       userId: auth.user.id,
       model: options.model ?? DEFAULT_MODEL,
       title: options.title ?? null,
-      contextSnapshot: options.pageContext ?? null,
+      contextSnapshot: sanitizedPageContext ?? null,
       delegantM365ConnectionId,
       deviceId,
       ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
-      systemPrompt: await buildSystemPrompt(auth, options.pageContext)
+      systemPrompt: await buildSystemPrompt(auth, sanitizedPageContext)
     })
     .returning();
 
@@ -324,7 +327,8 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
 export async function handleApproval(
   executionId: string,
   approved: boolean,
-  auth: AuthContext
+  auth: AuthContext,
+  expectedSessionId?: string
 ): Promise<boolean> {
   const [execution] = await db
     .select()
@@ -333,6 +337,7 @@ export async function handleApproval(
     .limit(1);
 
   if (!execution || execution.status !== 'pending') return false;
+  if (expectedSessionId && execution.sessionId !== expectedSessionId) return false;
 
   // Verify the session belongs to the user's org
   const session = await getSession(execution.sessionId, auth);

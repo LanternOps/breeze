@@ -604,7 +604,7 @@ aiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    const success = await handleApproval(executionId, approved, auth);
+    const success = await handleApproval(executionId, approved, auth, sessionId);
     if (!success) {
       return c.json({ error: 'Execution not found or already processed' }, 404);
     }

@@ -304,6 +304,7 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.approved).toBe(true);
+      expect(handleApproval).toHaveBeenCalledWith(EXECUTION_ID, true, expect.any(Object), SESSION_ID);
     });
 
     it('denies a tool execution', async () => {
@@ -325,6 +326,7 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.approved).toBe(false);
+      expect(handleApproval).toHaveBeenCalledWith(EXECUTION_ID, false, expect.any(Object), SESSION_ID);
     });
 
     it('returns 404 when session not found', async () => {

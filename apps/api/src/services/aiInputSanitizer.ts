@@ -125,13 +125,21 @@ function sanitizeField(value: string, maxLength: number): string {
 function sanitizeRecord(data: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
-    if (typeof value === 'string') {
-      result[key] = sanitizeField(value, 1000);
-    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result[key] = sanitizeRecord(value as Record<string, unknown>);
-    } else {
-      result[key] = value;
-    }
+    const safeKey = sanitizeField(key, 200);
+    result[safeKey] = sanitizeContextValue(value);
   }
   return result;
+}
+
+function sanitizeContextValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return sanitizeField(value, 1000);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeContextValue(entry));
+  }
+  if (typeof value === 'object' && value !== null) {
+    return sanitizeRecord(value as Record<string, unknown>);
+  }
+  return value;
 }

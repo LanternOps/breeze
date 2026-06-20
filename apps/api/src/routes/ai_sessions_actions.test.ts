@@ -259,6 +259,7 @@ describe('AI routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.approved).toBe(true);
+      expect(handleApproval).toHaveBeenCalledWith(EXEC_ID, true, expect.any(Object), SESSION_ID);
     });
 
     it('rejects a tool execution', async () => {
@@ -274,6 +275,7 @@ describe('AI routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.approved).toBe(false);
+      expect(handleApproval).toHaveBeenCalledWith(EXEC_ID, false, expect.any(Object), SESSION_ID);
     });
 
     it('returns 404 when session not found', async () => {
