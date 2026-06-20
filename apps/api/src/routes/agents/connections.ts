@@ -17,6 +17,22 @@ const STATE_MAX = 20;
 const PROCESS_NAME_MAX = 255;
 const ADDR_MAX = 128; // local_addr / remote_addr are text; cap for sanity (e.g. IPv6 zone IDs)
 
+// device_connections binds 12 columns per row, and Postgres caps a single
+// statement at 65534 bound parameters. The submit schema allows up to 10,000
+// connections, which at 12 cols would need 120,000 params and fail the insert
+// with MAX_PARAMETERS_EXCEEDED — silently dropping the device's entire
+// connection inventory (#1696). Chunk the insert well under the limit:
+// 5000 rows × 12 cols = 60,000 params, a comfortable margin under 65534.
+const CONNECTION_INSERT_CHUNK_SIZE = 5000;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
 function clampNullable(value: string | null | undefined, max: number): string | null {
   if (value === null || value === undefined || value === '') return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -54,21 +70,24 @@ connectionsRoutes.put(
 
       if (data.connections.length > 0) {
         const now = new Date();
-        await tx.insert(deviceConnections).values(
-          data.connections.map((conn) => ({
-            deviceId: device.id,
-            orgId: device.orgId,
-            protocol: conn.protocol,
-            localAddr: clampRequired(conn.localAddr, ADDR_MAX),
-            localPort: conn.localPort,
-            remoteAddr: clampNullable(conn.remoteAddr, ADDR_MAX),
-            remotePort: conn.remotePort || null,
-            state: clampNullable(conn.state, STATE_MAX),
-            pid: conn.pid || null,
-            processName: clampNullable(conn.processName, PROCESS_NAME_MAX),
-            updatedAt: now
-          }))
-        );
+        const rows = data.connections.map((conn) => ({
+          deviceId: device.id,
+          orgId: device.orgId,
+          protocol: conn.protocol,
+          localAddr: clampRequired(conn.localAddr, ADDR_MAX),
+          localPort: conn.localPort,
+          remoteAddr: clampNullable(conn.remoteAddr, ADDR_MAX),
+          remotePort: conn.remotePort || null,
+          state: clampNullable(conn.state, STATE_MAX),
+          pid: conn.pid || null,
+          processName: clampNullable(conn.processName, PROCESS_NAME_MAX),
+          updatedAt: now
+        }));
+        // Chunk to stay under Postgres' 65534 bound-parameter limit (#1696).
+        // All batches share the transaction, so delete+replace stays atomic.
+        for (const batch of chunk(rows, CONNECTION_INSERT_CHUNK_SIZE)) {
+          await tx.insert(deviceConnections).values(batch);
+        }
       }
     });
   } catch (err) {
