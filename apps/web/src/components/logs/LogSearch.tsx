@@ -3,6 +3,7 @@ import { Download, Save, Search } from 'lucide-react';
 
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { toCsv } from '@/lib/csvExport';
 
 type EventLogRow = {
   log: {
@@ -47,11 +48,6 @@ const LEVELS: Array<{ value: EventLogRow['log']['level']; label: string }> = [
 function toDatetimeLocalInput(date: Date): string {
   const offsetMs = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
-}
-
-function escapeCsv(value: string): string {
-  const escaped = value.replaceAll('"', '""');
-  return `"${escaped}"`;
 }
 
 export default function LogSearch() {
@@ -204,9 +200,9 @@ export default function LogSearch() {
       row.site?.name ?? '',
     ]);
 
-    const csv = [header, ...rows]
-      .map((line) => line.map((value) => escapeCsv(String(value))).join(','))
-      .join('\n');
+    // Neutralize spreadsheet-formula injection from agent-supplied fields
+    // (message/source/category/hostname) before quoting (F7).
+    const csv = toCsv(header, rows);
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);

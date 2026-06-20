@@ -1,28 +1,17 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
+
+// Re-export the shared CSV helpers so existing importers of these names from
+// './reportExport' keep working; the canonical definitions now live in
+// lib/csvExport (jsPDF-free so non-report exporters don't bundle a PDF library).
+export { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula };
 
 /** Convert an unknown cell value to a display string. */
 function cellToString(value: unknown): string {
   if (value === null || value === undefined) return '';
   return String(value);
-}
-
-const FORMULA_PREFIXES = new Set(['=', '+', '-', '@', '\t', '\r', '\n']);
-
-export function neutralizeSpreadsheetFormula(value: string): string {
-  if (value.length === 0) return value;
-  return FORMULA_PREFIXES.has(value[0]!) ? `'${value}` : value;
-}
-
-export function escapeCsvCell(value: string): string {
-  const safe = neutralizeSpreadsheetFormula(value);
-  return `"${safe.replace(/"/g, '""')}"`;
-}
-
-export function escapeTsvCell(value: string): string {
-  const safe = neutralizeSpreadsheetFormula(value);
-  return /[\t\r\n"]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 /** Extract column headers and string[][] body from raw row objects. */
