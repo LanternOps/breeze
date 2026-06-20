@@ -292,6 +292,224 @@ describe('role routes', () => {
       expect(res.status).toBe(403);
       expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
+
+    it('blocks a non-admin caller from inheriting an EMPTY system parent role', async () => {
+      // Caller holds only users:write — NOT *:*. Without the fix the empty
+      // effective set of the system parent short-circuits validateAssignablePermissions
+      // to "allow", letting a low-privilege caller reach a system-scoped role.
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'write' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-limited',
+        scope: 'partner'
+      } as any);
+
+      vi.mocked(db.select)
+        // validateParentRole — parent is a SYSTEM role in the same scope
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-4111-8111-111111111111',
+                  scope: 'partner',
+                  isSystem: true,
+                  partnerId: null,
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        // getEffectivePermissions — role row (parentRoleId null)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: '11111111-1111-4111-8111-111111111111', name: 'Admin', parentRoleId: null }
+              ])
+            })
+          })
+        } as any)
+        // getEffectivePermissions — direct permissions: EMPTY system role
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Sneaky',
+          parentRoleId: '11111111-1111-4111-8111-111111111111',
+          permissions: []
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('still allows a full-admin caller to inherit an EMPTY system parent role', async () => {
+      // Default caller holds *:* — assigning a system role is legitimate.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-4111-8111-111111111111',
+                  scope: 'partner',
+                  isSystem: true,
+                  partnerId: null,
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: '11111111-1111-4111-8111-111111111111', name: 'Admin', parentRoleId: null }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const roleInsertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: 'role-9',
+            name: 'Inherited',
+            description: null,
+            scope: 'partner',
+            isSystem: false,
+            parentRoleId: '11111111-1111-4111-8111-111111111111',
+            createdAt: new Date(),
+            updatedAt: new Date()
+          }
+        ])
+      });
+      const txInsert = vi
+        .fn()
+        .mockReturnValueOnce({ values: roleInsertValues })
+        .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ insert: txInsert } as any));
+
+      const res = await app.request('/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Inherited',
+          parentRoleId: '11111111-1111-4111-8111-111111111111',
+          permissions: []
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('still allows a non-admin caller to create an EMPTY CUSTOM role (no regression)', async () => {
+      // Caller holds only users:write. An empty custom role grants nothing and
+      // must remain creatable — the system-role guard must NOT touch this path.
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'write' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-limited',
+        scope: 'partner'
+      } as any);
+
+      const roleInsertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: 'role-empty',
+            name: 'Empty',
+            description: null,
+            scope: 'partner',
+            isSystem: false,
+            parentRoleId: null,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          }
+        ])
+      });
+      const txInsert = vi.fn().mockReturnValueOnce({ values: roleInsertValues });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ insert: txInsert } as any));
+
+      const res = await app.request('/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Empty', permissions: [] })
+      });
+
+      expect(res.status).toBe(201);
+    });
+  });
+
+  describe('POST /roles/:id/clone — system-role scope guard', () => {
+    it('blocks a non-admin caller from cloning an EMPTY system role', async () => {
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'write' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-limited',
+        scope: 'partner'
+      } as any);
+
+      // The 403 path consumes exactly two selects: source-role lookup, then
+      // source-permissions (empty). The post-insert new-role-permissions select
+      // is never reached, so it must NOT be queued — a leaked once-mock would
+      // corrupt the next test in the file.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-4111-8111-111111111111',
+                  name: 'System Empty',
+                  description: null,
+                  scope: 'partner',
+                  isSystem: true,
+                  partnerId: null,
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/roles/11111111-1111-4111-8111-111111111111/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Clone' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /roles/:id', () => {

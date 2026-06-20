@@ -179,9 +179,21 @@ async function getCallerPermissions(
 
 function validateAssignablePermissions(
   requested: Array<{ resource: string; action: string }>,
-  callerPermissions: UserPermissions | null
+  callerPermissions: UserPermissions | null,
+  // True when `requested` is the effective permission set of a SYSTEM role
+  // (e.g. a clone source or a system parent role). Defaults false because the
+  // create/update paths build CUSTOM roles from caller-supplied permissions.
+  fromSystemRole = false
 ): string | null {
   if (requested.length === 0) {
+    // A legitimately-empty custom permission set grants nothing and is fine.
+    // But an empty SYSTEM role has no enumerable permissions to subset-check
+    // below, so the loop would never run and the empty set would silently
+    // short-circuit to "allow" — letting a low-privilege caller clone/inherit a
+    // system role they shouldn't reach. Require full (*:*) privilege first.
+    if (fromSystemRole && (!callerPermissions || !hasPermission(callerPermissions, '*', '*'))) {
+      return 'Cannot assign a system role without full administrative permissions';
+    }
     return null;
   }
 
@@ -283,7 +295,7 @@ async function wouldCreateCircularInheritance(roleId: string, newParentId: strin
 async function validateParentRole(
   parentRoleId: string,
   scopeContext: ScopeContext
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<{ valid: boolean; error?: string; isSystem?: boolean }> {
   const [parentRole] = await db
     .select({
       id: roles.id,
@@ -315,7 +327,7 @@ async function validateParentRole(
     }
   }
 
-  return { valid: true };
+  return { valid: true, isSystem: parentRole.isSystem };
 }
 
 // Helper to get effective permissions (own + inherited from parent chain)
@@ -512,7 +524,8 @@ roleRoutes.post(
       }
       const parentPermissionError = validateAssignablePermissions(
         await getEffectivePermissions(body.parentRoleId),
-        callerPermissions
+        callerPermissions,
+        validation.isSystem
       );
       if (parentPermissionError) {
         return c.json({ error: parentPermissionError }, 403);
@@ -776,7 +789,8 @@ roleRoutes.patch(
       }
       const parentPermissionError = validateAssignablePermissions(
         await getEffectivePermissions(body.parentRoleId),
-        callerPermissions
+        callerPermissions,
+        validation.isSystem
       );
       if (parentPermissionError) {
         return c.json({ error: parentPermissionError }, 403);
@@ -1055,7 +1069,7 @@ roleRoutes.post(
       .from(rolePermissions)
       .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
       .where(eq(rolePermissions.roleId, roleId));
-    const permissionError = validateAssignablePermissions(sourcePerms, callerPermissions);
+    const permissionError = validateAssignablePermissions(sourcePerms, callerPermissions, sourceRole.isSystem);
     if (permissionError) {
       return c.json({ error: permissionError }, 403);
     }

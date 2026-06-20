@@ -199,13 +199,25 @@ async function validateAssignableRole(
   role: { id: string; isSystem: boolean }
 ): Promise<string | null> {
   const rolePermissionsForAssignment = await getEffectiveRolePermissions(role.id);
-  if (rolePermissionsForAssignment.length === 0) {
-    return null;
-  }
 
   const callerPermissions = await getCallerPermissions(c, auth);
   if (!callerPermissions) {
     return 'No permissions found';
+  }
+
+  if (rolePermissionsForAssignment.length === 0) {
+    // A legitimately-empty CUSTOM role (no inherited or direct permissions)
+    // grants nothing and stays assignable by anyone allowed to invite/update.
+    // A SYSTEM role, however, is a platform-defined privilege bundle: an empty
+    // effective set has no enumerable permissions to subset-check below, so the
+    // per-permission caller check would never run. Without this guard the empty
+    // set silently short-circuits to "allow", letting a low-privilege caller
+    // assign a system-scoped role (cross-scope escalation primitive). Require
+    // the caller to hold full (*:*) privilege before assigning any system role.
+    if (role.isSystem && !hasPermission(callerPermissions, '*', '*')) {
+      return 'Cannot assign a system role without full administrative permissions';
+    }
+    return null;
   }
 
   for (const permission of rolePermissionsForAssignment) {

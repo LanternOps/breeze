@@ -421,6 +421,153 @@ describe('user routes', () => {
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
+    it('blocks a non-admin caller from assigning an EMPTY system role', async () => {
+      // Caller holds only users:invite — NOT *:*. Without the fix, the empty
+      // effective permission set of the system role short-circuits
+      // validateAssignableRole to "allow", letting a low-privilege caller assign
+      // a system-scoped role (cross-scope escalation primitive).
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'invite' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-limited',
+        scope: 'partner'
+      } as any);
+
+      vi.mocked(db.select)
+        // getScopedRole — a SYSTEM role in the caller's (partner) scope
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '22222222-2222-2222-2222-222222222222',
+                  scope: 'partner',
+                  name: 'Admin',
+                  description: null,
+                  isSystem: true,
+                  partnerId: null,
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        // getEffectiveRolePermissions — role row (parentRoleId null)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }])
+            })
+          })
+        } as any)
+        // getEffectiveRolePermissions — direct permissions: EMPTY system role
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'invitee@example.com',
+          name: 'Invitee',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'all'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('still allows a non-admin caller to assign an EMPTY CUSTOM role (no regression)', async () => {
+      // An empty same-scope CUSTOM role grants nothing and must stay assignable.
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'invite' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-limited',
+        scope: 'partner'
+      } as any);
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '22222222-2222-2222-2222-222222222222',
+                  scope: 'partner',
+                  name: 'Empty Custom',
+                  description: null,
+                  isSystem: false,
+                  partnerId: 'partner-123',
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const txSelect = vi
+        .fn()
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        });
+      const txInsert = vi
+        .fn()
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              { id: '11111111-1111-1111-1111-111111111111', email: 'invitee@example.com', name: 'Invitee', status: 'invited' }
+            ])
+          })
+        })
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'link-1' }]) })
+        });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ select: txSelect, insert: txInsert } as any));
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'invitee@example.com',
+          name: 'Invitee',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'all'
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
     it('should require orgIds when orgAccess is selected', async () => {
       const res = await app.request('/users/invite', {
         method: 'POST',
