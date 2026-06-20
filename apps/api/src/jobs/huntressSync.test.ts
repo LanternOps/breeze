@@ -1,0 +1,163 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ---------------------------------------------------------------------------
+// #1697 — the Huntress sync must NOT hold a pooled DB connection in an open
+// transaction across its external HTTP fetch. We model the DB-context depth
+// with a counter that withSystemDbAccessContext increments and
+// runOutsideDbContext zeroes, then assert the HuntressClient calls were issued
+// at depth 0 while the DB reads/writes ran at depth > 0.
+// ---------------------------------------------------------------------------
+
+let contextDepth = 0;
+const fetchDepths: number[] = [];
+const dbCallDepths: number[] = [];
+
+// Chainable, awaitable stub for a drizzle query builder. Every builder method
+// returns the same chain; awaiting it resolves to `result`.
+function chain(result: unknown) {
+  const c: Record<string, unknown> = {};
+  for (const m of ['from', 'where', 'limit', 'set', 'values', 'onConflictDoUpdate']) {
+    c[m] = vi.fn(() => c);
+  }
+  (c as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+    Promise.resolve(result).then(resolve, reject);
+  return c;
+}
+
+const INTEGRATION_ROW = {
+  id: 'integration-1',
+  partnerId: 'partner-1',
+  accountId: 'acct-1',
+  apiBaseUrl: 'https://api.huntress.example',
+  apiKeyEncrypted: 'enc',
+  isActive: true,
+  lastSyncAt: null,
+};
+
+vi.mock('../db', () => ({
+  db: {
+    // `.select()` with no projection = Phase 1 integration read; with a
+    // projection arg = loadMappedOrgIds. Distinguish so each returns the right
+    // shape. Both record the context depth at call time.
+    select: vi.fn((projection?: unknown) => {
+      dbCallDepths.push(contextDepth);
+      return chain(projection === undefined ? [INTEGRATION_ROW] : []);
+    }),
+    update: vi.fn(() => {
+      dbCallDepths.push(contextDepth);
+      return chain(undefined);
+    }),
+    insert: vi.fn(() => {
+      dbCallDepths.push(contextDepth);
+      return chain(undefined);
+    }),
+  },
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    contextDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      contextDepth -= 1;
+    }
+  }),
+  // Mirrors AsyncLocalStorage.exit: store disabled for the synchronous call (and
+  // the async work it kicks off). The fetch promises are created synchronously
+  // inside `fn`, so the client methods are invoked while depth is 0.
+  runOutsideDbContext: vi.fn((fn: () => unknown) => {
+    const saved = contextDepth;
+    contextDepth = 0;
+    try {
+      return fn();
+    } finally {
+      contextDepth = saved;
+    }
+  }),
+}));
+
+const listOrganizations = vi.fn(async () => {
+  fetchDepths.push(contextDepth);
+  return [];
+});
+const listAgents = vi.fn(async () => {
+  fetchDepths.push(contextDepth);
+  return [];
+});
+const listIncidents = vi.fn(async () => {
+  fetchDepths.push(contextDepth);
+  return [];
+});
+
+vi.mock('../services/huntressClient', () => ({
+  HuntressClient: class {
+    listOrganizations = listOrganizations;
+    listAgents = listAgents;
+    listIncidents = listIncidents;
+  },
+  parseHuntressWebhookPayload: vi.fn(),
+}));
+
+vi.mock('../services/secretCrypto', () => ({
+  decryptSecret: vi.fn(() => 'plaintext-api-key'),
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
+import { syncIntegrationById } from './huntressSync';
+
+describe('huntressSync — DB context boundaries (#1697)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    contextDepth = 0;
+    fetchDepths.length = 0;
+    dbCallDepths.length = 0;
+  });
+
+  it('fetches from Huntress with no DB context held, but reads/writes inside one', async () => {
+    const result = await syncIntegrationById('integration-1', 'scheduled');
+
+    // All three external calls were issued.
+    expect(listOrganizations).toHaveBeenCalledTimes(1);
+    expect(listAgents).toHaveBeenCalledTimes(1);
+    expect(listIncidents).toHaveBeenCalledTimes(1);
+
+    // The core regression guard: every external HTTP call ran with NO open
+    // transaction held (depth 0). Pre-fix the whole job ran inside one context,
+    // so these would all be > 0.
+    expect(fetchDepths).toEqual([0, 0, 0]);
+
+    // Sanity: the DB reads/writes still ran inside a context (depth > 0), so RLS
+    // is satisfied and the contextless-write guard (#1375) stays quiet.
+    expect(dbCallDepths.length).toBeGreaterThan(0);
+    for (const depth of dbCallDepths) {
+      expect(depth).toBeGreaterThan(0);
+    }
+
+    expect(result.integrationId).toBe('integration-1');
+  });
+
+  it('keeps the fetch outside the transaction even when wrapped in an outer DB context (guards against re-adding the blanket worker wrap)', async () => {
+    const dbm = await import('../db');
+    await dbm.withSystemDbAccessContext(async () => {
+      await syncIntegrationById('integration-1', 'scheduled');
+    });
+
+    // Even with an outer context held (depth >= 1), runOutsideDbContext escaped
+    // it for the fetch. If a future change drops that escape, these become >= 1.
+    expect(fetchDepths).toEqual([0, 0, 0]);
+    for (const depth of dbCallDepths) {
+      expect(depth).toBeGreaterThan(0);
+    }
+  });
+
+  it('skips an inactive integration without fetching', async () => {
+    const { db } = (await import('../db')) as unknown as { db: { select: ReturnType<typeof vi.fn> } };
+    db.select.mockReturnValueOnce(chain([{ ...INTEGRATION_ROW, isActive: false }]) as never);
+
+    const result = await syncIntegrationById('integration-1', 'scheduled');
+
+    expect(listOrganizations).not.toHaveBeenCalled();
+    expect(result.upsertedAgents).toBe(0);
+  });
+});

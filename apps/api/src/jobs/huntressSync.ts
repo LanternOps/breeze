@@ -710,16 +710,24 @@ async function upsertIncidents(params: {
   return { created, updated };
 }
 
-async function syncIntegrationById(
+// Exported for unit testing the DB-context boundaries (#1697). The production
+// entry points are the BullMQ worker (scheduled) and ingestHuntressWebhookPayload.
+export async function syncIntegrationById(
   integrationId: string,
   source: 'manual' | 'scheduled' | 'webhook' = 'scheduled',
   webhookPayload?: { agents: HuntressAgentRecord[]; incidents: HuntressIncidentRecord[]; }
 ): Promise<HuntressSyncResult> {
-  const [integration] = await db
-    .select()
-    .from(huntressIntegrations)
-    .where(eq(huntressIntegrations.id, integrationId))
-    .limit(1);
+  // Phase 1 — load the integration row in its own short DB context, kept
+  // separate from the write phase so the external Huntress fetch below holds
+  // NO open transaction (#1697). Pinning a pooled connection across the ~20s
+  // HTTP window starved the US connection pool (Sentry BREEZE-9).
+  const [integration] = await runWithSystemDbAccess(() =>
+    db
+      .select()
+      .from(huntressIntegrations)
+      .where(eq(huntressIntegrations.id, integrationId))
+      .limit(1)
+  );
 
   if (!integration) {
     console.warn(`[HuntressSync] Integration ${integrationId} not found, skipping sync`);
@@ -768,89 +776,100 @@ async function syncIntegrationById(
         ? new Date(integration.lastSyncAt.getTime() - 60_000)
         : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
 
-      [organizations, agents, incidents] = await Promise.all([
-        client.listOrganizations(),
-        client.listAgents(since),
-        client.listIncidents(since),
-      ]);
-    }
-
-    const discoveredOrganizations = mergeDiscoveredOrganizations({ organizations, agents, incidents });
-    await upsertDiscoveredOrganizations({
-      integrationId: integration.id,
-      partnerId: integration.partnerId,
-      organizations: discoveredOrganizations,
-    });
-
-    const mappedOrgIds = await loadMappedOrgIds(integration.id);
-    const groupedAgents = groupByMappedOrg(agents, mappedOrgIds);
-    const groupedIncidents = groupByMappedOrg(incidents, mappedOrgIds);
-    const allMappedOrgIds = Array.from(new Set([
-      ...groupedAgents.byOrgId.keys(),
-      ...groupedIncidents.byOrgId.keys(),
-    ]));
-
-    let upsertedAgents = 0;
-    let createdIncidents = 0;
-    let updatedIncidents = 0;
-
-    for (const orgId of allMappedOrgIds) {
-      const orgAgents = groupedAgents.byOrgId.get(orgId) ?? [];
-      const orgIncidents = groupedIncidents.byOrgId.get(orgId) ?? [];
-      const devicesByHostname = await mapDevicesByHostname(
-        orgId,
-        collectCandidateHostnames(orgAgents, orgIncidents)
+      // Phase 2 — fetch from Huntress with NO DB context held.
+      // runOutsideDbContext guarantees this even when an outer context exists
+      // (e.g. the webhook caller wraps this function), so the external HTTP
+      // never sits inside an open transaction (#1105/#1697).
+      [organizations, agents, incidents] = await dbModule.runOutsideDbContext(() =>
+        Promise.all([
+          client.listOrganizations(),
+          client.listAgents(since),
+          client.listIncidents(since),
+        ])
       );
-
-      const [agentResult, incidentResult] = await Promise.all([
-        upsertAgents({
-          orgId,
-          integrationId: integration.id,
-          agents: orgAgents,
-          devicesByHostname,
-        }),
-        upsertIncidents({
-          orgId,
-          integrationId: integration.id,
-          incidents: orgIncidents,
-          devicesByHostname,
-        }),
-      ]);
-      upsertedAgents += agentResult.upserted;
-      createdIncidents += incidentResult.created;
-      updatedIncidents += incidentResult.updated;
     }
 
-    await db
-      .update(huntressIntegrations)
-      .set({
-        lastSyncAt: new Date(),
-        lastSyncStatus: 'success',
-        lastSyncError: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(huntressIntegrations.id, integration.id));
+    // Phase 3 — persist everything in ONE DB context so the upserts and the
+    // success-status update commit atomically together.
+    return await runWithSystemDbAccess(async () => {
+      const discoveredOrganizations = mergeDiscoveredOrganizations({ organizations, agents, incidents });
+      await upsertDiscoveredOrganizations({
+        integrationId: integration.id,
+        partnerId: integration.partnerId,
+        organizations: discoveredOrganizations,
+      });
 
-    return {
-      integrationId: integration.id,
-      fetchedAgents: agents.length,
-      fetchedIncidents: incidents.length,
-      upsertedAgents,
-      createdIncidents,
-      updatedIncidents,
-      discoveredOrganizations: discoveredOrganizations.length,
-      skippedUnmappedAgents: groupedAgents.skipped,
-      skippedUnmappedIncidents: groupedIncidents.skipped,
-    };
+      const mappedOrgIds = await loadMappedOrgIds(integration.id);
+      const groupedAgents = groupByMappedOrg(agents, mappedOrgIds);
+      const groupedIncidents = groupByMappedOrg(incidents, mappedOrgIds);
+      const allMappedOrgIds = Array.from(new Set([
+        ...groupedAgents.byOrgId.keys(),
+        ...groupedIncidents.byOrgId.keys(),
+      ]));
+
+      let upsertedAgents = 0;
+      let createdIncidents = 0;
+      let updatedIncidents = 0;
+
+      for (const orgId of allMappedOrgIds) {
+        const orgAgents = groupedAgents.byOrgId.get(orgId) ?? [];
+        const orgIncidents = groupedIncidents.byOrgId.get(orgId) ?? [];
+        const devicesByHostname = await mapDevicesByHostname(
+          orgId,
+          collectCandidateHostnames(orgAgents, orgIncidents)
+        );
+
+        const [agentResult, incidentResult] = await Promise.all([
+          upsertAgents({
+            orgId,
+            integrationId: integration.id,
+            agents: orgAgents,
+            devicesByHostname,
+          }),
+          upsertIncidents({
+            orgId,
+            integrationId: integration.id,
+            incidents: orgIncidents,
+            devicesByHostname,
+          }),
+        ]);
+        upsertedAgents += agentResult.upserted;
+        createdIncidents += incidentResult.created;
+        updatedIncidents += incidentResult.updated;
+      }
+
+      await db
+        .update(huntressIntegrations)
+        .set({
+          lastSyncAt: new Date(),
+          lastSyncStatus: 'success',
+          lastSyncError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(huntressIntegrations.id, integration.id));
+
+      return {
+        integrationId: integration.id,
+        fetchedAgents: agents.length,
+        fetchedIncidents: incidents.length,
+        upsertedAgents,
+        createdIncidents,
+        updatedIncidents,
+        discoveredOrganizations: discoveredOrganizations.length,
+        skippedUnmappedAgents: groupedAgents.skipped,
+        skippedUnmappedIncidents: groupedIncidents.skipped,
+      };
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {
-      // The whole sync job runs inside one withSystemDbAccessContext transaction.
-      // Re-throwing below rolls that transaction back, so recording the failure on
-      // the job's own connection would be undone and the row would keep its stale
-      // status. Escape the current context (runOutsideDbContext) and open a fresh
-      // transaction (runWithSystemDbAccess) so the 'error' status commits and
-      // survives the rollback.
+      // Record the failure on a FRESH transaction. Phase 3's write transaction
+      // (or, on the webhook path, the caller's outer context) is rolling back as
+      // we unwind, so recording the failure on that same connection would be
+      // undone and the row would keep its stale status. Escape the current
+      // context (runOutsideDbContext) and open a new transaction
+      // (runWithSystemDbAccess) so the 'error' status commits and survives the
+      // rollback.
       await dbModule.runOutsideDbContext(() =>
         runWithSystemDbAccess(() =>
           db
@@ -873,13 +892,19 @@ async function syncIntegrationById(
 
 async function processSyncAll(): Promise<{ queued: number }> {
   const queue = getHuntressSyncQueue();
-  const integrations = await db
-    .select({
-      id: huntressIntegrations.id,
-      lastSyncAt: huntressIntegrations.lastSyncAt,
-    })
-    .from(huntressIntegrations)
-    .where(eq(huntressIntegrations.isActive, true));
+  // Read inside a short DB context — huntress_integrations is partner-scoped, so
+  // a contextless read under breeze_app RLS silently returns 0 rows (#1375).
+  // The enqueue below then runs with no transaction held (Redis-in-context is
+  // itself the #1105 anti-pattern).
+  const integrations = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: huntressIntegrations.id,
+        lastSyncAt: huntressIntegrations.lastSyncAt,
+      })
+      .from(huntressIntegrations)
+      .where(eq(huntressIntegrations.isActive, true))
+  );
 
   const now = Date.now();
   const due = integrations.filter((integration) => {
@@ -980,16 +1005,17 @@ function createHuntressSyncWorker(): Worker<HuntressSyncJobData> {
   return new Worker<HuntressSyncJobData>(
     HUNTRESS_SYNC_QUEUE,
     async (job: Job<HuntressSyncJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
-          case 'sync-all':
-            return processSyncAll();
-          case 'sync-integration':
-            return processSyncIntegration(job.data);
-          default:
-            throw new Error(`Unknown Huntress sync job type: ${(job.data as { type: string }).type}`);
-        }
-      });
+      // No blanket withSystemDbAccessContext wrap here — each path manages its
+      // own short DB contexts so the external Huntress fetch in syncIntegrationById
+      // runs with no pooled connection held in an open transaction (#1105/#1697).
+      switch (job.data.type) {
+        case 'sync-all':
+          return processSyncAll();
+        case 'sync-integration':
+          return processSyncIntegration(job.data);
+        default:
+          throw new Error(`Unknown Huntress sync job type: ${(job.data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
