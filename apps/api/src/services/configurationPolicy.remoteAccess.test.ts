@@ -16,4 +16,8 @@ describe('remoteAccessInlineSettingsSchema', () => {
   it('rejects an invalid mode', () => {
     expect(() => remoteAccessInlineSettingsSchema.parse({ sessionPromptMode: 'always' })).toThrow();
   });
+
+  it('rejects unknown keys (.strict())', () => {
+    expect(() => remoteAccessInlineSettingsSchema.parse({ sessionPromptMode: 'consent', bogusKey: 1 })).toThrow();
+  });
 });

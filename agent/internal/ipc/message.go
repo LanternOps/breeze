@@ -422,8 +422,8 @@ type IntegrityResult struct {
 // DesktopStartRequest. Pointer fields are optional so older services that omit
 // them leave the helper at safe defaults.
 type DesktopPrompt struct {
-	// Mode controls how the helper handles end-user consent: "consent",
-	// "notify", or "silent".
+	// Mode controls how the helper handles end-user consent: "off",
+	// "notify", or "consent".
 	Mode string `json:"mode"`
 	// TechnicianName is the display name of the connecting technician, shown
 	// in consent dialogs and the session banner.
@@ -433,7 +433,7 @@ type DesktopPrompt struct {
 	// OrgName is the partner/MSP organisation name shown in dialogs.
 	OrgName *string `json:"orgName,omitempty"`
 	// ConsentUnavailableBehavior governs what happens when the helper cannot
-	// display a consent dialog (e.g. no interactive user): "proceed" or "deny".
+	// display a consent dialog (e.g. no interactive user): "proceed" or "block".
 	ConsentUnavailableBehavior string `json:"consentUnavailableBehavior"`
 	// ConsentTimeoutMs is how long (in ms) the helper waits for user input
 	// before applying ConsentUnavailableBehavior. 0 means no timeout.
@@ -453,7 +453,7 @@ type ConsentRequest struct {
 	TechnicianEmail string `json:"technicianEmail,omitempty"`
 	OrgName         string `json:"orgName,omitempty"`
 	TimeoutMs       int    `json:"timeoutMs"`
-	// OnTimeout is the behaviour when the dialog times out: "proceed" or "deny".
+	// OnTimeout is the behaviour when the dialog times out: "proceed" or "block".
 	OnTimeout string `json:"onTimeout"`
 }
 

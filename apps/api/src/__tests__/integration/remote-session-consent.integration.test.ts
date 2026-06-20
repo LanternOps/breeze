@@ -23,7 +23,6 @@ import './setup';
 import { getTestDb } from './setup';
 import {
   setupTestEnvironment,
-  createIntegrationTestClient,
 } from './db-utils';
 import { createAccessToken } from '../../services/jwt';
 

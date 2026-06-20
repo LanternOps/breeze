@@ -48,7 +48,7 @@ export const remoteAccessInlineSettingsSchema = z.object({
   notifyOnSessionEnd: z.boolean().default(true),
   showActiveIndicator: z.boolean().default(true),
   technicianIdentityLevel: z.enum(['name_email', 'name', 'generic']).default('name_email'),
-});
+}).strict();
 
 // Exported so the route can import the same schema (single source of truth).
 // uacInterceptionEnabled defaults to true on the read side (parsePamSettings),

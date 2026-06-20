@@ -224,7 +224,11 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return result
 	}
 
-	// Direct mode (console or non-Windows)
+	// Direct mode (console or non-Windows). Note: when there is no session
+	// broker (h.sessionBroker == nil), requestConsent returns helper-absent
+	// immediately, so the consent gate above never blocks the session. In that
+	// case consentUnavailableBehavior (the policy fallback) governs whether to
+	// proceed or block — the console user is NOT interactively prompted here.
 	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())

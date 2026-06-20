@@ -66,12 +66,12 @@ func parseDesktopPrompt(payload map[string]any) *ipc.DesktopPrompt {
 	return &prompt
 }
 
-// requestConsent asks the local user (via the desktop helper) to allow or deny a
-// remote session. It mirrors handleNotifyUser's session-lookup pattern. Returns
-// (verdict, helperPresent, timedOut):
-//   - no notify-capable helper connected  -> ("", false, false)
-//   - helper present but IPC timed out     -> ("", true, true)
-//   - helper replied                       -> (result.Decision, true, false)
+// requestConsent asks the local user (via the consent_ui-capable helper) to
+// allow or deny a remote session. It uses PreferredSessionWithScope("consent_ui")
+// to locate the assist helper. Returns (verdict, helperPresent, timedOut):
+//   - no consent_ui-capable helper connected -> ("", false, false)
+//   - helper present but IPC timed out       -> ("", true, true)
+//   - helper replied                         -> (result.Decision, true, false)
 //
 // The verdict is fed to decideConsent, which applies the unavailable-behavior
 // policy. requestConsent itself does not decide whether to proceed.
