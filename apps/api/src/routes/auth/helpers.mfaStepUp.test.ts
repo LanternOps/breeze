@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // --- Mocks must be declared before importing the unit under test ---
 // vi.mock factories are hoisted above module-scope consts, so the shared mock
 // references are declared via vi.hoisted (which is also hoisted) and reused here.
-const { selectLimit, db, getRedis, rateLimiter, verifyMFAToken, decryptMfaTotpSecret } = vi.hoisted(() => {
+const { selectLimit, db, getRedis, rateLimiter, consumeMFAToken, decryptMfaTotpSecret } = vi.hoisted(() => {
   const selectLimit = vi.fn();
   const db = {
     // db.select(...).from(...).where(...).limit(...) chain returning the mocked user row.
@@ -20,7 +20,7 @@ const { selectLimit, db, getRedis, rateLimiter, verifyMFAToken, decryptMfaTotpSe
     db,
     getRedis: vi.fn(),
     rateLimiter: vi.fn(),
-    verifyMFAToken: vi.fn(),
+    consumeMFAToken: vi.fn(),
     decryptMfaTotpSecret: vi.fn(),
   };
 });
@@ -48,7 +48,7 @@ vi.mock('../../services', () => ({
 }));
 
 vi.mock('../../services/mfa', () => ({
-  verifyMFAToken,
+  consumeMFAToken,
 }));
 
 vi.mock('../../services/mfaSecretCrypto', () => ({
@@ -87,19 +87,19 @@ describe('requireFreshMfaStepUp', () => {
     rateLimiter.mockResolvedValue({ allowed: true, resetAt: new Date(Date.now() + 60_000) });
     mockUserRow({ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'totp' });
     decryptMfaTotpSecret.mockReturnValue('PLAINTEXT-SECRET');
-    verifyMFAToken.mockResolvedValue(true);
+    consumeMFAToken.mockResolvedValue(true);
   });
 
   it('returns null for a valid TOTP code', async () => {
     const c = makeContext();
     const result = await requireFreshMfaStepUp(c, USER_ID, '123456');
     expect(result).toBeNull();
-    expect(verifyMFAToken).toHaveBeenCalledWith('PLAINTEXT-SECRET', '123456');
+    expect(consumeMFAToken).toHaveBeenCalledWith('PLAINTEXT-SECRET', '123456', USER_ID);
     expect(c.json).not.toHaveBeenCalled();
   });
 
   it('returns 401 for an invalid TOTP code', async () => {
-    verifyMFAToken.mockResolvedValue(false);
+    consumeMFAToken.mockResolvedValue(false);
     const c = makeContext();
     const result = await requireFreshMfaStepUp(c, USER_ID, '000000');
     expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
@@ -111,7 +111,7 @@ describe('requireFreshMfaStepUp', () => {
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
     expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
-    expect(verifyMFAToken).not.toHaveBeenCalled();
+    expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
   it('returns 401 when the MFA method is sms', async () => {
@@ -119,7 +119,7 @@ describe('requireFreshMfaStepUp', () => {
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
     expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
-    expect(verifyMFAToken).not.toHaveBeenCalled();
+    expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
   it('returns 401 when the MFA method is passkey', async () => {
@@ -127,7 +127,7 @@ describe('requireFreshMfaStepUp', () => {
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
     expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
-    expect(verifyMFAToken).not.toHaveBeenCalled();
+    expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
   it('returns 401 when no MFA secret is stored', async () => {
@@ -135,7 +135,7 @@ describe('requireFreshMfaStepUp', () => {
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
     expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
-    expect(verifyMFAToken).not.toHaveBeenCalled();
+    expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
   it('returns 401 when the stored secret cannot be decrypted', async () => {
@@ -143,7 +143,7 @@ describe('requireFreshMfaStepUp', () => {
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
     expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
-    expect(verifyMFAToken).not.toHaveBeenCalled();
+    expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
   it('returns 401 when the user does not exist', async () => {
@@ -162,7 +162,7 @@ describe('requireFreshMfaStepUp', () => {
       429,
     );
     expect((result as any).__status).toBe(429);
-    expect(verifyMFAToken).not.toHaveBeenCalled();
+    expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
   it('returns 503 when redis is unavailable', async () => {
