@@ -802,6 +802,16 @@ tunnelRoutes.post(
       userAgent: c.req.header('user-agent') ?? '',
     });
 
+    await logTunnelAudit(
+      'tunnel.ws_ticket.mint',
+      'tunnel_session',
+      id,
+      auth.user.id,
+      session.orgId,
+      { deviceId: session.deviceId, type: session.type },
+      getClientIp(c),
+    );
+
     return c.json({ ticket });
   }
 );
@@ -856,6 +866,15 @@ tunnelRoutes.post(
         userId: auth.user.id,
         email: auth.user.email,
       });
+      await logTunnelAudit(
+        'tunnel.connect_code.mint',
+        'tunnel_session',
+        session.id,
+        auth.user.id,
+        session.orgId,
+        { deviceId: session.deviceId, type: session.type },
+        getClientIp(c),
+      );
       return c.json(result);
     } catch (err) {
       console.error('[tunnels] Failed to create VNC connect code:', err instanceof Error ? err.message : err);
@@ -950,6 +969,20 @@ vncExchangeRoutes.post(
       email: record.email,
       sessionId: record.tunnelId,
     });
+
+    // No bearer auth on this route — the one-time code IS the auth. Attribute
+    // the redemption to the code-bound owner (record.userId) so the event is
+    // traceable even without a JWT actor. logTunnelAudit already runs in system
+    // DB context (this path establishes none of its own).
+    await logTunnelAudit(
+      'tunnel.vnc_exchange.redeem',
+      'tunnel_session',
+      record.tunnelId,
+      record.userId,
+      result.orgId,
+      { deviceId: record.deviceId, type: result.type },
+      getTrustedClientIp(c, 'unknown'),
+    );
 
     return c.json({
       accessToken,

@@ -1323,3 +1323,102 @@ describe('Audit logging — mutating tunnel endpoints', () => {
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 });
+
+// ─── Audit logging on credential-minting tunnel endpoints (Finding R1b) ──────
+// The three credential-mint / redeem handlers issue the actual access
+// credentials (viewer WS ticket, VNC connect code, and the code redemption
+// that hands back a viewer access token + ws-ticket). These are the most
+// security-relevant tunnel events and must be attributable in audit_logs.
+
+describe('Audit logging — credential-minting tunnel endpoints', () => {
+  let app: Hono;
+
+  const vncCodeRecord = {
+    tunnelId: SESSION_ID,
+    deviceId: DEVICE_ID,
+    orgId: ORG_ID,
+    userId: USER_ID,
+    email: 'test@example.com',
+    expiresAt: Date.now() + 60_000,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    rateLimiterMock.mockResolvedValue({
+      allowed: true,
+      remaining: 19,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+    app.route('/vnc-exchange', vncExchangeRoutes);
+  });
+
+  it('POST /:id/ws-ticket writes a tunnel.ws_ticket.mint audit row', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/ws-ticket`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.ws_ticket.mint',
+      resourceType: 'tunnel_session',
+      resourceId: SESSION_ID,
+      orgId: ORG_ID,
+      actorId: USER_ID,
+      result: 'success',
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID }));
+  });
+
+  it('POST /:id/connect-code writes a tunnel.connect_code.mint audit row', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.connect_code.mint',
+      resourceType: 'tunnel_session',
+      resourceId: SESSION_ID,
+      orgId: ORG_ID,
+      actorId: USER_ID,
+      result: 'success',
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID }));
+  });
+
+  it('POST /vnc-exchange/:code writes a tunnel.vnc_exchange.redeem audit row attributed to the code owner', async () => {
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce(vncCodeRecord);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(createViewerAccessToken).mockResolvedValueOnce('viewer-token-xyz');
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    // No bearer auth on this route — the actor is the code-bound userId.
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.vnc_exchange.redeem',
+      resourceType: 'tunnel_session',
+      resourceId: SESSION_ID,
+      orgId: ORG_ID,
+      actorId: USER_ID,
+      result: 'success',
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID }));
+  });
+});
