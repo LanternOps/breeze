@@ -40,7 +40,7 @@ const {
       sourceId: 'ml_feedback_events.sourceId', eventType: 'ml_feedback_events.eventType',
       outcome: 'ml_feedback_events.outcome', occurredAt: 'ml_feedback_events.occurredAt',
     },
-    devices: { id: 'devices.id', hostname: 'devices.hostname', siteId: 'devices.siteId' },
+    devices: { id: 'devices.id', hostname: 'devices.hostname', siteId: 'devices.siteId', orgId: 'devices.orgId' },
   };
 
   type Predicate = { op: string; col?: unknown; val?: unknown; vals?: unknown[]; args?: Predicate[] } | undefined;
@@ -231,6 +231,9 @@ const SITE_A = '5a5a5a5a-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SITE_B = '5b5b5b5b-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const DEVICE_2 = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd';
 const ALERT_4 = 'a4a4a4a4-4444-4444-8444-444444444444';
+// Deviceless (org-wide) alert: not site-bound, must stay visible/ackable to a
+// site-restricted caller.
+const ALERT_5 = 'a5a5a5a5-5555-4555-8555-555555555555';
 
 function makeApp() {
   const app = new Hono();
@@ -252,8 +255,8 @@ function seed() {
   state.members = [];
   state.feedback = [];
   state.devices = [
-    { id: DEVICE_1, hostname: 'server-1', siteId: SITE_A },
-    { id: DEVICE_2, hostname: 'server-2', siteId: SITE_B },
+    { id: DEVICE_1, hostname: 'server-1', siteId: SITE_A, orgId: ORG_1 },
+    { id: DEVICE_2, hostname: 'server-2', siteId: SITE_B, orgId: ORG_1 },
   ];
   state.unwritableAlertIds = new Set();
 }
@@ -845,21 +848,34 @@ describe('/alerts correlation routes', () => {
         title: 'Other site', ruleId: 'rule-4',
         triggeredAt: new Date('2026-06-18T12:05:00Z'), createdAt: new Date('2026-06-18T12:05:00Z'),
       });
+      // Deviceless (org-wide) member: not site-bound, stays visible/ackable.
+      state.alerts.push({
+        id: ALERT_5, orgId: ORG_1, deviceId: null, status: 'active', severity: 'high',
+        title: 'Org-wide', ruleId: 'rule-5',
+        triggeredAt: new Date('2026-06-18T12:07:00Z'), createdAt: new Date('2026-06-18T12:07:00Z'),
+      });
       state.correlations.push({
         id: '44444444-aaaa-4aaa-8aaa-444444444444',
         parentAlertId: ALERT_1, childAlertId: ALERT_4,
         correlationType: 'same_device_temporal', confidence: '0.80',
         createdAt: new Date('2026-06-18T12:06:00Z'),
       });
+      state.correlations.push({
+        id: '55555555-aaaa-4aaa-8aaa-555555555555',
+        parentAlertId: ALERT_1, childAlertId: ALERT_5,
+        correlationType: 'same_device_temporal', confidence: '0.75',
+        createdAt: new Date('2026-06-18T12:07:00Z'),
+      });
       state.groups = [{
         id: GROUP_1, orgId: ORG_1, groupKey: `root:${ALERT_1}`, rootAlertId: ALERT_1,
-        status: 'open', score: '0.90', noiseReductionPercent: 50, memberCount: 2,
-        firstSeenAt: new Date('2026-06-18T12:00:00Z'), lastSeenAt: new Date('2026-06-18T12:05:00Z'),
+        status: 'open', score: '0.90', noiseReductionPercent: 50, memberCount: 3,
+        firstSeenAt: new Date('2026-06-18T12:00:00Z'), lastSeenAt: new Date('2026-06-18T12:07:00Z'),
         metadata: {}, createdAt: new Date('2026-06-18T12:06:00Z'),
       }];
       state.members = [
         { id: 'eeeeeeee-0001-4eee-8eee-eeeeeeeeeeee', orgId: ORG_1, groupId: GROUP_1, alertId: ALERT_1, role: 'root', confidence: '1.00', createdAt: new Date('2026-06-18T12:06:00Z') },
         { id: 'eeeeeeee-0004-4eee-8eee-eeeeeeeeeeee', orgId: ORG_1, groupId: GROUP_1, alertId: ALERT_4, role: 'related', confidence: '0.80', createdAt: new Date('2026-06-18T12:06:00Z') },
+        { id: 'eeeeeeee-0005-4eee-8eee-eeeeeeeeeeee', orgId: ORG_1, groupId: GROUP_1, alertId: ALERT_5, role: 'related', confidence: '0.75', createdAt: new Date('2026-06-18T12:07:00Z') },
       ];
     }
 
@@ -877,6 +893,24 @@ describe('/alerts correlation routes', () => {
       const ids = body.group.alerts.map((a: { id: string }) => a.id);
       expect(ids).toContain(ALERT_1);
       expect(ids).not.toContain(ALERT_4);
+    });
+
+    it('keeps a deviceless (org-wide) group member visible and ackable to a SITE_A-restricted user', async () => {
+      seedSiteScopedGroup();
+      restrictToSiteA();
+
+      const detail = await makeApp().request(`/alerts/correlations/${GROUP_1}`);
+      expect(detail.status).toBe(200);
+      const detailBody = await detail.json();
+      const ids = detailBody.group.alerts.map((a: { id: string }) => a.id);
+      expect(ids).toContain(ALERT_1);
+      expect(ids).toContain(ALERT_5);
+      expect(ids).not.toContain(ALERT_4);
+
+      const ack = await makeApp().request(`/alerts/correlations/${GROUP_1}/acknowledge`, { method: 'POST' });
+      expect(ack.status).toBe(200);
+      expect(state.alerts.find((a) => a.id === ALERT_5)?.status).toBe('acknowledged');
+      expect(state.alerts.find((a) => a.id === ALERT_4)?.status).toBe('active');
     });
 
     it('does not acknowledge a SITE_B alert when a SITE_A-restricted user acks the group', async () => {

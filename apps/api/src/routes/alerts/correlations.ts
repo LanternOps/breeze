@@ -839,7 +839,10 @@ alertCorrelationRoutes.post(
     }
 
     const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
-    const groupAlerts = persistedGroupAlerts ?? await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
+    // Defense-in-depth: persistedGroupAlerts is already site-filtered, but the
+    // in-memory fallback re-fetches by id unfiltered, so re-apply the site axis
+    // (RLS does NOT enforce it). No-op for in-scope ids / unrestricted callers.
+    const groupAlerts = persistedGroupAlerts ?? await filterAlertsBySiteScope(auth, await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds)));
     const result = await mutateAlerts(groupAlerts, 'acknowledge', auth.user.id);
     if (persistedGroupAlerts !== null && groupAlerts[0]) {
       await updatePersistedGroupStatus(groupId, groupAlerts[0].orgId, 'acknowledged');
@@ -890,7 +893,10 @@ alertCorrelationRoutes.post(
     }
 
     const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
-    const groupAlerts = persistedGroupAlerts ?? await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds));
+    // Defense-in-depth: persistedGroupAlerts is already site-filtered, but the
+    // in-memory fallback re-fetches by id unfiltered, so re-apply the site axis
+    // (RLS does NOT enforce it). No-op for in-scope ids / unrestricted callers.
+    const groupAlerts = persistedGroupAlerts ?? await filterAlertsBySiteScope(auth, await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds)));
     const result = await mutateAlerts(groupAlerts, 'resolve', auth.user.id);
     if (persistedGroupAlerts !== null && groupAlerts[0]) {
       await updatePersistedGroupStatus(groupId, groupAlerts[0].orgId, 'resolved');

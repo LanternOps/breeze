@@ -9,7 +9,7 @@ import { Hono } from 'hono';
 const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
   const tables = {
     alerts: { id: 'alerts.id', orgId: 'alerts.orgId', deviceId: 'alerts.deviceId', status: 'alerts.status' },
-    devices: { id: 'devices.id', siteId: 'devices.siteId' },
+    devices: { id: 'devices.id', siteId: 'devices.siteId', orgId: 'devices.orgId' },
     tickets: { id: 'tickets.id', deviceId: 'tickets.deviceId' },
   };
 
@@ -172,7 +172,7 @@ describe('alert state-change authz (Finding #6)', () => {
     authRef.current = {
       scope: 'organization',
       user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
-      partnerId: null, orgId: 'org-1', accessibleOrgIds: null, canAccessOrg: () => true,
+      partnerId: null, orgId: 'org-1', accessibleOrgIds: null, allowedSiteIds: undefined, canAccessOrg: () => true,
     } as typeof authRef.current;
   });
 
@@ -248,8 +248,8 @@ describe('POST /alerts/bulk site-axis scope (T3)', () => {
       allowedSiteIds: undefined, canAccessOrg: () => true,
     } as typeof authRef.current;
     state.devices = [
-      { id: DEVICE_A, siteId: SITE_A },
-      { id: DEVICE_B, siteId: SITE_B },
+      { id: DEVICE_A, siteId: SITE_A, orgId: ORG },
+      { id: DEVICE_B, siteId: SITE_B, orgId: ORG },
     ];
     state.alerts = [
       { id: ALERT_A, orgId: ORG, deviceId: DEVICE_A, status: 'active', ruleId: 'r-a' },
@@ -269,6 +269,21 @@ describe('POST /alerts/bulk site-axis scope (T3)', () => {
 
     expect(res.status).toBe(200);
     expect(state.alerts.find((a) => a.id === ALERT_A)?.status).toBe('acknowledged');
+    expect(state.alerts.find((a) => a.id === ALERT_B)?.status).toBe('active');
+  });
+
+  it('returns 404 (no writes) when every alertId is out-of-site for a SITE_A-restricted user', async () => {
+    authRef.current = { ...authRef.current, allowedSiteIds: [SITE_A] } as typeof authRef.current;
+
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: [ALERT_B], action: 'acknowledge' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'No accessible alerts found' });
+    // No alert was mutated.
     expect(state.alerts.find((a) => a.id === ALERT_B)?.status).toBe('active');
   });
 

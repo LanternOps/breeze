@@ -1,4 +1,4 @@
-import { eq, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets, devices } from '../../db/schema';
 import { siteAccessCheck } from '../../middleware/auth';
@@ -41,7 +41,7 @@ export async function deviceInSiteScope(
  * uniformly across both call sites.
  */
 export async function filterAlertsBySiteScope<T extends { deviceId: string | null }>(
-  auth: Pick<AuthContext, 'allowedSiteIds'>,
+  auth: Pick<AuthContext, 'allowedSiteIds'> & { orgId?: string | null },
   rows: T[],
 ): Promise<T[]> {
   const allowed = auth.allowedSiteIds;
@@ -50,10 +50,17 @@ export async function filterAlertsBySiteScope<T extends { deviceId: string | nul
   const deviceIds = [...new Set(rows.map((row) => row.deviceId).filter((id): id is string => Boolean(id)))];
   const deviceSites = new Map<string, string | null>();
   if (deviceIds.length > 0) {
+    // Belt-and-suspenders org scope on the device lookup (mirrors alerts.ts:186):
+    // RLS already confines breeze_app to accessible orgs, but pinning orgId here
+    // means a cross-org device id can never resolve to a same-site match. A site-
+    // restricted caller is always organization scope, so auth.orgId is present.
+    const deviceWhere = auth.orgId
+      ? and(inArray(devices.id, deviceIds), eq(devices.orgId, auth.orgId))
+      : inArray(devices.id, deviceIds);
     const deviceRows = await db
       .select({ id: devices.id, siteId: devices.siteId })
       .from(devices)
-      .where(inArray(devices.id, deviceIds));
+      .where(deviceWhere);
     for (const device of deviceRows) {
       deviceSites.set(device.id, device.siteId ?? null);
     }
