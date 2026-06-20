@@ -183,6 +183,35 @@ describe('GET /install.sh — generated installer script', () => {
     return res.text();
   }
 
+  it('does not derive the production server URL from the request host', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalBreezeServer = process.env.BREEZE_SERVER;
+    const originalPublicApiUrl = process.env.PUBLIC_API_URL;
+    const originalApiUrl = process.env.API_URL;
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.BREEZE_SERVER;
+      delete process.env.PUBLIC_API_URL;
+      delete process.env.API_URL;
+
+      const res = await downloadRoutes.request('https://attacker.example/install.sh');
+      const body = await res.text();
+
+      expect(res.status).toBe(503);
+      expect(body).not.toContain('attacker.example');
+      expect(body).not.toContain('https://attacker.example');
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+      if (originalBreezeServer === undefined) delete process.env.BREEZE_SERVER;
+      else process.env.BREEZE_SERVER = originalBreezeServer;
+      if (originalPublicApiUrl === undefined) delete process.env.PUBLIC_API_URL;
+      else process.env.PUBLIC_API_URL = originalPublicApiUrl;
+      if (originalApiUrl === undefined) delete process.env.API_URL;
+      else process.env.API_URL = originalApiUrl;
+    }
+  });
+
   it('is valid bash (bash -n syntax check)', async () => {
     const script = await fetchScript();
     const tmp = mkdtempSync(join(tmpdir(), 'breeze-install-sh-'));

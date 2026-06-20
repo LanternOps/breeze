@@ -288,11 +288,28 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
 // Install Script (public, no auth)
 // ============================================
 
-downloadRoutes.get('/install.sh', async (c) => {
-  const serverUrl =
+function resolveInstallScriptServerUrl(requestUrl: string): string | null {
+  const configured =
     process.env.BREEZE_SERVER ||
     process.env.PUBLIC_API_URL ||
-    new URL(c.req.url).origin;
+    process.env.API_URL;
+  if (configured) return configured.replace(/\/$/, '');
+
+  if (process.env.NODE_ENV === 'production') {
+    return null;
+  }
+
+  return new URL(requestUrl).origin.replace(/\/$/, '');
+}
+
+downloadRoutes.get('/install.sh', async (c) => {
+  const serverUrl = resolveInstallScriptServerUrl(c.req.url);
+  if (!serverUrl) {
+    return c.json(
+      { error: 'Installer script unavailable: server URL is not configured' },
+      503
+    );
+  }
 
   const script = generateInstallScript(serverUrl);
 
