@@ -28,6 +28,12 @@ vi.mock('../../services/invoicePdf', () => ({
   getInvoicePdf: vi.fn()
 }));
 
+// Payment routes write to the durable audit chain; stub it so route tests don't
+// hit the real audit persistence path.
+vi.mock('../../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn()
+}));
+
 // InvoiceServiceError lives in invoiceTypes; routes import the class from there.
 vi.mock('../../services/invoiceTypes', () => ({
   InvoiceServiceError: class InvoiceServiceError extends Error {
@@ -262,7 +268,10 @@ describe('invoice payment routes', () => {
   });
 
   it('POST /:id/payments records a payment', async () => {
-    (svc.recordPayment as any).mockResolvedValue({ id: 'pay1', amount: '40.00' });
+    (svc.recordPayment as any).mockResolvedValue({
+      invoice: { id: INV_ID, amount: '40.00' },
+      audit: { orgId: ORG_ID, paymentId: 'pay1', invoiceId: INV_ID, amount: '40.00', method: 'card', reference: null, recordedBy: 'u1' }
+    });
     const res = await app().request(`/${INV_ID}/payments`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

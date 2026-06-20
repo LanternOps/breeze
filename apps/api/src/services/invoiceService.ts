@@ -548,18 +548,44 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment!.id, actorUserId: actor.userId });
   const updated = await getOwnedInvoiceOr404(invoiceId);
   if (updated.status === 'paid') await emitInvoiceEvent({ type: 'invoice.paid', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
-  return updated;
+  // Surface the persisted payment alongside the refreshed invoice so the route
+  // can write a durable audit_logs entry for this money-path mutation. The
+  // emitInvoiceEvent bus above is intentionally unconsumed and is NOT the
+  // durable chain.
+  return {
+    invoice: updated,
+    audit: {
+      orgId: inv.orgId,
+      paymentId: payment!.id,
+      invoiceId,
+      amount: payment!.amount,
+      method: payment!.method,
+      reference: payment!.reference,
+      recordedBy: payment!.recordedBy,
+    },
+  };
 }
 
 export async function voidPayment(paymentId: string, actor: InvoiceActor) {
   const [pay] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
   if (!pay) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
   requireOrgAccess(actor, pay.orgId);
+  // Capture the destroyed row's financial details BEFORE the delete so the voided
+  // payment survives in the durable audit chain even after the row is gone.
+  const audit = {
+    orgId: pay.orgId,
+    paymentId,
+    invoiceId: pay.invoiceId,
+    amount: pay.amount,
+    method: pay.method,
+    reference: pay.reference,
+    recordedBy: pay.recordedBy,
+  };
   await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
   await recomputeInvoiceStatus(pay.invoiceId);
   const inv = await getOwnedInvoiceOr404(pay.invoiceId);
   await emitInvoiceEvent({ type: 'payment.voided', invoiceId: pay.invoiceId, orgId: pay.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
-  return inv;
+  return { invoice: inv, audit };
 }
 
 export async function listPayments(invoiceId: string, actor: InvoiceActor) {
