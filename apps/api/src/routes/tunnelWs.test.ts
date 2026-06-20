@@ -32,7 +32,40 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
 }));
 
-import { validateTunnelTextRelayFrame } from './tunnelWs';
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => 'redis-client'),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(),
+  })),
+}));
+
+import { rateLimiter } from '../services/rate-limit';
+import { getRedis } from '../services/redis';
+import { isUserTunnelWsRateLimited, validateTunnelTextRelayFrame } from './tunnelWs';
+
+describe('isUserTunnelWsRateLimited', () => {
+  it('uses the shared Redis-backed limiter for tunnel websocket upgrades', async () => {
+    await expect(isUserTunnelWsRateLimited('user-1')).resolves.toBe(false);
+
+    expect(getRedis).toHaveBeenCalled();
+    expect(rateLimiter).toHaveBeenCalledWith('redis-client', 'tunnelws:conn:user-1', 10, 60);
+  });
+
+  it('fails closed when the shared limiter denies the tunnel websocket upgrade', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(),
+    });
+
+    await expect(isUserTunnelWsRateLimited('user-1')).resolves.toBe(true);
+  });
+});
 
 describe('validateTunnelTextRelayFrame', () => {
   it('accepts base64 data within the binary frame cap', () => {

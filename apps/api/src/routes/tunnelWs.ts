@@ -10,6 +10,8 @@ import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { getTrustedClientIp } from '../services/clientIp';
 import { createAuditLogAsync } from '../services/auditService';
+import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
 
 // Store active tunnel connections: Map<tunnelId, TunnelConnection>
 interface TunnelConnection {
@@ -51,27 +53,20 @@ const PING_INTERVAL_MS = 30_000;
 // silence before declaring the tunnel dead.
 const PONG_TIMEOUT_MS = 90_000;
 
-// Rate limiting
-const USER_WS_RATE_WINDOW_MS = 60_000;
-const USER_WS_RATE_MAX = 10;
-const userWsTimestamps = new Map<string, number[]>();
+// E1: Redis-backed sliding window rate limiter for user WS upgrades.
+// Decision: fail closed on Redis outage (matches terminalWs/desktopWs).
+const USER_WS_RATE_LIMIT = 10;
+const USER_WS_RATE_WINDOW_SECONDS = 60;
 
-function isRateLimited(userId: string): boolean {
-  const now = Date.now();
-  const cutoff = now - USER_WS_RATE_WINDOW_MS;
-  let timestamps = userWsTimestamps.get(userId);
-  if (timestamps) {
-    timestamps = timestamps.filter(t => t > cutoff);
-  } else {
-    timestamps = [];
-  }
-  if (timestamps.length >= USER_WS_RATE_MAX) {
-    userWsTimestamps.set(userId, timestamps);
-    return true;
-  }
-  timestamps.push(now);
-  userWsTimestamps.set(userId, timestamps);
-  return false;
+export async function isUserTunnelWsRateLimited(userId: string): Promise<boolean> {
+  const redis = getRedis();
+  const result = await rateLimiter(
+    redis,
+    `tunnelws:conn:${userId}`,
+    USER_WS_RATE_LIMIT,
+    USER_WS_RATE_WINDOW_SECONDS
+  );
+  return !result.allowed;
 }
 
 export function validateTunnelTextRelayFrame(text: string): { ok: true; data: string } | { ok: false; error: string } {
@@ -113,16 +108,6 @@ export function validateTunnelTextRelayFrame(text: string): { ok: true; data: st
 
   return { ok: true, data: record.data };
 }
-
-// Periodic cleanup
-setInterval(() => {
-  const cutoff = Date.now() - USER_WS_RATE_WINDOW_MS * 2;
-  for (const [userId, timestamps] of userWsTimestamps) {
-    if (timestamps.length === 0 || timestamps[timestamps.length - 1]! < cutoff) {
-      userWsTimestamps.delete(userId);
-    }
-  }
-}, 120_000);
 
 /**
  * Register tunnel ownership (called when tunnel_open succeeds, before browser connects).
@@ -329,7 +314,7 @@ function createTunnelWsHandlers(
           return;
         }
 
-        if (isRateLimited(userId)) {
+        if (await isUserTunnelWsRateLimited(userId)) {
           ws.send(JSON.stringify({ type: 'error', message: 'Too many tunnel connections' }));
           ws.close(4029, 'Rate limited');
           return;
