@@ -1,5 +1,11 @@
 import { getToken, graphFetch, type DirectInvokeResult } from './m365DirectGraph';
 
+/** Encode a Graph composite site ID (hostname,scGuid,webGuid) for use in a path segment.
+ * encodeURIComponent encodes commas to %2C, but Graph requires literal commas in this position. */
+function encodeSiteId(id: string): string {
+  return encodeURIComponent(id).replace(/%2C/g, ',');
+}
+
 export async function listSharePointLibraries(orgId: string): Promise<DirectInvokeResult> {
   const tok = await getToken(orgId);
   if ('kind' in tok) return tok; // error result
@@ -16,7 +22,7 @@ export async function listSharePointLibraries(orgId: string): Promise<DirectInvo
     const drives = await graphFetch(
       token,
       'GET',
-      `/sites/${encodeURIComponent(site.id)}/drives?$select=id,name,list`,
+      `/sites/${encodeSiteId(site.id)}/drives?$select=id,name,list`,
     );
     if (drives.kind === 'error') continue; // skip a site we can't read; don't fail the whole list
     const driveRows = Array.isArray((drives.data as any)?.value) ? (drives.data as any).value : [];

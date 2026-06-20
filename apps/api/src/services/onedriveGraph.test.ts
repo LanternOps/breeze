@@ -25,6 +25,11 @@ describe('listSharePointLibraries', () => {
     expect((res as any).data.libraries[0]).toMatchObject({
       siteName: 'Marketing', driveId: 'drive-1', listId: 'list-1', libraryName: 'Documents',
     });
+
+    // Composite site IDs contain literal commas (hostname,scGuid,webGuid); Graph does not accept %2C
+    const drivesPath = (graphFetch as any).mock.calls[1][2] as string;
+    expect(drivesPath).toContain('/sites/host,scid,webid/drives');
+    expect(drivesPath).not.toContain('%2C');
   });
 
   it('propagates a token error', async () => {
