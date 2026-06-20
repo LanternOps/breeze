@@ -111,7 +111,9 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
 
     const quoteForRender = {
       ...quote,
-      sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partner),
+      // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
+      // the From block still renders (issued docs use the frozen column).
+      sellerSnapshot: quote.sellerSnapshot ?? (partner ? buildSellerSnapshot(partner) : null),
     };
 
     // Real image loader: pull bytes from quote_images, constrained to BOTH the

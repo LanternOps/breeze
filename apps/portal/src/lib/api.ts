@@ -311,6 +311,8 @@ export interface InvoiceSummary {
   balance: string;
 }
 
+// Intentional duplicate of SellerSnapshot in apps/api/src/services/sellerSnapshot.ts
+// and apps/web/src/components/billing/invoiceTypes.ts — api/web/portal can't share a package; keep in sync.
 export interface SellerSnapshot {
   name: string | null;
   address: {

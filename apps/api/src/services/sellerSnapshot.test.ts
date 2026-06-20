@@ -39,6 +39,15 @@ describe('sellerAddressLines', () => {
     expect(sellerAddressLines(snap)).toEqual(['1 Main St', 'Austin, TX, 78701', 'US']);
   });
 
+  it('includes line2 when present', () => {
+    const snap = buildSellerSnapshot({
+      ...base, billingAddressLine1: '1 Main St', billingAddressLine2: 'Suite 100',
+      billingAddressCity: 'Austin', billingAddressRegion: 'TX',
+      billingAddressPostalCode: '78701', billingAddressCountry: 'US',
+    });
+    expect(sellerAddressLines(snap)).toEqual(['1 Main St', 'Suite 100', 'Austin, TX, 78701', 'US']);
+  });
+
   it('returns [] for a null snapshot', () => {
     expect(sellerAddressLines(null)).toEqual([]);
   });

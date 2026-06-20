@@ -238,7 +238,7 @@ export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor)
   await db.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
 }
 
-/** Draft-only header edit (notes/site/dueDate). Only provided fields are written;
+/** Draft-only header edit (notes/site/dueDate/termsAndConditions). Only provided fields are written;
  *  siteId can be explicitly set to null to clear it. issue() overwrites dueDate
  *  with issueDate + partner terms, so a draft dueDate is advisory until then. */
 export async function updateInvoice(
@@ -484,7 +484,10 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       issueDate: issueDate.toISOString().slice(0, 10), dueDate: dueDate.toISOString().slice(0, 10),
       taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
-      billToTaxExempt: org?.taxExempt ?? false, terms: partner?.invoiceFooter ?? null,
+      billToTaxExempt: org?.taxExempt ?? false,
+      // `terms` is the small footer line (from partner.invoiceFooter); `termsAndConditions`
+      // is the labeled Terms & Conditions block (from partner.billingTermsAndConditions).
+      terms: partner?.invoiceFooter ?? null,
       sellerSnapshot: buildSellerSnapshot(partner),
       termsAndConditions: inv.termsAndConditions ?? partner?.billingTermsAndConditions ?? null,
       updatedAt: issueDate

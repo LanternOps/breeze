@@ -321,6 +321,8 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
   const [partner] = await db.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   const [branding] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, invoice.orgId)).limit(1);
+  // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
+  // the From block still renders (issued docs use the frozen column).
   if (!invoice.sellerSnapshot && partner) {
     (invoice as { sellerSnapshot: unknown }).sellerSnapshot = buildSellerSnapshot(partner);
   }

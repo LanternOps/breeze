@@ -1,6 +1,8 @@
 // Shared client-side types + helpers for the invoice billing UI.
 // Money fields arrive from the API as numeric(12,2) strings (e.g. '123.40').
 
+// Intentional duplicate of SellerSnapshot in apps/api/src/services/sellerSnapshot.ts
+// and apps/portal/src/lib/api.ts — api/web/portal can't share a package; keep in sync.
 /** Snapshot of the seller's contact info captured at invoice/quote creation time.
  *  Any field may be null if not filled in at the time. */
 export interface SellerSnapshot {
@@ -18,6 +20,8 @@ export interface SellerSnapshot {
   website: string | null;
 }
 
+// Intentional duplicate of sellerAddressLines in apps/api/src/services/sellerSnapshot.ts
+// and sellerLines in apps/portal/src/lib/api.ts — api/web/portal can't share a package; keep in sync.
 /** Convert a SellerSnapshot address into an array of non-empty display lines. */
 export function sellerLines(a: SellerSnapshot['address'] | null | undefined): string[] {
   if (!a) return [];

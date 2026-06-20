@@ -3,8 +3,12 @@
 // read the frozen snapshot. The address sub-object uses the SAME keys as
 // billToAddress so the PDF renderers' existing addressLines() helper works for it.
 
+// Intentional duplicate of SellerSnapshot in apps/web/src/components/billing/invoiceTypes.ts
+// and apps/portal/src/lib/api.ts — api/web/portal can't share a package; keep in sync.
 export interface SellerSnapshot {
   name: string | null;
+  // builder never returns null for address, but consumers may receive null from
+  // legacy jsonb rows — the | null is load-bearing for readers; do not remove it.
   address: {
     line1: string | null; line2: string | null; city: string | null;
     region: string | null; postalCode: string | null; country: string | null;
