@@ -124,7 +124,8 @@ describe('Auth Integration Tests', () => {
       await createUser({
         partnerId: testPartnerId,
         email: 'login@example.com',
-        password: 'MyPassword123!'
+        password: 'MyPassword123!',
+        withMembership: true // security review #2: login requires a membership
       });
 
       const res = await app.request('/auth/login', {
@@ -186,7 +187,8 @@ describe('Auth Integration Tests', () => {
       const user = await createUser({
         partnerId: testPartnerId,
         email: 'lastlogin@example.com',
-        password: 'MyPassword123!'
+        password: 'MyPassword123!',
+        withMembership: true // security review #2: login requires a membership
       });
 
       expect(user.lastLoginAt).toBeNull();

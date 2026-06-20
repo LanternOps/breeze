@@ -43,6 +43,14 @@ export interface CreateUserOptions {
   password?: string;
   status?: 'active' | 'invited' | 'disabled';
   mfaEnabled?: boolean;
+  /**
+   * Also create a tenant membership (organization_users when orgId is set, else
+   * partner_users) plus a minimal role, so the user can actually log in. Token
+   * issuance now requires a membership — a membership-less non-admin is rejected
+   * (security review #2 / resolveCurrentUserTokenContext). Default false to keep
+   * the many RLS/isolation fixtures (which only need the `users` row) unchanged.
+   */
+  withMembership?: boolean;
 }
 
 export async function createUser(options: CreateUserOptions) {
@@ -61,6 +69,16 @@ export async function createUser(options: CreateUserOptions) {
       mfaEnabled: options.mfaEnabled || false
     })
     .returning();
+
+  if (options.withMembership) {
+    if (options.orgId) {
+      const role = await createRole({ scope: 'organization', orgId: options.orgId, partnerId: options.partnerId });
+      await assignUserToOrganization(user.id, options.orgId, role.id);
+    } else {
+      const role = await createRole({ scope: 'partner', partnerId: options.partnerId });
+      await assignUserToPartner(user.id, options.partnerId, role.id, 'all');
+    }
+  }
 
   return user;
 }

@@ -115,6 +115,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     // Seed
     await createUser({
       partnerId: testPartnerId,
+      withMembership: true,
       email: 'family@example.com',
       password: 'FamilyPass123!'
     });
@@ -152,6 +153,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
   it('rejects a refresh whose family was revoked by an earlier reuse', async () => {
     await createUser({
       partnerId: testPartnerId,
+      withMembership: true,
       email: 'famrevoke@example.com',
       password: 'FamilyPass123!'
     });
@@ -190,6 +192,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     const email = 'mfafam@example.com';
     const user = await createUser({
       partnerId: testPartnerId,
+      withMembership: true,
       email,
       password,
       mfaEnabled: true,
@@ -253,6 +256,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
   it('issues a new family on each /login (independent revocation scope)', async () => {
     await createUser({
       partnerId: testPartnerId,
+      withMembership: true,
       email: 'twofam@example.com',
       password: 'FamilyPass123!'
     });
@@ -311,6 +315,7 @@ describe('Refresh-Token Rotation Leeway (#1107)', () => {
   it('does NOT kill the family when a just-rotated jti is replayed within the leeway window', async () => {
     await createUser({
       partnerId: testPartnerId,
+      withMembership: true,
       email: 'leeway@example.com',
       password: 'FamilyPass123!'
     });
