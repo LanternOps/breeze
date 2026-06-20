@@ -57,6 +57,68 @@ describe('parseStreamingMultipart', () => {
     expect(await readFile(tempPath, 'utf8')).toBe(content);
   });
 
+  it('streams a multi-megabyte file whose disk write outlives parse completion', async () => {
+    // Large enough that the disk-write pipeline almost certainly settles AFTER
+    // busboy emits `finish` — exercising the parsingDone + filePending gate that
+    // the small-payload happy path does not. A regression dropping that gate
+    // would resolve with file === null here.
+    const big = Buffer.alloc(5 * 1024 * 1024, 0x61); // 5 MiB of 'a'
+    const expected = createHash('sha256').update(big).digest('hex');
+    const tempPath = freshTempPath();
+    created.push(tempPath);
+
+    const fd = new FormData();
+    fd.append('file', new File([big], 'big.msi'));
+
+    const { contentType, body } = multipartRequest(fd);
+    const result = await parseStreamingMultipart({
+      contentType,
+      body,
+      tempPath,
+      maxFileSize: 50 * 1024 * 1024,
+    });
+
+    expect(result.file).not.toBeNull();
+    expect(result.file!.fileSize).toBe(big.length);
+    expect(result.file!.checksum).toBe(expected);
+    // The full file must be on disk, not a field-buffered fragment.
+    const onDisk = await readFile(tempPath);
+    expect(onDisk.length).toBe(big.length);
+  });
+
+  it('rejects an over-limit text field with 413 instead of silently truncating', async () => {
+    const tempPath = freshTempPath();
+    const fd = new FormData();
+    fd.append('preInstallScript', 'x'.repeat(2048));
+    fd.append('file', new File(['payload'], 'pkg.msi'));
+
+    const { contentType, body } = multipartRequest(fd);
+    await expect(
+      parseStreamingMultipart({
+        contentType,
+        body,
+        tempPath,
+        maxFileSize: 1024 * 1024,
+        maxFieldSize: 1024,
+      }),
+    ).rejects.toMatchObject({ status: 413 });
+  });
+
+  it('surfaces a disk-write failure as a non-MultipartError and cleans up', async () => {
+    // An un-creatable temp path (parent dir does not exist) makes the file
+    // pipeline reject — the one branch that produces a non-MultipartError.
+    const tempPath = join(tmpdir(), `no-such-dir-${randomUUID()}`, 'out.bin');
+    const fd = new FormData();
+    fd.append('file', new File(['payload-bytes'], 'pkg.msi'));
+
+    const { contentType, body } = multipartRequest(fd);
+    await expect(
+      parseStreamingMultipart({ contentType, body, tempPath, maxFileSize: 1024 * 1024 }),
+    ).rejects.toSatisfy((e: unknown) => e instanceof Error && !(e instanceof MultipartError));
+
+    await expect(stat(tempPath)).rejects.toThrow();
+  });
+
   it('returns file: null when no file part is present', async () => {
     const tempPath = freshTempPath();
     const fd = new FormData();

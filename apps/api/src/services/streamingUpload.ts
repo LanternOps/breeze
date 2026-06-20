@@ -78,6 +78,12 @@ export interface ParseStreamingMultipartOptions {
  * On any error the partially-written temp file is removed before throwing, so
  * the caller never has to clean up after a failed parse. On success the caller
  * owns `tempPath` and must unlink it when done.
+ *
+ * Error contract: a {@link MultipartError} carries a client-facing HTTP status
+ * (400/413/415) the caller should surface directly. Any *other* thrown error
+ * (disk write failure, aborted request body, malformed multipart) is an
+ * infrastructure failure with no status — the caller must log it and map it to
+ * a 500.
  */
 export async function parseStreamingMultipart(
   opts: ParseStreamingMultipartOptions,
@@ -98,6 +104,9 @@ export async function parseStreamingMultipart(
   if (!body) {
     throw new MultipartError('Request body is empty', 400);
   }
+  if (maxFileSize <= 0 || maxFieldSize <= 0 || maxFields <= 0) {
+    throw new Error('parseStreamingMultipart: size/count limits must be positive');
+  }
 
   const fields: Record<string, string> = {};
   let file: StreamedFile | null = null;
@@ -115,16 +124,25 @@ export async function parseStreamingMultipart(
         },
       });
 
+      // Drive the web ReadableStream into busboy.
+      const nodeStream = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]);
+
       // A single rejection wins; later events after the first failure are ignored.
-      // `close` (parsing done) and the file's disk-write pipeline settle
+      // `finish` (parsing done) and the file's disk-write pipeline settle
       // independently, so only resolve once *both* have finished — otherwise
-      // `close` could fire before the temp file finished writing.
+      // `finish` could fire before the temp file finished writing.
       let settled = false;
       let parsingDone = false;
       let filePending = false;
       const fail = (err: Error) => {
         if (settled) return;
         settled = true;
+        // Tear down the source + parser so no stream outlives the rejected
+        // promise (otherwise the request body keeps draining into a discarded
+        // busboy, and a later stream 'error' would have no live listener).
+        nodeStream.unpipe(bb);
+        nodeStream.destroy();
+        bb.destroy();
         reject(err);
       };
       const maybeSucceed = () => {
@@ -133,8 +151,16 @@ export async function parseStreamingMultipart(
         resolve();
       };
 
-      bb.on('field', (name, value) => {
+      bb.on('field', (name, value, _fieldnameTruncated, valueTruncated) => {
         if (settled) return;
+        // busboy silently truncates an over-`fieldSize` value rather than
+        // erroring. Surface it as 413 instead of persisting a half-value —
+        // the route reads pre/post-install scripts from these fields, and a
+        // silently-cut script is worse than a rejected upload.
+        if (valueTruncated) {
+          fail(new MultipartError(`Field "${name}" too large`, 413));
+          return;
+        }
         fields[name] = value;
       });
 
@@ -176,7 +202,13 @@ export async function parseStreamingMultipart(
         pipeline(stream, dest)
           .then(() => {
             filePending = false;
-            if (truncated || stream.truncated) {
+            // Oversize detection must not rely solely on busboy's soft `limit`
+            // flag: when the cap is hit busboy stops feeding and `pipeline`
+            // resolves *normally* with a partial file on disk. Independently
+            // treat reaching the byte cap as oversize, so a truncated installer
+            // can never slip through as a "success" with a hash over partial
+            // bytes. (busboy's fileSize limit means it stops AT maxFileSize.)
+            if (truncated || stream.truncated || fileSize >= maxFileSize) {
               fail(
                 new MultipartError(
                   `File too large (max ${Math.floor(maxFileSize / 1024 / 1024)}MB)`,
@@ -212,8 +244,6 @@ export async function parseStreamingMultipart(
         maybeSucceed();
       });
 
-      // Drive the web ReadableStream into busboy.
-      const nodeStream = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]);
       nodeStream.on('error', (err) => fail(err));
       nodeStream.pipe(bb);
     });

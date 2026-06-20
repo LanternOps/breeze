@@ -21,6 +21,7 @@ import {
   MultipartError,
   type StreamedMultipart,
 } from '../services/streamingUpload';
+import { captureException, captureMessage } from '../services/sentry';
 import { unlink, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -734,7 +735,12 @@ softwareRoutes.post(
       if (err instanceof MultipartError) {
         return c.json({ error: err.message }, err.status);
       }
-      throw err;
+      // A non-MultipartError is an infrastructure failure (disk full, aborted
+      // body, malformed multipart) with no client status. Don't let it vanish
+      // into a blank 500 — capture it with request context, then surface a
+      // specific message so an out-of-disk condition is diagnosable.
+      captureException(err, c);
+      return c.json({ error: 'Failed to store uploaded package' }, 500);
     }
 
     const { fields, file } = parsed;
@@ -762,7 +768,17 @@ softwareRoutes.post(
       const postInstallScript = typeof fields.postInstallScript === 'string' ? fields.postInstallScript : null;
       let supportedOs: string[] | null = null;
       if (typeof fields.supportedOs === 'string') {
-        try { supportedOs = JSON.parse(fields.supportedOs); } catch { /* ignore */ }
+        try {
+          supportedOs = JSON.parse(fields.supportedOs);
+        } catch {
+          // Malformed supportedOs silently dropped the OS-targeting field on the
+          // created version. Don't fail the upload (matches prior behavior), but
+          // make the discard visible rather than fully silent.
+          captureMessage('software upload: discarded malformed supportedOs', 'warning', {
+            orgId,
+            catalogId,
+          });
+        }
       }
 
       // Auto-detect MSI silent args
