@@ -1318,6 +1318,29 @@ describe('sso routes', () => {
       expect(verifyDomain).not.toHaveBeenCalled();
     });
 
+    it('DELETE /domains/:id returns 403 when canAccessOrg is false', async () => {
+      setAuthContext({ canAccessOrg: () => false });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DOMAIN_UUID,
+              orgId: ORG_UUID_OTHER,
+              domain: 'example.com',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/sso/domains/${DOMAIN_UUID}`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
     it('DELETE /domains/:id returns {data:{deleted:true}} on success', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
