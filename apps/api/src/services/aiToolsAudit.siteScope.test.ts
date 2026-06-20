@@ -9,6 +9,7 @@ vi.mock('../db', () => ({
 
 import { db } from '../db';
 import { registerAuditTools } from './aiToolsAudit';
+import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
@@ -81,5 +82,92 @@ describe('query_change_log — site narrowing (no deviceId branch)', () => {
     expect(parsed.error).toBeUndefined();
     expect(parsed.showing).toBe(1);
     expect(parsed.total).toBe(1);
+  });
+});
+
+describe('query_audit_log — device-typed row site narrowing', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // The site-narrowing SQL predicate is opaque to the mock, so these tests
+  // assert the handler resolves the allowed device set (the resolver SELECT)
+  // before scanning — proving the narrowing path runs for restricted callers.
+  it('site-restricted caller resolves the allowed device set and applies a scan predicate', async () => {
+    let resolverRan = false;
+    let scanWhere: unknown;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        resolverRan = true;
+        return {
+          from: () => ({
+            where: () =>
+              Promise.resolve([
+                { id: 'd-inscope', siteId: 'site-A' },
+                { id: 'd-forbidden', siteId: 'site-B' },
+              ]),
+          }),
+        };
+      }
+      const p: any = Promise.resolve([
+        { id: 'a1', timestamp: null, actorType: 'user', actorEmail: 'x', action: 'agent.command.script', resourceType: 'device', resourceName: 'in-scope', result: 'ok', details: null },
+      ]);
+      for (const m of ['from', 'innerJoin', 'leftJoin', 'orderBy', 'limit', 'groupBy', 'offset']) p[m] = () => p;
+      p.where = (w: unknown) => {
+        scanWhere = w;
+        return p;
+      };
+      return p;
+    });
+
+    const r = await handlerFor('query_audit_log')({}, makeAuth(['site-A']));
+    const parsed = JSON.parse(r);
+    expect(parsed.error).toBeUndefined();
+    expect(resolverRan).toBe(true);
+    expect(scanWhere).toBeDefined();
+  });
+
+  it('site-restricted caller with explicit out-of-scope device returns denied/empty', async () => {
+    let scanRan = false;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        return {
+          from: () => ({
+            where: () => Promise.resolve([{ id: 'd-inscope', siteId: 'site-A' }]),
+          }),
+        };
+      }
+      scanRan = true;
+      return chain([
+        { id: 'a1', timestamp: null, actorType: 'user', actorEmail: 'x', action: 'a', resourceType: 'device', resourceName: 'forbidden', result: 'ok', details: null },
+      ]);
+    });
+
+    const r = await handlerFor('query_audit_log')(
+      { resourceType: 'device', resourceId: 'd-forbidden' },
+      makeAuth(['site-A']),
+    );
+    const parsed = JSON.parse(r);
+    expect(parsed.entries).toEqual([]);
+    expect(parsed.showing).toBe(0);
+    expect(parsed.scopeNote).toBe(SITE_SCOPE_EMPTY_NOTE);
+    expect(scanRan).toBe(false);
+    expect(JSON.stringify(parsed)).not.toContain('forbidden');
+  });
+
+  it('unrestricted caller queries audit log normally (no regression)', async () => {
+    let resolverRan = false;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        resolverRan = true;
+        return { from: () => ({ where: () => Promise.resolve([]) }) };
+      }
+      return chain([
+        { id: 'a1', timestamp: null, actorType: 'user', actorEmail: 'x', action: 'a', resourceType: 'device', resourceName: 'r', result: 'ok', details: null },
+      ]);
+    });
+    const r = await handlerFor('query_audit_log')({}, makeAuth(undefined));
+    const parsed = JSON.parse(r);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.showing).toBe(1);
+    expect(resolverRan).toBe(false);
   });
 });

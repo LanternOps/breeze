@@ -8,7 +8,7 @@
 
 import { db } from '../db';
 import { devices, auditLogs, deviceChangeLog } from '../db/schema';
-import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
+import { eq, ne, or, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
@@ -68,6 +68,37 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       if (input.resourceType) conditions.push(eq(auditLogs.resourceType, input.resourceType as string));
       if (input.resourceId) conditions.push(eq(auditLogs.resourceId, input.resourceId as string));
       if (input.actorType) conditions.push(eq(auditLogs.actorType, input.actorType as typeof auditLogs.actorType.enumValues[number]));
+
+      // Site axis (app-layer only; RLS does NOT enforce it). audit_logs is
+      // org-keyed and heterogeneous — `resourceId` is a device id only when
+      // `resourceType === 'device'`; other rows reference orgs/users/tickets/etc.
+      // The site axis is device-centric, so narrow ONLY device-typed rows to the
+      // caller's allowed device set, leaving other resource types governed by the
+      // existing org axis. No-op for unrestricted partner/system callers.
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        const allowedDeviceIds = orgId ? await resolveSiteAllowedDeviceIds(orgId, auth) : [];
+        if (allowedDeviceIds !== null) {
+          // An explicit device-row lookup outside the allowed set is denied outright.
+          if (
+            input.resourceType === 'device' &&
+            input.resourceId &&
+            !allowedDeviceIds.includes(input.resourceId as string)
+          ) {
+            return JSON.stringify({ entries: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+          }
+          // Show non-device rows as before; device rows only for in-scope devices.
+          // Empty allowed set ⇒ exclude all device rows.
+          conditions.push(
+            allowedDeviceIds.length > 0
+              ? or(
+                  ne(auditLogs.resourceType, 'device'),
+                  inArray(auditLogs.resourceId, allowedDeviceIds),
+                )!
+              : ne(auditLogs.resourceType, 'device'),
+          );
+        }
+      }
 
       const hoursBack = Math.min(Math.max(1, Number(input.hoursBack) || 24), 168);
       const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
