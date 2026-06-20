@@ -499,4 +499,65 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(fetched.quote.monthlyRecurringTotal).toBe('60.00'); // 2 * 30
     expect(fetched.quote.annualRecurringTotal).toBe('0.00');
   });
+
+  // --- Cross-partner catalog disclosure (T7) ------------------------------
+  // catalog_items is partner-axis RLS. For a partner-scope caller RLS contains
+  // a foreign item, but under SYSTEM scope the partner predicate short-circuits,
+  // so a system-scope request could snapshot ANOTHER partner's catalog item into
+  // a quote line (name/unitPrice/taxable/billingType disclosure + binding a
+  // foreign catalog_item_id FK). addCatalogLine must therefore resolve the item
+  // scoped to the quote's OWN partner — a foreign item must be not-found even
+  // when RLS would otherwise let the read through.
+  runDb('addCatalogLine rejects a catalog item owned by a different partner (system scope, no snapshot)', async () => {
+    const fx = await seedFixture();
+    // A second partner with its own catalog item (the "victim").
+    const partnerB = await withSystemDbAccessContext(() => createPartner());
+    const foreignItem = await seedCatalogItem(partnerB.id, {
+      name: "Partner B's secret SKU",
+      unitPrice: '999.99',
+      billingType: 'recurring',
+      billingFrequency: 'annual',
+      commitmentTermMonths: 36,
+      taxable: false,
+    });
+    // partner-A's draft quote.
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+
+    // Run under SYSTEM scope (the attack vector): the catalog partner predicate
+    // short-circuits, so without an explicit partner filter the foreign item
+    // would resolve and be snapshotted. With the fix it must be not-found.
+    await expect(
+      withSystemDbAccessContext(() =>
+        addCatalogLine(quote.id, foreignItem.id, 1, undefined, fx.actorA)
+      )
+    ).rejects.toMatchObject({ code: 'CATALOG_ITEM_NOT_FOUND', status: 404 });
+
+    // No line was snapshotted, so no foreign data leaked onto the quote.
+    const lines = await withSystemDbAccessContext(() =>
+      db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id))
+    );
+    expect(lines).toHaveLength(0);
+  });
+
+  runDb('addCatalogLine still works for a same-partner item under system scope', async () => {
+    const fx = await seedFixture();
+    const item = await seedCatalogItem(fx.partnerA.id, {
+      name: 'Own SKU',
+      unitPrice: '10.00',
+      billingType: 'one_time',
+      taxable: true,
+    });
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const line = await withSystemDbAccessContext(() =>
+      addCatalogLine(quote.id, item.id, 3, undefined, fx.actorA)
+    );
+    expect(line.catalogItemId).toBe(item.id);
+    expect(line.unitPrice).toBe('10.00');
+    expect(line.description).toBe('Own SKU');
+    expect(line.lineTotal).toBe('30.00'); // 3 * 10.00
+  });
 });

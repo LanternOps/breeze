@@ -240,7 +240,17 @@ export async function addCatalogLine(
   actor: QuoteActor
 ) {
   const q = await loadDraft(quoteId, actor);
-  const [item] = await db.select().from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
+  // Scope the catalog lookup to the quote's OWN partner. catalog_items is
+  // partner-axis RLS, which contains a foreign item for a partner-scope caller —
+  // but under SYSTEM scope the partner predicate short-circuits, so without this
+  // explicit filter a system-scope request could snapshot another partner's
+  // catalog item (name/price/taxable/billingType) into the quote line and bind a
+  // foreign catalog_item_id FK. Mirrors invoiceService → catalogService's
+  // getOwnedItemOr404(id, partnerId): a foreign item resolves to not-found
+  // regardless of read scope.
+  const [item] = await db.select().from(catalogItems)
+    .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
+    .limit(1);
   if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
   // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
   // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
