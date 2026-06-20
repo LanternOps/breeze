@@ -59,6 +59,7 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     hostname: 'devices.hostname',
     osType: 'devices.osType',
+    siteId: 'devices.siteId',
   },
 }));
 
@@ -416,6 +417,203 @@ describe('auditBaselines routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // ── Site-scope guard on the APPROVE path ───────────────────────
+    const SITE_S1 = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const SITE_S2 = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+    /** Mock: load pending approval, then (optionally) load its target devices. */
+    function mockApprovalThenDevices(
+      approval: Record<string, unknown>,
+      targetDevices: Array<Record<string, unknown>> | null,
+    ) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([approval]),
+          }),
+        }),
+      } as any);
+      if (targetDevices !== null) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(targetDevices),
+          }),
+        } as any);
+      }
+    }
+
+    function mockDecisionUpdate(returnRow: Record<string, unknown>) {
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([returnRow]),
+          }),
+        }),
+      } as any);
+    }
+
+    const futureDate = new Date('2099-01-01T00:00:00Z');
+    const pendingApproval = {
+      id: APPROVAL_ID,
+      orgId: ORG_ID,
+      baselineId: BASELINE_ID,
+      requestedBy: 'user-2',
+      status: 'pending',
+      requestPayload: { baselineId: BASELINE_ID, deviceIds: [DEVICE_ID], eligibleDeviceIds: [DEVICE_ID] },
+      expiresAt: futureDate,
+      approvedAt: null,
+      consumedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+
+    it('rejects approval by a site-restricted approver whose scope excludes the target devices', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      // Approver restricted to S2; target device is in S1.
+      setAuth({ user: { id: 'user-1', email: 'x', name: 'X' } });
+      app = makeApp();
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'x', name: 'X' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (id: string) => id === ORG_ID,
+          orgCondition: () => undefined,
+        });
+        c.set('permissions', { allowedSiteIds: [SITE_S2] });
+        return next();
+      });
+
+      mockApprovalThenDevices(pendingApproval, [
+        { id: DEVICE_ID, osType: 'windows', hostname: 'PC-01', siteId: SITE_S1 },
+      ]);
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('site');
+      // No status flip.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows approval by a site-restricted approver whose scope includes the target devices', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'x', name: 'X' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (id: string) => id === ORG_ID,
+          orgCondition: () => undefined,
+        });
+        c.set('permissions', { allowedSiteIds: [SITE_S1] });
+        return next();
+      });
+
+      mockApprovalThenDevices(pendingApproval, [
+        { id: DEVICE_ID, osType: 'windows', hostname: 'PC-01', siteId: SITE_S1 },
+      ]);
+      mockDecisionUpdate({
+        ...pendingApproval,
+        status: 'approved',
+        approvedBy: 'user-1',
+        approvedAt: NOW,
+      });
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.approval.status).toBe('approved');
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows approval by an unrestricted approver (no allowedSiteIds)', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'x', name: 'X' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (id: string) => id === ORG_ID,
+          orgCondition: () => undefined,
+        });
+        // no permissions set → unrestricted
+        return next();
+      });
+
+      mockApprovalThenDevices(pendingApproval, [
+        { id: DEVICE_ID, osType: 'windows', hostname: 'PC-01', siteId: SITE_S1 },
+      ]);
+      mockDecisionUpdate({
+        ...pendingApproval,
+        status: 'approved',
+        approvedBy: 'user-1',
+        approvedAt: NOW,
+      });
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.approval.status).toBe('approved');
+    });
+
+    it('allows a deny decision regardless of approver site scope (no device load)', async () => {
+      vi.mocked(resolveOrgId).mockReturnValue({ orgId: ORG_ID } as any);
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'x', name: 'X' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (id: string) => id === ORG_ID,
+          orgCondition: () => undefined,
+        });
+        c.set('permissions', { allowedSiteIds: [SITE_S2] });
+        return next();
+      });
+
+      // No device load expected on the deny path.
+      mockApprovalThenDevices(pendingApproval, null);
+      mockDecisionUpdate({
+        ...pendingApproval,
+        status: 'rejected',
+        approvedBy: null,
+        approvedAt: null,
+      });
+
+      const res = await app.request(`/baselines/apply-requests/${APPROVAL_ID}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'rejected' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.approval.status).toBe('rejected');
     });
   });
 

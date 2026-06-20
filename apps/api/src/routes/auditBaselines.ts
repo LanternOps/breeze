@@ -741,6 +741,30 @@ auditBaselineRoutes.post(
       return c.json({ error: 'Requester cannot approve their own apply request' }, 400);
     }
 
+    // Separation-of-duties: a site-restricted approver may only approve a
+    // request whose target devices fall entirely within their site scope.
+    // (Denying grants nothing, so the deny path is intentionally not site-gated.)
+    if (body.decision === 'approved') {
+      const payload = (approval.requestPayload ?? {}) as { deviceIds?: unknown };
+      const targetDeviceIds = Array.isArray(payload.deviceIds)
+        ? payload.deviceIds.filter((id): id is string => typeof id === 'string')
+        : [];
+
+      if (targetDeviceIds.length > 0) {
+        const targetDevices = await db
+          .select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(
+            eq(devices.orgId, approval.orgId),
+            inArray(devices.id, targetDeviceIds),
+          ));
+
+        if (inaccessibleDeviceIdsForSites(targetDevices, c.get('permissions') as UserPermissions | undefined).length > 0) {
+          return c.json({ error: 'Access to one or more device sites denied' }, 403);
+        }
+      }
+    }
+
     const [updated] = await db
       .update(auditBaselineApplyApprovals)
       .set({
