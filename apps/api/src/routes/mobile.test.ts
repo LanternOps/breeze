@@ -1045,6 +1045,135 @@ describe('mobile routes', () => {
       const body = await res.json();
       expect(body.commandId).toBe('cmd-1');
     });
+
+    describe('run_script cross-org isolation', () => {
+      const DEVICE_ORG = 'org-b';
+      const SCRIPT_ORG = 'org-a';
+      const SCRIPT_ID = '11111111-1111-1111-1111-111111111111';
+
+      // A multi-org partner caller whose canAccessOrg passes for BOTH the
+      // script's org and the device's org. Without the same-org invariant both
+      // access checks pass and org A's script content lands on org B's device.
+      const useMultiOrgPartnerAuth = () => {
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+            scope: 'partner',
+            orgId: null,
+            partnerId: 'partner-123',
+            accessibleOrgIds: [SCRIPT_ORG, DEVICE_ORG],
+            canAccessOrg: (orgId: string) => orgId === SCRIPT_ORG || orgId === DEVICE_ORG,
+          });
+          return next();
+        });
+      };
+
+      it('rejects running an org A script on an org B device (no insert)', async () => {
+        useMultiOrgPartnerAuth();
+        vi.mocked(db.select)
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              { id: 'device-1', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              {
+                id: SCRIPT_ID,
+                orgId: SCRIPT_ORG,
+                isSystem: false,
+                osTypes: ['linux'],
+                language: 'bash',
+                content: 'echo pwned',
+                timeoutSeconds: 60,
+                runAs: 'root'
+              }
+            ]) as any
+          );
+        vi.mocked(db.insert).mockReturnValue(mockInsertReturning([{ id: 'exec-1' }]) as any);
+
+        const res = await app.request('/mobile/devices/device-1/actions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('allows running a same-org script on its own org device', async () => {
+        useMultiOrgPartnerAuth();
+        vi.mocked(db.select)
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              { id: 'device-1', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              {
+                id: SCRIPT_ID,
+                orgId: DEVICE_ORG,
+                isSystem: false,
+                osTypes: ['linux'],
+                language: 'bash',
+                content: 'echo ok',
+                timeoutSeconds: 60,
+                runAs: 'root'
+              }
+            ]) as any
+          );
+        vi.mocked(db.insert)
+          .mockReturnValueOnce(mockInsertReturning([{ id: 'exec-1' }]) as any)
+          .mockReturnValueOnce(mockInsertReturning([{ id: 'cmd-1' }]) as any);
+
+        const res = await app.request('/mobile/devices/device-1/actions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
+        });
+
+        expect(res.status).toBe(201);
+        const body = await res.json();
+        expect(body.executionId).toBe('exec-1');
+      });
+
+      it('allows running a system (org-less) script on any accessible device', async () => {
+        useMultiOrgPartnerAuth();
+        vi.mocked(db.select)
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              { id: 'device-1', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              {
+                id: SCRIPT_ID,
+                orgId: null,
+                isSystem: true,
+                osTypes: ['linux'],
+                language: 'bash',
+                content: 'echo system',
+                timeoutSeconds: 60,
+                runAs: 'root'
+              }
+            ]) as any
+          );
+        vi.mocked(db.insert)
+          .mockReturnValueOnce(mockInsertReturning([{ id: 'exec-1' }]) as any)
+          .mockReturnValueOnce(mockInsertReturning([{ id: 'cmd-1' }]) as any);
+
+        const res = await app.request('/mobile/devices/device-1/actions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
+        });
+
+        expect(res.status).toBe(201);
+      });
+    });
   });
 
   describe('GET /mobile/summary', () => {

@@ -975,6 +975,14 @@ mobileRoutes.post(
         }
       }
 
+      // Org-equality invariant (mirrors playbooks.ts): a system/org-less script
+      // is universally runnable, but a non-null script org must match the
+      // target device's org. Otherwise a multi-org caller could run one org's
+      // script content on another org's device with both access checks passing.
+      if (script.orgId && script.orgId !== device.orgId) {
+        return c.json({ error: 'Script and device must belong to the same organization' }, 403);
+      }
+
       if (!script.osTypes.includes(device.osType)) {
         return c.json({ error: 'Script is not compatible with device OS' }, 400);
       }

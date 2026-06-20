@@ -104,6 +104,13 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   const siteDeniedDeviceIds: string[] = [];
   for (const device of deviceRecords) {
     if (!ensureOrgAccess(device.orgId, input.auth)) continue;
+    // Org-equality invariant (mirrors playbooks.ts): a system/org-less script
+    // (orgId === null) is universally runnable, but a non-null script org must
+    // match the target device's org. Without this, a multi-org caller can run
+    // one org's script content on another org's devices even though both
+    // canAccessOrg checks pass. Treat a mismatch like an inaccessible device:
+    // exclude it from the executable set rather than failing the whole batch.
+    if (script.orgId !== null && script.orgId !== device.orgId) continue;
     if (!canAccessDeviceSite(device.siteId, input.permissions)) {
       siteDeniedDeviceIds.push(device.id);
       continue;
