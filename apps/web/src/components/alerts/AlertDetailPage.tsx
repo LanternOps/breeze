@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { cn } from '@/lib/utils';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
+import { ActionError, handleActionError, runAction } from '../../lib/runAction';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import {
   severityConfig,
@@ -145,13 +146,18 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     if (!alert || actionInProgress) return;
     try {
       setActionInProgress(true);
-      const response = await fetchWithAuth(`/alerts/${alertId}/acknowledge`, {
-        method: 'POST'
+      await runAction({
+        request: () => fetchWithAuth(`/alerts/${alertId}/acknowledge`, { method: 'POST' }),
+        errorFallback: 'Failed to acknowledge alert',
+        successMessage: 'Alert acknowledged',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-      if (!response.ok) throw new Error('Failed to acknowledge alert');
       await fetchAlert();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to acknowledge alert');
+      handleActionError(err, 'Failed to acknowledge alert');
+      if (!(err instanceof ActionError && err.status === 401)) {
+        setError(err instanceof Error ? err.message : 'Failed to acknowledge alert');
+      }
     } finally {
       setActionInProgress(false);
     }
@@ -161,13 +167,18 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     if (!alert || actionInProgress) return;
     try {
       setActionInProgress(true);
-      const response = await fetchWithAuth(`/alerts/${alertId}/resolve`, {
-        method: 'POST'
+      await runAction({
+        request: () => fetchWithAuth(`/alerts/${alertId}/resolve`, { method: 'POST' }),
+        errorFallback: 'Failed to resolve alert',
+        successMessage: 'Alert resolved',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-      if (!response.ok) throw new Error('Failed to resolve alert');
       await fetchAlert();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve alert');
+      handleActionError(err, 'Failed to resolve alert');
+      if (!(err instanceof ActionError && err.status === 401)) {
+        setError(err instanceof Error ? err.message : 'Failed to resolve alert');
+      }
     } finally {
       setActionInProgress(false);
     }

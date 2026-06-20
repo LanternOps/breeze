@@ -30,6 +30,7 @@ const REPO_ROOT = resolve(WEB_ROOT, '../../..');
 const TARGET_GLOBS = [
   'src/components/alerts/NotificationChannelsPage.tsx',
   'src/components/alerts/AlertsPage.tsx',
+  'src/components/alerts/AlertDetailPage.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/patches/PatchesPage.tsx',
   'src/components/settings/RolesPage.tsx',
@@ -262,7 +263,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(43);
+    expect(absoluteFiles.length).toBe(44);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

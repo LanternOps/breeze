@@ -23,7 +23,6 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/devices/DeviceSettingsModal.tsx',
   'apps/web/src/components/devices/DeviceWarrantyCard.tsx',
   'apps/web/src/components/alerts/AlertCorrelationView.tsx',
-  'apps/web/src/components/alerts/AlertDetailPage.tsx',
   'apps/web/src/components/alerts/AlertRuleEditor.tsx',
   'apps/web/src/components/alerts/AlertRulesPage.tsx',
   'apps/web/src/components/alerts/AlertTemplateEditor.tsx',
