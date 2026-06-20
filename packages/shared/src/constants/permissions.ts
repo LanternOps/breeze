@@ -73,6 +73,10 @@ export const PERMISSION_GRANTS = {
   ORGS_WRITE: { resource: 'organizations', action: 'write' },
   ORGS_DELETE: { resource: 'organizations', action: 'delete' },
 
+  // SSO administration: configure providers + manage verified domains. A
+  // higher-trust capability than organizations:write (security review #2 H-2).
+  SSO_ADMIN: { resource: 'sso', action: 'admin' },
+
   // Sites
   SITES_READ: { resource: 'sites', action: 'read' },
   SITES_WRITE: { resource: 'sites', action: 'write' },
