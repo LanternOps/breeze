@@ -57,7 +57,20 @@ export async function createSession(
     approvalMode?: AiApprovalMode;
   }
 ): Promise<{ id: string; orgId: string; delegantM365ConnectionId: string | null }> {
-  const sanitizedPageContext = options.pageContext ? sanitizePageContext(options.pageContext) : undefined;
+  let sanitizedPageContext: AiPageContext | undefined;
+  if (options.pageContext) {
+    const pageContextFlags: string[] = [];
+    sanitizedPageContext = sanitizePageContext(options.pageContext, pageContextFlags);
+    if (pageContextFlags.length > 0) {
+      // Page context is operator-/UI-supplied data that flows into the system
+      // prompt. An injection attempt there is neutralized above, but mirror the
+      // message-sanitization path (aiAgentSdk.ts) and record that it happened.
+      console.warn(
+        '[AI] Page-context sanitization flags:',
+        JSON.stringify({ flags: pageContextFlags, userId: auth.user.id }),
+      );
+    }
+  }
 
   // A device-scoped task ("Fix with AI") anchors the session to the device's
   // org. Resolve the device up front so its org can drive org selection for
@@ -337,7 +350,22 @@ export async function handleApproval(
     .limit(1);
 
   if (!execution || execution.status !== 'pending') return false;
-  if (expectedSessionId && execution.sessionId !== expectedSessionId) return false;
+  if (expectedSessionId && execution.sessionId !== expectedSessionId) {
+    // SECURITY: a caller approved an execution via a session route that does not
+    // own it (cross-session approval-forgery attempt). We keep returning `false`
+    // so the route response stays a generic 404 (no enumeration), but the
+    // mismatch is security-relevant and must not be silent — log it server-side.
+    console.warn(
+      '[AI] Cross-session approval mismatch rejected:',
+      JSON.stringify({
+        executionId,
+        executionSessionId: execution.sessionId,
+        expectedSessionId,
+        actorId: auth.user.id,
+      }),
+    );
+    return false;
+  }
 
   // Verify the session belongs to the user's org
   const session = await getSession(execution.sessionId, auth);

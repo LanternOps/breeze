@@ -82,64 +82,92 @@ export function sanitizeUserMessage(content: string): SanitizeResult {
 /**
  * Sanitize page context before including in system prompt.
  * Truncates fields and strips injection patterns from string values.
+ *
+ * Return shape stays `AiPageContext` for backward compatibility. Callers that
+ * want to observe whether anything was neutralized (so an injection attempt via
+ * page context is recorded rather than silently dropped — mirroring
+ * `sanitizeUserMessage`'s flags) should pass a `flags` collector array; any
+ * detected flags are appended to it in place.
  */
-export function sanitizePageContext(ctx: AiPageContext): AiPageContext {
+export function sanitizePageContext(ctx: AiPageContext, flags?: string[]): AiPageContext {
   const clone = structuredClone(ctx);
+  const sink = flags ?? [];
 
   switch (clone.type) {
     case 'device':
-      clone.hostname = sanitizeField(clone.hostname, 255);
-      if (clone.os) clone.os = sanitizeField(clone.os, 100);
-      if (clone.status) clone.status = sanitizeField(clone.status, 50);
-      if (clone.ip) clone.ip = sanitizeField(clone.ip, 45);
+      clone.hostname = sanitizeField(clone.hostname, 255, sink);
+      if (clone.os) clone.os = sanitizeField(clone.os, 100, sink);
+      if (clone.status) clone.status = sanitizeField(clone.status, 50, sink);
+      if (clone.ip) clone.ip = sanitizeField(clone.ip, 45, sink);
       break;
 
     case 'alert':
-      clone.title = sanitizeField(clone.title, 500);
-      if (clone.severity) clone.severity = sanitizeField(clone.severity, 50);
-      if (clone.deviceHostname) clone.deviceHostname = sanitizeField(clone.deviceHostname, 255);
+      clone.title = sanitizeField(clone.title, 500, sink);
+      if (clone.severity) clone.severity = sanitizeField(clone.severity, 50, sink);
+      if (clone.deviceHostname) clone.deviceHostname = sanitizeField(clone.deviceHostname, 255, sink);
       break;
 
     case 'dashboard':
-      if (clone.orgName) clone.orgName = sanitizeField(clone.orgName, 255);
+      if (clone.orgName) clone.orgName = sanitizeField(clone.orgName, 255, sink);
       break;
 
     case 'custom':
-      clone.label = sanitizeField(clone.label, 200);
-      clone.data = sanitizeRecord(clone.data);
+      clone.label = sanitizeField(clone.label, 200, sink);
+      clone.data = sanitizeRecord(clone.data, sink);
       break;
   }
 
   return clone;
 }
 
-function sanitizeField(value: string, maxLength: number): string {
+function addFlag(flags: string[], flag: string): void {
+  if (!flags.includes(flag)) flags.push(flag);
+}
+
+function sanitizeField(value: string, maxLength: number, flags: string[] = []): string {
   let sanitized = value.slice(0, maxLength);
+  const beforeUnicode = sanitized;
   sanitized = sanitized.replace(DANGEROUS_UNICODE, '');
-  for (const { pattern } of INJECTION_PATTERNS) {
-    sanitized = sanitized.replace(pattern, '[filtered]');
+  if (sanitized !== beforeUnicode) addFlag(flags, 'dangerous_unicode');
+  for (const { pattern, flag } of INJECTION_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(sanitized)) {
+      addFlag(flags, flag);
+      pattern.lastIndex = 0;
+      sanitized = sanitized.replace(pattern, '[filtered]');
+    }
   }
   return sanitized;
 }
 
-function sanitizeRecord(data: Record<string, unknown>): Record<string, unknown> {
+function sanitizeRecord(data: Record<string, unknown>, flags: string[] = []): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
-    const safeKey = sanitizeField(key, 200);
-    result[safeKey] = sanitizeContextValue(value);
+    let safeKey = sanitizeField(key, 200, flags);
+    // Distinct injection-shaped keys can collapse to the same sanitized string
+    // (e.g. both become "[filtered]"), which would silently overwrite the first
+    // value. Disambiguate with a numeric suffix so no value is dropped, and flag
+    // that a collision occurred.
+    if (safeKey in result) {
+      addFlag(flags, 'key_collision');
+      let suffix = 2;
+      while (`${safeKey}_${suffix}` in result) suffix++;
+      safeKey = `${safeKey}_${suffix}`;
+    }
+    result[safeKey] = sanitizeContextValue(value, flags);
   }
   return result;
 }
 
-function sanitizeContextValue(value: unknown): unknown {
+function sanitizeContextValue(value: unknown, flags: string[] = []): unknown {
   if (typeof value === 'string') {
-    return sanitizeField(value, 1000);
+    return sanitizeField(value, 1000, flags);
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeContextValue(entry));
+    return value.map((entry) => sanitizeContextValue(entry, flags));
   }
   if (typeof value === 'object' && value !== null) {
-    return sanitizeRecord(value as Record<string, unknown>);
+    return sanitizeRecord(value as Record<string, unknown>, flags);
   }
   return value;
 }
