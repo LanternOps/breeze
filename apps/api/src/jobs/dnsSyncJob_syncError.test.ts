@@ -42,7 +42,9 @@ const mockDb = {
 
 vi.mock('../db', () => ({
   db: mockDb,
-  withSystemDbAccessContext: undefined,
+  // Passthroughs — the processors now self-scope their DB contexts (#1697); the
+  // chainable db mock above is exercised directly, contexts are transparent.
+  withSystemDbAccessContext: <T>(fn: () => T): T => fn(),
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
 }));
 

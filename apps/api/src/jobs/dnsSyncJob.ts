@@ -410,14 +410,19 @@ async function processSyncAll(): Promise<{ queued: number }> {
   const queue = getDnsSyncQueue();
   const now = Date.now();
 
-  const integrations = await db
-    .select({
-      id: dnsFilterIntegrations.id,
-      lastSync: dnsFilterIntegrations.lastSync,
-      config: dnsFilterIntegrations.config
-    })
-    .from(dnsFilterIntegrations)
-    .where(eq(dnsFilterIntegrations.isActive, true));
+  // Read inside a short DB context — dns_filter_integrations is tenant-scoped,
+  // so a contextless read under breeze_app RLS silently returns 0 rows (#1375).
+  // The enqueue below then runs with no transaction held (#1105/#1697).
+  const integrations = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: dnsFilterIntegrations.id,
+        lastSync: dnsFilterIntegrations.lastSync,
+        config: dnsFilterIntegrations.config
+      })
+      .from(dnsFilterIntegrations)
+      .where(eq(dnsFilterIntegrations.isActive, true))
+  );
 
   const dueIntegrations = integrations.filter((integration) => {
     const config = parseIntegrationConfig(integration.config);
@@ -444,6 +449,177 @@ async function processSyncAll(): Promise<{ queued: number }> {
   return { queued: dueIntegrations.length };
 }
 
+// Phase 3 of a DNS event sync: turn the fetched provider events into security
+// event rows + aggregation deltas, prune per retention, and mark the
+// integration synced — all inside a single DB context. Extracted so the
+// provider fetch in processSyncIntegration runs OUTSIDE any held transaction
+// (#1697); the caller wraps this in runWithSystemDbAccess. Returns the number
+// of newly-inserted security events.
+async function persistDnsEventSync(params: {
+  orgId: string;
+  integrationId: string;
+  config: DnsIntegrationConfig;
+  events: DnsEvent[];
+  until: Date;
+}): Promise<number> {
+  const { orgId, integrationId, config, events, until } = params;
+
+  const categoriesFilter = new Set(
+    (config.categories ?? [])
+      .map((item) => normalizeThreatCategory(item))
+      .filter((item): item is DnsThreatCategory => item !== null)
+  );
+  const devicesByIp = await mapDevicesByIp(orgId);
+
+  const values = events.flatMap((event) => {
+    const domain = normalizeDomain(event.domain);
+    if (!domain) return [];
+
+    const action = normalizeAction(event.action);
+    const category = normalizeThreatCategory(event.category);
+
+    if (categoriesFilter.size > 0) {
+      if (!category || !categoriesFilter.has(category)) {
+        return [];
+      }
+    }
+
+    const sourceIp = normalizeSourceIp(event.sourceIp);
+    const deviceId = sourceIp ? (devicesByIp.get(sourceIp) ?? null) : null;
+
+    return [{
+      orgId,
+      integrationId,
+      deviceId,
+      timestamp: event.timestamp,
+      domain,
+      queryType: normalizeQueryType(event.queryType),
+      action,
+      category,
+      threatType: normalizeThreatType(event.threatType),
+      sourceIp,
+      sourceHostname: normalizeSourceHost(event.sourceHostname),
+      providerEventId: normalizeSourceHost(event.providerEventId) ?? createFallbackProviderEventId(integrationId, event),
+      metadata: event.metadata ?? null
+    }];
+  });
+
+  let insertedCount = 0;
+  const aggregationMap = new Map<string, EventAggregationDelta>();
+
+  for (const batch of chunk(values, 500)) {
+    const inserted = await db
+      .insert(dnsSecurityEvents)
+      .values(batch)
+      .onConflictDoNothing({
+        target: [dnsSecurityEvents.integrationId, dnsSecurityEvents.providerEventId]
+      })
+      .returning({
+        orgId: dnsSecurityEvents.orgId,
+        integrationId: dnsSecurityEvents.integrationId,
+        deviceId: dnsSecurityEvents.deviceId,
+        timestamp: dnsSecurityEvents.timestamp,
+        domain: dnsSecurityEvents.domain,
+        category: dnsSecurityEvents.category,
+        action: dnsSecurityEvents.action
+      });
+
+    insertedCount += inserted.length;
+
+    for (const row of inserted) {
+      const day = toDateKey(row.timestamp);
+      const category = row.category as DnsThreatCategory | null;
+      const key = [
+        row.orgId,
+        day,
+        row.integrationId ?? '',
+        row.deviceId ?? '',
+        row.domain ?? '',
+        category ?? ''
+      ].join('|');
+
+      const current = aggregationMap.get(key) ?? {
+        orgId: row.orgId,
+        date: day,
+        integrationId: row.integrationId,
+        deviceId: row.deviceId,
+        domain: row.domain,
+        category,
+        totalQueries: 0,
+        blockedQueries: 0,
+        allowedQueries: 0
+      };
+
+      current.totalQueries += 1;
+      if (row.action === 'blocked') current.blockedQueries += 1;
+      if (row.action === 'allowed') current.allowedQueries += 1;
+      aggregationMap.set(key, current);
+
+      // #829 — emit dns.threat.blocked so the existing event-bus
+      // subscribers (webhookDelivery, automationWorker, alert rules) can
+      // consume the signal. Only fire for actually-blocked threat events
+      // (action=blocked AND category present) so an "allowed" DNS query
+      // doesn't pollute the bus. Best-effort: failure to publish here
+      // must not abort sync — the event-bus internals already swallow
+      // local-handler errors with structured logging (#820), but we
+      // still wrap the call to suppress a hypothetical xadd reject.
+      if (row.action === 'blocked' && category) {
+        publishEvent(
+          EVENT_TYPES.DNS_THREAT_BLOCKED,
+          row.orgId,
+          {
+            deviceId: row.deviceId,
+            domain: row.domain,
+            category,
+            integrationId: row.integrationId,
+            timestamp: row.timestamp.toISOString(),
+          },
+          'dns-sync-job',
+          { priority: 'high' }
+        ).catch((err) => {
+          console.error(
+            '[DnsSyncJob] dns.threat.blocked publish failed',
+            JSON.stringify({
+              orgId: row.orgId,
+              domain: row.domain,
+              category,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        });
+      }
+    }
+  }
+
+  await persistAggregationDeltas(Array.from(aggregationMap.values()));
+
+  const retentionDays = Number(config.retentionDays);
+  if (Number.isFinite(retentionDays) && retentionDays > 0) {
+    const cutoff = new Date(Date.now() - Math.round(retentionDays) * 24 * 60 * 60 * 1000);
+    await db
+      .delete(dnsSecurityEvents)
+      .where(
+        and(
+          eq(dnsSecurityEvents.integrationId, integrationId),
+          lte(dnsSecurityEvents.timestamp, cutoff)
+        )
+      );
+  }
+
+  await db
+    .update(dnsFilterIntegrations)
+    .set({
+      lastSync: until,
+      lastSyncStatus: 'success',
+      lastSyncError: null,
+      totalEventsProcessed: sql`${dnsFilterIntegrations.totalEventsProcessed} + ${insertedCount}`,
+      updatedAt: new Date()
+    })
+    .where(eq(dnsFilterIntegrations.id, integrationId));
+
+  return insertedCount;
+}
+
 // Exported for focused catch-block coverage (#1035 item 2): a unit test mocks
 // the provider to throw a DnsProviderHttpError carrying a distinctive upstream
 // body marker and asserts the SSRF read-oracle invariant — the tenant-visible
@@ -454,11 +630,15 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
   fetched: number;
   inserted: number;
 }> {
-  const [integration] = await db
-    .select()
-    .from(dnsFilterIntegrations)
-    .where(eq(dnsFilterIntegrations.id, data.integrationId))
-    .limit(1);
+  // Phase 1 — read the integration row in its own short DB context, so the
+  // provider fetch (Phase 2) holds no open transaction (#1697).
+  const [integration] = await runWithSystemDbAccess(() =>
+    db
+      .select()
+      .from(dnsFilterIntegrations)
+      .where(eq(dnsFilterIntegrations.id, data.integrationId))
+      .limit(1)
+  );
 
   if (!integration || !integration.isActive) {
     return { integrationId: data.integrationId, fetched: 0, inserted: 0 };
@@ -479,164 +659,26 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
       : new Date(Date.now() - 24 * 60 * 60 * 1000);
     const until = new Date();
 
-    const events = await provider.syncEvents(since, until);
-    const categoriesFilter = new Set(
-      (config.categories ?? [])
-        .map((item) => normalizeThreatCategory(item))
-        .filter((item): item is DnsThreatCategory => item !== null)
-    );
-    const devicesByIp = await mapDevicesByIp(integration.orgId);
+    // Phase 2 — fetch from the DNS provider with NO DB context held
+    // (#1105/#1697). The ~20s-timeout HTTP must not pin a pooled connection.
+    const events = await dbModule.runOutsideDbContext(() => provider.syncEvents(since, until));
 
-    const values = events.flatMap((event) => {
-      const domain = normalizeDomain(event.domain);
-      if (!domain) return [];
-
-      const action = normalizeAction(event.action);
-      const category = normalizeThreatCategory(event.category);
-
-      if (categoriesFilter.size > 0) {
-        if (!category || !categoriesFilter.has(category)) {
-          return [];
-        }
-      }
-
-      const sourceIp = normalizeSourceIp(event.sourceIp);
-      const deviceId = sourceIp ? (devicesByIp.get(sourceIp) ?? null) : null;
-
-      return [{
+    // Phase 3 — process + persist all events in ONE context (security events,
+    // aggregations, retention prune and success status commit together).
+    const inserted = await runWithSystemDbAccess(() =>
+      persistDnsEventSync({
         orgId: integration.orgId,
         integrationId: integration.id,
-        deviceId,
-        timestamp: event.timestamp,
-        domain,
-        queryType: normalizeQueryType(event.queryType),
-        action,
-        category,
-        threatType: normalizeThreatType(event.threatType),
-        sourceIp,
-        sourceHostname: normalizeSourceHost(event.sourceHostname),
-        providerEventId: normalizeSourceHost(event.providerEventId) ?? createFallbackProviderEventId(integration.id, event),
-        metadata: event.metadata ?? null
-      }];
-    });
-
-    let insertedCount = 0;
-    const aggregationMap = new Map<string, EventAggregationDelta>();
-
-    for (const batch of chunk(values, 500)) {
-      const inserted = await db
-        .insert(dnsSecurityEvents)
-        .values(batch)
-        .onConflictDoNothing({
-          target: [dnsSecurityEvents.integrationId, dnsSecurityEvents.providerEventId]
-        })
-        .returning({
-          orgId: dnsSecurityEvents.orgId,
-          integrationId: dnsSecurityEvents.integrationId,
-          deviceId: dnsSecurityEvents.deviceId,
-          timestamp: dnsSecurityEvents.timestamp,
-          domain: dnsSecurityEvents.domain,
-          category: dnsSecurityEvents.category,
-          action: dnsSecurityEvents.action
-        });
-
-      insertedCount += inserted.length;
-
-      for (const row of inserted) {
-        const day = toDateKey(row.timestamp);
-        const category = row.category as DnsThreatCategory | null;
-        const key = [
-          row.orgId,
-          day,
-          row.integrationId ?? '',
-          row.deviceId ?? '',
-          row.domain ?? '',
-          category ?? ''
-        ].join('|');
-
-        const current = aggregationMap.get(key) ?? {
-          orgId: row.orgId,
-          date: day,
-          integrationId: row.integrationId,
-          deviceId: row.deviceId,
-          domain: row.domain,
-          category,
-          totalQueries: 0,
-          blockedQueries: 0,
-          allowedQueries: 0
-        };
-
-        current.totalQueries += 1;
-        if (row.action === 'blocked') current.blockedQueries += 1;
-        if (row.action === 'allowed') current.allowedQueries += 1;
-        aggregationMap.set(key, current);
-
-        // #829 — emit dns.threat.blocked so the existing event-bus
-        // subscribers (webhookDelivery, automationWorker, alert rules) can
-        // consume the signal. Only fire for actually-blocked threat events
-        // (action=blocked AND category present) so an "allowed" DNS query
-        // doesn't pollute the bus. Best-effort: failure to publish here
-        // must not abort sync — the event-bus internals already swallow
-        // local-handler errors with structured logging (#820), but we
-        // still wrap the call to suppress a hypothetical xadd reject.
-        if (row.action === 'blocked' && category) {
-          publishEvent(
-            EVENT_TYPES.DNS_THREAT_BLOCKED,
-            row.orgId,
-            {
-              deviceId: row.deviceId,
-              domain: row.domain,
-              category,
-              integrationId: row.integrationId,
-              timestamp: row.timestamp.toISOString(),
-            },
-            'dns-sync-job',
-            { priority: 'high' }
-          ).catch((err) => {
-            console.error(
-              '[DnsSyncJob] dns.threat.blocked publish failed',
-              JSON.stringify({
-                orgId: row.orgId,
-                domain: row.domain,
-                category,
-                error: err instanceof Error ? err.message : String(err),
-              }),
-            );
-          });
-        }
-      }
-    }
-
-    await persistAggregationDeltas(Array.from(aggregationMap.values()));
-
-    const retentionDays = Number(config.retentionDays);
-    if (Number.isFinite(retentionDays) && retentionDays > 0) {
-      const cutoff = new Date(Date.now() - Math.round(retentionDays) * 24 * 60 * 60 * 1000);
-      await db
-        .delete(dnsSecurityEvents)
-        .where(
-          and(
-            eq(dnsSecurityEvents.integrationId, integration.id),
-            lte(dnsSecurityEvents.timestamp, cutoff)
-          )
-        );
-    }
-
-    await db
-      .update(dnsFilterIntegrations)
-      .set({
-        lastSync: until,
-        lastSyncStatus: 'success',
-        lastSyncError: null,
-        totalEventsProcessed: sql`${dnsFilterIntegrations.totalEventsProcessed} + ${insertedCount}`,
-        updatedAt: new Date()
+        config,
+        events,
+        until,
       })
-      .where(eq(dnsFilterIntegrations.id, integration.id));
+    );
 
     return {
       integrationId: integration.id,
       fetched: events.length,
-      inserted: insertedCount
+      inserted
     };
   } catch (error) {
     // Full detail (including the upstream response body, redacted) goes to the
@@ -646,14 +688,19 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
     // Pi-hole puts the API key in the URL query string (?auth=<key>) and an
     // upstream body could echo arbitrary public-host content (SSRF read
     // oracle) — neither may land in dnsFilterIntegrations.lastSyncError.
-    await db
-      .update(dnsFilterIntegrations)
-      .set({
-        lastSyncStatus: 'error',
-        lastSyncError: tenantVisibleSyncError(error),
-        updatedAt: new Date()
-      })
-      .where(eq(dnsFilterIntegrations.id, integration.id));
+    // Record on a FRESH transaction so it survives Phase 3's rollback.
+    await dbModule.runOutsideDbContext(() =>
+      runWithSystemDbAccess(() =>
+        db
+          .update(dnsFilterIntegrations)
+          .set({
+            lastSyncStatus: 'error',
+            lastSyncError: tenantVisibleSyncError(error),
+            updatedAt: new Date()
+          })
+          .where(eq(dnsFilterIntegrations.id, integration.id))
+      )
+    );
     throw error;
   }
 }
@@ -666,15 +713,19 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
   added: number;
   removed: number;
 }> {
-  const [row] = await db
-    .select({
-      policy: dnsPolicies,
-      integration: dnsFilterIntegrations
-    })
-    .from(dnsPolicies)
-    .innerJoin(dnsFilterIntegrations, eq(dnsPolicies.integrationId, dnsFilterIntegrations.id))
-    .where(eq(dnsPolicies.id, data.policyId))
-    .limit(1);
+  // Phase 1 — read the policy + its integration in a short DB context, so the
+  // provider mutations (Phase 2) hold no open transaction (#1697).
+  const [row] = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        policy: dnsPolicies,
+        integration: dnsFilterIntegrations
+      })
+      .from(dnsPolicies)
+      .innerJoin(dnsFilterIntegrations, eq(dnsPolicies.integrationId, dnsFilterIntegrations.id))
+      .where(eq(dnsPolicies.id, data.policyId))
+      .limit(1)
+  );
 
   if (!row) {
     return { policyId: data.policyId, added: 0, removed: 0 };
@@ -697,25 +748,33 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
       ? normalizeDomainList(data.operations.remove)
       : [];
 
-    // Mutations MUST run sequentially — see runSequentialDomainMutations for
-    // why concurrency here causes silent rule clobbering (issue #827).
-    if (row.policy.type === 'blocklist') {
-      await runSequentialDomainMutations(addDomains, (domain) => provider.addBlocklistDomain(domain));
-      await runSequentialDomainMutations(removeDomains, (domain) => provider.removeBlocklistDomain(domain));
-    } else {
-      await runSequentialDomainMutations(addDomains, (domain) => provider.addAllowlistDomain(domain));
-      await runSequentialDomainMutations(removeDomains, (domain) => provider.removeAllowlistDomain(domain));
-    }
+    // Phase 2 — push domain mutations to the provider with NO DB context held
+    // (#1105/#1697): this is a sequential loop of ~20s-timeout HTTP calls and
+    // must not pin a pooled connection across the whole run. Mutations MUST run
+    // sequentially — see runSequentialDomainMutations for why concurrency here
+    // causes silent rule clobbering (issue #827).
+    await dbModule.runOutsideDbContext(async () => {
+      if (row.policy.type === 'blocklist') {
+        await runSequentialDomainMutations(addDomains, (domain) => provider.addBlocklistDomain(domain));
+        await runSequentialDomainMutations(removeDomains, (domain) => provider.removeBlocklistDomain(domain));
+      } else {
+        await runSequentialDomainMutations(addDomains, (domain) => provider.addAllowlistDomain(domain));
+        await runSequentialDomainMutations(removeDomains, (domain) => provider.removeAllowlistDomain(domain));
+      }
+    });
 
-    await db
-      .update(dnsPolicies)
-      .set({
-        syncStatus: 'synced',
-        lastSynced: new Date(),
-        syncError: null,
-        updatedAt: new Date()
-      })
-      .where(eq(dnsPolicies.id, row.policy.id));
+    // Phase 3 — mark the policy synced in a short context.
+    await runWithSystemDbAccess(() =>
+      db
+        .update(dnsPolicies)
+        .set({
+          syncStatus: 'synced',
+          lastSynced: new Date(),
+          syncError: null,
+          updatedAt: new Date()
+        })
+        .where(eq(dnsPolicies.id, row.policy.id))
+    );
 
     return {
       policyId: row.policy.id,
@@ -725,15 +784,20 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
   } catch (error) {
     // Full detail (including the upstream response body, redacted) goes to the
     // SERVER-SIDE log only; the tenant-visible column gets a body-free message.
+    // Record on a FRESH transaction so it survives any Phase 3 rollback.
     logSyncFailureServerSide({ policyId: row.policy.id, orgId: row.integration.orgId }, error);
-    await db
-      .update(dnsPolicies)
-      .set({
-        syncStatus: 'error',
-        syncError: tenantVisibleSyncError(error),
-        updatedAt: new Date()
-      })
-      .where(eq(dnsPolicies.id, row.policy.id));
+    await dbModule.runOutsideDbContext(() =>
+      runWithSystemDbAccess(() =>
+        db
+          .update(dnsPolicies)
+          .set({
+            syncStatus: 'error',
+            syncError: tenantVisibleSyncError(error),
+            updatedAt: new Date()
+          })
+          .where(eq(dnsPolicies.id, row.policy.id))
+      )
+    );
     throw error;
   }
 }
@@ -742,18 +806,20 @@ function createDnsSyncWorker(): Worker<DnsSyncJobData> {
   return new Worker<DnsSyncJobData>(
     DNS_SYNC_QUEUE,
     async (job: Job<DnsSyncJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
-          case 'sync-all':
-            return processSyncAll();
-          case 'sync-integration':
-            return processSyncIntegration(job.data);
-          case 'sync-policy':
-            return processPolicySync(job.data);
-          default:
-            throw new Error(`Unknown DNS sync job type: ${(job.data as { type: string }).type}`);
-        }
-      });
+      // No blanket withSystemDbAccessContext wrap — each path self-scopes its DB
+      // contexts so the external DNS provider HTTP (event fetch / domain
+      // mutations) runs with no pooled connection held in an open transaction
+      // (#1105/#1697).
+      switch (job.data.type) {
+        case 'sync-all':
+          return processSyncAll();
+        case 'sync-integration':
+          return processSyncIntegration(job.data);
+        case 'sync-policy':
+          return processPolicySync(job.data);
+        default:
+          throw new Error(`Unknown DNS sync job type: ${(job.data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
