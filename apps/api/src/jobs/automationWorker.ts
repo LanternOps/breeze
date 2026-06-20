@@ -30,6 +30,8 @@ import {
 } from '../services/featureConfigResolver';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import { automationQueueJobDataSchema, type AutomationQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
@@ -110,13 +112,7 @@ interface ExecuteConfigPolicyRunJobData {
   triggeredBy: string;
 }
 
-type AutomationJobData =
-  | ScanSchedulesJobData
-  | TriggerScheduleJobData
-  | TriggerEventJobData
-  | ExecuteRunJobData
-  | TriggerConfigPolicyScheduleJobData
-  | ExecuteConfigPolicyRunJobData;
+type AutomationJobData = AutomationQueueJobData;
 
 let automationQueue: Queue<AutomationJobData> | null = null;
 let automationWorker: Worker<AutomationJobData> | null = null;
@@ -711,21 +707,26 @@ function createAutomationWorker(): Worker<AutomationJobData> {
     AUTOMATION_QUEUE,
     async (job: Job<AutomationJobData>) => {
       return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
+        const data = parseQueueJobData(AUTOMATION_QUEUE, job, automationQueueJobDataSchema);
+        switch (data.type) {
           case 'scan-schedules':
-            return processScanSchedules(job.data.scanAt);
+            assertQueueJobName(AUTOMATION_QUEUE, job, 'scan-schedules');
+            return processScanSchedules(data.scanAt);
           case 'trigger-schedule':
-            return processTriggerSchedule(job.data);
+            assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-schedule');
+            return processTriggerSchedule(data);
           case 'trigger-event':
-            return processTriggerEvent(job.data);
+            assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-event');
+            return processTriggerEvent(data);
           case 'execute-run':
-            return processExecuteRun(job.data);
+            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-run');
+            return processExecuteRun(data);
           case 'trigger-config-policy-schedule':
-            return processTriggerConfigPolicySchedule(job.data);
+            assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-config-policy-schedule');
+            return processTriggerConfigPolicySchedule(data);
           case 'execute-config-policy-run':
-            return processExecuteConfigPolicyRun(job.data);
-          default:
-            throw new Error(`Unknown automation job type: ${(job.data as { type: string }).type}`);
+            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
+            return processExecuteConfigPolicyRun(data);
         }
       });
     },

@@ -144,6 +144,74 @@ export const monitorQueueJobDataSchema = z.discriminatedUnion('type', [
   }).strict(),
 ]);
 
+const automationAssignmentTargetSchema = z.object({
+  level: z.string().min(1),
+  targetId: z.string().min(1),
+}).strict();
+
+export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('scan-schedules'),
+    scanAt: z.string().min(1),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('trigger-schedule'),
+    automationId: z.string().min(1),
+    slotKey: z.string().min(1),
+    scanAt: z.string().min(1),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('trigger-event'),
+    automationId: z.string().min(1),
+    eventType: z.string().min(1),
+    eventId: z.string().min(1).optional(),
+    eventPayload: z.record(z.string(), z.unknown()).optional(),
+    eventTimestamp: z.string().min(1),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('execute-run'),
+    runId: z.string().min(1),
+    targetDeviceIds: z.array(z.string().min(1)).optional(),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('trigger-config-policy-schedule'),
+    configPolicyAutomationId: z.string().min(1),
+    configPolicyAutomationName: z.string().min(1),
+    assignmentTargets: z.array(automationAssignmentTargetSchema).optional(),
+    assignmentLevel: z.string().min(1).optional(),
+    assignmentTargetId: z.string().min(1).optional(),
+    policyId: z.string().min(1),
+    policyName: z.string().min(1),
+    slotKey: z.string().min(1),
+    scanAt: z.string().min(1),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('execute-config-policy-run'),
+    configPolicyAutomationId: z.string().min(1),
+    targetDeviceIds: z.array(z.string().min(1)),
+    triggeredBy: z.string().min(1),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+]);
+
+export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('dispatch-scan'),
+    scanId: z.string().min(1),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('schedule-policies'),
+    scanAt: z.string().min(1),
+    meta: queueActorMetaSchema.optional(),
+  }).strict(),
+]);
+
 export const drExecutionQueueJobDataSchema = z.object({
   type: z.literal('reconcile-execution'),
   executionId: z.string().min(1),
@@ -165,6 +233,8 @@ export const recoveryBootMediaQueueJobDataSchema = z.object({
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
 export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
+export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
+export type SensitiveDataQueueJobData = z.infer<typeof sensitiveDataQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
 export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;

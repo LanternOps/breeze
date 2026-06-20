@@ -8,6 +8,8 @@ import { isCronDue } from '../services/automationRuntime';
 import { attachWorkerObservability } from './workerObservability';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import { sensitiveDataQueueJobDataSchema, type SensitiveDataQueueJobData } from './queueSchemas';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -42,7 +44,7 @@ type SchedulePoliciesJobData = {
   scanAt: string;
 };
 
-type SensitiveDataJobData = DispatchScanJobData | SchedulePoliciesJobData;
+type SensitiveDataJobData = SensitiveDataQueueJobData;
 
 let sensitiveDataQueue: Queue<SensitiveDataJobData> | null = null;
 let sensitiveDataWorker: Worker<SensitiveDataJobData> | null = null;
@@ -481,10 +483,13 @@ export function createSensitiveDataWorker(): Worker<SensitiveDataJobData> {
     SENSITIVE_DATA_QUEUE,
     async (job: Job<SensitiveDataJobData>) => {
       return runWithSystemDbAccess(async () => {
-        if (job.data.type === 'dispatch-scan') {
-          return processDispatchScan(job.data);
+        const data = parseQueueJobData(SENSITIVE_DATA_QUEUE, job, sensitiveDataQueueJobDataSchema);
+        if (data.type === 'dispatch-scan') {
+          assertQueueJobName(SENSITIVE_DATA_QUEUE, job, 'dispatch-scan');
+          return processDispatchScan(data);
         }
-        return processSchedulePolicies(job.data);
+        assertQueueJobName(SENSITIVE_DATA_QUEUE, job, 'schedule-policies');
+        return processSchedulePolicies(data);
       });
     },
     {
