@@ -6,8 +6,13 @@ import { devices } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
 import { upsertSecurityStatusForDevice } from './helpers';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const agentSecurityRoutes = new Hono();
+// Security + management-posture ingest is the main agent's job; reject
+// watchdog-role tokens so a weaker credential can't falsify operator-facing
+// security/compliance posture for the device (F3).
+agentSecurityRoutes.use('*', requireAgentRole);
 
 agentSecurityRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestSchema), async (c) => {
   const agentId = c.req.param('id');

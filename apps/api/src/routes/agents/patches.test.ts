@@ -129,6 +129,18 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     patchRows = [];
     patchUpsertSet = undefined;
     app = new Hono();
+    // Simulate agentAuthMiddleware setting the main-agent credential so the
+    // requireAgentRole guard on patchesRoutes lets these ingest tests through.
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: DEVICE_ID,
+        agentId: AGENT_ID,
+        orgId: ORG_ID,
+        siteId: 'site-1',
+        role: 'agent',
+      } as never);
+      return next();
+    });
     app.route('/agents', patchesRoutes);
 
     vi.mocked(db.select).mockImplementation(() => ({
@@ -302,6 +314,18 @@ describe('PUT /agents/:id/patches - ENABLE_AI_PATCH_TESTING gating', () => {
       alreadyExisted: false,
     });
     app = new Hono();
+    // Simulate agentAuthMiddleware setting the main-agent credential so the
+    // requireAgentRole guard on patchesRoutes lets these ingest tests through.
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: DEVICE_ID,
+        agentId: AGENT_ID,
+        orgId: ORG_ID,
+        siteId: 'site-1',
+        role: 'agent',
+      } as never);
+      return next();
+    });
     app.route('/agents', patchesRoutes);
 
     vi.mocked(db.select).mockImplementation(() => ({
@@ -380,5 +404,50 @@ describe('PUT /agents/:id/patches - ENABLE_AI_PATCH_TESTING gating', () => {
       catalogId: 'cat-1',
       version: '121.0',
     });
+  });
+});
+
+describe('PUT /agents/:id/patches - requireAgentRole gate (F3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rejects a watchdog-role token with 403 and does not touch the DB', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: DEVICE_ID,
+        agentId: AGENT_ID,
+        orgId: ORG_ID,
+        siteId: 'site-1',
+        role: 'watchdog',
+      } as never);
+      return next();
+    });
+    app.route('/agents', patchesRoutes);
+
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patches: [] }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects when no agent credential is present (missing context)', async () => {
+    const app = new Hono();
+    app.route('/agents', patchesRoutes);
+
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patches: [] }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
   });
 });
