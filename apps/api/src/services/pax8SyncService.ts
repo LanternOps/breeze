@@ -9,6 +9,7 @@ import {
   pax8ProductMappings,
   pax8SubscriptionSnapshots,
 } from '../db/schema';
+import { captureException } from './sentry';
 import { decryptForColumn, encryptSecret } from './secretCrypto';
 import { DEFAULT_PAX8_API_BASE_URL, DEFAULT_PAX8_TOKEN_URL, Pax8Client, type Pax8CompanyRecord, type Pax8SubscriptionRecord } from './pax8Client';
 
@@ -333,16 +334,23 @@ export async function syncPax8Integration(integrationId: string): Promise<Pax8Sy
     });
   } catch (err) {
     // Record failure on a FRESH transaction so it survives Phase 3's rollback.
-    await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() =>
-        db.update(pax8Integrations).set({
-          lastSyncAt: new Date(),
-          lastSyncStatus: 'failed',
-          lastSyncError: errorMessage(err).slice(0, 2000),
-          updatedAt: new Date(),
-        }).where(eq(pax8Integrations.id, integrationId))
-      )
-    );
+    // Guard the bookkeeping write itself: if it throws (e.g. pool exhaustion),
+    // log + capture it but re-throw the ORIGINAL sync error, never the DB error.
+    try {
+      await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.update(pax8Integrations).set({
+            lastSyncAt: new Date(),
+            lastSyncStatus: 'failed',
+            lastSyncError: errorMessage(err).slice(0, 2000),
+            updatedAt: new Date(),
+          }).where(eq(pax8Integrations.id, integrationId))
+        )
+      );
+    } catch (dbErr) {
+      console.error(`[Pax8Sync] Failed to record sync error for integration ${integrationId}:`, dbErr);
+      captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
+    }
     throw err;
   }
 }

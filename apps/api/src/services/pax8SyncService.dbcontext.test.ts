@@ -12,15 +12,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 let contextDepth = 0;
 const fetchDepths: number[] = [];
 const dbCallDepths: number[] = [];
+// `.set(payload)` calls (update writes) with the context depth at call time.
+const updatePayloads: Array<{ depth: number; payload: Record<string, unknown> }> = [];
 
 function chain(result: unknown) {
   const c: Record<string, unknown> = {};
   for (const m of [
-    'from', 'where', 'limit', 'set', 'values', 'returning',
+    'from', 'where', 'limit', 'values', 'returning',
     'onConflictDoUpdate', 'onConflictDoNothing', 'innerJoin', 'leftJoin',
   ]) {
     c[m] = vi.fn(() => c);
   }
+  c.set = vi.fn((payload: Record<string, unknown>) => {
+    updatePayloads.push({ depth: contextDepth, payload });
+    return c;
+  });
   (c as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
     Promise.resolve(result).then(resolve, reject);
   return c;
@@ -111,6 +117,7 @@ describe('pax8SyncService — DB context boundaries (#1697)', () => {
     contextDepth = 0;
     fetchDepths.length = 0;
     dbCallDepths.length = 0;
+    updatePayloads.length = 0;
   });
 
   it('fetches from Pax8 with no DB context held, but reads/writes inside one', async () => {
@@ -130,5 +137,34 @@ describe('pax8SyncService — DB context boundaries (#1697)', () => {
     }
 
     expect(result.integrationId).toBe('pax8-int-1');
+  });
+
+  it('on fetch failure, records the failed status on a fresh context and re-throws the ORIGINAL error', async () => {
+    const boom = new Error('pax8 fetch exploded');
+    listCompanies.mockRejectedValueOnce(boom);
+
+    await expect(syncPax8Integration('pax8-int-1')).rejects.toBe(boom);
+
+    const failedWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'failed');
+    expect(failedWrite).toBeDefined();
+    expect(failedWrite!.depth).toBeGreaterThan(0);
+  });
+
+  it('a failing error-status write does not mask the original sync error', async () => {
+    const boom = new Error('pax8 fetch exploded');
+    listCompanies.mockRejectedValueOnce(boom);
+    const dbm = await import('../db');
+    // Phase 0 'running' write succeeds; make the error-status 'failed' write throw.
+    (dbm.db.update as unknown as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(() => {
+        dbCallDepths.push(contextDepth);
+        return chain(undefined);
+      })
+      .mockImplementationOnce(() => {
+        throw new Error('pool exhausted');
+      });
+
+    // The ORIGINAL sync error must still propagate, not the bookkeeping failure.
+    await expect(syncPax8Integration('pax8-int-1')).rejects.toBe(boom);
   });
 });

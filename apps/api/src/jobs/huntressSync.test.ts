@@ -11,14 +11,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 let contextDepth = 0;
 const fetchDepths: number[] = [];
 const dbCallDepths: number[] = [];
+// `.set(payload)` calls (update writes) with the context depth at call time, so
+// tests can assert e.g. the error-status write happened inside a context.
+const updatePayloads: Array<{ depth: number; payload: Record<string, unknown> }> = [];
 
 // Chainable, awaitable stub for a drizzle query builder. Every builder method
 // returns the same chain; awaiting it resolves to `result`.
 function chain(result: unknown) {
   const c: Record<string, unknown> = {};
-  for (const m of ['from', 'where', 'limit', 'set', 'values', 'onConflictDoUpdate']) {
+  for (const m of ['from', 'where', 'limit', 'values', 'onConflictDoUpdate']) {
     c[m] = vi.fn(() => c);
   }
+  c.set = vi.fn((payload: Record<string, unknown>) => {
+    updatePayloads.push({ depth: contextDepth, payload });
+    return c;
+  });
   (c as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
     Promise.resolve(result).then(resolve, reject);
   return c;
@@ -112,6 +119,7 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
     contextDepth = 0;
     fetchDepths.length = 0;
     dbCallDepths.length = 0;
+    updatePayloads.length = 0;
   });
 
   it('fetches from Huntress with no DB context held, but reads/writes inside one', async () => {
@@ -149,6 +157,37 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
     for (const depth of dbCallDepths) {
       expect(depth).toBeGreaterThan(0);
     }
+  });
+
+  it('on fetch failure, records the error status on a fresh context and re-throws the ORIGINAL error', async () => {
+    const boom = new Error('huntress fetch exploded');
+    listAgents.mockRejectedValueOnce(boom);
+
+    // The original sync error must propagate — never be masked by the
+    // error-status bookkeeping write.
+    await expect(syncIntegrationById('integration-1', 'scheduled')).rejects.toBe(boom);
+
+    // The failure-status write happened, carried 'error', and ran inside a
+    // context (depth > 0) — i.e. on a real (fresh) transaction, not contextless.
+    const errorWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'error');
+    expect(errorWrite).toBeDefined();
+    expect(errorWrite!.depth).toBeGreaterThan(0);
+  });
+
+  it('on the webhook path, persists without any external fetch', async () => {
+    const result = await syncIntegrationById('integration-1', 'webhook', { agents: [], incidents: [] });
+
+    expect(listOrganizations).not.toHaveBeenCalled();
+    expect(listAgents).not.toHaveBeenCalled();
+    expect(listIncidents).not.toHaveBeenCalled();
+    expect(fetchDepths).toEqual([]);
+
+    // The persist still ran inside a context.
+    expect(dbCallDepths.length).toBeGreaterThan(0);
+    for (const depth of dbCallDepths) {
+      expect(depth).toBeGreaterThan(0);
+    }
+    expect(result.integrationId).toBe('integration-1');
   });
 
   it('skips an inactive integration without fetching', async () => {
