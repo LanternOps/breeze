@@ -39,6 +39,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1030.0",
     "@breeze/shared": "workspace:*",
     "@elastic/elasticsearch": "^9.3.2",
+    "@fastify/busboy": "^3.2.0",
     "@googleapis/admin": "^31.0.0",
     "@googleapis/calendar": "^15.0.0",
     "@googleapis/gmail": "^17.0.0",

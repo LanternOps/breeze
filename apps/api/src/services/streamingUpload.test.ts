@@ -1,0 +1,138 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFile, unlink, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import {
+  parseStreamingMultipart,
+  MultipartError,
+  type StreamedMultipart,
+} from './streamingUpload';
+
+function freshTempPath(): string {
+  return join(tmpdir(), `streamingUpload-test-${randomUUID()}.bin`);
+}
+
+function multipartRequest(fd: FormData): { contentType: string; body: ReadableStream<Uint8Array> } {
+  const req = new Request('http://test/', { method: 'POST', body: fd });
+  return {
+    contentType: req.headers.get('content-type')!,
+    body: req.body as ReadableStream<Uint8Array>,
+  };
+}
+
+describe('parseStreamingMultipart', () => {
+  const created: string[] = [];
+  afterEach(async () => {
+    await Promise.all(created.splice(0).map((p) => unlink(p).catch(() => {})));
+  });
+
+  it('streams the file to disk, hashes it, and collects text fields', async () => {
+    const content = 'hello-breeze-package-payload';
+    const expected = createHash('sha256').update(content).digest('hex');
+    const tempPath = freshTempPath();
+    created.push(tempPath);
+
+    const fd = new FormData();
+    fd.append('version', '1.2.3');
+    fd.append('architecture', 'x64');
+    fd.append('file', new File([content], 'pkg.msi', { type: 'application/octet-stream' }));
+
+    const { contentType, body } = multipartRequest(fd);
+    const result: StreamedMultipart = await parseStreamingMultipart({
+      contentType,
+      body,
+      tempPath,
+      maxFileSize: 10 * 1024 * 1024,
+    });
+
+    expect(result.fields.version).toBe('1.2.3');
+    expect(result.fields.architecture).toBe('x64');
+    expect(result.file).not.toBeNull();
+    expect(result.file!.filename).toBe('pkg.msi');
+    expect(result.file!.checksum).toBe(expected);
+    expect(result.file!.fileSize).toBe(Buffer.byteLength(content));
+    // File actually landed on disk with the exact bytes.
+    expect(await readFile(tempPath, 'utf8')).toBe(content);
+  });
+
+  it('returns file: null when no file part is present', async () => {
+    const tempPath = freshTempPath();
+    const fd = new FormData();
+    fd.append('version', '1.0.0');
+
+    const { contentType, body } = multipartRequest(fd);
+    const result = await parseStreamingMultipart({
+      contentType,
+      body,
+      tempPath,
+      maxFileSize: 1024,
+    });
+
+    expect(result.file).toBeNull();
+    expect(result.fields.version).toBe('1.0.0');
+    // No temp file should have been written.
+    await expect(stat(tempPath)).rejects.toThrow();
+  });
+
+  it('rejects an oversized file with a 413 and cleans up the temp file', async () => {
+    const tempPath = freshTempPath();
+    const big = 'x'.repeat(4096);
+    const fd = new FormData();
+    fd.append('file', new File([big], 'big.msi'));
+
+    const { contentType, body } = multipartRequest(fd);
+    await expect(
+      parseStreamingMultipart({ contentType, body, tempPath, maxFileSize: 1024 }),
+    ).rejects.toMatchObject({ status: 413 });
+
+    // Partially-written temp file must be removed on failure.
+    await expect(stat(tempPath)).rejects.toThrow();
+  });
+
+  it('lets onFile reject a disallowed file before bytes are written (415)', async () => {
+    const tempPath = freshTempPath();
+    const fd = new FormData();
+    fd.append('file', new File(['payload'], 'evil.sh'));
+
+    const { contentType, body } = multipartRequest(fd);
+    await expect(
+      parseStreamingMultipart({
+        contentType,
+        body,
+        tempPath,
+        maxFileSize: 1024 * 1024,
+        onFile: ({ filename }) => {
+          if (!filename.endsWith('.msi')) {
+            throw new MultipartError('Unsupported file type', 415);
+          }
+        },
+      }),
+    ).rejects.toMatchObject({ status: 415, message: 'Unsupported file type' });
+
+    await expect(stat(tempPath)).rejects.toThrow();
+  });
+
+  it('rejects a non-multipart content-type with 400', async () => {
+    await expect(
+      parseStreamingMultipart({
+        contentType: 'application/json',
+        body: new Request('http://x', { method: 'POST', body: '{}' }).body as ReadableStream<Uint8Array>,
+        tempPath: freshTempPath(),
+        maxFileSize: 1024,
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects a missing body with 400', async () => {
+    await expect(
+      parseStreamingMultipart({
+        contentType: 'multipart/form-data; boundary=abc',
+        body: null,
+        tempPath: freshTempPath(),
+        maxFileSize: 1024,
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+});

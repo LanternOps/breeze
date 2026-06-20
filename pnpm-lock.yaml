@@ -92,6 +92,9 @@ importers:
       '@elastic/elasticsearch':
         specifier: ^9.3.2
         version: 9.4.2
+      '@fastify/busboy':
+        specifier: ^3.2.0
+        version: 3.2.0
       '@googleapis/admin':
         specifier: ^31.0.0
         version: 31.0.0

@@ -16,11 +16,12 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { uploadBinary, getPresignedUrl, isS3Configured } from '../services/s3Storage';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
-import { createHash } from 'node:crypto';
+import {
+  parseStreamingMultipart,
+  MultipartError,
+  type StreamedMultipart,
+} from '../services/streamingUpload';
 import { unlink, mkdir } from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -702,71 +703,78 @@ softwareRoutes.post(
       .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
 
-    // Parse multipart form
-    const body = await c.req.parseBody({ all: true });
-    const file = body.file;
-    if (!(file instanceof File)) {
+    // Stream the multipart body straight to a temp file via busboy, hashing as
+    // it arrives, instead of buffering the whole parsed File into the Node heap
+    // (which `c.req.parseBody()` does before the handler runs). Peak heap is now
+    // constant regardless of file size — the OOM vector from #1408. The file's
+    // extension is validated in `onFile` before any bytes are written to disk.
+    const tempDir = join(tmpdir(), 'breeze-uploads');
+    await mkdir(tempDir, { recursive: true });
+    const tempPath = join(tempDir, `${randomUUID()}.upload`);
+
+    let parsed: StreamedMultipart;
+    try {
+      parsed = await parseStreamingMultipart({
+        contentType: c.req.header('content-type'),
+        body: c.req.raw.body,
+        tempPath,
+        maxFileSize: MAX_UPLOAD_SIZE,
+        onFile: ({ filename }) => {
+          // Preserve the route's prior contract: disallowed extension -> 400.
+          const candidate = getFileExtension(filename || 'package');
+          if (!ALLOWED_EXTENSIONS.has(candidate)) {
+            throw new MultipartError(
+              `Unsupported file type: ${candidate}. Allowed: ${[...ALLOWED_EXTENSIONS].join(', ')}`,
+              400,
+            );
+          }
+        },
+      });
+    } catch (err) {
+      if (err instanceof MultipartError) {
+        return c.json({ error: err.message }, err.status);
+      }
+      throw err;
+    }
+
+    const { fields, file } = parsed;
+    if (!file) {
       return c.json({ error: 'file is required' }, 400);
     }
 
-    const version = typeof body.version === 'string' ? body.version.trim() : '';
-    if (!version) return c.json({ error: 'version is required' }, 400);
-
-    // Validate file
-    if (file.size > MAX_UPLOAD_SIZE) {
-      return c.json({ error: `File too large (max ${MAX_UPLOAD_SIZE / 1024 / 1024}MB)` }, 413);
-    }
-
-    const originalFileName = file.name || 'package';
-    const ext = getFileExtension(originalFileName);
-    if (!ALLOWED_EXTENSIONS.has(ext)) {
-      return c.json({ error: `Unsupported file type: ${ext}. Allowed: ${[...ALLOWED_EXTENSIONS].join(', ')}` }, 400);
-    }
-
-    const fileType = ext.slice(1); // remove leading dot
-    const architecture = typeof body.architecture === 'string' ? body.architecture : null;
-    const releaseNotes = typeof body.releaseNotes === 'string' ? body.releaseNotes : null;
-    let silentInstallArgs = typeof body.silentInstallArgs === 'string' ? body.silentInstallArgs : null;
-    let silentUninstallArgs = typeof body.silentUninstallArgs === 'string' ? body.silentUninstallArgs : null;
-    const preInstallScript = typeof body.preInstallScript === 'string' ? body.preInstallScript : null;
-    const postInstallScript = typeof body.postInstallScript === 'string' ? body.postInstallScript : null;
-    let supportedOs: string[] | null = null;
-    if (typeof body.supportedOs === 'string') {
-      try { supportedOs = JSON.parse(body.supportedOs); } catch { /* ignore */ }
-    }
-
-    // Auto-detect MSI silent args
-    if (fileType === 'msi' && !silentInstallArgs) {
-      silentInstallArgs = 'msiexec /i "{file}" /qn /norestart';
-    }
-    if (fileType === 'msi' && !silentUninstallArgs) {
-      silentUninstallArgs = 'msiexec /x "{file}" /qn /norestart';
-    }
-
-    // Write to temp file and compute checksum
-    const tempDir = join(tmpdir(), 'breeze-uploads');
-    await mkdir(tempDir, { recursive: true });
-    const tempPath = join(tempDir, `${randomUUID()}${ext}`);
-
     try {
-      // Stream the upload straight to the temp file, hashing incrementally,
-      // instead of buffering the whole file into an ArrayBuffer and again into
-      // a Buffer (~2x the file size, transiently, on top of the parsed body).
-      // Follows the pipeline(stream, hash) pattern in s3Storage.ts. Cuts the
-      // peak transient heap per upload (partially addresses #1408).
-      const hash = createHash('sha256');
-      await pipeline(
-        Readable.fromWeb(file.stream() as Parameters<typeof Readable.fromWeb>[0]),
-        async function* (source) {
-          for await (const chunk of source) {
-            hash.update(chunk as Buffer);
-            yield chunk;
-          }
-        },
-        createWriteStream(tempPath),
-      );
-      const checksum = hash.digest('hex');
-      const fileSize = file.size;
+      const version = typeof fields.version === 'string' ? fields.version.trim() : '';
+      if (!version) return c.json({ error: 'version is required' }, 400);
+
+      const originalFileName = file.filename || 'package';
+      const ext = getFileExtension(originalFileName);
+      // Defensive: onFile already rejected disallowed extensions before writing.
+      if (!ALLOWED_EXTENSIONS.has(ext)) {
+        return c.json({ error: `Unsupported file type: ${ext}. Allowed: ${[...ALLOWED_EXTENSIONS].join(', ')}` }, 400);
+      }
+
+      const fileType = ext.slice(1); // remove leading dot
+      const architecture = typeof fields.architecture === 'string' ? fields.architecture : null;
+      const releaseNotes = typeof fields.releaseNotes === 'string' ? fields.releaseNotes : null;
+      let silentInstallArgs = typeof fields.silentInstallArgs === 'string' ? fields.silentInstallArgs : null;
+      let silentUninstallArgs = typeof fields.silentUninstallArgs === 'string' ? fields.silentUninstallArgs : null;
+      const preInstallScript = typeof fields.preInstallScript === 'string' ? fields.preInstallScript : null;
+      const postInstallScript = typeof fields.postInstallScript === 'string' ? fields.postInstallScript : null;
+      let supportedOs: string[] | null = null;
+      if (typeof fields.supportedOs === 'string') {
+        try { supportedOs = JSON.parse(fields.supportedOs); } catch { /* ignore */ }
+      }
+
+      // Auto-detect MSI silent args
+      if (fileType === 'msi' && !silentInstallArgs) {
+        silentInstallArgs = 'msiexec /i "{file}" /qn /norestart';
+      }
+      if (fileType === 'msi' && !silentUninstallArgs) {
+        silentUninstallArgs = 'msiexec /x "{file}" /qn /norestart';
+      }
+
+      const checksum = file.checksum;
+      const fileSize = file.fileSize;
 
       // Generate version ID for S3 key path
       const versionId = randomUUID();

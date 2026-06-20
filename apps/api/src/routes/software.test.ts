@@ -170,6 +170,45 @@ describe('software routes', () => {
       expect(call[2]).toBe(expectedChecksum); // checksum from the streamed hash
       expect(typeof call[0]).toBe('string');  // temp file path, not an in-memory buffer
     });
+
+    it('rejects a disallowed file extension during streaming (400)', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append('file', new File(['payload'], 'evil.sh', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(400);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when no file part is sent', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(400);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /software/deploy validation', () => {
