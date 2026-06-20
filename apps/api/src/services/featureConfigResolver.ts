@@ -20,6 +20,7 @@ import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
+import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 
 // ============================================
 // Types
@@ -865,7 +866,7 @@ export async function resolveDeviceIdsForSoftwarePolicy(
 
 export interface ScheduledAutomationWithTarget {
   automation: typeof configPolicyAutomations.$inferSelect;
-  assignmentLevel: string;
+  assignmentLevel: AutomationAssignmentLevel;
   assignmentTargetId: string;
   policyId: string;
   policyName: string;
