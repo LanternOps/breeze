@@ -447,6 +447,27 @@ describe('bearerTokenAuthMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('rejects org-scoped bearer tokens for an actively blocked OAuth client', async () => {
+    dbState.rows = [[{ orgId }]];
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'org-blocked-client-jti',
+      client_id: 'client-blocked-for-org',
+    });
+    const next = vi.fn();
+
+    await expect(
+      bearerTokenAuthMiddleware(createContext({ Authorization: `Bearer ${token}` }), next)
+    ).rejects.toMatchObject({
+      status: 403,
+      message: 'oauth client blocked for this organization',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('preserves grant_id for stable MCP session and rate-limit ownership', async () => {
     const token = await mintToken({
       sub: userId,
@@ -522,6 +543,44 @@ describe('bearerTokenAuthMiddleware', () => {
     const facts = collectPredicateFacts(orgPredicate);
     expect(facts.columns).toEqual(expect.arrayContaining(['partner_id', 'status', 'deleted_at']));
     expect(facts.params).toEqual(expect.arrayContaining(['active', 'trial']));
+  });
+
+  it('removes orgs with active OAuth client blocks from partner-scope bearer access', async () => {
+    const blockedOrg = '44444444-4444-4444-8444-444444444444';
+    const allowedOrg = '55555555-5555-5555-8555-555555555555';
+    dbState.rows = [
+      [{ orgAccess: 'all', orgIds: null }],
+      [{ id: blockedOrg }, { id: allowedOrg }],
+      [{ orgId: blockedOrg }],
+    ];
+
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: null,
+      scope: 'mcp:read',
+      jti: 'partner-blocked-client-jti',
+      client_id: 'client-blocked-in-one-org',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(c.get('apiKey')).toMatchObject({
+      id: 'oauth:partner-blocked-client-jti',
+      orgId: null,
+      partnerId,
+      oauthClientId: 'client-blocked-in-one-org',
+    });
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'partner',
+        accessibleOrgIds: [allowedOrg],
+      }),
+      expect.any(Function)
+    );
+    expect(next).toHaveBeenCalledOnce();
   });
 
   it('passes [] (not null) for partner-scope tokens whose partner has no orgs (M-B1)', async () => {
