@@ -150,6 +150,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const [script] = await db
         .select({
           id: scripts.id,
+          orgId: scripts.orgId,
           language: scripts.language,
           content: scripts.content,
           timeoutSeconds: scripts.timeoutSeconds,
@@ -169,6 +170,18 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           const access = await verifyDeviceAccess(deviceId, auth);
           if ('error' in access) {
             results[deviceId] = { error: access.error };
+            continue;
+          }
+
+          // Org-equality invariant (mirrors scriptExecution.ts / playbooks.ts):
+          // a system/org-less script (orgId === null) is universally runnable,
+          // but a non-null script org MUST match the target device's org. For a
+          // multi-org caller, orgCondition resolves an org-A script and
+          // verifyDeviceAccess admits an org-B device — both pass canAccessOrg —
+          // so without this an org-A script's content lands on an org-B device.
+          // Treat a mismatch like an inaccessible device.
+          if (script.orgId !== null && script.orgId !== access.device.orgId) {
+            results[deviceId] = { error: 'Device not found or access denied' };
             continue;
           }
 
