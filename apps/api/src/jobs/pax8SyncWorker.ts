@@ -67,9 +67,9 @@ export async function enqueuePax8Sync(integrationId: string): Promise<string> {
 }
 
 export async function processPax8SyncIntegration(integrationId: string) {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => syncPax8Integration(integrationId))
-  );
+  // syncPax8Integration self-manages its DB contexts so its Pax8 API fetch runs
+  // outside any held transaction (#1697); no blanket wrap here.
+  return syncPax8Integration(integrationId);
 }
 
 export async function processPax8SyncAll(): Promise<{ queued: number; failed: number }> {

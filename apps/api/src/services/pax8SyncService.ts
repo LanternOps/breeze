@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   contractLines,
   organizations,
@@ -273,53 +273,76 @@ export interface Pax8SyncResult {
 }
 
 export async function syncPax8Integration(integrationId: string): Promise<Pax8SyncResult> {
+  // Self-manages DB contexts so the Pax8 API fetch (Phase 2) holds no open
+  // transaction — pinning a pooled connection across the ~20s HTTP window
+  // starved the connection pool (#1697). Phases: mark-running → read+build
+  // client → fetch (outside any context) → persist atomically.
   const startedAt = new Date();
-  await db.update(pax8Integrations).set({
-    lastSyncStatus: 'running',
-    lastSyncError: null,
-    updatedAt: startedAt,
-  }).where(eq(pax8Integrations.id, integrationId));
+  await withSystemDbAccessContext(() =>
+    db.update(pax8Integrations).set({
+      lastSyncStatus: 'running',
+      lastSyncError: null,
+      updatedAt: startedAt,
+    }).where(eq(pax8Integrations.id, integrationId))
+  );
 
   try {
-    const { integration, client } = await createPax8ClientForIntegration(integrationId);
-    const [companies, subscriptions] = await Promise.all([
-      client.listCompanies(),
-      client.listSubscriptions(),
-    ]);
-    await persistTokenCache(integrationId, client);
-    const companyCount = await upsertCompanies(integration.id, integration.partnerId, companies);
-    const mappedCompanies = await loadMappedCompanies(integration.id);
-    const subscriptionCount = await upsertSubscriptions({
-      integrationId: integration.id,
-      partnerId: integration.partnerId,
-      subscriptions,
-      mappedCompanies,
+    // Phase 1 — load the integration row and build the client (DB read only).
+    const { integration, client } = await withSystemDbAccessContext(() =>
+      createPax8ClientForIntegration(integrationId)
+    );
+
+    // Phase 2 — fetch from Pax8 with NO DB context held. The OAuth token
+    // refresh also runs here, outside any transaction (#1105/#1697).
+    const [companies, subscriptions] = await runOutsideDbContext(() =>
+      Promise.all([
+        client.listCompanies(),
+        client.listSubscriptions(),
+      ])
+    );
+
+    // Phase 3 — persist token cache + upserts + success status atomically.
+    return await withSystemDbAccessContext(async () => {
+      await persistTokenCache(integration.id, client);
+      const companyCount = await upsertCompanies(integration.id, integration.partnerId, companies);
+      const mappedCompanies = await loadMappedCompanies(integration.id);
+      const subscriptionCount = await upsertSubscriptions({
+        integrationId: integration.id,
+        partnerId: integration.partnerId,
+        subscriptions,
+        mappedCompanies,
+      });
+      const productCount = await upsertProductMappings(integration.id, integration.partnerId, subscriptions);
+      const applied = await applyEnabledPax8ContractLineLinks(integration.id);
+
+      await db.update(pax8Integrations).set({
+        lastSyncAt: new Date(),
+        lastSyncStatus: 'success',
+        lastSyncError: null,
+        updatedAt: new Date(),
+      }).where(eq(pax8Integrations.id, integration.id));
+
+      return {
+        integrationId: integration.id,
+        companies: companyCount,
+        subscriptions: subscriptionCount,
+        products: productCount,
+        appliedContractLines: applied.applied,
+        skippedContractLines: applied.skipped,
+      };
     });
-    const productCount = await upsertProductMappings(integration.id, integration.partnerId, subscriptions);
-    const applied = await applyEnabledPax8ContractLineLinks(integration.id);
-
-    await db.update(pax8Integrations).set({
-      lastSyncAt: new Date(),
-      lastSyncStatus: 'success',
-      lastSyncError: null,
-      updatedAt: new Date(),
-    }).where(eq(pax8Integrations.id, integration.id));
-
-    return {
-      integrationId: integration.id,
-      companies: companyCount,
-      subscriptions: subscriptionCount,
-      products: productCount,
-      appliedContractLines: applied.applied,
-      skippedContractLines: applied.skipped,
-    };
   } catch (err) {
-    await db.update(pax8Integrations).set({
-      lastSyncAt: new Date(),
-      lastSyncStatus: 'failed',
-      lastSyncError: errorMessage(err).slice(0, 2000),
-      updatedAt: new Date(),
-    }).where(eq(pax8Integrations.id, integrationId));
+    // Record failure on a FRESH transaction so it survives Phase 3's rollback.
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db.update(pax8Integrations).set({
+          lastSyncAt: new Date(),
+          lastSyncStatus: 'failed',
+          lastSyncError: errorMessage(err).slice(0, 2000),
+          updatedAt: new Date(),
+        }).where(eq(pax8Integrations.id, integrationId))
+      )
+    );
     throw err;
   }
 }
