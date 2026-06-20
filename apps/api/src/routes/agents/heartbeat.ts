@@ -8,6 +8,7 @@ import {
   deviceMetrics,
   agentVersions,
   agentLogs,
+  onedriveDeviceState,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
@@ -457,6 +458,40 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     } catch (err) {
       console.error(`[agents] failed to queue threshold filesystem scan for ${device.id}:`, err);
+    }
+  }
+
+  if (data.onedriveDeviceState) {
+    const s = data.onedriveDeviceState;
+    try {
+      await db.insert(onedriveDeviceState).values({
+        deviceId: device.id,
+        orgId: device.orgId,
+        signedIn: s.signedIn,
+        oneDriveVersion: s.oneDriveVersion ?? null,
+        filesOnDemandOn: s.filesOnDemandOn,
+        kfmFolderStates: s.kfmFolderStates,
+        mountedLibraries: s.mountedLibraries,
+        entitledLibraries: s.entitledLibraries,
+        driftEntries: s.driftEntries,
+        lastReportedAt: new Date(),
+        updatedAt: new Date(),
+      }).onConflictDoUpdate({
+        target: onedriveDeviceState.deviceId,
+        set: {
+          signedIn: s.signedIn,
+          oneDriveVersion: s.oneDriveVersion ?? null,
+          filesOnDemandOn: s.filesOnDemandOn,
+          kfmFolderStates: s.kfmFolderStates,
+          mountedLibraries: s.mountedLibraries,
+          entitledLibraries: s.entitledLibraries,
+          driftEntries: s.driftEntries,
+          lastReportedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      console.error(`[agents] failed to upsert onedrive device state for ${agentId}:`, err);
     }
   }
 

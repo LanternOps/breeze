@@ -177,6 +177,15 @@ export const heartbeatSchema = z.object({
   mainAgentLastRestartAt: z.string().datetime({ offset: true }).optional().catch(undefined),
   flapDetected: z.boolean().optional().catch(undefined),
   osType: z.string().optional().catch(undefined),
+  onedriveDeviceState: z.object({
+    signedIn: z.boolean(),
+    oneDriveVersion: z.string().max(64).optional(),
+    filesOnDemandOn: z.boolean(),
+    kfmFolderStates: z.record(z.string(), z.string()).default({}),
+    mountedLibraries: z.array(z.string().max(1024)).default([]),
+    entitledLibraries: z.array(z.string().max(1024)).default([]),
+    driftEntries: z.array(z.record(z.string(), z.unknown())).default([]),
+  }).optional().catch(undefined),
 });
 
 // ============================================

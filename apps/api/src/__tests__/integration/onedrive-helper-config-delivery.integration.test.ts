@@ -1,10 +1,13 @@
 /**
- * Integration test: buildOnedriveHelperConfigUpdate(deviceId)
+ * Integration test: buildOnedriveHelperConfigUpdate(deviceId) + heartbeat ingest
  *
  * Verifies that the resolver correctly joins config policy assignments →
  * active policies → feature links (onedrive_helper) → settings + libraries,
  * applying closest-level-wins hierarchy, and that it returns null when no
  * onedrive_helper policy is assigned to the device.
+ *
+ * Also verifies that the heartbeat route accepts an optional onedriveDeviceState
+ * payload and upserts it into the onedrive_device_state table (Task 9).
  *
  * All seeding runs under withSystemDbAccessContext so RLS does not hide
  * the freshly inserted rows. The function under test uses the bare `db`
@@ -15,7 +18,10 @@
  * partners/organizations CASCADE on beforeEach, wiping all policy rows.
  */
 import './setup';
+import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
+import { Hono } from 'hono';
+import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   configPolicyOnedriveSettings,
@@ -27,8 +33,10 @@ import {
   organizations,
   partners,
   sites,
+  onedriveDeviceState,
 } from '../../db/schema';
 import { buildOnedriveHelperConfigUpdate } from '../../routes/agents/helpers';
+import { agentRoutes } from '../../routes/agents';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -49,6 +57,9 @@ interface LibrarySeed {
 interface SeedResult {
   deviceId: string;
   settingsId: string | null;
+  agentId: string;
+  agentToken: string;
+  orgId: string;
 }
 
 /**
@@ -102,19 +113,23 @@ async function seedDeviceWithOnedrivePolicy(options: {
       .returning({ id: sites.id });
     if (!site) throw new Error('seedDeviceWithOnedrivePolicy: failed to insert site');
 
-    // 4. Device
+    // 4. Device — include agentTokenHash so the heartbeat route can auth
+    const agentId = `od-delivery-test-${ts}-${rand}`;
+    const agentToken = `brz_od_test_${ts}_${rand}`;
+    const agentTokenHash = createHash('sha256').update(agentToken).digest('hex');
     const [device] = await db
       .insert(devices)
       .values({
         orgId: org.id,
         siteId: site.id,
-        agentId: `od-delivery-test-${ts}-${rand}`,
+        agentId,
         hostname: `od-host-${rand}`,
         osType: 'windows',
         osVersion: '11',
         architecture: 'x86_64',
         agentVersion: '0.0.0-test',
         status: 'online',
+        agentTokenHash,
         enrolledAt: new Date(),
       })
       .returning({ id: devices.id });
@@ -122,7 +137,7 @@ async function seedDeviceWithOnedrivePolicy(options: {
 
     if (options.base === null) {
       // No policy — test the null path
-      return { deviceId: device.id, settingsId: null };
+      return { deviceId: device.id, settingsId: null, agentId, agentToken, orgId: org.id };
     }
 
     // 5. Configuration policy (active)
@@ -179,8 +194,18 @@ async function seedDeviceWithOnedrivePolicy(options: {
       priority: 10,
     });
 
-    return { deviceId: device.id, settingsId: settings.id };
+    return { deviceId: device.id, settingsId: settings.id, agentId, agentToken, orgId: org.id };
   });
+}
+
+// ============================================================================
+// Heartbeat app for ingest tests
+// ============================================================================
+
+function buildHeartbeatApp(): Hono {
+  const app = new Hono();
+  app.route('/', agentRoutes);
+  return app;
 }
 
 // ============================================================================
@@ -253,5 +278,110 @@ describe('buildOnedriveHelperConfigUpdate', () => {
     expect(cfg!.base.filesOnDemand).toBe(true);
     expect(cfg!.base.kfmSilentOptIn).toBe(false);
     expect(cfg!.libraries).toHaveLength(0);
+  });
+});
+
+// ============================================================================
+// Task 9: Heartbeat ingest — persisting onedriveDeviceState
+// ============================================================================
+
+describe('heartbeat ingest: onedriveDeviceState', () => {
+  runDb('persists reported onedrive device state via heartbeat (insert)', async () => {
+    const { deviceId, agentId, agentToken } = await seedDeviceWithOnedrivePolicy({
+      base: null,
+      libraries: [],
+    });
+
+    const app = buildHeartbeatApp();
+    const res = await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${agentToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'ok',
+        agentVersion: '1.0.0-test',
+        onedriveDeviceState: {
+          signedIn: true,
+          filesOnDemandOn: true,
+          kfmFolderStates: { Documents: 'redirected' },
+          mountedLibraries: ['lib-all'],
+          entitledLibraries: ['lib-all'],
+          driftEntries: [],
+        },
+      }),
+    });
+
+    expect(res.status, `heartbeat returned ${res.status}: ${await res.text()}`).toBe(200);
+
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select().from(onedriveDeviceState).where(eq(onedriveDeviceState.deviceId, deviceId))
+    );
+    expect(row, 'onedrive_device_state row should exist after heartbeat').toBeDefined();
+    expect(row!.signedIn).toBe(true);
+    expect(row!.filesOnDemandOn).toBe(true);
+    expect(row!.mountedLibraries).toEqual(['lib-all']);
+    expect(row!.kfmFolderStates).toEqual({ Documents: 'redirected' });
+  });
+
+  runDb('second heartbeat updates (not duplicates) the state row', async () => {
+    const { deviceId, agentId, agentToken } = await seedDeviceWithOnedrivePolicy({
+      base: null,
+      libraries: [],
+    });
+
+    const app = buildHeartbeatApp();
+
+    // First heartbeat — signedIn: true
+    await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${agentToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'ok',
+        agentVersion: '1.0.0-test',
+        onedriveDeviceState: {
+          signedIn: true,
+          filesOnDemandOn: false,
+          kfmFolderStates: {},
+          mountedLibraries: ['lib-v1'],
+          entitledLibraries: ['lib-v1'],
+          driftEntries: [],
+        },
+      }),
+    });
+
+    // Second heartbeat — signedIn: false, different libraries
+    await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${agentToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'ok',
+        agentVersion: '1.0.0-test',
+        onedriveDeviceState: {
+          signedIn: false,
+          filesOnDemandOn: true,
+          kfmFolderStates: { Desktop: 'redirected' },
+          mountedLibraries: ['lib-v2'],
+          entitledLibraries: ['lib-v2'],
+          driftEntries: [],
+        },
+      }),
+    });
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(onedriveDeviceState).where(eq(onedriveDeviceState.deviceId, deviceId))
+    );
+    // Must be exactly one row (upsert, not duplicate insert)
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.signedIn).toBe(false);
+    expect(rows[0]!.filesOnDemandOn).toBe(true);
+    expect(rows[0]!.mountedLibraries).toEqual(['lib-v2']);
   });
 });
