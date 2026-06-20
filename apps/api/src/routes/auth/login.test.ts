@@ -434,8 +434,13 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: 'Invalid refresh token' });
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    // Must bail before reuse-detection / minting — no family work, no new pair.
+    // Observability: the legacy-token cohort must be countable in prod so the
+    // "compat window has closed" assumption is verifiable (#917 L-1 review).
+    expect(recordFailedLogin).toHaveBeenCalledWith('refresh_fam_missing');
+    // Must bail before reuse-detection / minting — no family work, no new pair,
+    // no Redis jti mutation (guards against a refactor reordering the fam check).
     expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 

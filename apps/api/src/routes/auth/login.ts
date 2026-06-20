@@ -589,7 +589,15 @@ loginRoutes.post('/refresh', async (c) => {
   // was time-gated to one refresh-token TTL (7d) past the rollout; that window
   // has now elapsed, so every still-valid refresh token carries a `fam`. Reject
   // the claimless remainder rather than fall through to the legacy per-jti path.
+  //
+  // Emit a counter so the cohort is observable: this rejection's safety rests on
+  // the compat window having fully closed. A non-trivial `refresh_fam_missing`
+  // rate in production would mean that assumption is wrong (clock skew, a late-
+  // upgraded self-hosted instance) and real users are being silently logged out
+  // — this metric is the only signal that distinguishes that from ordinary
+  // expiry, since the response is a generic 401 like every other invalid token.
   if (!payload.fam) {
+    recordFailedLogin('refresh_fam_missing');
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
