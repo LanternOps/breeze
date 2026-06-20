@@ -85,6 +85,9 @@ const SITE_GATED_NON_VERIFY_FILES = [
   'aiToolsDns.ts',
   'aiToolsHuntress.ts',
   'aiToolsSLABackup.ts',
+  'aiToolsAudit.ts',
+  'aiToolsCisBenchmark.ts',
+  'aiToolsPam.ts',
 ];
 
 const SITE_GATE_MARKERS = [

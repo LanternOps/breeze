@@ -12,6 +12,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent, type EventType } from './eventBus';
 import { evaluatePamRules, type PamRuleMatch } from './pamRuleEngine';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 // Input schemas for these tools live in the canonical `toolInputSchemas`
 // registry in ./aiToolSchemas (validated centrally by executeTool).
@@ -429,6 +430,24 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.deviceId === 'string') conditions.push(eq(elevationRequests.deviceId, input.deviceId));
       if (typeof input.status === 'string') conditions.push(eq(elevationRequests.status, input.status as any));
       if (typeof input.flowType === 'string') conditions.push(eq(elevationRequests.flowType, input.flowType as any));
+
+      // Site axis (app-layer only; RLS does NOT enforce it). elevationRequests are
+      // device-keyed; a site-restricted caller may only see requests for devices in
+      // their allowed sites. Narrow to that set (no-op for unrestricted callers).
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        if (!orgId) {
+          return JSON.stringify({ results: [], scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({ results: [], scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) {
+          return JSON.stringify({ results: [], scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        conditions.push(inArray(elevationRequests.deviceId, allowed));
+      }
 
       const limit = clampNumber(input.limit, 25, 100);
       const rows = await db

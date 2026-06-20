@@ -8,9 +8,10 @@
 
 import { db } from '../db';
 import { devices, auditLogs, deviceChangeLog } from '../db/schema';
-import { eq, and, desc, sql, gte, lte, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -134,6 +135,20 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
         const access = await verifyDeviceAccess(input.deviceId as string, auth);
         if ('error' in access) return JSON.stringify({ error: access.error });
         conditions.push(eq(deviceChangeLog.deviceId, input.deviceId as string));
+      } else if (auth.allowedSiteIds && auth.canAccessSite) {
+        // Site axis (app-layer only; RLS does NOT enforce it). deviceChangeLog is
+        // device-keyed; when no deviceId is supplied, a site-restricted caller may
+        // only see changes for devices in their allowed sites. Narrow both the rows
+        // and count queries (they share `whereClause`). No-op for unrestricted callers.
+        const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        if (!orgId) {
+          return JSON.stringify({ changes: [], total: 0, showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({ changes: [], total: 0, showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        conditions.push(inArray(deviceChangeLog.deviceId, allowed));
       }
 
       if (input.startTime) {

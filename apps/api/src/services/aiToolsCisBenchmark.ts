@@ -19,6 +19,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { scheduleCisRemediationWithResult } from '../jobs/cisJobs';
 import { extractFailedCheckIds } from './cisHardening';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -87,6 +88,31 @@ registerTool({
     }
     if (typeof input.osType === 'string') {
       conditions.push(eq(cisBaselines.osType, input.osType as 'windows' | 'macos' | 'linux'));
+    }
+
+    // Site axis (app-layer only; RLS does NOT enforce it). cisBaselineResults are
+    // device-keyed; a site-restricted caller may only see results for devices in
+    // their allowed sites. Narrow to that set (no-op for unrestricted callers).
+    if (auth.allowedSiteIds && auth.canAccessSite) {
+      const queryOrgId =
+        (typeof input.orgId === 'string' ? input.orgId : null) ??
+        auth.orgId ??
+        auth.accessibleOrgIds?.[0] ??
+        null;
+      const emptyResult = JSON.stringify({
+        count: 0,
+        totalMatched: 0,
+        summary: { averageScore: 100, devicesAudited: 0, failingDevices: 0, compliantDevices: 0 },
+        results: [],
+        scopeNote: SITE_SCOPE_EMPTY_NOTE,
+      });
+      if (!queryOrgId) return emptyResult;
+      const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
+      if (!allowed || allowed.length === 0) return emptyResult;
+      if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) {
+        return emptyResult;
+      }
+      conditions.push(inArray(cisBaselineResults.deviceId, allowed));
     }
 
     const rankedResults = db
