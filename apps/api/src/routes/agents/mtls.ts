@@ -6,6 +6,7 @@ import { createHash } from 'crypto';
 import { lookup as dnsLookup } from 'dns/promises';
 import { isIP } from 'net';
 import { db, withSystemDbAccessContext } from '../../db';
+import { isAgentTenantActive } from '../../services/tenantStatus';
 import { devices, organizations } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
@@ -215,6 +216,29 @@ mtlsRoutes.post('/renew-cert', async (c) => {
       // failed-closed if redis is fully unavailable; if zcard fails we proceed.
       console.warn('[agents] mTLS success-window check failed:', String(err));
     }
+  }
+
+  // Tenant-status gate (F4): this route authenticates the device token by hand
+  // and never passes through agentAuthMiddleware, so it missed the org/partner
+  // lifecycle check the rest of the agent surface enforces. A device whose
+  // tenant is suspended/churned/soft-deleted — but whose token was not
+  // individually suspended — could otherwise keep minting fresh Cloudflare mTLS
+  // cert + private-key material. Mirror the agentAuth gate: run it after the
+  // per-device rate limiters (so an inactive tenant can't drive uncached
+  // lookups) and before any Cloudflare issuance, and return the same opaque 401
+  // as a stale token so suspension is not distinguishable from a bad credential.
+  if (!(await isAgentTenantActive(device.orgId))) {
+    writeAuditEvent(c, {
+      orgId: device.orgId,
+      actorType: 'agent',
+      actorId: device.agentId,
+      action: 'agent.mtls.renew.denied',
+      resourceType: 'device',
+      resourceId: device.id,
+      result: 'denied',
+      details: { reason: 'tenant_inactive' },
+    });
+    return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 
   const cfService = CloudflareMtlsService.fromEnv();

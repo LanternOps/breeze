@@ -52,6 +52,13 @@ vi.mock('../../middleware/agentAuth', () => ({
   matchAgentTokenHash: vi.fn(() => ({ mode: 'primary' })),
 }));
 
+const { tenantActiveMock } = vi.hoisted(() => ({
+  tenantActiveMock: vi.fn(async () => true),
+}));
+vi.mock('../../services/tenantStatus', () => ({
+  isAgentTenantActive: tenantActiveMock,
+}));
+
 vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
@@ -263,6 +270,73 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
       headers: { Authorization: 'Bearer brz_wrong' },
     });
     expect(resp.status).toBe(401);
+  });
+});
+
+describe('POST /renew-cert — tenant-status gate (F4)', () => {
+  const activeDeviceRow = {
+    id: DEVICE_ID,
+    orgId: ORG_ID,
+    agentId: AGENT_ID,
+    hostname: 'host-1',
+    status: 'online',
+    agentTokenHash: TOKEN_HASH,
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    agentTokenSuspendedAt: null,
+    // Valid (non-expired) cert so the handler does not divert into quarantine.
+    mtlsCertExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+    mtlsCertCfId: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisState.clear();
+    issueCertMock.mockReset();
+    revokeCertMock.mockReset();
+    tenantActiveMock.mockResolvedValue(true);
+    mockDbUpdateOk();
+  });
+
+  it('rejects with opaque 401 and does NOT issue a cert when the tenant is inactive', async () => {
+    // The org/partner is suspended but the device token itself is not
+    // individually suspended — without the tenant gate the agent would still
+    // get fresh Cloudflare cert + private key material.
+    tenantActiveMock.mockResolvedValue(false);
+    mockDeviceLookup(activeDeviceRow);
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    // Same opaque message as a stale/suspended token — suspension is not leaked.
+    expect(body.error).toBe('Invalid agent credentials');
+    expect(issueCertMock).not.toHaveBeenCalled();
+    expect(revokeCertMock).not.toHaveBeenCalled();
+  });
+
+  it('issues normally when the tenant is active', async () => {
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-1',
+      certificate: 'CERT',
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: 'sn-1',
+    });
+    mockDeviceLookup(activeDeviceRow);
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(issueCertMock).toHaveBeenCalled();
+    expect(tenantActiveMock).toHaveBeenCalledWith(ORG_ID);
   });
 });
 
