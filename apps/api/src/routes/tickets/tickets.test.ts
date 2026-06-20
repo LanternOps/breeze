@@ -376,6 +376,23 @@ describe('GET /tickets', () => {
     const res = await makeApp().request('/tickets?deviceId=not-a-uuid');
     expect(res.status).toBe(400);
   });
+
+  it('constrains the unfiltered partner list to the user accessible org ids (org_access=selected)', async () => {
+    // org_access='selected' partner with a concrete accessible-org set hitting
+    // GET /tickets without an explicit ?orgId=. The base partner branch must
+    // narrow to inArray(orgId, accessibleOrgIds) — parity with detail/stats —
+    // not rely on RLS alone.
+    authRef.current = { ...DEFAULT_AUTH, accessibleOrgIds: ['org-selected-a', 'org-selected-b'] };
+    dbSelectMock.mockResolvedValue([]);
+
+    const res = await makeApp().request('/tickets');
+
+    expect(res.status).toBe(200);
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('org-selected-a');
+    expect(serialized).toContain('org-selected-b');
+  });
 });
 
 describe('POST /tickets', () => {
