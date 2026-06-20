@@ -10,6 +10,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 import BackupVerificationTab from './BackupVerificationTab';
@@ -93,10 +94,8 @@ function formatBytes(bytes: number | null | undefined): string {
 }
 
 function formatTime(iso: string | null | undefined): string {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '-';
-  return d.toLocaleString(undefined, {
+  return formatDateTime(iso, {
+    fallback: '-',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Loader2, Monitor, RefreshCcw, Search } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type LauncherMode = 'terminal' | 'files';
 
@@ -78,9 +79,7 @@ function formatOs(osType?: string): string {
 
 function formatLastSeen(value?: string): string {
   if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleString();
+  return formatDateTime(value, { fallback: '-' });
 }
 
 export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherPageProps) {

@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import AddDnsIntegrationModal from './AddDnsIntegrationModal';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Provider =
   | 'umbrella'
@@ -168,7 +169,7 @@ export default function DnsSecurityIntegrationsTab() {
                   <td className="px-4 py-2">
                     {it.lastSync ? (
                       <span className={it.lastSyncStatus === 'error' ? 'text-destructive' : ''}>
-                        {new Date(it.lastSync).toLocaleString()}
+                        {formatDateTime(it.lastSync)}
                         {it.lastSyncStatus === 'error' && ' — failed'}
                       </span>
                     ) : (

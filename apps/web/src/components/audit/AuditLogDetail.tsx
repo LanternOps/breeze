@@ -1,4 +1,5 @@
 import { Clock, Globe, Shield, User, X } from 'lucide-react';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type AuditLogEntry = {
   id: string;
@@ -63,7 +64,7 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
               <div className="mt-3 space-y-2 text-sm text-muted-foreground">
                 <p>
                   <span className="font-medium text-foreground">Timestamp:</span>{' '}
-                  {new Date(entry.timestamp).toLocaleString([], { timeZone: timezone })}
+                  {formatDateTime(entry.timestamp, { timeZone: timezone })}
                 </p>
                 <p>
                   <span className="font-medium text-foreground">Action:</span> {entry.action}

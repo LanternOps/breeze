@@ -12,6 +12,7 @@ import {
 
 import { ENABLE_ENDPOINT_AV_FEATURES } from '../../lib/featureFlags';
 import { friendlyFetchError } from '../../lib/utils';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import DeviceSecurityStatus from '../security/DeviceSecurityStatus';
 
@@ -66,7 +67,7 @@ function formatDateTime(value: string | null, timezone?: string): string {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatUserDateTime(date, timezone ? { timeZone: timezone } : undefined);
 }
 
 function compactPath(value: string): string {

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import BaselineFormModal, { type Baseline } from './BaselineFormModal';
 
 type Props = {
@@ -66,11 +67,11 @@ export default function BaselineOverviewTab({ baseline, onUpdated }: Props) {
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-sm">
           <p className="text-xs text-muted-foreground">Created</p>
-          <p className="mt-1 text-sm">{new Date(baseline.createdAt).toLocaleString()}</p>
+          <p className="mt-1 text-sm">{formatDateTime(baseline.createdAt)}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-sm">
           <p className="text-xs text-muted-foreground">Last Updated</p>
-          <p className="mt-1 text-sm">{new Date(baseline.updatedAt).toLocaleString()}</p>
+          <p className="mt-1 text-sm">{formatDateTime(baseline.updatedAt)}</p>
         </div>
       </div>
 

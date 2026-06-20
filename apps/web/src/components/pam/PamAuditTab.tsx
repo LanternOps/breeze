@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, ScrollText } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
   type ElevationFlowType,
   type ElevationRequest,
@@ -319,7 +320,7 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
                 return (
                 <tr key={r.id} className="border-b last:border-0" data-testid={`pam-audit-row-${r.id}`}>
                   <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
-                    {new Date(r.requestedAt).toLocaleString()}
+                    {formatDateTime(r.requestedAt)}
                   </td>
                   <td className="px-3 py-2">{r.deviceHostname ?? r.deviceId}</td>
                   <td className="px-3 py-2">{r.subjectUsername}</td>

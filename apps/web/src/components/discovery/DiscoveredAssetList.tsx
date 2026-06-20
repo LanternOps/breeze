@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Filter, Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type DiscoveredAssetApprovalStatus = 'pending' | 'approved' | 'dismissed';
 export type DiscoveredAssetType =
@@ -116,7 +117,7 @@ function formatLastSeen(value?: string, timezone?: string) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { timeZone: timezone });
+  return formatDateTime(date, { timeZone: timezone });
 }
 
 function formatPing(ms?: number | null) {

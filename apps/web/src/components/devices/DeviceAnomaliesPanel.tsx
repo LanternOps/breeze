@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle, ExternalLink, RefreshCw, TrendingUp, XCircle } from 'lucide-react';
 
 import { runAction, handleActionError } from '../../lib/runAction';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
@@ -118,7 +119,7 @@ function formatMetricValue(metricName: string, value: number): string {
 function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
+  return formatDateTime(date, {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

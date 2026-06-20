@@ -11,6 +11,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
@@ -127,10 +128,8 @@ function formatDuration(startedAt?: string | null, completedAt?: string | null):
 }
 
 function formatTime(iso?: string | null): string {
-  if (!iso) return '--';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '--';
-  return date.toLocaleString([], {
+  return formatDateTime(iso, {
+    fallback: '--',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

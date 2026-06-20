@@ -23,6 +23,7 @@ import { showToast } from '../shared/Toast';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
 type AlertItem = {
   id: string;
@@ -114,12 +115,12 @@ function formatDateTime(value: string | undefined) {
   if (!value) return 'Unknown';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return 'Unknown';
-  return new Intl.DateTimeFormat(undefined, {
+  return formatUserDateTime(parsed, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit'
-  }).format(parsed);
+  });
 }
 
 function evidenceLabel(source: string) {

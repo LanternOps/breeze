@@ -15,6 +15,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
 
@@ -111,10 +112,7 @@ function formatBytes(bytes?: number | null): string {
 }
 
 function formatTimestamp(value?: string | null): string {
-  if (!value) return '--';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '--';
-  return date.toLocaleString();
+  return formatDateTime(value, { fallback: '--' });
 }
 
 function renderJson(value: unknown): string {

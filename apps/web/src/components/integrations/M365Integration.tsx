@@ -10,6 +10,7 @@ import {
   Building2
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Connection = {
   connected: boolean;
@@ -342,7 +343,7 @@ export default function M365Integration() {
             <div className="flex justify-between text-muted-foreground">
               <span>Last verified</span>
               <span className="text-foreground">
-                {connection?.lastVerifiedAt ? new Date(connection.lastVerifiedAt).toLocaleString() : 'Never'}
+                {connection?.lastVerifiedAt ? formatDateTime(connection.lastVerifiedAt) : 'Never'}
               </span>
             </div>
           </div>

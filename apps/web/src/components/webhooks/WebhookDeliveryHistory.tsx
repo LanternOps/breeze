@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { CheckCircle, XCircle, Clock, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type WebhookDeliveryStatus = 'success' | 'failed' | 'pending';
 
@@ -40,7 +41,7 @@ const statusIcons: Record<WebhookDeliveryStatus, typeof CheckCircle> = {
 function formatTimestamp(value: string, timezone?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { timeZone: timezone });
+  return formatDateTime(date, { timeZone: timezone });
 }
 
 export default function WebhookDeliveryHistory({

@@ -4,6 +4,7 @@ import { Dialog } from '../shared/Dialog';
 import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { buildInstallCommands } from '@/lib/installCommands';
 import { navigateTo } from '@/lib/navigation';
@@ -62,7 +63,7 @@ function formatTokenExpiry(iso: string): string {
   if (diffMinutes < 60) return `in about ${diffMinutes} minute${diffMinutes === 1 ? '' : 's'}`;
   const diffHours = Math.round(diffMinutes / 60);
   if (diffHours < 48) return `in about ${diffHours} hour${diffHours === 1 ? '' : 's'}`;
-  return `on ${new Date(expiresMs).toLocaleString()}`;
+  return `on ${formatDateTime(expiresMs)}`;
 }
 
 interface AddDeviceModalProps {

@@ -4,6 +4,7 @@ import {
   type NetworkBaselineScanSchedule,
   type NetworkBaselineAlertSettings
 } from '@breeze/shared';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
 export { NETWORK_EVENT_TYPES };
 export type { NetworkEventType, NetworkBaselineScanSchedule, NetworkBaselineAlertSettings };
@@ -192,6 +193,5 @@ export function formatDateTime(value: string | null | undefined, timezone?: stri
   if (!value) return '—';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatUserDateTime(parsed, timezone ? { timeZone: timezone } : undefined);
 }
-

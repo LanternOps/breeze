@@ -221,10 +221,7 @@ export function formatBytes(bytes: number): string {
 }
 
 export function formatTime(iso?: string | null): string {
-  if (!iso) return '--';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '--';
-  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return formatDateTime(iso, { fallback: '--', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export function formatDuration(startedAt?: string | null, completedAt?: string | null): string {
@@ -273,3 +270,4 @@ export function buildLinePath(values: number[], maxValue: number): string {
     })
     .join(' ');
 }
+import { formatDateTime } from '@/lib/dateTimeFormat';

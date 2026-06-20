@@ -21,6 +21,7 @@ import {
   Legend,
   ResponsiveContainer
 } from 'recharts';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, friendlyFetchError } from '../../lib/utils';
 
@@ -78,7 +79,7 @@ function formatTimestampShort(value: string): string {
 function formatTimestampFull(value: string, timezone?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatDateTime(date, timezone ? { timeZone: timezone } : undefined);
 }
 
 function getImpactBadgeClass(score: number | null): string {

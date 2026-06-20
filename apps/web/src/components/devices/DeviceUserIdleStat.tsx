@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Timer } from 'lucide-react';
+import { formatTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type ActiveSession = {
@@ -49,7 +50,7 @@ function tooltip(sessions: ActiveSession[]): string | undefined {
   if (updatedAt) {
     const d = new Date(updatedAt);
     if (!isNaN(d.getTime())) {
-      lines.push(`As of ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+      lines.push(`As of ${formatTime(d, { hour: '2-digit', minute: '2-digit' })}`);
     }
   }
   return lines.join('\n');

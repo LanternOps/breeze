@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
 type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
@@ -202,7 +203,7 @@ export default function IncidentsPage() {
                       {incident.classification ?? '-'}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {new Date(incident.detectedAt).toLocaleString()}
+                      {formatDateTime(incident.detectedAt)}
                     </td>
                   </tr>
                 ))}

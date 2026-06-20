@@ -12,6 +12,7 @@ import {
   Undo2,
   Ban,
 } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type PlaybookStepResult = {
@@ -86,7 +87,7 @@ function formatDateTime(value?: string, timezone?: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+    : formatUserDateTime(date, timezone ? { timeZone: timezone } : undefined);
 }
 
 function formatDurationMs(ms?: number) {

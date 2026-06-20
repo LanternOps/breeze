@@ -9,6 +9,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
@@ -52,8 +53,7 @@ type GroupFailure = {
 };
 
 function formatDate(value: string | null): string {
-  if (!value) return '-';
-  return new Date(value).toLocaleString();
+  return formatDateTime(value, { fallback: '-' });
 }
 
 function formatDuration(startedAt: string | null, completedAt: string | null): string {

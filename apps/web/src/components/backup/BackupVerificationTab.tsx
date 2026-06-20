@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   XCircle,
 } from 'lucide-react';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 
@@ -349,7 +350,7 @@ export default function BackupVerificationTab({
                         )}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
-                        {new Date(v.startedAt).toLocaleString()}
+                        {formatDateTime(v.startedAt)}
                       </td>
                       <td className="py-2 pr-4">
                         {formatDuration(v.restoreTimeSeconds ?? duration)}

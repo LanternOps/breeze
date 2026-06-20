@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
@@ -406,7 +407,7 @@ export default function AiUsagePage() {
                     ) : null}
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">
-                    {new Date(s.createdAt).toLocaleString()}
+                    {formatDateTime(s.createdAt)}
                   </td>
                 </tr>
               ))}

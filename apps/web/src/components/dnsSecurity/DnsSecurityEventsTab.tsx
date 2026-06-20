@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ScrollText, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Action = 'allowed' | 'blocked' | 'redirected';
 
@@ -139,7 +140,7 @@ export default function DnsSecurityEventsTab() {
               {events.map((e) => (
                 <tr key={e.id} className="border-b last:border-b-0 hover:bg-muted/20">
                   <td className="px-3 py-1.5 whitespace-nowrap text-xs text-muted-foreground">
-                    {new Date(e.timestamp).toLocaleString()}
+                    {formatDateTime(e.timestamp)}
                   </td>
                   <td className="px-3 py-1.5">
                     {e.deviceHostname ?? e.sourceHostname ?? e.sourceIp ?? <span className="text-muted-foreground italic">unknown</span>}

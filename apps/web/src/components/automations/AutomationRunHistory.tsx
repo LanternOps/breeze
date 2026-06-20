@@ -13,6 +13,7 @@ import {
   Timer
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type DeviceRunResult = {
   deviceId: string;
@@ -94,7 +95,7 @@ const triggerLabels: Record<string, string> = {
 function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString([], { timeZone: timezone });
+  return formatDateTime(date, { timeZone: timezone });
 }
 
 function formatDuration(ms: number): string {

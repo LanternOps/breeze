@@ -8,6 +8,7 @@ import {
   Clock,
   FolderOpen
 } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 
@@ -168,7 +169,7 @@ function formatDateTime(value: string | undefined): string {
   if (!value) return '-';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString([], {
+  return formatUserDateTime(parsed, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

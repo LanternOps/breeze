@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, Loader2, Shield, ShieldAlert, XCircle, Zap } from 'lucide-react';
 
 import { fetchWithAuth } from '@/stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { friendlyFetchError } from '@/lib/utils';
 
 type DeviceSecurity = {
@@ -90,8 +91,7 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
 
   const formatDate = (value: string | null): string => {
     if (!value) return '-';
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? '-' : parsed.toLocaleString();
+    return formatDateTime(value, { fallback: '-' });
   };
 
   if (loading) {

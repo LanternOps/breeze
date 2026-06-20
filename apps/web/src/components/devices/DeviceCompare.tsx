@@ -19,6 +19,7 @@ import {
   ResponsiveContainer,
   Legend
 } from 'recharts';
+import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 
 type SoftwareItem = {
@@ -136,20 +137,20 @@ function formatTimestamp(timestamp: string, range: TimeRange, timezone?: string)
   const tzOptions = timezone ? { timeZone: timezone } : undefined;
   switch (range) {
     case '1h':
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...tzOptions });
+      return formatUserTime(date, { hour: '2-digit', minute: '2-digit', ...tzOptions });
     case '6h':
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...tzOptions });
+      return formatUserTime(date, { hour: '2-digit', minute: '2-digit', ...tzOptions });
     case '24h':
-      return date.toLocaleDateString([], { weekday: 'short', hour: '2-digit', ...tzOptions });
+      return formatUserDateTime(date, { weekday: 'short', hour: '2-digit', ...tzOptions });
     default:
-      return date.toLocaleTimeString([], tzOptions);
+      return formatUserTime(date, tzOptions);
   }
 }
 
 function formatDateTime(value: string, timezone?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatUserDateTime(date, timezone ? { timeZone: timezone } : undefined);
 }
 
 function createSeededRandom(seed: number) {

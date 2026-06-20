@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
 type PeripheralEvent = {
   id: string;
@@ -31,7 +32,7 @@ type PeripheralActivityLogProps = {
 function formatDateTime(value?: string) {
   if (!value) return '—';
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? value : formatUserDateTime(d);
 }
 
 export default function PeripheralActivityLog({ deviceId, limit: propLimit }: PeripheralActivityLogProps) {

@@ -22,6 +22,7 @@ import {
   Activity,
   Bot,
 } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type ActivityEntry = {
@@ -101,7 +102,7 @@ function formatDateTime(value?: string | null, timezone?: string) {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
+  return formatUserDateTime(date, {
     ...(timezone ? { timeZone: timezone } : {}),
     month: 'short',
     day: 'numeric',

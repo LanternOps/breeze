@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatAuditAction } from '@/lib/auditFormat';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type ActivityEntry = {
   id: string;
@@ -20,7 +21,7 @@ type UserOption = {
   name: string;
 };
 
-const formatTimestamp = (value: string, timezone?: string) => new Date(value).toLocaleString([], { timeZone: timezone });
+const formatTimestamp = (value: string, timezone?: string) => formatDateTime(value, { timeZone: timezone });
 
 interface UserActivityReportProps {
   timezone?: string;

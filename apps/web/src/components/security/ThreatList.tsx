@@ -3,6 +3,7 @@ import { Filter, Loader2, Search, ShieldAlert, ShieldCheck } from 'lucide-react'
 
 import { cn, friendlyFetchError } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
 type ThreatStatus = 'active' | 'quarantined' | 'removed';
@@ -35,7 +36,7 @@ const statusBadge: Record<ThreatStatus, string> = {
 function formatDetectedAt(value: string, timezone?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { timeZone: timezone });
+  return formatDateTime(date, { timeZone: timezone });
 }
 
 interface ThreatListProps {

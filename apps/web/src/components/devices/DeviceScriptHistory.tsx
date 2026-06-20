@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronUp, Copy, Check, CheckCircle, XCircle, Loader2, AlertTriangle, Clock, AlertOctagon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type ScriptExecution = {
@@ -48,7 +49,7 @@ const statusConfig: Record<string, { label: string; color: string; bgColor: stri
 function formatDateTime(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return Number.isNaN(date.getTime()) ? value : formatUserDateTime(date, timezone ? { timeZone: timezone } : undefined);
 }
 
 function formatDuration(ms?: number, seconds?: number) {

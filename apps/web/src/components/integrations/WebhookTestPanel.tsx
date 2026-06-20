@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Send } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type TestHistoryItem = {
   id: string;
@@ -91,7 +92,7 @@ export default function WebhookTestPanel({ webhookId, timezone }: WebhookTestPan
           id: delivery.id,
           event: delivery.event || 'unknown',
           status: delivery.statusCode || 0,
-          timestamp: delivery.createdAt ? new Date(delivery.createdAt).toLocaleString([], { timeZone: timezone }) : 'Unknown'
+          timestamp: delivery.createdAt ? formatDateTime(delivery.createdAt, { timeZone: timezone }) : 'Unknown'
         }))
       );
     } catch (err) {

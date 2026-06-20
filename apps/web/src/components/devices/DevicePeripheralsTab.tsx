@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Usb, ShieldAlert, Activity, Shield } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type PeripheralEvent = {
@@ -45,7 +46,7 @@ const actionBadge: Record<string, string> = {
 function formatDateTime(value?: string, timezone?: string) {
   if (!value) return '—';
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return Number.isNaN(d.getTime()) ? value : formatUserDateTime(d, timezone ? { timeZone: timezone } : undefined);
 }
 
 export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePeripheralsTabProps) {

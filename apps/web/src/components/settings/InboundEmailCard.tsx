@@ -4,6 +4,7 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { showToast } from '../shared/Toast';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 interface InboundConfig {
   enabled: boolean;
@@ -340,7 +341,7 @@ export default function InboundEmailCard() {
                     <div className="text-muted-foreground">{r.subject ?? '(no subject)'}</div>
                     <div className="mt-0.5 text-xs text-muted-foreground">
                       <span className="rounded border px-1 py-0.5">{r.parseStatus}</span>{' '}
-                      {new Date(r.createdAt).toLocaleString()}
+                      {formatDateTime(r.createdAt)}
                       {r.parseStatus === 'failed' && r.error && (
                         <span className="ml-2 text-red-600">{r.error}</span>
                       )}

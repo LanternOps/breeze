@@ -12,6 +12,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { cn, marginLeftPxClass } from '@/lib/utils';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type TreeNode = {
@@ -99,10 +100,8 @@ function formatBytes(bytes: number | null | undefined): string {
 }
 
 function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleString(undefined, {
+  return formatUserDateTime(value, {
+    fallback: '-',
     month: 'short',
     day: 'numeric',
     year: 'numeric',

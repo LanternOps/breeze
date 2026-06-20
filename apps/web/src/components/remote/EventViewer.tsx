@@ -20,6 +20,7 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
 // Platform type
 export type Platform = 'windows' | 'macos' | 'linux';
@@ -155,7 +156,7 @@ function formatDateTime(dateString?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   
-  return date.toLocaleString(undefined, {
+  return formatUserDateTime(date, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',

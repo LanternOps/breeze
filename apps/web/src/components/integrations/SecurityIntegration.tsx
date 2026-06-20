@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Integration = {
   id: string;
@@ -406,7 +407,7 @@ export default function SecurityIntegration() {
                 <span>Last sync</span>
                 <span className="text-foreground">
                   {integration.lastSyncAt
-                    ? new Date(integration.lastSyncAt).toLocaleString()
+                    ? formatDateTime(integration.lastSyncAt)
                     : 'Never'}
                 </span>
               </div>

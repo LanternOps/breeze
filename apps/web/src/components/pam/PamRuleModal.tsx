@@ -3,6 +3,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
   type ElevationStatus,
   type PamRule,
@@ -699,7 +700,7 @@ export default function PamRuleModal({
               <ul className="space-y-1">
                 {preview.sample.slice(0, 5).map((s) => (
                   <li key={s.id} className="truncate text-xs text-muted-foreground">
-                    {new Date(s.requestedAt).toLocaleString()} · {s.subjectUsername} ·{' '}
+                    {formatDateTime(s.requestedAt)} · {s.subjectUsername} ·{' '}
                     {s.targetExecutablePath ?? s.toolName ?? '—'}
                   </li>
                 ))}

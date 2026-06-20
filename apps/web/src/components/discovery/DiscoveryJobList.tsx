@@ -3,6 +3,7 @@ import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight, CalendarC
 import { fetchWithAuth } from '../../stores/auth';
 import { widthPercentClass } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
 
@@ -65,7 +66,7 @@ function formatTimestamp(value?: string, timezone?: string) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { timeZone: timezone });
+  return formatDateTime(date, { timeZone: timezone });
 }
 
 function formatDuration(startedAt?: string | null, completedAt?: string | null): string | null {

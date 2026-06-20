@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Calendar } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type AlertItem = {
@@ -34,7 +35,7 @@ const severityStyles: Record<string, string> = {
 function formatDateTime(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return Number.isNaN(date.getTime()) ? value : formatUserDateTime(date, timezone ? { timeZone: timezone } : undefined);
 }
 
 export default function DeviceAlertHistory({

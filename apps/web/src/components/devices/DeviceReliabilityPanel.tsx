@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react';
 
 import { runAction, handleActionError } from '../../lib/runAction';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
@@ -66,7 +67,7 @@ function scoreBarClass(score: number): string {
 function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return formatDateTime(date, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function formatEvidenceKey(value: string): string {

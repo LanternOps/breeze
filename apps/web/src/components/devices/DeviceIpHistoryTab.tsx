@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Clock3, Network, RefreshCw, Search, X } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type IPAssignmentType = 'dhcp' | 'static' | 'vpn' | 'link-local' | 'unknown';
@@ -39,7 +40,7 @@ function formatDateTime(value?: string | null): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
+  return formatUserDateTime(date, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

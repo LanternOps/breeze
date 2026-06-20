@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Clock, Loader2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 
@@ -65,10 +66,7 @@ function formatMinutes(minutes?: number | null): string {
 }
 
 function formatTime(iso?: string | null): string {
-  if (!iso) return '--';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '--';
-  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return formatUserDateTime(iso, { fallback: '--', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export default function BackupVerificationOverview() {

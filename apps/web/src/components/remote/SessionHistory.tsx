@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
 const DATE_LOCALE = 'en-US';
 const DATE_TIME_ZONE = 'UTC';
@@ -115,7 +116,8 @@ function formatDateTime(dateString?: string): string {
   const isToday = isSameUtcDate(date, now);
 
   if (isToday) {
-    return `Today ${date.toLocaleTimeString(DATE_LOCALE, {
+    return `Today ${formatUserTime(date, {
+      locale: DATE_LOCALE,
       hour: '2-digit',
       minute: '2-digit',
       timeZone: DATE_TIME_ZONE
@@ -127,14 +129,16 @@ function formatDateTime(dateString?: string): string {
   const isYesterday = isSameUtcDate(date, yesterday);
 
   if (isYesterday) {
-    return `Yesterday ${date.toLocaleTimeString(DATE_LOCALE, {
+    return `Yesterday ${formatUserTime(date, {
+      locale: DATE_LOCALE,
       hour: '2-digit',
       minute: '2-digit',
       timeZone: DATE_TIME_ZONE
     })}`;
   }
 
-  return date.toLocaleString(DATE_LOCALE, {
+  return formatUserDateTime(date, {
+    locale: DATE_LOCALE,
     month: 'short',
     day: 'numeric',
     year: date.getUTCFullYear() !== now.getUTCFullYear() ? 'numeric' : undefined,

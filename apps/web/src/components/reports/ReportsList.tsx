@@ -15,6 +15,7 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, getBrowserTimezone } from './reportExport';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type ReportType =
   | 'device_inventory'
@@ -227,7 +228,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return 'Never';
-    return new Date(dateStr).toLocaleString([], { timeZone: effectiveTimezone });
+    return formatDateTime(dateStr, { timeZone: effectiveTimezone });
   };
 
   if (loading) {

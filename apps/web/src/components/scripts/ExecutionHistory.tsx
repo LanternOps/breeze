@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
 
 export type ScriptExecution = {
@@ -53,7 +54,7 @@ function formatDateTime(dateString: string, timezone?: string): string {
   const isToday = date.toDateString() === now.toDateString();
 
   if (isToday) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: tz });
+    return formatUserTime(date, { hour: '2-digit', minute: '2-digit', timeZone: tz });
   }
 
   const yesterday = new Date(now);
@@ -61,10 +62,10 @@ function formatDateTime(dateString: string, timezone?: string): string {
   const isYesterday = date.toDateString() === yesterday.toDateString();
 
   if (isYesterday) {
-    return `Yesterday ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: tz })}`;
+    return `Yesterday ${formatUserTime(date, { hour: '2-digit', minute: '2-digit', timeZone: tz })}`;
   }
 
-  return date.toLocaleString([], {
+  return formatUserDateTime(date, {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

@@ -15,6 +15,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 // ── Types mirrored from apps/api/src/routes/pax8.ts ────────────────────────
 interface Pax8Integration {
@@ -487,7 +488,7 @@ export default function Pax8Integration() {
             <div className="flex justify-between text-muted-foreground">
               <span>Last sync</span>
               <span className="text-foreground">
-                {integration?.lastSyncAt ? new Date(integration.lastSyncAt).toLocaleString() : 'Never'}
+                {integration?.lastSyncAt ? formatDateTime(integration.lastSyncAt) : 'Never'}
               </span>
             </div>
             <div className="flex justify-between text-muted-foreground">

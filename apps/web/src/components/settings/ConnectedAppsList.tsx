@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 interface ConnectedApp {
   client_id: string;
@@ -16,8 +17,7 @@ type Status =
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return 'Never';
-  const d = new Date(value);
-  return Number.isNaN(d.valueOf()) ? '—' : d.toLocaleString();
+  return formatDateTime(value, { fallback: '—' });
 }
 
 export default function ConnectedAppsList() {

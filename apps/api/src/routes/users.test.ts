@@ -615,6 +615,7 @@ describe('user routes', () => {
       ['theme', 'sepia', /Invalid theme value/i],
       ['density', 'tiny', /Invalid density value/i],
       ['font', 'comic-sans', /Invalid font value/i],
+      ['timeFormat', 'military-ish', /Invalid timeFormat value/i],
     ])('rejects invalid %s appearance preference', async (key, value, message) => {
       const res = await app.request('/users/me', {
         method: 'PATCH',
@@ -630,11 +631,13 @@ describe('user routes', () => {
       const existingPreferences = {
         theme: 'dark',
         density: 'compact',
+        timeFormat: '12h',
         customKey: 'preserve-me'
       };
       const mergedPreferences = {
         ...existingPreferences,
-        font: 'system'
+        font: 'system',
+        timeFormat: '24h'
       };
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -668,7 +671,7 @@ describe('user routes', () => {
       const res = await app.request('/users/me', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ preferences: { font: 'system' } })
+        body: JSON.stringify({ preferences: { font: 'system', timeFormat: '24h' } })
       });
 
       expect(res.status).toBe(200);

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 
 import { friendlyFetchError } from '../../lib/utils';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ const STATUS_BADGE: Record<DetectionStatus, string> = {
 function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
+  return formatUserDateTime(date, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

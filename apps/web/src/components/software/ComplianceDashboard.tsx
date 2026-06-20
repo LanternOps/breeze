@@ -11,6 +11,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Policy = {
   id: string;
@@ -482,7 +483,7 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
                 Remediation: {row.compliance.remediationStatus ?? 'none'}
               </div>
               <div className="text-xs text-muted-foreground">
-                Checked: {new Date(row.compliance.lastChecked).toLocaleString()}
+                Checked: {formatDateTime(row.compliance.lastChecked)}
               </div>
             </div>
           ))}

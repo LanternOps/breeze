@@ -13,6 +13,7 @@ import {
 import { cn } from '@/lib/utils';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
 // --- Types ---
 
@@ -96,10 +97,10 @@ const statusBadge: Record<string, { label: string; className: string }> = {
 };
 
 // Fixed reference time for SSR hydration consistency
-const REFERENCE_TIME = '12:00 PM';
+const REFERENCE_TIME = '12:00';
 
 const formatTime = (date: Date) =>
-  date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  formatUserTime(date, { locale: 'en-US', hour: 'numeric', minute: '2-digit' });
 
 // --- Component ---
 

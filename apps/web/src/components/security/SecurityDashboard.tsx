@@ -12,6 +12,7 @@ import {
   TrendingUp,
   User
 } from 'lucide-react';
+import { formatTime } from '@/lib/dateTimeFormat';
 import {
   CartesianGrid,
   Line,
@@ -587,7 +588,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
           </button>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              Updated {lastUpdated.toLocaleTimeString([], { timeZone: timezone })}
+              Updated {formatTime(lastUpdated, { timeZone: timezone })}
             </span>
           )}
         </div>

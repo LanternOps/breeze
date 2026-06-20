@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, CheckCircle2, HardDrive, Loader2, Play, Timer } from 'lucide-react';
 
 import { fetchWithAuth } from '@/stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { friendlyFetchError } from '@/lib/utils';
 import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
 
@@ -205,8 +206,7 @@ export default function SecurityScanManager() {
 
   const formatTimestamp = (value: string | null): string => {
     if (!value) return '-';
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+    return formatDateTime(value, { fallback: '-' });
   };
 
   return (

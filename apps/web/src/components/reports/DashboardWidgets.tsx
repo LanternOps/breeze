@@ -17,6 +17,7 @@ import {
 import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import AccessDenied from '../shared/AccessDenied';
+import { formatTime } from '@/lib/dateTimeFormat';
 
 type DeviceStatusData = {
   total: number;
@@ -527,7 +528,7 @@ export default function DashboardWidgets({
 
       {/* Last Updated */}
       <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
-        <span>Last updated: {lastUpdated.toLocaleTimeString([], { timeZone: effectiveTimezone })}</span>
+        <span>Last updated: {formatTime(lastUpdated, { timeZone: effectiveTimezone })}</span>
         <button
           type="button"
           onClick={fetchData}

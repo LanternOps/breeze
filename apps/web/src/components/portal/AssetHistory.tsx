@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type AssetHistoryEntry = {
   id: string;
@@ -31,7 +32,7 @@ export default function AssetHistory({ entries, timezone }: AssetHistoryProps) {
             <div>
               <div className="text-sm font-medium text-foreground">{entry.user}</div>
               <div className="text-xs text-muted-foreground">
-                {new Date(entry.date).toLocaleString([], { timeZone: timezone })}
+                {formatDateTime(entry.date, { timeZone: timezone })}
               </div>
             </div>
             <div className="flex items-center gap-3 text-xs">

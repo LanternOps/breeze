@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { statusConfig, type TicketComment, type TicketStatus } from './ticketConfig';
+import { formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 
 const SYSTEM_TYPES = new Set(['status_change', 'assignment', 'system', 'time_entry']);
 
@@ -54,7 +55,7 @@ function SystemRun({ items }: { items: TicketComment[] }) {
       {items.map((c) => (
         <div key={c.id} className="flex items-baseline gap-2 px-1 text-xs text-muted-foreground">
           <span>{systemLine(c)}</span>
-          <span title={new Date(c.createdAt).toLocaleString()}>{new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          <span title={formatDateTime(c.createdAt)}>{formatTime(c.createdAt, { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
       ))}
     </div>
@@ -85,8 +86,8 @@ export default function TicketFeed({ comments }: { comments: TicketComment[] }) 
             <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">{b.item.authorName ?? (b.item.portalUserId ? 'Requester' : 'Technician')}</span>
               {!b.item.isPublic && <span className="font-medium text-warning">Internal</span>}
-              <span className="ml-auto" title={new Date(b.item.createdAt).toLocaleString()}>
-                {new Date(b.item.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              <span className="ml-auto" title={formatDateTime(b.item.createdAt)}>
+                {formatDateTime(b.item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </span>
             </div>
             <p className="whitespace-pre-wrap text-sm">{b.item.content}</p>

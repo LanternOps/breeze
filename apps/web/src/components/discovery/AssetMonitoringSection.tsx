@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import EnableMonitoringForm from './EnableMonitoringForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type MonitoringStatus = {
   enabled: boolean;
@@ -187,7 +188,7 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
               <p className="text-xs font-medium">SNMP Device Monitor</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {snmpDevice.snmpVersion} &middot; every {snmpDevice.pollingInterval}s
-                {snmpDevice.lastPolled ? ` • last polled ${new Date(snmpDevice.lastPolled).toLocaleString()}` : ''}
+                {snmpDevice.lastPolled ? ` • last polled ${formatDateTime(snmpDevice.lastPolled)}` : ''}
               </p>
             </div>
           )}

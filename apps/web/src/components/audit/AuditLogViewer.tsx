@@ -18,6 +18,7 @@ import AuditLogDetail, { type AuditLogEntry } from './AuditLogDetail';
 import AuditFilters from './AuditFilters';
 import { navigateTo } from '@/lib/navigation';
 import { formatAuditAction, formatAuditDetails } from '@/lib/auditFormat';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAddress';
 
@@ -432,7 +433,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                           </button>
                           <div>
                             <p className="font-medium text-foreground">
-                              {new Date(entry.timestamp).toLocaleString([], { timeZone: timezone })}
+                              {formatDateTime(entry.timestamp, { timeZone: timezone })}
                             </p>
                             <p className="text-xs text-muted-foreground">{entry.resourceType}</p>
                           </div>

@@ -3,6 +3,7 @@ import { Plus, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { SCAN_STATUS_COLORS } from './constants';
 import CreateScanModal from './CreateScanModal';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Scan = {
   id: string;
@@ -122,7 +123,7 @@ export default function ScansTab() {
                 </td>
                 <td className="px-4 py-3 text-xs">{scan.findings?.total ?? '-'}</td>
                 <td className="px-4 py-3 text-xs text-muted-foreground">
-                  {scan.startedAt ? new Date(scan.startedAt).toLocaleString() : scan.createdAt ? new Date(scan.createdAt).toLocaleString() : '-'}
+                  {scan.startedAt ? formatDateTime(scan.startedAt) : scan.createdAt ? formatDateTime(scan.createdAt) : '-'}
                 </td>
                 <td className="px-4 py-3 text-xs text-muted-foreground">
                   {formatDuration(scan.startedAt, scan.completedAt)}

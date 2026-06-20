@@ -6,6 +6,7 @@ import { ToolExecutionAnalytics } from './ToolExecutionAnalytics';
 import { ApprovalHistoryFeed } from './ApprovalHistoryFeed';
 import { RateLimitStatus } from './RateLimitStatus';
 import { RejectionDenialLog } from './RejectionDenialLog';
+import { formatTime } from '@/lib/dateTimeFormat';
 
 type TimeRange = '24h' | '7d' | '30d';
 
@@ -177,7 +178,7 @@ export default function AiRiskDashboard() {
 
           {needsData && lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              Updated {lastUpdated.toLocaleTimeString()}
+              Updated {formatTime(lastUpdated)}
             </span>
           )}
         </div>

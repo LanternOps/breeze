@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Legend
 } from 'recharts';
+import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -27,20 +28,18 @@ type MetricDataPoint = {
 };
 
 function formatTimestamp(timestamp: string, range: TimeRange): string {
-  const date = new Date(timestamp);
-
   switch (range) {
     case '1h':
     case '6h':
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return formatTime(timestamp, { hour: '2-digit', minute: '2-digit' });
     case '24h':
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return formatTime(timestamp, { hour: '2-digit', minute: '2-digit' });
     case '7d':
-      return date.toLocaleDateString([], { weekday: 'short', hour: '2-digit' });
+      return formatDateTime(timestamp, { weekday: 'short', hour: '2-digit' });
     case '30d':
-      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      return formatDate(timestamp, { month: 'short', day: 'numeric' });
     default:
-      return date.toLocaleTimeString();
+      return formatTime(timestamp);
   }
 }
 
@@ -163,7 +162,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
               />
               <Tooltip
                 wrapperClassName="chart-tooltip"
-                labelFormatter={(value) => new Date(value).toLocaleString()}
+                labelFormatter={(value) => formatDateTime(String(value))}
               />
               <Line
                 type="monotone"
@@ -268,7 +267,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
             />
             <Tooltip
               wrapperClassName="chart-tooltip"
-              labelFormatter={(value) => new Date(value).toLocaleString()}
+              labelFormatter={(value) => formatDateTime(String(value))}
               formatter={(value: number, name: string) => [`${value}%`, name]}
             />
             <Legend />

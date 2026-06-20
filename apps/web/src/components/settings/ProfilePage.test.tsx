@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProfilePage from './ProfilePage';
 import { fetchWithAuth } from '../../stores/auth';
-import { writeDensity, writeFontPreference, writeThemePreference } from '@/lib/appearance';
+import { writeDensity, writeFontPreference, writeThemePreference, writeTimeFormatPreference } from '@/lib/appearance';
 
 vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: vi.fn(),
@@ -225,7 +225,8 @@ describe('ProfilePage theming settings', () => {
           preferences: {
             theme: 'dark',
             density: 'compact',
-            font: 'system'
+            font: 'system',
+            timeFormat: '12h'
           }
         });
       }
@@ -265,7 +266,8 @@ describe('ProfilePage theming settings', () => {
           preferences: {
             theme: 'light',
             density: 'comfortable',
-            font: 'breeze'
+            font: 'breeze',
+            timeFormat: '12h'
           }
         }}
       />
@@ -277,12 +279,14 @@ describe('ProfilePage theming settings', () => {
       writeThemePreference('dark');
       writeDensity('dense');
       writeFontPreference('system');
+      writeTimeFormatPreference('24h');
     });
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Dark/i })).toHaveAttribute('aria-pressed', 'true');
       expect(screen.getByRole('button', { name: /Dense/i })).toHaveAttribute('aria-pressed', 'true');
       expect(screen.getByText('OS interface font').closest('button')).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByText('24-hour').closest('button')).toHaveAttribute('aria-pressed', 'true');
     });
   });
 
@@ -297,7 +301,8 @@ describe('ProfilePage theming settings', () => {
           preferences: {
             theme: 'dark',
             density: 'compact',
-            font: 'breeze'
+            font: 'breeze',
+            timeFormat: '12h'
           }
         }}
       />
@@ -319,11 +324,65 @@ describe('ProfilePage theming settings', () => {
       preferences: {
         theme: 'dark',
         density: 'compact',
-        font: 'system'
+        font: 'system',
+        timeFormat: '12h'
       }
     });
     expect(localStorage.getItem('breeze.font')).toBe('system');
     expect(document.documentElement).toHaveAttribute('data-font', 'system');
+  });
+
+  it('saves the selected time format with existing appearance preferences', async () => {
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/users/me') {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        return makeJsonResponse({ preferences: body.preferences });
+      }
+      return undefined as unknown as Response;
+    });
+
+    render(
+      <ProfilePage
+        initialUser={{
+          id: 'user-1',
+          name: 'Casey Admin',
+          email: 'casey@example.com',
+          mfaEnabled: false,
+          preferences: {
+            theme: 'dark',
+            density: 'compact',
+            font: 'breeze',
+            timeFormat: '12h'
+          }
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByText('24-hour').closest('button')!);
+
+    await screen.findByText('Theming preferences saved.');
+
+    const preferenceCall = fetchWithAuthMock.mock.calls.find(
+      ([url]) => String(url) === '/users/me'
+    );
+    expect(preferenceCall).toBeDefined();
+    const [, init] = preferenceCall!;
+    expect(init?.method).toBe('PATCH');
+    expect(JSON.parse(String(init?.body))).toEqual({
+      preferences: {
+        theme: 'dark',
+        density: 'compact',
+        font: 'breeze',
+        timeFormat: '24h'
+      }
+    });
+    expect(localStorage.getItem('breeze.timeFormat')).toBe('24h');
+    await waitFor(() => {
+      expect(screen.getByText('24-hour').closest('button')).toHaveAttribute('aria-pressed', 'true');
+    });
   });
 });
 

@@ -13,6 +13,7 @@ import {
   RotateCcw,
   type LucideIcon,
 } from 'lucide-react';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type ActivityEvent = {
@@ -82,7 +83,7 @@ function absoluteTime(value?: string, timezone?: string): string | undefined {
   if (!value) return undefined;
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return undefined;
-  return d.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatDateTime(d, timezone ? { timeZone: timezone } : undefined);
 }
 
 export default function DeviceActivityFeed({ deviceId, timezone, limit = 8 }: DeviceActivityFeedProps) {

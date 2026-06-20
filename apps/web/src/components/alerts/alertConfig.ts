@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
@@ -90,5 +91,5 @@ export function formatRelativeTime(dateString: string): string {
 export function formatDateTime(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString();
+  return formatUserDateTime(date);
 }

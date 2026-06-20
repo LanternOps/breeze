@@ -29,6 +29,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
+import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
 const tabs = [
   {
@@ -185,10 +186,10 @@ type OrgDetails = {
 };
 
 // Fixed reference time for SSR hydration consistency
-const REFERENCE_TIME = '12:00 PM';
+const REFERENCE_TIME = '12:00';
 
 const formatTime = (date: Date) =>
-  date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  formatUserTime(date, { locale: 'en-US', hour: 'numeric', minute: '2-digit' });
 
 type OrgSettingsPageProps = {
   orgId?: string;

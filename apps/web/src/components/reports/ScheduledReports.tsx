@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getSafeHttpHref } from '@/lib/safeHref';
+import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import type { Report } from './ReportsList';
 
 const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -95,7 +96,7 @@ function formatDateTime(dateString?: string | null, timezone?: string): string {
   if (!dateString) return '-';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString([], { timeZone: timezone });
+  return formatUserDateTime(date, { timeZone: timezone });
 }
 
 function formatTime(time: string, timezone?: string): string {
@@ -106,7 +107,7 @@ function formatTime(time: string, timezone?: string): string {
   if (Number.isNaN(hour) || Number.isNaN(minute)) return time;
   const date = new Date();
   date.setHours(hour, minute, 0, 0);
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: timezone });
+  return formatUserTime(date, { hour: 'numeric', minute: '2-digit', timeZone: timezone });
 }
 
 function isValidEmail(email: string): boolean {

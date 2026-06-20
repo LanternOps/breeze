@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Inbox } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import PamRespondModal from './PamRespondModal';
 import PamRevokeModal from './PamRevokeModal';
 import PamRuleModal from './PamRuleModal';
@@ -183,7 +184,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                 return (
                   <tr key={r.id} className="border-b align-top last:border-0" data-testid={`pam-request-row-${r.id}`}>
                     <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
-                      {new Date(r.requestedAt).toLocaleString()}
+                      {formatDateTime(r.requestedAt)}
                     </td>
                     <td className="px-3 py-2">{r.deviceHostname ?? r.deviceId}</td>
                     <td className="px-3 py-2">{r.subjectUsername}</td>

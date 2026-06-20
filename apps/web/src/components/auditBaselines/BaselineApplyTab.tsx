@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import type { Baseline } from './BaselineFormModal';
@@ -525,13 +526,13 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                   </td>
                   <td className="px-4 py-3 text-right">{deviceCount}</td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {new Date(approval.createdAt).toLocaleString()}
+                    {formatDateTime(approval.createdAt)}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {isExpired && approval.status === 'pending' ? (
                       <span className="text-red-600">Expired</span>
                     ) : (
-                      new Date(approval.expiresAt).toLocaleString()
+                      formatDateTime(approval.expiresAt)
                     )}
                   </td>
                   <td className="px-4 py-3">

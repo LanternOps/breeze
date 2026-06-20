@@ -9,6 +9,7 @@ import {
   ShieldAlert,
   XCircle,
 } from 'lucide-react';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 type LogLevel = 'info' | 'warning' | 'error' | 'critical';
@@ -68,7 +69,7 @@ const categoryConfig: Record<LogCategory, { label: string; color: string }> = {
 function formatDateTime(value: string, timezone?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatUserDateTime(date, timezone ? { timeZone: timezone } : undefined);
 }
 
 const osSourcePresets: Record<OSType, { label: string; value: string }[]> = {

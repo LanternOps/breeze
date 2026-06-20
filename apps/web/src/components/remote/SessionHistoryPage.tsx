@@ -4,6 +4,7 @@ import SessionHistory, { normalizeRemoteSession, type RemoteSession, type Remote
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { getSafeHttpHref } from '@/lib/safeHref';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -83,7 +84,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
 
   const formatDateTime = (dateString?: string) => {
     if (!dateString) return '-';
-    return new Date(dateString).toLocaleString();
+    return formatUserDateTime(dateString);
   };
 
   const formatDuration = (seconds?: number) => {

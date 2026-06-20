@@ -5,6 +5,7 @@ import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { runAction, handleActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 /**
  * AI for Office — client-session audit viewer (spec §9.3). excel_client
@@ -88,7 +89,7 @@ interface SessionDetail {
 }
 
 const formatCost = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-const formatTime = (iso: string) => new Date(iso).toLocaleString();
+const formatTime = (iso: string) => formatDateTime(iso);
 
 /** Workbook-context chips (spec §9.3): tool name + range/sheet from toolInput. */
 function workbookChips(m: TranscriptMessage): string[] {

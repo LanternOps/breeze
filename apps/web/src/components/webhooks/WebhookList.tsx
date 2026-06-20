@@ -1,6 +1,7 @@
 import { useMemo, useState, type MouseEvent } from 'react';
 import { Pencil, Trash2, Play, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type WebhookStatus = 'active' | 'disabled';
 
@@ -65,7 +66,7 @@ const formatTimestamp = (value?: string | null, timezone?: string) => {
   if (!value) return 'N/A';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { timeZone: timezone });
+  return formatDateTime(date, { timeZone: timezone });
 };
 
 export default function WebhookList({

@@ -5,6 +5,7 @@ import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import AssetMonitoringSection from './AssetMonitoringSection';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 
 export type AssetDetail = DiscoveredAsset & {
@@ -238,7 +239,7 @@ export default function AssetDetailModal({
             <p className="mt-1 text-sm text-muted-foreground">
               {asset.ip}{asset.mac !== '—' && <> • {asset.mac}</>}
               {asset.manufacturer !== '—' && <> • {asset.manufacturer}</>}
-              {asset.lastSeen && <> • Last seen {new Date(asset.lastSeen).toLocaleString()}</>}
+              {asset.lastSeen && <> • Last seen {formatDateTime(asset.lastSeen)}</>}
             </p>
           </div>
           <button

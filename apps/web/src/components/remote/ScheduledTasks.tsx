@@ -24,6 +24,7 @@ import {
   Filter
 } from 'lucide-react';
 import { cn, paddingLeftPxClass } from '@/lib/utils';
+import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
 // Types
 export type TaskStatus = 'ready' | 'running' | 'disabled' | 'queued' | 'unknown';
@@ -187,7 +188,7 @@ function formatDateTime(dateString?: string): string {
   const isToday = date.toDateString() === now.toDateString();
 
   if (isToday) {
-    return 'Today ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return 'Today ' + formatUserTime(date, { hour: '2-digit', minute: '2-digit' });
   }
 
   const tomorrow = new Date(now);
@@ -195,10 +196,10 @@ function formatDateTime(dateString?: string): string {
   const isTomorrow = date.toDateString() === tomorrow.toDateString();
 
   if (isTomorrow) {
-    return 'Tomorrow ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return 'Tomorrow ' + formatUserTime(date, { hour: '2-digit', minute: '2-digit' });
   }
 
-  return date.toLocaleDateString([], {
+  return formatUserDateTime(date, {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

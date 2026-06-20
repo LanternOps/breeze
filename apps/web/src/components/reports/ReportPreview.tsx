@@ -10,6 +10,7 @@ import {
   FileText
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { ReportType } from './ReportsList';
 
 type PreviewMode = 'table' | 'chart';
@@ -103,9 +104,9 @@ export default function ReportPreview({
   const formatCellValue = (value: unknown): string => {
     if (value === null || value === undefined) return '-';
     if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (value instanceof Date) return value.toLocaleString([], { timeZone: effectiveTimezone });
+    if (value instanceof Date) return formatDateTime(value, { timeZone: effectiveTimezone });
     if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}/)) {
-      return new Date(value).toLocaleString([], { timeZone: effectiveTimezone });
+      return formatDateTime(value, { timeZone: effectiveTimezone });
     }
     if (Array.isArray(value)) return value.join(', ');
     if (typeof value === 'object') return JSON.stringify(value);
@@ -175,7 +176,7 @@ export default function ReportPreview({
         <div>
           <h3 className="text-lg font-semibold">{reportTypeLabels[data.type]}</h3>
           <p className="text-sm text-muted-foreground">
-            Generated {new Date(data.generatedAt).toLocaleString([], { timeZone: effectiveTimezone })}
+            Generated {formatDateTime(data.generatedAt, { timeZone: effectiveTimezone })}
             {data.data.rowCount !== undefined && ` - ${data.data.rowCount} records`}
           </p>
         </div>

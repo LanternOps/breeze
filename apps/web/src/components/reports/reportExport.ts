@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 /** Convert an unknown cell value to a display string. */
 function cellToString(value: unknown): string {
@@ -98,7 +99,7 @@ export function exportReport(
 
   // PDF
   const title = reportType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  const generatedAt = new Date().toLocaleString([], { timeZone: timezone });
+  const generatedAt = formatDateTime(new Date(), { timeZone: timezone });
 
   const doc = new jsPDF({ orientation: 'landscape' });
   doc.setFontSize(18);

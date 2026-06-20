@@ -1,3 +1,5 @@
+import type { TimeFormat } from '@breeze/shared';
+
 export const THEME_OPTIONS = ['light', 'dark', 'system'] as const;
 export type ThemePreference = (typeof THEME_OPTIONS)[number];
 
@@ -7,10 +9,14 @@ export type Density = (typeof DENSITY_OPTIONS)[number];
 export const FONT_OPTIONS = ['breeze', 'system'] as const;
 export type FontPreference = (typeof FONT_OPTIONS)[number];
 
+export const TIME_FORMAT_OPTIONS = ['12h', '24h'] as const satisfies readonly TimeFormat[];
+export type TimeFormatPreference = TimeFormat;
+
 export type AppearancePreferences = {
   theme?: ThemePreference;
   density?: Density;
   font?: FontPreference;
+  timeFormat?: TimeFormatPreference;
 };
 
 export const DEFAULT_THEME: ThemePreference = 'system';
@@ -20,6 +26,7 @@ export const DEFAULT_FONT: FontPreference = 'breeze';
 export const THEME_STORAGE_KEY = 'theme';
 export const DENSITY_STORAGE_KEY = 'breeze.density';
 export const FONT_STORAGE_KEY = 'breeze.font';
+export const TIME_FORMAT_STORAGE_KEY = 'breeze.timeFormat';
 
 export function isValidTheme(value: unknown): value is ThemePreference {
   return typeof value === 'string' && (THEME_OPTIONS as readonly string[]).includes(value);
@@ -33,6 +40,10 @@ export function isValidFont(value: unknown): value is FontPreference {
   return typeof value === 'string' && (FONT_OPTIONS as readonly string[]).includes(value);
 }
 
+export function isValidTimeFormat(value: unknown): value is TimeFormatPreference {
+  return typeof value === 'string' && (TIME_FORMAT_OPTIONS as readonly string[]).includes(value);
+}
+
 export function normalizeTheme(value: unknown): ThemePreference | undefined {
   return isValidTheme(value) ? value : undefined;
 }
@@ -43,6 +54,10 @@ export function normalizeDensity(value: unknown): Density | undefined {
 
 export function normalizeFont(value: unknown): FontPreference | undefined {
   return isValidFont(value) ? value : undefined;
+}
+
+export function normalizeTimeFormat(value: unknown): TimeFormatPreference | undefined {
+  return isValidTimeFormat(value) ? value : undefined;
 }
 
 function readStorageValue(key: string): string | null {
@@ -77,6 +92,27 @@ export function readDensity(): Density {
 
 export function readFontPreference(): FontPreference {
   return normalizeFont(readStorageValue(FONT_STORAGE_KEY)) ?? DEFAULT_FONT;
+}
+
+export function readTimeFormatPreference(): TimeFormatPreference | undefined {
+  return normalizeTimeFormat(readStorageValue(TIME_FORMAT_STORAGE_KEY));
+}
+
+export function detectBrowserTimeFormat(): TimeFormatPreference {
+  if (typeof Intl === 'undefined' || typeof Intl.DateTimeFormat !== 'function') {
+    return '12h';
+  }
+
+  try {
+    const hourCycle = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hourCycle;
+    return hourCycle === 'h23' || hourCycle === 'h24' ? '24h' : '12h';
+  } catch {
+    return '12h';
+  }
+}
+
+export function readResolvedTimeFormatPreference(): TimeFormatPreference {
+  return readTimeFormatPreference() ?? detectBrowserTimeFormat();
 }
 
 export function applyThemePreference(value: ThemePreference): void {
@@ -119,6 +155,12 @@ export function writeFontPreference(value: FontPreference): void {
   notifyFont(value);
 }
 
+export function writeTimeFormatPreference(value: TimeFormatPreference): void {
+  if (!isValidTimeFormat(value)) return;
+  writeStorageValue(TIME_FORMAT_STORAGE_KEY, value);
+  notifyTimeFormat(value);
+}
+
 export function applyAppearancePreferences(preferences: AppearancePreferences): void {
   if (preferences.theme) {
     writeThemePreference(preferences.theme);
@@ -129,11 +171,15 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
   if (preferences.font) {
     writeFontPreference(preferences.font);
   }
+  if (preferences.timeFormat) {
+    writeTimeFormatPreference(preferences.timeFormat);
+  }
 }
 
 const themeSubscribers = new Set<(value: ThemePreference) => void>();
 const densitySubscribers = new Set<(value: Density) => void>();
 const fontSubscribers = new Set<(value: FontPreference) => void>();
+const timeFormatSubscribers = new Set<(value: TimeFormatPreference) => void>();
 
 function notifyTheme(value: ThemePreference): void {
   for (const fn of themeSubscribers) {
@@ -165,6 +211,16 @@ function notifyFont(value: FontPreference): void {
   }
 }
 
+function notifyTimeFormat(value: TimeFormatPreference): void {
+  for (const fn of timeFormatSubscribers) {
+    try {
+      fn(value);
+    } catch {
+      // Subscriber errors must not break setter.
+    }
+  }
+}
+
 export function subscribeTheme(fn: (value: ThemePreference) => void): () => void {
   themeSubscribers.add(fn);
   return () => {
@@ -183,6 +239,13 @@ export function subscribeFont(fn: (value: FontPreference) => void): () => void {
   fontSubscribers.add(fn);
   return () => {
     fontSubscribers.delete(fn);
+  };
+}
+
+export function subscribeTimeFormat(fn: (value: TimeFormatPreference) => void): () => void {
+  timeFormatSubscribers.add(fn);
+  return () => {
+    timeFormatSubscribers.delete(fn);
   };
 }
 

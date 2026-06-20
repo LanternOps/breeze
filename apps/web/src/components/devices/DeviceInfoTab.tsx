@@ -5,6 +5,7 @@ import MacOSPermissionsCard from './MacOSPermissionsCard';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
 import { runAction, ActionError } from '../../lib/runAction';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
   DEVICE_ROLES,
   getDeviceRoleLabel,
@@ -80,9 +81,7 @@ function formatDisk(valueGb: number | null | undefined): string {
 
 function formatDate(dateString: string | null | undefined): string {
   if (!dateString) return '—';
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString([], {
+  return formatDateTime(dateString, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

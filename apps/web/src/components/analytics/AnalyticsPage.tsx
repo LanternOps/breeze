@@ -7,6 +7,7 @@ import CapacityForecast, { type ForecastPoint, type Thresholds } from './Capacit
 import SLAComplianceCard from './SLAComplianceCard';
 import ExecutiveSummary, { type ExecutiveSummaryProps } from './ExecutiveSummary';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatTime } from '@/lib/dateTimeFormat';
 
 const dashboardOptions = [
   { value: 'operations', label: 'Operations Overview' },
@@ -749,7 +750,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           </button>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              Updated {lastUpdated.toLocaleTimeString([], { timeZone: timezone })}
+              Updated {formatTime(lastUpdated, { timeZone: timezone })}
             </span>
           )}
         </div>

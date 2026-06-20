@@ -3,6 +3,7 @@ import type { ComponentType } from 'react';
 import { AlertTriangle, CheckCircle2, Clock, Loader2, Shield, ShieldCheck, ShieldOff, Trash2 } from 'lucide-react';
 
 import { fetchWithAuth } from '@/stores/auth';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { friendlyFetchError } from '@/lib/utils';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
@@ -146,7 +147,7 @@ export default function ThreatDetail({ threatId, timezone }: ThreatDetailProps) 
   const formatDateTime = (value: string): string => {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
-    return date.toLocaleString([], { timeZone: timezone });
+    return formatUserDateTime(date, { timeZone: timezone });
   };
 
   if (loading) {

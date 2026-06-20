@@ -18,6 +18,7 @@ import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 import { fetchWithAuth } from '../../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -373,7 +374,7 @@ function capabilitySummary(config?: BackupConfig | null): string {
     return 'Run Test to verify that the selected bucket has object lock enabled.';
   }
   if (capability.supported) {
-    return `Object lock verified on ${new Date(capability.checkedAt).toLocaleString()}.`;
+    return `Object lock verified on ${formatDateTime(capability.checkedAt)}.`;
   }
   return capability.error ?? 'Object lock is not available for this config.';
 }

@@ -14,6 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import C2CConnectionWizard from './C2CConnectionWizard';
 import C2CRestoreDialog from './C2CRestoreDialog';
@@ -108,8 +109,7 @@ function formatBytes(bytes: number | null): string {
 }
 
 function formatDate(d: string | null): string {
-  if (!d) return '-';
-  return new Date(d).toLocaleString();
+  return formatDateTime(d, { fallback: '-' });
 }
 
 export default function C2CDashboard() {

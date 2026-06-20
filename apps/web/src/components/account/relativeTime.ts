@@ -1,6 +1,8 @@
 // Minimal relative-time helper for lifecycle pages. Picks the largest unit
 // that fits and rounds; falls back to a locale date for anything older than
 // ~1 month.
+import { formatDateTime } from '@/lib/dateTimeFormat';
+
 export function formatRelative(input: string | null | undefined): string {
   if (!input) return 'Never';
   const date = new Date(input);
@@ -24,7 +26,7 @@ export function formatAbsolute(input: string | null | undefined): string {
   if (!input) return '—';
   const date = new Date(input);
   if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString(undefined, {
+  return formatDateTime(date, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

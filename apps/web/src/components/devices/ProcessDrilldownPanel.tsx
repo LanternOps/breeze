@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { Dialog } from '../shared/Dialog';
 
@@ -92,7 +93,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           {live
             ? 'Live (now)'
             : sampleTime
-              ? `Nearest sample: ${new Date(sampleTime).toLocaleString()}`
+              ? `Nearest sample: ${formatDateTime(sampleTime)}`
               : 'No sample near this time'}
         </p>
 

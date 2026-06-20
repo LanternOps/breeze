@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, ShieldAlert, UserCheck
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type UserRiskScore = {
   orgId: string;
@@ -92,7 +93,7 @@ const formatPercent = (value: number | null): string => (
 const formatDate = (value: string): string => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return formatDateTime(date, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
 const formatFactor = (value: string): string => (

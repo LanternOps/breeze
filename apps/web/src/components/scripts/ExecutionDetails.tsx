@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, ChevronDown, ChevronUp, Copy, Check, Clock, CheckCircle, XCircle, Loader2, AlertTriangle, Terminal, AlertOctagon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import type { ScriptExecution, ExecutionStatus } from './ExecutionHistory';
 
 type ExecutionDetailsProps = {
@@ -32,7 +33,7 @@ function formatDateTime(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return date.toLocaleString([], {
+  return formatUserDateTime(date, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

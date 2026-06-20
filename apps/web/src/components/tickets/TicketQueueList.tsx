@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 import SlaChip from './SlaChip';
 import { statusConfig, priorityConfig, type TicketSummary } from './ticketConfig';
 import { priorityLabel, statusLabel, type TicketConfig } from '../../lib/ticketConfigApi';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 interface Props {
   tickets: TicketSummary[];
@@ -121,7 +122,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
               <span className="truncate">{t.orgName ?? ''}</span>
               <span className="ml-auto shrink-0 flex items-center gap-2">
                 <SlaChip ticket={t} />
-                <span title={new Date(t.updatedAt).toLocaleString()}>{timeAgo(t.updatedAt)}</span>
+                <span title={formatDateTime(t.updatedAt)}>{timeAgo(t.updatedAt)}</span>
               </span>
             </div>
           </button>

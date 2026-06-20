@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
 type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
@@ -199,7 +200,7 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
             <div key={d.label} className="rounded-lg border bg-card p-3">
               <p className="text-xs font-medium text-muted-foreground">{d.label}</p>
               <p className="text-sm font-medium text-foreground mt-0.5">
-                {new Date(d.value!).toLocaleString()}
+                {formatDateTime(d.value)}
               </p>
             </div>
           ))}
@@ -261,7 +262,7 @@ function TimelineView({ entries }: { entries: TimelineEntry[] }) {
               <p className="text-sm text-foreground">{entry.summary}</p>
               <div className="flex items-center gap-2 mt-1">
                 <span className="text-xs text-muted-foreground">
-                  {new Date(entry.at).toLocaleString()}
+                  {formatDateTime(entry.at)}
                 </span>
                 {entry.actor && (
                   <>
@@ -318,7 +319,7 @@ function ActionsView({ entries }: { entries: ActionEntry[] }) {
                 {action.executedBy ?? '-'}
               </td>
               <td className="px-4 py-3 text-muted-foreground">
-                {new Date(action.executedAt).toLocaleString()}
+                {formatDateTime(action.executedAt)}
               </td>
             </tr>
           ))}
@@ -361,7 +362,7 @@ function EvidenceView({ entries }: { entries: EvidenceEntry[] }) {
                 {ev.collectedBy ?? '-'}
               </td>
               <td className="px-4 py-3 text-muted-foreground">
-                {new Date(ev.collectedAt).toLocaleString()}
+                {formatDateTime(ev.collectedAt)}
               </td>
               <td className="px-4 py-3 text-muted-foreground font-mono text-xs">
                 {ev.hash ? ev.hash.substring(0, 12) + '...' : '-'}

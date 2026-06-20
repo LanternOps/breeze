@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import DRExecutionView from './DRExecutionView';
@@ -43,8 +44,7 @@ type DRExecution = {
 };
 
 function formatDate(value: string | null): string {
-  if (!value) return '-';
-  return new Date(value).toLocaleString();
+  return formatDateTime(value, { fallback: '-' });
 }
 
 function formatDuration(startedAt: string | null, completedAt: string | null): string {

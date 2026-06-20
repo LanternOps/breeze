@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
   Legend
 } from 'recharts';
+import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import ProcessDrilldownPanel from './ProcessDrilldownPanel';
 
@@ -66,12 +67,12 @@ function formatTimestamp(value: string, range: TimeRange) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   if (range === '24h') {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return formatTime(date, { hour: '2-digit', minute: '2-digit' });
   }
   if (range === '7d') {
-    return date.toLocaleDateString([], { weekday: 'short', hour: '2-digit' });
+    return formatDateTime(date, { weekday: 'short', hour: '2-digit' });
   }
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return formatDate(date, { month: 'short', day: 'numeric' });
 }
 
 export default function DevicePerformanceGraphs({ deviceId, compact = false }: DevicePerformanceGraphsProps) {
@@ -240,7 +241,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             />
             <Tooltip
               wrapperClassName="chart-tooltip"
-              labelFormatter={(value) => new Date(value).toLocaleString()}
+              labelFormatter={(value) => formatDateTime(String(value))}
               formatter={(value: number, name: string) => [`${value}%`, name]}
             />
             {!compact && <Legend />}
@@ -304,7 +305,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                 />
                 <Tooltip
                   wrapperClassName="chart-tooltip"
-                  labelFormatter={(value) => new Date(value).toLocaleString()}
+                  labelFormatter={(value) => formatDateTime(String(value))}
                   formatter={(value: number, name: string) => [formatBandwidth(value), name]}
                 />
                 {!compact && <Legend />}
@@ -385,7 +386,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                 />
                 <Tooltip
                   wrapperClassName="chart-tooltip"
-                  labelFormatter={(value) => new Date(value).toLocaleString()}
+                  labelFormatter={(value) => formatDateTime(String(value))}
                   formatter={(value: number, name: string) => [formatBytesPerSec(value), name]}
                 />
                 {!compact && <Legend />}

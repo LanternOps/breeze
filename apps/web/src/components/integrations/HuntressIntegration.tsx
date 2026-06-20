@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { type Organization, useOrgStore } from '../../stores/orgStore';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Integration = {
   id: string;
@@ -470,7 +471,7 @@ export default function HuntressIntegration() {
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex justify-between text-muted-foreground">
                 <span>Last sync</span>
-                <span className="text-foreground">{integration.lastSyncAt ? new Date(integration.lastSyncAt).toLocaleString() : 'Never'}</span>
+                <span className="text-foreground">{integration.lastSyncAt ? formatDateTime(integration.lastSyncAt) : 'Never'}</span>
               </div>
               {integration.lastSyncError && (
                 <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">{integration.lastSyncError}</div>
@@ -591,7 +592,7 @@ export default function HuntressIntegration() {
                 <div>
                   <div className="font-medium">{incident.title}</div>
                   <div className="text-xs text-muted-foreground">
-                    {incident.reportedAt ? new Date(incident.reportedAt).toLocaleString() : 'Unknown time'} - {incident.status}
+                    {incident.reportedAt ? formatDateTime(incident.reportedAt) : 'Unknown time'} - {incident.status}
                   </div>
                 </div>
                 <SeverityBadge severity={incident.severity} />
