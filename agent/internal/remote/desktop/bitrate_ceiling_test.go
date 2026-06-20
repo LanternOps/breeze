@@ -86,6 +86,43 @@ func TestResolveMaxBitrate_EnvOverrideCanLowerForWAN(t *testing.T) {
 	}
 }
 
+func TestResolveMaxBitrate_EnvOverrideAcceptsExactBounds(t *testing.T) {
+	// Guards the inclusive [1, 200] Mbps window: a future `<`→`<=` (or
+	// `>`→`>=`) flip in the bounds check would silently start rejecting a
+	// legitimately-configured floor/ceiling and fall back to the default.
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{"1", minConfiguredMaxBitrate},   // exact lower bound, accepted
+		{"200", maxConfiguredMaxBitrate}, // exact upper bound, accepted
+	}
+	for _, tc := range cases {
+		t.Run("raw="+tc.raw, func(t *testing.T) {
+			t.Setenv(maxBitrateEnvVar, tc.raw)
+			resetEnvCeilingForTest()
+			if got := resolveMaxBitrate(3840, 2160); got != tc.want {
+				t.Fatalf("boundary override %q = %d, want %d (must be accepted, not clamped to default)", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveMaxBitrate_NaNAndInfIgnored(t *testing.T) {
+	// ParseFloat accepts these literals with err==nil; they must be rejected,
+	// not applied or crashed on.
+	cases := []string{"NaN", "Inf", "+Inf", "-Inf"}
+	for _, raw := range cases {
+		t.Run("raw="+raw, func(t *testing.T) {
+			t.Setenv(maxBitrateEnvVar, raw)
+			resetEnvCeilingForTest()
+			if got := resolveMaxBitrate(2560, 1440); got != defaultMaxBitrateHiRes {
+				t.Fatalf("non-finite override %q applied: got %d, want default %d", raw, got, defaultMaxBitrateHiRes)
+			}
+		})
+	}
+}
+
 func TestResolveMaxBitrate_InvalidEnvIgnored(t *testing.T) {
 	cases := []string{"abc", "-5", "0", "  "}
 	for _, raw := range cases {

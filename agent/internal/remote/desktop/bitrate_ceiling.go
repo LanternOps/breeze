@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -61,7 +62,10 @@ func configuredMaxBitrate() int {
 			return
 		}
 		mbps, err := strconv.ParseFloat(raw, 64)
-		if err != nil || mbps <= 0 {
+		// ParseFloat accepts the literals "NaN"/"Inf" with err==nil; reject them
+		// here so they get the accurate "invalid" message rather than falling
+		// through to the out-of-range branch with garbage after int() conversion.
+		if err != nil || math.IsNaN(mbps) || math.IsInf(mbps, 0) || mbps <= 0 {
 			slog.Warn("Ignoring invalid "+maxBitrateEnvVar+" (expected a positive number of Mbps)",
 				"value", raw)
 			return
