@@ -34,15 +34,10 @@ const SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP = parsePositiveIntEnv('SENSITIVE_DAT
 const SENSITIVE_DATA_ORG_QUEUE_BACKPRESSURE_LIMIT = parsePositiveIntEnv('SENSITIVE_DATA_ORG_QUEUE_BACKPRESSURE_LIMIT', 500);
 const SENSITIVE_DATA_THROTTLE_REQUEUE_SECONDS = parsePositiveIntEnv('SENSITIVE_DATA_THROTTLE_REQUEUE_SECONDS', 20);
 
-type DispatchScanJobData = {
-  type: 'dispatch-scan';
-  scanId: string;
-};
-
-type SchedulePoliciesJobData = {
-  type: 'schedule-policies';
-  scanAt: string;
-};
+// Per-variant types are derived from the Zod union validated at the dequeue
+// boundary so they can never drift from the schema (see queueSchemas.ts).
+type DispatchScanJobData = Extract<SensitiveDataQueueJobData, { type: 'dispatch-scan' }>;
+type SchedulePoliciesJobData = Extract<SensitiveDataQueueJobData, { type: 'schedule-policies' }>;
 
 type SensitiveDataJobData = SensitiveDataQueueJobData;
 

@@ -31,7 +31,7 @@ import {
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
-import { automationQueueJobDataSchema, type AutomationQueueJobData } from './queueSchemas';
+import { automationQueueJobDataSchema, type AutomationAssignmentLevel, type AutomationQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
@@ -59,58 +59,17 @@ function logMissingTableWarning(worker: string, feature: string): void {
 const AUTOMATION_QUEUE = 'automations';
 const SCHEDULE_SCAN_INTERVAL_MS = 60 * 1000;
 
-interface ScanSchedulesJobData {
-  type: 'scan-schedules';
-  scanAt: string;
-}
+// Per-variant types are derived from the Zod union so they can never drift from
+// the schema validated at the dequeue boundary (see queueSchemas.ts:233-241).
+type TriggerScheduleJobData = Extract<AutomationQueueJobData, { type: 'trigger-schedule' }>;
+type TriggerEventJobData = Extract<AutomationQueueJobData, { type: 'trigger-event' }>;
+type ExecuteRunJobData = Extract<AutomationQueueJobData, { type: 'execute-run' }>;
+type TriggerConfigPolicyScheduleJobData = Extract<AutomationQueueJobData, { type: 'trigger-config-policy-schedule' }>;
+type ExecuteConfigPolicyRunJobData = Extract<AutomationQueueJobData, { type: 'execute-config-policy-run' }>;
 
-interface TriggerScheduleJobData {
-  type: 'trigger-schedule';
-  automationId: string;
-  slotKey: string;
-  scanAt: string;
-}
-
-interface TriggerEventJobData {
-  type: 'trigger-event';
-  automationId: string;
-  eventType: string;
-  eventId?: string;
-  eventPayload?: Record<string, unknown>;
-  eventTimestamp: string;
-}
-
-interface ExecuteRunJobData {
-  type: 'execute-run';
-  runId: string;
-  targetDeviceIds?: string[];
-}
-
-interface ConfigPolicyAssignmentTarget {
-  level: string;
-  targetId: string;
-}
-
-interface TriggerConfigPolicyScheduleJobData {
-  type: 'trigger-config-policy-schedule';
-  configPolicyAutomationId: string;
-  configPolicyAutomationName: string;
-  assignmentTargets?: ConfigPolicyAssignmentTarget[];
-  // Backward compatibility with already-enqueued jobs from older payloads.
-  assignmentLevel?: string;
-  assignmentTargetId?: string;
-  policyId: string;
-  policyName: string;
-  slotKey: string;
-  scanAt: string;
-}
-
-interface ExecuteConfigPolicyRunJobData {
-  type: 'execute-config-policy-run';
-  configPolicyAutomationId: string;
-  targetDeviceIds: string[];
-  triggeredBy: string;
-}
+// Shared shape for a resolved (level, targetId) assignment pair, matching the
+// element type of the schema's assignmentTargets[] array.
+type ConfigPolicyAssignmentTarget = { level: AutomationAssignmentLevel; targetId: string };
 
 type AutomationJobData = AutomationQueueJobData;
 

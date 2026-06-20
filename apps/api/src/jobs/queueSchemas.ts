@@ -144,8 +144,19 @@ export const monitorQueueJobDataSchema = z.discriminatedUnion('type', [
   }).strict(),
 ]);
 
+// Closed set of assignment levels resolveDeviceIdsForAssignment() understands.
+// An unknown level used to be silently warned-and-skipped at runtime; constrain
+// it here so a malformed level is dead-lettered at the dequeue boundary instead.
+export const automationAssignmentLevelSchema = z.enum([
+  'device',
+  'device_group',
+  'site',
+  'organization',
+  'partner',
+]);
+
 const automationAssignmentTargetSchema = z.object({
-  level: z.string().min(1),
+  level: automationAssignmentLevelSchema,
   targetId: z.string().min(1),
 }).strict();
 
@@ -153,14 +164,12 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('scan-schedules'),
     scanAt: z.string().min(1),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
     type: z.literal('trigger-schedule'),
     automationId: z.string().min(1),
     slotKey: z.string().min(1),
     scanAt: z.string().min(1),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
     type: z.literal('trigger-event'),
@@ -169,33 +178,31 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     eventId: z.string().min(1).optional(),
     eventPayload: z.record(z.string(), z.unknown()).optional(),
     eventTimestamp: z.string().min(1),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
     type: z.literal('execute-run'),
     runId: z.string().min(1),
     targetDeviceIds: z.array(z.string().min(1)).optional(),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
     type: z.literal('trigger-config-policy-schedule'),
     configPolicyAutomationId: z.string().min(1),
     configPolicyAutomationName: z.string().min(1),
     assignmentTargets: z.array(automationAssignmentTargetSchema).optional(),
-    assignmentLevel: z.string().min(1).optional(),
+    // Backward compatibility with already-enqueued (pre-deploy) jobs that carry
+    // a single legacy assignment target rather than the assignmentTargets[] array.
+    assignmentLevel: automationAssignmentLevelSchema.optional(),
     assignmentTargetId: z.string().min(1).optional(),
     policyId: z.string().min(1),
     policyName: z.string().min(1),
     slotKey: z.string().min(1),
     scanAt: z.string().min(1),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
     type: z.literal('execute-config-policy-run'),
     configPolicyAutomationId: z.string().min(1),
     targetDeviceIds: z.array(z.string().min(1)),
     triggeredBy: z.string().min(1),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
 ]);
 
@@ -203,12 +210,10 @@ export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('dispatch-scan'),
     scanId: z.string().min(1),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
     type: z.literal('schedule-policies'),
     scanAt: z.string().min(1),
-    meta: queueActorMetaSchema.optional(),
   }).strict(),
 ]);
 
@@ -234,6 +239,7 @@ export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
 export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
 export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
+export type AutomationAssignmentLevel = z.infer<typeof automationAssignmentLevelSchema>;
 export type SensitiveDataQueueJobData = z.infer<typeof sensitiveDataQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
