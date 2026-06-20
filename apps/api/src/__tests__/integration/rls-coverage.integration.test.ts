@@ -235,6 +235,7 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['config_policy_sensitive_data_settings', ['configuration_policies']],
   ['config_policy_monitoring_settings', ['configuration_policies']],
   ['config_policy_monitoring_watches', ['configuration_policies']],
+  ['config_policy_remote_access_settings', ['configuration_policies']],
   ['dashboard_widgets', ['analytics_dashboards']],
   ['backup_snapshot_files', ['backup_snapshots']],
   // psa_ticket_mappings already shipped a correct single-table-join policy
