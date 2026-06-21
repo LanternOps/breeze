@@ -36,6 +36,7 @@ export const PERMISSION_GRANTS = {
   // Tickets
   TICKETS_READ: { resource: 'tickets', action: 'read' },
   TICKETS_WRITE: { resource: 'tickets', action: 'write' },
+  TICKETS_MANAGE: { resource: 'tickets', action: 'manage' },
 
   // Catalog (billing/invoicing program)
   CATALOG_READ: { resource: 'catalog', action: 'read' },
