@@ -7,6 +7,9 @@ import { partners, organizations } from './orgs';
 import { users } from './users';
 import { INVOICE_STATUSES, INVOICE_LINE_SOURCE_TYPES, PAYMENT_METHODS } from '@breeze/shared';
 
+// Spread the readonly SSOT tuples into pgEnum's mutable `[string, ...string[]]`.
+// Keep this a DIRECT spread of the const tuple — routing through a `string[]`
+// intermediate would silently widen the column type and drop literal narrowing.
 export const invoiceStatusEnum = pgEnum('invoice_status', [...INVOICE_STATUSES]);
 export const invoiceLineSourceTypeEnum = pgEnum('invoice_line_source_type', [...INVOICE_LINE_SOURCE_TYPES]);
 export const paymentMethodEnum = pgEnum('payment_method', [...PAYMENT_METHODS]);

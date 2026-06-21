@@ -1,4 +1,6 @@
 import { z } from 'zod';
+// Spread the readonly SSOT tuples into z.enum (keep it a direct spread of the
+// const — a `string[]` intermediate would widen the schema to z.enum(string)).
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 
 const money = z.number().nonnegative().multipleOf(0.01);
