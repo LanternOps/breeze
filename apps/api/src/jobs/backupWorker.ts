@@ -40,6 +40,7 @@ import { getDueOccurrenceKey } from '../routes/backup/helpers';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 import { markBackupJobFailedIfInFlight } from '../services/backupResultPersistence';
 import { createScheduledBackupJobIfAbsent } from '../services/backupJobCreation';
+import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
@@ -511,6 +512,16 @@ async function processDispatchBackup(
         ...target.payload,
       },
     };
+
+    // Record the server-side dispatch expectation BEFORE sending so the WS
+    // result handler can verify this completion corresponds to work we actually
+    // dispatched and hasn't already been consumed (F6). Recording first closes
+    // the (otherwise negligible) window where a result could arrive before the
+    // expectation lands. If the send then fails, the orphaned expectation is
+    // harmless — it expires via TTL and can't be consumed without a matching
+    // job + owning device. Best-effort: a Redis outage makes the result
+    // fail-closed on arrival (dropped), not trusted.
+    await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
 
     const sent = sendCommandToAgent(agentId, command);
     if (sent) {

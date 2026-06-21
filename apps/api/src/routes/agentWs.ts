@@ -17,7 +17,12 @@ import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
-import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
+import {
+  applyVaultSyncCommandResult,
+  findRecentCompletedSnapshotForDevice,
+  resolveVaultForResult,
+} from '../services/vaultSyncPersistence';
+import { claimConsumeOnce, consumeDispatchedExpectation, recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
@@ -488,6 +493,13 @@ const agentPingStates = new Map<string, AgentPingState>();
 const AGENT_PING_INTERVAL_MS = 30_000;
 const AGENT_PONG_TIMEOUT_MS = 10_000;
 const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
+
+// F5: a `vault-auto-sync-<snapshotID>` result is only honored if a real,
+// recently-COMPLETED backup snapshot exists for the authenticated device with
+// that snapshot id. Auto-sync runs right after a backup, but the agent may be
+// slow or reconnect, so the window is generous; dropping a legitimate late
+// result only degrades vault state to "not-synced" (fail-safe).
+const VAULT_AUTO_SYNC_SNAPSHOT_FRESHNESS_MS = 24 * 60 * 60 * 1000; // 24h
 const MONITOR_COMMAND_TYPES = new Set(['network_ping', 'network_tcp_check', 'network_http_check', 'network_dns_check']);
 
 type OrphanedResultExpectation =
@@ -846,7 +858,7 @@ async function updateDeviceStatus(agentId: string, status: 'online' | 'offline')
  * (without a deviceCommands DB record). This covers discovery scans
  * and SNMP polls which use their own job tracking tables.
  */
-async function processOrphanedCommandResult(
+export async function processOrphanedCommandResult(
   agentId: string,
   authenticatedDeviceId: string,
   result: z.infer<typeof commandResultSchema>
@@ -946,14 +958,65 @@ async function processOrphanedCommandResult(
 
   if (result.commandId.startsWith('vault-auto-sync-')) {
     try {
+      // Integrity gate (F5): the `vault-auto-sync-<snapshotID>` command id is
+      // agent-generated — there is no server dispatch to bind to. Derive
+      // legitimacy from a server-known event instead: a real, recently-completed
+      // backup snapshot for THIS device carrying that snapshot id. Without a
+      // matching snapshot, a compromised agent could forge sync-completed/failed
+      // state on the device's vault, so we log + drop (mutate nothing).
+      const snapshotId = result.commandId.slice('vault-auto-sync-'.length);
+      if (!snapshotId) {
+        console.warn(`[AgentWs] Dropping vault auto-sync result from agent ${agentId}: empty snapshot id. reason=empty-snapshot-id`);
+        return;
+      }
+
+      const snapshot = await findRecentCompletedSnapshotForDevice(
+        authenticatedDeviceId,
+        snapshotId,
+        VAULT_AUTO_SYNC_SNAPSHOT_FRESHNESS_MS,
+      );
+      if (!snapshot) {
+        console.warn(
+          `[AgentWs] Dropping vault auto-sync result for snapshot ${snapshotId} from agent ${agentId} ` +
+          `(device ${authenticatedDeviceId}): no recent completed backup snapshot matches. reason=no-matching-snapshot`
+        );
+        return;
+      }
+
       const { normalizedResult, stdout, validationError } = normalizeCriticalResultIfNeeded('vault_sync', result);
+
+      // Resolve the target vault unambiguously (no single-active-vault fallback)
+      // so we can key consume-once on (deviceId, snapshotId, vaultId) and refuse
+      // to guess which vault a forged result is "for".
+      const vault = await resolveVaultForResult(authenticatedDeviceId, stdout);
+      if (!vault) {
+        console.warn(
+          `[AgentWs] Dropping vault auto-sync result for snapshot ${snapshotId} from agent ${agentId} ` +
+          `(device ${authenticatedDeviceId}): vault could not be unambiguously derived. reason=ambiguous-vault`
+        );
+        return;
+      }
+
+      // Consume-once on the derived tuple: the same snapshot can't drive repeated
+      // or overwriting vault-state updates. Fail-closed (Redis down ⇒ dropped).
+      const claim = await claimConsumeOnce('vault_sync', authenticatedDeviceId, `${snapshotId}:${vault.id}`);
+      if (!claim.ok) {
+        console.warn(
+          `[AgentWs] Dropping vault auto-sync result for snapshot ${snapshotId} (vault ${vault.id}) from agent ${agentId}: ` +
+          `already consumed or Redis unavailable. reason=consume-once-rejected`
+        );
+        return;
+      }
+
       if (validationError) {
         console.warn(`[AgentWs] ${validationError} for orphaned auto-sync ${result.commandId}`);
-        // Update vault state to reflect the validation failure so it's visible to operators
+        // Snapshot-correlated + consumed: a malformed payload from an otherwise
+        // legitimate sync is surfaced to operators as a failure on the resolved vault.
         await applyVaultSyncCommandResult({
           deviceId: authenticatedDeviceId,
           resultStatus: 'failed',
           error: validationError,
+          allowSingleVaultFallback: false,
         });
         return;
       }
@@ -963,6 +1026,7 @@ async function processOrphanedCommandResult(
         stdout,
         stderr: normalizedResult.stderr,
         error: normalizedResult.error,
+        allowSingleVaultFallback: false,
       });
     } catch (err) {
       console.error(`[AgentWs] Failed to process vault auto-sync result for ${agentId}:`, err);
@@ -1151,6 +1215,19 @@ async function processOrphanedCommandResult(
       console.warn(`[AgentWs] Rejecting backup result for job ${backupJob.id} from unexpected agent ${agentId}`);
       return;
     }
+    // Integrity gate (F6): accept a backup completion only if it corresponds to a
+    // dispatch we recorded and hasn't already been consumed. This blocks a
+    // compromised agent that preemptively reports `completed` with fabricated
+    // metadata, replays a result, or re-drives an already-terminal/never-dispatched
+    // job UUID. Fail-closed: Redis unavailable ⇒ dropped (not trusted).
+    const backupExpectation = await consumeDispatchedExpectation('backup', backupJob.deviceId, backupJob.id);
+    if (!backupExpectation.ok) {
+      console.warn(
+        `[AgentWs] Dropping backup result for job ${backupJob.id} from agent ${agentId}: ` +
+        `no outstanding dispatch expectation (forged, replayed, or already-consumed). reason=expectation-not-consumed`
+      );
+      return;
+    }
     console.log(`[AgentWs] Processing backup result for job ${backupJob.id} from agent ${agentId}`);
     try {
       const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
@@ -1198,6 +1275,11 @@ async function processOrphanedCommandResult(
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
       captureException(err);
+      // We already consumed the dispatch expectation but persistence failed
+      // (e.g. transient BullMQ/DB error). Re-record it so a legitimate agent
+      // retry of this same result can be accepted instead of being permanently
+      // dropped as "already-consumed". Best-effort; safe to no-op on Redis down.
+      await recordDispatchedExpectation('backup', backupJob.deviceId, backupJob.id);
     }
     return;
   }
