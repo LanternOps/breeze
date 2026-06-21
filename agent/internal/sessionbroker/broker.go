@@ -648,14 +648,21 @@ func (b *Broker) preferredRunAsUserSessionForOS(goos string) *Session {
 	consoleSession := b.ConsoleSessionID()
 
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	var best *Session
+	var excludedNonConsole int // run_as_user helpers skipped solely for being off-console
 	for _, s := range b.sessions {
 		if !s.HasScope("run_as_user") {
 			continue
 		}
 		if s.WinSessionID != consoleSession {
+			// A run_as_user helper exists but is bound to a non-console session.
+			// On a single-user host this never happens; on a multi-user / RDS host
+			// it is either a co-logged-in attacker's helper (the threat #1009
+			// closes) OR the legitimate operator working from a non-console
+			// session. Either way the console binding correctly refuses to deliver
+			// here — but count the exclusion so we can make the drop observable
+			// below rather than vanishing silently.
+			excludedNonConsole++
 			continue
 		}
 		if best == nil {
@@ -672,6 +679,24 @@ func (b *Broker) preferredRunAsUserSessionForOS(goos string) *Session {
 		if betterSession(s, best) {
 			best = s
 		}
+	}
+	b.mu.RUnlock()
+
+	// Observable fallback (#1009 run_as_user slice). When the ONLY eligible
+	// run_as_user helpers were excluded purely because they sit outside the
+	// active console session, the caller will fall back to local SYSTEM
+	// execution. That fallback is a deliberate fail-safe (don't deliver a
+	// run_as_user script to the wrong principal), but on an unusual
+	// multi-session / RDS host where the operator's helper genuinely lives
+	// off-console it manifests as a silent non-delivery. Emit a clear WARN so
+	// the dropped delivery is diagnosable instead of disappearing. When no
+	// run_as_user helper is connected at all (excludedNonConsole == 0), stay
+	// quiet — nil is the expected result and warning on every poll would be noise.
+	if best == nil && excludedNonConsole > 0 {
+		log.Warn("run_as_user delivery suppressed: no helper in the active console session",
+			"consoleWinSession", consoleSession,
+			"excludedNonConsole", excludedNonConsole,
+		)
 	}
 	return best
 }

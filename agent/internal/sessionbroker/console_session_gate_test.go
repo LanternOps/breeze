@@ -1,6 +1,7 @@
 package sessionbroker
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -221,6 +222,114 @@ func TestPreferredRunAsUserSessionNoConsoleHelper(t *testing.T) {
 
 	if got := b.preferredRunAsUserSessionForOS("windows"); got != nil {
 		t.Fatalf("preferredRunAsUserSessionForOS(windows) = %q, want nil (no console helper)", got.SessionID)
+	}
+}
+
+// TestPreferredRunAsUserSessionWarnsWhenConsoleBindingSuppressesDelivery is the
+// observable-fallback contract for the still-open run_as_user slice of #1009.
+//
+// The console binding (TestPreferredRunAsUserSessionFiltersByConsoleSession)
+// correctly refuses to deliver a run_as_user script to a co-logged-in user's
+// helper in a non-console session. But on an unusual multi-session / RDS host —
+// where the operator's helper genuinely lives outside the active console session
+// (e.g. the physical console sits at the lock screen while the operator works
+// over RDP) — that same binding silently drops delivery, and the caller then
+// downgrades to local SYSTEM execution. That drop must be OBSERVABLE: when the
+// only eligible run_as_user helpers are excluded purely because they are outside
+// the console session, the broker must emit a clear WARN naming the suppression
+// so the dropped delivery is diagnosable, rather than vanishing silently.
+func TestPreferredRunAsUserSessionWarnsWhenConsoleBindingSuppressesDelivery(t *testing.T) {
+	logs := captureLogs(t)
+
+	now := time.Now()
+
+	// A user-role run_as_user helper exists, but only in a NON-console session.
+	otherUser, otherClient := newTestUserSession(t, "noncon-user", "alice", now.Add(-1*time.Minute))
+	defer otherClient.Close()
+	otherUser.WinSessionID = "3"
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			otherUser.SessionID: otherUser,
+		},
+		byIdentity:         make(map[string][]*Session),
+		staleHelpers:       make(map[string][]int),
+		consoleSessionIDFn: func() string { return "1" },
+	}
+
+	got := b.preferredRunAsUserSessionForOS("windows")
+	if got != nil {
+		t.Fatalf("preferredRunAsUserSessionForOS(windows) = %q, want nil (no console helper)", got.SessionID)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "run_as_user delivery suppressed") {
+		t.Fatalf("expected a WARN that run_as_user delivery was suppressed by console binding; got logs:\n%s", out)
+	}
+	// The warning must name the active console session and the count of
+	// excluded non-console helpers so an operator can diagnose the RDS-host drop.
+	if !strings.Contains(out, "consoleWinSession") || !strings.Contains(out, "excludedNonConsole") {
+		t.Fatalf("suppression warning missing diagnostic fields; got logs:\n%s", out)
+	}
+}
+
+// TestPreferredRunAsUserSessionNoWarnWhenNoUserHelper asserts the suppression
+// warning is NOT noise: when there is genuinely no user-role run_as_user helper
+// connected at all (so nil is the correct, expected result — not a console-binding
+// drop), the broker must stay quiet rather than crying wolf on every poll.
+func TestPreferredRunAsUserSessionNoWarnWhenNoUserHelper(t *testing.T) {
+	logs := captureLogs(t)
+
+	b := &Broker{
+		sessions:           map[string]*Session{},
+		byIdentity:         make(map[string][]*Session),
+		staleHelpers:       make(map[string][]int),
+		consoleSessionIDFn: func() string { return "1" },
+	}
+
+	if got := b.preferredRunAsUserSessionForOS("windows"); got != nil {
+		t.Fatalf("preferredRunAsUserSessionForOS(windows) = %q, want nil", got.SessionID)
+	}
+
+	if out := logs.String(); strings.Contains(out, "run_as_user delivery suppressed") {
+		t.Fatalf("did not expect a suppression WARN when no user helper is connected; got logs:\n%s", out)
+	}
+}
+
+// TestPreferredRunAsUserSessionNoWarnOnConsoleMatch asserts that the happy path —
+// a helper IS present in the console session and is selected — logs no spurious
+// suppression warning.
+func TestPreferredRunAsUserSessionNoWarnOnConsoleMatch(t *testing.T) {
+	logs := captureLogs(t)
+
+	now := time.Now()
+
+	consoleUser, consoleClient := newTestUserSession(t, "con-user", "alice", now.Add(-2*time.Minute))
+	defer consoleClient.Close()
+	consoleUser.WinSessionID = "1"
+
+	// A co-logged-in non-console helper also present — it is excluded, but
+	// because a console helper WAS selected, no suppression warning should fire.
+	otherUser, otherClient := newTestUserSession(t, "noncon-user", "mallory", now.Add(-1*time.Minute))
+	defer otherClient.Close()
+	otherUser.WinSessionID = "3"
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			consoleUser.SessionID: consoleUser,
+			otherUser.SessionID:   otherUser,
+		},
+		byIdentity:         make(map[string][]*Session),
+		staleHelpers:       make(map[string][]int),
+		consoleSessionIDFn: func() string { return "1" },
+	}
+
+	if got := b.preferredRunAsUserSessionForOS("windows"); got != consoleUser {
+		t.Fatalf("preferredRunAsUserSessionForOS(windows) did not select the console helper")
+	}
+
+	if out := logs.String(); strings.Contains(out, "run_as_user delivery suppressed") {
+		t.Fatalf("did not expect a suppression WARN when a console helper was selected; got logs:\n%s", out)
 	}
 }
 
