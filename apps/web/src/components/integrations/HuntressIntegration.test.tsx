@@ -304,6 +304,25 @@ describe('HuntressIntegration', () => {
     expect(screen.getByText(/inbound webhooks are rejected with 403/i)).toBeInTheDocument();
   });
 
+  it('does not surface the partner webhook URL or Generate button in organization scope', async () => {
+    // currentOrgId is set (org scope) by the default beforeEach. The webhook
+    // endpoint + secret are partner-level and must not leak into a customer-org
+    // context (guarded by isPartnerView).
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (url === '/huntress/integration') return makeResponse({ data: existingIntegration, mapped: true });
+      if (url === '/huntress/status') return makeResponse({ ...emptyStatus, mapped: true });
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() => expect(screen.getByText('Sync status')).toBeInTheDocument());
+    expect(screen.queryByText('Inbound webhook (push from Huntress)')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Generate/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/huntress\/webhook\?integrationId=/)).not.toBeInTheDocument();
+  });
+
   it('generates a webhook secret, fills the input, and shows a copy-once notice that is submitted on save', async () => {
     const user = userEvent.setup();
     useOrgStore.setState({ currentOrgId: null });
@@ -331,5 +350,22 @@ describe('HuntressIntegration', () => {
       ([url, init]) => url === '/huntress/integration' && init?.method === 'POST'
     );
     expect(JSON.parse(String(postCall?.[1]?.body))).toMatchObject({ webhookSecret: generated });
+  });
+
+  it('clears the copy-once notice when the user manually edits the generated secret', async () => {
+    const user = userEvent.setup();
+    useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({ integration: existingIntegration });
+
+    render(<HuntressIntegration />);
+    await waitFor(() => expect(screen.getByText('Partner connection')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /Generate/i }));
+    expect(screen.getByText(/Copy this webhook secret now/i)).toBeInTheDocument();
+
+    // Typing into the secret field means the user is supplying their own value;
+    // the "you just generated this, copy it now" banner no longer applies.
+    await user.type(screen.getByPlaceholderText('Enter or generate a webhook secret'), 'x');
+    expect(screen.queryByText(/Copy this webhook secret now/i)).not.toBeInTheDocument();
   });
 });
