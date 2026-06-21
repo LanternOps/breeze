@@ -6,6 +6,7 @@ import { patchRoutes } from './index';
 const ACCESSIBLE_ORG_ID = '11111111-1111-1111-1111-111111111111';
 const BLOCKED_ORG_ID = '22222222-2222-2222-2222-222222222222';
 const USER_ID = '33333333-3333-3333-3333-333333333333';
+const PARTNER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab';
 
 const DEVICE_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const DEVICE_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -78,7 +79,7 @@ vi.mock('../../db/schema', () => ({
     lastCheckedAt: 'devicePatches.lastCheckedAt'
   },
   patchApprovals: {
-    orgId: 'patchApprovals.orgId',
+    partnerId: 'patchApprovals.partnerId',
     patchId: 'patchApprovals.patchId',
     ringId: 'patchApprovals.ringId',
     status: 'patchApprovals.status',
@@ -86,7 +87,7 @@ vi.mock('../../db/schema', () => ({
   },
   patchPolicies: {
     id: 'patchPolicies.id',
-    orgId: 'patchPolicies.orgId'
+    partnerId: 'patchPolicies.partnerId'
   },
   patchJobs: {
     orgId: 'patchJobs.orgId',
@@ -933,19 +934,19 @@ describe('patch routes', () => {
     expect(body.error).toContain('Scheduled rollback');
   });
 
-  it('allows partner bulk approve when orgId is provided (asserts db.execute path)', async () => {
+  it('allows partner bulk approve when partnerId is provided (asserts db.execute path)', async () => {
     mockAuthState.scope = 'partner';
     mockAuthState.orgId = null;
-    mockAuthState.partnerId = 'partner-123';
+    mockAuthState.partnerId = PARTNER_ID;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
 
     const res = await app.request('/patches/bulk-approve', {
       method: 'POST',
       headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        orgId: ACCESSIBLE_ORG_ID,
+        partnerId: PARTNER_ID,
         patchIds: [PATCH_ID],
-        note: 'Approve for tenant'
+        note: 'Approve for partner'
       })
     });
 
@@ -968,12 +969,12 @@ describe('patch routes', () => {
     const executeMock = vi.mocked(db.execute);
     const lastCall = executeMock.mock.calls[executeMock.mock.calls.length - 1]!;
     const sqlPayload = lastCall[0] as unknown as { strings: TemplateStringsArray; values: unknown[] };
-    expect(sqlPayload.values).toContain(ACCESSIBLE_ORG_ID);
+    expect(sqlPayload.values).toContain(PARTNER_ID);
     expect(sqlPayload.values).toContain(PATCH_ID);
     expect(sqlPayload.values).toContain('approved');
     // approvedAt is bound as an ISO string (PR #814 fix; postgres-js bind
     // step rejects Date instances). helpers.ts binds order is:
-    //   [orgId, patchId, ringId, status, approvedBy, approvedAtIso,
+    //   [partnerId, patchId, ringId, status, approvedBy, approvedAtIso,
     //    deferUntilIso, notes, NIL_UUID]
     // — so the ISO timestamp lives at values[5]. Assert that, AND scan to
     // catch regressions if the bind order shifts.
@@ -984,18 +985,18 @@ describe('patch routes', () => {
     expect(sqlPayload.values.some((v) => v instanceof Date)).toBe(false);
   });
 
-  it('falls back to query-param orgId for partner bulk approve when body omits it (#814 fallback path)', async () => {
+  it('falls back to query-param partnerId for partner bulk approve when body omits it (#814 fallback path)', async () => {
     mockAuthState.scope = 'partner';
     mockAuthState.orgId = null;
-    mockAuthState.partnerId = 'partner-123';
+    mockAuthState.partnerId = PARTNER_ID;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
 
-    const res = await app.request(`/patches/bulk-approve?orgId=${ACCESSIBLE_ORG_ID}`, {
+    const res = await app.request(`/patches/bulk-approve?partnerId=${PARTNER_ID}`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
       body: JSON.stringify({
         patchIds: [PATCH_ID],
-        note: 'Query-param orgId'
+        note: 'Query-param partnerId'
       })
     });
 
@@ -1003,29 +1004,30 @@ describe('patch routes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.approved).toEqual([PATCH_ID]);
-    // Verify the query-param org made it through to the SQL bind, not just
-    // that the request succeeded — a default-org bug would also 200 here.
+    // Verify the query-param partner made it through to the SQL bind, not just
+    // that the request succeeded — a default-partner bug would also 200 here.
     const executeMock = vi.mocked(db.execute);
     const lastCall = executeMock.mock.calls[executeMock.mock.calls.length - 1]!;
     const sqlPayload = lastCall[0] as unknown as { values: unknown[] };
-    expect(sqlPayload.values).toContain(ACCESSIBLE_ORG_ID);
+    expect(sqlPayload.values).toContain(PARTNER_ID);
   });
 
-  it('uses the selected ring org for partner bulk approve instead of the ambient orgId query', async () => {
-    mockAuthState.scope = 'partner';
+  it('uses the ring partner for bulk approve instead of the ambient partnerId query', async () => {
+    const OTHER_PARTNER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    mockAuthState.scope = 'system';
     mockAuthState.orgId = null;
-    mockAuthState.partnerId = 'partner-123';
-    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+    mockAuthState.partnerId = null;
+    mockAuthState.accessibleOrgIds = null;
 
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ orgId: ACCESSIBLE_ORG_ID }])
+          limit: vi.fn().mockResolvedValue([{ partnerId: PARTNER_ID }])
         })
       })
     } as any);
 
-    const res = await app.request(`/patches/bulk-approve?orgId=${BLOCKED_ORG_ID}`, {
+    const res = await app.request(`/patches/bulk-approve?partnerId=${OTHER_PARTNER_ID}`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1039,35 +1041,34 @@ describe('patch routes', () => {
     const executeMock = vi.mocked(db.execute);
     const lastCall = executeMock.mock.calls[executeMock.mock.calls.length - 1]!;
     const sqlPayload = lastCall[0] as unknown as { values: unknown[] };
-    expect(sqlPayload.values).toContain(ACCESSIBLE_ORG_ID);
-    expect(sqlPayload.values).not.toContain(BLOCKED_ORG_ID);
+    expect(sqlPayload.values).toContain(PARTNER_ID);
+    expect(sqlPayload.values).not.toContain(OTHER_PARTNER_ID);
     expect(sqlPayload.values).toContain(RING_ID);
   });
 
-  it('rejects partner bulk approve with 403 when query-param orgId is not accessible', async () => {
+  it('rejects partner bulk approve with 403 when partnerId does not match the token', async () => {
+    const OTHER_PARTNER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     mockAuthState.scope = 'partner';
     mockAuthState.orgId = null;
-    mockAuthState.partnerId = 'partner-123';
+    mockAuthState.partnerId = PARTNER_ID;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
 
-    const OTHER_ORG_ID = '22222222-2222-2222-2222-222222222222';
-
-    const res = await app.request(`/patches/bulk-approve?orgId=${OTHER_ORG_ID}`, {
+    const res = await app.request('/patches/bulk-approve', {
       method: 'POST',
       headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        partnerId: OTHER_PARTNER_ID,
         patchIds: [PATCH_ID],
-        note: 'Cross-tenant attempt'
+        note: 'Cross-partner attempt'
       })
     });
 
     expect(res.status).toBe(403);
-    // The canAccessOrg gate fires before the SQL write — confirm we never
-    // got to the DB.
+    // The partner gate fires before the SQL write — confirm we never got to the DB.
     expect(db.execute).not.toHaveBeenCalled();
   });
 
-  it('allows system patch approve when orgId is provided (asserts db.execute path + ISO date)', async () => {
+  it('allows system patch approve when partnerId is provided (asserts db.execute path + ISO date)', async () => {
     mockAuthState.scope = 'system';
     mockAuthState.orgId = null;
     mockAuthState.partnerId = null;
@@ -1079,7 +1080,7 @@ describe('patch routes', () => {
       method: 'POST',
       headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        orgId: ACCESSIBLE_ORG_ID,
+        partnerId: PARTNER_ID,
         note: 'System approval'
       })
     });
@@ -1094,7 +1095,7 @@ describe('patch routes', () => {
     const executeMock = vi.mocked(db.execute);
     const lastCall = executeMock.mock.calls[executeMock.mock.calls.length - 1]!;
     const sqlPayload = lastCall[0] as unknown as { values: unknown[] };
-    expect(sqlPayload.values).toContain(ACCESSIBLE_ORG_ID);
+    expect(sqlPayload.values).toContain(PARTNER_ID);
     expect(typeof sqlPayload.values[5]).toBe('string');
     expect(sqlPayload.values.some((v) => v instanceof Date)).toBe(false);
   });
