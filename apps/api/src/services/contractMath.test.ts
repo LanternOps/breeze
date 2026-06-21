@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired } from './contractMath';
+import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired, addDaysISO, duePeriodStartFor, isWithinNoticeWindow, extendTermPastDue } from './contractMath';
 
 describe('addMonthsClamped', () => {
   it('preserves day-of-month when valid', () => {
@@ -60,5 +60,51 @@ describe('isExpired', () => {
   });
   it('false when no end date', () => {
     expect(isExpired({ endDate: null, periodStart: '2099-01-01' })).toBe(false);
+  });
+});
+
+describe('addDaysISO', () => {
+  it('adds and subtracts days across month/year boundaries (UTC)', () => {
+    expect(addDaysISO('2026-07-01', -30)).toBe('2026-06-01');
+    expect(addDaysISO('2026-12-31', 1)).toBe('2027-01-01');
+    expect(addDaysISO('2028-02-28', 1)).toBe('2028-02-29'); // leap
+  });
+});
+
+describe('duePeriodStartFor', () => {
+  it('advance ⇒ nextBillingAt itself', () => {
+    expect(duePeriodStartFor('advance', '2027-07-01', 1)).toBe('2027-07-01');
+  });
+  it('arrears ⇒ nextBillingAt minus one interval', () => {
+    expect(duePeriodStartFor('arrears', '2027-08-01', 1)).toBe('2027-07-01');
+    expect(duePeriodStartFor('arrears', '2027-10-01', 3)).toBe('2027-07-01');
+  });
+});
+
+describe('isWithinNoticeWindow', () => {
+  it('true inside [endDate - noticeDays, endDate)', () => {
+    expect(isWithinNoticeWindow('2026-06-15', '2026-07-01', 30)).toBe(true); // 16 days out
+    expect(isWithinNoticeWindow('2026-06-01', '2026-07-01', 30)).toBe(true); // exactly at window start
+  });
+  it('false before the window and on/after endDate', () => {
+    expect(isWithinNoticeWindow('2026-05-31', '2026-07-01', 30)).toBe(false);
+    expect(isWithinNoticeWindow('2026-07-01', '2026-07-01', 30)).toBe(false);
+  });
+});
+
+describe('extendTermPastDue', () => {
+  it('pushes endDate forward by whole terms until the due period no longer expires', () => {
+    // due period starts exactly at endDate ⇒ one 12-month roll
+    expect(extendTermPastDue({ endDate: '2027-07-01', duePeriodStart: '2027-07-01', termMonths: 12 }))
+      .toEqual({ newEndDate: '2028-07-01', renewed: true });
+  });
+  it('catches up multiple terms when the sweep was down (term < gap)', () => {
+    // due period is 2 months past a 1-month term ⇒ rolls 3 times to clear it
+    expect(extendTermPastDue({ endDate: '2027-07-01', duePeriodStart: '2027-09-01', termMonths: 1 }))
+      .toEqual({ newEndDate: '2027-10-01', renewed: true });
+  });
+  it('no-op when the due period is still inside the term', () => {
+    expect(extendTermPastDue({ endDate: '2027-07-01', duePeriodStart: '2027-06-01', termMonths: 12 }))
+      .toEqual({ newEndDate: '2027-07-01', renewed: false });
   });
 });
