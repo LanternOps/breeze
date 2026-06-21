@@ -1,7 +1,7 @@
 // Owns ticketing configuration: custom statuses, priority SLA settings, and org-level overrides — per 2026-06-12 spec.
 
 import { eq, and, asc, desc, inArray, count } from 'drizzle-orm';
-import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound, organizations } from '../db/schema';
+import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound, organizations, customerEmailDomains } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
 import { getConfig } from '../config/validate';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -9,7 +9,8 @@ import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
-  OrgTicketSettingsInput, TicketPriorityValue
+  OrgTicketSettingsInput, TicketPriorityValue,
+  CreateCustomerEmailDomainInput, UpdateCustomerEmailDomainInput
 } from '@breeze/shared';
 import type { TicketSlaPriority } from './ticketSla';
 
@@ -361,7 +362,7 @@ export async function getTicketConfig(partnerId: string) {
   const slug = partner?.slug ?? '';
   const settings = (partner?.settings as Record<string, unknown> | null) ?? {};
   const inboundCfg = (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
-    { enabled?: boolean; address?: string; defaultTriageOrgId?: string | null; autoresponderEnabled?: boolean } | undefined) ?? {};
+    { enabled?: boolean; address?: string; defaultTriageOrgId?: string | null; autoresponderEnabled?: boolean; triageUnknownSenders?: boolean } | undefined) ?? {};
   const domain = getConfig().TICKETS_INBOUND_DOMAIN ?? '';
   const domainConfigured = domain.length > 0;
   const derived = domainConfigured && slug ? `${slug}@${domain}` : '';
@@ -373,6 +374,7 @@ export async function getTicketConfig(partnerId: string) {
     addressOverride,
     defaultTriageOrgId: inboundCfg.defaultTriageOrgId ?? null,
     autoresponderEnabled: inboundCfg.autoresponderEnabled ?? true,
+    triageUnknownSenders: inboundCfg.triageUnknownSenders ?? false,
     slug,
     domainConfigured,
   };
@@ -782,4 +784,93 @@ export async function dismissEmailInbound(partnerId: string, id: string): Promis
     .returning(returnQueueCols());
   if (!updated) throw new TicketConfigServiceError('Inbound email not found', 404, 'INBOUND_ROW_NOT_FOUND');
   return updated;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: customer email-domain routing (sender domain -> customer org).
+// Partner-admin managed. Org-ownership is enforced both here (explicit
+// partner_id equality, mirroring convertEmailInbound) and at the DB layer via
+// the composite FK (org_id, partner_id) -> organizations(id, partner_id).
+// ---------------------------------------------------------------------------
+
+export async function listCustomerEmailDomains(partnerId: string) {
+  return db
+    .select({
+      id: customerEmailDomains.id,
+      domain: customerEmailDomains.domain,
+      orgId: customerEmailDomains.orgId,
+      orgName: organizations.name,
+      autoCreateContact: customerEmailDomains.autoCreateContact,
+      isActive: customerEmailDomains.isActive,
+      createdAt: customerEmailDomains.createdAt,
+    })
+    .from(customerEmailDomains)
+    .leftJoin(organizations, eq(customerEmailDomains.orgId, organizations.id))
+    .where(eq(customerEmailDomains.partnerId, partnerId))
+    .orderBy(asc(customerEmailDomains.domain));
+}
+
+export async function createCustomerEmailDomain(
+  partnerId: string,
+  input: CreateCustomerEmailDomainInput,
+  actor: { userId: string },
+) {
+  // Security boundary: the mapped org MUST belong to the caller's partner.
+  const [orgOk] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(eq(organizations.id, input.orgId), eq(organizations.partnerId, partnerId)))
+    .limit(1);
+  if (!orgOk) throw new TicketConfigServiceError('That organization is not in your partner', 400, 'ORG_NOT_ACCESSIBLE');
+
+  try {
+    const [row] = await db
+      .insert(customerEmailDomains)
+      .values({
+        partnerId,
+        orgId: input.orgId,
+        domain: input.domain,
+        autoCreateContact: input.autoCreateContact,
+        createdBy: actor.userId,
+      })
+      .returning();
+    return row;
+  } catch (err) {
+    if (isPgUniqueViolation(err)) {
+      throw new TicketConfigServiceError('That domain is already mapped', 409, 'DOMAIN_ALREADY_MAPPED');
+    }
+    throw err;
+  }
+}
+
+export async function updateCustomerEmailDomain(
+  partnerId: string,
+  id: string,
+  input: UpdateCustomerEmailDomainInput,
+) {
+  // Re-assert org ownership if the mapping is being re-pointed at another org.
+  if (input.orgId) {
+    const [orgOk] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, input.orgId), eq(organizations.partnerId, partnerId)))
+      .limit(1);
+    if (!orgOk) throw new TicketConfigServiceError('That organization is not in your partner', 400, 'ORG_NOT_ACCESSIBLE');
+  }
+
+  const [updated] = await db
+    .update(customerEmailDomains)
+    .set({ ...input, updatedAt: new Date() })
+    .where(and(eq(customerEmailDomains.id, id), eq(customerEmailDomains.partnerId, partnerId)))
+    .returning();
+  if (!updated) throw new TicketConfigServiceError('Domain mapping not found', 404, 'DOMAIN_MAPPING_NOT_FOUND');
+  return updated;
+}
+
+export async function deleteCustomerEmailDomain(partnerId: string, id: string) {
+  const [deleted] = await db
+    .delete(customerEmailDomains)
+    .where(and(eq(customerEmailDomains.id, id), eq(customerEmailDomains.partnerId, partnerId)))
+    .returning({ id: customerEmailDomains.id });
+  if (!deleted) throw new TicketConfigServiceError('Domain mapping not found', 404, 'DOMAIN_MAPPING_NOT_FOUND');
 }
