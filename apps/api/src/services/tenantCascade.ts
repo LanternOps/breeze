@@ -120,6 +120,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'configuration_policies',
   'contract_billing_periods',
   'contract_lines',
+  'contract_renewal_notices',
   'contracts',
   'custom_field_definitions',
   // NB: sorts AFTER custom_field_definitions — localeCompare puts the '_' in
