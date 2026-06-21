@@ -8,10 +8,14 @@
 
 import { db } from '../db';
 import { devices, auditLogs, deviceChangeLog } from '../db/schema';
-import { eq, ne, or, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
+import { eq, ne, or, and, not, isNull, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  resolveSiteAllowedDeviceIds,
+  resolveSiteForbiddenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -72,12 +76,30 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       // Site axis (app-layer only; RLS does NOT enforce it). audit_logs is
       // org-keyed and heterogeneous — `resourceId` is a device id only when
       // `resourceType === 'device'`; other rows reference orgs/users/tickets/etc.
-      // The site axis is device-centric, so narrow ONLY device-typed rows to the
-      // caller's allowed device set, leaving other resource types governed by the
-      // existing org axis. No-op for unrestricted partner/system callers.
+      // The site axis is device-centric, so:
+      //   (1) narrow device-typed rows (resourceId IS the device id) to the
+      //       caller's allowed device set (R3b), and
+      //   (2) narrow NON-device rows that still REFERENCE a device id inside the
+      //       `details` jsonb — overwhelmingly under `details.deviceId` (the
+      //       dominant write convention: commands, elevation/PAM, backup,
+      //       network/authenticator changes; `details.linkedDeviceId` for
+      //       discovery linking). This excludes rows referencing an
+      //       OUT-of-scope fleet device (R3b residual).
+      // Both narrowings leave rows with no device reference governed by the org
+      // axis only, and are a no-op for unrestricted partner/system callers.
+      //
+      // Known residual (documented, not closed here): array-valued `details.deviceIds`
+      // (sparse) and free-text device hostnames in `resourceName` carry no reliable
+      // single device id to key off, so those references are left to the org axis.
       if (auth.allowedSiteIds && auth.canAccessSite) {
         const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
         const allowedDeviceIds = orgId ? await resolveSiteAllowedDeviceIds(orgId, auth) : [];
+        // The forbidden set = org devices outside the caller's sites. We key the
+        // details narrowing off this set (rather than "any id not in allowed")
+        // so an id under `details.deviceId` that is NOT a fleet device at all —
+        // e.g. an authenticator credential id — is never mistaken for an
+        // out-of-scope device and over-excluded.
+        const forbiddenDeviceIds = orgId ? await resolveSiteForbiddenDeviceIds(orgId, auth) : [];
         if (allowedDeviceIds !== null) {
           // An explicit device-row lookup outside the allowed set is denied outright.
           if (
@@ -87,7 +109,16 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           ) {
             return JSON.stringify({ entries: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
           }
-          // Show non-device rows as before; device rows only for in-scope devices.
+          // An explicit lookup of a device id known to be out-of-scope is denied
+          // outright (mirrors the device-typed short-circuit above).
+          if (
+            input.resourceId &&
+            forbiddenDeviceIds &&
+            forbiddenDeviceIds.includes(input.resourceId as string)
+          ) {
+            return JSON.stringify({ entries: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+          }
+          // (1) Device-typed rows: only for in-scope devices.
           // Empty allowed set ⇒ exclude all device rows.
           conditions.push(
             allowedDeviceIds.length > 0
@@ -97,6 +128,20 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
                 )!
               : ne(auditLogs.resourceType, 'device'),
           );
+          // (2) `details`-referenced rows: exclude any row whose
+          // `details.deviceId` / `details.linkedDeviceId` is a known out-of-scope
+          // fleet device. Rows where the key is absent (NULL ->> result) are
+          // untouched — only a positive match against the forbidden set excludes.
+          if (forbiddenDeviceIds && forbiddenDeviceIds.length > 0) {
+            const deviceIdRef = sql`${auditLogs.details}->>'deviceId'`;
+            const linkedDeviceIdRef = sql`${auditLogs.details}->>'linkedDeviceId'`;
+            conditions.push(
+              and(
+                or(isNull(deviceIdRef), not(inArray(deviceIdRef, forbiddenDeviceIds)))!,
+                or(isNull(linkedDeviceIdRef), not(inArray(linkedDeviceIdRef, forbiddenDeviceIds)))!,
+              )!,
+            );
+          }
         }
       }
 

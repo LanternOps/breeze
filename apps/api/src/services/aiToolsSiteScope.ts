@@ -55,6 +55,33 @@ export async function resolveSiteAllowedDeviceIds(
 }
 
 /**
+ * Resolve the org device IDs a site-restricted caller may NOT read — i.e. the
+ * `orgId` devices whose site is outside the caller's allowlist. Returns `null`
+ * when the caller is NOT site-restricted (no narrowing needed). A restricted
+ * caller all of whose org devices are in-scope gets an empty array.
+ *
+ * Unlike `resolveSiteAllowedDeviceIds` (the in-scope set), this is the explicit
+ * forbidden set, which lets a caller exclude rows that *reference* an
+ * out-of-scope fleet device by id without over-excluding rows whose device-id
+ * field happens to hold an id that is not a fleet device at all (e.g. an
+ * authenticator credential id stored under `details.deviceId`). Only ids that
+ * are real out-of-site-scope org devices land in this set.
+ */
+export async function resolveSiteForbiddenDeviceIds(
+  orgId: string,
+  auth: AuthContext,
+): Promise<string[] | null> {
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => !auth.canAccessSite!(d.siteId))
+    .map((d) => d.id);
+}
+
+/**
  * True when a site-restricted caller must be denied access to a device with the
  * given `siteId`. Fails closed: a null-site device is denied for a restricted
  * caller. Always false (allow) for an unrestricted caller. Use this for tools

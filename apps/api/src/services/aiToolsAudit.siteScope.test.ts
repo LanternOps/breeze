@@ -170,4 +170,41 @@ describe('query_audit_log — device-typed row site narrowing', () => {
     expect(parsed.showing).toBe(1);
     expect(resolverRan).toBe(false);
   });
+
+  // R3b residual: a NON-device row may reference a device via `details.deviceId`.
+  // An explicit lookup by a `resourceId` that is a known out-of-scope fleet
+  // device is denied outright (regardless of resourceType), and the scan is
+  // never reached. Both resolver SELECTs (allowed + forbidden) share the
+  // `{id, siteId}` shape; `canAccessSite` derives the in/out-of-scope split.
+  it('explicit resourceId that is a known out-of-scope device is denied/empty (any resourceType)', async () => {
+    let scanRan = false;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        return {
+          from: () => ({
+            where: () =>
+              Promise.resolve([
+                { id: 'd-inscope', siteId: 'site-A' },
+                { id: 'd-forbidden', siteId: 'site-B' },
+              ]),
+          }),
+        };
+      }
+      scanRan = true;
+      return chain([
+        { id: 'a1', timestamp: null, actorType: 'user', actorEmail: 'x', action: 'a', resourceType: 'remote_session', resourceName: 'leak', result: 'ok', details: { deviceId: 'd-forbidden' } },
+      ]);
+    });
+
+    const r = await handlerFor('query_audit_log')(
+      { resourceId: 'd-forbidden' },
+      makeAuth(['site-A']),
+    );
+    const parsed = JSON.parse(r);
+    expect(parsed.entries).toEqual([]);
+    expect(parsed.showing).toBe(0);
+    expect(parsed.scopeNote).toBe(SITE_SCOPE_EMPTY_NOTE);
+    expect(scanRan).toBe(false);
+    expect(JSON.stringify(parsed)).not.toContain('leak');
+  });
 });
