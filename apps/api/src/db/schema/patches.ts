@@ -14,6 +14,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
+import { partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 import { scripts } from './scripts';
@@ -141,7 +142,7 @@ export const patches = pgTable('patches', {
 
 export const patchPolicies = pgTable('patch_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
   kind: patchPolicyKindEnum('kind').notNull().default('ring'),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
@@ -170,7 +171,7 @@ export const patchPolicies = pgTable('patch_policies', {
 
 export const patchApprovals = pgTable('patch_approvals', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
   patchId: uuid('patch_id').notNull().references(() => patches.id),
   policyId: uuid('policy_id').references(() => patchPolicies.id),
   ringId: uuid('ring_id').references(() => patchPolicies.id),
@@ -182,9 +183,9 @@ export const patchApprovals = pgTable('patch_approvals', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  // Ring-scoped: one approval per (org, patch, ring). NULL ring = org-wide legacy.
-  orgPatchRingUnique: uniqueIndex('patch_approvals_org_patch_ring_unique').on(
-    table.orgId,
+  // Partner-scoped: one approval per (partner, patch, ring). NULL ring = partner-wide blanket.
+  partnerPatchRingUnique: uniqueIndex('patch_approvals_partner_patch_ring_unique').on(
+    table.partnerId,
     table.patchId,
     sql`COALESCE(${table.ringId}, '00000000-0000-0000-0000-000000000000')`
   )
