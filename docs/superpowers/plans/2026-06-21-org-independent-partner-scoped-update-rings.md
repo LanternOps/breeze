@@ -1131,6 +1131,146 @@ git add -A && git commit -m "chore: finalize partner-scoped update rings & appro
 
 ---
 
+## Task 16: Approval-status READ paths → partner (`list.ts`, `compliance.ts`)
+
+> Added after Task 6 surfaced a plan gap: 8 files outside the original plan still reference the removed `patchPolicies.orgId` / `patchApprovals.orgId`. Tasks 16-18 close it. Run order: after Task 10, before Task 14.
+
+**Files:**
+- Modify: `apps/api/src/routes/patches/helpers.ts` (add shared helper)
+- Modify: `apps/api/src/routes/patches/list.ts:156`
+- Modify: `apps/api/src/routes/patches/compliance.ts:45,53,56,120-124,161`
+
+**Interfaces:**
+- Produces: `resolvePartnerIdForOrg(orgId: string): Promise<string | null>` in `helpers.ts` (SELECT partner_id FROM organizations WHERE id = orgId; null if none). Reused by Tasks 17-18.
+
+- [ ] **Step 1: Add `resolvePartnerIdForOrg` to `helpers.ts`**
+
+```typescript
+export async function resolvePartnerIdForOrg(orgId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return row?.partnerId ?? null;
+}
+```
+Import `organizations` from the schema if not already imported.
+
+- [ ] **Step 2: Fix `list.ts:156`**
+
+The handler filters approval status by `?orgId`. Resolve the org's partner first, then filter `patchApprovals` by partner (and keep the existing `ringId` filter if present):
+```typescript
+const partnerId = await resolvePartnerIdForOrg(query.orgId);
+// if partnerId is null, there are no approvals: skip the join / return empty approval map
+... eq(patchApprovals.partnerId, partnerId) ...
+```
+If `query.orgId` is absent (partner/system viewing all), derive partner from `auth.partnerId` when available, else leave approvals unfiltered by partner only if the route already gates partner/system. Match the file's existing control flow; do not broaden scope.
+
+- [ ] **Step 3: Fix `compliance.ts`**
+
+This handler overloads `effectiveOrgId` for BOTH device scoping (stays org-scoped — KEEP) and approval scoping (now partner). Introduce a separate `effectivePartnerId`:
+- Line 45: the ring lookup must select `patchPolicies.partnerId` (not `orgId`). Replace the `canAccessOrg(ring.orgId)` gate (line 53) with the partner check `auth.scope !== 'system' && auth.partnerId !== ring.partnerId` → 403, and set `effectivePartnerId = ring.partnerId`. For the non-ring path, set `effectivePartnerId = await resolvePartnerIdForOrg(effectiveOrgId)`.
+- Lines 120-124: `eq(patchApprovals.orgId, effectiveOrgId)` → `eq(patchApprovals.partnerId, effectivePartnerId)`.
+- Line 161 (raw SQL `pa.org_id = ${devicePatches.orgId}`): `patch_approvals` has no `org_id`. Rewrite the join so `pa.partner_id` equals the device-org's partner. Since `device_patches` is org-scoped, join through the org's partner — e.g. resolve `effectivePartnerId` once and bind it: `pa.partner_id = ${effectivePartnerId}`. Verify the rewritten SQL returns the same approved set it did before (just keyed on partner).
+- `device_patches.orgId` and any `patchJobs.orgId` / `patchComplianceSnapshots.orgId` references in this file STAY unchanged (those tables remain org-scoped).
+
+- [ ] **Step 4: Verify**
+
+```bash
+NODE_OPTIONS=--max-old-space-size=8192 PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter @breeze/api exec tsc --noEmit
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter @breeze/api exec vitest run src/routes/patches
+```
+Expected: no errors in `list.ts`/`compliance.ts`/`helpers.ts`; patches route tests pass. Update any test asserting the old org-keyed approval read.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/api/src/routes/patches/helpers.ts apps/api/src/routes/patches/list.ts apps/api/src/routes/patches/compliance.ts
+git commit -m "fix(patches): partner-scope approval-status reads in list/compliance"
+```
+
+---
+
+## Task 17: Device install gate + Fleet AI writes → partner (`devices/patches.ts`, `aiToolsFleet.ts`)
+
+**Files:**
+- Modify: `apps/api/src/routes/devices/patches.ts:125,248,386`
+- Modify: `apps/api/src/services/aiToolsFleet.ts:380,395-404,415-425,438-449`
+
+**Interfaces:**
+- Consumes: `resolvePartnerIdForOrg` (Task 16) and `upsertPatchApproval` (Task 6, partner-keyed).
+
+- [ ] **Step 1: Fix `devices/patches.ts` install gate**
+
+Rename `getApprovedPatchIdsForOrg(orgId, patchIds)` → `getApprovedPatchIdsForPartner(partnerId, patchIds)` and change the query to `eq(patchApprovals.partnerId, partnerId)` (line 125). At the two call sites (lines 248, 386), derive the partner from the device's org: `const partnerId = await resolvePartnerIdForOrg(device.orgId); if (!partnerId) { /* no approvals → treat all as unapproved (fail-safe, existing behavior) */ }`. This is the safety-critical install gate — confirm the empty-partner path still blocks (does not auto-approve) installs.
+
+- [ ] **Step 2: Fix `aiToolsFleet.ts` approval writes**
+
+The four write branches (approve 395-404, defer 415-425, bulk_approve 438-449) and the compliance read (380) currently insert/`onConflictDoUpdate` on `[patchApprovals.orgId, patchApprovals.patchId]`. That conflict target does NOT match the new expression unique index. REPLACE each ad-hoc insert/upsert with a call to the shared `upsertPatchApproval({ partnerId, patchId, ringId: null, status, approvedBy, ... })` from `patches/helpers.ts` (it correctly targets `(partner_id, patch_id, COALESCE(ring_id, NIL))`). Derive `partnerId` from `auth.partnerId ?? await resolvePartnerIdForOrg(getOrgId(auth))`. The compliance-read aggregate (380) becomes `eq(patchApprovals.partnerId, partnerId)`.
+- `patchJobs.orgId` (485-495) and `patchComplianceSnapshots.orgId` (365-369) STAY org-scoped — do not change them.
+
+- [ ] **Step 3: Verify**
+
+```bash
+NODE_OPTIONS=--max-old-space-size=8192 PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter @breeze/api exec tsc --noEmit
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter @breeze/api exec vitest run src/routes/devices src/services/aiToolsFleet.test.ts
+```
+Expected: clean; update affected tests to partner behavior. If a fleet test asserted the old `[orgId, patchId]` upsert, switch it to assert the `upsertPatchApproval` call / partner key.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add apps/api/src/routes/devices/patches.ts apps/api/src/services/aiToolsFleet.ts
+git commit -m "fix(patches): partner-scope device install gate + fleet AI approvals"
+```
+
+---
+
+## Task 18: Ring lookup/validation + legacy route + migration script → partner
+
+**Files:**
+- Modify: `apps/api/src/routes/patchPolicies.ts:23-37,53,103,110,119,122`
+- Modify: `apps/api/src/services/configurationPolicy.ts:1307,1329-1338,1379-1388`
+- Modify: `apps/api/src/services/configPolicyPatching.ts:190,294,374`
+- Modify: `apps/api/src/scripts/migrateToConfigPolicies.ts:183,457,610`
+
+**Interfaces:**
+- Consumes: `resolvePartnerIdForOrg` (Task 16); `auth.partnerId`.
+
+- [ ] **Step 1: `patchPolicies.ts` (legacy read route) → partner filters**
+
+`ensureOrgAccess(policy.orgId, auth)` (23-37, 53) → a partner check `auth.scope !== 'system' && auth.partnerId !== policy.partnerId` → 403. The four list filters (103, 110, 119, 122) collapse to `eq(patchPolicies.partnerId, auth.partnerId)` for partner scope (the `inArray(orgId, accessibleOrgIds)` case becomes a single partner equality), `eq(patchPolicies.partnerId, <resolved partner>)` for a system caller filtering by a specific partner, and gate org-scope callers out (`requireScope('partner','system')` if not already). Mirror the partner-resolution style from `updateRings.ts` (Task 5).
+
+- [ ] **Step 2: `configurationPolicy.ts` feature-policy validation → partner**
+
+`FEATURE_TABLE_MAP.patch` (1307) `orgIdCol: patchPolicies.orgId` → `partnerIdCol: patchPolicies.partnerId` (rename the map field consistently with how the generic path at 1374-1388 consumes it). `validateFeaturePolicyExists` (1329-1338) currently compares `eq(patchPolicies.orgId, orgId)`; the `patch` branch must validate the ring belongs to the partner: derive partner via `await resolvePartnerIdForOrg(orgId)` (the function still receives the config policy's orgId) and compare `eq(patchPolicies.partnerId, partnerId)`. Keep all OTHER feature tables' org-axis validation unchanged — only the `patch` entry moves to partner.
+
+- [ ] **Step 3: `configPolicyPatching.ts` ring reference resolution → partner**
+
+`resolvePatchPolicyReference(orgId, featurePolicyId)` (190) → `(partnerId, featurePolicyId)` with `eq(patchPolicies.partnerId, partnerId)`. The two call sites (294, 374) pass `row.orgId` (the config policy's org) — derive partner first: `const partnerId = await resolvePartnerIdForOrg(row.orgId)` and pass it. The `configPolicy_uuid` fallback path (uses `configurationPolicies.orgId`) STAYS unchanged.
+
+- [ ] **Step 4: `migrateToConfigPolicies.ts` (one-shot script) → partner**
+
+Mechanical: `selectDistinct({ partnerId: patchPolicies.partnerId })` (183), and the two per-scope fetches (457, 610) `eq(patchPolicies.partnerId, partnerId)`, iterating partner ids. If this script is confirmed already-run/dead, a top-of-file note is acceptable, but it must still COMPILE.
+
+- [ ] **Step 5: Verify (this should make the FULL project typecheck clean)**
+
+```bash
+NODE_OPTIONS=--max-old-space-size=8192 PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter @breeze/api exec tsc --noEmit
+PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm --filter @breeze/api exec vitest run src/routes/patchPolicies.test.ts src/services/configurationPolicy.test.ts src/services/configPolicyPatching.test.ts
+```
+Expected: with Tasks 7-9 and 16-17 also done, `tsc` should now report ZERO `patchPolicies.orgId`/`patchApprovals.orgId` errors across the project. (Run the grep `grep -rn "patchApprovals\.orgId\|patchPolicies\.orgId" apps/api/src | grep -v test` — expect no hits.)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/api/src/routes/patchPolicies.ts apps/api/src/services/configurationPolicy.ts apps/api/src/services/configPolicyPatching.ts apps/api/src/scripts/migrateToConfigPolicies.ts
+git commit -m "fix(patches): partner-scope ring validation, legacy route, migration script"
+```
+
+---
+
 ## Notes / risks carried from the spec
 
 - **Behavior change (accepted):** org-scoped users lose ring creation + update-approval; they keep read-only Compliance/Patches. The Update Rings tab and approval modal are hidden/blocked client-side AND enforced server-side (403).
