@@ -214,6 +214,12 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
     LEFT JOIN device_metrics dm
       ON dm.org_id = bg.org_id
       AND dm.device_id = bg.device_id
+      -- join window bound: constrain the scan to [from,to). bucket_start comes
+      -- from generate_series, so the per-bucket predicates below are NOT sargable
+      -- and Postgres would bitmap-scan each device's ENTIRE metric history per
+      -- bucket. These two constant bounds let it index-range only the window.
+      AND dm.timestamp >= ${fromIso}::timestamp
+      AND dm.timestamp < ${toIso}::timestamp
       AND dm.timestamp >= bg.bucket_start
       AND dm.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
       AND ${valueSql} IS NOT NULL

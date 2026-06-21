@@ -84,6 +84,22 @@ describe('metric rollups service', () => {
     expect(rawStatementSql).toContain('DO UPDATE SET');
   });
 
+  it('bounds the raw device_metrics join to the rollup window (incident 2026-06-21: prevents full per-device history scan)', async () => {
+    await rollupDeviceMetricsRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:15:00.000Z'),
+    });
+
+    // The raw device statement is the first execute() call. Its LEFT JOIN must
+    // carry an explicit [from,to) bound in addition to the per-bucket bound;
+    // without it the generate_series-derived bucket_start predicate is
+    // non-sargable and Postgres bitmap-scans each device's entire history.
+    const rawDeviceSql = JSON.stringify(executeMock.mock.calls[0]);
+    expect(rawDeviceSql).toContain('LEFT JOIN device_metrics');
+    expect(rawDeviceSql).toContain('join window bound');
+  });
+
   it('lets derived rollups include gap buckets without averaging empty values', async () => {
     await rollupDeviceMetricsRange({
       orgId: '11111111-1111-1111-1111-111111111111',
