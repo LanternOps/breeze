@@ -205,13 +205,28 @@ function maxTimestamp(values: Array<string | undefined>): string | undefined {
   return raw;
 }
 
-function computeUptimePercent(latest: LatestHistorySnapshot | null, windowDays: number, now: Date): number {
+function computeUptimePercent(
+  latest: LatestHistorySnapshot | null,
+  windowDays: number,
+  now: Date,
+  enrolledAt?: Date | null
+): number {
   if (!latest) return 100;
-  const windowSeconds = windowDays * 24 * 60 * 60;
+  const fullWindowSeconds = windowDays * 24 * 60 * 60;
   const nowSeconds = Math.floor(now.getTime() / 1000);
-  const startSeconds = nowSeconds - windowSeconds;
+  // The measurement window starts at `now - windowDays`, but a device cannot be
+  // "up" before it was enrolled, so clamp the window start forward to the
+  // enrollment timestamp. This keeps pre-existence time out of the denominator
+  // (#1738) — a device enrolled 2 days ago is measured over ~2 days, not 90.
+  const fixedStartSeconds = nowSeconds - fullWindowSeconds;
+  const enrolledSeconds = enrolledAt ? Math.floor(enrolledAt.getTime() / 1000) : fixedStartSeconds;
+  const windowStartSeconds = Math.max(fixedStartSeconds, enrolledSeconds);
+  // Denominator is the length of the (possibly shortened) measurement window.
+  // Guard against a zero/negative window (enrolledAt at or after now).
+  const windowSeconds = Math.min(fullWindowSeconds, Math.max(0, nowSeconds - windowStartSeconds));
+  if (windowSeconds <= 0) return 100;
   const bootSeconds = Math.floor(latest.bootTime.getTime() / 1000);
-  const uptimeStart = Math.max(startSeconds, bootSeconds);
+  const uptimeStart = Math.max(windowStartSeconds, bootSeconds);
   const uptimeSecondsFromBoot = Math.max(0, nowSeconds - uptimeStart);
   const boundedUptimeSeconds = Math.min(windowSeconds, Math.min(uptimeSecondsFromBoot, Math.max(0, latest.uptimeSeconds)));
   return round2((boundedUptimeSeconds / windowSeconds) * 100);
@@ -806,6 +821,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     .select({
       id: devices.id,
       orgId: devices.orgId,
+      enrolledAt: devices.enrolledAt,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -847,9 +863,10 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   pruneDailyBuckets(dailyBucketMap, lookbackStart, now);
   const dailyBuckets = sortDailyBuckets(dailyBucketMap);
 
-  const uptime7d = computeUptimePercent(latest, 7, now);
-  const uptime30d = computeUptimePercent(latest, 30, now);
-  const uptime90d = computeUptimePercent(latest, 90, now);
+  const enrolledAt = device.enrolledAt ?? null;
+  const uptime7d = computeUptimePercent(latest, 7, now, enrolledAt);
+  const uptime30d = computeUptimePercent(latest, 30, now, enrolledAt);
+  const uptime90d = computeUptimePercent(latest, 90, now, enrolledAt);
 
   const crashCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.crashCount);
   const crashCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.crashCount);
@@ -1425,6 +1442,7 @@ export const reliabilityScoringInternals = {
   buildDailyTrendPoints,
   computeTrend,
   computeMtbfHours,
+  computeUptimePercent,
   scoreUptime,
   scoreCrashes,
   scoreHangs,
