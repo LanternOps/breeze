@@ -1,9 +1,10 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { quotes, quoteAcceptances } from '../../db/schema/quotes';
 import { invoices, invoiceLines } from '../../db/schema/invoices';
+import { contracts, contractLines } from '../../db/schema/contracts';
 import { organizations } from '../../db/schema/orgs';
 import { createPartner, createOrganization } from './db-utils';
 import { createQuote, addManualLine } from '../../services/quoteService';
@@ -22,7 +23,7 @@ describe('quote accept → convert', () => {
     const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
     const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
     await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Onboarding', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
-    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Managed services', quantity: 1, unitPrice: 99, taxable: false, customerVisible: true, recurrence: 'monthly' } as any, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Managed services', quantity: 5, unitPrice: 99, taxable: false, customerVisible: true, recurrence: 'monthly' } as any, actor));
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
 
     const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane Buyer', signerEmail: 'jane@org.example', ipAddress: '9.9.9.9', userAgent: 'UA' }));
@@ -41,6 +42,27 @@ describe('quote accept → convert', () => {
     expect(invLines[0]!.description).toBe('Onboarding');
     const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
     expect(inv!.total).toBe('250.00');
+
+    // Phase 4: the monthly recurring line becomes a draft contract.
+    expect(res.contractIds).toHaveLength(1);
+    const createdContracts = await withSystemDbAccessContext(() =>
+      db.select().from(contracts).where(eq(contracts.id, res.contractIds[0]!)),
+    );
+    expect(createdContracts).toHaveLength(1);
+    const contract = createdContracts[0]!;
+    expect(contract.status).toBe('draft');
+    expect(contract.intervalMonths).toBe(1);
+    expect(contract.billingTiming).toBe('advance');
+    expect(contract.autoIssue).toBe(false);
+
+    const cLines = await withSystemDbAccessContext(() =>
+      db.select().from(contractLines).where(eq(contractLines.contractId, contract.id)),
+    );
+    expect(cLines).toHaveLength(1);
+    expect(cLines[0]!.lineType).toBe('manual');
+    expect(cLines[0]!.description).toBe('Managed services');
+    expect(cLines[0]!.unitPrice).toBe('99.00');
+    expect(cLines[0]!.manualQuantity).toBe('5.00');
   });
 
   // The auto-issued invoice must carry the quote's frozen seller snapshot, T&C, and
@@ -198,5 +220,24 @@ describe('quote accept → convert', () => {
     expect(invs[0]!.id).toBe(first.invoiceId);
     const accs = await withSystemDbAccessContext(() => db.select({ id: quoteAcceptances.id }).from(quoteAcceptances).where(eq(quoteAcceptances.quoteId, created.id)));
     expect(accs).toHaveLength(1);
+  });
+
+  runDb('creates a monthly and an annual draft contract for a quote with both cadences', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Annual license', quantity: 1, unitPrice: 1200, taxable: false, customerVisible: true, recurrence: 'annual' } as any, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'EDR', quantity: 3, unitPrice: 15, taxable: false, customerVisible: true, recurrence: 'monthly' } as any, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+
+    const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane Buyer' }));
+
+    expect(res.contractIds).toHaveLength(2);
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(contracts).where(inArray(contracts.id, res.contractIds)),
+    );
+    const intervals = rows.map((r) => r.intervalMonths).sort((a, b) => a - b);
+    expect(intervals).toEqual([1, 12]);
+    expect(rows.every((r) => r.status === 'draft')).toBe(true);
   });
 });
