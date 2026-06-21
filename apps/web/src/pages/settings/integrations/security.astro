@@ -1,8 +1,6 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import SecurityIntegration from '../../../components/integrations/SecurityIntegration';
+// Integration config consolidated into the /integrations hub (tab-based UI).
+// Keep this route as a permanent alias so existing bookmarks / in-app links land
+// on the right tab instead of an orphaned standalone page.
+return Astro.redirect('/integrations#security', 301);
 ---
-
-<DashboardLayout title="Security Integrations">
-  <SecurityIntegration client:load />
-</DashboardLayout>

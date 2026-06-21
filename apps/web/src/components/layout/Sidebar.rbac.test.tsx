@@ -169,3 +169,47 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/')).toBe(true);
   });
 });
+
+describe('Sidebar — SSO (sso:admin) and platform-admin gating', () => {
+  it('hides SSO from a users:read role lacking sso:admin, but shows the other identity items', async () => {
+    state.user.permissions = [{ resource: 'users', action: 'read' }];
+    const { container } = render(<Sidebar currentPath="/settings/users" />);
+    await waitFor(() => expect(has(container, '/settings/users')).toBe(true));
+
+    // Access Reviews piggybacks on users:read, so it shows.
+    expect(has(container, '/settings/access-reviews')).toBe(true);
+    // SSO is the only item gated on sso:admin — hidden without that grant.
+    expect(has(container, '/settings/sso')).toBe(false);
+  });
+
+  it('shows SSO once the role holds sso:admin', async () => {
+    state.user.permissions = [
+      { resource: 'users', action: 'read' },
+      { resource: 'sso', action: 'admin' },
+    ];
+    const { container } = render(<Sidebar currentPath="/settings/users" />);
+    await waitFor(() => expect(has(container, '/settings/sso')).toBe(true));
+  });
+
+  it('hides all platformAdminOnly items from a non-platform-admin even with wildcard permissions', async () => {
+    state.user.isPlatformAdmin = false;
+    state.user.permissions = ADMIN;
+    const { container } = render(<Sidebar currentPath="/fleet" />);
+    await waitFor(() => expect(has(container, '/settings/users')).toBe(true));
+
+    expect(has(container, '/admin/account-deletion-requests')).toBe(false);
+    expect(has(container, '/admin/quarantined')).toBe(false);
+    expect(has(container, '/admin/third-party-catalog')).toBe(false);
+    expect(has(container, '/admin/connected-apps')).toBe(false);
+  });
+
+  it('shows platformAdminOnly items to a platform admin', async () => {
+    state.user.isPlatformAdmin = true;
+    state.user.permissions = ADMIN;
+    const { container } = render(<Sidebar currentPath="/fleet" />);
+    await waitFor(() => expect(has(container, '/admin/quarantined')).toBe(true));
+
+    expect(has(container, '/admin/third-party-catalog')).toBe(true);
+    expect(has(container, '/admin/connected-apps')).toBe(true);
+  });
+});

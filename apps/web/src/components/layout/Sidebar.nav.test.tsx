@@ -60,6 +60,7 @@ describe('navSections structure (#1321, #1324)', () => {
       '/billing/quotes',
       '/billing/invoices',
       '/contracts',
+      '/timesheet',
       '/settings/catalog',
       '/software',
       '/software-inventory',

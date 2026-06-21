@@ -2,12 +2,14 @@ import { useState } from 'react';
 import {
   Activity,
   Boxes,
+  MessageSquare,
   Plug,
   Shield,
   Users,
   Webhook
 } from 'lucide-react';
 import WebhooksPage from '../webhooks/WebhooksPage';
+import CommunicationIntegrations from './CommunicationIntegrations';
 import PsaConnectionsPage from '../psa/PsaConnectionsPage';
 import SecurityIntegration from './SecurityIntegration';
 import HuntressIntegration from './HuntressIntegration';
@@ -18,13 +20,14 @@ import Pax8Integration from './Pax8Integration';
 import TdSynnexCatalogPanel from '../settings/TdSynnexCatalogPanel';
 import { getJwtClaims } from '../../lib/authScope';
 
-type TabId = 'webhooks' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors';
+type TabId = 'webhooks' | 'notifications' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors';
 type SecuritySubTab = 'sentinelone' | 'huntress';
 type IdentitySubTab = 'google' | 'm365';
 type DistributorSubTab = 'pax8' | 'tdsynnex';
 
 const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'webhooks', label: 'Webhooks', icon: Webhook },
+  { id: 'notifications', label: 'Notifications', icon: MessageSquare },
   { id: 'psa', label: 'PSA', icon: Plug },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
@@ -52,10 +55,28 @@ interface IntegrationsPageProps {
 }
 
 export default function IntegrationsPage({ initialTab = 'webhooks' }: IntegrationsPageProps) {
-  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
-  const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>('sentinelone');
-  const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>('google');
-  const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>('pax8');
+  // Deep-link support: the URL hash selects the initial tab — and sub-tab — on
+  // load, e.g. /integrations#psa or /integrations#huntress. Used by the legacy
+  // /settings/integrations/* routes, which now 301-redirect here with a hash. A
+  // sub-tab hash (e.g. #huntress) also activates its parent tab.
+  const initialFromHash: {
+    tab: TabId;
+    securitySub?: SecuritySubTab;
+    identitySub?: IdentitySubTab;
+    distributorSub?: DistributorSubTab;
+  } = (() => {
+    if (typeof window === 'undefined') return { tab: initialTab };
+    const hash = window.location.hash.replace(/^#/, '');
+    if (tabs.some((t) => t.id === hash)) return { tab: hash as TabId };
+    if (securitySubTabs.some((s) => s.id === hash)) return { tab: 'security', securitySub: hash as SecuritySubTab };
+    if (identitySubTabs.some((s) => s.id === hash)) return { tab: 'identity', identitySub: hash as IdentitySubTab };
+    if (distributorSubTabs.some((s) => s.id === hash)) return { tab: 'distributors', distributorSub: hash as DistributorSubTab };
+    return { tab: initialTab };
+  })();
+  const [activeTab, setActiveTab] = useState<TabId>(initialFromHash.tab);
+  const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>(initialFromHash.securitySub ?? 'sentinelone');
+  const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>(initialFromHash.identitySub ?? 'google');
+  const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>(initialFromHash.distributorSub ?? 'pax8');
 
   // Pax8 and TD SYNNEX APIs both enforce requireScope('partner','system'). Gate
   // the Distributors tab on the JWT scope (never on useOrgStore().partners.length,
@@ -170,6 +191,7 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
 
       {/* Tab content */}
       {activeTab === 'webhooks' && <WebhooksPage />}
+      {activeTab === 'notifications' && <CommunicationIntegrations />}
       {activeTab === 'psa' && <PsaConnectionsPage />}
       {activeTab === 'security' && securitySubTab === 'sentinelone' && <SecurityIntegration />}
       {activeTab === 'security' && securitySubTab === 'huntress' && <HuntressIntegration />}

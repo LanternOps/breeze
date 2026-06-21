@@ -1,8 +1,6 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import HuntressIntegration from '../../../components/integrations/HuntressIntegration';
+// Integration config consolidated into the /integrations hub (tab-based UI).
+// Keep this route as a permanent alias so existing bookmarks / in-app links land
+// on the right tab instead of an orphaned standalone page.
+return Astro.redirect('/integrations#huntress', 301);
 ---
-
-<DashboardLayout title="Huntress Integration">
-  <HuntressIntegration client:load />
-</DashboardLayout>

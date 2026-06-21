@@ -43,6 +43,11 @@ import {
   ShieldEllipsis,
   UserCheck,
   UserX,
+  Fingerprint,
+  FileCheck,
+  Clock,
+  Ban,
+  Boxes,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -183,6 +188,7 @@ export const navSections: NavSection[] = [
       { name: 'Quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
       { name: 'Invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
       { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
+      { name: 'Timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
       { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
       { name: 'Software Library', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Software Policies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
@@ -225,8 +231,13 @@ export const navSections: NavSection[] = [
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'Roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'SSO', href: '/settings/sso', icon: Fingerprint, requiredPermission: { resource: 'sso', action: 'admin' } },
+      { name: 'Access Reviews', href: '/settings/access-reviews', icon: FileCheck, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Deletion requests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
+      { name: 'Quarantined Devices', href: '/admin/quarantined', icon: Ban, platformAdminOnly: true },
+      { name: 'Third-Party Catalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
+      { name: 'Connected Apps (admin)', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
     ],
   },
 ];
