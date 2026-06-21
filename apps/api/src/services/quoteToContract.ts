@@ -96,7 +96,7 @@ export function buildContractSpecsFromQuote(
         unitPrice: l.unitPrice,
         manualQuantity: l.quantity,
         taxable: l.taxable,
-        catalogItemId: l.catalogItemId,
+        catalogItemId: null, // drop the catalog link so billing uses the frozen quote price, not the live catalog price
         sortOrder: i,
       })),
     });

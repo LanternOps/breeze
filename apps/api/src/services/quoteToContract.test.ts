@@ -152,4 +152,15 @@ describe('buildContractSpecsFromQuote', () => {
     );
     expect(specs[0]!.currencyCode).toBe('USD');
   });
+
+  it('drops catalogItemId so the contract bills the frozen quote price, not the live catalog price', () => {
+    const specs = buildContractSpecsFromQuote(
+      quote,
+      [line({ recurrence: 'monthly', catalogItemId: 'cat-123', unitPrice: '42.00' })],
+      '2026-06-21',
+      'user-1',
+    );
+    expect(specs[0]!.lines[0]!.catalogItemId).toBeNull();
+    expect(specs[0]!.lines[0]!.unitPrice).toBe('42.00');
+  });
 });
