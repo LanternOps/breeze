@@ -23,7 +23,13 @@ import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
-import { enqueuePatchJob, selectStaleScheduledJobIds, filterOrphanedJobIds } from './patchJobExecutor';
+import {
+  enqueuePatchJob,
+  selectStaleScheduledJobIds,
+  filterOrphanedJobIds,
+  type StaleScheduledJob,
+} from './patchJobExecutor';
+import { captureException } from '../services/sentry';
 import { buildPatchesSnapshot } from '../services/patchJobSnapshot';
 import {
   backfillMissingPatchSettings,
@@ -321,7 +327,7 @@ async function scanAndCreateJobs(): Promise<{
   created: number;
   scanned: number;
   enqueueJobIds: string[];
-  staleScheduledJobIds: string[];
+  staleScheduledJobs: StaleScheduledJob[];
 }> {
   const now = new Date();
   let created = 0;
@@ -461,25 +467,26 @@ async function scanAndCreateJobs(): Promise<{
     }
   }
 
-  // Orphan-recovery read (#1733): collect `scheduled` patch_jobs rows that are
-  // past the grace window so the worker can re-enqueue any whose Redis job was
-  // lost in the create->enqueue gap. This is a DB-only read; the queue-state
-  // check + re-enqueue happen outside this DB access context (see the worker).
-  let staleScheduledJobIds: string[] = [];
+  // Orphan-recovery read (#1733): collect `scheduled` patch_jobs rows whose
+  // intended run time has passed (plus grace) so the worker can re-enqueue any
+  // whose Redis job was lost in the create->enqueue gap. This is a DB-only read;
+  // the queue-state check + re-enqueue happen outside this DB access context
+  // (see the worker). A failure here silently disables the backstop, so surface
+  // it to Sentry, not just the console (#1379 worker-observability convention).
+  let staleScheduledJobs: StaleScheduledJob[] = [];
   try {
-    staleScheduledJobIds = await selectStaleScheduledJobIds(now);
+    staleScheduledJobs = await selectStaleScheduledJobIds(now);
   } catch (err) {
-    console.error(
-      '[PatchScheduler] Failed to read stale scheduled jobs for reconcile:',
-      err instanceof Error ? err.message : err
-    );
+    const message = '[PatchScheduler] Failed to read stale scheduled jobs for reconcile';
+    console.error(`${message}:`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(message));
   }
 
   return {
     created,
     scanned: patchPoliciesWithSchedules.length,
     enqueueJobIds,
-    staleScheduledJobIds,
+    staleScheduledJobs,
   };
 }
 
@@ -492,16 +499,25 @@ async function scanAndCreateJobs(): Promise<{
 //      process restart or Redis-connection drop between the DB commit and
 //      enqueuePatchJob leaves the patch_jobs row status='scheduled' with no
 //      queue job, and the occurrence-idempotency guard stops the next scan from
-//      ever re-creating it. We re-enqueue any `scheduled` row (past the grace
-//      window) that has no active queue job. Just-created ids are also in this
-//      list, but they were enqueued moments ago so the filter sees their active
-//      job and skips them; the grace window keeps this from racing a fresh
-//      enqueue. enqueuePatchJob is idempotent on the stable jobId, so a
-//      redundant re-enqueue is a no-op.
-async function enqueueScanResults(result: {
-  enqueueJobIds: string[];
-  staleScheduledJobIds: string[];
-}): Promise<{ enqueued: number; recovered: number }> {
+//      ever re-creating it. We re-enqueue any `scheduled` row whose run time has
+//      passed (past the grace window) that has no active queue job, preserving
+//      the remaining delay so a future-scheduled job recovered early still waits
+//      for its window. Just-created ids are also in this list, but they were
+//      enqueued moments ago so the filter normally sees their active job and
+//      skips them; in the rare case a just-created job already completed, the
+//      status re-check in processExecutePatchJob makes the redundant enqueue a
+//      no-op. enqueuePatchJob is idempotent on the stable jobId.
+//
+// Observability (#1379): failing to recover an orphan, or a non-zero recovery
+// count (the #1733 race is actively firing in prod), is surfaced to Sentry —
+// console-only logging is not observable in this stack.
+async function enqueueScanResults(
+  result: {
+    enqueueJobIds: string[];
+    staleScheduledJobs: StaleScheduledJob[];
+  },
+  now: Date = new Date()
+): Promise<{ enqueued: number; recovered: number }> {
   let enqueued = 0;
   for (const jobId of result.enqueueJobIds) {
     try {
@@ -517,23 +533,37 @@ async function enqueueScanResults(result: {
 
   let recovered = 0;
   try {
-    const orphanedJobIds = await filterOrphanedJobIds(result.staleScheduledJobIds);
-    for (const jobId of orphanedJobIds) {
+    const orphaned = await filterOrphanedJobIds(result.staleScheduledJobs);
+    for (const job of orphaned) {
       try {
-        await enqueuePatchJob(jobId);
+        // Preserve any remaining delay: a future-scheduled orphan (POST route)
+        // recovered before its window must still wait, not fire immediately.
+        const delayMs = job.scheduledAt
+          ? Math.max(0, job.scheduledAt.getTime() - now.getTime())
+          : 0;
+        await enqueuePatchJob(job.id, delayMs || undefined);
         recovered += 1;
-        console.warn(`[PatchScheduler] Re-enqueued orphaned scheduled patch job ${jobId} (#1733 recovery)`);
+        console.warn(`[PatchScheduler] Re-enqueued orphaned scheduled patch job ${job.id} (#1733 recovery)`);
       } catch (err) {
-        console.error(
-          `[PatchScheduler] Failed to re-enqueue orphaned patch job ${jobId}:`,
-          err instanceof Error ? err.message : err
-        );
+        const message = `[PatchScheduler] Failed to re-enqueue orphaned patch job ${job.id} (#1733 recovery)`;
+        console.error(`${message}:`, err instanceof Error ? err.message : err);
+        // A recovery enqueue that fails means a silently-lost run stays lost —
+        // page-worthy, surface it.
+        captureException(err instanceof Error ? err : new Error(message));
       }
     }
   } catch (err) {
-    console.error(
-      '[PatchScheduler] Orphan-reconcile sweep failed:',
-      err instanceof Error ? err.message : err
+    const message = '[PatchScheduler] Orphan-reconcile sweep failed';
+    console.error(`${message}:`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(message));
+  }
+
+  if (recovered > 0) {
+    // A non-zero recovery means the #1733 create->enqueue race fired in prod and
+    // we backstopped it. Surface as a warning-level Sentry signal so the rate is
+    // observable (vs. only living in container logs).
+    captureException(
+      new Error(`[PatchScheduler] Recovered ${recovered} orphaned scheduled patch job(s) — #1733 race active`)
     );
   }
 
@@ -553,15 +583,15 @@ function createSchedulerWorker(): Worker {
               _configPolicyTableWarningLogged = true;
               console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
             }
-            return { created: 0, scanned: 0, enqueueJobIds: [], staleScheduledJobIds: [] };
+            return { created: 0, scanned: 0, enqueueJobIds: [], staleScheduledJobs: [] };
           }
           throw error;
         }
       });
 
-      await enqueueScanResults(result);
+      const { recovered } = await enqueueScanResults(result);
 
-      return { created: result.created, scanned: result.scanned };
+      return { created: result.created, scanned: result.scanned, recovered };
     },
     {
       connection: getBullMQConnection(),

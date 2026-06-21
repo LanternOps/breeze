@@ -796,29 +796,40 @@ describe('orphaned scheduled-job reconcile (#1733)', () => {
     shared.addMock.mockResolvedValue({ id: 'queue-job-1' });
   });
 
-  it('selectStaleScheduledJobIds returns ids of scheduled rows past the grace window', async () => {
+  it('selectStaleScheduledJobIds returns id + scheduledAt of stale scheduled rows', async () => {
+    const sched = new Date('2026-06-21T08:00:00Z');
     vi.mocked(db.select).mockImplementationOnce(
-      () => createWhereSelectChain([{ id: 'job-a' }, { id: 'job-b' }]) as any,
+      () => createWhereSelectChain([
+        { id: 'job-a', scheduledAt: sched },
+        { id: 'job-b', scheduledAt: null },
+      ]) as any,
     );
 
-    const ids = await selectStaleScheduledJobIds(new Date('2026-06-21T09:00:00Z'));
+    const jobs = await selectStaleScheduledJobIds(new Date('2026-06-21T09:00:00Z'));
 
-    expect(ids).toEqual(['job-a', 'job-b']);
+    expect(jobs).toEqual([
+      { id: 'job-a', scheduledAt: sched },
+      { id: 'job-b', scheduledAt: null },
+    ]);
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 
-  it('filterOrphanedJobIds keeps only ids with no active queue job', async () => {
+  it('filterOrphanedJobIds keeps only jobs with no active queue job (carrying scheduledAt)', async () => {
     // job-a has an active (waiting) queue job → already enqueued, drop it.
-    // job-b has no queue job → orphaned, keep it.
+    // job-b has no queue job → orphaned, keep it (with its scheduledAt).
     shared.getJobMock.mockImplementation(async (id: string) =>
       id === 'patch-job-job-a'
         ? { id, getState: vi.fn().mockResolvedValue('waiting'), remove: vi.fn() }
         : null,
     );
 
-    const orphaned = await filterOrphanedJobIds(['job-a', 'job-b']);
+    const sched = new Date('2026-06-21T08:00:00Z');
+    const orphaned = await filterOrphanedJobIds([
+      { id: 'job-a', scheduledAt: null },
+      { id: 'job-b', scheduledAt: sched },
+    ]);
 
-    expect(orphaned).toEqual(['job-b']);
+    expect(orphaned).toEqual([{ id: 'job-b', scheduledAt: sched }]);
   });
 
   it('filterOrphanedJobIds treats a completed queue job as not active (orphan recoverable)', async () => {
@@ -831,9 +842,9 @@ describe('orphaned scheduled-job reconcile (#1733)', () => {
       remove: removeMock,
     });
 
-    const orphaned = await filterOrphanedJobIds(['job-c']);
+    const orphaned = await filterOrphanedJobIds([{ id: 'job-c', scheduledAt: null }]);
 
-    expect(orphaned).toEqual(['job-c']);
+    expect(orphaned).toEqual([{ id: 'job-c', scheduledAt: null }]);
     expect(removeMock).toHaveBeenCalled();
   });
 

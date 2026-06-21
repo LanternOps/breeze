@@ -18,7 +18,7 @@ import {
   devices,
   deviceCommands,
 } from '../db/schema';
-import { eq, and, sql, inArray, lt } from 'drizzle-orm';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import {
@@ -172,21 +172,28 @@ export async function enqueuePatchJob(patchJobId: string, delayMs?: number): Pro
 // Orphan reconcile sweep (#1733)
 // ============================================
 
-// Grace period after a job's scheduledAt before the reconcile sweep will
-// re-enqueue it. The scheduler enqueues the Redis job immediately after the DB
-// commit, so a row that is only seconds old is almost certainly mid-enqueue (or
-// its execute-patch-job worker is about to claim it). Waiting a couple of
-// minutes avoids racing the happy path and only acts on jobs that genuinely
-// missed their enqueue (process restart / Redis-connection churn in the
-// create->enqueue gap — the #1733 failure window).
+// Grace period after a job's intended run time (scheduledAt) before the
+// reconcile sweep will re-enqueue it. The scheduler enqueues the Redis job
+// immediately after the DB commit, so a row whose run time only just passed is
+// almost certainly mid-enqueue (or its execute-patch-job worker is about to
+// claim it). Waiting a couple of minutes avoids racing the happy path and only
+// acts on jobs that genuinely missed their enqueue (process restart /
+// Redis-connection churn in the create->enqueue gap — the #1733 failure
+// window).
 const RECONCILE_MIN_AGE_MS = 2 * 60 * 1000;
 
-// Upper bound on how far back the sweep looks. Matches the scheduler's
-// occurrence-idempotency lookback (45 days): a `scheduled` row older than this
-// is well past any window we would still want to run, and re-enqueuing it would
-// fire a long-stale patch run. Such rows are stuck for a different reason and
-// should be surfaced/cleaned up rather than silently executed.
+// Upper bound on how far back the sweep looks (relative to scheduledAt). Matches
+// the scheduler's occurrence-idempotency lookback (45 days): a `scheduled` row
+// whose run time is older than this is well past any window we would still want
+// to run, and re-enqueuing it would fire a long-stale patch run. Such rows are
+// stuck for a different reason and should be surfaced/cleaned up rather than
+// silently executed.
 const RECONCILE_MAX_AGE_MS = 45 * 24 * 60 * 60 * 1000;
+
+export interface StaleScheduledJob {
+  id: string;
+  scheduledAt: Date | null;
+}
 
 /**
  * Recover `patch_jobs` rows that committed with `status='scheduled'` but whose
@@ -198,11 +205,21 @@ const RECONCILE_MAX_AGE_MS = 45 * 24 * 60 * 60 * 1000;
  * enqueue leaves the row with no queue job, and the occurrence-idempotency
  * guard then prevents the next scan from ever re-creating it.
  *
- * This sweep finds `scheduled` rows past a short grace period that have no
- * active execute-patch-job queue entry and re-enqueues them. `enqueuePatchJob`
- * is idempotent on the stable jobId, and `processExecutePatchJob` re-checks
+ * This sweep finds `scheduled` rows whose intended run time has passed (plus a
+ * grace window) that have no active execute-patch-job queue entry and
+ * re-enqueues them, preserving any remaining delay. `enqueuePatchJob` is
+ * idempotent on the stable jobId, and `processExecutePatchJob` re-checks
  * `status='scheduled'` under a conditional UPDATE, so re-enqueuing a job that is
  * actually fine (or already running) is a safe no-op.
+ *
+ * The window is keyed off `scheduledAt`, NOT `createdAt`: the POST creation
+ * route (`configurationPolicies/patchJobs.ts`) lets an operator schedule a job
+ * for a future `scheduledAt` and enqueues it with a matching BullMQ delay. If we
+ * gated on `createdAt`, a future-scheduled row whose delayed enqueue was lost
+ * would become "stale" 2 minutes after creation and the sweep would re-enqueue
+ * it with no delay — firing the patch run up to 45 days early. `scheduledAt` is
+ * nullable; scheduler rows always set it to the run time, and we COALESCE to
+ * `createdAt` for any legacy/null row so it stays recoverable.
  *
  * Split into two phases so the caller can keep the DB read inside its system DB
  * access context and the Redis round-trips outside it (#1105):
@@ -211,41 +228,48 @@ const RECONCILE_MAX_AGE_MS = 45 * 24 * 60 * 60 * 1000;
  *   2. filterOrphanedJobIds — Redis-only; drops ids that already have an active
  *      queue job. Runs outside the DB context, alongside the enqueue.
  */
-export async function selectStaleScheduledJobIds(now: Date = new Date()): Promise<string[]> {
+export async function selectStaleScheduledJobIds(now: Date = new Date()): Promise<StaleScheduledJob[]> {
   const minAge = new Date(now.getTime() - RECONCILE_MIN_AGE_MS);
   const maxAge = new Date(now.getTime() - RECONCILE_MAX_AGE_MS);
 
+  // Effective run time = scheduledAt when set, else createdAt (non-null). The
+  // [maxAge, minAge) window over that value only re-enqueues rows whose run time
+  // has actually passed (so we never fire early) but not so long ago that firing
+  // them would run a long-stale patch window. Dates are bound as ISO strings —
+  // postgres.js can't serialize a raw Date param inside a sql template (it must
+  // be a string/Buffer); the repo's other windowed sweeps do the same (see
+  // staleCommandReaper.ts).
+  const effectiveRunTime = sql`COALESCE(${patchJobs.scheduledAt}, ${patchJobs.createdAt})`;
+
   const candidates = await db
-    .select({ id: patchJobs.id })
+    .select({ id: patchJobs.id, scheduledAt: patchJobs.scheduledAt })
     .from(patchJobs)
     .where(
       and(
         eq(patchJobs.status, 'scheduled'),
-        // createdAt is non-null; the [maxAge, minAge) window only re-enqueues
-        // rows old enough to have missed their enqueue but not so old that
-        // firing them would run a long-stale patch window.
-        lt(patchJobs.createdAt, minAge),
-        sql`${patchJobs.createdAt} >= ${maxAge}`
+        sql`${effectiveRunTime} < ${minAge.toISOString()}`,
+        sql`${effectiveRunTime} >= ${maxAge.toISOString()}`
       )
     );
 
-  return candidates.map((row) => row.id);
+  return candidates.map((row) => ({ id: row.id, scheduledAt: row.scheduledAt }));
 }
 
 /**
- * Of the given `scheduled` job ids, return those with no active execute-patch-job
+ * Of the given `scheduled` jobs, return those with no active execute-patch-job
  * queue entry — i.e. the rows whose enqueue was lost (#1733). Pure Redis reads;
- * run this outside the DB access context.
+ * run this outside the DB access context. Carries `scheduledAt` through so the
+ * caller can re-enqueue with the correct remaining delay.
  */
-export async function filterOrphanedJobIds(jobIds: string[]): Promise<string[]> {
-  if (jobIds.length === 0) return [];
+export async function filterOrphanedJobIds(jobs: StaleScheduledJob[]): Promise<StaleScheduledJob[]> {
+  if (jobs.length === 0) return [];
   const queue = getPatchJobQueue();
-  const orphaned: string[] = [];
-  for (const jobId of jobIds) {
-    const stableJobId = getPatchJobExecutionId(jobId);
+  const orphaned: StaleScheduledJob[] = [];
+  for (const job of jobs) {
+    const stableJobId = getPatchJobExecutionId(job.id);
     const existing = await resolveActiveQueueJob(queue, [stableJobId]);
     if (!existing) {
-      orphaned.push(jobId);
+      orphaned.push(job);
     }
   }
   return orphaned;
