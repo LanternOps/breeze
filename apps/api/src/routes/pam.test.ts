@@ -1703,7 +1703,7 @@ describe('PAM org config — default unmatched verdict', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.config.defaultUnmatchedVerdict).toBe('auto_deny');
-    const valuesArg = values.mock.calls[0]![0] as {
+    const valuesArg = (values as any).mock.calls[0][0] as {
       orgId: string;
       defaultUnmatchedVerdict: string;
       updatedByUserId: string;
