@@ -34,6 +34,16 @@ describe('addMonthsToDate', () => {
     // Jan 31 + 1 month has no Feb 31 -> JS rolls into March (acceptable, documented).
     expect(addMonthsToDate('2026-01-31', 1)).toBe('2026-03-03');
   });
+
+  it('throws on malformed date string', () => {
+    expect(() => addMonthsToDate('2026-6-1', 1)).toThrow();
+    expect(() => addMonthsToDate('not-a-date', 1)).toThrow();
+  });
+
+  it('throws on non-positive months', () => {
+    expect(() => addMonthsToDate('2026-06-21', 0)).toThrow();
+    expect(() => addMonthsToDate('2026-06-21', -1)).toThrow();
+  });
 });
 
 describe('buildContractSpecsFromQuote', () => {
@@ -162,5 +172,22 @@ describe('buildContractSpecsFromQuote', () => {
     );
     expect(specs[0]!.lines[0]!.catalogItemId).toBeNull();
     expect(specs[0]!.lines[0]!.unitPrice).toBe('42.00');
+  });
+
+  it('annual line with termMonths=12 gets endDate; monthly line with termMonths=null gets endDate===null', () => {
+    const specs = buildContractSpecsFromQuote(
+      quote,
+      [
+        line({ recurrence: 'annual', termMonths: 12, description: 'Annual license', unitPrice: '1200.00' }),
+        line({ recurrence: 'monthly', termMonths: null, description: 'Monthly mgmt', unitPrice: '99.00' }),
+      ],
+      '2026-06-21',
+      'user-1',
+    );
+    expect(specs).toHaveLength(2);
+    const annual = specs.find((s) => s.intervalMonths === 12)!;
+    const monthly = specs.find((s) => s.intervalMonths === 1)!;
+    expect(annual.endDate).toBe(addMonthsToDate('2026-06-21', 12));
+    expect(monthly.endDate).toBeNull();
   });
 });

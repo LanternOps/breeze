@@ -51,6 +51,12 @@ export interface NewContractSpec {
 // Date-only (YYYY-MM-DD) month arithmetic in UTC. Month overflow rolls forward
 // (Jan 31 + 1mo -> Mar 03), matching JS Date semantics — acceptable for term ends.
 export function addMonthsToDate(dateStr: string, months: number): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    throw new Error(`addMonthsToDate: expected YYYY-MM-DD, got "${dateStr}"`);
+  }
+  if (!Number.isInteger(months) || months < 1) {
+    throw new Error(`addMonthsToDate: months must be a positive integer, got ${months}`);
+  }
   const [y, m, d] = dateStr.split('-').map((n) => parseInt(n, 10));
   const base = new Date(Date.UTC(y!, m! - 1, d!));
   base.setUTCMonth(base.getUTCMonth() + months);

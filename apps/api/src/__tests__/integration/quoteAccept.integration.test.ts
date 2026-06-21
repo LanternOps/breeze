@@ -54,6 +54,10 @@ describe('quote accept → convert', () => {
     expect(contract.intervalMonths).toBe(1);
     expect(contract.billingTiming).toBe('advance');
     expect(contract.autoIssue).toBe(false);
+    expect(contract.currencyCode).toBe('USD');
+    expect(contract.orgId).toBe(org.id);
+    expect(contract.partnerId).toBe(partner.id);
+    expect(contract.startDate).toBe(new Date().toISOString().slice(0, 10));
 
     const cLines = await withSystemDbAccessContext(() =>
       db.select().from(contractLines).where(eq(contractLines.contractId, contract.id)),
@@ -166,6 +170,14 @@ describe('quote accept → convert', () => {
     expect(inv!.total).toBe('0.00');
     const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
     expect(q!.status).toBe('converted');
+
+    // Phase 4: even a recurring-only quote still creates the draft contract.
+    expect(res.contractIds).toHaveLength(1);
+    const [recurringContract] = await withSystemDbAccessContext(() =>
+      db.select().from(contracts).where(eq(contracts.id, res.contractIds[0]!)),
+    );
+    expect(recurringContract!.status).toBe('draft');
+    expect(recurringContract!.intervalMonths).toBe(1);
   });
 
   // Phase 3 read-time expiry guard: a quote whose expiry_date has passed must be
@@ -220,6 +232,23 @@ describe('quote accept → convert', () => {
     expect(invs[0]!.id).toBe(first.invoiceId);
     const accs = await withSystemDbAccessContext(() => db.select({ id: quoteAcceptances.id }).from(quoteAcceptances).where(eq(quoteAcceptances.quoteId, created.id)));
     expect(accs).toHaveLength(1);
+  });
+
+  runDb('one-time-only quote creates no contracts', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Onboarding fee', quantity: 1, unitPrice: 500, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+
+    const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }));
+    expect(res.contractIds).toEqual([]);
+
+    // Defense-in-depth: confirm no contracts exist at the DB level either.
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ id: contracts.id }).from(contracts).where(eq(contracts.orgId, org.id)),
+    );
+    expect(rows).toHaveLength(0);
   });
 
   runDb('creates a monthly and an annual draft contract for a quote with both cadences', async () => {

@@ -414,7 +414,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 // Tenancy (orgId/partnerId) is already validated by the caller, so there is NO
 // actor guard here. MUST run inside an established system-scope DB context
 // (e.g. acceptQuote's withSystemDbAccessContext transaction) — do not call from
-// a bare request handler. Always lands status='draft'; the MSP activates later.
+// a bare request handler — a contextless/org-only call hits the partner-axis writes'
+// RLS WITH CHECK and fails (now a typed CONTRACT_CREATE_FAILED, previously a 0-row
+// silent write). Always lands status='draft'; the MSP activates later.
 export async function createContractWithLines(
   spec: NewContractSpec,
 ): Promise<typeof contracts.$inferSelect> {
@@ -437,10 +439,17 @@ export async function createContractWithLines(
     })
     .returning();
 
+  if (!contract) {
+    throw new ContractServiceError(
+      `contract insert returned 0 rows (org=${spec.orgId} partner=${spec.partnerId}) — likely an RLS WITH CHECK rejection from a non-system DB context`,
+      500, 'CONTRACT_CREATE_FAILED',
+    );
+  }
+
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]!;
-    await db.insert(contractLines).values({
-      contractId: contract!.id,
+    const [insertedLine] = await db.insert(contractLines).values({
+      contractId: contract.id,
       orgId: spec.orgId,
       lineType: l.lineType,
       description: l.description,
@@ -450,8 +459,15 @@ export async function createContractWithLines(
       siteId: l.lineType === 'per_device' ? (l.siteId ?? null) : null,
       taxable: l.taxable,
       sortOrder: l.sortOrder ?? i,
-    });
+    }).returning({ id: contractLines.id });
+
+    if (!insertedLine) {
+      throw new ContractServiceError(
+        `contract line insert returned 0 rows (contractId=${contract.id} org=${spec.orgId} line[${i}]) — likely an RLS WITH CHECK rejection`,
+        500, 'CONTRACT_LINE_CREATE_FAILED',
+      );
+    }
   }
 
-  return contract!;
+  return contract;
 }
