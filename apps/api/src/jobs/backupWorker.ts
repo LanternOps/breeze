@@ -40,6 +40,7 @@ import { getDueOccurrenceKey } from '../routes/backup/helpers';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 import { markBackupJobFailedIfInFlight } from '../services/backupResultPersistence';
 import { createScheduledBackupJobIfAbsent } from '../services/backupJobCreation';
+import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
@@ -515,6 +516,11 @@ async function processDispatchBackup(
     const sent = sendCommandToAgent(agentId, command);
     if (sent) {
       sentCount++;
+      // Record a server-side dispatch expectation so the WS result handler can
+      // verify this completion corresponds to work we actually dispatched and
+      // hasn't already been consumed (F6). Best-effort: a Redis outage here
+      // makes the result fail-closed on arrival (dropped), not trusted.
+      await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
     } else {
       console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${commandJobId}`);
       failedTargets.push(target.commandType);
