@@ -94,6 +94,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   'pax8_company_mappings',
   'pax8_subscription_snapshots',
   'pax8_contract_line_links',
+  // customer_email_domains (Phase 5): partner-axis (Shape 3) carrying a
+  // denormalized org_id (the routing target). RLS axis is partner_id; the
+  // org_id is for routing + cascade only. Functional cross-partner/cross-org
+  // forge proof: customerEmailDomainsRls.integration.test.ts.
+  'customer_email_domains',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -144,6 +149,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Functional cross-partner forge proof: emailInboundRls.integration.test.ts.
   ['ticket_email_inbound', 'partner_id'],
   ['partner_inbound_domains', 'partner_id'],
+  // customer_email_domains (Phase 5): sender-domain -> customer-org routing.
+  // Partner-axis + denormalized org_id (also in ORG_AXIS_POLICY_EXCLUDED_TABLES).
+  // Policy: breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
+  // Functional forge: customerEmailDomainsRls.integration.test.ts.
+  ['customer_email_domains', 'partner_id'],
   // Stripe payments (2026-06-15): one connected Stripe account per partner
   // (RLS shape 3, flat breeze_has_partner_access(partner_id)). The sibling
   // invoice_stripe_payments table carries a direct org_id column and is
