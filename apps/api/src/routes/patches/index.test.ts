@@ -564,6 +564,80 @@ describe('patch routes', () => {
     expect(body.data.filters).toEqual({ source: 'apple', severity: 'critical', ringId: null });
   });
 
+  it('system-scope compliance: correlated partner subquery marks approved patches correctly (null effectivePartnerId path)', async () => {
+    // Simulates GET /patches/compliance with no orgId and no ringId — the
+    // "all orgs" aggregate view for a system-scope caller. effectivePartnerId
+    // is null in this path, so a scalar pa.partner_id = NULL::uuid bind would
+    // make every device-patch report as unapproved. The correlated subquery
+    // (pa.partner_id = (select o.partner_id from organizations o where o.id = ...))
+    // resolves each device's partner independently and must match.
+    mockAuthState.scope = 'system';
+    mockAuthState.orgId = null;
+    mockAuthState.partnerId = null;
+    mockAuthState.accessibleOrgIds = null;
+
+    const groupBy = vi.fn().mockResolvedValue([
+      { status: 'installed', count: 3 },
+      { status: 'pending', count: 1 }
+    ]);
+    const where = vi.fn().mockReturnValue({ groupBy });
+    const innerJoin = vi.fn().mockReturnValue({ where });
+
+    const deviceBreakdownResult = vi.fn().mockResolvedValue([
+      {
+        deviceId: DEVICE_A,
+        hostname: 'host-a',
+        osType: 'windows',
+        lastSeenAt: null,
+        missingCount: 1,
+        approvedMissing: 1,   // correlated subquery should match for this device
+        unapprovedMissing: 0,
+        criticalCount: 0,
+        importantCount: 1,
+        osMissing: 1,
+        thirdPartyMissing: 0,
+        lastInstalledAt: null,
+        pendingReboot: false,
+        lastScannedAt: null
+      }
+    ]);
+    const deviceBreakdownHaving = vi.fn().mockReturnValue({ orderBy: deviceBreakdownResult });
+    const deviceBreakdownGroupBy = vi.fn().mockReturnValue({ having: deviceBreakdownHaving });
+    const deviceBreakdownWhere = vi.fn().mockReturnValue({ groupBy: deviceBreakdownGroupBy });
+    const deviceBreakdownInnerJoin2 = vi.fn().mockReturnValue({ where: deviceBreakdownWhere });
+    const deviceBreakdownInnerJoin1 = vi.fn().mockReturnValue({ innerJoin: deviceBreakdownInnerJoin2 });
+
+    const severityGroupBy = vi.fn().mockResolvedValue([]);
+    const severityWhere = vi.fn().mockReturnValue({ groupBy: severityGroupBy });
+    const severityInnerJoin = vi.fn().mockReturnValue({ where: severityWhere });
+
+    vi.mocked(db.select)
+      // org device IDs (system scope: orgCondition returns op:'orgCondition')
+      .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_A }]) as any)
+      // status counts
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin }) } as any)
+      // device breakdown
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: deviceBreakdownInnerJoin1 }) } as any)
+      // severity counts
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: severityInnerJoin }) } as any);
+
+    const res = await app.request('/patches/compliance', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // The correlated subquery resolves per-device — approved patches must show
+    // as approved (approvedMissing > 0, unapprovedMissing === 0).
+    expect(body.data.devicesNeedingPatches).toHaveLength(1);
+    expect(body.data.devicesNeedingPatches[0].approvedMissing).toBe(1);
+    expect(body.data.devicesNeedingPatches[0].unapprovedMissing).toBe(0);
+    expect(body.data.summary.total).toBe(4);
+    expect(body.data.summary.installed).toBe(3);
+  });
+
   it('queues a compliance report request and returns a persisted report id', async () => {
     const reportId = '55555555-5555-5555-5555-555555555555';
 

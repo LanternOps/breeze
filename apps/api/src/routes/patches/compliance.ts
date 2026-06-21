@@ -163,13 +163,19 @@ complianceRoutes.get(
     const approvalRingScope = query.ringId
       ? sql`and (pa.ring_id = ${query.ringId}::uuid or pa.ring_id is null)`
       : sql``;
-    // patch_approvals has no org_id — join on partner_id instead.
-    // effectivePartnerId was resolved from the org (or ring) above; bind it
-    // directly so the subquery returns the same approved set, now keyed on partner.
+    // patch_approvals has no org_id — correlate per-row through the device's org
+    // to find the owning partner. This is correct for all scopes:
+    //  - org scope: each device has the same org/partner, correlated correctly.
+    //  - partner scope: devices span multiple orgs, all under the same partner.
+    //  - ring scope: effectivePartnerId is set; ring scope is handled by approvalRingScope.
+    //  - system scope (no orgId, no ringId): effectivePartnerId is null here, so
+    //    a scalar bind of NULL::uuid would make every device-patch show as
+    //    unapproved. The correlated subquery resolves each device's partner
+    //    independently, so the system-wide aggregate view is correct.
     const isApprovedForInstall = sql`exists (
       select 1
       from patch_approvals pa
-      where pa.partner_id = ${effectivePartnerId}::uuid
+      where pa.partner_id = (select o.partner_id from organizations o where o.id = ${devicePatches.orgId})
         and pa.patch_id = ${devicePatches.patchId}
         and pa.status = 'approved'
         ${approvalRingScope}
