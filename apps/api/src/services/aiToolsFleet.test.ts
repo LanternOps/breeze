@@ -159,6 +159,7 @@ vi.mock('../routes/patches/helpers', () => ({
 
 import { registerFleetTools } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
+import { upsertPatchApproval } from '../routes/patches/helpers';
 
 const EXPECTED_TOOLS = [
   'manage_deployments',
@@ -297,10 +298,34 @@ describe('manage_patches handler', () => {
     orgCondition: () => undefined,
   } as any;
 
+  const orgAuth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+
   it('setup_auto_approval is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({ action: 'setup_auto_approval' }, noOrgAuth));
     expect(result.error).toContain('Action "setup_auto_approval" is disabled');
     expect(result.error).toContain('configuration policies');
+  });
+
+  it('approve action calls upsertPatchApproval with correct call shape', async () => {
+    vi.mocked(upsertPatchApproval).mockClear();
+    const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    await tool.handler({ action: 'approve', patchId }, orgAuth);
+    expect(upsertPatchApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        partnerId: 'partner-1',
+        patchId,
+        ringId: null,
+        status: 'approved',
+      })
+    );
   });
 });
 
