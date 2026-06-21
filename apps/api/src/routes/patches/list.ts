@@ -5,7 +5,7 @@ import { requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
-import { getPagination, inferPatchOs } from './helpers';
+import { getPagination, inferPatchOs, resolvePartnerIdForOrg } from './helpers';
 
 // Whitelist mapping sort keys (validated by listPatchesSchema) to real columns.
 // Never pass raw user input into orderBy — only keys present here are honored.
@@ -150,25 +150,30 @@ listRoutes.get(
     };
     for (const row of sourceCounts) counts[row.source] = Number(row.count);
 
-    // If org specified, get approval statuses (optionally ring-scoped)
+    // If org specified, get approval statuses (optionally ring-scoped).
+    // Approvals are partner-scoped; resolve the org's partner first.
     let approvalStatuses: Record<string, string> = {};
     if (query.orgId) {
-      const approvalConditions = [eq(patchApprovals.orgId, query.orgId)];
-      if (query.ringId) {
-        approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
+      const partnerId = await resolvePartnerIdForOrg(query.orgId);
+      if (partnerId !== null) {
+        const approvalConditions = [eq(patchApprovals.partnerId, partnerId)];
+        if (query.ringId) {
+          approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
+        }
+
+        const approvals = await db
+          .select({
+            patchId: patchApprovals.patchId,
+            status: patchApprovals.status
+          })
+          .from(patchApprovals)
+          .where(and(...approvalConditions));
+
+        approvalStatuses = Object.fromEntries(
+          approvals.map(a => [a.patchId, a.status])
+        );
       }
-
-      const approvals = await db
-        .select({
-          patchId: patchApprovals.patchId,
-          status: patchApprovals.status
-        })
-        .from(patchApprovals)
-        .where(and(...approvalConditions));
-
-      approvalStatuses = Object.fromEntries(
-        approvals.map(a => [a.patchId, a.status])
-      );
+      // If partnerId is null the org has no partner; no approvals exist — leave approvalStatuses empty.
     }
 
     const data = patchList.map(patch => ({

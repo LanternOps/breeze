@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { patchPolicies } from '../../db/schema';
+import { organizations, patchPolicies } from '../../db/schema';
 import { writeRouteAudit, type AuthContext } from '../../services/auditEvents';
 
 // Max rows a patches list endpoint will return in a single page. Raised from
@@ -134,6 +134,15 @@ export async function resolvePatchApprovalPartnerIdForRing(
   }
   if (auth.partnerId) return { partnerId: auth.partnerId };
   return { error: 'partnerId is required', status: 400 };
+}
+
+export async function resolvePartnerIdForOrg(orgId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return row?.partnerId ?? null;
 }
 
 export function resolvePatchReportOrgId(

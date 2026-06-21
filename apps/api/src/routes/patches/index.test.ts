@@ -89,6 +89,10 @@ vi.mock('../../db/schema', () => ({
     id: 'patchPolicies.id',
     partnerId: 'patchPolicies.partnerId'
   },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
+  },
   patchJobs: {
     orgId: 'patchJobs.orgId',
     status: 'patchJobs.status',
@@ -529,13 +533,19 @@ describe('patch routes', () => {
     const severityInnerJoin = vi.fn().mockReturnValue({ where: severityWhere });
 
     vi.mocked(db.select)
+      // resolvePartnerIdForOrg: organizations SELECT
+      .mockReturnValueOnce(selectWhereLimitResult([{ partnerId: PARTNER_ID }]) as any)
+      // org device IDs
       .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_A }, { id: DEVICE_C }]) as any)
+      // status counts
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           innerJoin
         })
       } as any)
+      // device breakdown
       .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: deviceBreakdownInnerJoin1 }) } as any)
+      // severity counts
       .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: severityInnerJoin }) } as any);
 
     const res = await app.request(`/patches/compliance?orgId=${ACCESSIBLE_ORG_ID}&source=apple&severity=critical`, {

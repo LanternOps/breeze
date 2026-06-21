@@ -17,7 +17,7 @@ import {
   OUTSTANDING_DEVICE_PATCH_STATUSES
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
-import { resolvePatchReportOrgId } from './helpers';
+import { resolvePatchReportOrgId, resolvePartnerIdForOrg } from './helpers';
 
 export const complianceRoutes = new Hono();
 
@@ -40,9 +40,12 @@ complianceRoutes.get(
     const query = c.req.valid('query');
 
     let effectiveOrgId = query.orgId ?? null;
+    // effectivePartnerId drives approval lookups (patch_approvals is partner-scoped).
+    // effectiveOrgId drives device/patch scoping (device_patches, devices remain org-scoped).
+    let effectivePartnerId: string | null = null;
     if (query.ringId) {
       const [ring] = await db
-        .select({ orgId: patchPolicies.orgId })
+        .select({ partnerId: patchPolicies.partnerId })
         .from(patchPolicies)
         .where(eq(patchPolicies.id, query.ringId))
         .limit(1);
@@ -50,12 +53,17 @@ complianceRoutes.get(
       if (!ring) {
         return c.json({ error: 'Update ring not found' }, 404);
       }
-      if (!auth.canAccessOrg(ring.orgId)) {
+      if (auth.scope !== 'system' && auth.partnerId !== ring.partnerId) {
         return c.json({ error: 'Access denied to this update ring' }, 403);
       }
-      effectiveOrgId = ring.orgId;
+      effectivePartnerId = ring.partnerId;
     } else if (effectiveOrgId && !auth.canAccessOrg(effectiveOrgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    // For the non-ring path, resolve the partner from the org.
+    if (effectivePartnerId === null && effectiveOrgId) {
+      effectivePartnerId = await resolvePartnerIdForOrg(effectiveOrgId);
     }
 
     // Get devices scoped to org (or all accessible orgs for partner/system)
@@ -109,15 +117,16 @@ complianceRoutes.get(
       });
     }
 
-    // If ringId specified, scope to ring-approved patches only
+    // If ringId specified, scope to ring-approved patches only.
+    // Approvals are partner-scoped; use effectivePartnerId resolved above.
     let ringPatchScope: string[] | null = null;
-    if (query.ringId && effectiveOrgId) {
+    if (query.ringId && effectivePartnerId) {
       const ringApprovedPatches = await db
         .select({ patchId: patchApprovals.patchId })
         .from(patchApprovals)
         .where(
           and(
-            eq(patchApprovals.orgId, effectiveOrgId),
+            eq(patchApprovals.partnerId, effectivePartnerId),
             eq(patchApprovals.ringId, query.ringId),
             eq(patchApprovals.status, 'approved')
           )
@@ -154,10 +163,13 @@ complianceRoutes.get(
     const approvalRingScope = query.ringId
       ? sql`and (pa.ring_id = ${query.ringId}::uuid or pa.ring_id is null)`
       : sql``;
+    // patch_approvals has no org_id — join on partner_id instead.
+    // effectivePartnerId was resolved from the org (or ring) above; bind it
+    // directly so the subquery returns the same approved set, now keyed on partner.
     const isApprovedForInstall = sql`exists (
       select 1
       from patch_approvals pa
-      where pa.org_id = ${devicePatches.orgId}
+      where pa.partner_id = ${effectivePartnerId}::uuid
         and pa.patch_id = ${devicePatches.patchId}
         and pa.status = 'approved'
         ${approvalRingScope}
