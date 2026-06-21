@@ -23,7 +23,7 @@ import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
-import { enqueuePatchJob } from './patchJobExecutor';
+import { enqueuePatchJob, selectStaleScheduledJobIds, filterOrphanedJobIds } from './patchJobExecutor';
 import { buildPatchesSnapshot } from '../services/patchJobSnapshot';
 import {
   backfillMissingPatchSettings,
@@ -317,7 +317,12 @@ async function hasExistingOccurrenceJob(
   });
 }
 
-async function scanAndCreateJobs(): Promise<{ created: number; scanned: number; enqueueJobIds: string[] }> {
+async function scanAndCreateJobs(): Promise<{
+  created: number;
+  scanned: number;
+  enqueueJobIds: string[];
+  staleScheduledJobIds: string[];
+}> {
   const now = new Date();
   let created = 0;
   // Job ids to enqueue to Redis AFTER the system DB access-context transaction
@@ -456,7 +461,83 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number; 
     }
   }
 
-  return { created, scanned: patchPoliciesWithSchedules.length, enqueueJobIds };
+  // Orphan-recovery read (#1733): collect `scheduled` patch_jobs rows that are
+  // past the grace window so the worker can re-enqueue any whose Redis job was
+  // lost in the create->enqueue gap. This is a DB-only read; the queue-state
+  // check + re-enqueue happen outside this DB access context (see the worker).
+  let staleScheduledJobIds: string[] = [];
+  try {
+    staleScheduledJobIds = await selectStaleScheduledJobIds(now);
+  } catch (err) {
+    console.error(
+      '[PatchScheduler] Failed to read stale scheduled jobs for reconcile:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  return {
+    created,
+    scanned: patchPoliciesWithSchedules.length,
+    enqueueJobIds,
+    staleScheduledJobIds,
+  };
+}
+
+// Post-scan Redis work, run OUTSIDE the system DB access context (#1105): all
+// DB writes committed when scanAndCreateJobs returned, so doing the BullMQ
+// round-trips here keeps the pooled connection from sitting idle-in-transaction.
+// Two phases:
+//   1. Enqueue the just-created jobs.
+//   2. Orphan-recovery sweep (#1733). The create->enqueue gap is not atomic: a
+//      process restart or Redis-connection drop between the DB commit and
+//      enqueuePatchJob leaves the patch_jobs row status='scheduled' with no
+//      queue job, and the occurrence-idempotency guard stops the next scan from
+//      ever re-creating it. We re-enqueue any `scheduled` row (past the grace
+//      window) that has no active queue job. Just-created ids are also in this
+//      list, but they were enqueued moments ago so the filter sees their active
+//      job and skips them; the grace window keeps this from racing a fresh
+//      enqueue. enqueuePatchJob is idempotent on the stable jobId, so a
+//      redundant re-enqueue is a no-op.
+async function enqueueScanResults(result: {
+  enqueueJobIds: string[];
+  staleScheduledJobIds: string[];
+}): Promise<{ enqueued: number; recovered: number }> {
+  let enqueued = 0;
+  for (const jobId of result.enqueueJobIds) {
+    try {
+      await enqueuePatchJob(jobId);
+      enqueued += 1;
+    } catch (err) {
+      console.error(
+        `[PatchScheduler] Failed to enqueue patch job ${jobId}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  let recovered = 0;
+  try {
+    const orphanedJobIds = await filterOrphanedJobIds(result.staleScheduledJobIds);
+    for (const jobId of orphanedJobIds) {
+      try {
+        await enqueuePatchJob(jobId);
+        recovered += 1;
+        console.warn(`[PatchScheduler] Re-enqueued orphaned scheduled patch job ${jobId} (#1733 recovery)`);
+      } catch (err) {
+        console.error(
+          `[PatchScheduler] Failed to re-enqueue orphaned patch job ${jobId}:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+  } catch (err) {
+    console.error(
+      '[PatchScheduler] Orphan-reconcile sweep failed:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  return { enqueued, recovered };
 }
 
 function createSchedulerWorker(): Worker {
@@ -472,29 +553,13 @@ function createSchedulerWorker(): Worker {
               _configPolicyTableWarningLogged = true;
               console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
             }
-            return { created: 0, scanned: 0, enqueueJobIds: [] };
+            return { created: 0, scanned: 0, enqueueJobIds: [], staleScheduledJobIds: [] };
           }
           throw error;
         }
       });
 
-      // Enqueue OUTSIDE the system DB access-context transaction (#1105). All
-      // DB writes (incl. the patch_jobs inserts) committed when the context
-      // above returned; doing the Redis enqueue here keeps the pooled
-      // connection from sitting idle-in-transaction across BullMQ round-trips.
-      // A job that fails to enqueue is logged (its row already exists) and is
-      // skipped by the occurrence-idempotency guard on the next scan — same
-      // outcome as the prior in-transaction failure path.
-      for (const jobId of result.enqueueJobIds) {
-        try {
-          await enqueuePatchJob(jobId);
-        } catch (err) {
-          console.error(
-            `[PatchScheduler] Failed to enqueue patch job ${jobId}:`,
-            err instanceof Error ? err.message : err
-          );
-        }
-      }
+      await enqueueScanResults(result);
 
       return { created: result.created, scanned: result.scanned };
     },
@@ -572,4 +637,5 @@ export async function shutdownPatchSchedulerWorker(): Promise<void> {
 // (#1318). Internal helper, not part of the worker's public surface.
 export const __testOnly = {
   loadDeviceSchedulingContexts,
+  enqueueScanResults,
 };

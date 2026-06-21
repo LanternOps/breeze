@@ -18,7 +18,7 @@ import {
   devices,
   deviceCommands,
 } from '../db/schema';
-import { eq, and, sql, inArray } from 'drizzle-orm';
+import { eq, and, sql, inArray, lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import {
@@ -166,6 +166,89 @@ export async function enqueuePatchJob(patchJobId: string, delayMs?: number): Pro
       ? { ...PATCH_JOB_RETENTION, delay: delayMs, jobId: stableJobId }
       : { ...PATCH_JOB_RETENTION, jobId: stableJobId }
   );
+}
+
+// ============================================
+// Orphan reconcile sweep (#1733)
+// ============================================
+
+// Grace period after a job's scheduledAt before the reconcile sweep will
+// re-enqueue it. The scheduler enqueues the Redis job immediately after the DB
+// commit, so a row that is only seconds old is almost certainly mid-enqueue (or
+// its execute-patch-job worker is about to claim it). Waiting a couple of
+// minutes avoids racing the happy path and only acts on jobs that genuinely
+// missed their enqueue (process restart / Redis-connection churn in the
+// create->enqueue gap — the #1733 failure window).
+const RECONCILE_MIN_AGE_MS = 2 * 60 * 1000;
+
+// Upper bound on how far back the sweep looks. Matches the scheduler's
+// occurrence-idempotency lookback (45 days): a `scheduled` row older than this
+// is well past any window we would still want to run, and re-enqueuing it would
+// fire a long-stale patch run. Such rows are stuck for a different reason and
+// should be surfaced/cleaned up rather than silently executed.
+const RECONCILE_MAX_AGE_MS = 45 * 24 * 60 * 60 * 1000;
+
+/**
+ * Recover `patch_jobs` rows that committed with `status='scheduled'` but whose
+ * Redis enqueue was lost (issue #1733). The scheduler inserts the row inside
+ * its DB transaction and enqueues to BullMQ *after* the transaction commits and
+ * outside the DB access context (deliberately, to avoid holding a pooled
+ * connection idle-in-transaction across Redis round-trips — #1105). That gap is
+ * not atomic: a process restart or Redis-connection failure between commit and
+ * enqueue leaves the row with no queue job, and the occurrence-idempotency
+ * guard then prevents the next scan from ever re-creating it.
+ *
+ * This sweep finds `scheduled` rows past a short grace period that have no
+ * active execute-patch-job queue entry and re-enqueues them. `enqueuePatchJob`
+ * is idempotent on the stable jobId, and `processExecutePatchJob` re-checks
+ * `status='scheduled'` under a conditional UPDATE, so re-enqueuing a job that is
+ * actually fine (or already running) is a safe no-op.
+ *
+ * Split into two phases so the caller can keep the DB read inside its system DB
+ * access context and the Redis round-trips outside it (#1105):
+ *   1. selectStaleScheduledJobIds — DB-only; the scheduled rows past the grace
+ *      window. Runs inside the DB context.
+ *   2. filterOrphanedJobIds — Redis-only; drops ids that already have an active
+ *      queue job. Runs outside the DB context, alongside the enqueue.
+ */
+export async function selectStaleScheduledJobIds(now: Date = new Date()): Promise<string[]> {
+  const minAge = new Date(now.getTime() - RECONCILE_MIN_AGE_MS);
+  const maxAge = new Date(now.getTime() - RECONCILE_MAX_AGE_MS);
+
+  const candidates = await db
+    .select({ id: patchJobs.id })
+    .from(patchJobs)
+    .where(
+      and(
+        eq(patchJobs.status, 'scheduled'),
+        // createdAt is non-null; the [maxAge, minAge) window only re-enqueues
+        // rows old enough to have missed their enqueue but not so old that
+        // firing them would run a long-stale patch window.
+        lt(patchJobs.createdAt, minAge),
+        sql`${patchJobs.createdAt} >= ${maxAge}`
+      )
+    );
+
+  return candidates.map((row) => row.id);
+}
+
+/**
+ * Of the given `scheduled` job ids, return those with no active execute-patch-job
+ * queue entry — i.e. the rows whose enqueue was lost (#1733). Pure Redis reads;
+ * run this outside the DB access context.
+ */
+export async function filterOrphanedJobIds(jobIds: string[]): Promise<string[]> {
+  if (jobIds.length === 0) return [];
+  const queue = getPatchJobQueue();
+  const orphaned: string[] = [];
+  for (const jobId of jobIds) {
+    const stableJobId = getPatchJobExecutionId(jobId);
+    const existing = await resolveActiveQueueJob(queue, [stableJobId]);
+    if (!existing) {
+      orphaned.push(jobId);
+    }
+  }
+  return orphaned;
 }
 
 // ============================================

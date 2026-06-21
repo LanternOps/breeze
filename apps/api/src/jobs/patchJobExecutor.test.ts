@@ -44,6 +44,8 @@ vi.mock('../db/schema', () => ({
     targets: 'patchJobs.targets',
     devicesFailed: 'patchJobs.devicesFailed',
     devicesPending: 'patchJobs.devicesPending',
+    scheduledAt: 'patchJobs.scheduledAt',
+    createdAt: 'patchJobs.createdAt',
   },
   patchJobResults: {},
   patches: {
@@ -93,6 +95,8 @@ import {
   createPatchJobDeviceWorker,
   createPatchJobWorker,
   enqueuePatchJob,
+  selectStaleScheduledJobIds,
+  filterOrphanedJobIds,
 } from './patchJobExecutor';
 import { resolveApprovedPatchesForDevice } from '../services/patchApprovalEvaluator';
 import { queueCommandForExecution } from '../services/commandQueue';
@@ -110,6 +114,15 @@ function createUpdateChain(returnedRows: any[] = []) {
   chain.set = vi.fn(() => chain);
   chain.where = vi.fn(() => chain);
   chain.returning = vi.fn(() => Promise.resolve(returnedRows));
+  return chain;
+}
+
+// Select chain whose terminal .where() resolves to the rows (no .limit()) —
+// matches selectStaleScheduledJobIds' query shape.
+function createWhereSelectChain(rows: any[] = []) {
+  const chain: any = {};
+  chain.from = vi.fn(() => chain);
+  chain.where = vi.fn(() => Promise.resolve(rows));
   return chain;
 }
 
@@ -773,5 +786,60 @@ describe('patch job executor queueing', () => {
     );
     expect(captureException).toHaveBeenCalledWith(expect.any(Error));
     warnSpy.mockRestore();
+  });
+});
+
+describe('orphaned scheduled-job reconcile (#1733)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    shared.getJobMock.mockResolvedValue(null);
+    shared.addMock.mockResolvedValue({ id: 'queue-job-1' });
+  });
+
+  it('selectStaleScheduledJobIds returns ids of scheduled rows past the grace window', async () => {
+    vi.mocked(db.select).mockImplementationOnce(
+      () => createWhereSelectChain([{ id: 'job-a' }, { id: 'job-b' }]) as any,
+    );
+
+    const ids = await selectStaleScheduledJobIds(new Date('2026-06-21T09:00:00Z'));
+
+    expect(ids).toEqual(['job-a', 'job-b']);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('filterOrphanedJobIds keeps only ids with no active queue job', async () => {
+    // job-a has an active (waiting) queue job → already enqueued, drop it.
+    // job-b has no queue job → orphaned, keep it.
+    shared.getJobMock.mockImplementation(async (id: string) =>
+      id === 'patch-job-job-a'
+        ? { id, getState: vi.fn().mockResolvedValue('waiting'), remove: vi.fn() }
+        : null,
+    );
+
+    const orphaned = await filterOrphanedJobIds(['job-a', 'job-b']);
+
+    expect(orphaned).toEqual(['job-b']);
+  });
+
+  it('filterOrphanedJobIds treats a completed queue job as not active (orphan recoverable)', async () => {
+    // A stable jobId left over as completed must NOT block recovery — the row is
+    // still status='scheduled', so the run never actually executed.
+    const removeMock = vi.fn().mockResolvedValue(undefined);
+    shared.getJobMock.mockResolvedValue({
+      id: 'patch-job-job-c',
+      getState: vi.fn().mockResolvedValue('completed'),
+      remove: removeMock,
+    });
+
+    const orphaned = await filterOrphanedJobIds(['job-c']);
+
+    expect(orphaned).toEqual(['job-c']);
+    expect(removeMock).toHaveBeenCalled();
+  });
+
+  it('filterOrphanedJobIds short-circuits on an empty list', async () => {
+    const orphaned = await filterOrphanedJobIds([]);
+    expect(orphaned).toEqual([]);
+    expect(shared.getJobMock).not.toHaveBeenCalled();
   });
 });
