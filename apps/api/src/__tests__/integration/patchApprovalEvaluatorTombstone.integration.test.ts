@@ -48,11 +48,12 @@ async function seedDevice(orgId: string, siteId: string, hostname: string): Prom
   return row.id;
 }
 
-/** Seed a patch + a device_patches row + a manual 'approved' approval (org-wide).
+/** Seed a patch + a device_patches row + a manual 'approved' approval (partner-wide).
  *  Returns the patchId. The approval means automation WOULD install it if the
  *  row is treated as outstanding. */
 async function seedApprovedPatch(opts: {
   orgId: string;
+  partnerId: string;
   deviceId: string;
   status: 'pending' | 'missing';
 }): Promise<string> {
@@ -75,7 +76,7 @@ async function seedApprovedPatch(opts: {
     lastCheckedAt: new Date(),
   });
   await tdb.insert(patchApprovals).values({
-    orgId: opts.orgId,
+    partnerId: opts.partnerId,
     patchId: patch.id,
     ringId: null,
     status: 'approved',
@@ -92,19 +93,21 @@ const RING_CONFIG: RingConfig = {
 
 describe('resolveApprovedPatchesForDevice — tombstone exclusion', () => {
   let orgId: string;
+  let partnerId: string;
   let siteId: string;
 
   beforeEach(async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     orgId = env.organization.id;
+    partnerId = env.partner.id;
     siteId = env.site.id;
   });
 
   it('does not select stale "missing" tombstones for installation, even when approved', async () => {
     const deviceId = await seedDevice(orgId, siteId, 'eval-device');
-    const pendingPatchId = await seedApprovedPatch({ orgId, deviceId, status: 'pending' });
+    const pendingPatchId = await seedApprovedPatch({ orgId, partnerId, deviceId, status: 'pending' });
     // An approved-but-tombstoned patch: must be ignored by automation.
-    await seedApprovedPatch({ orgId, deviceId, status: 'missing' });
+    await seedApprovedPatch({ orgId, partnerId, deviceId, status: 'missing' });
 
     const approved = await withDbAccessContext(
       {

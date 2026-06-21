@@ -498,15 +498,18 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     apps: jobApps,
   };
 
-  // If we have a ringId, load deferralDays from the ring
+  // If we have a ringId, load deferralDays and partnerId from the ring.
+  // partnerId is threaded into ringConfig so the evaluator can guard against
+  // cross-partner ring links (a config policy featurePolicyId is unconstrained).
   if (ringConfig.ringId) {
     const [ring] = await db
-      .select({ deferralDays: patchPolicies.deferralDays })
+      .select({ deferralDays: patchPolicies.deferralDays, partnerId: patchPolicies.partnerId })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, ringConfig.ringId), eq(patchPolicies.kind, 'ring')))
       .limit(1);
     if (ring) {
       ringConfig.deferralDays = ring.deferralDays;
+      ringConfig.ringPartnerId = ring.partnerId;
     }
   }
 
