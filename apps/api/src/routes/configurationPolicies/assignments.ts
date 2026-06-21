@@ -58,7 +58,30 @@ assignmentRoutes.post(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    const targetValidation = await validateAssignmentTarget(policy.orgId, data.level, data.targetId);
+    // For a Partner-Wide assignment the target is the partner itself, derived
+    // server-side (#1724) — never trust a client-supplied partner id. For a
+    // partner-OWNED policy that is its own partner_id; for an org-owned policy
+    // assigned partner-wide it is the owning org's partner (resolved in the
+    // validator). The client may omit targetId for the partner level.
+    let targetId = data.targetId;
+    if (data.level === 'partner') {
+      if (policy.partnerId) {
+        targetId = policy.partnerId;
+      } else if (auth.partnerId) {
+        targetId = auth.partnerId;
+      } else {
+        return c.json({ error: 'Partner-wide assignments require partner scope' }, 403);
+      }
+    }
+    if (!targetId) {
+      return c.json({ error: 'targetId is required for this assignment level' }, 400);
+    }
+
+    const targetValidation = await validateAssignmentTarget(
+      { orgId: policy.orgId, partnerId: policy.partnerId },
+      data.level,
+      targetId
+    );
     if (!targetValidation.valid) {
       return c.json({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' }, 403);
     }
@@ -67,7 +90,7 @@ assignmentRoutes.post(
       const assignment = await assignPolicy(
         id,
         data.level,
-        data.targetId,
+        targetId,
         data.priority ?? 0,
         auth.user.id,
         data.roleFilter,
@@ -83,7 +106,7 @@ assignmentRoutes.post(
         resourceType: 'configuration_policy',
         resourceId: id,
         resourceName: policy.name,
-        details: { level: data.level, targetId: data.targetId, priority: data.priority },
+        details: { level: data.level, targetId, priority: data.priority },
       });
 
       return c.json(assignment, 201);
@@ -142,6 +165,9 @@ assignmentRoutes.get(
     // Filter results to only include policies the caller can access
     const filtered = result.filter((r) => {
       if (auth.scope === 'system') return true;
+      // Partner-owned policies (org_id NULL, #1724) aren't org-scoped, so an
+      // org-axis access check can't apply — exclude them from these scopes.
+      if (r.policyOrgId === null) return false;
       if (auth.scope === 'organization') return auth.orgId === r.policyOrgId;
       return auth.canAccessOrg(r.policyOrgId);
     });

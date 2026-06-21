@@ -25,7 +25,8 @@ export type PatchEffectiveStatus = 'ok' | 'needs_repair' | 'invalid_reference';
 export interface PatchInventoryRow {
   configPolicyId: string;
   configPolicyName: string;
-  orgId: string;
+  // null for partner-wide policies (#1724).
+  orgId: string | null;
   featureLinkId: string;
   referencedTargetId: string | null;
   classification: PatchReferenceClassification;
@@ -46,7 +47,8 @@ export interface PatchRingResolution {
 export interface PolicyLocalPatchConfig {
   configPolicyId: string;
   configPolicyName: string;
-  orgId: string;
+  // null for partner-wide policies (#1724).
+  orgId: string | null;
   featureLinkId: string;
   featurePolicyId: string | null;
   settings: PatchInlineSettings;
@@ -165,10 +167,15 @@ function normalizeStoredInlineSettingsWithSalvage(
 }
 
 export async function resolvePatchPolicyReference(
-  partnerId: string,
+  // patch_policies is partner-axis (scoped by partner_id, no org_id). Partner-wide
+  // config policies (#1724) carry orgId === null; callers resolve a partnerId from
+  // the org (or, for a partner-wide policy, derive it directly) before calling here,
+  // so a null partnerId short-circuits to the empty/'null' classification just as a
+  // missing featurePolicyId does.
+  partnerId: string | null,
   featurePolicyId: string | null
 ): Promise<PatchRingResolution> {
-  if (!featurePolicyId) {
+  if (!featurePolicyId || !partnerId) {
     return {
       classification: 'null',
       valid: true,
@@ -247,6 +254,7 @@ export async function loadPolicyLocalPatchConfig(
       configPolicyId: configurationPolicies.id,
       configPolicyName: configurationPolicies.name,
       orgId: configurationPolicies.orgId,
+      partnerId: configurationPolicies.partnerId,
       featureLinkId: configPolicyFeatureLinks.id,
       featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
       storedInlineSettings: configPolicyFeatureLinks.inlineSettings,
@@ -292,11 +300,14 @@ export async function loadPolicyLocalPatchConfig(
       })
     : storedInline;
 
-  const partnerId = await resolvePartnerIdForOrg(row.orgId);
+  // Partner-wide config policies (#1724) carry partnerId directly and orgId === null;
+  // org-scoped policies derive the partner from their org. Prefer the explicit
+  // partnerId so partner-wide policies still resolve their (partner-axis) patch ring.
+  const partnerId = row.partnerId ?? (row.orgId ? await resolvePartnerIdForOrg(row.orgId) : null);
   if (!partnerId) {
     console.warn(
-      `[configPolicyPatching] orphaned org has no partner — cannot resolve patch ring`,
-      { orgId: row.orgId, configPolicyId: row.configPolicyId }
+      `[configPolicyPatching] config policy has no resolvable partner — cannot resolve patch ring`,
+      { orgId: row.orgId, partnerId: row.partnerId, configPolicyId: row.configPolicyId }
     );
     return null;
   }
@@ -366,6 +377,7 @@ async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow
       configPolicyId: configurationPolicies.id,
       configPolicyName: configurationPolicies.name,
       orgId: configurationPolicies.orgId,
+      partnerId: configurationPolicies.partnerId,
       featureLinkId: configPolicyFeatureLinks.id,
       referencedTargetId: configPolicyFeatureLinks.featurePolicyId,
       storedInlineSettings: configPolicyFeatureLinks.inlineSettings,
@@ -380,11 +392,13 @@ async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow
 
   // TODO: batch-fetch patch policy references to avoid N+1 queries
   for (const row of rows) {
-    const rowPartnerId = await resolvePartnerIdForOrg(row.orgId);
+    // Prefer the policy's own partnerId (set for partner-wide policies, #1724);
+    // fall back to deriving it from the org for org-scoped policies.
+    const rowPartnerId = row.partnerId ?? (row.orgId ? await resolvePartnerIdForOrg(row.orgId) : null);
     if (!rowPartnerId) {
       console.warn(
-        `[configPolicyPatching] orphaned org has no partner — classifying as missing_target`,
-        { orgId: row.orgId, configPolicyId: row.configPolicyId }
+        `[configPolicyPatching] config policy has no resolvable partner — classifying as missing_target`,
+        { orgId: row.orgId, partnerId: row.partnerId, configPolicyId: row.configPolicyId }
       );
     }
     const classification = rowPartnerId

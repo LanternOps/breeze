@@ -66,6 +66,11 @@ featureLinkRoutes.post(
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
     if (data.featurePolicyId) {
+      // Referenced feature policies are org-scoped; a partner-owned config
+      // policy (org_id NULL, #1724) cannot link one.
+      if (policy.orgId === null) {
+        return c.json({ error: 'Cannot link an org-scoped feature policy to a partner-owned policy' }, 400);
+      }
       const validation = await validateFeaturePolicyExists(
         data.featureType,
         data.featurePolicyId,
@@ -173,6 +178,11 @@ featureLinkRoutes.patch(
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
+      // Referenced feature policies are org-scoped; a partner-owned config
+      // policy (org_id NULL, #1724) cannot link one.
+      if (policy.orgId === null) {
+        return c.json({ error: 'Cannot link an org-scoped feature policy to a partner-owned policy' }, 400);
+      }
       const validation = await validateFeaturePolicyExists(
         existingLink.featureType as any,
         data.featurePolicyId,

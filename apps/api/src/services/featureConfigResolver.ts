@@ -133,6 +133,26 @@ function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
   ];
 }
 
+/**
+ * Build the policy-ownership condition for a device's hierarchy.
+ *
+ * A configuration_policies row resolves for this device when it is owned by
+ * the device's own org (the original org-scoped shape) OR owned by the
+ * device's partner (org_id NULL, partner_id set — the "partner-wide / all orgs"
+ * shape, #1724). breeze_has_org_access / breeze_has_partner_access at the RLS
+ * layer still gate visibility; this is the additional "does this policy apply
+ * to this device" join predicate.
+ *
+ * Use this in place of a bare org-equality join on every per-device resolver
+ * so partner-owned policies span all of the partner's orgs.
+ */
+function policyOwnershipCondition(hierarchy: DeviceHierarchy): SQL {
+  if (hierarchy.partnerId) {
+    return sql`(${configurationPolicies.orgId} = ${hierarchy.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${hierarchy.partnerId}))`;
+  }
+  return sql`${configurationPolicies.orgId} = ${hierarchy.orgId}`;
+}
+
 function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
   const conditions: SQL[] = [];
 
@@ -232,7 +252,7 @@ export async function resolveAlertRulesForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(
@@ -293,7 +313,7 @@ export async function resolveAutomationsForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(
@@ -451,7 +471,7 @@ export async function resolvePatchConfigDetailsForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(
@@ -526,7 +546,7 @@ export async function resolveBackupConfigForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(
@@ -587,7 +607,7 @@ export async function resolveMaintenanceConfigForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(
@@ -641,7 +661,7 @@ export async function resolveComplianceRulesForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(
@@ -700,7 +720,7 @@ export async function resolveSoftwarePolicyForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(
@@ -1157,7 +1177,7 @@ export async function resolveBackupProtectionForDevice(
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, hierarchy.orgId)
+        policyOwnershipCondition(hierarchy)
       )
     )
     .innerJoin(

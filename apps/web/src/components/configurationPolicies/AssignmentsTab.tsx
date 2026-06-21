@@ -18,7 +18,7 @@ type Assignment = {
 type TargetOption = { id: string; name: string; extra?: string };
 
 const assignmentLevels = [
-  { value: 'partner', label: 'Partner' },
+  { value: 'partner', label: 'Partner-Wide (All Orgs)' },
   { value: 'organization', label: 'Organization' },
   { value: 'site', label: 'Site' },
   { value: 'device_group', label: 'Device Group' },
@@ -86,6 +86,15 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
 
   // Fetch target options when level changes
   const fetchTargetOptions = useCallback(async (level: string) => {
+    // Partner-Wide (All Orgs) needs no target picker: the partner is derived
+    // server-side from the caller's own partner_id (#1724). Listing partners
+    // (the old `/orgs/partners` call) requires system scope and 403s for a
+    // normal MSP user, so we must NOT call it here.
+    if (level === 'partner') {
+      setTargetOptions([]);
+      setLoadingTargets(false);
+      return;
+    }
     setLoadingTargets(true);
     setTargetOptions([]);
     const endpointMap: Record<string, string> = {
@@ -93,7 +102,6 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
       site: `/orgs/sites?orgId=${orgId}&limit=200`,
       device_group: `/device-groups?orgId=${orgId}&limit=200`,
       device: '/devices?limit=200',
-      partner: '/orgs/partners?limit=200',
     };
     try {
       const url = endpointMap[level];
@@ -141,17 +149,20 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Resolve target names for existing assignments (skip already-attempted IDs)
+  // Resolve target names for existing assignments (skip already-attempted IDs).
+  // Partner rows are rendered as "All Organizations" without a lookup — the
+  // old `/partners/:id` path is system-scoped and 403s for MSP users (#1724).
   useEffect(() => {
     const missing = assignments.filter(
-      (a) => !targetNameCache[a.targetId] && !attemptedIdsRef.current.has(a.targetId)
+      (a) => a.level !== 'partner' &&
+        !targetNameCache[a.targetId] && !attemptedIdsRef.current.has(a.targetId)
     );
     if (missing.length === 0) return;
     missing.forEach((a) => attemptedIdsRef.current.add(a.targetId));
 
     const levelEndpoint: Record<string, string> = {
       organization: '/organizations', site: '/sites', device: '/devices',
-      device_group: '/devices/groups', partner: '/partners',
+      device_group: '/devices/groups',
     };
     const resolveAll = async () => {
       const resolved: Record<string, string> = {};
@@ -188,8 +199,11 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
     setTargetSearch('');
   };
 
+  const isPartnerLevel = newLevel === 'partner';
+
   const handleAddAssignment = async () => {
-    if (!policyId || !newTargetId.trim()) return;
+    // Partner-Wide needs no target; the server derives it (#1724).
+    if (!policyId || (!isPartnerLevel && !newTargetId.trim())) return;
     setAddingAssignment(true);
     setError(undefined);
     try {
@@ -197,7 +211,9 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
         method: 'POST',
         body: JSON.stringify({
           level: newLevel,
-          targetId: newTargetId.trim(),
+          // Omit targetId entirely for Partner-Wide — the server uses the
+          // caller's / policy's own partner_id and ignores any client value.
+          ...(isPartnerLevel ? {} : { targetId: newTargetId.trim() }),
           priority: Number(newPriority) || 0,
           ...(newRoleFilter.length > 0 ? { roleFilter: newRoleFilter } : {}),
           ...(newOsFilter.length > 0 ? { osFilter: newOsFilter } : {}),
@@ -267,6 +283,11 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
           </div>
           <div ref={dropdownRef} className="relative">
             <label className="text-sm font-medium">Target</label>
+            {isPartnerLevel ? (
+              <div className="mt-2 flex h-10 w-full items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
+                All organizations in your partner
+              </div>
+            ) : (
             <button
               type="button"
               onClick={() => setTargetDropdownOpen(!targetDropdownOpen)}
@@ -277,7 +298,8 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
               </span>
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             </button>
-            {targetDropdownOpen && (
+            )}
+            {!isPartnerLevel && targetDropdownOpen && (
               <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-lg">
                 <div className="flex items-center border-b px-3 py-2">
                   <Search className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -410,7 +432,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
           <button
             type="button"
             onClick={handleAddAssignment}
-            disabled={addingAssignment || !newTargetId.trim()}
+            disabled={addingAssignment || (!isPartnerLevel && !newTargetId.trim())}
             className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <Plus className="h-4 w-4" />
@@ -452,7 +474,9 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
                     </td>
                     <td className="px-4 py-3">
                       <div>
-                        {targetNameCache[assignment.targetId] ? (
+                        {assignment.level === 'partner' ? (
+                          <span className="font-medium">All Organizations</span>
+                        ) : targetNameCache[assignment.targetId] ? (
                           <>
                             <span className="font-medium">{targetNameCache[assignment.targetId]}</span>
                             <span className="ml-2 font-mono text-[10px] text-muted-foreground">

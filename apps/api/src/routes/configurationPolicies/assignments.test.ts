@@ -45,6 +45,7 @@ import { assignmentRoutes } from './assignments';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
 const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
+const PARTNER_ID = '66666666-6666-6666-6666-666666666666';
 
 function makeAuth(overrides: Record<string, unknown> = {}): any {
   return {
@@ -74,7 +75,7 @@ describe('configurationPolicies assignment routes', () => {
   });
 
   it('assigns a policy when the target belongs to the policy organization', async () => {
-    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, name: 'Policy 1' });
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
     validateAssignmentTargetMock.mockResolvedValue({ valid: true });
     assignPolicyMock.mockResolvedValue({
       id: '44444444-4444-4444-4444-444444444444',
@@ -90,7 +91,11 @@ describe('configurationPolicies assignment routes', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(validateAssignmentTargetMock).toHaveBeenCalledWith(ORG_ID, 'device', DEVICE_ID);
+    expect(validateAssignmentTargetMock).toHaveBeenCalledWith(
+      { orgId: ORG_ID, partnerId: null },
+      'device',
+      DEVICE_ID
+    );
     expect(assignPolicyMock).toHaveBeenCalledWith(
       POLICY_ID,
       'device',
@@ -103,7 +108,7 @@ describe('configurationPolicies assignment routes', () => {
   });
 
   it('denies cross-org assignment targets before inserting the assignment', async () => {
-    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, name: 'Policy 1' });
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
     validateAssignmentTargetMock.mockResolvedValue({
       valid: false,
       error: 'Device target not found in the policy organization',
@@ -120,5 +125,39 @@ describe('configurationPolicies assignment routes', () => {
       error: 'Device target not found in the policy organization',
     });
     expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('derives the partner target server-side for a partner-wide assignment (#1724)', async () => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({
+      id: '55555555-5555-5555-5555-555555555555',
+      configPolicyId: POLICY_ID,
+      level: 'partner',
+      targetId: PARTNER_ID,
+    });
+
+    // No targetId in the body — the server must fill it from the policy's partner.
+    const res = await app.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'partner' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(validateAssignmentTargetMock).toHaveBeenCalledWith(
+      { orgId: null, partnerId: PARTNER_ID },
+      'partner',
+      PARTNER_ID
+    );
+    expect(assignPolicyMock).toHaveBeenCalledWith(
+      POLICY_ID,
+      'partner',
+      PARTNER_ID,
+      0,
+      'user-1',
+      undefined,
+      undefined
+    );
   });
 });

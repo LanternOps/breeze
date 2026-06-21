@@ -442,6 +442,11 @@ export const createConfigPolicySchema = z.object({
   description: z.string().optional(),
   status: z.enum(['active', 'inactive', 'archived']).optional(),
   orgId: z.string().guid().optional(),
+  // Ownership axis (#1724). 'organization' (default) = the classic org-scoped
+  // policy. 'partner' = partner-wide / all-orgs; the server derives the partner
+  // from the caller's own partner_id — a client-supplied partner id is NEVER
+  // trusted. orgId is ignored when ownerScope is 'partner'.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
 });
 
 export const updateConfigPolicySchema = z.object({
@@ -636,7 +641,10 @@ export const updateFeatureLinkSchema = z.object({
 
 export const assignPolicySchema = z.object({
   level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
-  targetId: z.string().guid(),
+  // Optional: for the 'partner' level the server derives the target from the
+  // caller's / policy's own partner_id (#1724) and ignores any client value.
+  // Required (enforced server-side) for all other levels.
+  targetId: z.string().guid().optional(),
   priority: z.number().int().min(0).max(1000).optional(),
   roleFilter: z.array(z.enum(DEVICE_ROLES)).optional(),
   osFilter: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),

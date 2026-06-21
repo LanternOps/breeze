@@ -107,15 +107,41 @@ export interface EffectiveConfiguration {
 // CRUD
 // ============================================
 
+/**
+ * Access condition for a configuration_policies row, honoring both ownership
+ * axes (#1724). A caller may reach a row that is owned by an org they can
+ * access (the original shape) OR owned by their own partner (partner-wide /
+ * all-orgs policies, org_id NULL). System scope returns undefined (no filter).
+ *
+ * RLS already enforces this at the DB layer; this app-layer condition keeps
+ * partner-owned policies visible to org/partner-scoped reads that filter by
+ * `auth.orgCondition` (which would otherwise exclude org_id IS NULL rows).
+ */
+function policyAccessCondition(auth: AuthContext): SQL | undefined {
+  const orgCond = auth.orgCondition(configurationPolicies.orgId);
+  // System scope: no filter on either axis.
+  if (!orgCond) return undefined;
+  // Org-owned rows the caller can reach, OR partner-owned rows for the caller's
+  // own partner. partner-scope callers have a partnerId; org-scope callers do
+  // not own partner-wide policies, so the partner branch is a no-op for them.
+  if (auth.partnerId) {
+    return and(
+      sql`(${orgCond} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${auth.partnerId}))`
+    );
+  }
+  return orgCond;
+}
+
 export async function createConfigPolicy(
-  orgId: string,
+  owner: { orgId: string; partnerId?: null } | { orgId?: null; partnerId: string },
   data: { name: string; description?: string; status?: 'active' | 'inactive' | 'archived' },
   userId: string
 ) {
   const [policy] = await db
     .insert(configurationPolicies)
     .values({
-      orgId,
+      orgId: owner.orgId ?? null,
+      partnerId: owner.partnerId ?? null,
       name: data.name,
       description: data.description ?? null,
       status: data.status ?? 'active',
@@ -128,8 +154,8 @@ export async function createConfigPolicy(
 
 export async function getConfigPolicy(id: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
-  const orgCond = auth.orgCondition(configurationPolicies.orgId);
-  if (orgCond) conditions.push(orgCond);
+  const accessCond = policyAccessCondition(auth);
+  if (accessCond) conditions.push(accessCond);
 
   const [policy] = await db
     .select()
@@ -150,8 +176,8 @@ export async function listConfigPolicies(
   pagination: { page: number; limit: number }
 ) {
   const conditions: SQL[] = [];
-  const orgCond = auth.orgCondition(configurationPolicies.orgId);
-  if (orgCond) conditions.push(orgCond);
+  const accessCond = policyAccessCondition(auth);
+  if (accessCond) conditions.push(accessCond);
 
   if (filters.orgId) {
     conditions.push(eq(configurationPolicies.orgId, filters.orgId));
@@ -192,8 +218,8 @@ export async function updateConfigPolicy(
   auth: AuthContext
 ) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
-  const orgCond = auth.orgCondition(configurationPolicies.orgId);
-  if (orgCond) conditions.push(orgCond);
+  const accessCond = policyAccessCondition(auth);
+  if (accessCond) conditions.push(accessCond);
 
   const [existing] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
   if (!existing) return null;
@@ -215,8 +241,8 @@ export async function updateConfigPolicy(
 
 export async function deleteConfigPolicy(id: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
-  const orgCond = auth.orgCondition(configurationPolicies.orgId);
-  if (orgCond) conditions.push(orgCond);
+  const accessCond = policyAccessCondition(auth);
+  if (accessCond) conditions.push(accessCond);
 
   const [deleted] = await db
     .delete(configurationPolicies)
@@ -470,6 +496,13 @@ async function decomposeInlineSettings(
         .where(eq(configPolicyFeatureLinks.id, linkId))
         .limit(1);
       if (!policyRow) throw new Error(`Cannot resolve orgId for feature link ${linkId}`);
+      // Backup settings carry a concrete org_id FK (per-org backup target). A
+      // partner-wide policy (org_id NULL) has no single owning org, so backup is
+      // not supported on partner-owned policies (#1724 — deferred; would need a
+      // per-device org-resolved backup design). Reject rather than write NULL.
+      if (!policyRow.orgId) {
+        throw new Error('Backup settings are not supported on partner-wide configuration policies');
+      }
       await tx.insert(configPolicyBackupSettings).values({
         featureLinkId: linkId,
         orgId: policyRow.orgId,
@@ -1021,10 +1054,30 @@ export async function assignPolicy(
 }
 
 export async function validateAssignmentTarget(
-  policyOrgId: string,
+  policyOwner: { orgId: string | null; partnerId: string | null },
   level: ConfigAssignmentLevel,
   targetId: string
 ): Promise<{ valid: boolean; error?: string }> {
+  const policyOrgId = policyOwner.orgId;
+
+  // Partner-owned policies (#1724) span all of the partner's orgs and may only
+  // carry a partner-level assignment targeting their own partner. Org/site/
+  // group/device assignments are nonsensical for a policy with no owning org.
+  if (policyOwner.partnerId) {
+    if (level !== 'partner') {
+      return { valid: false, error: 'Partner-wide policies can only be assigned at the Partner level' };
+    }
+    if (targetId !== policyOwner.partnerId) {
+      return { valid: false, error: 'A partner-wide policy can only target its own partner' };
+    }
+    return { valid: true };
+  }
+
+  // Org-owned policies: org_id is guaranteed non-null by the ownership CHECK.
+  if (!policyOrgId) {
+    return { valid: false, error: 'Policy has no owning organization' };
+  }
+
   switch (level) {
     case 'organization': {
       if (targetId !== policyOrgId) {
@@ -1218,10 +1271,20 @@ async function resolveEffectiveConfigWithExecutor(
     .innerJoin(configurationPolicies, and(
       eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
       eq(configurationPolicies.status, 'active'),
-      eq(configurationPolicies.orgId, device.orgId)
+      // Org-owned policies for this device's org, OR partner-owned policies
+      // (org_id NULL) for this device's partner (#1724).
+      org?.partnerId
+        ? sql`(${configurationPolicies.orgId} = ${device.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${org.partnerId}))`
+        : eq(configurationPolicies.orgId, device.orgId)
     ))
     .innerJoin(configPolicyFeatureLinks, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .where(and(
+      sql`(${sql.join(targetConditions, sql` OR `)})`,
+      // Apply the optional role/os device-type filter (#1724). A NULL filter
+      // matches all; a set filter gates the assignment to matching devices.
+      sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
+      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`
+    ))
     .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
 
   // 6. Sort by level priority (device=5 first), then priority ASC, then createdAt ASC

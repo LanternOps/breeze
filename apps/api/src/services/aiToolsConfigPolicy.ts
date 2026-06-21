@@ -210,7 +210,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
       const targetValidation = await validateAssignmentTarget(
-        policy.orgId,
+        { orgId: policy.orgId, partnerId: policy.partnerId },
         input.level as any,
         input.targetId as string
       );
@@ -363,7 +363,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
-        const policy = await createConfigPolicy(orgId, {
+        const policy = await createConfigPolicy({ orgId }, {
           name: input.name as string,
           description: input.description as string | undefined,
           status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',

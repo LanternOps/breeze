@@ -505,7 +505,9 @@ automationRoutes.get(
         .from(configurationPolicies)
         .where(eq(configurationPolicies.id, run.configPolicyId))
         .limit(1);
-      if (!policy || !ensureOrgAccess(policy.orgId, auth)) {
+      // Partner-owned policies (org_id NULL, #1724) have no owning org to
+      // tenant-check against on this org-scoped path; treat as not found.
+      if (!policy || policy.orgId === null || !ensureOrgAccess(policy.orgId, auth)) {
         return c.json({ error: 'Automation run not found' }, 404);
       }
 

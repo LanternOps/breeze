@@ -148,8 +148,11 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
 
   let enqueued = 0;
 
-  // 2. For each org, resolve all backup-assigned devices via config policy hierarchy
+  // 2. For each org, resolve all backup-assigned devices via config policy hierarchy.
+  // Backup features are org-owned only (#1724 rejects backup on partner-wide
+  // policies), so org_id is always present here; skip defensively if NULL.
   for (const { orgId } of orgRows) {
+    if (!orgId) continue;
     try {
       const entries = await resolveAllBackupAssignedDevices(orgId);
 

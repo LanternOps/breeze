@@ -12,7 +12,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alertSeverityEnum } from './alerts';
 import { automationOnFailureEnum, policyEnforcementEnum } from './automations';
@@ -60,9 +60,14 @@ export const backupModeEnum = pgEnum('backup_mode_enum', [
   'system_image',
 ]);
 
+// A policy is owned by EITHER an org (orgId set, partnerId NULL — the original
+// org-scoped shape) OR a partner (partnerId set, orgId NULL — "partner-wide /
+// all orgs"). Exactly one axis is set per row; the CHECK constraint
+// `configuration_policies_one_owner_chk` (migration 2026-06-27) enforces it.
 export const configurationPolicies = pgTable('configuration_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   status: configPolicyStatusEnum('status').notNull().default('active'),
@@ -71,6 +76,7 @@ export const configurationPolicies = pgTable('configuration_policies', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   orgIdIdx: index('config_policies_org_id_idx').on(table.orgId),
+  partnerIdIdx: index('config_policies_partner_id_idx').on(table.partnerId),
   statusIdx: index('config_policies_status_idx').on(table.status),
 }));
 

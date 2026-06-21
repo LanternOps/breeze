@@ -653,7 +653,9 @@ complianceRoutes.get(
       .where(eq(configurationPolicies.id, id))
       .limit(1);
 
-    if (!configPolicy || !ensureOrgAccess(configPolicy.orgId, auth)) {
+    // Partner-owned policies (org_id NULL, #1724) have no owning org to
+    // tenant-check against on this org-scoped compliance path; treat as not found.
+    if (!configPolicy || configPolicy.orgId === null || !ensureOrgAccess(configPolicy.orgId, auth)) {
       return c.json({ error: 'Policy not found' }, 404);
     }
 

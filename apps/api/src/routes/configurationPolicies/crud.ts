@@ -55,6 +55,26 @@ crudRoutes.post(
     const auth = c.get('auth') as AuthContext;
     const data = c.req.valid('json');
 
+    // Partner-wide / all-orgs policy (#1724). The partner is ALWAYS derived from
+    // the caller's own token — never from a client-supplied value — so a caller
+    // cannot create a policy owned by another partner. Org-scope callers have no
+    // partner of their own and cannot own partner-wide policies.
+    if (data.ownerScope === 'partner') {
+      if (!auth.partnerId) {
+        return c.json({ error: 'Partner-wide policies require partner scope' }, 403);
+      }
+      const policy = await createConfigPolicy({ partnerId: auth.partnerId }, data, auth.user.id);
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'config_policy.create',
+        resourceType: 'configuration_policy',
+        resourceId: policy.id,
+        resourceName: policy.name,
+        details: { ownerScope: 'partner', partnerId: auth.partnerId },
+      });
+      return c.json(policy, 201);
+    }
+
     let orgId = data.orgId;
     if (auth.scope === 'organization') {
       if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
@@ -73,7 +93,7 @@ crudRoutes.post(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const policy = await createConfigPolicy(orgId as string, data, auth.user.id);
+    const policy = await createConfigPolicy({ orgId: orgId as string }, data, auth.user.id);
 
     writeRouteAudit(c, {
       orgId: policy.orgId,
