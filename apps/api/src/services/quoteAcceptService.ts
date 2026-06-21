@@ -220,7 +220,7 @@ export async function acceptQuote(
     {
       orgId: quote.orgId,
       partnerId: quote.partnerId,
-      quoteNumber: quote.quoteNumber ?? '',
+      quoteNumber: quote.quoteNumber ?? quote.id,
       currencyCode: quote.currencyCode ?? null,
       terms: quote.terms ?? null,
     },
@@ -229,6 +229,7 @@ export async function acceptQuote(
       customerVisible: l.customerVisible,
       description: l.description,
       unitPrice: l.unitPrice,
+      quantity: l.quantity,
       taxable: l.taxable,
       catalogItemId: l.catalogItemId ?? null,
       termMonths: l.termMonths ?? null,

@@ -16,6 +16,7 @@ function line(over: Partial<QuoteLineForContract>): QuoteLineForContract {
     customerVisible: true,
     description: 'Managed endpoint',
     unitPrice: '99.00',
+    quantity: '1',
     taxable: false,
     catalogItemId: null,
     termMonths: null,
@@ -50,7 +51,7 @@ describe('buildContractSpecsFromQuote', () => {
     const specs = buildContractSpecsFromQuote(
       quote,
       [
-        line({ recurrence: 'monthly', description: 'EDR', unitPrice: '10.00' }),
+        line({ recurrence: 'monthly', description: 'EDR', unitPrice: '10.00', quantity: '25' }),
         line({ recurrence: 'monthly', description: 'Backup', unitPrice: '5.00', taxable: true }),
         line({ recurrence: 'one_time', description: 'Onboarding' }),
       ],
@@ -69,9 +70,11 @@ describe('buildContractSpecsFromQuote', () => {
     expect(c.createdBy).toBe('user-1');
     expect(c.name).toBe('Q-1001 — Monthly');
     expect(c.lines.map((l) => l.description)).toEqual(['EDR', 'Backup']);
-    expect(c.lines.every((l) => l.lineType === 'flat')).toBe(true);
+    expect(c.lines.every((l) => l.lineType === 'manual')).toBe(true);
     expect(c.lines[1]!.taxable).toBe(true);
     expect(c.lines.map((l) => l.sortOrder)).toEqual([0, 1]);
+    expect(c.lines[0]!.manualQuantity).toBe('25');
+    expect(c.lines[0]!.unitPrice).toBe('10.00');
   });
 
   it('produces two contracts when both monthly and annual lines exist', () => {

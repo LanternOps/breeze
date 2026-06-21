@@ -16,6 +16,7 @@ export interface QuoteLineForContract {
   customerVisible: boolean;
   description: string;
   unitPrice: string;
+  quantity: string;
   taxable: boolean;
   catalogItemId: string | null;
   termMonths: number | null;
@@ -90,9 +91,10 @@ export function buildContractSpecsFromQuote(
       terms: quote.terms ?? null,
       createdBy,
       lines: group.map((l, i) => ({
-        lineType: 'flat' as const,
+        lineType: 'manual' as const,
         description: l.description,
         unitPrice: l.unitPrice,
+        manualQuantity: l.quantity,
         taxable: l.taxable,
         catalogItemId: l.catalogItemId,
         sortOrder: i,
