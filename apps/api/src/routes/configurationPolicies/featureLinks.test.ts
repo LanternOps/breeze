@@ -265,4 +265,55 @@ describe('featureLinks routes', () => {
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
   });
+
+  // ============================================================
+  // POST /:id/features — org-scoped features rejected on partner-wide (#1724)
+  // ============================================================
+  describe('POST /:id/features — org-scoped features rejected on partner-wide policy', () => {
+    const PARTNER_POLICY = {
+      id: POLICY_ID,
+      orgId: null,
+      partnerId: '99999999-9999-9999-9999-999999999999',
+      name: 'Partner-wide',
+      featureLinks: [],
+    };
+
+    beforeEach(() => {
+      getConfigPolicyMock.mockResolvedValue(PARTNER_POLICY);
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'backup' });
+    });
+
+    // onedrive_helper is also in ORG_SCOPED_ONLY_FEATURES but isn't accepted by
+    // addFeatureLinkSchema's enum, so it can't reach the route at all — only
+    // backup and patch are exercisable here.
+    it.each(['backup', 'patch'])(
+      'rejects the %s feature on a partner-owned policy → 400 (no insert)',
+      async (featureType) => {
+        const res = await app.request(`/${POLICY_ID}/features`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Valid body (passes the schema refine) so we exercise the
+          // partner-wide guard, not the generic validator.
+          body: JSON.stringify({ featureType, inlineSettings: { enabled: true } }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(String(body.error)).toContain('partner-wide');
+        expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      }
+    );
+
+    it('still allows an org-derived feature (security) on a partner-owned policy', async () => {
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'security' });
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'security', inlineSettings: { enabled: true } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+  });
 });

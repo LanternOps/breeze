@@ -27,6 +27,15 @@ export const featureLinkRoutes = new Hono();
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
+// Feature types whose per-feature config is fundamentally org-scoped and cannot
+// be authored on a partner-wide policy (#1724): backup/onedrive_helper settings
+// carry a concrete org_id FK, and patch scheduling is org-batch only (the
+// scheduler iterates orgs, not partners). Rejecting these at the feature-link
+// write layer keeps the read side (effective-config resolution) and the write
+// side consistent — a partner-wide policy never advertises coverage the
+// scheduler won't deliver. See the PR scope note.
+const ORG_SCOPED_ONLY_FEATURES = new Set(['backup', 'onedrive_helper', 'patch']);
+
 // GET /:id/features — list feature links for a policy
 featureLinkRoutes.get(
   '/:id/features',
@@ -59,6 +68,15 @@ featureLinkRoutes.post(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    // Partner-wide policies (org_id NULL, #1724) can't carry org-scoped feature
+    // settings. Reject at write time so the scheduler/read-side stay consistent.
+    if (policy.orgId === null && ORG_SCOPED_ONLY_FEATURES.has(data.featureType)) {
+      return c.json(
+        { error: `The "${data.featureType}" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy.` },
+        400
+      );
+    }
 
     if (data.featureType === 'patch' && !hasSatisfiedMfa(auth)) {
       return c.json({ error: 'MFA required' }, 403);

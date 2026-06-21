@@ -218,6 +218,50 @@ describe('configurationPolicies CRUD routes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it('creates a partner-wide policy with server-derived partner for partner scope (#1724)', async () => {
+      const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
+      const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
+      createConfigPolicyMock.mockResolvedValue(policy);
+
+      const appPartner = new Hono();
+      appPartner.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+        await next();
+      });
+      appPartner.route('/', crudRoutes);
+
+      const res = await appPartner.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // A client-supplied orgId must be IGNORED for ownerScope:'partner'.
+        body: JSON.stringify({ name: 'Partner-wide', ownerScope: 'partner', orgId: ORG_ID }),
+      });
+      expect(res.status).toBe(201);
+      // The partner is derived from auth.partnerId, not from the request body.
+      expect(createConfigPolicyMock).toHaveBeenCalledWith(
+        { partnerId: PARTNER_ID },
+        expect.objectContaining({ name: 'Partner-wide' }),
+        'user-1'
+      );
+    });
+
+    it('rejects ownerScope:partner for an org-scope caller (no partner) (#1724)', async () => {
+      const appOrg = new Hono();
+      appOrg.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'organization', orgId: ORG_ID, partnerId: null }));
+        await next();
+      });
+      appOrg.route('/', crudRoutes);
+
+      const res = await appOrg.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Nope', ownerScope: 'partner' }),
+      });
+      expect(res.status).toBe(403);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================

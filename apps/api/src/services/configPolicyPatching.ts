@@ -300,6 +300,16 @@ export async function loadPolicyLocalPatchConfig(
       })
     : storedInline;
 
+  // Patch feature links are rejected on partner-wide policies (org_id NULL) at the
+  // featureLinks route (#1724), so reaching this load path with a patch link and no
+  // org is a misconfiguration that escaped the write-side gate. Warn rather than
+  // silently resolving so it surfaces instead of masking. (Defense-in-depth: the
+  // ring still resolves from partnerId below since patch_policies is partner-axis.)
+  if (row.featurePolicyId && !row.orgId) {
+    console.warn(
+      `[configPolicyPatching] patch feature link ${row.featurePolicyId} on partner-wide config policy ${row.configPolicyId} (no org) — should have been blocked at write time`
+    );
+  }
   // Partner-wide config policies (#1724) carry partnerId directly and orgId === null;
   // org-scoped policies derive the partner from their org. Prefer the explicit
   // partnerId so partner-wide policies still resolve their (partner-axis) patch ring.

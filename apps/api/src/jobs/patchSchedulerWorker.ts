@@ -357,8 +357,10 @@ async function scanAndCreateJobs(): Promise<{
 
   for (const row of patchPoliciesWithSchedules) {
     try {
-      // Partner-owned policies (org_id NULL, #1724) don't target org-scoped
-      // devices, so there's nothing to schedule patches for here.
+      // Partner-owned policies (org_id NULL, #1724) cannot carry a patch
+      // feature link — the feature-link route rejects 'patch' on partner-wide
+      // policies (ORG_SCOPED_ONLY_FEATURES), so this query never returns one.
+      // The guard is a defensive backstop; it never skips real work.
       if (row.policyOrgId === null) continue;
 
       const policyLocal = await loadPolicyLocalPatchConfig(row.configPolicyId);
