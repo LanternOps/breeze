@@ -42,6 +42,9 @@ type ScriptFormProps = {
   submitLabel?: string;
   loading?: boolean;
   isNew?: boolean;
+  // System scripts can't be re-scoped through this form (they're read-only for
+  // non-system users and stay system-scope-seed-only). Hides the picker on edit.
+  isSystemScript?: boolean;
 };
 
 export default function ScriptForm({
@@ -51,6 +54,7 @@ export default function ScriptForm({
   submitLabel = 'Save script',
   loading,
   isNew = false,
+  isSystemScript = false,
 }: ScriptFormProps) {
   const [editorMounted, setEditorMounted] = useState(false);
   const editorInstanceRef = useRef<Parameters<NonNullable<EditorProps['onMount']>>[0] | null>(null);
@@ -272,13 +276,15 @@ export default function ScriptForm({
   // `GET /orgs/partners` endpoint and so is always empty for a real partner-scope
   // user (the picker would never render for its own audience). `organizations` IS
   // populated for partner users, so it still drives the >1-org check.
-  // The "Available to" picker shows only for partner-scope users creating a NEW
-  // script with >1 accessible org (single-org partner users don't need to pick;
-  // org-scope users always write to their own org — the backend forces it).
+  // The "Available to" picker shows for partner-scope users with >1 accessible
+  // org — on create (choose initial scope) AND on edit (re-scope a script:
+  // move org→org or promote to All Orgs, issue #1734). Single-org partner users
+  // don't need to pick; org-scope users always write to their own org and can't
+  // re-scope (the backend 403s a non-partner re-scope and forces org on create).
   const { organizations } = useOrgStore();
   const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
   const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
-  const showAvailabilityPicker = isNew && isPartnerScope && organizations.length > 1;
+  const showAvailabilityPicker = isPartnerScope && organizations.length > 1 && !isSystemScript;
 
   const monacoLanguage = useMemo(() => {
     return languageOptions.find(l => l.value === watchLanguage)?.monacoLang || 'plaintext';
@@ -328,16 +334,25 @@ export default function ScriptForm({
       })}
       className="space-y-8 rounded-lg border bg-card p-6 shadow-sm"
     >
-      {/* Availability picker — shown only for partner-scope users creating a new script with >1 org */}
+      {/* Availability picker — partner-scope users with >1 org. On create it
+          sets the initial scope; on edit it re-scopes the script (move org→org
+          or promote to All Orgs, issue #1734). The checked radio is driven by
+          react-hook-form's `availability` default (seeded from the current
+          scope on edit), so no hardcoded defaultChecked. */}
       {showAvailabilityPicker && (
         <fieldset className="space-y-2 rounded-md border p-4">
           <legend className="px-1 text-sm font-medium">Available to</legend>
+          {!isNew && (
+            <p className="text-xs text-muted-foreground">
+              Change which organizations can see and run this script. &ldquo;All my
+              organizations&rdquo; makes it partner-wide.
+            </p>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
               value="partner"
               {...register('availability')}
-              defaultChecked
             />
             All my organizations
           </label>

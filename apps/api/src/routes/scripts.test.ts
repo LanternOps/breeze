@@ -1024,4 +1024,191 @@ describe('scripts routes', () => {
       expect(body.error).toMatch(/system scripts are read-only/i);
     });
   });
+
+  describe('Task 9: re-scope on edit (issue #1734)', () => {
+    function makePartnerAuth() {
+      return {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'partner' as const,
+        partnerId: PARTNER_ID,
+        orgId: null,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: null, partnerId: PARTNER_ID, scope: 'partner', type: 'access', mfa: true,
+        },
+        accessibleOrgIds: [ORG_ID, ORG_ID_2],
+        canAccessOrg: (id: string) => [ORG_ID, ORG_ID_2].includes(id),
+      };
+    }
+
+    function makeOrgAuth() {
+      return {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization' as const,
+        partnerId: PARTNER_ID,
+        orgId: ORG_ID,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: ORG_ID, partnerId: PARTNER_ID, scope: 'organization', type: 'access', mfa: true,
+        },
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (id: string) => id === ORG_ID,
+      };
+    }
+
+    async function withAuth(auth: any) {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', auth);
+        return next();
+      });
+    }
+
+    // The PUT handler's getScriptWithOrgCheck uses .from().where().limit();
+    // the reference-count checks use .from().where() (no .limit()). This mock
+    // serves the existing script for the first call and zero counts thereafter.
+    function mockScriptLookup(script: any, refCount = 0) {
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => ({
+            // count-query path (no .limit) resolves directly to a count row
+            then: (resolve: (v: any) => void) => resolve([{ count: refCount }]),
+            limit: vi.fn().mockResolvedValue([script]),
+          })),
+        }),
+      }) as any);
+    }
+
+    function captureUpdate(returnedRow: any) {
+      let setValues: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((vals: any) => {
+          setValues = vals;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([returnedRow]),
+            }),
+          };
+        }),
+      } as any);
+      return () => setValues;
+    }
+
+    it('partner user promotes an org script to All Orgs (org_id→null)', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+      const getSet = captureUpdate({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: null, partnerId: PARTNER_ID, version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'partner' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(getSet().orgId).toBeNull();
+      expect(getSet().partnerId).toBe(PARTNER_ID);
+    });
+
+    it('partner user moves a script org→org (when no references exist)', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+      const getSet = captureUpdate({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID_2, partnerId: PARTNER_ID, version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'org', orgId: ORG_ID_2 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(getSet().orgId).toBe(ORG_ID_2);
+      expect(getSet().partnerId).toBe(PARTNER_ID);
+    });
+
+    it('blocks a narrowing re-scope (partner-wide→org) when policy references exist → 409', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Shared Script', orgId: null, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 2); // 2 referencing policies
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'org', orgId: ORG_ID }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/referenced by automation or patch policies/i);
+    });
+
+    it('org-scope user cannot re-scope → 403', async () => {
+      await withAuth(makeOrgAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'partner' }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/only partner-scope users/i);
+    });
+
+    it('partner user cannot move a script to an org they cannot access → 403', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'org', orgId: 'a0000000-0000-4000-8000-000000000000' }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/access to this organization denied/i);
+    });
+
+    it('a plain metadata edit (no availability) never touches scope', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+      const getSet = captureUpdate({
+        id: SCRIPT_ID_1, name: 'Renamed', orgId: ORG_ID, partnerId: PARTNER_ID, version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(getSet().orgId).toBeUndefined();
+      expect(getSet().partnerId).toBeUndefined();
+    });
+  });
 });
