@@ -107,6 +107,28 @@ describe('agent hardware inventory — warranty sync re-trigger (#1732)', () => 
     expect(queueWarrantySyncForDevice).toHaveBeenCalledTimes(1);
   });
 
+  it('enqueues when prior row had manufacturer but no serial (partial -> full)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockPriorHardware({ manufacturer: 'Dell Inc.', serialNumber: null });
+    mockHardwareUpsert();
+
+    const res = await postHardware(makeApp(), DELL);
+
+    expect(res.status).toBe(200);
+    expect(queueWarrantySyncForDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it('enqueues when prior row had serial but no manufacturer (partial -> full)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockPriorHardware({ manufacturer: null, serialNumber: '3S0HXB4' });
+    mockHardwareUpsert();
+
+    const res = await postHardware(makeApp(), DELL);
+
+    expect(res.status).toBe(200);
+    expect(queueWarrantySyncForDevice).toHaveBeenCalledTimes(1);
+  });
+
   it('does NOT enqueue on a routine re-report when identity was already known', async () => {
     mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
     mockPriorHardware({ manufacturer: 'Dell Inc.', serialNumber: '3S0HXB4' });
@@ -118,13 +140,23 @@ describe('agent hardware inventory — warranty sync re-trigger (#1732)', () => 
     expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
   });
 
-  it('does NOT enqueue when the new report still lacks manufacturer or serial', async () => {
+  it('does NOT enqueue when the new report has manufacturer but no serial', async () => {
     mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
     mockPriorHardware(null);
     mockHardwareUpsert();
 
-    // manufacturer present but serial absent — still not identifiable
     const res = await postHardware(makeApp(), { manufacturer: 'Dell Inc.', model: 'X' });
+
+    expect(res.status).toBe(200);
+    expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
+  });
+
+  it('does NOT enqueue when the new report has serial but no manufacturer', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockPriorHardware(null);
+    mockHardwareUpsert();
+
+    const res = await postHardware(makeApp(), { serialNumber: '3S0HXB4', model: 'X' });
 
     expect(res.status).toBe(200);
     expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();

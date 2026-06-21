@@ -81,7 +81,7 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
   if (!wasIdentified && nowIdentified) {
     queueWarrantySyncForDevice(device.id).catch((err) => {
       console.error(
-        '[Inventory] Failed to queue warranty sync on hardware report:',
+        `[Inventory] Failed to queue warranty sync on hardware report for device ${device.id}:`,
         err instanceof Error ? err.message : err
       );
     });
