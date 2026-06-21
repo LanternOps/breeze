@@ -40,6 +40,10 @@ export interface ElevationRequest {
   toolName?: string | null;
   riskTier?: number | null;
   executionId?: string | null;
+  // Surfaced from metadata by the API (uac_intercept capture) so a rule can be
+  // seeded with a command-line / parent-image criterion.
+  commandLine?: string | null;
+  parentImage?: string | null;
   // Joined by the API
   deviceHostname?: string | null;
   siteName?: string | null;
@@ -129,6 +133,8 @@ export type PamRuleDraft =
       matchSigner?: string | null;
       matchHash?: string | null;
       matchPathGlob?: string | null;
+      matchParentImage?: string | null;
+      matchCommandLine?: string | null;
       matchUser?: string | null;
     }
   | {
@@ -165,13 +171,25 @@ export function requestToRuleDraft(r: ElevationRequest): PamRuleDraft {
     return { shape: 'executable', orgId: r.orgId, siteId: r.siteId ?? null, matchUser: r.subjectUsername };
   }
   const name = r.targetExecutablePath ? `Rule for ${baseName(r.targetExecutablePath)}` : undefined;
+  // Pre-fill the observed command line / parent image as additional (editable)
+  // narrowing alongside the primary criterion — this is what makes a one-click
+  // "auto-elevate only this exact invocation" rule (e.g. the printer recipe)
+  // possible. The admin can clear them in the modal if the rule should be broader.
+  const base = {
+    shape: 'executable' as const,
+    name,
+    orgId: r.orgId,
+    siteId: r.siteId ?? null,
+    matchParentImage: r.parentImage ?? null,
+    matchCommandLine: r.commandLine ?? null,
+  };
   if (r.targetExecutableSigner) {
-    return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchSigner: r.targetExecutableSigner };
+    return { ...base, matchSigner: r.targetExecutableSigner };
   }
   if (r.targetExecutableHash) {
-    return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchHash: r.targetExecutableHash };
+    return { ...base, matchHash: r.targetExecutableHash };
   }
-  return { shape: 'executable', name, orgId: r.orgId, siteId: r.siteId ?? null, matchPathGlob: r.targetExecutablePath ?? null };
+  return { ...base, matchPathGlob: r.targetExecutablePath ?? null };
 }
 
 export const STATUS_LABELS: Record<ElevationStatus, string> = {

@@ -241,6 +241,10 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
         pamRuleId,
         pamRuleName,
         decisionSource,
+        // Surfaced from metadata so "Create rule from this request" can seed a
+        // command-line / parent-image criterion (uac_intercept captures both).
+        commandLine: typeof meta.command_line === 'string' ? meta.command_line : null,
+        parentImage: typeof meta.parent_image === 'string' ? meta.parent_image : null,
       };
     }),
     pagination: { page, limit, total: countRows[0]?.total ?? 0 },

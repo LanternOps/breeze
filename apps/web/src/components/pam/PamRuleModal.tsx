@@ -116,8 +116,12 @@ export default function PamRuleModal({
   const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? seedExec?.matchSigner ?? '');
   const [matchHash, setMatchHash] = useState(rule?.matchHash ?? seedExec?.matchHash ?? '');
   const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? seedExec?.matchPathGlob ?? '');
-  const [matchParentImage, setMatchParentImage] = useState(rule?.matchParentImage ?? '');
-  const [matchCommandLine, setMatchCommandLine] = useState(rule?.matchCommandLine ?? '');
+  const [matchParentImage, setMatchParentImage] = useState(
+    rule?.matchParentImage ?? seedExec?.matchParentImage ?? '',
+  );
+  const [matchCommandLine, setMatchCommandLine] = useState(
+    rule?.matchCommandLine ?? seedExec?.matchCommandLine ?? '',
+  );
   const [matchUser, setMatchUser] = useState(rule?.matchUser ?? seedExec?.matchUser ?? '');
   const [matchAdGroup, setMatchAdGroup] = useState(rule?.matchAdGroup ?? '');
   const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? seedTool?.matchToolName ?? '');
