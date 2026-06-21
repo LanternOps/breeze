@@ -226,7 +226,7 @@ describe('quote accept → convert', () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
     const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
-    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Annual license', quantity: 1, unitPrice: 1200, taxable: false, customerVisible: true, recurrence: 'annual' } as any, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Annual license', quantity: 2, unitPrice: 1200, taxable: false, customerVisible: true, recurrence: 'annual' } as any, actor));
     await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'EDR', quantity: 3, unitPrice: 15, taxable: false, customerVisible: true, recurrence: 'monthly' } as any, actor));
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
 
@@ -239,5 +239,27 @@ describe('quote accept → convert', () => {
     const intervals = rows.map((r) => r.intervalMonths).sort((a, b) => a - b);
     expect(intervals).toEqual([1, 12]);
     expect(rows.every((r) => r.status === 'draft')).toBe(true);
+    expect(rows.every((r) => r.billingTiming === 'advance' && r.autoIssue === false)).toBe(true);
+
+    // Verify contract lines: two contracts, each with exactly one manual line
+    const cLines = await withSystemDbAccessContext(() =>
+      db.select().from(contractLines).where(inArray(contractLines.contractId, res.contractIds)),
+    );
+    expect(cLines).toHaveLength(2);
+    expect(cLines.every((l) => l.lineType === 'manual')).toBe(true);
+
+    // Match lines to contracts by intervalMonths: 1=monthly (EDR, qty 3, price 15), 12=annual (Annual license, qty 2, price 1200)
+    const monthlyContract = rows.find((c) => c.intervalMonths === 1)!;
+    const annualContract = rows.find((c) => c.intervalMonths === 12)!;
+
+    const monthlyLine = cLines.find((l) => l.contractId === monthlyContract.id)!;
+    expect(monthlyLine.description).toBe('EDR');
+    expect(monthlyLine.unitPrice).toBe('15.00');
+    expect(monthlyLine.manualQuantity).toBe('3.00');
+
+    const annualLine = cLines.find((l) => l.contractId === annualContract.id)!;
+    expect(annualLine.description).toBe('Annual license');
+    expect(annualLine.unitPrice).toBe('1200.00');
+    expect(annualLine.manualQuantity).toBe('2.00');
   });
 });
