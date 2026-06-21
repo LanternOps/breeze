@@ -30,6 +30,8 @@ import {
   devices,
   elevationAudit,
   elevationRequests,
+  PAM_RULE_NEGATE_KEYS,
+  pamOrgConfig,
   pamRules,
   sites,
   softwarePolicies,
@@ -771,6 +773,7 @@ const ruleCriteriaFields = [
   'matchHash',
   'matchPathGlob',
   'matchParentImage',
+  'matchCommandLine',
   'matchUser',
   'matchAdGroup',
 ] as const;
@@ -794,10 +797,12 @@ const ruleCriteriaValidators = {
     .optional(),
   matchPathGlob: z.string().min(1).max(4096).nullable().optional(),
   matchParentImage: z.string().min(1).max(4096).nullable().optional(),
+  matchCommandLine: z.string().min(1).max(4096).nullable().optional(),
   matchUser: z.string().min(1).max(255).nullable().optional(),
   matchAdGroup: z.string().min(1).max(255).nullable().optional(),
   matchToolName: z.string().min(1).max(100).nullable().optional(),
   matchRiskTier: z.number().int().min(0).max(4).nullable().optional(),
+  matchNegate: z.array(z.enum(PAM_RULE_NEGATE_KEYS)).max(PAM_RULE_NEGATE_KEYS.length).nullable().optional(),
   timeWindow: timeWindowSchema.nullable().optional(),
 };
 
@@ -823,6 +828,7 @@ type RuleCriteriaShape = {
   matchHash?: string | null;
   matchPathGlob?: string | null;
   matchParentImage?: string | null;
+  matchCommandLine?: string | null;
   matchUser?: string | null;
   matchAdGroup?: string | null;
   matchToolName?: string | null;
@@ -844,6 +850,7 @@ const executableCriteriaFields = [
   'matchHash',
   'matchPathGlob',
   'matchParentImage',
+  'matchCommandLine',
 ] as const;
 
 function hasToolActionCriteria(rule: RuleCriteriaShape): boolean {
@@ -928,10 +935,12 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
       matchHash: payload.matchHash ? payload.matchHash.toLowerCase() : null,
       matchPathGlob: payload.matchPathGlob ?? null,
       matchParentImage: payload.matchParentImage ?? null,
+      matchCommandLine: payload.matchCommandLine ?? null,
       matchUser: payload.matchUser ?? null,
       matchAdGroup: payload.matchAdGroup ?? null,
       matchToolName: payload.matchToolName ?? null,
       matchRiskTier: payload.matchRiskTier ?? null,
+      matchNegate: payload.matchNegate ?? null,
       timeWindow: payload.timeWindow ?? null,
       verdict: payload.verdict,
       approvalDurationMinutes: payload.approvalDurationMinutes ?? null,
@@ -1027,10 +1036,12 @@ pamRoutes.post(
       matchHash: body.matchHash ? body.matchHash.toLowerCase() : null,
       matchPathGlob: body.matchPathGlob ?? null,
       matchParentImage: body.matchParentImage ?? null,
+      matchCommandLine: body.matchCommandLine ?? null,
       matchUser: body.matchUser ?? null,
       matchAdGroup: body.matchAdGroup ?? null,
       matchToolName: body.matchToolName ?? null,
       matchRiskTier: body.matchRiskTier ?? null,
+      matchNegate: body.matchNegate ?? null,
       timeWindow: body.timeWindow ?? null,
     };
 
@@ -1054,6 +1065,7 @@ pamRoutes.post(
         targetExecutableSigner: r.targetExecutableSigner ?? undefined,
         subjectUsername: r.subjectUsername,
         parentImage: typeof meta.parent_image === 'string' ? meta.parent_image : undefined,
+        commandLine: typeof meta.command_line === 'string' ? meta.command_line : undefined,
         toolName: r.toolName ?? undefined,
         riskTier: r.riskTier ?? undefined,
         at: r.requestedAt,
@@ -1126,10 +1138,14 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
       ...(payload.matchParentImage !== undefined
         ? { matchParentImage: payload.matchParentImage }
         : {}),
+      ...(payload.matchCommandLine !== undefined
+        ? { matchCommandLine: payload.matchCommandLine }
+        : {}),
       ...(payload.matchUser !== undefined ? { matchUser: payload.matchUser } : {}),
       ...(payload.matchAdGroup !== undefined ? { matchAdGroup: payload.matchAdGroup } : {}),
       ...(payload.matchToolName !== undefined ? { matchToolName: payload.matchToolName } : {}),
       ...(payload.matchRiskTier !== undefined ? { matchRiskTier: payload.matchRiskTier } : {}),
+      ...(payload.matchNegate !== undefined ? { matchNegate: payload.matchNegate } : {}),
       ...(payload.timeWindow !== undefined ? { timeWindow: payload.timeWindow } : {}),
       ...(payload.verdict !== undefined ? { verdict: payload.verdict } : {}),
       ...(payload.approvalDurationMinutes !== undefined
@@ -1179,3 +1195,80 @@ pamRoutes.delete('/rules/:id', requirePamWrite, requireMfa(), async (c) => {
 
   return c.json({ success: true });
 });
+
+// ============================================================
+// Org config — default verdict for unmatched elevations
+// ============================================================
+// When an elevation matches no software policy and no PAM rule, the org's
+// configured default applies. Absent a row, the default is require_approval
+// (the historical behavior — the request waits for a human).
+const updateConfigSchema = z.object({
+  orgId: z.string().guid().optional(),
+  defaultUnmatchedVerdict: z.enum(['require_approval', 'auto_deny']),
+});
+
+pamRoutes.get('/config', requirePamRead, async (c) => {
+  const auth = c.get('auth');
+  const resolvedOrg = resolveOrgIdForWrite(auth, c.req.query('orgId') ?? undefined);
+  if (!resolvedOrg.orgId) {
+    return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
+  }
+  const [cfg] = await db
+    .select()
+    .from(pamOrgConfig)
+    .where(eq(pamOrgConfig.orgId, resolvedOrg.orgId))
+    .limit(1);
+  return c.json({
+    success: true,
+    config: {
+      orgId: resolvedOrg.orgId,
+      defaultUnmatchedVerdict: cfg?.defaultUnmatchedVerdict ?? 'require_approval',
+    },
+  });
+});
+
+pamRoutes.put(
+  '/config',
+  requirePamWrite,
+  requireMfa(),
+  zValidator('json', updateConfigSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const payload = c.req.valid('json');
+    const resolvedOrg = resolveOrgIdForWrite(
+      auth,
+      payload.orgId ?? c.req.query('orgId') ?? undefined,
+    );
+    if (!resolvedOrg.orgId) {
+      return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
+    }
+    const [saved] = await db
+      .insert(pamOrgConfig)
+      .values({
+        orgId: resolvedOrg.orgId,
+        defaultUnmatchedVerdict: payload.defaultUnmatchedVerdict,
+        updatedByUserId: auth.user.id,
+      })
+      .onConflictDoUpdate({
+        target: pamOrgConfig.orgId,
+        set: {
+          defaultUnmatchedVerdict: payload.defaultUnmatchedVerdict,
+          updatedByUserId: auth.user.id,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    writeAuditEvent(c, {
+      orgId: resolvedOrg.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      action: 'pam.config.update',
+      resourceType: 'pam_org_config',
+      resourceId: saved?.id ?? resolvedOrg.orgId,
+      details: { defaultUnmatchedVerdict: payload.defaultUnmatchedVerdict },
+    });
+
+    return c.json({ success: true, config: saved });
+  },
+);
