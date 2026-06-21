@@ -49,16 +49,6 @@ const DEVICE_SCAN_PAGE_LIMIT = 100;
 export default function PatchesPage() {
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
-  // "All orgs" mode: a partner/multi-org user with no specific org selected via
-  // the switcher. Single-org actions (create-ring, approve/decline/defer,
-  // compliance export) can't pick a target org here, so we disable them with a
-  // hint instead of firing a request that 400s ("orgId is required"). A
-  // single-org user always has an implicit org (currentOrgId set), so this is
-  // never true for them. The patch list + compliance READ views still work in
-  // this mode (partner scope returns the full catalog).
-  const allOrgsMode = currentOrgId === null;
-  const SELECT_ORG_HINT = 'Select an organization to perform this action';
-
   const { scope } = getJwtClaims();
   // Rings + approvals are partner-scoped: only partner/system users manage them.
   const canManageRings = scope === 'partner' || scope === 'system';
