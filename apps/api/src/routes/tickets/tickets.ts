@@ -6,14 +6,16 @@ import { db } from '../../db';
 import { tickets, ticketComments, ticketAlertLinks, devices, organizations, users, alerts, ticketStatuses } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from './siteScope';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
-  assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema
+  assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
+  editCommentSchema
 } from '@breeze/shared';
 import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, updateTicketFields,
+  editTicketComment, deleteTicketComment,
   TicketServiceError
 } from '../../services/ticketService';
 import {
@@ -709,6 +711,61 @@ ticketsRoutes.post(
     try {
       const result = await addTicketComment(id, body, actorFrom(c));
       return c.json({ data: result.comment }, 201);
+    } catch (err) {
+      return handleServiceError(c, err);
+    }
+  }
+);
+
+const commentParam = z.object({ id: z.string().guid(), commentId: z.string().guid() });
+
+// PATCH /tickets/:id/comments/:commentId — edit a comment body.
+// tickets:write to reach it; author-or-tickets:manage enforced in the service.
+ticketsRoutes.patch(
+  '/:id/comments/:commentId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', commentParam),
+  zValidator('json', editCommentSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id, commentId } = c.req.valid('param');
+    const body = c.req.valid('json');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const canManageAny = perms ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action) : false;
+    try {
+      const comment = await editTicketComment(commentId, body, actorFrom(c), { canManageAny });
+      return c.json({ data: comment });
+    } catch (err) {
+      return handleServiceError(c, err);
+    }
+  }
+);
+
+// DELETE /tickets/:id/comments/:commentId — soft-delete a comment.
+ticketsRoutes.delete(
+  '/:id/comments/:commentId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', commentParam),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id, commentId } = c.req.valid('param');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const canManageAny = perms ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action) : false;
+    try {
+      const result = await deleteTicketComment(commentId, actorFrom(c), { canManageAny });
+      return c.json({ data: result });
     } catch (err) {
       return handleServiceError(c, err);
     }

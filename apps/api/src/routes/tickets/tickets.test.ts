@@ -14,6 +14,8 @@ const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, l
       unlinkAlertFromTicket: vi.fn(),
       updateTicketFields: vi.fn(),
       getAssigneeForValidation: vi.fn(),
+      editTicketComment: vi.fn(),
+      deleteTicketComment: vi.fn(),
     },
     ticketTriageMocks: {
       getTicketTriageSuggestion: vi.fn(),
@@ -1624,5 +1626,102 @@ describe('authMiddleware wiring', () => {
     expect(res.status).toBe(200);
     const { authMiddleware } = await import('../../middleware/auth');
     expect(authMiddleware).toHaveBeenCalledTimes(1);
+  });
+});
+
+const COMMENT_ID = 'cccccccc-1111-4222-8333-444455556666';
+const jsonHeaders = { 'Content-Type': 'application/json' };
+
+describe('PATCH /tickets/:id/comments/:commentId', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('edits a comment via the service and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404
+    serviceMocks.editTicketComment.mockResolvedValue({
+      id: COMMENT_ID, content: 'new content', editedAt: new Date()
+    });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ content: 'new content' })
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.editTicketComment).toHaveBeenCalledWith(
+      COMMENT_ID,
+      expect.objectContaining({ content: 'new content' }),
+      expect.objectContaining({ userId: 'u-1' }),
+      expect.objectContaining({ canManageAny: expect.any(Boolean) })
+    );
+  });
+
+  it('404s when the ticket is out of scope', async () => {
+    dbSelectMock.mockResolvedValueOnce([]); // getScopedTicketOr404 → not found
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ content: 'x' })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.editTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('maps TicketServiceError status through from service (403 forbidden)', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.editTicketComment.mockRejectedValue(
+      new TicketServiceError('Not allowed to edit this comment', 403)
+    );
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ content: 'x' })
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('DELETE /tickets/:id/comments/:commentId', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('soft-deletes and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404
+    serviceMocks.deleteTicketComment.mockResolvedValue({ id: COMMENT_ID, deletedAt: new Date() });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: jsonHeaders
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.deleteTicketComment).toHaveBeenCalledWith(
+      COMMENT_ID,
+      expect.objectContaining({ userId: 'u-1' }),
+      expect.objectContaining({ canManageAny: expect.any(Boolean) })
+    );
+  });
+
+  it('404s when the ticket is out of scope', async () => {
+    dbSelectMock.mockResolvedValueOnce([]); // getScopedTicketOr404 → not found
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: jsonHeaders
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.deleteTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('maps TicketServiceError status through from service (403 forbidden)', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.deleteTicketComment.mockRejectedValue(
+      new TicketServiceError('Not allowed to delete this comment', 403)
+    );
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: jsonHeaders
+    });
+    expect(res.status).toBe(403);
   });
 });
