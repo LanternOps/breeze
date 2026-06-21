@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { shouldAutoScroll } from './aiChatScroll';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Bot, User } from 'lucide-react';
@@ -70,11 +71,50 @@ export default function AiChatMessages({
   messages, pendingApproval, pendingPlan, activePlan, approvalMode, isPaused,
   onApprove, onReject, onApprovePlan, onAbortPlan, onPauseAi, onSendQuickAction,
 }: AiChatMessagesProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Whether the viewport is currently pinned near the bottom. Seeded `true` so
+  // the first render (and a freshly opened panel) auto-scrolls. We only flip it
+  // off when the user deliberately scrolls up to read history.
+  const pinnedToBottomRef = useRef(true);
+  // Holds the pending rAF id so a burst of streaming re-renders coalesces into a
+  // single post-paint scroll instead of fighting each other mid-animation.
+  const scrollFrameRef = useRef<number | null>(null);
 
+  // #1713: keep the conversation anchored to the bottom on submit + streaming.
+  // The previous implementation called `scrollIntoView({ behavior: 'smooth' })`
+  // on every `messages` change. During streaming the messages array is recreated
+  // on each content delta, so many smooth-scroll animations were issued and
+  // interrupted mid-flight — leaving the viewport stranded at the top. The fix:
+  // (1) only auto-scroll when the user is already pinned to the bottom, so we
+  // don't yank someone reading history; (2) defer to after paint via rAF so the
+  // scroll resolves against the final DOM; (3) set scrollTop directly (instant)
+  // rather than re-issuing interruptible smooth animations.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, pendingApproval]);
+    const container = scrollContainerRef.current;
+    if (!container || !pinnedToBottomRef.current) return;
+
+    if (scrollFrameRef.current !== null) {
+      cancelAnimationFrame(scrollFrameRef.current);
+    }
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
+  }, [messages, pendingApproval, pendingPlan, activePlan]);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedToBottomRef.current = shouldAutoScroll(distanceFromBottom);
+  };
 
   if (messages.length === 0) {
     return (
@@ -101,7 +141,7 @@ export default function AiChatMessages({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-3 space-y-3">
+    <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-3 space-y-3">
       {messages.map((msg) => {
         if (msg.role === 'user') {
           return (
@@ -237,8 +277,6 @@ export default function AiChatMessages({
           </button>
         </div>
       )}
-
-      <div ref={bottomRef} />
     </div>
   );
 }
