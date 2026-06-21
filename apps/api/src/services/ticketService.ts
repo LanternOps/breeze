@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
@@ -898,4 +898,147 @@ export async function createTicketFromAlert(
     );
   }
   return ticket;
+}
+
+// ─── Comment mutation primitives (Phase 6a) ───────────────────────────────────
+
+/**
+ * System-generated comment types that may never be edited or deleted by users.
+ */
+export const SYSTEM_COMMENT_TYPES = new Set(['status_change', 'assignment', 'time_entry', 'system']);
+
+async function loadCommentWithTicket(commentId: string) {
+  const rows = await db
+    .select()
+    .from(ticketComments)
+    .where(eq(ticketComments.id, commentId))
+    .limit(1);
+  const comment = rows[0];
+  if (!comment) throw new TicketServiceError('Comment not found', 404);
+  const ticket = await getTicketOrThrow(comment.ticketId);
+  return { comment, ticket };
+}
+
+function assertCommentEditable(
+  comment: typeof ticketComments.$inferSelect,
+  actor: TicketActor,
+  canManageAny: boolean
+) {
+  if (SYSTEM_COMMENT_TYPES.has(comment.commentType)) {
+    throw new TicketServiceError('System-generated entries cannot be edited or deleted', 400);
+  }
+  if (comment.deletedAt) {
+    throw new TicketServiceError('Comment already deleted', 409);
+  }
+  const isAuthor = comment.userId != null && comment.userId === actor.userId;
+  if (!isAuthor && !canManageAny) {
+    throw new TicketServiceError('You can only edit or delete your own comments', 403);
+  }
+}
+
+export async function editTicketComment(
+  commentId: string,
+  input: { content: string },
+  actor: TicketActor,
+  opts: { canManageAny: boolean }
+) {
+  const { comment, ticket } = await loadCommentWithTicket(commentId);
+  assertCommentEditable(comment, actor, opts.canManageAny);
+
+  const previousContent = comment.content;
+  const updated = await db
+    .update(ticketComments)
+    .set({ content: input.content, editedAt: new Date() })
+    .where(eq(ticketComments.id, commentId))
+    .returning();
+  const row = updated[0];
+  if (!row) throw new TicketServiceError('Comment not found', 404);
+
+  await emitTicketEvent({
+    type: 'ticket.commented',
+    ticketId: ticket.id,
+    orgId: ticket.orgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { commentId, isPublic: row.isPublic }
+  });
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.comment.edit',
+    resourceType: 'ticket',
+    resourceId: ticket.id,
+    details: { commentId, previousContent },
+    result: 'success'
+  });
+  return row;
+}
+
+export async function deleteTicketComment(
+  commentId: string,
+  actor: TicketActor,
+  opts: { canManageAny: boolean }
+) {
+  const { comment, ticket } = await loadCommentWithTicket(commentId);
+  assertCommentEditable(comment, actor, opts.canManageAny);
+
+  const previousContent = comment.content;
+  await db
+    .update(ticketComments)
+    .set({ deletedAt: new Date() })
+    .where(eq(ticketComments.id, commentId))
+    .returning();
+
+  await emitTicketEvent({
+    type: 'ticket.commented',
+    ticketId: ticket.id,
+    orgId: ticket.orgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { commentId, isPublic: comment.isPublic }
+  });
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.comment.delete',
+    resourceType: 'ticket',
+    resourceId: ticket.id,
+    details: { commentId, previousContent },
+    result: 'success'
+  });
+  return { id: commentId };
+}
+
+/**
+ * Checks whether a portal customer may still edit or delete their own comment.
+ * The window closes once any later comment on the ticket has authorType !== 'portal'
+ * (i.e. a staff member or system event has acted on the ticket after this comment).
+ */
+export async function portalCommentMutable(
+  commentId: string,
+  portalUserId: string
+): Promise<{ ok: boolean; reason?: 'not_found' | 'not_author' | 'staff_replied' }> {
+  const rows = await db
+    .select()
+    .from(ticketComments)
+    .where(eq(ticketComments.id, commentId))
+    .limit(1);
+  const comment = rows[0];
+  if (!comment || comment.deletedAt) return { ok: false, reason: 'not_found' };
+  if (comment.portalUserId !== portalUserId) return { ok: false, reason: 'not_author' };
+
+  // Single query: select authorType for all later comments on this ticket.
+  // If any has authorType !== 'portal' the edit window is closed.
+  const laterRows = await db
+    .select({ authorType: ticketComments.authorType })
+    .from(ticketComments)
+    .where(and(
+      eq(ticketComments.ticketId, comment.ticketId),
+      gt(ticketComments.createdAt, comment.createdAt)
+    ))
+    .limit(50);
+  if (laterRows.some((r) => r.authorType !== 'portal')) {
+    return { ok: false, reason: 'staff_replied' };
+  }
+  return { ok: true };
 }
