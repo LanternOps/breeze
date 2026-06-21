@@ -130,6 +130,14 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
     fetchMetrics();
   }, [fetchMetrics]);
 
+  // Process drilldown is time-keyed, not metric-specific: clicking any chart
+  // opens the "top processes at that timestamp" panel. Shared so the CPU/RAM/Disk
+  // line chart and the Network Bandwidth / Disk Activity area charts behave
+  // consistently (issue #1722 — previously only the line chart was clickable).
+  const handleChartClick = useCallback((state: { activeLabel?: string | number } | null) => {
+    if (state && state.activeLabel != null) setDrilldownAt(String(state.activeLabel));
+  }, []);
+
   const latest = useMemo(() => data[data.length - 1], [data]);
   const hasBandwidth = useMemo(() => data.some(d => d.bandwidthInBps > 0 || d.bandwidthOutBps > 0), [data]);
   const hasDiskActivity = useMemo(
@@ -218,12 +226,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
 
       <div className={compact ? 'mt-4 h-56' : 'mt-6 h-80'}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart
-            data={data}
-            onClick={(state: { activeLabel?: string | number } | null) => {
-              if (state && state.activeLabel != null) setDrilldownAt(String(state.activeLabel));
-            }}
-          >
+          <LineChart data={data} onClick={handleChartClick}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
             <XAxis
               dataKey="timestamp"
@@ -277,7 +280,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
           </div>
           <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data}>
+              <AreaChart data={data} onClick={handleChartClick}>
                 <defs>
                   <linearGradient id="bandwidthInGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
@@ -358,7 +361,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
           </div>
           <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data}>
+              <AreaChart data={data} onClick={handleChartClick}>
                 <defs>
                   <linearGradient id="diskReadGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#16a34a" stopOpacity={0.3} />
