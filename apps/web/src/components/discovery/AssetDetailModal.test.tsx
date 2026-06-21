@@ -78,6 +78,22 @@ describe('AssetDetailModal — link to managed device', () => {
     );
   });
 
+  it('falls back to a device-name-less confirmation when the linked device is not in the list', async () => {
+    // asset.linkedDeviceId references a device absent from `devices` — the
+    // select pre-selects it, but the name lookup misses, exercising the
+    // fallback branch of the success message.
+    const orphanAsset: AssetDetail = { ...asset, linkedDeviceId: 'dev-not-in-list' };
+    render(<AssetDetailModal open asset={orphanAsset} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Link asset' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Asset linked. It is now marked approved.')
+      ).toBeInTheDocument();
+    });
+  });
+
   it('surfaces an error and shows no success message when the link request fails', async () => {
     render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
 

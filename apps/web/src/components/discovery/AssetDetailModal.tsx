@@ -77,6 +77,7 @@ export default function AssetDetailModal({
   const handleLink = async () => {
     if (!asset) return;
     if (!selectedDevice) {
+      setLinkSuccess(undefined);
       setLinkError('Select a device to link.');
       return;
     }
