@@ -244,16 +244,24 @@ function getTabFromHash(): DiscoveryTab {
 }
 
 export default function DiscoveryPage() {
-  const { currentOrgId, currentSiteId, sites } = useOrgStore();
-  // "All orgs" mode: a partner/multi-org user with no specific org selected via
-  // the switcher (currentOrgId === null). Network discovery is inherently
+  const { currentOrgId, currentSiteId, sites, allOrgs } = useOrgStore();
+  // "All orgs" mode: a partner/multi-org user who has *explicitly* chosen the
+  // All-orgs scope via the switcher. Network discovery is inherently
   // org/site/agent-scoped — the API deliberately refuses an unscoped list
   // request (400 "orgId is required …") rather than fan out across orgs. So
   // instead of firing requests that 400 and surfacing a generic page error
   // (#1727), we render a "select an organization" prompt and skip the
-  // org-scoped fetches entirely, matching the Patches page UX. A single-org
-  // user always has an implicit org selected, so this is never true for them.
-  const allOrgsMode = currentOrgId === null;
+  // org-scoped fetches entirely, matching the Patches page UX. (The refusal is
+  // specifically for a partner spanning multiple orgs / system scope —
+  // resolveOrgId auto-resolves a single-org partner — but those callers are
+  // exactly the ones who can reach the All-orgs scope.)
+  //
+  // Gate on the store's explicit `allOrgs` intent flag, NOT raw
+  // `currentOrgId === null`: the store also reports a *transient* null org on a
+  // fresh session before the first org is auto-selected (orgStore.ts:35-43), and
+  // keying on the bare null would flash this prompt at single-org users on every
+  // cold load before hydration completes.
+  const allOrgsMode = allOrgs && currentOrgId === null;
 
   const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
@@ -285,9 +293,11 @@ export default function DiscoveryPage() {
     if (assetId) setTopologyAssetId(assetId);
   }, []);
 
-  // Fetch asset detail when a topology node is clicked
+  // Fetch asset detail when a topology node is clicked (or via the `?asset=`
+  // deep link above). Skip in All-Orgs mode: this asset-detail endpoint is
+  // org-scoped too, so an unscoped fetch would 400 just like the list requests.
   useEffect(() => {
-    if (!topologyAssetId) {
+    if (!topologyAssetId || allOrgsMode) {
       setTopologyAsset(null);
       return;
     }
@@ -311,7 +321,7 @@ export default function DiscoveryPage() {
         if (!cancelled) setTopologyAssetLoading(false);
       });
     return () => { cancelled = true; };
-  }, [topologyAssetId]);
+  }, [topologyAssetId, allOrgsMode]);
 
   const tabLabels: Record<DiscoveryTab, string> = {
     profiles: 'Profiles',
@@ -323,12 +333,20 @@ export default function DiscoveryPage() {
   const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
   const fetchProfiles = useCallback(async () => {
-    // In All-Orgs mode there is no org to scope the request to; the API would
-    // 400. The page renders a "select an organization" prompt instead.
+    // No concrete org → don't fire the unscoped request (it would 400). This
+    // covers two null-org cases: explicit All-Orgs scope (the page shows the
+    // prompt; clear to an empty list) and the transient pre-hydration null
+    // before the first org is auto-selected (keep the spinner up so the
+    // profiles tab doesn't flash "no profiles"). The effect re-runs once
+    // `currentOrgId` resolves.
     if (currentOrgId === null) {
-      setProfiles([]);
       setProfilesError(undefined);
-      setProfilesLoading(false);
+      if (allOrgsMode) {
+        setProfiles([]);
+        setProfilesLoading(false);
+      } else {
+        setProfilesLoading(true);
+      }
       return;
     }
     try {
@@ -345,7 +363,7 @@ export default function DiscoveryPage() {
     } finally {
       setProfilesLoading(false);
     }
-  }, [currentOrgId]);
+  }, [currentOrgId, allOrgsMode]);
 
   useEffect(() => {
     fetchProfiles();
