@@ -19,6 +19,7 @@ import {
 } from './schemas';
 import { sanitizeDate } from './helpers';
 import { upsertAgentWarranty } from '../../services/warrantySync';
+import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const inventoryRoutes = new Hono();
@@ -39,6 +40,21 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  // Capture the prior warranty-relevant identity so we can detect the
+  // empty -> populated transition after the upsert. Warranty sync at
+  // enrollment time runs before the first inventory report, so it hits the
+  // "no serial/manufacturer" early-return and skips; nothing re-fires it once
+  // hardware arrives, leaving the device with no warranty row until the next
+  // 6-hour batch sweep or a manual refresh (issue #1732).
+  const [priorHw] = await db
+    .select({
+      serialNumber: deviceHardware.serialNumber,
+      manufacturer: deviceHardware.manufacturer,
+    })
+    .from(deviceHardware)
+    .where(eq(deviceHardware.deviceId, device.id))
+    .limit(1);
+
   await db
     .insert(deviceHardware)
     .values({
@@ -54,6 +70,22 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
         updatedAt: new Date()
       }
     });
+
+  // Enqueue a warranty sync only when this report makes both the manufacturer
+  // and serial number known for the first time (empty/absent -> populated).
+  // queueWarrantySyncForDevice uses a stable jobId so duplicate enqueues are
+  // deduplicated by BullMQ, but gating on the transition avoids redundant Dell
+  // API calls on every routine hardware re-report. Fire-and-forget.
+  const wasIdentified = Boolean(priorHw?.manufacturer && priorHw?.serialNumber);
+  const nowIdentified = Boolean(data.manufacturer && data.serialNumber);
+  if (!wasIdentified && nowIdentified) {
+    queueWarrantySyncForDevice(device.id).catch((err) => {
+      console.error(
+        '[Inventory] Failed to queue warranty sync on hardware report:',
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
 
   return c.json({ success: true });
 });
