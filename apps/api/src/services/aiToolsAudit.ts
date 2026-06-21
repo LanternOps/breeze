@@ -13,7 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   resolveSiteAllowedDeviceIds,
-  resolveSiteForbiddenDeviceIds,
+  resolveSiteDevicePartition,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
 
@@ -93,14 +93,16 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       // single device id to key off, so those references are left to the org axis.
       if (auth.allowedSiteIds && auth.canAccessSite) {
         const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-        const allowedDeviceIds = orgId ? await resolveSiteAllowedDeviceIds(orgId, auth) : [];
-        // The forbidden set = org devices outside the caller's sites. We key the
-        // details narrowing off this set (rather than "any id not in allowed")
-        // so an id under `details.deviceId` that is NOT a fleet device at all —
-        // e.g. an authenticator credential id — is never mistaken for an
-        // out-of-scope device and over-excluded.
-        const forbiddenDeviceIds = orgId ? await resolveSiteForbiddenDeviceIds(orgId, auth) : [];
-        if (allowedDeviceIds !== null) {
+        // One device scan yields both partitions: `allowed` (in-scope, for the
+        // device-typed narrowing) and `forbidden` (out-of-site-scope org
+        // devices). We key the `details` narrowing off `forbidden` (rather than
+        // "any id not in allowed") so an id under `details.deviceId` that is NOT
+        // a fleet device at all — e.g. an authenticator credential id — is never
+        // mistaken for an out-of-scope device and over-excluded.
+        const partition = orgId ? await resolveSiteDevicePartition(orgId, auth) : { allowed: [], forbidden: [] };
+        if (partition !== null) {
+          const allowedDeviceIds = partition.allowed;
+          const forbiddenDeviceIds = partition.forbidden;
           // An explicit device-row lookup outside the allowed set is denied outright.
           if (
             input.resourceType === 'device' &&
@@ -111,11 +113,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           }
           // An explicit lookup of a device id known to be out-of-scope is denied
           // outright (mirrors the device-typed short-circuit above).
-          if (
-            input.resourceId &&
-            forbiddenDeviceIds &&
-            forbiddenDeviceIds.includes(input.resourceId as string)
-          ) {
+          if (input.resourceId && forbiddenDeviceIds.includes(input.resourceId as string)) {
             return JSON.stringify({ entries: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
           }
           // (1) Device-typed rows: only for in-scope devices.
@@ -132,7 +130,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           // `details.deviceId` / `details.linkedDeviceId` is a known out-of-scope
           // fleet device. Rows where the key is absent (NULL ->> result) are
           // untouched — only a positive match against the forbidden set excludes.
-          if (forbiddenDeviceIds && forbiddenDeviceIds.length > 0) {
+          if (forbiddenDeviceIds.length > 0) {
             const deviceIdRef = sql`${auditLogs.details}->>'deviceId'`;
             const linkedDeviceIdRef = sql`${auditLogs.details}->>'linkedDeviceId'`;
             conditions.push(

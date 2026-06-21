@@ -143,6 +143,18 @@ describe('query_audit_log — details.deviceId site narrowing (R3b residual)', (
     // (e) device-typed row for an out-of-scope device → must be hidden
     //     (existing R3b device-typed narrowing stays intact)
     await seedAudit(org.id, marker, 'device', outScopeDevice.id, null);
+    // (f) non-device row referencing an OUT-of-scope device via the secondary
+    //     `linkedDeviceId` key (discovery linking convention) → must be hidden
+    await seedAudit(org.id, marker, 'discovered_asset', randomUUID(), {
+      linkedDeviceId: outScopeDevice.id,
+      reason: 'forbidden-linked-ref',
+    });
+    // (g) non-device row referencing an IN-scope device via `linkedDeviceId`
+    //     → must be visible
+    await seedAudit(org.id, marker, 'discovered_asset', randomUUID(), {
+      linkedDeviceId: inScopeDevice.id,
+      reason: 'allowed-linked-ref',
+    });
 
     const handler = auditHandler();
     const auth = makeAuth(org.id, [siteAllowed.id]);
@@ -158,10 +170,50 @@ describe('query_audit_log — details.deviceId site narrowing (R3b residual)', (
     expect(reasons).toContain('allowed-ref');
     expect(reasons).toContain('org_update');
     expect(reasons).toContain('credential-revoke');
+    expect(reasons).toContain('allowed-linked-ref');
     expect(reasons).not.toContain('forbidden-ref');
+    expect(reasons).not.toContain('forbidden-linked-ref');
     // device-typed out-of-scope row excluded too
     expect((parsed.entries ?? []).some((e: any) => e.resourceType === 'device')).toBe(false);
+    // Exactly the 4 in-scope / no-ref rows survive (b, c, d, g) — no over- or
+    // under-inclusion. Marker-scoped so only this run's rows are counted.
+    expect(parsed.showing).toBe(4);
     expect(JSON.stringify(parsed)).not.toContain(outScopeDevice.id);
+  });
+
+  it('does NOT over-exclude device-referencing rows when the caller has no forbidden devices (empty forbidden set)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const onlySite = await createSite({ orgId: org.id });
+    // The single device is in the caller's only allowed site, so the forbidden
+    // set is empty and the details predicate must be SKIPPED entirely — the
+    // device-referencing row must still be returned.
+    const device = await seedDevice(org.id, onlySite.id);
+
+    const marker = `r3b-empty-forbidden-${randomUUID()}`;
+    await seedAudit(org.id, marker, 'remote_session', randomUUID(), {
+      deviceId: device.id,
+      reason: 'in-scope-ref',
+    });
+    await seedAudit(org.id, marker, 'remote_session', randomUUID(), {
+      linkedDeviceId: device.id,
+      reason: 'in-scope-linked-ref',
+    });
+
+    const handler = auditHandler();
+    const auth = makeAuth(org.id, [onlySite.id]); // restricted, but all devices in-scope
+
+    const raw = await withDbAccessContext(
+      { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id] },
+      async () => handler({ action: marker, hoursBack: 168, limit: 100 }, auth),
+    );
+    const parsed = JSON.parse(raw);
+    const reasons = (parsed.entries ?? []).map((e: any) => e.details?.reason);
+
+    expect(parsed.error).toBeUndefined();
+    expect(reasons).toContain('in-scope-ref');
+    expect(reasons).toContain('in-scope-linked-ref');
+    expect(parsed.showing).toBe(2);
   });
 
   it('unrestricted caller sees every row including out-of-scope device references (no-op)', async () => {
