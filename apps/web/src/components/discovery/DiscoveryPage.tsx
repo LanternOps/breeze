@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, useEffect } from 'react';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Building2 } from 'lucide-react';
 import DiscoveryProfileList, { type DiscoveryProfile, type DiscoveryProfileStatus } from './DiscoveryProfileList';
 import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings, type ProfileAlertSettings, defaultAlertSettings } from './DiscoveryProfileForm';
 import DiscoveryJobList from './DiscoveryJobList';
@@ -244,6 +244,17 @@ function getTabFromHash(): DiscoveryTab {
 }
 
 export default function DiscoveryPage() {
+  const { currentOrgId, currentSiteId, sites } = useOrgStore();
+  // "All orgs" mode: a partner/multi-org user with no specific org selected via
+  // the switcher (currentOrgId === null). Network discovery is inherently
+  // org/site/agent-scoped — the API deliberately refuses an unscoped list
+  // request (400 "orgId is required …") rather than fan out across orgs. So
+  // instead of firing requests that 400 and surfacing a generic page error
+  // (#1727), we render a "select an organization" prompt and skip the
+  // org-scoped fetches entirely, matching the Patches page UX. A single-org
+  // user always has an implicit org selected, so this is never true for them.
+  const allOrgsMode = currentOrgId === null;
+
   const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
   // Sync tab from the hash after hydration + listen for hash changes.
@@ -312,6 +323,14 @@ export default function DiscoveryPage() {
   const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
   const fetchProfiles = useCallback(async () => {
+    // In All-Orgs mode there is no org to scope the request to; the API would
+    // 400. The page renders a "select an organization" prompt instead.
+    if (currentOrgId === null) {
+      setProfiles([]);
+      setProfilesError(undefined);
+      setProfilesLoading(false);
+      return;
+    }
     try {
       setProfilesLoading(true);
       setProfilesError(undefined);
@@ -326,7 +345,7 @@ export default function DiscoveryPage() {
     } finally {
       setProfilesLoading(false);
     }
-  }, []);
+  }, [currentOrgId]);
 
   useEffect(() => {
     fetchProfiles();
@@ -342,7 +361,6 @@ export default function DiscoveryPage() {
     return map;
   }, [profiles]);
 
-  const { currentOrgId, currentSiteId, sites } = useOrgStore();
   const siteOptions = useMemo(() => sites.map(s => ({ id: s.id, name: s.name })), [sites]);
 
   const formInitialValues = useMemo<DiscoveryProfileFormValues | undefined>(() => {
@@ -577,7 +595,7 @@ export default function DiscoveryPage() {
             Configure discovery profiles, monitor scans, and manage network assets.
           </p>
         </div>
-        {activeTab === 'profiles' && (
+        {activeTab === 'profiles' && !allOrgsMode && (
           <button
             type="button"
             className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
@@ -593,6 +611,18 @@ export default function DiscoveryPage() {
         )}
       </div>
 
+      {allOrgsMode ? (
+        <div className="flex flex-col items-center justify-center rounded-lg border bg-card p-12 text-center shadow-sm">
+          <Building2 className="h-10 w-10 text-muted-foreground" />
+          <h2 className="mt-4 text-lg font-semibold">Select an organization to view network discovery</h2>
+          <p className="mt-2 max-w-md text-sm text-muted-foreground">
+            Network discovery is scoped to a single organization, site, and agent.
+            Choose an organization in the scope switcher to view its discovered
+            assets, profiles, scan jobs, and topology.
+          </p>
+        </div>
+      ) : (
+        <>
       <div className="flex flex-wrap gap-2">
         {tabButtons.map(tab => (
           <button
@@ -658,6 +688,8 @@ export default function DiscoveryPage() {
           currentSiteId={currentSiteId}
           siteOptions={siteOptions}
         />
+      )}
+        </>
       )}
 
       {isProfileModalOpen && (

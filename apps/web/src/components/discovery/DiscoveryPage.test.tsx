@@ -10,12 +10,14 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
 
+const orgStoreState: { currentOrgId: string | null; currentSiteId: string | null; sites: unknown[] } = {
+  currentOrgId: 'org-1',
+  currentSiteId: 'site-1',
+  sites: []
+};
+
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: () => ({
-    currentOrgId: 'org-1',
-    currentSiteId: 'site-1',
-    sites: []
-  })
+  useOrgStore: () => orgStoreState
 }));
 
 vi.mock('../../lib/navigation', () => ({
@@ -85,6 +87,9 @@ function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('DiscoveryPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.currentSiteId = 'site-1';
+    orgStoreState.sites = [];
     window.history.pushState({}, '', '/discovery#profiles');
   });
 
@@ -227,5 +232,46 @@ describe('DiscoveryPage', () => {
 
     // Spinner still cleared on the early-return path (finally ran).
     expect(await screen.findByLabelText('Run HQ sweep')).not.toBeDisabled();
+  });
+
+  describe('All-Orgs mode (currentOrgId === null)', () => {
+    beforeEach(() => {
+      orgStoreState.currentOrgId = null;
+      orgStoreState.currentSiteId = null;
+    });
+
+    it('renders the select-an-organization prompt and does not fire org-scoped requests', async () => {
+      window.history.pushState({}, '', '/discovery#assets');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      // Prompt is shown instead of an error state.
+      expect(
+        await screen.findByText('Select an organization to view network discovery')
+      ).toBeInTheDocument();
+
+      // No tab content is rendered (none of the org-scoped tabs mount).
+      expect(screen.queryByText('Assets tab')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Topology' })).not.toBeInTheDocument();
+
+      // Crucially, the page never fires the requests that would 400.
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/profiles');
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith(
+        '/discovery/profiles',
+        expect.anything()
+      );
+      expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    });
+
+    it('hides the New Profile action while in All-Orgs mode', async () => {
+      window.history.pushState({}, '', '/discovery#profiles');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      await screen.findByText('Select an organization to view network discovery');
+      expect(screen.queryByRole('button', { name: /New Profile/ })).not.toBeInTheDocument();
+    });
   });
 });
