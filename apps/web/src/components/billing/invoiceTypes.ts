@@ -29,10 +29,11 @@ export function sellerLines(a: SellerSnapshot['address'] | null | undefined): st
   return [a.line1, a.line2, cityLine, a.country].filter((s): s is string => !!s && s.trim().length > 0);
 }
 
-export type InvoiceStatus =
-  | 'draft' | 'sent' | 'partially_paid' | 'overdue' | 'paid' | 'void';
-
-export type PaymentMethod = 'cash' | 'check' | 'bank_transfer' | 'card' | 'other';
+// Invoice-domain enums come from the single source of truth in @breeze/shared
+// (packages/shared/src/types/billing-enums.ts). Imported for the Record maps
+// below and re-exported so existing './invoiceTypes' consumers are unaffected.
+import type { InvoiceStatus, PaymentMethod } from '@breeze/shared';
+export type { InvoiceStatus, PaymentMethod };
 
 export interface InvoiceSummary {
   id: string;
