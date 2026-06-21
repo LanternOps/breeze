@@ -17,8 +17,8 @@
  *   - Route-level partner-scope + cross-partner denial (Task 14):
  *       org-scope POST /update-rings → 403 (requireScope gate)
  *       partner-scope POST /update-rings → 201, GET lists own rings only
- *       partner B GET /update-rings/:id owned by partner A → 403
- *       approve patch with ringId from another partner → 403
+ *       partner B GET /update-rings/:id owned by partner A → 404 (RLS hides ring; no existence oracle)
+ *       approve patch with ringId from another partner → 404 (RLS hides ring; no existence oracle)
  *       partner-wide approval (ringId omitted) upserts (partner_id, patch_id,
  *         ring_id NULL) row visible only to that partner
  *
@@ -220,20 +220,31 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
   });
 
   // Case 3: partner B cannot GET partner A's ring
-  runDb('partner B GET /update-rings/:id owned by partner A → 403', async () => {
-    const { partnerA, partnerB, ringA } = await seed();
-
-    // Mint non-mfa partner B token (GET doesn't require MFA).
+  // RLS hides the ring under partner B's context → 0 rows → 404.
+  // No 403 existence-oracle leak: the route never sees the row.
+  runDb('partner B GET /update-rings/:id owned by partner A → 404 (RLS hides ring)', async () => {
+    const envA = await setupTestEnvironment({ scope: 'partner' });
     const envB = await setupTestEnvironment({ scope: 'partner' });
-    // We need envB to represent partnerB from seed(), but setupTestEnvironment
-    // creates its own partner. Instead we mint a token for an ad-hoc partnerB
-    // user — use createPartner + createAccessToken pattern from sibling tests.
+
+    // Seed a ring belonging to partner A via superuser pool (bypasses RLS).
+    const [ringA] = await getTestDb()
+      .insert(patchPolicies)
+      .values({
+        partnerId: envA.partner.id,
+        kind: 'ring',
+        name: `case3-ring-${Date.now()}`,
+      })
+      .returning();
+    if (!ringA) throw new Error('failed to seed ringA for Case 3');
+
+    // Mint a non-mfa token for the real envB user (GET doesn't require MFA).
+    // authMiddleware looks up users by sub; a real DB row is required to avoid 401.
     const tokenB = await createAccessToken({
-      sub: randomUUID(),        // no real user needed for this assertion
-      email: 'b@test.example',
+      sub: envB.user.id,
+      email: envB.user.email,
       roleId: envB.role.id,
       orgId: null,
-      partnerId: partnerB.id,
+      partnerId: envB.partner.id,
       scope: 'partner',
       mfa: false,
     });
@@ -242,12 +253,16 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
     const res = await app.request(`/update-rings/${ringA.id}`, {
       headers: { Authorization: `Bearer ${tokenB}` },
     });
-    // Route reads ring (found via system-pool), then checks auth.partnerId ≠ ring.partnerId → 403.
-    expect(res.status).toBe(403);
+    // RLS returns 0 rows for a cross-partner ring → route responds 404.
+    // This is security-correct: no existence-oracle leak (a 403 would confirm the ring exists).
+    expect(res.status).toBe(404);
   });
 
-  // Case 4: approve patch with ringId from another partner → 403
-  runDb('approve patch with ringId from another partner → 403', async () => {
+  // Case 4: approve patch with ringId from another partner → 404 (RLS hides ring)
+  // resolvePatchApprovalPartnerIdForRing looks up the ring under partner B's RLS
+  // context → 0 rows → { error: 'Update ring not found', status: 404 }.
+  // No 403 existence-oracle leak.
+  runDb('approve patch with ringId from another partner → 404 (RLS hides ring)', async () => {
     const envA = await setupTestEnvironment({ scope: 'partner' });
     const envB = await setupTestEnvironment({ scope: 'partner' });
 
@@ -282,8 +297,10 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       headers: { Authorization: `Bearer ${mfaTokenB}`, ...JSON_HEADERS },
       body: JSON.stringify({ ringId: ringA.id }),
     });
-    // resolvePatchApprovalPartnerIdForRing: ring found, auth.partnerId ≠ ring.partnerId → 403.
-    expect(res.status).toBe(403);
+    // resolvePatchApprovalPartnerIdForRing looks up the ring under partner B's RLS context
+    // → 0 rows → { error: 'Update ring not found', status: 404 }.
+    // This is security-correct: no existence-oracle leak (a 403 would confirm the ring exists).
+    expect(res.status).toBe(404);
   });
 
   // Case 5: partner-wide approval (ringId omitted) upserts (partner_id, patch_id, ring_id NULL)
