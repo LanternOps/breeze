@@ -3,6 +3,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
+import { useOrgStore } from '../../../stores/orgStore';
 import { quotePdfUrl, sendQuote } from '../../../lib/api/quotes';
 import {
   type QuoteDetail as QuoteDetailData,
@@ -28,6 +29,7 @@ interface Props {
 
 export default function QuoteDetail({ detail, onChanged }: Props) {
   const { can } = usePermissions();
+  const organizations = useOrgStore((s) => s.organizations);
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
 
@@ -96,7 +98,17 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
 
-  const orgName = quote.billToName ?? quote.orgId.slice(0, 8);
+  // Customer label: prefer the explicit bill-to name; otherwise resolve the real
+  // organization name from the client-side org list (same source the org switcher
+  // renders). Fall back to the UUID prefix only when neither is available (e.g.
+  // the quote's org isn't in the currently-loaded list, such as All-orgs scope).
+  const orgName = useMemo(
+    () =>
+      quote.billToName ??
+      organizations.find((o) => o.id === quote.orgId)?.name ??
+      quote.orgId.slice(0, 8),
+    [quote.billToName, quote.orgId, organizations],
+  );
 
   return (
     <div className="space-y-6" data-testid="quote-detail">
@@ -138,7 +150,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
               )}
             </div>
             <dl className="space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Customer</dt><dd className="text-right">{orgName}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">Customer</dt><dd className="text-right" data-testid="quote-detail-customer">{orgName}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Issued</dt><dd>{formatDate(quote.issueDate)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Created</dt><dd>{formatDate(quote.createdAt)}</dd></div>
             </dl>
