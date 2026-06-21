@@ -50,14 +50,17 @@ const container = (root: HTMLElement) => root.querySelector('.overflow-y-auto') 
 
 describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
   let rafCallbacks: FrameRequestCallback[];
+  let cancelSpy: ReturnType<typeof vi.fn<(id: number) => void>>;
 
   beforeEach(() => {
     rafCallbacks = [];
+    cancelSpy = vi.fn<(id: number) => void>();
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
       rafCallbacks.push(cb);
       return rafCallbacks.length;
     });
     vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      cancelSpy(id);
       rafCallbacks[id - 1] = () => {};
     });
   });
@@ -136,5 +139,77 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     flushRaf();
 
     expect(el.scrollTop).toBe(1200);
+  });
+
+  // The core of the #1713 fix: a burst of streaming re-renders must coalesce into
+  // ONE post-paint scroll, cancelling the prior frame each time. Without the
+  // cancellation block, the original interrupted-animation jank returns — yet the
+  // single-rerender tests above would still pass. This locks in the mechanism.
+  it('coalesces a burst of re-renders into a single scroll (cancels the prior frame)', () => {
+    const msg = (n: number) => ({ id: `m${n}`, role: 'assistant' as const, content: `delta ${n}`, isStreaming: true });
+    const { rerender } = renderWithMessages([{ id: '1', role: 'user', content: 'hi' }]);
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 700 });
+
+    // Three rapid streaming re-renders before any frame fires. (The initial
+    // mount also scheduled a frame.)
+    rerender(<AiChatMessages {...baseProps} messages={[{ id: '1', role: 'user', content: 'hi' }, msg(1)] as never} />);
+    rerender(<AiChatMessages {...baseProps} messages={[{ id: '1', role: 'user', content: 'hi' }, msg(2)] as never} />);
+    rerender(<AiChatMessages {...baseProps} messages={[{ id: '1', role: 'user', content: 'hi' }, msg(3)] as never} />);
+
+    // Each re-render runs the prior effect's cleanup, which cancels the still-
+    // pending frame before the new effect schedules the next one. Across the
+    // mount + 3 rerenders that is 3 cancellations, leaving exactly one live
+    // frame — the coalescing contract. Delete the cancellation block and this
+    // drops to 0, while the single-rerender tests above still pass.
+    expect(cancelSpy).toHaveBeenCalledTimes(3);
+
+    flushRaf();
+    expect(el.scrollTop).toBe(1000);
+  });
+
+  it('auto-scrolls when a pending-approval card appears (not just on messages change)', () => {
+    const messages = [{ id: '1', role: 'user', content: 'run it' }];
+    const { rerender } = render(<AiChatMessages {...baseProps} messages={messages as never} />);
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 700 });
+
+    // messages unchanged; only the pendingApproval prop flips on.
+    rerender(
+      <AiChatMessages
+        {...baseProps}
+        messages={messages as never}
+        pendingApproval={{
+          executionId: 'e1', toolName: 'run_script', input: {}, description: 'Run a script',
+        }}
+      />,
+    );
+    flushRaf();
+
+    expect(el.scrollTop).toBe(1000);
+  });
+
+  it('cancels the pending frame on unmount so it never scrolls a torn-down container', () => {
+    const { rerender, unmount } = renderWithMessages([{ id: '1', role: 'user', content: 'hi' }]);
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 700 });
+
+    rerender(
+      <AiChatMessages
+        {...baseProps}
+        messages={[
+          { id: '1', role: 'user', content: 'hi' },
+          { id: '2', role: 'assistant', content: 'streaming…', isStreaming: true },
+        ] as never}
+      />,
+    );
+
+    unmount();
+    expect(cancelSpy).toHaveBeenCalled();
+
+    // Flushing any surviving callback must not write to the detached container.
+    el.scrollTop = 700;
+    flushRaf();
+    expect(el.scrollTop).toBe(700);
   });
 });

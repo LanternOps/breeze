@@ -77,7 +77,7 @@ export default function AiChatMessages({
   // off when the user deliberately scrolls up to read history.
   const pinnedToBottomRef = useRef(true);
   // Holds the pending rAF id so a burst of streaming re-renders coalesces into a
-  // single post-paint scroll instead of fighting each other mid-animation.
+  // single post-paint scroll instead of issuing a redundant scroll per delta.
   const scrollFrameRef = useRef<number | null>(null);
 
   // #1713: keep the conversation anchored to the bottom on submit + streaming.
@@ -89,6 +89,9 @@ export default function AiChatMessages({
   // don't yank someone reading history; (2) defer to after paint via rAF so the
   // scroll resolves against the final DOM; (3) set scrollTop directly (instant)
   // rather than re-issuing interruptible smooth animations.
+  // Re-runs on any state that changes panel height — the messages array plus the
+  // pending-approval / pending-plan / active-plan cards — so the anchor tracks
+  // every content growth, not just streamed text.
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container || !pinnedToBottomRef.current) return;
