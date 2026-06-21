@@ -1243,10 +1243,25 @@ describe('POST /agents/:id/heartbeat — virtualization attribute (#1387)', () =
 
   it('leaves stored virtualization untouched when an old agent omits the field', async () => {
     const setSpy = arrange({ isVirtual: true, virtualizationPlatform: 'vmware' });
-    await beat({}); // no isVirtual in payload
+    await beat({}); // no isVirtual in payload (also covers the agent's not-yet-classified startup window, where IsVirtual is nil)
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg.isVirtual).toBeUndefined();
     expect(updateArg.virtualizationPlatform).toBeUndefined();
+  });
+
+  it('persists virtualization independently of deviceRoleSource (admin-pinned role still updates the axis)', async () => {
+    // A VDI box with an operator-pinned role (deviceRoleSource='manual') must
+    // still have its orthogonal virtualization axis updated — the two are
+    // independent. Guards against a future refactor folding both under the
+    // deviceRole 'auto' gate.
+    const setSpy = arrange({ deviceRoleSource: 'manual', deviceRole: 'server' });
+    await beat({ deviceRole: 'workstation', isVirtual: true, virtualizationPlatform: 'vmware' });
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    // Role NOT updated (source is manual)...
+    expect(updateArg.deviceRole).toBeUndefined();
+    // ...but virtualization IS.
+    expect(updateArg.isVirtual).toBe(true);
+    expect(updateArg.virtualizationPlatform).toBe('vmware');
   });
 
   // NOTE: schema-level coercion (e.g. an unrecognized platform string being

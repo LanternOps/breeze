@@ -161,6 +161,15 @@ func TestClassifyVirtualization(t *testing.T) {
 			wantPlatform: "vmware",
 		},
 		{
+			// Marker precedence: a QEMU/KVM guest can carry BOTH "qemu" and
+			// "kvm" tokens; qemu is listed before kvm, so first-match-wins must
+			// resolve to qemu (the more specific identifier).
+			name:         "qemu wins over kvm when both tokens present (precedence)",
+			hw:           &HardwareInfo{Manufacturer: "QEMU", Model: "KVM"},
+			wantVirtual:  true,
+			wantPlatform: "qemu",
+		},
+		{
 			name:         "nil hardware is not virtual",
 			hw:           nil,
 			wantVirtual:  false,

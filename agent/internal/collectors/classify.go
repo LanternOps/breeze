@@ -106,9 +106,12 @@ var virtualizationMarkers = []virtualizationMarker{
 	// Bochs (rare, used by some cloud/emulation stacks).
 	{platform: "bochs", needles: []string{"bochs"}},
 	// Hyper-V: Manufacturer "Microsoft Corporation" + Model "Virtual Machine".
-	// Microsoft is ALSO the manufacturer of physical Surface hardware, so this
-	// marker is the model string ("virtual machine"), never the manufacturer
-	// alone — handled specially below so a physical Surface is not flagged.
+	// Microsoft is ALSO the manufacturer of physical Surface hardware, so the
+	// needle is the MODEL substring "virtual machine", never the manufacturer
+	// string "microsoft". That narrow needle is the whole mechanism — there is
+	// no special-case branch — so a physical Surface (Manufacturer "Microsoft
+	// Corporation", Model "Surface Laptop 5") simply doesn't match. (Covered by
+	// the Surface test case in classify_test.go.)
 	{platform: "hyperv", needles: []string{"virtual machine"}},
 }
 

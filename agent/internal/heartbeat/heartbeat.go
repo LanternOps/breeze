@@ -233,8 +233,22 @@ type Heartbeat struct {
 	// Cached virtualization classification (issue #1387) — the orthogonal
 	// "is this a VM and on what hypervisor" attribute. Computed in the same
 	// hardware-collection pass as cachedDeviceRole and guarded by h.mu.
+	//
+	// cachedVirtComputed gates the heartbeat send: virtualization is derivable
+	// ONLY from full hardware collection (CollectHardware), which runs in a
+	// background goroutine that can take ~75s on Windows and may fail. Until it
+	// succeeds, cachedIsVirtual is its zero value (false) — an affirmative
+	// "physical" claim we have NOT actually established. Sending that false
+	// would overwrite the correct is_virtual/platform that synchronous
+	// enrollment already persisted for a real VM (the server treats a present
+	// false as authoritative and clears the platform). So we send the
+	// virtualization fields only once cachedVirtComputed is true; before that
+	// the heartbeat omits them (nil) and the server leaves the stored value
+	// untouched — same "don't touch" semantics as an old agent that lacks the
+	// field entirely.
 	cachedIsVirtual    bool
 	cachedVirtPlatform string
+	cachedVirtComputed bool
 
 	// Cached system info (hostname, OS version) — refreshed every 10 min
 	cachedSysInfo      *collectors.SystemInfo
@@ -368,7 +382,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			defer observability.Recoverer("heartbeat.hardwareCollect")
 			hwInfo, err := h.hardwareCol.CollectHardware()
 			if err != nil {
-				log.Warn("hardware collection failed in background; device role will use system-info-only classification", "error", err.Error())
+				log.Warn("hardware collection failed in background; device role will use system-info-only classification and virtualization detection (#1387) is unavailable — heartbeat will omit is_virtual so the enroll-time value is preserved", "error", err.Error())
 				return
 			}
 			virt := collectors.ClassifyVirtualization(hwInfo)
@@ -376,6 +390,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, hwInfo)
 			h.cachedIsVirtual = virt.IsVirtual
 			h.cachedVirtPlatform = virt.Platform
+			h.cachedVirtComputed = true
 			h.mu.Unlock()
 		}(sysInfo)
 	} else {
@@ -2198,17 +2213,26 @@ func (h *Heartbeat) sendHeartbeat() {
 	deviceRole := h.cachedDeviceRole
 	isVirtual := h.cachedIsVirtual
 	virtPlatform := h.cachedVirtPlatform
+	virtComputed := h.cachedVirtComputed
 	h.mu.Unlock()
 
 	payload := HeartbeatPayload{
-		Status:                 status,
-		AgentVersion:           h.agentVersion,
-		HelperVersion:          h.helperMgr.InstalledVersion(),
-		HealthStatus:           h.healthMon.Summary(),
-		DeviceRole:             deviceRole,
-		IsVirtual:              &isVirtual,
-		VirtualizationPlatform: virtPlatform,
-		IsHeadless:             h.isHeadless,
+		Status:        status,
+		AgentVersion:  h.agentVersion,
+		HelperVersion: h.helperMgr.InstalledVersion(),
+		HealthStatus:  h.healthMon.Summary(),
+		DeviceRole:    deviceRole,
+		IsHeadless:    h.isHeadless,
+	}
+
+	// Only report virtualization once background hardware collection has
+	// actually classified it (#1387). Before then — or if hardware collection
+	// failed — leave IsVirtual nil so the field is omitted and the server keeps
+	// the value synchronous enrollment already established, rather than letting
+	// a not-yet-determined zero value flip a real VM to "physical".
+	if virtComputed {
+		payload.IsVirtual = &isVirtual
+		payload.VirtualizationPlatform = virtPlatform
 	}
 
 	// Include hostname/OS version so the server can detect changes
