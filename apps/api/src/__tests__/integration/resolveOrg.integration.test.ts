@@ -76,6 +76,25 @@ describe('resolveOrgBySenderDomain', () => {
     const r = await withSystemDbAccessContext(() => resolveOrgBySenderDomain('garbage', p.id));
     expect(r).toBeNull();
   });
+
+  it('scopes by partner_id — the same domain under partner B is invisible to partner A', async () => {
+    // Runs in SYSTEM scope (RLS bypassed for the worker), so the partner_id
+    // predicate in the query is the ONLY tenant boundary. Prove it: map the same
+    // domain under two partners and confirm A resolves to A's org, not B's.
+    const a = await seedPartnerOrg();
+    const b = await seedPartnerOrg();
+    const domain = `shared-${uniqueSuffix()}.test`;
+    await withSystemDbAccessContext(async () => {
+      await db.insert(customerEmailDomains).values({ partnerId: a.p.id, orgId: a.org.id, domain });
+      await db.insert(customerEmailDomains).values({ partnerId: b.p.id, orgId: b.org.id, domain });
+    });
+
+    const ra = await withSystemDbAccessContext(() => resolveOrgBySenderDomain(`x@${domain}`, a.p.id));
+    const rb = await withSystemDbAccessContext(() => resolveOrgBySenderDomain(`x@${domain}`, b.p.id));
+    expect(ra?.orgId).toBe(a.org.id);
+    expect(rb?.orgId).toBe(b.org.id);
+    expect(ra?.orgId).not.toBe(b.org.id);
+  });
 });
 
 describe('findOrCreateEmailContact', () => {

@@ -838,7 +838,9 @@ export async function createCustomerEmailDomain(
       .returning();
     return row!;
   } catch (err) {
-    if (isPgUniqueViolation(err)) {
+    // Pin the constraint name (matches the isUniqueNameViolation pattern above):
+    // a future second unique index must not be mislabeled as a domain collision.
+    if (isPgUniqueViolation(err, 'customer_email_domains_partner_domain_uq')) {
       throw new TicketConfigServiceError('That domain is already mapped', 409, 'DOMAIN_ALREADY_MAPPED');
     }
     throw err;

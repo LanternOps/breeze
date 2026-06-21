@@ -243,7 +243,7 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
     // (8) Nothing matched -> quarantine for manual review.
     await logInbound(n, partnerId, 'quarantined', null);
   } catch (err) {
-    // (7) Any guard/error -> failed, logged under the RESOLVED partner (or null if
+    // (9) Any guard/error -> failed, logged under the RESOLVED partner (or null if
     // resolution failed). Never a cross-tenant write.
     //
     // The outer work transaction is now poisoned (25P02): we CANNOT log on it. Record

@@ -831,4 +831,22 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     expect(createTicketMock).not.toHaveBeenCalled();
     expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
   });
+
+  it('a known portal user WINS over a domain mapping (precedence #5 before #6)', async () => {
+    // Both signals match: the sender is a known portal user in org o-known AND
+    // their domain maps to a different org o-domain. The portal-user branch is
+    // most-specific and must win — the domain resolver must not even be consulted.
+    state.selectRows['portal_users'] = [{ id: 'pu-known', orgId: 'o-known' }];
+    state.selectRows['organizations'] = [{ id: 'o-known' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-domain', autoCreateContact: true });
+    createTicketMock.mockResolvedValue({ id: 't-k', internalNumber: 'T-2026-0101' });
+
+    await processInboundEmail(email());
+
+    expect(resolveOrgMock).not.toHaveBeenCalled();
+    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.orgId).toBe('o-known');
+    expect(input.submittedBy).toBe('pu-known');
+  });
 });

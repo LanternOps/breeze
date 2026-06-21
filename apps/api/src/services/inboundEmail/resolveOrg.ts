@@ -14,6 +14,11 @@ function domainOf(address: string): string | null {
 /**
  * Resolve a sender's email domain to a mapped customer org (Phase 5).
  * Read-only; caller is in system context (the inbound worker).
+ *
+ * Matches the EXACT sender domain only — `bob@mail.acme.com` does NOT match an
+ * `acme.com` mapping (it falls through to triage/quarantine). This is deliberate:
+ * a suffix match would route arbitrary subdomains the MSP never vetted into the org.
+ * Do not "fix" this into an endsWith() match.
  */
 export async function resolveOrgBySenderDomain(
   fromAddress: string,
@@ -40,6 +45,14 @@ export async function resolveOrgBySenderDomain(
  * contact for attribution + future thread matching. A null passwordHash is
  * inherently non-login (mirrors the Entra path's password-less rows); this is
  * NOT an auth-capable account. Returns the portal user id.
+ *
+ * SELECT-then-INSERT is not atomic and `portal_users` has no (org_id, email)
+ * unique index (the login path already tolerates duplicates — see
+ * portal/auth.ts). The inbound worker processes one message per transaction, so
+ * the only way to double-insert is two distinct first-time emails from the SAME
+ * new sender arriving concurrently — rare, and the dup is benign (both rows point
+ * at the same org; attribution binds to one). A real fix is a partial unique index
+ * on portal_users, which is a broader, auth-table change tracked separately.
  */
 export async function findOrCreateEmailContact(
   orgId: string,

@@ -13,9 +13,13 @@ CREATE TABLE IF NOT EXISTS customer_email_domains (
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Org must belong to the partner (DB-enforced; mirrors ticket_categories composite FK).
--- Relies on UNIQUE(id, partner_id) on organizations (already used by ticket_categories
--- and users). Add it if a fresh DB somehow lacks it (idempotent, by-columns check).
+-- Org must belong to the partner (DB-enforced, dual-axis pattern).
+-- Relies on a UNIQUE(id, partner_id) constraint on organizations — the same one the
+-- `users` composite FK uses (2026-04-11-users-rls.sql). (ticket_categories' composite
+-- FK references ticket_categories(id, partner_id), NOT organizations, so it is not a
+-- precedent here.) Add it if a fresh DB somehow lacks it. The by-columns existence
+-- check means the pre-existing constraint's name is irrelevant; the ADD only runs on
+-- the rare fresh-DB fallback path, under its own name.
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
