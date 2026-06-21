@@ -10,6 +10,14 @@ const DEVICE_ROLES = [
   'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
 ] as const;
 
+// Orthogonal virtualization attribute (issue #1387). Kept in sync with the
+// agent's classify.go virtualizationMarkers and shared VIRTUALIZATION_PLATFORMS.
+// A value outside this set is dropped (heartbeat) / rejected (enroll) rather
+// than persisted, so an unrecognized platform never lands in the column.
+const VIRTUALIZATION_PLATFORMS = [
+  'vmware', 'hyperv', 'virtualbox', 'qemu', 'kvm', 'xen', 'bochs', 'parallels'
+] as const;
+
 const desktopAccessReasonSchema = z.enum([
   'missing_permission',
   'missing_entitlement',
@@ -28,6 +36,8 @@ export const enrollSchema = z.object({
   architecture: z.string().min(1),
   agentVersion: z.string().min(1),
   deviceRole: z.enum(DEVICE_ROLES).optional(),
+  isVirtual: z.boolean().optional(),
+  virtualizationPlatform: z.enum(VIRTUALIZATION_PLATFORMS).optional(),
   hardwareInfo: z.object({
     cpuModel: z.string().optional(),
     cpuCores: z.number().int().optional(),
@@ -149,6 +159,8 @@ export const heartbeatSchema = z.object({
   lastUser: z.string().max(255).optional().catch(undefined),
   uptime: z.number().int().min(0).optional().catch(undefined),
   deviceRole: z.enum(DEVICE_ROLES).optional().catch(undefined),
+  isVirtual: z.boolean().optional().catch(undefined),
+  virtualizationPlatform: z.enum(VIRTUALIZATION_PLATFORMS).optional().catch(undefined),
   hostname: z.string().min(1).max(255).optional().catch(undefined),
   osVersion: z.string().min(1).max(255).optional().catch(undefined),
   osBuild: z.string().max(255).optional().catch(undefined),

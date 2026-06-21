@@ -69,7 +69,13 @@ type HeartbeatPayload struct {
 	LastUser         string                    `json:"lastUser,omitempty"`
 	UptimeSeconds    int64                     `json:"uptime,omitempty"`
 	DeviceRole       string                    `json:"deviceRole,omitempty"`
-	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
+	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
+	// pointer so an old-agent omission (nil) is distinguishable from a
+	// genuine "physical" report (false) — the server only overwrites the
+	// stored value when the agent actually sends one.
+	IsVirtual              *bool          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
 	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
@@ -224,6 +230,12 @@ type Heartbeat struct {
 	// Cached device role classification (computed once at startup)
 	cachedDeviceRole string
 
+	// Cached virtualization classification (issue #1387) — the orthogonal
+	// "is this a VM and on what hypervisor" attribute. Computed in the same
+	// hardware-collection pass as cachedDeviceRole and guarded by h.mu.
+	cachedIsVirtual    bool
+	cachedVirtPlatform string
+
 	// Cached system info (hostname, OS version) — refreshed every 10 min
 	cachedSysInfo      *collectors.SystemInfo
 	lastSysInfoRefresh time.Time
@@ -359,8 +371,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 				log.Warn("hardware collection failed in background; device role will use system-info-only classification", "error", err.Error())
 				return
 			}
+			virt := collectors.ClassifyVirtualization(hwInfo)
 			h.mu.Lock()
 			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, hwInfo)
+			h.cachedIsVirtual = virt.IsVirtual
+			h.cachedVirtPlatform = virt.Platform
 			h.mu.Unlock()
 		}(sysInfo)
 	} else {
@@ -2181,15 +2196,19 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 	sysInfo := h.cachedSysInfo
 	deviceRole := h.cachedDeviceRole
+	isVirtual := h.cachedIsVirtual
+	virtPlatform := h.cachedVirtPlatform
 	h.mu.Unlock()
 
 	payload := HeartbeatPayload{
-		Status:        status,
-		AgentVersion:  h.agentVersion,
-		HelperVersion: h.helperMgr.InstalledVersion(),
-		HealthStatus:  h.healthMon.Summary(),
-		DeviceRole:    deviceRole,
-		IsHeadless:    h.isHeadless,
+		Status:                 status,
+		AgentVersion:           h.agentVersion,
+		HelperVersion:          h.helperMgr.InstalledVersion(),
+		HealthStatus:           h.healthMon.Summary(),
+		DeviceRole:             deviceRole,
+		IsVirtual:              &isVirtual,
+		VirtualizationPlatform: virtPlatform,
+		IsHeadless:             h.isHeadless,
 	}
 
 	// Include hostname/OS version so the server can detect changes

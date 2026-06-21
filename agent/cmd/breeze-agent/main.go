@@ -975,15 +975,28 @@ func enrollDevice(enrollmentKey string) {
 		fmt.Printf("Device role: %s\n", deviceRole)
 	}
 
+	// Orthogonal virtualization attribute (issue #1387): is this a VM, and on
+	// what hypervisor. Derived from the hardware identity strings already
+	// collected above; a virtual box keeps its role-based policies.
+	virt := collectors.ClassifyVirtualization(hardwareInfo)
+	if virt.IsVirtual {
+		enrollLog.Info("detected virtualization", "platform", virt.Platform)
+		if !quietEnroll {
+			fmt.Printf("Virtualization: %s\n", virt.Platform)
+		}
+	}
+
 	enrollReq := &api.EnrollRequest{
-		EnrollmentKey:    enrollmentKey,
-		EnrollmentSecret: secret,
-		Hostname:         systemInfo.Hostname,
-		OSType:           systemInfo.OSType,
-		OSVersion:        systemInfo.OSVersion,
-		Architecture:     systemInfo.Architecture,
-		AgentVersion:     version,
-		DeviceRole:       deviceRole,
+		EnrollmentKey:          enrollmentKey,
+		EnrollmentSecret:       secret,
+		Hostname:               systemInfo.Hostname,
+		OSType:                 systemInfo.OSType,
+		OSVersion:              systemInfo.OSVersion,
+		Architecture:           systemInfo.Architecture,
+		AgentVersion:           version,
+		DeviceRole:             deviceRole,
+		IsVirtual:              virt.IsVirtual,
+		VirtualizationPlatform: virt.Platform,
 		HardwareInfo: &api.HardwareInfo{
 			CPUModel:                hardwareInfo.CPUModel,
 			CPUCores:                hardwareInfo.CPUCores,
