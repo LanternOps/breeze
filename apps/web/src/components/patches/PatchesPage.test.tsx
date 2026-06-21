@@ -257,6 +257,32 @@ describe('PatchesPage', () => {
     expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
   });
 
+  it('org scope: falls back to compliance when URL contains ?tab=rings (bookmark guard)', async () => {
+    // If an org user navigates to /patches?tab=rings (e.g. a stale bookmark or
+    // shared link from a partner), the initializer guard must redirect to compliance
+    // so rings body content (UpdateRingList / New Ring button) is never rendered.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/?tab=rings');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    // The Compliance tab nav button must be present (page fell back to compliance).
+    expect(await screen.findByRole('button', { name: /Compliance/i })).toBeInTheDocument();
+
+    // Rings-only body content must NOT be rendered.
+    expect(screen.queryByRole('button', { name: /New Ring/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
+  });
+
   it('enables New Ring when a specific org is selected and creates the ring (orgId auto-injected) with a success toast', async () => {
     orgState.currentOrgId = 'org-1';
     window.history.replaceState({}, '', '/?tab=rings');

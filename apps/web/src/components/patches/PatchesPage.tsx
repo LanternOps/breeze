@@ -64,11 +64,24 @@ export default function PatchesPage() {
   const canManageRings = scope === 'partner' || scope === 'system';
   const RING_SCOPE_HINT = 'Update rings are managed at the partner level';
 
-  const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
+  // If an org user lands with ?tab=rings (e.g. a bookmark), fall back to compliance
+  // so the rings body is never rendered without navigation access.
+  const [activeTab, setActiveTabState] = useState<TabKey>(() => {
+    const tab = getTabFromUrl();
+    return tab === 'rings' && !canManageRings ? 'compliance' : tab;
+  });
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
     setTabInUrl(tab);
   }, []);
+
+  // Guard against hash/search changes after mount that could re-introduce rings
+  // for an org-scoped user (e.g. back-navigation replaying the URL).
+  useEffect(() => {
+    if (activeTab === 'rings' && !canManageRings) {
+      setActiveTab('compliance');
+    }
+  }, [activeTab, canManageRings, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
