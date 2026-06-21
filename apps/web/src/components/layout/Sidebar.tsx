@@ -95,7 +95,8 @@ function useCurrentPath(initialPath: string): string {
 // item the user just clicked (and its neighbours) stay in view.
 //
 // Returns a ref to attach to the scrollable `<nav>`. The captured value lives in
-// a module-free closure ref so it survives the swap without touching storage.
+// a per-instance `useRef` (not module state or storage), so it survives the swap
+// without persisting anywhere.
 function useSidebarScrollPersist(): React.RefObject<HTMLElement | null> {
   const navRef = useRef<HTMLElement | null>(null);
   const savedScrollTop = useRef<number | null>(null);

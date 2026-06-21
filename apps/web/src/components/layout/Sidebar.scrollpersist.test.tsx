@@ -95,4 +95,48 @@ describe('Sidebar scroll-position persistence (#1714)', () => {
 
     await waitFor(() => expect(nav.scrollTop).toBe(0));
   });
+
+  it('re-arms the capture on every swap (multiple sequential navigations)', async () => {
+    const { container } = render(<Sidebar currentPath="/" />);
+    const nav = getNav(container);
+
+    // First navigation from a deep scroll position.
+    nav.scrollTop = 240;
+    document.dispatchEvent(new Event('astro:before-swap'));
+    nav.scrollTop = 0;
+    document.dispatchEvent(new Event('astro:after-swap'));
+    await waitFor(() => expect(nav.scrollTop).toBe(240));
+
+    // Second navigation from a *different* position — the capture must re-arm
+    // on the second before-swap rather than replaying the first value.
+    nav.scrollTop = 480;
+    document.dispatchEvent(new Event('astro:before-swap'));
+    nav.scrollTop = 0;
+    document.dispatchEvent(new Event('astro:after-swap'));
+    await waitFor(() => expect(nav.scrollTop).toBe(480));
+  });
+
+  it('removes its document listeners on unmount (no leak, no stale-node writes)', () => {
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    const { container, unmount } = render(<Sidebar currentPath="/" />);
+    const nav = getNav(container);
+
+    unmount();
+
+    // Both swap listeners must be torn down.
+    const removed = removeSpy.mock.calls.map((c) => c[0]);
+    expect(removed).toContain('astro:before-swap');
+    expect(removed).toContain('astro:after-swap');
+
+    // After unmount, a stray swap must not throw or mutate the detached node.
+    nav.scrollTop = 130;
+    expect(() => {
+      document.dispatchEvent(new Event('astro:before-swap'));
+      nav.scrollTop = 0;
+      document.dispatchEvent(new Event('astro:after-swap'));
+    }).not.toThrow();
+    expect(nav.scrollTop).toBe(0);
+
+    removeSpy.mockRestore();
+  });
 });
