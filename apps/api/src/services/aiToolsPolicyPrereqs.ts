@@ -12,7 +12,7 @@ import { patchPolicies } from '../db/schema/patches';
 import { softwarePolicies } from '../db/schema/softwarePolicies';
 import { peripheralPolicies } from '../db/schema/peripheralControl';
 import { backupConfigs } from '../db/schema/backup';
-import { eq, and, desc, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { ringAutoApproveSchema } from '@breeze/shared/validators';
@@ -49,6 +49,17 @@ function getOrgId(auth: AuthContext): string | null {
 
 function orgWhere(auth: AuthContext, orgIdCol: any): SQL | undefined {
   return auth.orgCondition(orgIdCol) ?? undefined;
+}
+
+function getPartnerId(auth: AuthContext): string | null {
+  return auth.partnerId ?? null;
+}
+
+function partnerWhere(auth: AuthContext, partnerIdCol: any): SQL | undefined {
+  if (auth.scope === 'system') return undefined; // all partners
+  if (auth.partnerId) return eq(partnerIdCol, auth.partnerId);
+  // org scope or partnerless: match nothing
+  return sql`false`;
 }
 
 function safeHandler(toolName: string, fn: Handler): Handler {
@@ -107,12 +118,17 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_update_rings', async (input, auth) => {
       const action = input.action as string;
-      const orgId = getOrgId(auth);
+
+      if (auth.scope === 'organization') {
+        return JSON.stringify({ error: 'Update rings are managed at partner scope. Switch to a partner/admin context.' });
+      }
+
+      const partnerId = getPartnerId(auth);
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, patchPolicies.orgId);
-        if (oc) conditions.push(oc);
+        const pc = partnerWhere(auth, patchPolicies.partnerId);
+        if (pc) conditions.push(pc);
         conditions.push(eq(patchPolicies.enabled, true));
         conditions.push(eq(patchPolicies.kind, 'ring'));
 
@@ -144,8 +160,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get') {
         if (!input.ringId) return JSON.stringify({ error: 'ringId is required' });
         const conditions: SQL[] = [eq(patchPolicies.id, input.ringId as string), eq(patchPolicies.kind, 'ring')];
-        const oc = orgWhere(auth, patchPolicies.orgId);
-        if (oc) conditions.push(oc);
+        const pc = partnerWhere(auth, patchPolicies.partnerId);
+        if (pc) conditions.push(pc);
 
         const [ring] = await db.select().from(patchPolicies).where(and(...conditions)).limit(1);
         if (!ring) return JSON.stringify({ error: 'Update ring not found or access denied' });
@@ -153,7 +169,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        if (!partnerId) return JSON.stringify({ error: 'Partner context required' });
         if (!input.name) return JSON.stringify({ error: 'name is required' });
 
         // Fail-closed autoApprove (#1317): reject enabled-without-severity at the
@@ -167,7 +183,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         }
 
         const rows = await db.insert(patchPolicies).values({
-          orgId,
+          partnerId,
           kind: 'ring',
           name: input.name as string,
           description: (input.description as string) ?? null,
@@ -194,8 +210,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         if (!input.ringId) return JSON.stringify({ error: 'ringId is required' });
         const conditions: SQL[] = [eq(patchPolicies.id, input.ringId as string), eq(patchPolicies.kind, 'ring')];
-        const oc = orgWhere(auth, patchPolicies.orgId);
-        if (oc) conditions.push(oc);
+        const pc = partnerWhere(auth, patchPolicies.partnerId);
+        if (pc) conditions.push(pc);
 
         const [existing] = await db.select().from(patchPolicies).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Update ring not found or access denied' });
