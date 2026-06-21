@@ -298,7 +298,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
 
       <div className="rounded-lg border bg-background p-4">
         <h3 className="text-sm font-semibold">Recent Actions</h3>
-        <div className="mt-4 overflow-hidden rounded-md border">
+        <div className="mt-4 overflow-x-auto rounded-md border">
           <table className="min-w-full divide-y text-sm">
             <thead className="bg-muted/40">
               <tr>

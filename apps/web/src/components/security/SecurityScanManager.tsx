@@ -378,7 +378,7 @@ export default function SecurityScanManager() {
             <h3 className="text-base font-semibold">Scan history</h3>
             <HardDrive className="h-5 w-5 text-muted-foreground" />
           </div>
-          <div className="mt-4 overflow-hidden rounded-md border">
+          <div className="mt-4 overflow-x-auto rounded-md border">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

@@ -1,5 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// PatchList renders through ResponsiveTable — a desktop <table> and a mobile
+// card list are both in the DOM at once (the sm: breakpoint is CSS-only, invisible
+// to jsdom), so row text/labels appear twice. Scope row-level interactions to the
+// desktop surface; use findAllByText for render-wait gates that tolerate the dupe.
+const desktop = () => within(screen.getByTestId('responsive-table-desktop'));
 
 // Mock showToast before importing PatchesPage so runAction uses the mock
 const showToast = vi.fn();
@@ -91,10 +97,10 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('Critical Security Update');
+    await screen.findAllByText('Critical Security Update');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Select Feature Update' }));
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Feature Update' }));
     fireEvent.click(screen.getByRole('button', { name: 'Approve 2' }));
 
     await waitFor(() => {
@@ -110,8 +116,8 @@ describe('PatchesPage', () => {
     });
 
     await screen.findByText('Failed to approve 1 patch');
-    expect(screen.getAllByRole('button', { name: 'Deploy' })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: 'Review' })).toHaveLength(1);
+    expect(desktop().getAllByRole('button', { name: 'Deploy' })).toHaveLength(1);
+    expect(desktop().getAllByRole('button', { name: 'Review' })).toHaveLength(1);
   });
 
   it('blocks bulk approve and prompts for an update ring when there is no org context', async () => {
@@ -142,8 +148,8 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('Critical Security Update');
-    fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
+    await screen.findAllByText('Critical Security Update');
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
     fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
 
     await screen.findByText(/select an organization or update ring/i);
@@ -181,7 +187,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    const deploy = await screen.findByRole('button', { name: 'Deploy' });
+    const deploy = (await screen.findAllByRole('button', { name: 'Deploy' }))[0];
     fireEvent.click(deploy);
 
     // Feedback toast fires and the Compliance tab content renders.
@@ -300,7 +306,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
 
     // Click "Run Scan" — this should NOT yet fire the POST
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
@@ -379,7 +385,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -431,7 +437,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -470,7 +476,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     await waitFor(() => {
@@ -507,7 +513,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     await waitFor(() => {
@@ -553,7 +559,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -601,7 +607,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -650,7 +656,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -706,7 +712,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -757,7 +763,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Confirmation must reflect the two actual target orgs
@@ -801,7 +807,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm

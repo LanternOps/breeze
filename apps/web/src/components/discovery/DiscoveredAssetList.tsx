@@ -3,6 +3,7 @@ import { Filter, Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type DiscoveredAssetApprovalStatus = 'pending' | 'approved' | 'dismissed';
 export type DiscoveredAssetType =
@@ -453,6 +454,95 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     );
   }
 
+  // Row pieces shared by the desktop table and the mobile cards.
+  const renderHostInfo = (asset: DiscoveredAsset) => (
+    <div className="flex items-center gap-2">
+      <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${asset.isOnline ? 'bg-green-500' : 'bg-muted-foreground/40'}`} title={asset.isOnline ? 'Online' : 'Offline'} />
+      <div className="min-w-0">
+        {asset.label && (
+          <div className="text-sm font-semibold truncate">{asset.label}</div>
+        )}
+        <div className="flex items-baseline gap-2">
+          <span className={`text-sm ${asset.label ? 'text-muted-foreground' : 'font-medium'} truncate`}>{asset.hostname || asset.ip}</span>
+          {asset.hostname && <span className="text-xs text-muted-foreground font-mono">{asset.ip}</span>}
+        </div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+          {asset.mac !== '—' && <span className="font-mono">{asset.mac}</span>}
+          {asset.manufacturer !== '—' && <span>{asset.manufacturer}</span>}
+          {asset.responseTimeMs != null && (
+            <span className={`font-mono ${pingColor(asset.responseTimeMs)}`}>{formatPing(asset.responseTimeMs)}</span>
+          )}
+          {asset.monitoringEnabled && (
+            <span className="inline-flex items-center gap-0.5 text-green-600">
+              <Signal className="h-3 w-3" />
+              Monitored
+            </span>
+          )}
+          {asset.linkedDeviceName && (
+            <span className="inline-flex items-center gap-0.5 text-green-700">
+              <CheckCircle2 className="h-3 w-3" />
+              {asset.linkedDeviceName}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderTypeBadge = (asset: DiscoveredAsset) => (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${typeConfig[asset.type].color}`}>
+      {typeConfig[asset.type].label}
+    </span>
+  );
+
+  const renderApprovalBadge = (asset: DiscoveredAsset) => (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
+      {approvalStatusConfig[asset.approvalStatus].label}
+    </span>
+  );
+
+  const renderActions = (asset: DiscoveredAsset) => (
+    <div className="flex items-center justify-end gap-2">
+      <button
+        type="button"
+        onClick={event => {
+          event.stopPropagation();
+          setSelectedAsset(toDetail(asset));
+        }}
+        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+        title="View details"
+      >
+        <Info className="h-4 w-4" />
+      </button>
+      {asset.approvalStatus !== 'approved' && (
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation();
+            void handleApprove(asset);
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-green-500/40 text-green-700 hover:bg-green-500/10"
+          title="Approve"
+        >
+          <CheckCircle2 className="h-4 w-4" />
+        </button>
+      )}
+      {asset.approvalStatus !== 'dismissed' && (
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation();
+            void handleDismiss(asset);
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+          title="Dismiss"
+        >
+          <XCircle className="h-4 w-4" />
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div>
@@ -587,141 +677,101 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         </button>
       </div>
 
-      <div className="mt-4 overflow-hidden rounded-md border">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3 w-10">
-                <input
-                  type="checkbox"
-                  aria-label="Select all visible assets"
-                  checked={allVisibleSelected}
-                  onChange={toggleSelectAllVisible}
-                  className="h-4 w-4 rounded border-muted-foreground/40"
-                />
-              </th>
-              <th className="px-4 py-3">Host</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Approval</th>
-              <th className="px-4 py-3">Last Seen</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {filteredAssets.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  {assets.length === 0 ? 'No assets discovered yet.' : 'No assets match the current filters.'}
-                </td>
+      <ResponsiveTable
+        className="mt-4"
+        table={
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3 w-10">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible assets"
+                    checked={allVisibleSelected}
+                    onChange={toggleSelectAllVisible}
+                    className="h-4 w-4 rounded border-muted-foreground/40"
+                  />
+                </th>
+                <th className="px-4 py-3">Host</th>
+                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3">Approval</th>
+                <th className="px-4 py-3">Last Seen</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ) : (
-              filteredAssets.map(asset => (
-                <tr
-                  key={asset.id}
-                  onClick={() => setSelectedAsset(toDetail(asset))}
-                  className={`cursor-pointer transition hover:bg-muted/40 ${asset.approvalStatus === 'pending' ? 'border-l-2 border-l-amber-400' : ''}`}
-                >
-                  <td className="px-4 py-3 align-top">
-                    <input
-                      type="checkbox"
-                      aria-label={`Select asset ${asset.hostname || asset.ip}`}
-                      checked={selectedAssetIds.has(asset.id)}
-                      onClick={event => event.stopPropagation()}
-                      onChange={() => toggleAssetSelection(asset.id)}
-                      className="mt-0.5 h-4 w-4 rounded border-muted-foreground/40"
-                    />
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${asset.isOnline ? 'bg-green-500' : 'bg-muted-foreground/40'}`} title={asset.isOnline ? 'Online' : 'Offline'} />
-                      <div className="min-w-0">
-                        {asset.label && (
-                          <div className="text-sm font-semibold truncate">{asset.label}</div>
-                        )}
-                        <div className="flex items-baseline gap-2">
-                          <span className={`text-sm ${asset.label ? 'text-muted-foreground' : 'font-medium'} truncate`}>{asset.hostname || asset.ip}</span>
-                          {asset.hostname && <span className="text-xs text-muted-foreground font-mono">{asset.ip}</span>}
-                        </div>
-                        <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                          {asset.mac !== '—' && <span className="font-mono">{asset.mac}</span>}
-                          {asset.manufacturer !== '—' && <span>{asset.manufacturer}</span>}
-                          {asset.responseTimeMs != null && (
-                            <span className={`font-mono ${pingColor(asset.responseTimeMs)}`}>{formatPing(asset.responseTimeMs)}</span>
-                          )}
-                          {asset.monitoringEnabled && (
-                            <span className="inline-flex items-center gap-0.5 text-green-600">
-                              <Signal className="h-3 w-3" />
-                              Monitored
-                            </span>
-                          )}
-                          {asset.linkedDeviceName && (
-                            <span className="inline-flex items-center gap-0.5 text-green-700">
-                              <CheckCircle2 className="h-3 w-3" />
-                              {asset.linkedDeviceName}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${typeConfig[asset.type].color}`}>
-                      {typeConfig[asset.type].label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
-                      {approvalStatusConfig[asset.approvalStatus].label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 align-top text-xs text-muted-foreground whitespace-nowrap">{formatLastSeen(asset.lastSeen, timezone)}</td>
-                  <td className="px-4 py-3 align-top">
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={event => {
-                          event.stopPropagation();
-                          setSelectedAsset(toDetail(asset));
-                        }}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                        title="View details"
-                      >
-                        <Info className="h-4 w-4" />
-                      </button>
-                      {asset.approvalStatus !== 'approved' && (
-                        <button
-                          type="button"
-                          onClick={event => {
-                            event.stopPropagation();
-                            void handleApprove(asset);
-                          }}
-                          className="flex h-8 w-8 items-center justify-center rounded-md border border-green-500/40 text-green-700 hover:bg-green-500/10"
-                          title="Approve"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                        </button>
-                      )}
-                      {asset.approvalStatus !== 'dismissed' && (
-                        <button
-                          type="button"
-                          onClick={event => {
-                            event.stopPropagation();
-                            void handleDismiss(asset);
-                          }}
-                          className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                          title="Dismiss"
-                        >
-                          <XCircle className="h-4 w-4" />
-                        </button>
-                      )}
-                    </div>
+            </thead>
+            <tbody className="divide-y">
+              {filteredAssets.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    {assets.length === 0 ? 'No assets discovered yet.' : 'No assets match the current filters.'}
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                filteredAssets.map(asset => (
+                  <tr
+                    key={asset.id}
+                    onClick={() => setSelectedAsset(toDetail(asset))}
+                    className={`cursor-pointer transition ${asset.approvalStatus === 'pending' ? 'bg-warning/5 hover:bg-warning/10' : 'hover:bg-muted/40'}`}
+                  >
+                    <td className="px-4 py-3 align-top">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select asset ${asset.hostname || asset.ip}`}
+                        checked={selectedAssetIds.has(asset.id)}
+                        onClick={event => event.stopPropagation()}
+                        onChange={() => toggleAssetSelection(asset.id)}
+                        className="mt-0.5 h-4 w-4 rounded border-muted-foreground/40"
+                      />
+                    </td>
+                    <td className="px-4 py-3">{renderHostInfo(asset)}</td>
+                    <td className="px-4 py-3 align-top">{renderTypeBadge(asset)}</td>
+                    <td className="px-4 py-3 align-top">{renderApprovalBadge(asset)}</td>
+                    <td className="px-4 py-3 align-top text-xs text-muted-foreground whitespace-nowrap">{formatLastSeen(asset.lastSeen, timezone)}</td>
+                    <td className="px-4 py-3 align-top">{renderActions(asset)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          filteredAssets.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">
+                {assets.length === 0 ? 'No assets discovered yet.' : 'No assets match the current filters.'}
+              </p>
+            </DataCard>
+          ) : (
+            filteredAssets.map(asset => (
+              <DataCard
+                key={asset.id}
+                onClick={() => setSelectedAsset(toDetail(asset))}
+                className={asset.approvalStatus === 'pending' ? 'bg-warning/5' : undefined}
+              >
+                <div className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    aria-label={`Select asset ${asset.hostname || asset.ip}`}
+                    checked={selectedAssetIds.has(asset.id)}
+                    onClick={event => event.stopPropagation()}
+                    onChange={() => toggleAssetSelection(asset.id)}
+                    className="mt-1 h-4 w-4 shrink-0 rounded border-muted-foreground/40"
+                  />
+                  <div className="min-w-0 flex-1">{renderHostInfo(asset)}</div>
+                </div>
+                <div className="mt-3 space-y-2 border-t pt-3">
+                  <CardField label="Type">{renderTypeBadge(asset)}</CardField>
+                  <CardField label="Approval">{renderApprovalBadge(asset)}</CardField>
+                  <CardField label="Last seen">
+                    <span className="text-xs text-muted-foreground">{formatLastSeen(asset.lastSeen, timezone)}</span>
+                  </CardField>
+                </div>
+                <CardActions>{renderActions(asset)}</CardActions>
+              </DataCard>
+            ))
+          )
+        }
+      />
 
       <AssetDetailModal
         open={selectedAsset !== null}

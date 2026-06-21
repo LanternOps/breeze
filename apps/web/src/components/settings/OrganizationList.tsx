@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type Organization = {
   id: string;
@@ -53,6 +54,37 @@ export default function OrganizationList({
     });
   }, [organizations, query, statusFilter]);
 
+  const renderStatusBadge = (org: Organization) => (
+    <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium">
+      {statusLabels[org.status]}
+    </span>
+  );
+
+  const renderActions = (org: Organization) => (
+    <div className="flex justify-end gap-2">
+      <button
+        type="button"
+        onClick={event => {
+          event.stopPropagation();
+          onEdit?.(org);
+        }}
+        className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+      >
+        Edit
+      </button>
+      <button
+        type="button"
+        onClick={event => {
+          event.stopPropagation();
+          onDelete?.(org);
+        }}
+        className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+      >
+        Delete
+      </button>
+    </div>
+  );
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -84,71 +116,68 @@ export default function OrganizationList({
         </div>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-md border">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Devices</th>
-              <th className="px-4 py-3">Created</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {filteredOrganizations.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No organizations found. Try adjusting your search or filters.
-                </td>
+      <ResponsiveTable
+        className="mt-6"
+        table={
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Devices</th>
+                <th className="px-4 py-3">Created</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ) : (
-              filteredOrganizations.map(org => (
-                <tr
-                  key={org.id}
-                  onClick={() => onSelect?.(org)}
-                  className="cursor-pointer transition hover:bg-muted/40"
-                >
-                  <td className="px-4 py-3 text-sm font-medium">{org.name}</td>
-                  <td className="px-4 py-3 text-sm">
-                    <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium">
-                      {statusLabels[org.status]}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm">{org.deviceCount}</td>
-                  <td className="px-4 py-3 text-sm">
-                    {formatDate(org.createdAt)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={event => {
-                          event.stopPropagation();
-                          onEdit?.(org);
-                        }}
-                        className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={event => {
-                          event.stopPropagation();
-                          onDelete?.(org);
-                        }}
-                        className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        Delete
-                      </button>
-                    </div>
+            </thead>
+            <tbody className="divide-y">
+              {filteredOrganizations.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    No organizations found. Try adjusting your search or filters.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                filteredOrganizations.map(org => (
+                  <tr
+                    key={org.id}
+                    onClick={() => onSelect?.(org)}
+                    className="cursor-pointer transition hover:bg-muted/40"
+                  >
+                    <td className="px-4 py-3 text-sm font-medium">{org.name}</td>
+                    <td className="px-4 py-3 text-sm">{renderStatusBadge(org)}</td>
+                    <td className="px-4 py-3 text-sm">{org.deviceCount}</td>
+                    <td className="px-4 py-3 text-sm">
+                      {formatDate(org.createdAt)}
+                    </td>
+                    <td className="px-4 py-3 text-right">{renderActions(org)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          filteredOrganizations.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">
+                No organizations found. Try adjusting your search or filters.
+              </p>
+            </DataCard>
+          ) : (
+            filteredOrganizations.map(org => (
+              <DataCard key={org.id} onClick={() => onSelect?.(org)}>
+                <h3 className="text-sm font-medium">{org.name}</h3>
+                <div className="mt-3 space-y-2 border-t pt-3">
+                  <CardField label="Status">{renderStatusBadge(org)}</CardField>
+                  <CardField label="Devices">{org.deviceCount}</CardField>
+                  <CardField label="Created">{formatDate(org.createdAt)}</CardField>
+                </div>
+                <CardActions>{renderActions(org)}</CardActions>
+              </DataCard>
+            ))
+          )
+        }
+      />
     </div>
   );
 }

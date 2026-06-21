@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceSecurityStatus from './DeviceSecurityStatus';
@@ -128,9 +128,12 @@ describe('security UI smoke', () => {
 
     render(<ThreatList />);
 
-    await screen.findByText(/Trojan:Win32\/Emotet/i);
+    // ThreatList now renders both a desktop table and a mobile card list, so the
+    // threat name and row checkboxes appear twice. Scope to the desktop surface.
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    await desktop.findByText(/Trojan:Win32\/Emotet/i);
 
-    const checkboxes = screen.getAllByRole('checkbox');
+    const checkboxes = desktop.getAllByRole('checkbox');
     fireEvent.click(checkboxes[1]);
     fireEvent.click(screen.getByRole('button', { name: /quarantine selected/i }));
 

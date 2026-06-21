@@ -80,7 +80,7 @@ export default function ConnectorStatusPanel() {
         </button>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-lg border bg-background">
+      <div className="mt-6 overflow-x-auto rounded-lg border bg-background">
         <table className="min-w-full divide-y text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
             <tr>
