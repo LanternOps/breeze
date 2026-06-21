@@ -164,6 +164,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
   // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.
   ['authenticator_policies', 'partner_id'],
+  // Update rings + patch approvals (2026-06-21): partner-axis (RLS shape 3).
+  // patch_policies has no org_id column — auto-discovery doesn't reach it.
+  // patch_approvals likewise carries only partner_id (no org_id).
+  // Functional cross-partner forge proof: update-rings-partner-scope.integration.test.ts.
+  ['patch_policies', 'partner_id'],
+  ['patch_approvals', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
