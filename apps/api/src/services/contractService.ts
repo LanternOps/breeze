@@ -3,6 +3,7 @@ import { db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations } from '../db/schema';
 import { ContractServiceError, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
+import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
@@ -407,4 +408,50 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
   return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor };
+}
+
+// INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.
+// Tenancy (orgId/partnerId) is already validated by the caller, so there is NO
+// actor guard here. MUST run inside an established system-scope DB context
+// (e.g. acceptQuote's withSystemDbAccessContext transaction) — do not call from
+// a bare request handler. Always lands status='draft'; the MSP activates later.
+export async function createContractWithLines(
+  spec: NewContractSpec,
+): Promise<typeof contracts.$inferSelect> {
+  const [contract] = await db
+    .insert(contracts)
+    .values({
+      partnerId: spec.partnerId,
+      orgId: spec.orgId,
+      name: spec.name,
+      status: 'draft',
+      billingTiming: spec.billingTiming,
+      intervalMonths: spec.intervalMonths,
+      startDate: spec.startDate,
+      endDate: spec.endDate ?? null,
+      autoIssue: false,
+      currencyCode: spec.currencyCode ?? 'USD',
+      notes: spec.notes ?? null,
+      terms: spec.terms ?? null,
+      createdBy: spec.createdBy ?? null,
+    })
+    .returning();
+
+  for (let i = 0; i < spec.lines.length; i++) {
+    const l = spec.lines[i]!;
+    await db.insert(contractLines).values({
+      contractId: contract!.id,
+      orgId: spec.orgId,
+      lineType: l.lineType,
+      description: l.description,
+      catalogItemId: l.catalogItemId ?? null,
+      unitPrice: l.unitPrice,
+      manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+      siteId: l.lineType === 'per_device' ? (l.siteId ?? null) : null,
+      taxable: l.taxable,
+      sortOrder: l.sortOrder ?? i,
+    });
+  }
+
+  return contract!;
 }
