@@ -26,6 +26,7 @@ import { z } from 'zod';
 
 import { db } from '../db';
 import {
+  approvalRequests,
   authenticatorDevices,
   devices,
   elevationAudit,
@@ -552,6 +553,26 @@ pamRoutes.post(
           },
           occurredAt: now,
         });
+
+        // #1254: a uac_intercept elevation may also have been fanned out to the
+        // mobile approval surface. A web decision here is authoritative, so
+        // expire any still-pending mobile approval_requests rows linked to this
+        // elevation — they vanish from approvers' phones. Symmetric to the mobile
+        // decideHandler's sibling-expiry; keeps the two approval surfaces
+        // consistent so an elevation can be decided from EITHER, exactly once.
+        // Only uac_intercept fans out (tech_jit_admin / ai_tool_action never do),
+        // so the update is scoped to that flow to avoid a pointless statement.
+        if (row.flowType === 'uac_intercept') {
+          await tx
+            .update(approvalRequests)
+            .set({ status: 'expired' })
+            .where(
+              and(
+                eq(approvalRequests.elevationRequestId, row.id),
+                eq(approvalRequests.status, 'pending'),
+              ),
+            );
+        }
 
         // ai_tool_action rows: mirror the decision onto the linked
         // ai_tool_executions row the SDK gate is polling — in the SAME

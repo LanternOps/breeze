@@ -61,6 +61,7 @@ vi.mock('../db/schema', () => ({
     denialReason: 'denialReason',
   },
   elevationAudit: { id: 'id' },
+  approvalRequests: { id: 'id', elevationRequestId: 'elevationRequestId', status: 'status' },
   pamRules: {
     id: 'id',
     orgId: 'orgId',
@@ -1258,7 +1259,12 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(updateSetCalls.length).toBe(1);
+    // Two updates for uac_intercept: the elevation-status CAS, then the #1254
+    // mobile-approval expiry (clears any fanned-out approval_requests rows so
+    // a web decision also removes the request from approvers' phones). Neither
+    // is an execution mirror — that only happens for ai_tool_action.
+    expect(updateSetCalls.length).toBe(2);
+    expect((updateSetCalls[1] as { status?: string }).status).toBe('expired');
   });
 });
 
