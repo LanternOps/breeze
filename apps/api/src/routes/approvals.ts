@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, gt, desc, inArray, isNull } from 'drizzle-orm';
+import { and, eq, gt, desc, inArray, isNull, ne } from 'drizzle-orm';
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
+import { elevationRequests, elevationAudit } from '../db/schema/elevations';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
@@ -27,6 +28,12 @@ import {
 // defaulted by assertionProofSchema) OR the mobile_hw_key proof. z.union tries
 // the strict mobile literal first, then falls back to the webauthn shape.
 const approveProofSchema = z.union([mobileHwKeyProofSchema, assertionProofSchema]);
+
+// #1254: how long a mobile-approved elevation grant stays valid. Matches the
+// web respond path's DEFAULT_APPROVAL_DURATION_MINUTES in pam.ts (15) so an
+// approve here is bounded identically — an unbounded grant would leave the
+// elevation valid indefinitely.
+const PAM_ELEVATION_GRANT_MINUTES = 15;
 
 export const approvalRoutes = new Hono();
 
@@ -486,6 +493,91 @@ async function decideHandler(
       // Non-fatal: the approval_request row is the source of truth for the
       // mobile UI. The SDK poll will time out at the 5-min ceiling if the
       // mirror fails — better than failing the user-facing decide call.
+    }
+  }
+
+  // #1254: PAM mobile bridge. If this approval was fanned out from a pending
+  // uac_intercept elevation, mirror the decision back onto the elevation and
+  // expire the sibling approval rows. First-wins: the CAS only fires while the
+  // elevation is still 'pending', so a second approver (or the web respond
+  // path) that already decided it is a clean no-op. No actuate command is
+  // enqueued on approve — parity with pam.ts respond, deferred to #1150.
+  // Best-effort (same posture as the executionId mirror): the approval_requests
+  // row is the source of truth for the mobile UI, so a mirror failure must not
+  // fail the user's decide call.
+  if (updated?.elevationRequestId) {
+    const elevationId = updated.elevationRequestId;
+    try {
+      await db.transaction(async (tx) => {
+        const now = new Date();
+        const elevationUpdate = await tx
+          .update(elevationRequests)
+          .set(
+            status === 'approved'
+              ? {
+                  status: 'approved',
+                  approvedByUserId: userId,
+                  approvedAt: now,
+                  expiresAt: new Date(now.getTime() + PAM_ELEVATION_GRANT_MINUTES * 60_000),
+                  updatedAt: now,
+                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                  decidedVia: assurance.decidedVia,
+                  authenticatorDeviceId: assurance.authenticatorDeviceId,
+                }
+              : {
+                  status: 'denied',
+                  deniedByUserId: userId,
+                  denialReason: reason ?? null,
+                  updatedAt: now,
+                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                  decidedVia: assurance.decidedVia,
+                  authenticatorDeviceId: assurance.authenticatorDeviceId,
+                },
+          )
+          .where(
+            and(
+              eq(elevationRequests.id, elevationId),
+              eq(elevationRequests.status, 'pending'),
+            ),
+          )
+          .returning({ id: elevationRequests.id, orgId: elevationRequests.orgId });
+
+        // Lost the race (already decided/expired by a sibling or the web path):
+        // leave everything as-is. Our approval_requests row is still decided.
+        if (elevationUpdate.length === 0) return;
+        const elevation = elevationUpdate[0]!;
+
+        await tx.insert(elevationAudit).values({
+          orgId: elevation.orgId,
+          elevationRequestId: elevationId,
+          eventType: status === 'approved' ? 'approved' : 'denied',
+          actor: 'technician',
+          actorUserId: userId,
+          details: {
+            source: 'mobile_approval',
+            approval_request_id: updated.id,
+            ...(status === 'denied' && reason ? { reason } : {}),
+          },
+          occurredAt: now,
+        });
+
+        // Expire the sibling approval rows so they vanish from other approvers'
+        // queues — first-wins fan-in.
+        await tx
+          .update(approvalRequests)
+          .set({ status: 'expired' })
+          .where(
+            and(
+              eq(approvalRequests.elevationRequestId, elevationId),
+              ne(approvalRequests.id, updated.id),
+              eq(approvalRequests.status, 'pending'),
+            ),
+          );
+      });
+    } catch (err) {
+      console.error('[approvals] Failed to mirror decision to elevation_requests:', err);
+      // Non-fatal: the approval_request row is the source of truth for the
+      // mobile decision; the elevation mirror can be reconciled out of band.
     }
   }
 

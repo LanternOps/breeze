@@ -3,8 +3,15 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 
-import { db } from '../../db';
-import { devices, elevationAudit, elevationRequests, pamOrgConfig, pamRules } from '../../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import {
+  approvalRequests,
+  devices,
+  elevationAudit,
+  elevationRequests,
+  pamOrgConfig,
+  pamRules,
+} from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
@@ -13,6 +20,9 @@ import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { evaluatePamBridge, type PamBridgeVerdict } from '../../services/pamBridge';
 import { evaluatePamRules, type PamRuleMatch } from '../../services/pamRuleEngine';
 import { publishEvent, type EventType } from '../../services/eventBus';
+import { resolveElevationApprovers } from '../../services/pamApprovers';
+import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../../services/expoPush';
+import type { RiskTier } from '@breeze/shared';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
 // as `elevation_requests` rows with flow_type='uac_intercept'. Auth is the
@@ -43,6 +53,41 @@ const ELEVATION_REQUEST_RATE_WINDOW_SECONDS = 60;
 // pam_rule nor (future) org config specifies a duration. Conservative: the
 // uac_intercept flow only needs the window in which consent.exe is satisfied.
 const PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES = 15;
+
+// #1254: how long a fanned-out mobile approval_request stays actionable. The
+// technician has this long to tap approve/deny before it self-expires; the
+// underlying elevation has its own (null-until-approved) expiry.
+const PAM_MOBILE_APPROVAL_TTL_MINUTES = 15;
+
+/**
+ * Map a software-policy bridge verdict + signer presence to the mobile
+ * approval risk tier shown on the technician's phone. Pure — unit-tested.
+ *
+ * At the pending insert site `verdict` is effectively null (an allowlist /
+ * blocklist match would already have auto-decided the elevation, so the row
+ * never reaches the mobile bridge). The signer signal still matters: an
+ * UNSIGNED binary asking for admin is riskier than a signed one, so it tiers
+ * up. A blocklist verdict (defensive — shouldn't reach here) is 'critical'; an
+ * allowlist verdict is 'low'.
+ */
+export function elevationVerdictToRiskTier(
+  verdict: PamBridgeVerdict | null,
+  hasSigner: boolean,
+): RiskTier {
+  if (verdict?.match === 'blocklist') return 'critical';
+  if (verdict?.match === 'allowlist') return 'low';
+  return hasSigner ? 'medium' : 'high';
+}
+
+/**
+ * Last path segment of a Windows or POSIX path. `node:path` basename only
+ * splits on the host separator, but the agent always reports Windows-style
+ * backslash paths, so split on both.
+ */
+function pathBasename(p: string): string {
+  const parts = p.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? '';
+}
 
 export const elevationRequestSchema = z.object({
   subject_username: z.string().min(1).max(255),
@@ -79,6 +124,126 @@ async function safePublish(
     await publishEvent(type, orgId, payload, 'pam-ingest');
   } catch (err) {
     console.error(`[ElevationRequests] event publish failed (${type}):`, err);
+  }
+}
+
+/**
+ * #1254 — mobile approval bridge. For a freshly-inserted PENDING uac_intercept
+ * elevation, fan out one mobile approval_request per eligible technician
+ * approver and push each to their phone. Whichever approver decides first on
+ * mobile mirrors that decision back onto the elevation (see decideHandler in
+ * routes/approvals.ts) and expires the siblings.
+ *
+ * BEST-EFFORT: the elevation row is already committed and the agent's 201 must
+ * not depend on this. The whole body is wrapped in try/catch by the caller, and
+ * each per-approver push is additionally swallowed so one bad token can't drop
+ * the rest. No actuate command is enqueued (parity with pam.ts respond — that's
+ * deferred to #1150).
+ */
+async function fanOutMobileApprovals(args: {
+  elevationRequestId: string;
+  device: { id: string; orgId: string; hostname: string };
+  payload: ElevationRequestPayload;
+  reason: string;
+  bridgeVerdict: PamBridgeVerdict | null;
+  expiresAt: Date;
+}): Promise<void> {
+  const { elevationRequestId, device, payload, reason, bridgeVerdict, expiresAt } = args;
+
+  const hasSigner = !!payload.target_executable_signer;
+  const riskTier = elevationVerdictToRiskTier(bridgeVerdict, hasSigner);
+  const exeName = pathBasename(payload.target_executable_path);
+  const actionLabel = exeName ? `Elevate ${exeName}` : 'Run as administrator';
+  const riskSummary = `${payload.subject_username} requested admin to run ${
+    payload.target_executable_path
+  }${hasSigner ? ` (signed by ${payload.target_executable_signer})` : ' (unsigned)'}.`;
+
+  const actionArguments: Record<string, unknown> = {
+    targetExecutablePath: payload.target_executable_path,
+    targetExecutableSigner: payload.target_executable_signer ?? null,
+    targetExecutableHash: payload.target_executable_hash ?? null,
+    parentImage: payload.parent_image ?? null,
+    commandLine: payload.command_line ?? null,
+    reason,
+    subjectUsername: payload.subject_username,
+    deviceHostname: device.hostname,
+  };
+
+  // approval_requests is Shape-6 RLS (USING/WITH CHECK user_id = current_user
+  // OR scope='system'). This ingest path runs in the agent's ORG-scoped DB
+  // context, under which the INSERT is DENIED. withSystemDbAccessContext is a
+  // no-op when a context is already open (db/index.ts), so we must FIRST escape
+  // the request context with runOutsideDbContext, THEN open a system context —
+  // exactly as routes/agents/commands.ts does. All DB reads/writes (resolve
+  // approvers, the per-approver approval_requests insert, push-token lookup) run
+  // inside this one system context; we then perform the Expo network calls
+  // AFTER it closes so we never hold the DB transaction open across the network
+  // round-trip (the held-context tripwire in db/index.ts).
+  const pushTargets = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const approverIds = await resolveElevationApprovers(device.orgId);
+      if (approverIds.length === 0) return [];
+
+      const targets: Array<{ approvalId: string; actionLabel: string; tokens: string[] }> = [];
+      for (const userId of approverIds) {
+        let approvalId: string;
+        try {
+          const [row] = await db
+            .insert(approvalRequests)
+            .values({
+              userId,
+              elevationRequestId,
+              requestingClientLabel: 'Breeze Agent',
+              requestingMachineLabel: device.hostname ?? null,
+              actionLabel,
+              actionToolName: 'uac_intercept',
+              actionArguments,
+              riskTier,
+              riskSummary,
+              status: 'pending',
+              isRecursive: false,
+              expiresAt,
+            })
+            .returning({ id: approvalRequests.id });
+          if (!row) continue;
+          approvalId = row.id;
+        } catch (err) {
+          console.error(
+            `[ElevationRequests] mobile approval insert failed for user=${userId} elevation=${elevationRequestId}:`,
+            err,
+          );
+          continue;
+        }
+
+        const tokens = await getUserPushTokens(userId);
+        targets.push({ approvalId, actionLabel, tokens });
+      }
+      return targets;
+    }),
+  );
+
+  // Expo network calls run OUTSIDE the system DB context (no open transaction
+  // held across the HTTP round-trip). Push is best-effort per approver — a dead
+  // token or Expo outage must not block the remaining approvers or the 201.
+  for (const { approvalId, actionLabel: label, tokens } of pushTargets) {
+    if (tokens.length === 0) continue;
+    try {
+      await sendExpoPush(
+        tokens.map((to) => ({
+          to,
+          ...buildApprovalPush({
+            approvalId,
+            actionLabel: label,
+            requestingClientLabel: 'Breeze Agent',
+          }),
+        })),
+      );
+    } catch (err) {
+      console.error(
+        `[ElevationRequests] mobile push failed for approval=${approvalId}:`,
+        err,
+      );
+    }
   }
 }
 
@@ -137,6 +302,7 @@ elevationRequestsRoutes.post(
         id: devices.id,
         orgId: devices.orgId,
         siteId: devices.siteId,
+        hostname: devices.hostname,
       })
       .from(devices)
       .where(eq(devices.agentId, agentId))
@@ -430,6 +596,29 @@ elevationRequestsRoutes.post(
           ? { pamRuleId: decision.rule.ruleId }
           : {}),
       });
+
+      // #1254: bridge a manually-pending uac_intercept to the mobile approval
+      // surface (fan-out to eligible technicians). Best-effort — the elevation
+      // row + audit are already committed and the agent must get its 201 even
+      // if the entire bridge fails. auto_approved / denied rows skip this (no
+      // human decision is needed).
+      if (decision.kind === 'pending') {
+        try {
+          await fanOutMobileApprovals({
+            elevationRequestId: row.id,
+            device: { id: device.id, orgId: device.orgId, hostname: device.hostname },
+            payload,
+            reason,
+            bridgeVerdict,
+            expiresAt: new Date(now.getTime() + PAM_MOBILE_APPROVAL_TTL_MINUTES * 60_000),
+          });
+        } catch (bridgeErr) {
+          console.error(
+            `[ElevationRequests] mobile bridge failed for request=${row.id}:`,
+            bridgeErr,
+          );
+        }
+      }
 
       return c.json({ id: row.id, status: row.status }, 201);
     } catch (err) {

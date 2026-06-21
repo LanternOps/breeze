@@ -54,6 +54,18 @@ export const approvalRequests = pgTable(
     executionId: uuid('execution_id'),
 
     /**
+     * #1254 PAM mobile bridge: links this fanned-out mobile approval back to
+     * the `elevation_requests` row it was created for (a pending
+     * uac_intercept). One elevation fans out to N approver rows that all carry
+     * the same elevation_request_id; the first approver to decide mirrors the
+     * decision onto the elevation (first-wins CAS) and the siblings are
+     * expired. Nullable — non-PAM approvals (AI agent, helper, dev seed) never
+     * set it. ON DELETE SET NULL so a purged elevation leaves the approval row
+     * readable for audit (mirrors execution_id).
+     */
+    elevationRequestId: uuid('elevation_request_id'),
+
+    /**
      * Server-issued: TRUE when the requesting OAuth client is the user's
      * own mobile app AND the request targets that same user (i.e. the phone
      * is approving its own action). Replaces the mobile client's
@@ -84,6 +96,16 @@ export const approvalRequests = pgTable(
       foreignColumns: [aiToolExecutions.id],
       name: 'approval_requests_execution_id_fkey',
     }).onDelete('set null'),
+    elevationRequestIdIdx: index('approval_requests_elevation_request_id_idx').on(
+      t.elevationRequestId,
+    ),
+    // FK to elevation_requests(id) ON DELETE SET NULL is declared in the
+    // migration only (2026-06-27-pam-approval-elevation-link.sql). Modeling it
+    // in Drizzle would force an `import { elevationRequests } from
+    // './elevations'`, but elevations.ts already imports approvalRequests
+    // (parentApprovalId) — the cycle makes TS infer both tables as `any`
+    // (TS7022). Same precedent as authenticatorDeviceId (DB FK, no Drizzle
+    // reference). db:check-drift tolerates the column+index match.
   })
 );
 

@@ -7,6 +7,7 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
 }));
 
@@ -21,7 +22,16 @@ vi.mock('../services/expoPush', () => ({
 }));
 
 vi.mock('../db/schema/approvals', () => ({
-  approvalRequests: {},
+  approvalRequests: {
+    id: 'id',
+    elevationRequestId: 'elevation_request_id',
+    status: 'status',
+  },
+}));
+
+vi.mock('../db/schema/elevations', () => ({
+  elevationRequests: { id: 'id', orgId: 'org_id', status: 'status' },
+  elevationAudit: { id: 'id', orgId: 'org_id', elevationRequestId: 'elevation_request_id' },
 }));
 
 vi.mock('../db/schema/authenticatorDevices', () => ({
@@ -215,6 +225,7 @@ beforeEach(() => {
   vi.mocked(db.update).mockReset();
   vi.mocked(db.insert).mockReset();
   vi.mocked(db.delete).mockReset();
+  vi.mocked(db.transaction).mockReset();
   // Re-establish the default no-proof (L1 session_tap) assurance after
   // clearAllMocks wipes the implementation, so the unchanged approve tests
   // keep recording session_tap and per-case overrides start from a clean slate.
@@ -956,6 +967,129 @@ describe('POST /approvals/:id/deny', () => {
     expect(aiSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'rejected', approvedBy: TEST_USER.id }),
     );
+  });
+});
+
+describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
+  // Builds a tx stub for db.transaction(fn). `elevationUpdateRows` is what the
+  // elevation CAS returns ([] = lost the race). Captures the elevation .set arg,
+  // the elevationAudit .values arg, and the sibling-expiry .set arg.
+  function mockElevationTx(elevationUpdateRows: unknown[]) {
+    const elevationSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(elevationUpdateRows) }),
+    });
+    const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const auditValues = vi.fn().mockResolvedValue(undefined);
+    let updateCall = 0;
+    const tx = {
+      update: vi.fn(() => {
+        updateCall += 1;
+        // 1st update in the tx = elevation CAS; 2nd = sibling expiry.
+        return { set: updateCall === 1 ? elevationSet : siblingExpireSet } as any;
+      }),
+      insert: vi.fn(() => ({ values: auditValues } as any)),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return { elevationSet, siblingExpireSet, auditValues };
+  }
+
+  // The decideHandler pre-fetch select + the approval_requests CAS update. The
+  // updated row carries elevationRequestId so the mirror block runs.
+  function mockDecideWithElevation(opts: { status: 'pending'; riskTier: string; elevationRequestId: string | null }) {
+    const updatedRow = {
+      id: 'appr-1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'Breeze Agent',
+      requestingMachineLabel: 'WS-01',
+      actionLabel: 'Elevate setup.exe',
+      actionToolName: 'uac_intercept',
+      actionArguments: {},
+      riskTier: opts.riskTier,
+      riskSummary: 'admin requested',
+      status: 'approved',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: new Date(),
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: opts.elevationRequestId,
+      isRecursive: false,
+      createdAt: new Date(),
+    };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ ...updatedRow, status: 'pending' }]),
+      }),
+    } as any);
+    const returning = vi.fn().mockResolvedValue([updatedRow]);
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    return updatedRow;
+  }
+
+  it('approve mirrors elevation to approved + expires siblings', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledOnce();
+    expect(tx.elevationSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'approved', approvedByUserId: TEST_USER.id }),
+    );
+    // #1254: the approve grant is bounded (parity with pam.ts's 15-min default),
+    // not left open-ended.
+    const elevationSetArg = tx.elevationSet.mock.calls[0]![0] as { expiresAt: Date };
+    expect(elevationSetArg.expiresAt).toBeInstanceOf(Date);
+    expect(elevationSetArg.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(tx.auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'approved', actor: 'technician', orgId: 'org-9' }),
+    );
+    expect(tx.siblingExpireSet).toHaveBeenCalledWith({ status: 'expired' });
+  });
+
+  it('deny mirrors elevation to denied', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'not allowed' }),
+    });
+    expect(res.status).toBe(200);
+    expect(tx.elevationSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'denied', deniedByUserId: TEST_USER.id, denialReason: 'not allowed' }),
+    );
+    expect(tx.auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'denied', actor: 'technician' }),
+    );
+  });
+
+  it('elevation already non-pending (CAS 0 rows) -> decide still 200, no audit/sibling write', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([]); // lost the race
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(tx.elevationSet).toHaveBeenCalled();
+    expect(tx.auditValues).not.toHaveBeenCalled();
+    expect(tx.siblingExpireSet).not.toHaveBeenCalled();
+  });
+
+  it('approval without elevationRequestId never opens the mirror transaction', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'low', elevationRequestId: null });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('mirror failure is non-fatal: decide still returns 200', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    vi.mocked(db.transaction).mockRejectedValue(new Error('tx blew up'));
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
   });
 });
 
