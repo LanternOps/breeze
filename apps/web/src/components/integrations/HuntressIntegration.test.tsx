@@ -7,7 +7,8 @@ import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  registerOrgIdProvider: vi.fn()
+  registerOrgIdProvider: vi.fn(),
+  resolveApiOrigin: vi.fn(() => 'https://us.2breeze.app')
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -272,5 +273,63 @@ describe('HuntressIntegration', () => {
       huntressOrgId: 'huntress-org-1',
       orgId: breezeOrg.id
     });
+  });
+
+  it('surfaces a region-correct, copyable inbound webhook URL carrying the integrationId', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({ integration: existingIntegration });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Inbound webhook (push from Huntress)')).toBeInTheDocument()
+    );
+    expect(
+      screen.getByText('https://us.2breeze.app/api/v1/huntress/webhook?integrationId=huntress-1')
+    ).toBeInTheDocument();
+    // Signing scheme is documented so the user can configure the Huntress side.
+    expect(screen.getByText(/Signing scheme to configure on Huntress/)).toBeInTheDocument();
+  });
+
+  it('warns that inbound webhooks are rejected until a webhook secret is configured', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    // existingIntegration.hasWebhookSecret is false.
+    mockPartnerLoad({ integration: existingIntegration });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Inbound webhook (push from Huntress)')).toBeInTheDocument()
+    );
+    expect(screen.getByText(/inbound webhooks are rejected with 403/i)).toBeInTheDocument();
+  });
+
+  it('generates a webhook secret, fills the input, and shows a copy-once notice that is submitted on save', async () => {
+    const user = userEvent.setup();
+    useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({ integration: existingIntegration });
+
+    render(<HuntressIntegration />);
+    await waitFor(() => expect(screen.getByText('Partner connection')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /Generate/i }));
+
+    // Copy-once notice appears; the secret input is revealed (type=text) and populated.
+    expect(screen.getByText(/Copy this webhook secret now/i)).toBeInTheDocument();
+    const secretInput = screen.getByPlaceholderText('Enter or generate a webhook secret') as HTMLInputElement;
+    expect(secretInput.value).toMatch(/^[0-9a-f]{64}$/);
+    const generated = secretInput.value;
+
+    await user.click(screen.getByRole('button', { name: /Update/i }));
+
+    await waitFor(() => {
+      expect(
+        fetchWithAuthMock.mock.calls.some(([url, init]) => url === '/huntress/integration' && init?.method === 'POST')
+      ).toBe(true);
+    });
+    const postCall = fetchWithAuthMock.mock.calls.find(
+      ([url, init]) => url === '/huntress/integration' && init?.method === 'POST'
+    );
+    expect(JSON.parse(String(postCall?.[1]?.body))).toMatchObject({ webhookSecret: generated });
   });
 });
