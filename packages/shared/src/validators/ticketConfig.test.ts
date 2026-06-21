@@ -163,3 +163,44 @@ describe('orgTicketSettingsSchema', () => {
     expect(orgTicketSettingsSchema.safeParse({ slaOverrides: { normal: { resolutionMinutes: 480 } } }).success).toBe(true);
   });
 });
+
+import { createCustomerEmailDomainSchema, updateCustomerEmailDomainSchema } from './ticketConfig';
+
+describe('createCustomerEmailDomainSchema', () => {
+  const orgId = '11111111-1111-4111-8111-111111111111';
+
+  it('accepts a normal domain, lowercases it, and defaults autoCreateContact true', () => {
+    const r = createCustomerEmailDomainSchema.parse({ domain: 'ACME.com', orgId });
+    expect(r.domain).toBe('acme.com');
+    expect(r.autoCreateContact).toBe(true);
+  });
+
+  it('honors an explicit autoCreateContact false', () => {
+    const r = createCustomerEmailDomainSchema.parse({ domain: 'acme.com', orgId, autoCreateContact: false });
+    expect(r.autoCreateContact).toBe(false);
+  });
+
+  it('rejects free-provider domains', () => {
+    expect(createCustomerEmailDomainSchema.safeParse({ domain: 'gmail.com', orgId }).success).toBe(false);
+    expect(createCustomerEmailDomainSchema.safeParse({ domain: 'Outlook.com', orgId }).success).toBe(false);
+  });
+
+  it('rejects malformed domains', () => {
+    expect(createCustomerEmailDomainSchema.safeParse({ domain: 'not a domain', orgId }).success).toBe(false);
+    expect(createCustomerEmailDomainSchema.safeParse({ domain: 'acme', orgId }).success).toBe(false);
+  });
+
+  it('rejects a non-uuid orgId', () => {
+    expect(createCustomerEmailDomainSchema.safeParse({ domain: 'acme.com', orgId: 'nope' }).success).toBe(false);
+  });
+});
+
+describe('updateCustomerEmailDomainSchema', () => {
+  it('requires at least one field', () => {
+    expect(updateCustomerEmailDomainSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('accepts a partial update', () => {
+    expect(updateCustomerEmailDomainSchema.safeParse({ isActive: false }).success).toBe(true);
+  });
+});

@@ -64,3 +64,38 @@ export const orgTicketSettingsSchema = z.object({
   defaultBillable: z.boolean().nullable().optional()
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 export type OrgTicketSettingsInput = z.infer<typeof orgTicketSettingsSchema>;
+
+// Phase 5: sender-domain -> customer-org mapping. Free email providers are
+// rejected — mapping e.g. gmail.com would route every consumer sender to a
+// single org.
+export const FREEMAIL_DOMAINS: ReadonlySet<string> = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com',
+  'msn.com', 'yahoo.com', 'ymail.com', 'icloud.com', 'me.com', 'mac.com',
+  'aol.com', 'proton.me', 'protonmail.com', 'gmx.com', 'mail.com', 'zoho.com'
+]);
+
+const customerDomainSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^(?=.{1,255}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/,
+    'Enter a valid domain like acme.com'
+  )
+  .refine((d) => !FREEMAIL_DOMAINS.has(d), 'Free email providers cannot be mapped to a single organization');
+
+export const createCustomerEmailDomainSchema = z.object({
+  domain: customerDomainSchema,
+  orgId: z.string().guid(),
+  autoCreateContact: z.boolean().optional().default(true)
+});
+export type CreateCustomerEmailDomainInput = z.infer<typeof createCustomerEmailDomainSchema>;
+
+export const updateCustomerEmailDomainSchema = z
+  .object({
+    orgId: z.string().guid().optional(),
+    autoCreateContact: z.boolean().optional(),
+    isActive: z.boolean().optional()
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
+export type UpdateCustomerEmailDomainInput = z.infer<typeof updateCustomerEmailDomainSchema>;
