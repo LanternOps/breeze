@@ -67,6 +67,22 @@ vi.mock('../db/schema', () => ({
     priority: 'priority',
     createdAt: 'createdAt',
   },
+  pamOrgConfig: {
+    id: 'id',
+    orgId: 'orgId',
+    defaultUnmatchedVerdict: 'defaultUnmatchedVerdict',
+  },
+  PAM_RULE_NEGATE_KEYS: [
+    'signer',
+    'hash',
+    'pathGlob',
+    'parentImage',
+    'commandLine',
+    'user',
+    'adGroup',
+    'toolName',
+    'riskTier',
+  ],
   aiToolExecutions: { id: 'id', status: 'status' },
   softwarePolicies: { id: 'id', name: 'name' },
   authenticatorDevices: {
@@ -1061,6 +1077,48 @@ describe('POST /pam/rules', () => {
     expect(valuesArg.matchRiskTier).toBe(2);
   });
 
+  it('passes matchCommandLine and matchNegate through to the insert', async () => {
+    const returning = vi.fn().mockResolvedValue([
+      { id: 'rule-cl', name: 'printui only', verdict: 'auto_approve', priority: 100 },
+    ]);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({ returning })),
+    } as any);
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'printui only',
+        verdict: 'auto_approve',
+        matchPathGlob: 'C:\\Windows\\System32\\rundll32.exe',
+        matchCommandLine: 'printui.dll,PrintUIEntry',
+        matchNegate: ['pathGlob'],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { matchCommandLine: string; matchNegate: string[] };
+    expect(valuesArg.matchCommandLine).toBe('printui.dll,PrintUIEntry');
+    expect(valuesArg.matchNegate).toEqual(['pathGlob']);
+  });
+
+  it('rejects a matchNegate key outside PAM_RULE_NEGATE_KEYS (400)', async () => {
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'bad negate',
+        verdict: 'auto_approve',
+        matchSigner: 'Acme Corp',
+        matchNegate: ['nonsense'],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
   it('rejects a rule mixing executable and tool-action criteria (400)', async () => {
     const res = await app().request('/pam/rules', {
       method: 'POST',
@@ -1579,5 +1637,89 @@ describe('POST /pam/rules/preview', () => {
     // 06:00Z = 06:00 UTC → outside 00:00–05:00
     expect(body.totalMatched).toBe(0);
     expect(body.totalScanned).toBe(1);
+  });
+});
+
+describe('PAM org config — default unmatched verdict', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  // clearAllMocks doesn't drain queued onces; reset the db method mocks so a
+  // queued-but-unconsumed select can't leak across cases.
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+  });
+
+  it('GET /config returns require_approval default when no row exists', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+      })),
+    } as any);
+
+    const res = await app().request('/pam/config');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.config.orgId).toBe(ORG_ID);
+    expect(body.config.defaultUnmatchedVerdict).toBe('require_approval');
+  });
+
+  it('GET /config returns the stored verdict when a row exists', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([{ defaultUnmatchedVerdict: 'auto_deny' }]),
+        })),
+      })),
+    } as any);
+
+    const res = await app().request('/pam/config');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.config.defaultUnmatchedVerdict).toBe('auto_deny');
+  });
+
+  it('PUT /config upserts the verdict and returns the saved row', async () => {
+    const returning = vi
+      .fn()
+      .mockResolvedValue([{ id: 'cfg-1', orgId: ORG_ID, defaultUnmatchedVerdict: 'auto_deny' }]);
+    const onConflictDoUpdate = vi.fn(() => ({ returning }));
+    const values = vi.fn(() => ({ onConflictDoUpdate }));
+    vi.mocked(db.insert).mockReturnValue({ values } as any);
+
+    const res = await app().request('/pam/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultUnmatchedVerdict: 'auto_deny' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.config.defaultUnmatchedVerdict).toBe('auto_deny');
+    const valuesArg = values.mock.calls[0]![0] as {
+      orgId: string;
+      defaultUnmatchedVerdict: string;
+      updatedByUserId: string;
+    };
+    expect(valuesArg.orgId).toBe(ORG_ID);
+    expect(valuesArg.defaultUnmatchedVerdict).toBe('auto_deny');
+    expect(valuesArg.updatedByUserId).toBe(USER_ID);
+  });
+
+  it('PUT /config rejects a verdict outside the enum (400)', async () => {
+    const res = await app().request('/pam/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultUnmatchedVerdict: 'auto_approve' }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
   });
 });

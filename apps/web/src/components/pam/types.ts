@@ -68,6 +68,27 @@ export interface PamTimeWindow {
   timezone?: string;
 }
 
+/**
+ * Criterion keys eligible for negation via pam_rules.matchNegate. Mirrors the
+ * API's PAM_RULE_NEGATE_KEYS (db/schema/pam.ts) — each inverts one match*
+ * criterion ("does NOT match").
+ */
+export const PAM_RULE_NEGATE_KEYS = [
+  'signer',
+  'hash',
+  'pathGlob',
+  'parentImage',
+  'commandLine',
+  'user',
+  'adGroup',
+  'toolName',
+  'riskTier',
+] as const;
+export type PamRuleNegateKey = (typeof PAM_RULE_NEGATE_KEYS)[number];
+
+/** Per-org default verdict for an elevation that matches no policy and no rule. */
+export type PamUnmatchedVerdict = 'require_approval' | 'auto_deny';
+
 export interface PamRule {
   id: string;
   orgId: string;
@@ -80,10 +101,12 @@ export interface PamRule {
   matchHash?: string | null;
   matchPathGlob?: string | null;
   matchParentImage?: string | null;
+  matchCommandLine?: string | null;
   matchUser?: string | null;
   matchAdGroup?: string | null;
   matchToolName?: string | null;
   matchRiskTier?: number | null;
+  matchNegate?: PamRuleNegateKey[] | null;
   timeWindow?: PamTimeWindow | null;
   verdict: PamVerdict;
   approvalDurationMinutes?: number | null;
