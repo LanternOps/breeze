@@ -33,8 +33,8 @@ Out of scope (unchanged from Phase 4 deferrals):
 | Where does the sender-domain mapping live? | **New table** `customer_email_domains`, not a column on `partner_inbound_domains`. Recipient-domain (MSP inbound address) and sender-domain (customer identity) are semantically distinct with different uniqueness rules. |
 | Does a domain match auto-create the ticket? | **Always.** That is the point of mapping the domain. |
 | What is toggleable? | **Only contact/portal-user creation** — it has login/notification side effects. Per-domain-row `autoCreateContact` flag (default on). |
-| Triage-org fallback default | **Off.** Opt-in via a `triageUnknownSenders` boolean + the `defaultTriageOrgId` picker. When off, behavior is unchanged (quarantine). |
-| Spoofing guard | Auto-routing on a domain/triage match requires the **Mailgun SPF/DKIM result to pass**; on auth failure the email quarantines even if the domain matches. |
+| Triage-org fallback default | **Off.** Opt-in via a `triageUnknownSenders` boolean + the `defaultTriageOrgId` picker. Both live in `partners.settings` JSONB (`settings.ticketing.inbound`) — no column/migration. When off, behavior is unchanged (quarantine). |
+| Spoofing guard | **Reuse the existing gate.** `inboundEmailService.ts` already quarantines unmatched emails unless `senderAuth.verified` (Mailgun **DMARC-pass**, the only From-domain-aligned signal). The new domain/triage routing sits behind that gate and inherits it — no new gate is built. |
 
 ## Org-resolution precedence (new-ticket path)
 
@@ -45,7 +45,7 @@ In `inboundEmailService.ts`, for an inbound email that is **not** a reply to a l
 3. **Triage fallback** — partner has `triageUnknownSenders` enabled **and** `defaultTriageOrgId` set → that catch-all org. *(NEW wiring.)* Create the ticket; **no** contact auto-create (the customer is unknown).
 4. **Quarantine** — none matched. *(Existing.)*
 
-**Spoofing gate:** Steps 2 and 3 (the new auto-route paths) only proceed when the inbound payload's SPF/DKIM verification passes. On auth failure, fall through to quarantine even if a domain matched. Step 1 is unchanged from Phase 4 (it already trusts the From address); steps 2–3 widen that trust to a whole domain, so the gate is required to prevent `From:`-header forgery from filing tickets into a customer's org.
+**Spoofing gate (already present):** `inboundEmailService.ts` already requires `senderAuth.verified` (Mailgun DMARC-pass) before an unmatched email reaches sender resolution — unverified senders quarantine with `'unverified sender (SPF/DKIM/DMARC)'`. The new steps 2–3 are inserted *after* that existing gate, so they inherit it: a forged `From: @acme.com` that fails DMARC never reaches domain routing. DMARC-pass is specifically the From-domain-aligned signal (a standalone SPF/DKIM pass is deliberately not treated as verified), which is exactly the trust we need to route on the From domain. No new gate is added.
 
 ## Data model — `customer_email_domains` (new table)
 
@@ -83,7 +83,7 @@ Reject mapping free-provider domains (`gmail.com`, `outlook.com`, `hotmail.com`,
 
 - New `resolveOrgBySenderDomain(fromAddress, partnerId): { orgId, autoCreateContact } | null` in `apps/api/src/services/inboundEmail/` (system-context; used by the worker). Keyed on the **sender** (From) domain — kept separate from `resolvePartnerByRecipient`, which keys on the **recipient**.
 - `inboundEmailService.ts` new-ticket path calls it after the existing portal-user lookup fails and before quarantine, applying the precedence and SPF/DKIM gate above.
-- **Auto-created contact** = a `portal_users` row with `org_id`, email, display name (from the `From` header), `source = 'email_auto'`, and **no password / non-login status**. It exists for attribution and future threading only and must **not** be an auth-capable account — explicitly not a portal-login bypass. The ticket's `submittedBy` points at it; the next email from the same sender then matches precedence step 1.
+- **Auto-created contact** = a `portal_users` row with `org_id`, email, display name (from the `From` header), and `passwordHash: null`. A null hash is inherently non-login (the Entra path already creates password-less rows, so this is an existing shape, not a new one) — explicitly not a portal-login bypass. `authMethod` stays `'password'`, `status` `'active'` so the contact can receive notifications/autoresponses. The ticket's `submittedBy` points at it; the next email from the same sender then matches precedence step 1. (No `source` column exists on `portal_users` and none is added — the table is auth-sensitive and left unchanged.)
 
 ## API (partner/admin-scoped, under `ticket-config`)
 
@@ -118,6 +118,7 @@ Authz:
 
 ## Migration & rollout notes
 
-- Single additive migration creating `customer_email_domains` + RLS policies (idempotent, date-prefixed `2026-06-20-*`). `triageUnknownSenders` added to the existing partner ticket-settings table via `ADD COLUMN IF NOT EXISTS` (default false → unchanged behavior on deploy).
+- Single additive migration creating `customer_email_domains` + RLS policies (idempotent, date-prefixed `2026-06-20-*`). The composite FK `(org_id, partner_id) → organizations(id, partner_id)` reuses the unique constraint already present on `organizations(id, partner_id)` (used by `ticket_categories` and `users`); confirm it exists during Task 1.
+- `triageUnknownSenders` is **not** a column — it lives in `partners.settings` JSONB at `settings.ticketing.inbound.triageUnknownSenders`, alongside the existing `defaultTriageOrgId`. No migration; default-absent reads as `false`.
 - No backfill. Behavior is opt-in: with no domain mappings and triage disabled, routing is identical to Phase 4.
-- Confirm during planning where `defaultTriageOrgId` is currently persisted and that the SPF/DKIM result is available on the inbound payload at the resolution point.
+- Resolution findings (verified during planning): `defaultTriageOrgId` is persisted in `partners.settings` JSONB; the DMARC-pass auth signal is on `NormalizedInboundEmail.senderAuth.verified` and already gates the unmatched-email path at `inboundEmailService.ts:172`.
