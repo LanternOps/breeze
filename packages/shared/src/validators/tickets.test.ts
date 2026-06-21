@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
-  ticketCategoryInputSchema, bulkTicketActionSchema
+  ticketCategoryInputSchema, bulkTicketActionSchema, editCommentSchema, moveTicketOrgSchema
 } from './tickets';
 
 describe('ticket validators', () => {
@@ -149,6 +149,25 @@ describe('ticket validators', () => {
       expect(bulkTicketActionSchema.safeParse({ ticketIds: ['not-a-uuid'], action: 'status', status: 'closed' }).success).toBe(false);
       const tooMany = Array.from({ length: 101 }, () => ID);
       expect(bulkTicketActionSchema.safeParse({ ticketIds: tooMany, action: 'status', status: 'closed' }).success).toBe(false);
+    });
+  });
+
+  describe('editCommentSchema', () => {
+    it('accepts non-empty content', () => {
+      expect(editCommentSchema.parse({ content: 'updated' })).toEqual({ content: 'updated' });
+    });
+    it('rejects empty content', () => {
+      expect(editCommentSchema.safeParse({ content: '' }).success).toBe(false);
+    });
+  });
+
+  describe('moveTicketOrgSchema', () => {
+    it('accepts a uuid orgId', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      expect(moveTicketOrgSchema.parse({ orgId: id })).toEqual({ orgId: id });
+    });
+    it('rejects a non-uuid orgId', () => {
+      expect(moveTicketOrgSchema.safeParse({ orgId: 'nope' }).success).toBe(false);
     });
   });
 });
