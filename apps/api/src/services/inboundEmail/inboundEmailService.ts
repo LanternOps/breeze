@@ -224,7 +224,7 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
     if (domainMatch) {
       const submittedBy = domainMatch.autoCreateContact
         ? await findOrCreateEmailContact(domainMatch.orgId, n.from, n.fromName ?? null)
-        : null;
+        : undefined;
       const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, submittedBy);
       await logInbound(n, partnerId, 'created', t.id);
       return;
@@ -235,7 +235,7 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
     // unknown. Default-off: absent settings keep the Phase 4 quarantine behavior.
     const policy = await loadPartnerInboundPolicy(partnerId);
     if (policy.triageUnknownSenders && policy.defaultTriageOrgId) {
-      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null);
+      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null);
       await logInbound(n, partnerId, 'created', t.id);
       return;
     }

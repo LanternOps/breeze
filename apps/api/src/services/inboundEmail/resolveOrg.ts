@@ -57,7 +57,7 @@ export async function findOrCreateEmailContact(
     .insert(portalUsers)
     .values({ orgId, email: lower, name, passwordHash: null, authMethod: 'password', status: 'active' })
     .returning({ id: portalUsers.id });
-  return inserted[0].id;
+  return inserted[0]!.id;
 }
 
 /**

@@ -7,12 +7,14 @@ import type { AuthContext } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import {
   createTicketStatusSchema, updateTicketStatusSchema, reorderTicketStatusesSchema,
-  prioritySettingsSchema
+  prioritySettingsSchema,
+  createCustomerEmailDomainSchema, updateCustomerEmailDomainSchema
 } from '@breeze/shared';
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
   upsertPrioritySettings, TicketConfigServiceError,
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
+  listCustomerEmailDomains, createCustomerEmailDomain, updateCustomerEmailDomain, deleteCustomerEmailDomain,
 } from '../services/ticketConfigService';
 
 export const ticketConfigRoutes = new Hono();
@@ -112,6 +114,53 @@ ticketConfigRoutes.patch('/email-inbound/:id/dismiss', scopes, writePerm, adminM
     const { id } = c.req.valid('param');
     const row = await dismissEmailInbound(partnerId, id);
     return c.json({ data: row });
+  } catch (err) {
+    return handleServiceError(c, err);
+  }
+});
+
+// --- Phase 5: customer email-domain routing (sender domain -> customer org) ---
+
+// GET /inbound-domains — list this partner's sender-domain mappings (joined org name).
+ticketConfigRoutes.get('/inbound-domains', scopes, readPerm, adminMiddleware, async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  const data = await listCustomerEmailDomains(partnerId);
+  return c.json({ data });
+});
+
+// POST /inbound-domains — map a customer sender domain to one of the partner's orgs.
+ticketConfigRoutes.post('/inbound-domains', scopes, writePerm, adminMiddleware, zValidator('json', createCustomerEmailDomainSchema), async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  const auth = c.get('auth') as AuthContext;
+  try {
+    const row = await createCustomerEmailDomain(partnerId, c.req.valid('json'), { userId: auth.user.id });
+    return c.json({ data: row });
+  } catch (err) {
+    return handleServiceError(c, err);
+  }
+});
+
+// PATCH /inbound-domains/:id — update org/auto-create/active for a mapping.
+ticketConfigRoutes.patch('/inbound-domains/:id', scopes, writePerm, adminMiddleware, zValidator('param', idParam), zValidator('json', updateCustomerEmailDomainSchema), async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  try {
+    const row = await updateCustomerEmailDomain(partnerId, c.req.valid('param').id, c.req.valid('json'));
+    return c.json({ data: row });
+  } catch (err) {
+    return handleServiceError(c, err);
+  }
+});
+
+// DELETE /inbound-domains/:id — remove a mapping.
+ticketConfigRoutes.delete('/inbound-domains/:id', scopes, writePerm, adminMiddleware, zValidator('param', idParam), async (c) => {
+  const partnerId = requirePartnerId(c);
+  if (partnerId instanceof Response) return partnerId;
+  try {
+    await deleteCustomerEmailDomain(partnerId, c.req.valid('param').id);
+    return c.json({ data: { ok: true } });
   } catch (err) {
     return handleServiceError(c, err);
   }

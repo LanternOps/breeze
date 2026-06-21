@@ -280,7 +280,9 @@ export type TicketConfigServiceErrorCode =
   | 'INBOUND_ROW_NOT_FOUND'
   | 'INBOUND_ROW_ALREADY_RESOLVED'
   | 'INBOUND_ROW_NO_SENDER'
-  | 'ORG_NOT_ACCESSIBLE';
+  | 'ORG_NOT_ACCESSIBLE'
+  | 'DOMAIN_ALREADY_MAPPED'
+  | 'DOMAIN_MAPPING_NOT_FOUND';
 
 export class TicketConfigServiceError extends Error {
   constructor(message: string, public status: 400 | 404 | 409 = 400, public code?: TicketConfigServiceErrorCode) {
@@ -834,7 +836,7 @@ export async function createCustomerEmailDomain(
         createdBy: actor.userId,
       })
       .returning();
-    return row;
+    return row!;
   } catch (err) {
     if (isPgUniqueViolation(err)) {
       throw new TicketConfigServiceError('That domain is already mapped', 409, 'DOMAIN_ALREADY_MAPPED');

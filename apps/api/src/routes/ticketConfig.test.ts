@@ -10,6 +10,10 @@ const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
     listEmailInboundQueue: vi.fn(),
     convertEmailInbound: vi.fn(),
     dismissEmailInbound: vi.fn(),
+    listCustomerEmailDomains: vi.fn(),
+    createCustomerEmailDomain: vi.fn(),
+    updateCustomerEmailDomain: vi.fn(),
+    deleteCustomerEmailDomain: vi.fn(),
   },
   authRef: {
     current: {
@@ -274,5 +278,108 @@ describe('PATCH /ticket-config/email-inbound/:id/dismiss', () => {
     serviceMocks.dismissEmailInbound.mockRejectedValue(new TicketConfigServiceError('done', 409, 'INBOUND_ROW_ALREADY_RESOLVED'));
     const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/dismiss`, { method: 'PATCH' });
     expect(res.status).toBe(409);
+  });
+});
+
+describe('inbound-domains routes (Phase 5)', () => {
+  const ORG_ID = 'aaaaaaaa-1111-4222-8333-444455556666';
+  const MAP_ID = 'bbbbbbbb-1111-4222-8333-444455556666';
+
+  it('GET 403 for a non-admin', async () => {
+    const res = await ticketConfigRoutes.request('/inbound-domains');
+    expect(res.status).toBe(403);
+  });
+
+  it('GET 200 lists mappings for an admin', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.listCustomerEmailDomains.mockResolvedValue([
+      { id: MAP_ID, domain: 'acme.com', orgId: ORG_ID, orgName: 'ACME', autoCreateContact: true, isActive: true },
+    ]);
+    const res = await ticketConfigRoutes.request('/inbound-domains');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [{ id: MAP_ID, domain: 'acme.com', orgId: ORG_ID, orgName: 'ACME', autoCreateContact: true, isActive: true }] });
+    expect(serviceMocks.listCustomerEmailDomains).toHaveBeenCalledWith('p-1');
+  });
+
+  it('POST 403 for a non-admin', async () => {
+    const res = await ticketConfigRoutes.request('/inbound-domains', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: 'acme.com', orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('POST 200 creates a mapping for an admin', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.createCustomerEmailDomain.mockResolvedValue({ id: MAP_ID, domain: 'acme.com' });
+    const res = await ticketConfigRoutes.request('/inbound-domains', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: 'ACME.com', orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { id: MAP_ID, domain: 'acme.com' } });
+    // domain lowercased by the validator; actor.userId threaded from auth.
+    expect(serviceMocks.createCustomerEmailDomain).toHaveBeenCalledWith(
+      'p-1',
+      expect.objectContaining({ domain: 'acme.com', orgId: ORG_ID }),
+      { userId: 'u-1' },
+    );
+  });
+
+  it('POST 400 for a freemail domain (validator rejects before the service)', async () => {
+    permsRef.current = ADMIN_PERMS;
+    const res = await ticketConfigRoutes.request('/inbound-domains', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: 'gmail.com', orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.createCustomerEmailDomain).not.toHaveBeenCalled();
+  });
+
+  it('POST maps ORG_NOT_ACCESSIBLE to 400 (cross-partner org IDOR)', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.createCustomerEmailDomain.mockRejectedValue(
+      new TicketConfigServiceError('That organization is not in your partner', 400, 'ORG_NOT_ACCESSIBLE'),
+    );
+    const res = await ticketConfigRoutes.request('/inbound-domains', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: 'acme.com', orgId: ORG_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'ORG_NOT_ACCESSIBLE' });
+  });
+
+  it('PATCH maps a not-found mapping to 404', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.updateCustomerEmailDomain.mockRejectedValue(
+      new TicketConfigServiceError('Domain mapping not found', 404, 'DOMAIN_MAPPING_NOT_FOUND'),
+    );
+    const res = await ticketConfigRoutes.request(`/inbound-domains/${MAP_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: false }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE 200 for an admin', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.deleteCustomerEmailDomain.mockResolvedValue(undefined);
+    const res = await ticketConfigRoutes.request(`/inbound-domains/${MAP_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.deleteCustomerEmailDomain).toHaveBeenCalledWith('p-1', MAP_ID);
+  });
+
+  it('DELETE maps a not-found mapping to 404', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.deleteCustomerEmailDomain.mockRejectedValue(
+      new TicketConfigServiceError('Domain mapping not found', 404, 'DOMAIN_MAPPING_NOT_FOUND'),
+    );
+    const res = await ticketConfigRoutes.request(`/inbound-domains/${MAP_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
   });
 });
