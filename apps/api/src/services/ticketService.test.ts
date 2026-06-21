@@ -1755,8 +1755,8 @@ describe('deleteTicketComment', () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
       .mockResolvedValueOnce([BASE_TICKET]);
-    // delete path: update returns (no returning needed, but mock shape needs it)
-    dbMocks.updateReturning.mockResolvedValue([]);
+    // delete path: update returns the soft-deleted row (required by TOCTOU guard)
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
 
     const res = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: false });
 
@@ -1787,7 +1787,7 @@ describe('deleteTicketComment', () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
       .mockResolvedValueOnce([BASE_TICKET]);
-    dbMocks.updateReturning.mockResolvedValue([]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
 
     const res = await deleteTicketComment('c1', { userId: 'admin' }, { canManageAny: true });
     expect(res.id).toBe('c1');
@@ -1811,6 +1811,21 @@ describe('deleteTicketComment', () => {
 
     const err = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
     expect(err.status).toBe(409);
+  });
+
+  it('throws 409 when the soft-delete update races and returns zero rows (TOCTOU)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    // Simulate concurrent soft-delete: the UPDATE matched nothing.
+    dbMocks.updateReturning.mockResolvedValue([]);
+
+    const err = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: false }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    // Audit and event must NOT have fired.
+    expect(auditMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 });
 

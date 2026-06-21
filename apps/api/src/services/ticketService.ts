@@ -983,11 +983,14 @@ export async function deleteTicketComment(
   assertCommentEditable(comment, actor, opts.canManageAny);
 
   const previousContent = comment.content;
-  await db
+  const deleted = await db
     .update(ticketComments)
     .set({ deletedAt: new Date() })
     .where(eq(ticketComments.id, commentId))
     .returning();
+  if (deleted.length === 0) {
+    throw new TicketServiceError('Comment not found or already deleted', 409);
+  }
 
   await emitTicketEvent({
     type: 'ticket.commented',
@@ -1029,6 +1032,7 @@ export async function portalCommentMutable(
 
   // Single query: select authorType for all later comments on this ticket.
   // If any has authorType !== 'portal' the edit window is closed.
+  // Deleted later comments still close the window — staff acted, then withdrew.
   const laterRows = await db
     .select({ authorType: ticketComments.authorType })
     .from(ticketComments)
