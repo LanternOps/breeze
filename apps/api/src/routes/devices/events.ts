@@ -37,6 +37,14 @@ const eventsParamSchema = z.object({
   id: z.string().guid(),
 });
 
+// Build a case-sensitive LIKE prefix pattern from a user-supplied action prefix.
+// The three LIKE metacharacters (% _ \) are escaped so a value like `device_x`
+// matches the literal underscore instead of acting as a single-char wildcard;
+// the trailing `%` makes it a prefix match. Postgres' default LIKE escape is `\`.
+export function likePrefixPattern(prefix: string): string {
+  return prefix.replace(/[%_\\]/g, '\\$&') + '%';
+}
+
 const eventsQuerySchema = z.object({
   search: z.string().max(200).optional(),
   category: eventCategoryEnum.optional(),
@@ -125,11 +133,11 @@ eventsRoutes.get(
 
     if (actions && actions.length > 0) {
       // Match any of the supplied action prefixes (server-side equivalent of the
-      // overview pane's "deliberate action" filter). `like` with an escaped
+      // overview pane's "deliberate action" filter). `LIKE` with an escaped
       // prefix keeps it index-friendly and avoids ILIKE's case-fold cost — audit
       // action keys are already lowercase dotted identifiers.
       conditions.push(
-        or(...actions.map((prefix) => sql`${auditLogs.action} LIKE ${prefix.replace(/[%_\\]/g, '\\$&') + '%'}`))!
+        or(...actions.map((prefix) => sql`${auditLogs.action} LIKE ${likePrefixPattern(prefix)}`))!
       );
     }
 
