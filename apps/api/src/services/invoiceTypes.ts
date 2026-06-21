@@ -1,9 +1,11 @@
-export type InvoiceStatus =
-  | 'draft' | 'sent' | 'partially_paid' | 'overdue' | 'paid' | 'void';
-export type InvoiceLineSourceType =
-  | 'time_entry' | 'part' | 'catalog' | 'bundle' | 'manual' | 'contract';
-export type PaymentMethod =
-  | 'cash' | 'check' | 'bank_transfer' | 'card' | 'other';
+// Invoice-domain enum types come from the single source of truth in
+// @breeze/shared (packages/shared/src/types/billing-enums.ts). Re-exported here
+// so existing `from './invoiceTypes'` consumers are unaffected.
+export type {
+  InvoiceStatus,
+  InvoiceLineSourceType,
+  PaymentMethod,
+} from '@breeze/shared';
 
 export interface InvoiceActor {
   /** The user who initiated the action, or null for system/background actors (e.g. contract worker). */
