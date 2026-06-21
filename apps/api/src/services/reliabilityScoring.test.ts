@@ -184,6 +184,15 @@ describe('computeUptimePercent', () => {
     expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
   });
 
+  it('is a no-op when enrollment falls exactly on the window start (boundary)', () => {
+    // enrolledAt === now - windowDays: the clamp Math.max picks fixedStartSeconds,
+    // so the denominator stays the full window — identical to the no-enrollment call.
+    const enrolledAt = new Date(now.getTime() - 90 * DAY * 1000);
+    const latest = makeLatest(120 * DAY, 120 * DAY);
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(computeUptimePercent(latest, 90, now));
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
+  });
+
   it('returns 100 when enrollment is at or after now (zero-length window)', () => {
     const latest = makeLatest(0, 0);
     expect(computeUptimePercent(latest, 90, now, now)).toBe(100);
@@ -289,6 +298,53 @@ describe('computeTopIssues', () => {
       criticalHardwareCount30d: 2,
     });
     expect(issues.length).toBeLessThanOrEqual(5);
+  });
+
+  // #1738: a newly-enrolled device that has been up its whole (short) life now
+  // computes uptime30d === 100 thanks to the enrollment clamp, so it must NOT
+  // be flagged with an `uptime` top-issue purely for time before it existed.
+  it('does not flag an uptime issue when uptime30d is 100 (young all-up device)', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 100,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+    });
+    expect(issues.find((i) => i.type === 'uptime')).toBeUndefined();
+  });
+
+  it('flags an uptime issue (warning) when uptime30d is between 90 and 95', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 92,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+    });
+    const uptime = issues.find((i) => i.type === 'uptime');
+    expect(uptime?.severity).toBe('warning');
+  });
+
+  it('flags an uptime issue (critical) when uptime30d is below 90', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 80,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+    });
+    const uptime = issues.find((i) => i.type === 'uptime');
+    expect(uptime?.severity).toBe('critical');
   });
 });
 

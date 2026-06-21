@@ -219,6 +219,10 @@ function computeUptimePercent(
   // enrollment timestamp. This keeps pre-existence time out of the denominator
   // (#1738) — a device enrolled 2 days ago is measured over ~2 days, not 90.
   const fixedStartSeconds = nowSeconds - fullWindowSeconds;
+  // `devices.enrolledAt` is NOT NULL (defaults to now()), so in practice it is
+  // always supplied. If it is ever missing we deliberately fall back to the
+  // fixed window start, i.e. the unclamped pre-#1738 behavior, rather than
+  // guess an enrollment time.
   const enrolledSeconds = enrolledAt ? Math.floor(enrolledAt.getTime() / 1000) : fixedStartSeconds;
   const windowStartSeconds = Math.max(fixedStartSeconds, enrolledSeconds);
   // Denominator is the length of the (possibly shortened) measurement window.
