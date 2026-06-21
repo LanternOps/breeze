@@ -33,6 +33,36 @@ describe('createContractSchema', () => {
   });
 });
 
+describe('auto-renew fields', () => {
+  const base = {
+    orgId: '11111111-1111-1111-1111-111111111111',
+    name: 'Acme', billingTiming: 'advance' as const, intervalMonths: 1, startDate: '2026-07-01'
+  };
+  it('accepts a fixed-term auto-renew contract', () => {
+    const r = createContractSchema.safeParse({
+      ...base, endDate: '2027-07-01', autoRenew: true, renewalTermMonths: 12, renewalNoticeDays: 30
+    });
+    expect(r.success).toBe(true);
+  });
+  it('rejects autoRenew without an endDate (cannot renew an indefinite contract)', () => {
+    const r = createContractSchema.safeParse({ ...base, autoRenew: true, renewalTermMonths: 12 });
+    expect(r.success).toBe(false);
+  });
+  it('rejects autoRenew without a renewalTermMonths', () => {
+    const r = createContractSchema.safeParse({ ...base, endDate: '2027-07-01', autoRenew: true });
+    expect(r.success).toBe(false);
+  });
+  it('rejects renewalTermMonths < 1', () => {
+    const r = createContractSchema.safeParse({
+      ...base, endDate: '2027-07-01', autoRenew: true, renewalTermMonths: 0
+    });
+    expect(r.success).toBe(false);
+  });
+  it('allows clearing auto-renew on update', () => {
+    expect(updateContractSchema.safeParse({ autoRenew: false }).success).toBe(true);
+  });
+});
+
 describe('contractLineInputSchema', () => {
   it('requires manualQuantity for manual lines', () => {
     expect(contractLineInputSchema.safeParse({

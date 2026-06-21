@@ -172,6 +172,19 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
   if (patch.autoIssue !== undefined)      safeSet.autoIssue      = patch.autoIssue;
   if ('notes' in patch)                   safeSet.notes          = patch.notes ?? null;
   if ('terms' in patch)                   safeSet.terms          = patch.terms ?? null;
+  if (patch.autoRenew !== undefined)      safeSet.autoRenew      = patch.autoRenew;
+  if ('renewalTermMonths' in patch)       safeSet.renewalTermMonths = patch.renewalTermMonths ?? null;
+  if ('renewalNoticeDays' in patch)       safeSet.renewalNoticeDays = patch.renewalNoticeDays ?? null;
+  // Post-merge invariant: auto-renew requires both an end date and a renewal term.
+  // updateContractSchema is a bare object that cannot cross-validate against the persisted
+  // row (the patch may only send autoRenew:true without re-sending endDate). We compute
+  // the effective values by merging the patch over the persisted row and check here.
+  const effectiveAutoRenew   = safeSet.autoRenew   !== undefined ? safeSet.autoRenew   : c.autoRenew;
+  const effectiveEndDate     = safeSet.endDate      !== undefined ? safeSet.endDate     : c.endDate;
+  const effectiveTerm        = safeSet.renewalTermMonths !== undefined ? safeSet.renewalTermMonths : c.renewalTermMonths;
+  if (effectiveAutoRenew && (effectiveEndDate == null || effectiveTerm == null)) {
+    throw new ContractServiceError('auto-renew requires an end date and renewal term', 400);
+  }
   await db.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
   return getOwnedContractOr404(contractId, actor);
 }

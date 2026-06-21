@@ -653,6 +653,46 @@ describe('contractService generation', () => {
   });
 });
 
+describe('contractService auto-renew invariant guard', () => {
+  it('rejects PATCH {autoRenew:true} when the persisted contract has no endDate or renewalTermMonths', async () => {
+    const { actor, orgId } = await seedOrg();
+    // Create a contract with no endDate (indefinite).
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'AR Test', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    // Attempting to enable auto-renew without endDate/renewalTermMonths must throw 400.
+    await expect(
+      withSystemDbAccessContext(() => updateContract(c.id, { autoRenew: true } as never, actor))
+    ).rejects.toSatisfy((e: unknown) => {
+      expect(e).toBeInstanceOf(ContractServiceError);
+      expect((e as ContractServiceError).status).toBe(400);
+      return true;
+    });
+  });
+
+  it('accepts PATCH {autoRenew:true} when the persisted contract already has endDate and renewalTermMonths', async () => {
+    const { actor, orgId } = await seedOrg();
+    // Pre-seed a contract with endDate and renewalTermMonths already set via direct insert.
+    let contractId = '';
+    await withSystemDbAccessContext(async () => {
+      const [org] = await db.select({ partnerId: organizations.partnerId })
+        .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      const [c] = await db.insert(contracts).values({
+        partnerId: org!.partnerId, orgId, name: 'AR Ok', status: 'draft',
+        billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01',
+        endDate: '2027-07-01', renewalTermMonths: 12,
+        autoIssue: false, currencyCode: 'USD', createdBy: null
+      }).returning({ id: contracts.id });
+      contractId = c!.id;
+    });
+    // Setting autoRenew:true when endDate and renewalTermMonths are already present must succeed.
+    const updated = await withSystemDbAccessContext(() =>
+      updateContract(contractId, { autoRenew: true } as never, actor)
+    );
+    expect(updated.autoRenew).toBe(true);
+  });
+});
+
 describe('contractService illegal lifecycle transitions', () => {
   // Table-driven tests for invalid state transitions that must throw ContractServiceError.
   // Each case brings the contract to the required starting state, then asserts the
