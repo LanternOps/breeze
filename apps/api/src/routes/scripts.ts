@@ -11,7 +11,10 @@ import {
   devices,
   deviceCommands,
   automationPolicies,
-  patchPolicies
+  patchPolicies,
+  configPolicyComplianceRules,
+  configPolicyFeatureLinks,
+  configurationPolicies
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -600,6 +603,15 @@ scriptRoutes.put(
         // (issue #1734 open question — block, don't silently detach/cascade).
         const widening = target.orgId === null; // → partner-wide covers all orgs
         if (!widening) {
+          // These counts run on the caller's request RLS context. The caller is
+          // always partner-scope here (resolveRescopeTarget enforces it), and
+          // all three reference tables resolve to a direct `org_id` (RLS shape
+          // 1) reachable via the partner short-circuit in breeze_has_org_access
+          // — so the partner sees references across ALL their orgs and the count
+          // can't silently under-report for the partner's own rows. A future
+          // RLS change on these tables would weaken this guard; keep them
+          // partner-visible. These cover every non-self-healing `scripts.id` FK
+          // (remediation_suggestions is onDelete:set null, so it self-heals).
           const [autoRef] = await db
             .select({ count: sql<number>`count(*)` })
             .from(automationPolicies)
@@ -613,13 +625,30 @@ scriptRoutes.put(
                 eq(patchPolicies.postInstallScript, scriptId)
               )
             );
+          // config_policy_compliance_rules has no direct org_id — join through
+          // its feature link to the parent configuration_policies (org_id) so
+          // the count is RLS-scoped to the partner's orgs.
+          const [complianceRef] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(configPolicyComplianceRules)
+            .innerJoin(
+              configPolicyFeatureLinks,
+              eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
+            )
+            .innerJoin(
+              configurationPolicies,
+              eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id)
+            )
+            .where(eq(configPolicyComplianceRules.remediationScriptId, scriptId));
           const referenceCount =
-            Number(autoRef?.count ?? 0) + Number(patchRef?.count ?? 0);
+            Number(autoRef?.count ?? 0) +
+            Number(patchRef?.count ?? 0) +
+            Number(complianceRef?.count ?? 0);
           if (referenceCount > 0) {
             return c.json(
               {
                 error:
-                  'Cannot narrow this script\'s scope while it is referenced by automation or patch policies. Detach those references first, or promote it to All Orgs instead.',
+                  'Cannot narrow this script\'s scope while it is referenced by automation, patch, or configuration policies. Detach those references first, or promote it to All Orgs instead.',
                 referencingPolicies: referenceCount
               },
               409
@@ -654,22 +683,31 @@ scriptRoutes.put(
       .where(eq(scripts.id, scriptId))
       .returning();
 
+    // The row was read+authorized above, but RLS (USING) or a concurrent
+    // soft-delete can still leave the UPDATE matching 0 rows. Without this
+    // guard the handler would write a fabricated `script.update` audit (a
+    // scopeChange to null/null that never happened) and return HTTP 200 with a
+    // null body, which the web layer toasts as success — a silent failure.
+    if (!updated) {
+      return c.json({ error: 'Script not found or no longer writable' }, 404);
+    }
+
     writeRouteAudit(c, {
       orgId: resolveScriptAuditOrgId(auth, script.orgId),
       action: 'script.update',
       resourceType: 'script',
-      resourceId: updated?.id,
-      resourceName: updated?.name,
+      resourceId: updated.id,
+      resourceName: updated.name,
       details: {
         changedFields: Object.keys(data),
-        newVersion: updated?.version,
+        newVersion: updated.version,
         // Forensic trail for scope changes (issue #1734): record the old and
         // new scope so a re-scope is auditable.
         ...(data.availability !== undefined
           ? {
               scopeChange: {
                 from: { orgId: script.orgId, partnerId: script.partnerId },
-                to: { orgId: updated?.orgId ?? null, partnerId: updated?.partnerId ?? null }
+                to: { orgId: updated.orgId ?? null, partnerId: updated.partnerId ?? null }
               }
             }
           : {})

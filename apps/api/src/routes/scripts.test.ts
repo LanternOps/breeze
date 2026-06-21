@@ -54,6 +54,9 @@ vi.mock('../db/schema', () => ({
   deviceCommands: {},
   organizations: {},
   patchPolicies: {},
+  configPolicyComplianceRules: {},
+  configPolicyFeatureLinks: {},
+  configurationPolicies: {},
   alertRules: {},
   backupConfigs: {},
   securityPolicies: {},
@@ -1066,16 +1069,24 @@ describe('scripts routes', () => {
 
     // The PUT handler's getScriptWithOrgCheck uses .from().where().limit();
     // the reference-count checks use .from().where() (no .limit()). This mock
-    // serves the existing script for the first call and zero counts thereafter.
+    // serves the existing script for the lookup (.where().limit()) and a count
+    // for each reference-check query. Reference queries take two shapes:
+    // direct `.from().where()` (automation/patch policies) and the
+    // join-chained `.from().innerJoin().innerJoin().where()` (compliance
+    // rules). `refCount` is the per-query count (use 0 for "no references").
     function mockScriptLookup(script: any, refCount = 0) {
+      const countResult = {
+        // count-query path (no .limit) — a thenable resolving to a count row.
+        then: (resolve: (v: any) => void) => resolve([{ count: refCount }]),
+        limit: vi.fn().mockResolvedValue([script]),
+      };
+      const whereMock = vi.fn().mockReturnValue(countResult);
+      const joinable: any = {
+        where: whereMock,
+        innerJoin: vi.fn(() => joinable),
+      };
       vi.mocked(db.select).mockImplementation(() => ({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockImplementation(() => ({
-            // count-query path (no .limit) resolves directly to a count row
-            then: (resolve: (v: any) => void) => resolve([{ count: refCount }]),
-            limit: vi.fn().mockResolvedValue([script]),
-          })),
-        }),
+        from: vi.fn().mockReturnValue(joinable),
       }) as any);
     }
 
@@ -1151,7 +1162,7 @@ describe('scripts routes', () => {
 
       expect(res.status).toBe(409);
       const body = await res.json();
-      expect(body.error).toMatch(/referenced by automation or patch policies/i);
+      expect(body.error).toMatch(/referenced by automation, patch, or configuration policies/i);
     });
 
     it('org-scope user cannot re-scope → 403', async () => {
@@ -1209,6 +1220,114 @@ describe('scripts routes', () => {
       expect(res.status).toBe(200);
       expect(getSet().orgId).toBeUndefined();
       expect(getSet().partnerId).toBeUndefined();
+    });
+
+    it('partner user cannot re-scope a script owned by a different partner → 403 (cross-partner forge guard)', async () => {
+      await withAuth(makePartnerAuth());
+      // Script belongs to a DIFFERENT partner (and would be unreachable via RLS
+      // in prod, but this asserts the route-level ownership guard explicitly).
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Other Partner Script', orgId: null,
+        partnerId: 'b0000000-0000-4000-8000-000000000000',
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'org', orgId: ORG_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/not owned by your partner/i);
+    });
+
+    it('partner user choosing availability=org without an orgId → 400', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Partner-wide Script', orgId: null, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'org' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/orgId is required/i);
+    });
+
+    it('blocks an org→org narrowing re-scope when policy references exist → 409', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 1); // 1 referencing policy
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'org', orgId: ORG_ID_2 }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/referenced by automation, patch, or configuration policies/i);
+    });
+
+    it('records the old→new scope in the script.update audit on a re-scope', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+      captureUpdate({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: null, partnerId: PARTNER_ID, version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'partner' }),
+      });
+
+      expect(res.status).toBe(200);
+      const auditCall = vi.mocked(writeRouteAudit).mock.calls.at(-1)?.[1] as any;
+      expect(auditCall?.details?.scopeChange).toEqual({
+        from: { orgId: ORG_ID, partnerId: PARTNER_ID },
+        to: { orgId: null, partnerId: PARTNER_ID },
+      });
+    });
+
+    it('a 0-row UPDATE (RLS reject / concurrent delete) → 404, no fabricated audit', async () => {
+      await withAuth(makePartnerAuth());
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      });
+      // UPDATE matches no rows (e.g. the RLS USING clause rejects between read
+      // and write) → returning() is empty.
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'partner' }),
+      });
+
+      expect(res.status).toBe(404);
+      // No audit row written for a write that didn't happen.
+      expect(vi.mocked(writeRouteAudit)).not.toHaveBeenCalled();
     });
   });
 });
