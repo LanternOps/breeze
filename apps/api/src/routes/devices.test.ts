@@ -89,6 +89,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },
   deviceHardware: { deviceId: 'deviceId' },
+  deviceReliability: { deviceId: 'deviceId', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
   deviceNetwork: { deviceId: 'deviceId' },
   deviceMetrics: { deviceId: 'deviceId', timestamp: 'timestamp' },
   deviceSoftware: { deviceId: 'deviceId' },
@@ -162,15 +163,21 @@ describe('device routes', () => {
             as: vi.fn(() => ({ deviceId: 'deviceId', latestTimestamp: 'latestTimestamp' }))
           }))
         })),
-        leftJoin: vi.fn(() => ({
-          where: vi.fn(() => Object.assign(Promise.resolve([]), {
-            orderBy: vi.fn(() => ({
-              limit: vi.fn(() => ({
-                offset: vi.fn(() => Promise.resolve([]))
+        // Two chained leftJoins (deviceHardware, then deviceReliability #1720):
+        // each leftJoin returns an object exposing both the next leftJoin and
+        // the terminal where(), so .leftJoin(...).leftJoin(...).where(...) works.
+        leftJoin: vi.fn(function leftJoinMock(): any {
+          return {
+            leftJoin: leftJoinMock,
+            where: vi.fn(() => Object.assign(Promise.resolve([]), {
+              orderBy: vi.fn(() => ({
+                limit: vi.fn(() => ({
+                  offset: vi.fn(() => Promise.resolve([]))
+                }))
               }))
             }))
-          }))
-        })),
+          };
+        }),
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => Promise.resolve([]))
         }))
@@ -504,17 +511,22 @@ describe('device routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 2 }])
           })
         } as any)
-        // 2nd: device list query
+        // 2nd: device list query — two chained leftJoins now (deviceHardware,
+        // then deviceReliability #1720), so the leftJoin mock returns itself
+        // before resolving to the terminal where().
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue(deviceList)
+            leftJoin: vi.fn(function leftJoinMock(): any {
+              return {
+                leftJoin: leftJoinMock,
+                where: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue(deviceList)
+                    })
                   })
                 })
-              })
+              };
             })
           })
         } as any);
