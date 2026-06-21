@@ -106,6 +106,15 @@ export type Device = {
     ramTotalMb?: number;
     diskTotalGb?: number;
   };
+  /**
+   * Headline device reliability score (0-100) from the existing
+   * device_reliability subsystem (#1720). Null/undefined when no score has
+   * been computed yet (newly enrolled, or before the reliability worker runs)
+   * — the Reliability column renders a dash and sorts those rows last.
+   */
+  reliabilityScore?: number | null;
+  /** Reliability trend from the same subsystem; drives the small arrow indicator. */
+  reliabilityTrend?: 'improving' | 'stable' | 'degrading' | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -262,6 +271,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   uptime: d => (d.status === 'online' && d.uptimeSeconds != null ? d.uptimeSeconds : null),
   enrolled: d => (d.enrolledAt ? new Date(d.enrolledAt).getTime() || null : null),
   desktopAccess: d => d.desktopAccess?.mode || null,
+  // No computed score yet (newly enrolled / pre-worker, or a network device)
+  // sorts as a blank-last null to match the dash the cell renders (#1284).
+  reliability: d => (typeof d.reliabilityScore === 'number' ? d.reliabilityScore : null),
 };
 
 export default function DeviceList({
@@ -603,6 +615,22 @@ export default function DeviceList({
     return version ? version : 'N/A';
   };
 
+  // Reliability score band → badge classes. Thresholds mirror
+  // DeviceReliabilityPanel.tsx (scoreClass): ≤50 critical, ≤70 warning,
+  // ≤85 info, else healthy — keep the two in sync so the list badge and the
+  // drill-down panel tell the same story (#1720).
+  const reliabilityBandClass = (score: number): string => {
+    if (score <= 50) return 'bg-destructive/15 text-destructive border-destructive/30';
+    if (score <= 70) return 'bg-warning/15 text-warning border-warning/30';
+    if (score <= 85) return 'bg-info/15 text-info border-info/30';
+    return 'bg-success/15 text-success border-success/30';
+  };
+  const reliabilityTrendGlyph: Record<NonNullable<Device['reliabilityTrend']>, { glyph: string; label: string }> = {
+    improving: { glyph: '↑', label: 'Improving' },
+    stable: { glyph: '→', label: 'Stable' },
+    degrading: { glyph: '↓', label: 'Degrading' },
+  };
+
   // columnDefs is the single source of truth for each toggleable column's
   // header and per-row cell. The thead and tbody iterate `renderedColumns`
   // and pick from this table, so adding a new column means adding one
@@ -925,6 +953,38 @@ export default function DeviceList({
           <td key="desktopAccess" className="px-3 py-3 text-sm text-muted-foreground">
             <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium" title={`mode=${da.mode}; loginUi=${da.loginUiReachable}; virtualDisplay=${da.virtualDisplayReady}`}>
               {da.mode}
+            </span>
+          </td>
+        );
+      },
+    },
+    reliability: {
+      header: () => sortHeader('reliability', 'Reliability', 'Sort by reliability score', true),
+      cell: (device) => {
+        const score = device.reliabilityScore;
+        if (typeof score !== 'number') {
+          // No score computed yet (newly enrolled, pre-worker) or a network
+          // device — render a dash; sortValue maps these to null so they sort
+          // last in both directions (#1284 dash convention).
+          return (
+            <td key="reliability" className="px-3 py-3 text-right text-sm tabular-nums" data-testid={`device-${device.id}-reliability`}>
+              {dash}
+            </td>
+          );
+        }
+        const trend = device.reliabilityTrend ? reliabilityTrendGlyph[device.reliabilityTrend] : null;
+        return (
+          <td key="reliability" className="px-3 py-3 text-right text-sm" data-testid={`device-${device.id}-reliability`}>
+            <span
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium tabular-nums ${reliabilityBandClass(score)}`}
+              title={trend ? `Reliability ${score}/100 · ${trend.label}` : `Reliability ${score}/100`}
+            >
+              {score}
+              {trend && (
+                <span aria-label={trend.label} className="opacity-80">
+                  {trend.glyph}
+                </span>
+              )}
             </span>
           </td>
         );
