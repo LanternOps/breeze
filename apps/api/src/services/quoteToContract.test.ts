@@ -60,7 +60,7 @@ describe('buildContractSpecsFromQuote', () => {
     expect(specs).toHaveLength(1);
     const c = specs[0]!;
     expect(c.intervalMonths).toBe(1);
-    expect(c.status === undefined).toBe(true); // status is set by the persister, not the spec
+    expect(c.notes).toBe('Auto-created from accepted quote Q-1001');
     expect(c.billingTiming).toBe('advance');
     expect(c.orgId).toBe('org-1');
     expect(c.partnerId).toBe('partner-1');
@@ -125,6 +125,19 @@ describe('buildContractSpecsFromQuote', () => {
       'user-1',
     );
     expect(mixed[0]!.endDate).toBeNull();
+  });
+
+  it('leaves endDate null when no line carries a termMonths', () => {
+    const specs = buildContractSpecsFromQuote(
+      quote,
+      [
+        line({ recurrence: 'monthly', termMonths: null }),
+        line({ recurrence: 'monthly', termMonths: null }),
+      ],
+      '2026-06-21',
+      'user-1',
+    );
+    expect(specs[0]!.endDate).toBeNull();
   });
 
   it('falls back to USD when the quote has no currency', () => {
