@@ -1354,6 +1354,7 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
     app = new Hono();
     app.route('/tunnels', tunnelRoutes);
     app.route('/vnc-exchange', vncExchangeRoutes);
+    app.route('/vnc-viewer', vncViewerRoutes);
   });
 
   it('POST /:id/ws-ticket writes a tunnel.ws_ticket.mint audit row', async () => {
@@ -1420,5 +1421,93 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
       result: 'success',
     }));
     expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID }));
+  });
+
+  it('POST /vnc-viewer/upgrade-to-webrtc writes a tunnel.upgrade_webrtc audit row attributed to the tunnel owner', async () => {
+    const NEW_SESSION_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-up',
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      tunnelUserId: USER_ID,
+      tunnelOrgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      tunnelType: 'vnc',
+      tunnelStatus: 'pending',
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    // db.update (terminate stragglers) then db.insert (new desktop session)
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([{ id: NEW_SESSION_ID }]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+    vi.mocked(createViewerAccessToken).mockResolvedValueOnce('viewer-token-up');
+
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    // Viewer-token auth — actor is the tunnel-bound owner, not a JWT subject.
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.upgrade_webrtc',
+      resourceType: 'tunnel_session',
+      resourceId: NEW_SESSION_ID,
+      orgId: ORG_ID,
+      actorId: USER_ID,
+      result: 'success',
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID, type: 'desktop' }));
+  });
+
+  it('POST /vnc-viewer/downgrade-to-vnc writes a tunnel.open audit row for the newly created tunnel', async () => {
+    const NEW_TUNNEL_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-down',
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      userId: USER_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([{ id: NEW_TUNNEL_ID }]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+    vi.mocked(createViewerAccessToken).mockResolvedValueOnce('viewer-token-down');
+
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    // New tunnel created under viewer-token auth — actor is the session-bound owner.
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.open',
+      resourceType: 'tunnel_session',
+      resourceId: NEW_TUNNEL_ID,
+      orgId: ORG_ID,
+      actorId: USER_ID,
+      result: 'success',
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID, type: 'vnc', via: 'downgrade_vnc' }));
   });
 });

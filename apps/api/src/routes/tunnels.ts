@@ -1146,6 +1146,19 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
     sessionId: session.id,
   });
 
+  // Viewer-token auth — no JWT actor. Attribute the upgrade to the tunnel-bound
+  // owner (the user who opened the originating VNC tunnel) so the credential
+  // mint is traceable. logTunnelAudit runs in its own system DB context.
+  await logTunnelAudit(
+    'tunnel.upgrade_webrtc',
+    'tunnel_session',
+    session.id,
+    bound.tunnelUserId,
+    bound.tunnelOrgId,
+    { deviceId: bound.deviceId, type: 'desktop', fromTunnelId: auth.sessionId },
+    getClientIp(c),
+  );
+
   return c.json({
     sessionId: session.id,
     accessToken,
@@ -1260,6 +1273,20 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     email: bound.userEmail,
     sessionId: tunnel.id,
   });
+
+  // This path creates a brand-new tunnel session under viewer-token auth (no
+  // JWT actor), mirroring POST /tunnels — so emit the same tunnel.open audit,
+  // attributed to the session-bound owner. Without this the downgrade opens a
+  // tunnel with no audit trail at all.
+  await logTunnelAudit(
+    'tunnel.open',
+    'tunnel_session',
+    tunnel.id,
+    bound.userId,
+    bound.orgId,
+    { deviceId: bound.deviceId, type: 'vnc', via: 'downgrade_vnc', fromSessionId: auth.sessionId },
+    getClientIp(c),
+  );
 
   return c.json({
     tunnelId: tunnel.id,
