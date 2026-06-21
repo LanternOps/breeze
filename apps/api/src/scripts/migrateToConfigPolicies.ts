@@ -1,4 +1,16 @@
 /**
+ * HISTORICAL ONE-SHOT MIGRATION — already run in production. DO NOT re-run.
+ *
+ * After the 2026-06 partner-scoping of update rings, patch_policies no longer
+ * carries org_id; ring discovery in migratePatchPoliciesLive now resolves by
+ * partner_id. Per-org ring selection is therefore BEST-EFFORT: a partner with
+ * multiple rings across orgs may resolve the same ring for every org.
+ *
+ * Retained for historical reference and to keep the build green. For any fresh
+ * migration, write a new script that accounts for the current schema.
+ */
+
+/**
  * One-shot data migration script: Standalone feature tables -> Configuration Policies.
  *
  * Reads standalone feature tables (alertRules, automations, automationPolicies,
