@@ -122,6 +122,9 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'contract_lines',
   'contracts',
   'custom_field_definitions',
+  // NB: sorts AFTER custom_field_definitions — localeCompare puts the '_' in
+  // 'custom_field' before the 'e' in 'customer' (the prefix-extension trap).
+  'customer_email_domains',
   'delegant_m365_connections',
   'deployment_invites',
   'deployments',
