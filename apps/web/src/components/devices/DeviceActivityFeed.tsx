@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -29,8 +29,6 @@ type ActivityEvent = {
 type DeviceActivityFeedProps = {
   deviceId: string;
   timezone?: string;
-  /** How many activity rows to show on the overview. */
-  limit?: number;
 };
 
 // "Deliberate actions taken on this endpoint." An event is shown only if its
@@ -54,6 +52,15 @@ function ruleFor(action?: string) {
   if (!action) return undefined;
   return ACTION_RULES.find((r) => action.startsWith(r.prefix));
 }
+
+// The same prefix set, sent to the API so the "deliberate action" filter runs
+// server-side (index-backed) instead of over-fetching raw rows and discarding
+// most of them client-side (issue #1726).
+const ACTION_PREFIXES = ACTION_RULES.map((r) => r.prefix).join(',');
+
+// How many filtered rows to request per page. Small fixed window for a fast,
+// predictable first paint; "Load more" pulls the next page on demand.
+const PAGE_SIZE = 10;
 
 // initiatedBy values worth surfacing — a person doing something is implicit via
 // the actor name, but "this happened automatically" is the interesting signal.
@@ -86,48 +93,81 @@ function absoluteTime(value?: string, timezone?: string): string | undefined {
   return formatDateTime(d, timezone ? { timeZone: timezone } : undefined);
 }
 
-export default function DeviceActivityFeed({ deviceId, timezone, limit = 8 }: DeviceActivityFeedProps) {
+export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivityFeedProps) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [activeAlerts, setActiveAlerts] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
+  // Whether the last page came back full, i.e. there may be more to load.
+  const [hasMore, setHasMore] = useState(false);
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(false);
-    try {
-      // Over-fetch raw events, then keep only the endpoint actions. Alerts are
-      // a separate source — we only need the active count for the pinned strip.
-      const [eventsRes, alertsRes] = await Promise.all([
-        fetchWithAuth(`/devices/${deviceId}/events?limit=40`),
-        fetchWithAuth(`/devices/${deviceId}/alerts?status=active`),
-      ]);
-      if (signal?.aborted) return;
-      if (!eventsRes.ok) throw new Error('events');
-
-      const eventsJson = await eventsRes.json();
-      const rawEvents: ActivityEvent[] = Array.isArray(eventsJson?.data) ? eventsJson.data : [];
-      setEvents(rawEvents.filter((e) => ruleFor(e.action)));
-
-      if (alertsRes.ok) {
-        const alertsJson = await alertsRes.json();
-        const payload = alertsJson?.data ?? alertsJson;
-        setActiveAlerts(Array.isArray(payload) ? payload.length : 0);
+  // Fetch one page of deliberate-action events. page 1 (re)loads from scratch;
+  // higher pages append. Filtering runs server-side and the count(*) is skipped
+  // (withTotal omitted), so each page is a bounded index-backed read.
+  const loadPage = useCallback(
+    async (page: number, signal?: AbortSignal) => {
+      const isFirst = page === 1;
+      if (isFirst) {
+        setLoading(true);
+        setError(false);
+      } else {
+        setLoadingMore(true);
       }
-    } catch {
-      if (!signal?.aborted) setError(true);
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
+      try {
+        const eventsUrl = `/devices/${deviceId}/events?limit=${PAGE_SIZE}&page=${page}&actions=${encodeURIComponent(
+          ACTION_PREFIXES
+        )}`;
+        // The active-alert count is only needed on the initial load.
+        const [eventsRes, alertsRes] = await Promise.all([
+          fetchWithAuth(eventsUrl),
+          isFirst ? fetchWithAuth(`/devices/${deviceId}/alerts?status=active`) : Promise.resolve(null),
+        ]);
+        if (signal?.aborted) return;
+        if (!eventsRes.ok) throw new Error('events');
+
+        const eventsJson = await eventsRes.json();
+        const pageEvents: ActivityEvent[] = Array.isArray(eventsJson?.data) ? eventsJson.data : [];
+        setEvents((prev) => (isFirst ? pageEvents : [...prev, ...pageEvents]));
+        setHasMore(pageEvents.length === PAGE_SIZE);
+
+        if (isFirst && alertsRes && alertsRes.ok) {
+          const alertsJson = await alertsRes.json();
+          const payload = alertsJson?.data ?? alertsJson;
+          setActiveAlerts(Array.isArray(payload) ? payload.length : 0);
+        }
+      } catch {
+        if (!signal?.aborted && isFirst) setError(true);
+      } finally {
+        if (!signal?.aborted) {
+          if (isFirst) setLoading(false);
+          else setLoadingMore(false);
+        }
+      }
+    },
+    [deviceId]
+  );
+
+  // Page number for the next "Load more" fetch. Reset to 1 whenever the device
+  // changes so the effect below reloads cleanly.
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    setPage(1);
   }, [deviceId]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
+    void loadPage(1, controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [loadPage]);
 
-  const visible = useMemo(() => events.slice(0, limit), [events, limit]);
+  const loadMore = useCallback(() => {
+    const next = page + 1;
+    setPage(next);
+    void loadPage(next);
+  }, [page, loadPage]);
+
+  const visible = events;
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -166,7 +206,11 @@ export default function DeviceActivityFeed({ deviceId, timezone, limit = 8 }: De
         ) : error ? (
           <p className="text-sm text-muted-foreground">
             Couldn&apos;t load activity.{' '}
-            <button type="button" onClick={() => void load()} className="font-medium text-primary hover:underline">
+            <button
+              type="button"
+              onClick={() => void loadPage(1)}
+              className="font-medium text-primary hover:underline"
+            >
               Retry
             </button>
           </p>
@@ -209,6 +253,17 @@ export default function DeviceActivityFeed({ deviceId, timezone, limit = 8 }: De
               );
             })}
           </ul>
+        )}
+
+        {!loading && !error && hasMore && (
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="mt-3 text-sm font-medium text-primary hover:underline disabled:opacity-60"
+          >
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </button>
         )}
       </div>
 

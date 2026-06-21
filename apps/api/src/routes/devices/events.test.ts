@@ -119,4 +119,49 @@ describe('GET /devices/:id/events validation', () => {
     );
     expect(res.status).toBe(200);
   });
+
+  it('accepts an actions prefix filter', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?actions=device.command,script.,device.patch&limit=10',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an actions value over 500 chars with 400', async () => {
+    const long = 'a.'.repeat(300); // 600 chars
+    const res = await app.request(
+      `/devices/11111111-1111-1111-1111-111111111111/events?actions=${long}`,
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('omits the total count by default (withTotal not set)', async () => {
+    const res = await app.request('/devices/11111111-1111-1111-1111-111111111111/events?limit=10', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { pagination: { total: number | null } };
+    expect(json.pagination.total).toBeNull();
+  });
+
+  it('includes a numeric total when withTotal=true', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?limit=10&withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { pagination: { total: number | null } };
+    expect(json.pagination.total).toBe(0);
+  });
+
+  it('rejects an invalid withTotal value with 400', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?withTotal=maybe',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(400);
+  });
 });
