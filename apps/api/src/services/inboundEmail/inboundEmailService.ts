@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketEmailInbound, tickets, ticketComments, portalUsers, organizations, partners } from '../../db/schema';
 import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
+import { resolveOrgBySenderDomain, findOrCreateEmailContact, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
 import { emitTicketEvent } from '../ticketEvents';
 import { captureException } from '../sentry';
@@ -205,14 +206,42 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
       return;
     }
 
-    // (5)/(6) Unmatched: known portal-user sender -> create; unknown -> quarantine.
+    // (5) Known portal-user sender -> their home org. Most specific; wins over
+    // domain rules (a user who belongs to a sub-org isn't overridden by a
+    // broader domain mapping).
     const sender = await findPortalUserInPartner(n.from, partnerId);
-    if (!sender) {
-      await logInbound(n, partnerId, 'quarantined', null);
+    if (sender) {
+      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, sender.id);
+      await logInbound(n, partnerId, 'created', t.id);
       return;
     }
-    const t = await createFromEmail(n, partnerId, sender.orgId, null, null, sender.id);
-    await logInbound(n, partnerId, 'created', t.id);
+
+    // (6) Sender domain mapped to a customer org (Phase 5) -> ALWAYS create the
+    // ticket; optionally onboard a password-less contact so future replies
+    // thread + attribute. This sits behind the senderAuth.verified (DMARC) gate
+    // above, so a forged From: @customer.com can't file into the customer's org.
+    const domainMatch = await resolveOrgBySenderDomain(n.from, partnerId);
+    if (domainMatch) {
+      const submittedBy = domainMatch.autoCreateContact
+        ? await findOrCreateEmailContact(domainMatch.orgId, n.from, n.fromName ?? null)
+        : null;
+      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, submittedBy);
+      await logInbound(n, partnerId, 'created', t.id);
+      return;
+    }
+
+    // (7) Triage fallback for unknown senders, only if the partner opted in
+    // (settings.ticketing.inbound). No contact is onboarded — the customer is
+    // unknown. Default-off: absent settings keep the Phase 4 quarantine behavior.
+    const policy = await loadPartnerInboundPolicy(partnerId);
+    if (policy.triageUnknownSenders && policy.defaultTriageOrgId) {
+      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null);
+      await logInbound(n, partnerId, 'created', t.id);
+      return;
+    }
+
+    // (8) Nothing matched -> quarantine for manual review.
+    await logInbound(n, partnerId, 'quarantined', null);
   } catch (err) {
     // (7) Any guard/error -> failed, logged under the RESOLVED partner (or null if
     // resolution failed). Never a cross-tenant write.

@@ -148,6 +148,19 @@ vi.mock('../../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DO
 const { resolveMock } = vi.hoisted(() => ({ resolveMock: vi.fn() }));
 vi.mock('./resolvePartner', () => ({ resolvePartnerByRecipient: resolveMock }));
 
+// Phase 5: sender-domain routing helpers. Mocked so the dispatch-precedence
+// tests don't hit the DB — resolveOrg has its own integration suite.
+const { resolveOrgMock, findOrCreateContactMock, loadPolicyMock } = vi.hoisted(() => ({
+  resolveOrgMock: vi.fn(),
+  findOrCreateContactMock: vi.fn(),
+  loadPolicyMock: vi.fn()
+}));
+vi.mock('./resolveOrg', () => ({
+  resolveOrgBySenderDomain: resolveOrgMock,
+  findOrCreateEmailContact: findOrCreateContactMock,
+  loadPartnerInboundPolicy: loadPolicyMock
+}));
+
 const { createTicketMock, changeStatusMock } = vi.hoisted(() => ({
   createTicketMock: vi.fn(),
   changeStatusMock: vi.fn()
@@ -208,6 +221,13 @@ beforeEach(() => {
   maybeSendAutoresponseMock.mockReset();
   captureExceptionMock.mockReset();
   createTicketMock.mockResolvedValue({ id: 't-new', internalNumber: 'T-2026-0009' });
+  // Phase 5 default: no sender-domain mapping, triage off — so an unmatched
+  // unknown sender still quarantines (preserves the pre-Phase-5 behavior).
+  resolveOrgMock.mockReset();
+  resolveOrgMock.mockResolvedValue(null);
+  findOrCreateContactMock.mockReset();
+  loadPolicyMock.mockReset();
+  loadPolicyMock.mockResolvedValue({ triageUnknownSenders: false, defaultTriageOrgId: null });
 });
 
 describe('processInboundEmail', () => {
@@ -729,5 +749,86 @@ describe('processInboundEmail', () => {
     const log = inboundOf();
     expect(log[0]!.parseStatus).toBe('matched');
     expect(log[0]!.ticketId).toBe('t-1');
+  });
+});
+
+describe('processInboundEmail — Phase 5 sender-domain routing', () => {
+  beforeEach(() => {
+    // Verified sender, no dup, no thread/closed match, NOT a known portal user
+    // -> falls through to the new domain/triage/quarantine precedence.
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [];
+    resolveMock.mockResolvedValue('p-1');
+    resolveOrgMock.mockReset();
+    findOrCreateContactMock.mockReset();
+    loadPolicyMock.mockReset();
+    // Safe defaults: no domain match, triage off.
+    resolveOrgMock.mockResolvedValue(null);
+    loadPolicyMock.mockResolvedValue({ triageUnknownSenders: false, defaultTriageOrgId: null });
+  });
+
+  it('routes a mapped domain (autoCreateContact true) -> creates ticket in the org + onboards a contact', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+    findOrCreateContactMock.mockResolvedValue('pu-auto');
+    createTicketMock.mockResolvedValue({ id: 't-d', internalNumber: 'T-2026-0099' });
+
+    await processInboundEmail(email());
+
+    expect(findOrCreateContactMock).toHaveBeenCalledWith('o-9', 'jane@customer.com', 'Jane Doe');
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.orgId).toBe('o-9');
+    expect(input.submittedBy).toBe('pu-auto');
+    expect(inboundOf()[0]!.parseStatus).toBe('created');
+  });
+
+  it('routes a mapped domain (autoCreateContact false) -> creates ticket, NO contact onboarding', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: false });
+    createTicketMock.mockResolvedValue({ id: 't-d', internalNumber: 'T-2026-0099' });
+
+    await processInboundEmail(email());
+
+    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.orgId).toBe('o-9');
+    expect(input.submittedBy ?? null).toBeNull();
+    expect(inboundOf()[0]!.parseStatus).toBe('created');
+  });
+
+  it('falls back to the triage org when enabled and no domain matches (no contact onboarding)', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-triage' }];
+    resolveOrgMock.mockResolvedValue(null);
+    loadPolicyMock.mockResolvedValue({ triageUnknownSenders: true, defaultTriageOrgId: 'o-triage' });
+    createTicketMock.mockResolvedValue({ id: 't-t', internalNumber: 'T-2026-0100' });
+
+    await processInboundEmail(email());
+
+    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.orgId).toBe('o-triage');
+    expect(inboundOf()[0]!.parseStatus).toBe('created');
+  });
+
+  it('quarantines when nothing matches and triage is disabled', async () => {
+    resolveOrgMock.mockResolvedValue(null);
+    loadPolicyMock.mockResolvedValue({ triageUnknownSenders: false, defaultTriageOrgId: null });
+
+    await processInboundEmail(email());
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('does NOT reach domain routing for an unverified sender (existing DMARC gate wins)', async () => {
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+
+    await processInboundEmail(email({ senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false } }));
+
+    expect(resolveOrgMock).not.toHaveBeenCalled();
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
   });
 });
