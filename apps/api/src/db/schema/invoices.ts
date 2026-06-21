@@ -5,16 +5,11 @@ import {
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users } from './users';
+import { INVOICE_STATUSES, INVOICE_LINE_SOURCE_TYPES, PAYMENT_METHODS } from '@breeze/shared';
 
-export const invoiceStatusEnum = pgEnum('invoice_status', [
-  'draft', 'sent', 'partially_paid', 'overdue', 'paid', 'void'
-]);
-export const invoiceLineSourceTypeEnum = pgEnum('invoice_line_source_type', [
-  'time_entry', 'part', 'catalog', 'bundle', 'manual', 'contract'
-]);
-export const paymentMethodEnum = pgEnum('payment_method', [
-  'cash', 'check', 'bank_transfer', 'card', 'other'
-]);
+export const invoiceStatusEnum = pgEnum('invoice_status', [...INVOICE_STATUSES]);
+export const invoiceLineSourceTypeEnum = pgEnum('invoice_line_source_type', [...INVOICE_LINE_SOURCE_TYPES]);
+export const paymentMethodEnum = pgEnum('payment_method', [...PAYMENT_METHODS]);
 
 // Partial-index predicate helpers (real partial indexes created in SQL migration;
 // drizzle-kit only needs these for drift detection).
