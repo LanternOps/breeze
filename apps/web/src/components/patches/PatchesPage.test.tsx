@@ -31,6 +31,17 @@ vi.mock('../../stores/orgStore', () => {
   return { useOrgStore: Object.assign(read, { getState: read }) };
 });
 
+// Mutable JWT scope so individual tests can simulate partner vs. org-scoped sessions.
+const jwtScope = vi.hoisted(() => ({ scope: 'partner' as 'partner' | 'system' | 'organization' | null }));
+
+vi.mock('../../lib/authScope', () => ({
+  getJwtClaims: () => ({
+    scope: jwtScope.scope,
+    partnerId: jwtScope.scope !== 'organization' ? 'p1' : null,
+    orgId: jwtScope.scope === 'organization' ? 'org-1' : null,
+  }),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -45,6 +56,7 @@ describe('PatchesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     orgState.currentOrgId = null;
+    jwtScope.scope = 'partner';
     window.history.replaceState({}, '', '/?tab=patches');
   });
 
@@ -198,7 +210,10 @@ describe('PatchesPage', () => {
     });
   });
 
-  it('disables New Ring in All-orgs mode (currentOrgId null) with a select-an-org hint', async () => {
+  it('partner scope: shows Update Rings tab and enables New Ring even in All-orgs mode', async () => {
+    // Rings are partner-scoped — a partner user in all-orgs mode (no org selected)
+    // should see the tab and be able to open the create form.
+    jwtScope.scope = 'partner';
     orgState.currentOrgId = null;
     window.history.replaceState({}, '', '/?tab=rings');
     fetchMock.mockImplementation(async (input) => {
@@ -210,9 +225,36 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
+    // The Update Rings tab must be visible.
+    expect(await screen.findByRole('button', { name: /Update Rings/i })).toBeInTheDocument();
+
+    // The New Ring button must be enabled (no disabled, no select-an-org hint).
     const newRing = await screen.findByRole('button', { name: /New Ring/i });
-    expect(newRing).toBeDisabled();
-    expect(newRing).toHaveAttribute('title', expect.stringMatching(/select an organization/i));
+    expect(newRing).not.toBeDisabled();
+    expect(newRing).not.toHaveAttribute('title');
+  });
+
+  it('org scope: hides the Update Rings tab and disables New Ring with partner-level hint', async () => {
+    // Org-scoped users don't manage rings — they should not see the tab at all.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/?tab=compliance');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    // Wait for the page to render (compliance tab is default here).
+    await screen.findByRole('button', { name: /Compliance/i });
+
+    // The Update Rings tab must NOT be rendered.
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
   });
 
   it('enables New Ring when a specific org is selected and creates the ring (orgId auto-injected) with a success toast', async () => {
