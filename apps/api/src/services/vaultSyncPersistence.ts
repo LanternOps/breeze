@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gte } from 'drizzle-orm';
 
 import { db } from '../db';
 import { backupSnapshots, localVaults, vaultSnapshotInventory } from '../db/schema';
@@ -15,6 +15,14 @@ export interface ApplyVaultSyncCommandResultInput {
   stdout?: string;
   stderr?: string;
   error?: string;
+  /**
+   * When false, a result whose vault can't be unambiguously derived (explicit
+   * vaultId/vaultPath) is dropped rather than guessed via the single-active-vault
+   * fallback. Used by the orphaned auto-sync path (F5) where the result is not
+   * bound to a server-dispatched command. Defaults to true for the
+   * server-dispatched path, which preserves prior behavior.
+   */
+  allowSingleVaultFallback?: boolean;
 }
 
 function parseStructuredStdout(stdout?: string): Record<string, unknown> {
@@ -38,7 +46,12 @@ function parsePayload(command?: VaultSyncCommandLike | null): { vaultId?: string
   };
 }
 
-async function resolveVaultRecord(deviceId: string, structured: Record<string, unknown>, payload: { vaultId?: string }): Promise<{ id: string; orgId: string } | null> {
+async function resolveVaultRecord(
+  deviceId: string,
+  structured: Record<string, unknown>,
+  payload: { vaultId?: string },
+  allowSingleVaultFallback: boolean,
+): Promise<{ id: string; orgId: string } | null> {
   if (payload.vaultId || structured.vaultId) {
     const [vault] = await db
       .select({ id: localVaults.id, orgId: localVaults.orgId })
@@ -68,6 +81,10 @@ async function resolveVaultRecord(deviceId: string, structured: Record<string, u
     if (vault) return vault;
   }
 
+  if (!allowSingleVaultFallback) {
+    return null;
+  }
+
   const vaults = await db
     .select({ id: localVaults.id, orgId: localVaults.orgId })
     .from(localVaults)
@@ -77,11 +94,69 @@ async function resolveVaultRecord(deviceId: string, structured: Record<string, u
   return vaults.length === 1 ? vaults[0]! : null;
 }
 
+/**
+ * Look up a recently-completed backup snapshot for this device by the provider
+ * snapshot id the agent embedded in the `vault-auto-sync-<snapshotID>` command id.
+ *
+ * The agent derives the auto-sync snapshot id from the backup_run result's
+ * `snapshot.id`, which the server persists as `backup_snapshots.snapshot_id`
+ * (see backupResultPersistence). So a *legitimate* auto-sync always has a matching
+ * snapshot row; a forged orphan result for a snapshot that was never produced has
+ * none. Returns the snapshot (and its org) when found within the freshness window,
+ * else null.
+ */
+export async function findRecentCompletedSnapshotForDevice(
+  deviceId: string,
+  snapshotId: string,
+  freshnessWindowMs: number,
+): Promise<{ id: string; orgId: string; size: number | null } | null> {
+  const cutoff = new Date(Date.now() - freshnessWindowMs);
+  const [snapshot] = await db
+    .select({
+      id: backupSnapshots.id,
+      orgId: backupSnapshots.orgId,
+      size: backupSnapshots.size,
+    })
+    .from(backupSnapshots)
+    .where(
+      and(
+        eq(backupSnapshots.snapshotId, snapshotId),
+        eq(backupSnapshots.deviceId, deviceId),
+        gte(backupSnapshots.timestamp, cutoff)
+      )
+    )
+    .orderBy(desc(backupSnapshots.timestamp))
+    .limit(1);
+  return snapshot ?? null;
+}
+
+/**
+ * Resolve the vault a vault-sync result targets, without mutating anything.
+ * Used by the orphaned auto-sync path (F5) so the caller can derive a stable
+ * consume-once key `(deviceId, snapshotId, vaultId)` before applying. Returns
+ * null when the vault can't be unambiguously derived (the single-active-vault
+ * fallback is disabled here on purpose).
+ */
+export async function resolveVaultForResult(
+  deviceId: string,
+  stdout?: string,
+  command?: VaultSyncCommandLike | null,
+): Promise<{ id: string; orgId: string } | null> {
+  const structured = parseStructuredStdout(stdout);
+  const payload = parsePayload(command);
+  return resolveVaultRecord(deviceId, structured, payload, false);
+}
+
 export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandResultInput): Promise<void> {
   const structured = parseStructuredStdout(input.stdout);
   const payload = parsePayload(input.command);
   const snapshotId = typeof structured.snapshotId === 'string' ? structured.snapshotId : payload.snapshotId ?? null;
-  const vault = await resolveVaultRecord(input.deviceId, structured, payload);
+  const vault = await resolveVaultRecord(
+    input.deviceId,
+    structured,
+    payload,
+    input.allowSingleVaultFallback ?? true,
+  );
 
   if (!vault) {
     console.warn(
