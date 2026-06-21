@@ -15,6 +15,10 @@ vi.mock('./sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../routes/patches/helpers', () => ({
+  resolvePartnerIdForOrg: vi.fn(async (_orgId: string) => 'partner-1'),
+}));
+
 vi.mock('../db/schema', () => ({
   configurationPolicies: { id: 'id', name: 'name', orgId: 'org_id' },
   configPolicyFeatureLinks: {
@@ -38,7 +42,7 @@ vi.mock('../db/schema', () => ({
   },
   patchPolicies: {
     id: 'id',
-    orgId: 'org_id',
+    partnerId: 'partner_id',
     kind: 'kind',
     name: 'name',
     categoryRules: 'category_rules',

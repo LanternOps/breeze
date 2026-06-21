@@ -33,6 +33,7 @@ import { z } from 'zod';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
+import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
 // ============================================
 // Inline settings schemas
@@ -1304,7 +1305,7 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  patch: { table: patchPolicies, orgIdCol: patchPolicies.orgId },
+  // patch is handled separately in validateFeaturePolicyExists (partner-scoped, not org-scoped)
   alert_rule: { table: alertRules, orgIdCol: alertRules.orgId },
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
   security: { table: securityPolicies, orgIdCol: securityPolicies.orgId },
@@ -1325,20 +1326,26 @@ export async function validateFeaturePolicyExists(
       return { valid: true };
     }
 
+    // Rings are partner-scoped: derive the partner from the config policy's org.
+    const partnerId = await resolvePartnerIdForOrg(orgId);
+    if (!partnerId) {
+      return { valid: false, error: `Update ring "${featurePolicyId}" not found — organization has no partner` };
+    }
+
     const [ring] = await db
       .select({ id: patchPolicies.id })
       .from(patchPolicies)
       .where(
         and(
           eq(patchPolicies.id, featurePolicyId),
-          eq(patchPolicies.orgId, orgId),
+          eq(patchPolicies.partnerId, partnerId),
           eq(patchPolicies.kind, 'ring')
         )
       )
       .limit(1);
 
     if (!ring) {
-      return { valid: false, error: `Update ring "${featurePolicyId}" not found in this organization` };
+      return { valid: false, error: `Update ring "${featurePolicyId}" not found for this partner` };
     }
 
     return { valid: true };

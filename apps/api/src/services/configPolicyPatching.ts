@@ -10,6 +10,7 @@ import {
   patchPolicies,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
 export type PatchInlineSettings = z.infer<typeof patchInlineSettingsSchema>;
 export type PatchReferenceClassification =
@@ -164,7 +165,7 @@ function normalizeStoredInlineSettingsWithSalvage(
 }
 
 export async function resolvePatchPolicyReference(
-  orgId: string,
+  partnerId: string,
   featurePolicyId: string | null
 ): Promise<PatchRingResolution> {
   if (!featurePolicyId) {
@@ -187,7 +188,7 @@ export async function resolvePatchPolicyReference(
       autoApprove: patchPolicies.autoApprove,
     })
     .from(patchPolicies)
-    .where(and(eq(patchPolicies.id, featurePolicyId), eq(patchPolicies.orgId, orgId)))
+    .where(and(eq(patchPolicies.id, featurePolicyId), eq(patchPolicies.partnerId, partnerId)))
     .limit(1);
 
   if (patchPolicy) {
@@ -214,7 +215,7 @@ export async function resolvePatchPolicyReference(
   const [configPolicy] = await db
     .select({ id: configurationPolicies.id })
     .from(configurationPolicies)
-    .where(and(eq(configurationPolicies.id, featurePolicyId), eq(configurationPolicies.orgId, orgId)))
+    .where(eq(configurationPolicies.id, featurePolicyId))
     .limit(1);
 
   if (configPolicy) {
@@ -291,7 +292,8 @@ export async function loadPolicyLocalPatchConfig(
       })
     : storedInline;
 
-  const ring = await resolvePatchPolicyReference(row.orgId, row.featurePolicyId);
+  const partnerId = (await resolvePartnerIdForOrg(row.orgId)) ?? '';
+  const ring = await resolvePatchPolicyReference(partnerId, row.featurePolicyId);
 
   return {
     configPolicyId: row.configPolicyId,
@@ -371,7 +373,8 @@ async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow
 
   // TODO: batch-fetch patch policy references to avoid N+1 queries
   for (const row of rows) {
-    const classification = (await resolvePatchPolicyReference(row.orgId, row.referencedTargetId)).classification;
+    const rowPartnerId = (await resolvePartnerIdForOrg(row.orgId)) ?? '';
+    const classification = (await resolvePatchPolicyReference(rowPartnerId, row.referencedTargetId)).classification;
     const inlineSettingsValid = patchInlineSettingsSchema.safeParse(row.storedInlineSettings ?? {}).success;
     const normalizedSettingsPresent = Boolean(row.patchSettingsId);
     const effectiveStatus: PatchEffectiveStatus =
