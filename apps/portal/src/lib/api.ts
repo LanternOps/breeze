@@ -318,7 +318,8 @@ export interface InvoiceSummary {
 }
 
 // Intentional duplicate of SellerSnapshot in apps/api/src/services/sellerSnapshot.ts
-// and apps/web/src/components/billing/invoiceTypes.ts — api/web/portal can't share a package; keep in sync.
+// and apps/web/src/components/billing/invoiceTypes.ts — api/web/portal can't share a *runtime*
+// package; keep in sync. (Type-only `@breeze/shared` imports are fine — erased at build, as above.)
 export interface SellerSnapshot {
   name: string | null;
   address: {
