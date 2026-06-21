@@ -5,6 +5,7 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { CustomerDomainsCard } from './CustomerDomainsCard';
 
 interface InboundConfig {
   enabled: boolean;
@@ -12,6 +13,7 @@ interface InboundConfig {
   addressOverride: string | null;
   defaultTriageOrgId: string | null;
   autoresponderEnabled: boolean;
+  triageUnknownSenders: boolean;
   slug: string;
   domainConfigured: boolean;
 }
@@ -117,7 +119,11 @@ export default function InboundEmailCard() {
   }, [loadAll]);
 
   const saveConfig = useCallback(
-    async (patch: Partial<Pick<InboundConfig, 'enabled' | 'defaultTriageOrgId' | 'autoresponderEnabled'>>) => {
+    async (
+      patch: Partial<
+        Pick<InboundConfig, 'enabled' | 'defaultTriageOrgId' | 'autoresponderEnabled' | 'triageUnknownSenders'>
+      >,
+    ) => {
       if (!cfg) return;
       const next = { ...cfg, ...patch };
       // Send the COMPLETE ticketing.inbound object — PATCH /partners/me shallow-
@@ -128,6 +134,7 @@ export default function InboundEmailCard() {
         enabled: next.enabled,
         defaultTriageOrgId: next.defaultTriageOrgId,
         autoresponderEnabled: next.autoresponderEnabled,
+        triageUnknownSenders: next.triageUnknownSenders,
       };
       if (next.addressOverride) inbound.address = next.addressOverride;
       setSaving(true);
@@ -286,8 +293,7 @@ export default function InboundEmailCard() {
 
         <div className="mt-3">
           <label className="text-xs font-medium" htmlFor="inbound-triage-org">
-            Default triage organization{' '}
-            <span className="text-muted-foreground">(reserved for future use)</span>
+            Default triage organization
           </label>
           <select
             id="inbound-triage-org"
@@ -309,6 +315,17 @@ export default function InboundEmailCard() {
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input
             type="checkbox"
+            checked={cfg.triageUnknownSenders ?? false}
+            disabled={saving || !cfg.defaultTriageOrgId}
+            onChange={(e) => void saveConfig({ triageUnknownSenders: e.target.checked })}
+            data-testid="inbound-triage-toggle"
+          />
+          Route unknown senders to the triage org instead of quarantining
+        </label>
+
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
             checked={cfg.autoresponderEnabled}
             disabled={saving}
             onChange={(e) => void saveConfig({ autoresponderEnabled: e.target.checked })}
@@ -317,6 +334,8 @@ export default function InboundEmailCard() {
           Send an autoresponse acknowledging new email tickets
         </label>
       </section>
+
+      <CustomerDomainsCard />
 
       <section className="rounded-lg border p-4" data-testid="inbound-review-queue">
         <h2 className="mb-1 text-sm font-semibold">Review queue</h2>
