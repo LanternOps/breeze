@@ -113,6 +113,11 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
   // switch (or unmount) cancels BOTH the initial load and any in-flight "Load
   // more", so a slow request can't append the previous device's rows.
   const abortRef = useRef<AbortController | null>(null);
+  // Synchronous in-flight guard for "Load more". `disabled={loadingMore}` is
+  // driven by async React state, so a fast double-click can slip two clicks
+  // through before the re-render — both would fetch the same page and append
+  // duplicate rows. This ref flips synchronously at click time to serialize.
+  const loadMoreInFlight = useRef(false);
 
   // Fetch one page of deliberate-action events. page 1 (re)loads from scratch;
   // higher pages append. Filtering runs server-side and the count(*) is skipped
@@ -152,6 +157,10 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
           const payload = alertsJson?.data ?? alertsJson;
           setActiveAlerts(Array.isArray(payload) ? payload.length : 0);
         }
+        // Deliberate: if the events fetch succeeded but the alerts fetch failed,
+        // we don't fail the whole pane — the feed is the primary content and the
+        // pinned alert banner is a secondary signal. activeAlerts stays at its
+        // prior value (0 on first load) and the banner simply doesn't render.
       } catch {
         if (signal.aborted) return;
         // Surface the failure: whole-pane error on the first page, inline
@@ -190,8 +199,11 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
 
   const loadMore = useCallback(() => {
     const signal = abortRef.current?.signal;
-    if (!signal || signal.aborted) return;
-    void loadPage(loadedPage + 1, signal);
+    if (!signal || signal.aborted || loadMoreInFlight.current) return;
+    loadMoreInFlight.current = true;
+    void loadPage(loadedPage + 1, signal).finally(() => {
+      loadMoreInFlight.current = false;
+    });
   }, [loadedPage, loadPage]);
 
   const visible = events;
