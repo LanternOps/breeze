@@ -78,6 +78,18 @@ describe('QuoteDetail — Customer label', () => {
     expect(customer).not.toHaveTextContent(ORG_ID.slice(0, 8));
   });
 
+  it('treats a blank/whitespace billToName as absent and resolves the org name', async () => {
+    // The bill-to validator allows an empty string, so `??` alone would render a
+    // blank Customer cell — the #1712 symptom via a different input. A whitespace
+    // billToName must fall through to the resolved org name.
+    useOrgStore.setState({
+      organizations: [{ id: ORG_ID, partnerId: 'p-1', name: 'Default Organization', status: 'active', createdAt: '' }],
+    });
+    render(<QuoteDetail detail={detailWith('   ')} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-detail-customer')).toHaveTextContent('Default Organization');
+  });
+
   it('falls back to the UUID prefix only when no name resolves', async () => {
     // Org not in the loaded list (e.g. All-orgs scope) and no billToName.
     render(<QuoteDetail detail={detailWith(null)} onChanged={vi.fn()} />);

@@ -102,13 +102,17 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
   // organization name from the client-side org list (same source the org switcher
   // renders). Fall back to the UUID prefix only when neither is available (e.g.
   // the quote's org isn't in the currently-loaded list, such as All-orgs scope).
-  const orgName = useMemo(
-    () =>
-      quote.billToName ??
-      organizations.find((o) => o.id === quote.orgId)?.name ??
-      quote.orgId.slice(0, 8),
-    [quote.billToName, quote.orgId, organizations],
-  );
+  // Use truthiness after trim, not `??`: the bill-to validator allows an empty
+  // string, and a blank/whitespace billToName would otherwise render an empty
+  // Customer cell — the same "unfinished header" symptom (#1712) via a different
+  // input.
+  const orgName = useMemo(() => {
+    const billTo = quote.billToName?.trim();
+    if (billTo) return billTo;
+    const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
+    if (resolved) return resolved;
+    return quote.orgId.slice(0, 8);
+  }, [quote.billToName, quote.orgId, organizations]);
 
   return (
     <div className="space-y-6" data-testid="quote-detail">
