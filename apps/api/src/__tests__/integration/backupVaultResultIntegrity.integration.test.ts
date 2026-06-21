@@ -182,6 +182,23 @@ function vaultSyncResult(snapshotId: string, vaultId: string) {
   };
 }
 
+/** A vault-sync result that carries NO vaultId/vaultPath, so the target vault
+ *  can only be derived via the (now-disabled) single-active-vault fallback. */
+function vaultSyncResultNoVaultHint(snapshotId: string) {
+  return {
+    type: 'command_result' as const,
+    commandId: `vault-auto-sync-${snapshotId}`,
+    status: 'completed' as const,
+    stdout: JSON.stringify({
+      auto: true,
+      snapshotId,
+      totalBytes: 1024,
+      fileCount: 3,
+      manifestVerified: true,
+    }),
+  };
+}
+
 function backupResult(jobId: string) {
   return {
     type: 'command_result' as const,
@@ -256,6 +273,50 @@ describe('F5 — vault auto-sync orphan result integrity', () => {
     const after = await getVault(vaultId);
     expect(after.lastSyncStatus).toBeNull();
   });
+
+  it('drops an unhinted vault-auto-sync result instead of guessing the single active vault', async () => {
+    const s = await seedDeviceWithBackup();
+    // Exactly ONE active vault: the old single-active-vault fallback would have
+    // happily picked it. The orphan path disables that fallback, so a result
+    // carrying no vaultId/vaultPath must be dropped, not applied to this vault.
+    const vaultId = await insertVault(s);
+    const jobId = await insertBackupJob(s, 'completed');
+    const snapshotId = 'snap-unhinted-1';
+    await insertCompletedSnapshot(s, snapshotId, new Date(), jobId);
+
+    await runHandler(s.orgId, s.agentId, s.deviceId, vaultSyncResultNoVaultHint(snapshotId));
+
+    expect((await getVault(vaultId)).lastSyncStatus).toBeNull();
+  });
+
+  it('drops a vault-auto-sync result with an empty snapshot id', async () => {
+    const s = await seedDeviceWithBackup();
+    const vaultId = await insertVault(s);
+
+    await runHandler(s.orgId, s.agentId, s.deviceId, {
+      type: 'command_result' as const,
+      commandId: 'vault-auto-sync-',
+      status: 'completed' as const,
+      stdout: JSON.stringify({ auto: true, vaultId, totalBytes: 1 }),
+    });
+
+    expect((await getVault(vaultId)).lastSyncStatus).toBeNull();
+  });
+
+  it('drops a vault-auto-sync result for a snapshot that belongs to a different device', async () => {
+    // device A is the authenticated agent; device B (another org) has the real snapshot.
+    const a = await seedDeviceWithBackup();
+    const b = await seedDeviceWithBackup();
+    const vaultA = await insertVault(a);
+    const jobB = await insertBackupJob(b, 'completed');
+    const snapshotId = 'snap-other-device';
+    await insertCompletedSnapshot(b, snapshotId, new Date(), jobB);
+
+    // Agent A forges a vault-sync referencing device B's snapshot id.
+    await runHandler(a.orgId, a.agentId, a.deviceId, vaultSyncResult(snapshotId, vaultA));
+
+    expect((await getVault(vaultA)).lastSyncStatus).toBeNull();
+  });
 });
 
 describe('F6 — backup completion forgery integrity', () => {
@@ -296,5 +357,19 @@ describe('F6 — backup completion forgery integrity', () => {
     // Re-drive after terminal: expectation already consumed → dropped.
     await runHandler(s.orgId, s.agentId, s.deviceId, backupResult(jobId));
     expect(await resultJobExists(jobId)).toBe(false);
+  });
+
+  it('rejects a backup result for a job that belongs to another device', async () => {
+    // device B owns a dispatched job; agent A (different org) tries to report it.
+    const a = await seedDeviceWithBackup();
+    const b = await seedDeviceWithBackup();
+    const jobB = await insertBackupJob(b, 'running');
+    await recordDispatchedExpectation('backup', b.deviceId, jobB);
+
+    // Under agent A's own org context the job row isn't even visible (RLS) and
+    // the agent-ownership guard rejects it; the result must be dropped.
+    await runHandler(a.orgId, a.agentId, a.deviceId, backupResult(jobB));
+
+    expect(await resultJobExists(jobB)).toBe(false);
   });
 });

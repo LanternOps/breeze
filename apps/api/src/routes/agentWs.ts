@@ -22,7 +22,7 @@ import {
   findRecentCompletedSnapshotForDevice,
   resolveVaultForResult,
 } from '../services/vaultSyncPersistence';
-import { claimConsumeOnce, consumeDispatchedExpectation } from '../services/agentWorkExpectation';
+import { claimConsumeOnce, consumeDispatchedExpectation, recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
@@ -1275,6 +1275,11 @@ export async function processOrphanedCommandResult(
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
       captureException(err);
+      // We already consumed the dispatch expectation but persistence failed
+      // (e.g. transient BullMQ/DB error). Re-record it so a legitimate agent
+      // retry of this same result can be accepted instead of being permanently
+      // dropped as "already-consumed". Best-effort; safe to no-op on Redis down.
+      await recordDispatchedExpectation('backup', backupJob.deviceId, backupJob.id);
     }
     return;
   }

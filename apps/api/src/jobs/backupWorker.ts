@@ -513,14 +513,19 @@ async function processDispatchBackup(
       },
     };
 
+    // Record the server-side dispatch expectation BEFORE sending so the WS
+    // result handler can verify this completion corresponds to work we actually
+    // dispatched and hasn't already been consumed (F6). Recording first closes
+    // the (otherwise negligible) window where a result could arrive before the
+    // expectation lands. If the send then fails, the orphaned expectation is
+    // harmless — it expires via TTL and can't be consumed without a matching
+    // job + owning device. Best-effort: a Redis outage makes the result
+    // fail-closed on arrival (dropped), not trusted.
+    await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
+
     const sent = sendCommandToAgent(agentId, command);
     if (sent) {
       sentCount++;
-      // Record a server-side dispatch expectation so the WS result handler can
-      // verify this completion corresponds to work we actually dispatched and
-      // hasn't already been consumed (F6). Best-effort: a Redis outage here
-      // makes the result fail-closed on arrival (dropped), not trusted.
-      await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
     } else {
       console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${commandJobId}`);
       failedTargets.push(target.commandType);

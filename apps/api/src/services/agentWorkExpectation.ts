@@ -69,15 +69,19 @@ export async function recordDispatchedExpectation(
   deviceId: string,
   key: string,
 ): Promise<void> {
-  const redis = getRedis();
-  if (!redis) {
-    console.warn(
-      `[AgentWorkExpectation] Redis unavailable while recording ${kind} expectation ` +
-      `(device=${deviceId}, key=${key}); the corresponding result will be dropped on arrival`,
-    );
-    return;
-  }
+  // Whole body wrapped: getRedis() can construct the client lazily and must not
+  // be able to throw out of this best-effort recorder (it runs inside the backup
+  // dispatch loop). A failure to record just means the result fails-closed on
+  // arrival, which is the safe direction.
   try {
+    const redis = getRedis();
+    if (!redis) {
+      console.warn(
+        `[AgentWorkExpectation] Redis unavailable while recording ${kind} expectation ` +
+        `(device=${deviceId}, key=${key}); the corresponding result will be dropped on arrival`,
+      );
+      return;
+    }
     await redis.set(
       dispatchedKey(kind, deviceId, key),
       '1',
@@ -103,15 +107,15 @@ export async function consumeDispatchedExpectation(
   deviceId: string,
   key: string,
 ): Promise<{ ok: boolean }> {
-  const redis = getRedis();
-  if (!redis) {
-    console.warn(
-      `[AgentWorkExpectation] Redis unavailable consuming ${kind} expectation ` +
-      `(device=${deviceId}, key=${key}); dropping result (fail-closed)`,
-    );
-    return { ok: false };
-  }
   try {
+    const redis = getRedis();
+    if (!redis) {
+      console.warn(
+        `[AgentWorkExpectation] Redis unavailable consuming ${kind} expectation ` +
+        `(device=${deviceId}, key=${key}); dropping result (fail-closed)`,
+      );
+      return { ok: false };
+    }
     const consumed = await redis.eval(
       CONSUME_IF_PRESENT_LUA,
       1,
@@ -139,15 +143,15 @@ export async function claimConsumeOnce(
   deviceId: string,
   key: string,
 ): Promise<{ ok: boolean }> {
-  const redis = getRedis();
-  if (!redis) {
-    console.warn(
-      `[AgentWorkExpectation] Redis unavailable claiming ${kind} consume-once ` +
-      `(device=${deviceId}, key=${key}); dropping result (fail-closed)`,
-    );
-    return { ok: false };
-  }
   try {
+    const redis = getRedis();
+    if (!redis) {
+      console.warn(
+        `[AgentWorkExpectation] Redis unavailable claiming ${kind} consume-once ` +
+        `(device=${deviceId}, key=${key}); dropping result (fail-closed)`,
+      );
+      return { ok: false };
+    }
     const result = await redis.set(
       consumeOnceKey(kind, deviceId, key),
       '1',
