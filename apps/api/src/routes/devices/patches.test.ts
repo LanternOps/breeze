@@ -48,7 +48,7 @@ vi.mock('../../db/schema', () => ({
     deviceId: 'devicePatches.deviceId'
   },
   patchApprovals: {
-    orgId: 'patchApprovals.orgId',
+    partnerId: 'patchApprovals.partnerId',
     patchId: 'patchApprovals.patchId',
     status: 'patchApprovals.status'
   }
@@ -77,6 +77,12 @@ vi.mock('./helpers', async () => {
     getDeviceWithOrgAndSiteCheck: vi.fn(),
   };
 });
+
+const PARTNER_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+
+vi.mock('../patches/helpers', () => ({
+  resolvePartnerIdForOrg: vi.fn().mockResolvedValue('dddddddd-dddd-dddd-dddd-dddddddddddd'),
+}));
 
 vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn()
@@ -312,7 +318,7 @@ describe('device patch routes', () => {
   it('does not issue the approvals query when a device has no patches', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     // Device-patch list resolves to an empty array → patchIds is empty →
-    // getApprovedPatchIdsForOrg short-circuits without a second db.select call.
+    // getApprovedPatchIdsForPartner short-circuits without a second db.select call.
     vi.mocked(db.select).mockReturnValueOnce(selectPatchStatusResult([]) as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches`, {

@@ -9,6 +9,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { resolvePartnerIdForOrg } from '../patches/helpers';
 
 export const patchesRoutes = new Hono();
 
@@ -101,20 +102,20 @@ function safeParsePatchResult(result: unknown): unknown {
 }
 
 /**
- * Resolve which of the given patch IDs carry an explicit org-wide manual-approval
- * record (`patchApprovals.status = 'approved'`) for the org.
+ * Resolve which of the given patch IDs carry an explicit partner-wide manual-approval
+ * record (`patchApprovals.status = 'approved'`) for the partner.
  *
- * This is intentionally only the org-wide manual-approval gate. It does NOT consider
+ * This is intentionally only the partner-wide manual-approval gate. It does NOT consider
  * the device's effective patch ring or category/auto-approve rules — for the full
  * ring + category-aware evaluation see `resolveApprovedPatchesForDevice` in
  * `services/patchApprovalEvaluator.ts`.
  *
- * Known limitation: because this gate is org-wide and ring-agnostic, a patch that is
+ * Known limitation: because this gate is partner-wide and ring-agnostic, a patch that is
  * approved for ring A passes this gate for a device in ring B. Wiring the install
  * endpoint through the full evaluator (`resolveApprovedPatchesForDevice`) is a tracked
  * follow-up.
  */
-async function getApprovedPatchIdsForOrg(orgId: string, patchIds: string[]): Promise<Set<string>> {
+async function getApprovedPatchIdsForPartner(partnerId: string, patchIds: string[]): Promise<Set<string>> {
   if (patchIds.length === 0) return new Set();
 
   const approvals = await db
@@ -122,7 +123,7 @@ async function getApprovedPatchIdsForOrg(orgId: string, patchIds: string[]): Pro
     .from(patchApprovals)
     .where(
       and(
-        eq(patchApprovals.orgId, orgId),
+        eq(patchApprovals.partnerId, partnerId),
         inArray(patchApprovals.patchId, patchIds),
         eq(patchApprovals.status, 'approved')
       )
@@ -245,7 +246,12 @@ patchesRoutes.get(
       .orderBy(desc(devicePatches.lastCheckedAt));
 
     const patchIds = [...new Set(devicePatchList.map((patch) => patch.patchId))];
-    const approvedPatchIds = await getApprovedPatchIdsForOrg(device.orgId, patchIds);
+    // Derive the partner from the device's org. If the lookup returns null (no partner
+    // found), treat the approved set as empty — all patches are unapproved (fail-safe).
+    const partnerId = await resolvePartnerIdForOrg(device.orgId);
+    const approvedPatchIds = partnerId
+      ? await getApprovedPatchIdsForPartner(partnerId, patchIds)
+      : new Set<string>();
 
     // Separate actionable pending updates from stale missing records.
     const pending = devicePatchList
@@ -383,7 +389,13 @@ patchesRoutes.post(
       }, 404);
     }
 
-    const approvedPatchIds = await getApprovedPatchIdsForOrg(device.orgId, data.patchIds);
+    // Derive the partner from the device's org. If null (no partner found), approved
+    // set is empty — all patches are treated as unapproved and installs are BLOCKED
+    // (fail-safe: an orphaned org cannot install any patches).
+    const partnerId = await resolvePartnerIdForOrg(device.orgId);
+    const approvedPatchIds = partnerId
+      ? await getApprovedPatchIdsForPartner(partnerId, data.patchIds)
+      : new Set<string>();
     const unapprovedPatchIds = data.patchIds.filter((patchId) => !approvedPatchIds.has(patchId));
     if (unapprovedPatchIds.length > 0) {
       return c.json({

@@ -71,7 +71,7 @@ vi.mock('../db/schema/patches', async (importOriginal) => {
   return {
     ...actual,
     patches: { orgId: 'orgId', id: 'id' },
-    patchApprovals: { patchId: 'patchId' },
+    patchApprovals: { partnerId: 'partnerId', patchId: 'patchId' },
     devicePatches: {},
     patchJobs: { orgId: 'orgId' },
     patchRollbacks: {},
@@ -144,6 +144,18 @@ vi.mock('../db/schema', async (importOriginal) => {
     sites: { orgId: 'orgId' },
   };
 });
+
+vi.mock('../routes/patches/helpers', () => ({
+  upsertPatchApproval: vi.fn(() => Promise.resolve()),
+  resolvePartnerIdForOrg: vi.fn(() => Promise.resolve('partner-1')),
+  resolvePatchApprovalPartnerIdForRing: vi.fn(() => Promise.resolve({ partnerId: 'partner-1' })),
+  resolvePatchReportOrgId: vi.fn((auth: any, requestedOrgId?: string) => requestedOrgId ? { orgId: requestedOrgId } : { orgId: auth?.orgId ?? 'org-1' }),
+  writePatchAuditForOrgIds: vi.fn(),
+  getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
+  inferPatchOs: vi.fn(() => 'unknown'),
+  NIL_UUID: '00000000-0000-0000-0000-000000000000',
+  MAX_PAGE_LIMIT: 200,
+}));
 
 import { registerFleetTools } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
