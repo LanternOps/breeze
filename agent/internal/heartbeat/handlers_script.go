@@ -53,7 +53,17 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 			return h.executeViaUserHelper(session, cmd, script.Timeout)
 		}
 		if !strings.EqualFold(script.RunAs, "system") && !strings.EqualFold(script.RunAs, "elevated") {
-			log.Debug("no user helper for runAs value, falling back to local executor", "runAs", script.RunAs)
+			// A user-context delivery was requested but no eligible helper was
+			// resolved, so the script is about to run in the local (SYSTEM)
+			// context instead. That privilege-context downgrade is security
+			// relevant — on a multi-user / RDS host it is the visible symptom of
+			// the console-session binding suppressing delivery (#1009) — so log it
+			// at WARN, not DEBUG, where it would be invisible at production log
+			// levels. The broker also WARNs why no console helper matched; this
+			// line records that the fallback actually fired. Behaviour is
+			// unchanged: we still fall through to the local executor below.
+			log.Warn("runAs delivery downgraded to local (SYSTEM) context: no eligible user helper",
+				"runAs", script.RunAs, "commandId", cmd.ID)
 		}
 	}
 

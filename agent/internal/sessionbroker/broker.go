@@ -693,7 +693,7 @@ func (b *Broker) preferredRunAsUserSessionForOS(goos string) *Session {
 	// run_as_user helper is connected at all (excludedNonConsole == 0), stay
 	// quiet — nil is the expected result and warning on every poll would be noise.
 	if best == nil && excludedNonConsole > 0 {
-		log.Warn("run_as_user delivery suppressed: no helper in the active console session",
+		log.Warn("run_as_user delivery suppressed: helper exists only outside the active console session",
 			"consoleWinSession", consoleSession,
 			"excludedNonConsole", excludedNonConsole,
 		)

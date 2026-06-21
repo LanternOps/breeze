@@ -273,6 +273,87 @@ func TestPreferredRunAsUserSessionWarnsWhenConsoleBindingSuppressesDelivery(t *t
 	}
 }
 
+// TestPreferredRunAsUserSessionWarnCountsAllExcludedHelpers asserts the WARN's
+// excludedNonConsole field reflects the ACTUAL number of off-console helpers,
+// not a hard-coded 1. This is the multi-RDP-session scenario: several
+// co-logged-in users each have a run_as_user helper, all off the active console
+// session. The operator needs the count to understand the scope of the drop.
+func TestPreferredRunAsUserSessionWarnCountsAllExcludedHelpers(t *testing.T) {
+	logs := captureLogs(t)
+
+	now := time.Now()
+
+	a, aClient := newTestUserSession(t, "noncon-a", "alice", now.Add(-3*time.Minute))
+	defer aClient.Close()
+	a.WinSessionID = "3"
+
+	bSess, bClient := newTestUserSession(t, "noncon-b", "bob", now.Add(-2*time.Minute))
+	defer bClient.Close()
+	bSess.WinSessionID = "4"
+
+	c, cClient := newTestUserSession(t, "noncon-c", "carol", now.Add(-1*time.Minute))
+	defer cClient.Close()
+	c.WinSessionID = "5"
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			a.SessionID:     a,
+			bSess.SessionID: bSess,
+			c.SessionID:     c,
+		},
+		byIdentity:         make(map[string][]*Session),
+		staleHelpers:       make(map[string][]int),
+		consoleSessionIDFn: func() string { return "1" },
+	}
+
+	if got := b.preferredRunAsUserSessionForOS("windows"); got != nil {
+		t.Fatalf("preferredRunAsUserSessionForOS(windows) = %q, want nil", got.SessionID)
+	}
+
+	if out := logs.String(); !strings.Contains(out, "excludedNonConsole=3") {
+		t.Fatalf("expected excludedNonConsole=3 in suppression WARN; got logs:\n%s", out)
+	}
+}
+
+// TestPreferredRunAsUserSessionWarnsWhenConsoleLookupFailed covers the
+// fail-closed scenario: when the active-console-session lookup fails,
+// ConsoleSessionID() normalizes the "0" sentinel to "". No helper has an empty
+// WinSessionID, so every run_as_user helper is excluded and delivery is fully
+// suppressed — exactly the case where the operator most needs the WARN (the
+// console lookup itself is broken). It must fire with an empty consoleWinSession.
+func TestPreferredRunAsUserSessionWarnsWhenConsoleLookupFailed(t *testing.T) {
+	logs := captureLogs(t)
+
+	now := time.Now()
+
+	helper, helperClient := newTestUserSession(t, "some-user", "alice", now.Add(-1*time.Minute))
+	defer helperClient.Close()
+	helper.WinSessionID = "1"
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			helper.SessionID: helper,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+		// "0" is the WTSGetActiveConsoleSessionId failure / Session-0 sentinel,
+		// normalized to "" by ConsoleSessionID().
+		consoleSessionIDFn: func() string { return "0" },
+	}
+
+	if got := b.preferredRunAsUserSessionForOS("windows"); got != nil {
+		t.Fatalf("preferredRunAsUserSessionForOS(windows) = %q, want nil (console lookup failed)", got.SessionID)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "run_as_user delivery suppressed") {
+		t.Fatalf("expected a suppression WARN when console lookup failed; got logs:\n%s", out)
+	}
+	if !strings.Contains(out, "excludedNonConsole=1") {
+		t.Fatalf("expected excludedNonConsole=1 when console lookup failed; got logs:\n%s", out)
+	}
+}
+
 // TestPreferredRunAsUserSessionNoWarnWhenNoUserHelper asserts the suppression
 // warning is NOT noise: when there is genuinely no user-role run_as_user helper
 // connected at all (so nil is the correct, expected result — not a console-binding
