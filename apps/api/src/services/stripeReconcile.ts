@@ -6,6 +6,7 @@ import { recomputeInvoiceStatus } from './invoiceService';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { fromMinorUnits } from './stripeMoney';
 import { captureException } from './sentry';
+import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -136,10 +137,36 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
     const full = input.amountRefundedCents >= input.chargeAmountCents;
     if (full) {
       // Full refund → void the payment row (mirrors voidPayment mechanics).
+      // Snapshot the financial record BEFORE deleting so the destroyed payment
+      // (amount/method/recordedBy/invoiceId) survives in the durable audit chain —
+      // this is a webhook path with no Hono request context, so we use the
+      // system-scope audit writer (mirrors quoteExpiryReaper), not writeRouteAudit.
+      const [snapshot] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
       await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
       await db.update(invoiceStripePayments)
         .set({ status: 'refunded', invoicePaymentId: null, lastEventAt: new Date(), updatedAt: new Date() })
         .where(eq(invoiceStripePayments.id, mapping.id));
+      // Best-effort, never throwing (consistent with the rest of this reconcile path).
+      try {
+        writeAuditEvent(requestLikeFromSnapshot({}), {
+          orgId: mapping.orgId,
+          action: 'invoice.payment.voided',
+          resourceType: 'invoice_payment',
+          resourceId: paymentId,
+          actorType: 'system',
+          actorId: null,
+          result: 'success',
+          details: {
+            amount: snapshot?.amount,
+            method: snapshot?.method,
+            recordedBy: snapshot?.recordedBy ?? null,
+            invoiceId: mapping.invoiceId,
+            reason: 'stripe_refund',
+          },
+        });
+      } catch (err) {
+        console.error('[stripeReconcile] failed to write void audit event', err);
+      }
     } else {
       // Partial refund → reduce the positive payment amount (stays > 0; respects the amount>0 CHECK).
       // Currency-aware: zero-decimal currencies (JPY, …) must NOT be divided by 100.
