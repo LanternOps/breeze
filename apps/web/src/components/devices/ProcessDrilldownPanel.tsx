@@ -36,6 +36,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
     (async () => {
       setLoading(true);
       setError(undefined);
+      setEmptyKind(null);
       try {
         if (live) {
           // On-demand process listing lives under /system-tools; the agent
@@ -107,15 +108,20 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
         </div>
 
         <p className="mt-1 text-xs text-muted-foreground" data-testid="process-drilldown-sample-time">
-          {live
-            ? 'Live (now)'
-            : sampleTime
-              ? `Nearest sample: ${formatDateTime(sampleTime)}`
-              : emptyKind === 'none-recorded'
-                ? 'No process samples recorded for this device yet'
-                : emptyKind === 'none-near-time'
-                  ? 'No process sample recorded at or before this time'
-                  : 'No sample near this time'}
+          {/* Suppressed on error so the red error banner below isn't contradicted
+              by a stale "no sample" subtitle (the catch sets neither sampleTime
+              nor emptyKind). */}
+          {error
+            ? ''
+            : live
+              ? 'Live (now)'
+              : sampleTime
+                ? `Nearest sample: ${formatDateTime(sampleTime)}`
+                : emptyKind === 'none-recorded'
+                  ? 'No process samples recorded for this device yet'
+                  : emptyKind === 'none-near-time'
+                    ? 'No process sample recorded at or before this time'
+                    : 'No sample near this time'}
         </p>
 
         <div className="mt-3 flex gap-2 text-sm">

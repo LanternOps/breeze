@@ -51,6 +51,17 @@ type DevicePerformanceGraphsProps = {
   compact?: boolean;
 };
 
+// Resolve the drilldown timestamp from a recharts click state. Exported (and
+// unit-tested) because it is the load-bearing bit of the #1722 fix: every chart
+// (line + the two area charts) routes its onClick through here, so a regression
+// that stops extracting `activeLabel` would silently make the charts un-drillable.
+// Returns the ISO timestamp string to drill into, or null when the click landed
+// off a data point (recharts passes a null state / undefined activeLabel).
+export function resolveDrilldownAt(state: { activeLabel?: string | number } | null): string | null {
+  if (state && state.activeLabel != null) return String(state.activeLabel);
+  return null;
+}
+
 const rangeLabels: Record<TimeRange, string> = {
   '24h': '24h',
   '7d': '7d',
@@ -135,7 +146,8 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
   // line chart and the Network Bandwidth / Disk Activity area charts behave
   // consistently (issue #1722 — previously only the line chart was clickable).
   const handleChartClick = useCallback((state: { activeLabel?: string | number } | null) => {
-    if (state && state.activeLabel != null) setDrilldownAt(String(state.activeLabel));
+    const at = resolveDrilldownAt(state);
+    if (at != null) setDrilldownAt(at);
   }, []);
 
   const latest = useMemo(() => data[data.length - 1], [data]);
