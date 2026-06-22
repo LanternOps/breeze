@@ -62,4 +62,52 @@ test.describe('tickets', () => {
     await expect(tickets.workbenchNumber()).toHaveText(ticketNumber!);
     await expect(tickets.statusSelect()).toHaveValue('resolved');
   });
+
+  test('comment edit/delete + inline subject edit', async ({ cleanPage }) => {
+    test.setTimeout(120_000); // serial multi-step flow: login + create + reply + edit + delete + subject edit
+
+    const auth = new AuthPage(cleanPage);
+    await cleanPage.goto(`${auth.url}?next=${encodeURIComponent('/tickets')}`);
+    await auth.page_().waitFor();
+    await cleanPage.waitForFunction(() => {
+      const form = document.querySelector('form');
+      return !!form && Object.keys(form).some((k) => k.startsWith('__reactFiber$'));
+    });
+    await auth.signIn(process.env.E2E_ADMIN_EMAIL!, process.env.E2E_ADMIN_PASSWORD!, /\/tickets(\?|$|#)/);
+
+    const tickets = new TicketsPage(cleanPage);
+    await tickets.heading().waitFor();
+
+    // Create a ticket
+    await tickets.createButton().click();
+    await tickets.formSubject().waitFor();
+    await tickets.formOrg().selectOption({ index: 1 });
+    await tickets.formSubject().fill('E2E edit/delete smoke ticket');
+    await tickets.formSubmit().click();
+    await cleanPage.waitForURL(/\/tickets#/);
+    await tickets.workbench().waitFor();
+    await expect(tickets.workbenchNumber()).toContainText('T-');
+
+    // Post a public reply
+    await tickets.composerInput().fill('Reply to be edited');
+    await tickets.composerSend().click();
+    await expect(cleanPage.getByTestId('ticket-feed')).toContainText('Reply to be edited');
+
+    // Edit the reply — window.prompt fires; handler registered inside editFirstComment
+    await tickets.editFirstComment('Edited reply content');
+    // Wait for the feed to re-render with the edited badge
+    await cleanPage.locator('[data-testid^="ticket-comment-edited-"]').first().waitFor();
+
+    // Delete the reply — window.confirm fires; handler registered inside deleteFirstComment
+    await tickets.deleteFirstComment();
+    // The deleted tombstone should now appear (the comment row is replaced)
+    await cleanPage.locator('[data-testid^="ticket-comment-deleted-"]').first().waitFor();
+
+    // Edit the subject inline
+    await tickets.editSubject('Renamed subject via e2e');
+    // Reload to confirm the new subject persisted server-side
+    await cleanPage.reload();
+    await tickets.workbench().waitFor();
+    await expect(tickets.subjectEdit()).toHaveValue('Renamed subject via e2e');
+  });
 });

@@ -264,6 +264,19 @@ export const configPolicyMonitoringSettings = pgTable('config_policy_monitoring_
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Single-item: one row per feature link (remote access settings)
+export const configPolicyRemoteAccessSettings = pgTable('config_policy_remote_access_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  sessionPromptMode: text('session_prompt_mode').notNull().default('notify'),
+  consentUnavailableBehavior: text('consent_unavailable_behavior').notNull().default('proceed'),
+  notifyOnSessionEnd: boolean('notify_on_session_end').notNull().default(true),
+  showActiveIndicator: boolean('show_active_indicator').notNull().default(true),
+  technicianIdentityLevel: text('technician_identity_level').notNull().default('name_email'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Multi-item: one row per watch within a monitoring settings row
 export const configPolicyMonitoringWatches = pgTable('config_policy_monitoring_watches', {
   id: uuid('id').primaryKey().defaultRandom(),

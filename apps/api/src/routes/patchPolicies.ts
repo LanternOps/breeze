@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc } from 'drizzle-orm';
 import { db } from '../db';
 import { patchPolicies } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -20,25 +20,9 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(
-  orgId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
-) {
-  if (auth.scope === 'organization') {
-    return auth.orgId === orgId;
-  }
-
-  if (auth.scope === 'partner') {
-    return auth.canAccessOrg(orgId);
-  }
-
-  // system scope has access to all
-  return true;
-}
-
-async function getPatchPolicyWithOrgCheck(
+async function getPatchPolicyWithPartnerCheck(
   policyId: string,
-  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+  auth: Pick<AuthContext, 'scope' | 'partnerId'>
 ) {
   const [policy] = await db
     .select()
@@ -50,8 +34,8 @@ async function getPatchPolicyWithOrgCheck(
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(policy.orgId, auth);
-  if (!hasAccess) {
+  // Partner-scope check: caller must belong to the same partner
+  if (auth.scope !== 'system' && auth.partnerId !== policy.partnerId) {
     return null;
   }
 
@@ -81,10 +65,10 @@ const listPatchPoliciesSchema = z.object({
 // Apply auth middleware to all routes
 patchPolicyRoutes.use('*', authMiddleware);
 
-// GET /patch-policies - List patch policies for org
+// GET /patch-policies - List patch policies for partner
 patchPolicyRoutes.get(
   '/',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePatchPolicyRead,
   zValidator('query', listPatchPoliciesSchema),
   async (c) => {
@@ -95,31 +79,16 @@ patchPolicyRoutes.get(
     // Build conditions array
     const conditions: ReturnType<typeof eq>[] = [];
 
-    // Filter by org access based on scope
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
+    // Filter by partner access based on scope
+    if (auth.scope === 'partner') {
+      if (!auth.partnerId) {
+        return c.json({ error: 'Partner context required' }, 403);
       }
-      conditions.push(eq(patchPolicies.orgId, auth.orgId));
-    } else if (auth.scope === 'partner') {
-      if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
-        if (!hasAccess) {
-          return c.json({ error: 'Access to this organization denied' }, 403);
-        }
-        conditions.push(eq(patchPolicies.orgId, query.orgId));
-      } else {
-        const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
-          return c.json({
-            data: [],
-            pagination: { page, limit, total: 0 }
-          });
-        }
-        conditions.push(inArray(patchPolicies.orgId, orgIds));
-      }
+      conditions.push(eq(patchPolicies.partnerId, auth.partnerId));
     } else if (auth.scope === 'system' && query.orgId) {
-      conditions.push(eq(patchPolicies.orgId, query.orgId));
+      // System callers may pass orgId as a hint, but rings are partner-scoped;
+      // there is no org-to-partner translation here — ignore for filtering.
+      // (orgId param is preserved in the schema for backwards compat only.)
     }
 
     if (query.enabled !== undefined) {
@@ -158,13 +127,13 @@ patchPolicyRoutes.get(
 // GET /patch-policies/:id - Get policy details
 patchPolicyRoutes.get(
   '/:id',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePatchPolicyRead,
   async (c) => {
     const auth = c.get('auth');
     const policyId = c.req.param('id')!;
 
-    const policy = await getPatchPolicyWithOrgCheck(policyId, auth);
+    const policy = await getPatchPolicyWithPartnerCheck(policyId, auth);
     if (!policy) {
       return c.json({ error: 'Patch policy not found' }, 404);
     }

@@ -9,12 +9,14 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, conf
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
+  const txExecuteMock = vi.fn().mockResolvedValue(undefined);
+  const txUpdateReturning = vi.fn();
   return {
     emitMock: vi.fn().mockResolvedValue(undefined),
     emitTriageFeedbackMock: vi.fn().mockResolvedValue(undefined),
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
-    dbMocks: { insertReturning, updateReturning, selectResult },
+    dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
     configMocks: {
       getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
       getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
@@ -72,14 +74,40 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => ({ returning: vi.fn(() => dbMocks.insertReturning()) }))
-    }))
+    })),
+    // Transaction mock: invokes callback with a tx stub that records SET/VALUES
+    // calls through the same recorders so tests can assert on child table UPDATEs.
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const tx = {
+        update: vi.fn(() => ({
+          set: vi.fn((v) => {
+            setMock(v);
+            return {
+              where: vi.fn((w) => {
+                whereMock(w);
+                return { returning: vi.fn(() => dbMocks.txUpdateReturning()) };
+              })
+            };
+          })
+        })),
+        insert: vi.fn(() => ({
+          values: vi.fn((v) => {
+            valuesMock(v);
+            return { returning: vi.fn(() => dbMocks.insertReturning()) };
+          })
+        })),
+        execute: vi.fn((...args) => dbMocks.txExecuteMock(...args)),
+      };
+      return fn(tx);
+    })
   }
 }));
 vi.mock('../db/schema', () => ({
   tickets: { id: 'id', orgId: 'orgId', status: 'status', assignedTo: 'assignedTo', statusId: 'statusId' },
   ticketComments: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId' },
-  organizations: { id: 'id', partnerId: 'partnerId' },
+  ticketParts: { ticketId: 'ticketId', orgId: 'orgId' },
+  organizations: { id: 'id', partnerId: 'partnerId', name: 'name' },
   alerts: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', orgId: 'orgId' },
   users: { id: 'id', partnerId: 'partnerId' },
@@ -91,8 +119,9 @@ vi.mock('../db/schema', () => ({
 import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
-  updateTicketFields,
-  TicketServiceError, TICKET_STATUS_TRANSITIONS
+  updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
+  moveTicketOrg,
+  TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 
 const actor = { userId: 'u-1', name: 'Tess Tech' };
@@ -1627,5 +1656,468 @@ describe('changeTicketStatus — statusId path', () => {
     expect(err).toBeInstanceOf(TicketServiceError);
     expect(err.code).toBe('INVALID_INPUT');
     expect(err.status).toBe(400);
+  });
+});
+
+// Base comment and ticket fixture shared by comment-mutation tests.
+const BASE_COMMENT = {
+  id: 'c1', ticketId: 't1', userId: 'tech-1', portalUserId: null,
+  commentType: 'comment', content: 'old', deletedAt: null,
+  isPublic: true, authorType: 'staff', createdAt: new Date('2026-01-01T10:00:00Z'),
+  editedAt: null, authorName: 'Tech'
+};
+const BASE_TICKET = { id: 't1', orgId: 'o1', partnerId: 'p1', status: 'open' };
+
+describe('SYSTEM_COMMENT_TYPES', () => {
+  it('contains the four expected type strings', () => {
+    expect(SYSTEM_COMMENT_TYPES).toContain('status_change');
+    expect(SYSTEM_COMMENT_TYPES).toContain('assignment');
+    expect(SYSTEM_COMMENT_TYPES).toContain('time_entry');
+    expect(SYSTEM_COMMENT_TYPES).toContain('system');
+    expect(SYSTEM_COMMENT_TYPES.size).toBe(4);
+  });
+});
+
+describe('editTicketComment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('lets the author edit their own comment and stamps editedAt + audit with previousContent', async () => {
+    const updatedRow = { ...BASE_COMMENT, content: 'new', editedAt: new Date() };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])  // loadCommentWithTicket: comment lookup
+      .mockResolvedValueOnce([BASE_TICKET]);  // loadCommentWithTicket: getTicketOrThrow
+    dbMocks.updateReturning.mockResolvedValue([updatedRow]);
+
+    const result = await editTicketComment('c1', { content: 'new' }, { userId: 'tech-1', name: 'Tech' }, { canManageAny: false });
+
+    expect(result.content).toBe('new');
+    expect(result.editedAt).toBeInstanceOf(Date);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload.content).toBe('new');
+    expect(updatePayload.editedAt).toBeInstanceOf(Date);
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ticket.comment.edit',
+      details: expect.objectContaining({ commentId: 'c1', previousContent: 'old' }),
+      result: 'success'
+    }));
+
+    // Fix 1: edit must NOT emit a ticket event — doing so re-triggers "new reply"
+    // emails to the portal requester. Regression guard: if emitMock is called here
+    // the spurious customer notification bug has returned.
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-author without canManageAny (403)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await editTicketComment('c1', { content: 'x' }, { userId: 'other-tech' }, { canManageAny: false }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(403);
+  });
+
+  it('allows a non-author WITH canManageAny', async () => {
+    const updatedRow = { ...BASE_COMMENT, content: 'x', editedAt: new Date() };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([updatedRow]);
+
+    const result = await editTicketComment('c1', { content: 'x' }, { userId: 'admin' }, { canManageAny: true });
+    expect(result.content).toBe('x');
+  });
+
+  it('throws 404 when expectedTicketId is provided but does not match the comment ticketId', async () => {
+    // Comment belongs to ticket 't1'; caller supplies a different URL ticket id.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])  // loadCommentWithTicket: comment lookup (ticketId='t1')
+      .mockResolvedValueOnce([BASE_TICKET]);  // loadCommentWithTicket: getTicketOrThrow
+
+    const err = await editTicketComment('c1', { content: 'x' }, { userId: 'tech-1' }, { canManageAny: true, expectedTicketId: 'other-ticket-id' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    // Must not reveal the comment exists or write any audit/event
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('passes through when expectedTicketId is omitted (backward-compat)', async () => {
+    const updatedRow = { ...BASE_COMMENT, content: 'compat', editedAt: new Date() };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([updatedRow]);
+
+    // No expectedTicketId in opts — must still succeed
+    const result = await editTicketComment('c1', { content: 'compat' }, { userId: 'tech-1' }, { canManageAny: false });
+    expect(result.content).toBe('compat');
+  });
+
+  it('rejects editing a system-type comment (400)', async () => {
+    const sysComment = { ...BASE_COMMENT, id: 'c-sys', commentType: 'system' };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([sysComment])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await editTicketComment('c-sys', { content: 'x' }, { userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+  });
+
+  it('rejects editing an already-deleted comment (409)', async () => {
+    const deletedComment = { ...BASE_COMMENT, id: 'c-del', deletedAt: new Date() };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([deletedComment])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await editTicketComment('c-del', { content: 'x' }, { userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+  });
+
+  it('throws 404 when the comment does not exist', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([]); // no comment found
+
+    const err = await editTicketComment('missing', { content: 'x' }, { userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+  });
+
+  it('rejects all SYSTEM_COMMENT_TYPES (status_change, assignment, time_entry)', async () => {
+    for (const type of ['status_change', 'assignment', 'time_entry']) {
+      vi.clearAllMocks();
+      const typedComment = { ...BASE_COMMENT, commentType: type };
+      dbMocks.selectResult
+        .mockResolvedValueOnce([typedComment])
+        .mockResolvedValueOnce([BASE_TICKET]);
+
+      const err = await editTicketComment('c1', { content: 'x' }, { userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
+      expect(err.status).toBe(400);
+    }
+  });
+});
+
+describe('deleteTicketComment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('soft-deletes (sets deletedAt) and audits with previousContent', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    // delete path: update returns the soft-deleted row (required by TOCTOU guard)
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
+
+    const res = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: false });
+
+    expect(res.id).toBe('c1');
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload.deletedAt).toBeInstanceOf(Date);
+    expect(updatePayload).not.toHaveProperty('content'); // only deletedAt stamped
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ticket.comment.delete',
+      details: expect.objectContaining({ commentId: 'c1', previousContent: 'old' }),
+      result: 'success'
+    }));
+
+    // Fix 1: delete must NOT emit a ticket event — doing so sends a ghost "new
+    // reply" email to the portal requester. Regression guard: if emitMock is called
+    // here the spurious customer notification bug has returned.
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-author without canManageAny (403)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await deleteTicketComment('c1', { userId: 'other' }, { canManageAny: false }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(403);
+  });
+
+  it('allows a non-author WITH canManageAny', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
+
+    const res = await deleteTicketComment('c1', { userId: 'admin' }, { canManageAny: true });
+    expect(res.id).toBe('c1');
+  });
+
+  it('throws 404 when expectedTicketId is provided but does not match the comment ticketId', async () => {
+    // Comment belongs to ticket 't1'; caller supplies a different URL ticket id.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])  // loadCommentWithTicket: comment lookup (ticketId='t1')
+      .mockResolvedValueOnce([BASE_TICKET]);  // loadCommentWithTicket: getTicketOrThrow
+
+    const err = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: true, expectedTicketId: 'other-ticket-id' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    // Must not reveal the comment exists or write any audit/event
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('passes through when expectedTicketId is omitted (backward-compat)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
+
+    // No expectedTicketId in opts — must still succeed
+    const res = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: false });
+    expect(res.id).toBe('c1');
+  });
+
+  it('rejects deleting a system-type comment (400)', async () => {
+    const sysComment = { ...BASE_COMMENT, commentType: 'status_change' };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([sysComment])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
+    expect(err.status).toBe(400);
+  });
+
+  it('rejects deleting an already-deleted comment (409)', async () => {
+    const deletedComment = { ...BASE_COMMENT, deletedAt: new Date() };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([deletedComment])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
+    expect(err.status).toBe(409);
+  });
+
+  it('throws 409 when the soft-delete update races and returns zero rows (TOCTOU)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    // Simulate concurrent soft-delete: the UPDATE matched nothing.
+    dbMocks.updateReturning.mockResolvedValue([]);
+
+    const err = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: false }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    // Audit and event must NOT have fired.
+    expect(auditMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('portalCommentMutable', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('returns ok:true when portal author has no later non-portal comments', async () => {
+    const portalComment = {
+      ...BASE_COMMENT,
+      userId: null,
+      portalUserId: 'pu-42',
+      authorType: 'portal',
+      createdAt: new Date('2026-01-01T10:00:00Z')
+    };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([portalComment])  // comment lookup
+      .mockResolvedValueOnce([]);              // later comments: none
+
+    const result = await portalCommentMutable('c1', 'pu-42');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('returns not_found when comment does not exist', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([]);
+
+    const result = await portalCommentMutable('missing', 'pu-42');
+    expect(result).toEqual({ ok: false, reason: 'not_found' });
+  });
+
+  it('returns not_found when comment is soft-deleted', async () => {
+    const deletedComment = {
+      ...BASE_COMMENT,
+      userId: null,
+      portalUserId: 'pu-42',
+      authorType: 'portal',
+      deletedAt: new Date()
+    };
+    dbMocks.selectResult.mockResolvedValueOnce([deletedComment]);
+
+    const result = await portalCommentMutable('c1', 'pu-42');
+    expect(result).toEqual({ ok: false, reason: 'not_found' });
+  });
+
+  it('returns not_author when portalUserId does not match', async () => {
+    const portalComment = {
+      ...BASE_COMMENT,
+      userId: null,
+      portalUserId: 'pu-99',
+      authorType: 'portal',
+      deletedAt: null
+    };
+    dbMocks.selectResult.mockResolvedValueOnce([portalComment]);
+
+    const result = await portalCommentMutable('c1', 'pu-42');
+    expect(result).toEqual({ ok: false, reason: 'not_author' });
+  });
+
+  it('returns staff_replied when a later comment exists with authorType !== portal', async () => {
+    const portalComment = {
+      ...BASE_COMMENT,
+      userId: null,
+      portalUserId: 'pu-42',
+      authorType: 'portal',
+      deletedAt: null,
+      createdAt: new Date('2026-01-01T10:00:00Z')
+    };
+    const laterStaffComment = { authorType: 'staff' };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([portalComment])        // comment lookup
+      .mockResolvedValueOnce([laterStaffComment]);   // later rows with authorType
+
+    const result = await portalCommentMutable('c1', 'pu-42');
+    expect(result).toEqual({ ok: false, reason: 'staff_replied' });
+  });
+
+  it('returns ok:true when later comments are all portal type', async () => {
+    const portalComment = {
+      ...BASE_COMMENT,
+      userId: null,
+      portalUserId: 'pu-42',
+      authorType: 'portal',
+      deletedAt: null,
+      createdAt: new Date('2026-01-01T10:00:00Z')
+    };
+    const laterPortalComment = { authorType: 'portal' };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([portalComment])
+      .mockResolvedValueOnce([laterPortalComment]);
+
+    const result = await portalCommentMutable('c1', 'pu-42');
+    expect(result).toEqual({ ok: true });
+  });
+});
+
+describe('moveTicketOrg', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    whereMock.mockClear();
+    dbMocks.txExecuteMock.mockClear();
+    dbMocks.txUpdateReturning.mockClear();
+  });
+
+  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 3 tables', async () => {
+    // Ticket { id:'t1', orgId:'oA', partnerId:'p1', deviceId:'d1' }
+    // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }]) // getTicketOrThrow
+      .mockResolvedValueOnce([                                                               // org lookup (IN clause)
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp' }
+      ]);
+    // txUpdateReturning returns the updated ticket row from the tx.update() call
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined); // 3 child-table raw UPDATEs
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]); // tx.insert ticketComments
+
+    const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    expect(result.orgId).toBe('oB');
+    expect(result.deviceId).toBeNull();
+
+    // The tx.update call should have set orgId + deviceId:null
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'oB', deviceId: null }));
+
+    // 3 raw SQL executes for the child tables (time_entries, ticket_parts, ticket_alert_links)
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(3);
+
+    // System feed comment inserted with "Moved to <org name>"
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: 't1',
+      commentType: 'system',
+      content: 'Moved to Beta Corp'
+    }));
+
+    // ticket.updated event emitted
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      ticketId: 't1',
+      orgId: 'oB',
+      payload: { changed: ['orgId'] }
+    }));
+
+    // Dual-org audit: source + target
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'oA',
+      action: 'ticket.move_org.source',
+      resourceId: 't1'
+    }));
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'oB',
+      action: 'ticket.move_org.target',
+      resourceId: 't1'
+    }));
+  });
+
+  it('rejects a cross-partner target (400)', async () => {
+    // Ticket in org oA (partner p1), target org oX (partner p2)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }]) // ticket
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp' },
+        { id: 'oX', partnerId: 'p2', name: 'Cross Corp' }  // different partner!
+      ]);
+
+    const err = await moveTicketOrg('t1', 'oX', { userId: 'admin' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/same partner/i);
+    // No transaction started
+    expect(setMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when target equals the current org', async () => {
+    const ticket = { id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null };
+    dbMocks.selectResult.mockResolvedValueOnce([ticket]); // getTicketOrThrow
+
+    const result = await moveTicketOrg('t1', 'oA', { userId: 'admin' });
+    // Returns the existing ticket unchanged
+    expect(result).toBe(ticket);
+    // No org lookup, no transaction, no event, no audit
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when target org is not found (404)', async () => {
+    // Org lookup returns only the source org — target is missing
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ id: 'oA', partnerId: 'p1', name: 'Alpha Corp' }]); // no oB row
+
+    const err = await moveTicketOrg('t1', 'oB', { userId: 'admin' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    expect(err.message).toMatch(/target organization not found/i);
+    expect(setMock).not.toHaveBeenCalled();
   });
 });

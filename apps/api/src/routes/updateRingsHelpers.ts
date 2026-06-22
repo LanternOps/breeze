@@ -9,6 +9,78 @@ import {
 } from '../db/schema';
 
 /**
+ * Shared inner logic: resolve device IDs assigned to a single ring via config policy assignments.
+ * Returns a deduplicated Set of device IDs.
+ */
+async function resolveRingAssignedDeviceIds(assignments: { level: string; targetId: string }[]): Promise<Set<string>> {
+  const deviceIds = new Set<string>();
+  const directDeviceIds: string[] = [];
+  const groupIds: string[] = [];
+  const siteIds: string[] = [];
+  const orgIds: string[] = [];
+
+  for (const a of assignments) {
+    if (a.level === 'device') directDeviceIds.push(a.targetId);
+    else if (a.level === 'device_group') groupIds.push(a.targetId);
+    else if (a.level === 'site') siteIds.push(a.targetId);
+    else if (a.level === 'organization' || a.level === 'partner') orgIds.push(a.targetId);
+  }
+
+  for (const id of directDeviceIds) deviceIds.add(id);
+
+  if (groupIds.length > 0) {
+    const groupDevices = await db
+      .select({ deviceId: deviceGroupMemberships.deviceId })
+      .from(deviceGroupMemberships)
+      .where(inArray(deviceGroupMemberships.groupId, groupIds));
+    for (const row of groupDevices) deviceIds.add(row.deviceId);
+  }
+
+  if (siteIds.length > 0) {
+    const siteDevices = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(inArray(devices.siteId, siteIds));
+    for (const row of siteDevices) deviceIds.add(row.id);
+  }
+
+  if (orgIds.length > 0) {
+    const orgDevices = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(inArray(devices.orgId, orgIds));
+    for (const row of orgDevices) deviceIds.add(row.id);
+  }
+
+  return deviceIds;
+}
+
+/**
+ * Resolve the set of device IDs assigned to a single ring via config policy assignments.
+ * Used by the compliance handler to scope device-patch status queries.
+ */
+export async function resolveRingDeviceIds(ringId: string): Promise<string[]> {
+  const linkedAssignments = await db
+    .select({
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(configurationPolicies, and(
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configurationPolicies.status, 'active')
+    ))
+    .innerJoin(configPolicyAssignments, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .where(and(
+      eq(configPolicyFeatureLinks.featureType, 'patch'),
+      eq(configPolicyFeatureLinks.featurePolicyId, ringId)
+    ));
+
+  const deviceIds = await resolveRingAssignedDeviceIds(linkedAssignments);
+  return Array.from(deviceIds);
+}
+
+/**
  * Resolve device counts per ring by tracing config policy assignments.
  * Config Policy → Feature Link (featureType=patch, featurePolicyId=ringId) → Assignment → Devices
  */
@@ -46,45 +118,7 @@ export async function resolveRingDeviceCounts(ringIds: string[]): Promise<Map<st
   // Resolve each ring's device count (isolated per ring — one failure doesn't block others)
   for (const [ringId, assignments] of ringAssignments) {
     try {
-      const deviceIds = new Set<string>();
-      const directDeviceIds: string[] = [];
-      const groupIds: string[] = [];
-      const siteIds: string[] = [];
-      const orgIds: string[] = [];
-
-      for (const a of assignments) {
-        if (a.level === 'device') directDeviceIds.push(a.targetId);
-        else if (a.level === 'device_group') groupIds.push(a.targetId);
-        else if (a.level === 'site') siteIds.push(a.targetId);
-        else if (a.level === 'organization' || a.level === 'partner') orgIds.push(a.targetId);
-      }
-
-      for (const id of directDeviceIds) deviceIds.add(id);
-
-      if (groupIds.length > 0) {
-        const groupDevices = await db
-          .select({ deviceId: deviceGroupMemberships.deviceId })
-          .from(deviceGroupMemberships)
-          .where(inArray(deviceGroupMemberships.groupId, groupIds));
-        for (const row of groupDevices) deviceIds.add(row.deviceId);
-      }
-
-      if (siteIds.length > 0) {
-        const siteDevices = await db
-          .select({ id: devices.id })
-          .from(devices)
-          .where(inArray(devices.siteId, siteIds));
-        for (const row of siteDevices) deviceIds.add(row.id);
-      }
-
-      if (orgIds.length > 0) {
-        const orgDevices = await db
-          .select({ id: devices.id })
-          .from(devices)
-          .where(inArray(devices.orgId, orgIds));
-        for (const row of orgDevices) deviceIds.add(row.id);
-      }
-
+      const deviceIds = await resolveRingAssignedDeviceIds(assignments);
       deviceCountMap.set(ringId, deviceIds.size);
     } catch (err) {
       console.error(`Failed to resolve device count for ring ${ringId}:`, err instanceof Error ? err.message : err);

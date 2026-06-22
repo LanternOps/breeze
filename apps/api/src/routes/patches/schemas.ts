@@ -38,20 +38,20 @@ export const listSourcesSchema = z.object({
 export const listApprovalsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
   ringId: z.string().guid().optional(),
   status: z.enum(['approved', 'rejected', 'deferred', 'pending']).optional(),
   patchId: z.string().guid().optional()
 });
 
 export const approvalActionSchema = z.object({
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
   ringId: z.string().guid().optional(),
   note: z.string().max(1000).optional()
 });
 
 export const deferSchema = z.object({
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
   ringId: z.string().guid().optional(),
   deferUntil: z.string().datetime(),
   note: z.string().max(1000).optional()
@@ -73,7 +73,7 @@ export const rollbackSchema = z.object({
 });
 
 export const bulkApproveSchema = z.object({
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
   ringId: z.string().guid().optional(),
   patchIds: z.array(z.string().guid()).min(1),
   note: z.string().max(1000).optional()

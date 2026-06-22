@@ -373,6 +373,43 @@ fn minimize_window(app: tauri::AppHandle) {
     }
 }
 
+/// Submit the local user's consent verdict for a remote session.
+///
+/// Invoked by the React consent window on Allow / Deny / timeout. `decision` is
+/// `"allow"` or `"deny"`. The verdict is handed to the live IPC session loop via
+/// the [`ConsentBridge`](crate::ipc::desktop::ConsentBridge), which writes the
+/// `consent_result` response back to the agent (correlated by envelope id
+/// `consent-<session_id>`), then we close the consent window.
+///
+/// Best-effort: if no IPC session is currently live the verdict is dropped — the
+/// agent has its own consent-timeout fallback, so a missing response is safe.
+#[tauri::command]
+fn submit_consent(app: tauri::AppHandle, session_id: String, decision: String) {
+    // Normalize to the two values the agent understands; anything unexpected is
+    // treated as a deny (fail-closed).
+    let decision = if decision == "allow" {
+        "allow".to_string()
+    } else {
+        "deny".to_string()
+    };
+
+    if let Some(bridge) =
+        app.try_state::<std::sync::Arc<crate::ipc::desktop::ConsentBridge>>()
+    {
+        let submitted = bridge.submit(crate::ipc::desktop::ConsentDecision {
+            session_id,
+            decision,
+        });
+        if !submitted {
+            eprintln!("[helper] submit_consent: no live IPC session to deliver verdict");
+        }
+    } else {
+        eprintln!("[helper] submit_consent: consent bridge not initialized");
+    }
+
+    crate::ipc::desktop::close_consent_window(&app);
+}
+
 /// Update the helper status file when chat activity changes.
 /// Called from the frontend when a chat session starts/ends or on message activity.
 #[tauri::command]
@@ -812,6 +849,7 @@ pub fn run() {
             get_helper_config,
             update_chat_active,
             helper_token_ready,
+            submit_consent,
         ])
         .setup(|app| {
             // Create main window manually (not from config) so we can set
@@ -1001,7 +1039,17 @@ pub fn run() {
             let token = helper_token().clone();
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             app.manage(stop_tx);
-            tauri::async_runtime::spawn(crate::ipc::client::run(token, stop_rx));
+
+            // Consent bridge: shared between the IPC session loop (which writes
+            // the consent_result back to the agent) and the `submit_consent`
+            // Tauri command (which the React consent window invokes).
+            let bridge = std::sync::Arc::new(crate::ipc::desktop::ConsentBridge::default());
+            app.manage(bridge.clone());
+            let desktop_ctx = crate::ipc::client::DesktopCtx {
+                app: app.handle().clone(),
+                bridge,
+            };
+            tauri::async_runtime::spawn(crate::ipc::client::run(token, stop_rx, desktop_ctx));
 
             Ok(())
         })

@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// Tracks how many times the count(*) query (db.select({ count })...where()) is
+// issued, so tests can prove the unbounded count is skipped unless withTotal is
+// set. The count select is distinguishable from the row select by its shape:
+// the count projection has a `count` key; the row projection does not.
+const countQueryCalls = vi.fn();
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
-    select: vi.fn(() => ({
+    select: vi.fn((projection?: Record<string, unknown>) => ({
       from: vi.fn(() => ({
         leftJoin: vi.fn(() => ({
           where: vi.fn(() => ({
@@ -17,7 +23,10 @@ vi.mock('../../db', () => ({
             }))
           }))
         })),
-        where: vi.fn(() => Promise.resolve([{ count: 0 }])),
+        where: vi.fn(() => {
+          if (projection && 'count' in projection) countQueryCalls();
+          return Promise.resolve([{ count: 0 }]);
+        }),
       }))
     })),
   }
@@ -69,7 +78,24 @@ vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
-import { eventsRoutes } from './events';
+import { eventsRoutes, likePrefixPattern } from './events';
+
+describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
+  it('appends a trailing wildcard for a clean dotted prefix', () => {
+    expect(likePrefixPattern('device.command')).toBe('device.command%');
+  });
+
+  it('escapes LIKE metacharacters so they match literally', () => {
+    // `_` and `%` would otherwise act as wildcards.
+    expect(likePrefixPattern('device_x')).toBe('device\\_x%');
+    expect(likePrefixPattern('a%b')).toBe('a\\%b%');
+    expect(likePrefixPattern('back\\slash')).toBe('back\\\\slash%');
+  });
+
+  it('escapes all metacharacters in a single value', () => {
+    expect(likePrefixPattern('a_b%c\\d')).toBe('a\\_b\\%c\\\\d%');
+  });
+});
 
 describe('GET /devices/:id/events validation', () => {
   let app: Hono;
@@ -118,5 +144,65 @@ describe('GET /devices/:id/events validation', () => {
       { method: 'GET', headers: { Authorization: 'Bearer token' } }
     );
     expect(res.status).toBe(200);
+  });
+
+  it('accepts an actions prefix filter', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?actions=device.command,script.,device.patch&limit=10',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('treats an empty / whitespace-only actions value as no filter (200, no empty OR)', async () => {
+    // The transform splits, trims, and drops empties; the handler guards on a
+    // non-empty array, so these must not build an empty or(...) (which throws).
+    for (const value of ['', ',,,', '%20%20']) {
+      const res = await app.request(
+        `/devices/11111111-1111-1111-1111-111111111111/events?actions=${value}&limit=10`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } }
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('rejects an actions value over 500 chars with 400', async () => {
+    const long = 'a.'.repeat(300); // 600 chars
+    const res = await app.request(
+      `/devices/11111111-1111-1111-1111-111111111111/events?actions=${long}`,
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('omits the total count by default and does NOT run the count(*) query', async () => {
+    const res = await app.request('/devices/11111111-1111-1111-1111-111111111111/events?limit=10', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { pagination: { total: number | null } };
+    expect(json.pagination.total).toBeNull();
+    // The whole point of #1726: the unbounded count(*) must not run by default.
+    expect(countQueryCalls).not.toHaveBeenCalled();
+  });
+
+  it('includes a numeric total and runs the count(*) query when withTotal=true', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?limit=10&withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { pagination: { total: number | null } };
+    expect(json.pagination.total).toBe(0);
+    expect(countQueryCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an invalid withTotal value with 400', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?withTotal=maybe',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(400);
   });
 });

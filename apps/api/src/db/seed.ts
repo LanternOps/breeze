@@ -129,6 +129,7 @@ export const DEFAULT_PERMISSIONS = [
   // Tickets
   { resource: 'tickets', action: 'read', description: 'View tickets, comments, and categories' },
   { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
+  { resource: 'tickets', action: 'manage', description: 'Edit or delete any comment and reassign ticket organization' },
 
   // Catalog (billing/invoicing program)
   { resource: 'catalog', action: 'read', description: 'View product catalog items and pricing' },
@@ -256,7 +257,7 @@ export const SYSTEM_ROLES = [
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
-      'tickets:read', 'tickets:write',
+      'tickets:read', 'tickets:write', 'tickets:manage',
       'reports:read', 'reports:write', 'reports:delete', 'reports:export',
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',

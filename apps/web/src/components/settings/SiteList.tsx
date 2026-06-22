@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type Site = {
   id: string;
@@ -28,6 +29,39 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
     return sites.filter(site => site.name.toLowerCase().includes(normalizedQuery));
   }, [query, sites]);
 
+  // Row pieces shared by the desktop table and the mobile cards.
+  const renderSiteName = (site: Site) =>
+    onSiteClick ? (
+      <button
+        type="button"
+        onClick={() => onSiteClick(site)}
+        className="text-left text-primary hover:underline"
+      >
+        {site.name}
+      </button>
+    ) : (
+      site.name
+    );
+
+  const renderActions = (site: Site) => (
+    <div className="flex justify-end gap-2">
+      <button
+        type="button"
+        onClick={() => onSiteClick ? onSiteClick(site) : onEdit?.(site)}
+        className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+      >
+        Edit
+      </button>
+      <button
+        type="button"
+        onClick={() => onDelete?.(site)}
+        className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+      >
+        Delete
+      </button>
+    </div>
+  );
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -55,65 +89,63 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
         </div>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-md border">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Timezone</th>
-              <th className="px-4 py-3">Devices</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {filteredSites.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No sites found. Add a site to get started.
-                </td>
+      <ResponsiveTable
+        className="mt-6"
+        table={
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Timezone</th>
+                <th className="px-4 py-3">Devices</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ) : (
-              filteredSites.map(site => (
-                <tr key={site.id} className="transition hover:bg-muted/40">
-                  <td className="px-4 py-3 text-sm font-medium">
-                    {onSiteClick ? (
-                      <button
-                        type="button"
-                        onClick={() => onSiteClick(site)}
-                        className="text-left text-primary hover:underline"
-                      >
-                        {site.name}
-                      </button>
-                    ) : (
-                      site.name
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-sm">{site.timezone}</td>
-                  <td className="px-4 py-3 text-sm">{site.deviceCount}</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onSiteClick ? onSiteClick(site) : onEdit?.(site)}
-                        className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDelete?.(site)}
-                        className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        Delete
-                      </button>
-                    </div>
+            </thead>
+            <tbody className="divide-y">
+              {filteredSites.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    No sites found. Add a site to get started.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                filteredSites.map(site => (
+                  <tr key={site.id} className="transition hover:bg-muted/40">
+                    <td className="px-4 py-3 text-sm font-medium">{renderSiteName(site)}</td>
+                    <td className="px-4 py-3 text-sm">{site.timezone}</td>
+                    <td className="px-4 py-3 text-sm">{site.deviceCount}</td>
+                    <td className="px-4 py-3 text-right">{renderActions(site)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          filteredSites.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">
+                No sites found. Add a site to get started.
+              </p>
+            </DataCard>
+          ) : (
+            filteredSites.map(site => (
+              <DataCard key={site.id}>
+                <div className="text-sm font-semibold">{renderSiteName(site)}</div>
+                <div className="mt-3 space-y-2 border-t pt-3">
+                  <CardField label="Timezone">
+                    <span className="text-sm">{site.timezone}</span>
+                  </CardField>
+                  <CardField label="Devices">
+                    <span className="text-sm">{site.deviceCount}</span>
+                  </CardField>
+                </div>
+                <CardActions>{renderActions(site)}</CardActions>
+              </DataCard>
+            ))
+          )
+        }
+      />
     </div>
   );
 }

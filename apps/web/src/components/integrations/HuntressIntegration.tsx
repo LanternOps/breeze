@@ -2,16 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  Check,
   CheckCircle2,
+  Copy,
   Eye,
   EyeOff,
   Loader2,
   RefreshCw,
   Save,
   Shield,
-  Unplug
+  Unplug,
+  Webhook
 } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, resolveApiOrigin } from '../../stores/auth';
 import { type Organization, useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
@@ -147,6 +150,9 @@ export default function HuntressIntegration() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [showApiSecret, setShowApiSecret] = useState(false);
   const [showWebhookSecret, setShowWebhookSecret] = useState(false);
+  // Set when Breeze generates a webhook secret for the user: copy-once banner
+  // stays until the user saves (which clears webhookSecret) or dismisses it.
+  const [generatedSecretNotice, setGeneratedSecretNotice] = useState(false);
 
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [syncState, setSyncState] = useState<SyncState>({ status: 'idle' });
@@ -163,6 +169,26 @@ export default function HuntressIntegration() {
     : null;
   const canSave = name.trim().length > 0 && (integration ? !hasCredentialInput || hasCompleteCredential : hasCompleteCredential);
   const unmappedCount = useMemo(() => huntressOrgs.filter((row) => !row.mappedOrgId).length, [huntressOrgs]);
+
+  // Region-correct inbound webhook endpoint to paste into Huntress. Built from
+  // the API origin (PUBLIC_API_URL, or the current page origin behind Caddy) and
+  // the per-integration id used by the receiver to resolve tenancy.
+  const webhookUrl = useMemo(() => {
+    if (!integration) return '';
+    const origin = resolveApiOrigin().replace(/\/$/, '');
+    if (!origin) return '';
+    return `${origin}/api/v1/huntress/webhook?integrationId=${encodeURIComponent(integration.id)}`;
+  }, [integration]);
+
+  const handleGenerateWebhookSecret = () => {
+    // 32 random bytes → 64 hex chars. Surfaced once for copy; saved encrypted.
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    setWebhookSecret(secret);
+    setShowWebhookSecret(true);
+    setGeneratedSecretNotice(true);
+  };
 
   const fetchIntegration = useCallback(async () => {
     const res = await fetchWithAuth('/huntress/integration');
@@ -264,6 +290,7 @@ export default function HuntressIntegration() {
       setApiKey('');
       setApiSecret('');
       setWebhookSecret('');
+      setGeneratedSecretNotice(false);
       await load();
     } catch (err) {
       setSaveState({ status: 'error', message: err instanceof Error ? err.message : 'Network error' });
@@ -419,15 +446,41 @@ export default function HuntressIntegration() {
               </p>
               {credentialPairError && <p className="mt-1 text-xs text-red-600">{credentialPairError}</p>}
             </div>
-            <SecretInput
-              label="Webhook Secret"
-              hint={integration?.hasWebhookSecret ? 'leave blank to keep existing' : 'optional'}
-              value={webhookSecret}
-              onChange={setWebhookSecret}
-              visible={showWebhookSecret}
-              onToggle={() => setShowWebhookSecret((value) => !value)}
-              placeholder={integration?.hasWebhookSecret ? '************' : 'Enter webhook secret'}
-            />
+            <div className="md:col-span-2">
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <SecretInput
+                    label="Webhook Secret"
+                    hint={integration?.hasWebhookSecret ? 'leave blank to keep existing' : 'optional — used to verify inbound Huntress webhooks'}
+                    value={webhookSecret}
+                    onChange={(value) => {
+                      setWebhookSecret(value);
+                      if (generatedSecretNotice) setGeneratedSecretNotice(false);
+                    }}
+                    visible={showWebhookSecret}
+                    onToggle={() => setShowWebhookSecret((value) => !value)}
+                    placeholder={integration?.hasWebhookSecret ? '************' : 'Enter or generate a webhook secret'}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGenerateWebhookSecret}
+                  className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+                >
+                  <RefreshCw className="h-4 w-4" /> Generate
+                </button>
+              </div>
+              {generatedSecretNotice && (
+                <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                  <p className="font-medium">Copy this webhook secret now, then click Update to save it.</p>
+                  <p className="mt-1">
+                    Paste the same value into Huntress&apos;s webhook configuration. After saving, Breeze stores it
+                    encrypted and never displays it again.
+                  </p>
+                  <CopyButton value={webhookSecret} label="Copy secret" className="mt-2" />
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -457,6 +510,68 @@ export default function HuntressIntegration() {
             {syncState.message && (
               <span className={`text-sm ${syncState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>{syncState.message}</span>
             )}
+          </div>
+        </div>
+      )}
+
+      {isPartnerView && integration && (
+        <div className="rounded-xl border bg-card p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Webhook className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold">Inbound webhook (push from Huntress)</h2>
+              <p className="text-sm text-muted-foreground">
+                Paste this endpoint into Huntress so it can push events to Breeze in near-real-time, instead of
+                waiting for the next poll. Inbound webhooks require a webhook secret (above) for signature verification.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <label className="mb-1 block text-sm font-medium">Webhook URL</label>
+            {webhookUrl ? (
+              <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
+                <code className="flex-1 truncate font-mono text-xs" title={webhookUrl}>{webhookUrl}</code>
+                <CopyButton value={webhookUrl} label="Copy" className="shrink-0" />
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Resolving webhook URL…</p>
+            )}
+            <p className="mt-1 text-xs text-muted-foreground">
+              The <code className="font-mono">integrationId</code> query parameter tells Breeze which partner the
+              events belong to. Keep it in the URL.
+            </p>
+          </div>
+
+          {!integration.hasWebhookSecret && (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                No webhook secret is set yet. Generate or enter a Webhook Secret above and click Update — inbound
+                webhooks are rejected with 403 until a secret is configured.
+              </span>
+            </div>
+          )}
+
+          <div className="mt-4 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">Signing scheme to configure on Huntress</p>
+            <ul className="mt-1 list-disc space-y-1 pl-4">
+              <li>
+                Header <code className="font-mono">x-huntress-signature</code>:{' '}
+                <code className="font-mono">sha256=HMAC-SHA256(&#123;timestamp&#125;.&#123;rawBody&#125;, secret)</code>
+              </li>
+              <li>
+                Header <code className="font-mono">x-huntress-timestamp</code>: Unix seconds, signed alongside the
+                body (requests older than 10 minutes are rejected).
+              </li>
+              <li>
+                Optional <code className="font-mono">x-huntress-account-id</code> /{' '}
+                <code className="font-mono">x-huntress-integration-id</code> headers are also accepted in place of
+                the query parameter.
+              </li>
+            </ul>
           </div>
         </div>
       )}
@@ -638,6 +753,32 @@ function SecretInput(props: {
         </button>
       </div>
     </div>
+  );
+}
+
+function CopyButton({ value, label = 'Copy', className }: { value: string; label?: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard blocked (insecure context / permissions); the value is still
+      // selectable in the adjacent field, so fail quietly rather than toast.
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      disabled={!value}
+      className={`inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ''}`}
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? 'Copied' : label}
+    </button>
   );
 }
 

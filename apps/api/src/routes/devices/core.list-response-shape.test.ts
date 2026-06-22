@@ -90,7 +90,12 @@ function rigDeviceListRows(rows: unknown[]) {
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
   const where = vi.fn().mockReturnValue({ orderBy });
-  const leftJoin = vi.fn().mockReturnValue({ where });
+  // Two chained leftJoins (deviceHardware, then deviceReliability #1720), so
+  // each leftJoin returns a thenable that also exposes the next leftJoin.
+  const chain: Record<string, unknown> = {};
+  const leftJoin = vi.fn().mockReturnValue(chain);
+  chain.leftJoin = leftJoin;
+  chain.where = where;
   const from = vi.fn().mockReturnValue({ leftJoin });
   vi.mocked(db.select).mockReturnValue({ from } as never);
   vi.mocked(db.execute).mockResolvedValue([] as never);
@@ -141,6 +146,8 @@ describe('GET /devices — response shape', () => {
         cpuCores: null,
         ramTotalMb: null,
         diskTotalGb: null,
+        reliabilityScore: 42,
+        reliabilityTrend: 'degrading',
       },
     ]);
 
@@ -160,6 +167,9 @@ describe('GET /devices — response shape', () => {
     expect(row).toHaveProperty('watchdogVersion', 'v0.67.1');
     // #1273 regression — pendingReboot must survive the mapper for the list badge.
     expect(row).toHaveProperty('pendingReboot', true);
+    // #1720 — reliability score + trend surfaced for the list column.
+    expect(row).toHaveProperty('reliabilityScore', 42);
+    expect(row).toHaveProperty('reliabilityTrend', 'degrading');
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -197,6 +207,8 @@ describe('GET /devices — response shape', () => {
         cpuCores: null,
         ramTotalMb: null,
         diskTotalGb: null,
+        reliabilityScore: null,
+        reliabilityTrend: null,
       },
     ]);
 
@@ -208,6 +220,13 @@ describe('GET /devices — response shape', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     const row = body.data[0];
+
+    // #1720 — reliability keys present even with no computed score (null),
+    // so the UI distinguishes "no score yet" (dash) from "field absent".
+    expect(Object.prototype.hasOwnProperty.call(row, 'reliabilityScore')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'reliabilityTrend')).toBe(true);
+    expect(row.reliabilityScore).toBeNull();
+    expect(row.reliabilityTrend).toBeNull();
 
     // Keys must exist on the shape even when null — UI distinguishes
     // "field absent" (older API) from "field present, value null"

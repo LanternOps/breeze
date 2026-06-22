@@ -25,10 +25,12 @@ function rule(overrides: Partial<PamRule>): PamRule {
     matchHash: null,
     matchPathGlob: null,
     matchParentImage: null,
+    matchCommandLine: null,
     matchUser: null,
     matchAdGroup: null,
     matchToolName: null,
     matchRiskTier: null,
+    matchNegate: null,
     timeWindow: null,
     verdict: 'require_approval',
     approvalDurationMinutes: null,
@@ -313,5 +315,105 @@ describe('tool-action rules (Phase 1 helper governance)', () => {
     const deny = rule({ matchToolName: 'manage_services', verdict: 'auto_deny', priority: 10 });
     const approve = rule({ matchToolName: 'manage_services', verdict: 'auto_approve', priority: 20 });
     expect(evaluatePamToolActionRules([approve, deny], toolCandidate)?.verdict).toBe('auto_deny');
+  });
+});
+
+describe('command-line matching', () => {
+  const printerCandidate: PamRuleCandidate = {
+    targetExecutablePath: 'C:\\Windows\\System32\\rundll32.exe',
+    targetExecutableSigner: 'Microsoft Windows',
+    subjectUsername: 'CORP\\alice',
+    commandLine: 'rundll32.exe printui.dll,PrintUIEntry /il',
+  };
+
+  it('matches a case-insensitive substring of the command line', () => {
+    const r = rule({ matchCommandLine: 'printui.dll,PrintUIEntry', verdict: 'auto_approve' });
+    expect(evaluatePamRules([r], printerCandidate)?.verdict).toBe('auto_approve');
+  });
+
+  it('does not match when the substring is absent', () => {
+    const r = rule({ matchCommandLine: 'KeyboardLayout', verdict: 'auto_approve' });
+    expect(evaluatePamRules([r], printerCandidate)).toBeNull();
+  });
+
+  it('fails closed when the candidate carries no command line', () => {
+    const r = rule({ matchCommandLine: 'printui', verdict: 'auto_approve' });
+    expect(evaluatePamRules([r], candidate)).toBeNull();
+  });
+
+  it('ANDs with a path glob (both must hold)', () => {
+    const r = rule({
+      matchPathGlob: 'C:\\Windows\\System32\\rundll32.exe',
+      matchCommandLine: 'printui.dll,PrintUIEntry',
+      verdict: 'auto_approve',
+    });
+    expect(evaluatePamRules([r], printerCandidate)).not.toBeNull();
+    // Same rule, command line that doesn't contain the substring → no match.
+    expect(
+      evaluatePamRules([r], { ...printerCandidate, commandLine: 'rundll32.exe shell32.dll,Control_RunDLL' }),
+    ).toBeNull();
+  });
+});
+
+describe('rule negation (match_negate)', () => {
+  it('inverts a path-glob criterion: matches when the path does NOT match', () => {
+    const r = rule({
+      matchPathGlob: 'C:\\Program Files\\Vendor\\**',
+      matchNegate: ['pathGlob'],
+      verdict: 'auto_deny',
+    });
+    // candidate's path IS under Vendor → negated criterion fails → no match.
+    expect(evaluatePamRules([r], candidate)).toBeNull();
+    // a path outside Vendor → negated criterion holds → match.
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutablePath: 'C:\\Temp\\evil.exe' })?.verdict,
+    ).toBe('auto_deny');
+  });
+
+  it('inverts a signer criterion combined (ANDed) with a positive path criterion', () => {
+    const r = rule({
+      matchPathGlob: 'C:\\Program Files\\Vendor\\**',
+      matchSigner: 'Evil Corp',
+      matchNegate: ['signer'],
+      verdict: 'auto_approve',
+    });
+    // path matches AND signer is NOT "Evil Corp" → match.
+    expect(evaluatePamRules([r], candidate)?.verdict).toBe('auto_approve');
+    // signer IS "Evil Corp" → negated signer fails → no match.
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Evil Corp' }),
+    ).toBeNull();
+  });
+
+  it('negation fails closed when the candidate field is absent (never over-grants)', () => {
+    const r = rule({
+      matchSigner: 'Evil Corp',
+      matchNegate: ['signer'],
+      verdict: 'auto_approve',
+    });
+    // unsigned binary (no signer) → absent data never satisfies a criterion,
+    // even a negated one → no match.
+    const unsigned: PamRuleCandidate = {
+      targetExecutablePath: 'C:\\Temp\\unsigned.exe',
+      subjectUsername: 'CORP\\alice',
+    };
+    expect(evaluatePamRules([r], unsigned)).toBeNull();
+  });
+
+  it('inverts a command-line criterion', () => {
+    const r = rule({
+      matchPathGlob: '**',
+      matchCommandLine: '--uninstall',
+      matchNegate: ['commandLine'],
+      verdict: 'auto_approve',
+    });
+    const installing: PamRuleCandidate = {
+      targetExecutablePath: 'C:\\App\\setup.exe',
+      subjectUsername: 'CORP\\alice',
+      commandLine: 'setup.exe --install',
+    };
+    const uninstalling: PamRuleCandidate = { ...installing, commandLine: 'setup.exe --uninstall' };
+    expect(evaluatePamRules([r], installing)?.verdict).toBe('auto_approve');
+    expect(evaluatePamRules([r], uninstalling)).toBeNull();
   });
 });

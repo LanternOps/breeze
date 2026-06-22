@@ -35,6 +35,7 @@ import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../serv
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
@@ -1817,23 +1818,79 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             }
           }
 
-          // Store WebRTC answer from start_desktop command results
+          // Consent denial from the agent's consent gate (Task 9). The agent
+          // returns a COMPLETED desk-start result carrying a `consent_denied`
+          // marker (no capture started) when the end user declined, the prompt
+          // timed out, or the consent-unavailable policy chose to block. Finalize
+          // the session as `denied` and audit the decision. Mirrors the
+          // operator-facing POST /sessions/:id/deny path (remote/sessions.ts).
           if (fastCommandId.startsWith('desk-start-') &&
               fastStatus === 'completed' &&
-              fastResult) {
+              fastResult &&
+              fastResult.event === 'consent_denied') {
             const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-start-');
             const resultSessionId = typeof fastResult.sessionId === 'string' && fastResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
               ? fastResult.sessionId
               : null;
-            const sessionId =
-              expectedSessionId && (!resultSessionId || resultSessionId === expectedSessionId)
-                ? expectedSessionId
-                : null;
+            const sessionId = resolveConsentMarkerSessionId(expectedSessionId, resultSessionId);
+            const reason = typeof fastResult.reason === 'string' ? fastResult.reason : 'no_user';
+            if (sessionId) {
+              try {
+                await runWithAgentDbAccess(async () => {
+                  const [updated] = await db
+                    .update(remoteSessions)
+                    .set({ status: 'denied', endedAt: new Date() })
+                    .where(
+                      and(
+                        eq(remoteSessions.id, sessionId),
+                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                        eq(remoteSessions.status, 'connecting')
+                      )
+                    )
+                    .returning({ id: remoteSessions.id, orgId: remoteSessions.orgId, userId: remoteSessions.userId, type: remoteSessions.type });
+
+                  if (updated) {
+                    // Kill the viewer token so a lingering token can't resurrect
+                    // a denied session via /viewer/offer.
+                    await revokeViewerSession(sessionId);
+                    // A genuine user denial or a consent timeout is a "denied"
+                    // decision; any other reason (no user present, helper absent,
+                    // malformed reply) is a bypass/unavailable path, audited
+                    // distinctly. Shared classifier keeps this in lockstep with
+                    // the operator deny route (remote/sessions.ts).
+                    const action = classifyConsentDenyAction(reason);
+                    await logSessionAudit(
+                      action,
+                      updated.userId,
+                      updated.orgId,
+                      { sessionId, type: updated.type, reason }
+                    );
+                    console.log(`[AgentWs] Session ${sessionId} denied by consent gate (reason=${reason})`);
+                  } else {
+                    console.warn(`[AgentWs] Consent-denied session ${sessionId} not found or not in connecting state`);
+                  }
+                });
+              } catch (err) {
+                console.error(`[AgentWs] Failed to mark session denied:`, err);
+              }
+            }
+          }
+
+          // Store WebRTC answer from start_desktop command results
+          if (fastCommandId.startsWith('desk-start-') &&
+              fastStatus === 'completed' &&
+              fastResult &&
+              fastResult.event !== 'consent_denied') {
+            const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-start-');
+            const resultSessionId = typeof fastResult.sessionId === 'string' && fastResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
+              ? fastResult.sessionId
+              : null;
+            const sessionId = resolveConsentMarkerSessionId(expectedSessionId, resultSessionId);
             const answer = typeof fastResult.answer === 'string' ? fastResult.answer : null;
             if (sessionId && answer && answer.length < 65536) {
               try {
                 await runWithAgentDbAccess(async () => {
-                  const result = await db
+                  const [updated] = await db
                     .update(remoteSessions)
                     .set({
                       webrtcAnswer: answer,
@@ -1847,10 +1904,23 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                         eq(remoteSessions.status, 'connecting')
                       )
                     )
-                    .returning({ id: remoteSessions.id });
+                    .returning({ id: remoteSessions.id, orgId: remoteSessions.orgId, userId: remoteSessions.userId, type: remoteSessions.type });
 
-                  if (result.length > 0) {
+                  if (updated) {
                     console.log(`[AgentWs] Stored WebRTC answer for session ${sessionId}`);
+                    // When the session was gated by a `consent` prompt that the
+                    // user allowed, the agent rides a `consentReason: 'user'`
+                    // marker alongside the answer. Emit a dedicated
+                    // `session_consent_granted` audit so the grant is recorded
+                    // independently of activation. Mirrors the /answer route.
+                    if (fastResult.consentReason === 'user') {
+                      await logSessionAudit(
+                        'session_consent_granted',
+                        updated.userId,
+                        updated.orgId,
+                        { sessionId, type: updated.type, reason: 'user' }
+                      );
+                    }
                   } else {
                     console.warn(`[AgentWs] Session ${sessionId} not found or not owned by agent ${agentId}`);
                   }
@@ -2232,11 +2302,16 @@ const desktopCommandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'cancelled']),
   error: z.string().max(8192).optional(),
   result: z.object({
-    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started']).optional(),
+    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started', 'consent_denied']).optional(),
     sessionId: z.string().min(SESSION_ID_MIN).max(SESSION_ID_MAX).optional(),
     answer: z.string().max(65536).optional(),
     error: z.string().max(8192).optional(),
     candidate: z.unknown().optional(),
+    // Consent gate markers (Task 9). `reason` accompanies a `consent_denied`
+    // event; `consentReason` rides alongside a successful start when a consent
+    // prompt was allowed by the user.
+    reason: z.enum(['user', 'timeout', 'no_user', 'helper_absent']).optional(),
+    consentReason: z.literal('user').optional(),
   }).strict().optional(),
 }).passthrough();
 

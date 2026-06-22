@@ -53,4 +53,24 @@ describe('ProcessDrilldownPanel', () => {
     // and the live row actually renders from `data` (regression guard for the array-under-data shape)
     await waitFor(() => expect(screen.getByTestId('process-drilldown-row-0')).toHaveTextContent('live'));
   });
+
+  it('shows the "no samples recorded yet" empty state when hasAnySample is false (#1722)', async () => {
+    fetchWithAuth.mockReturnValue(jsonResponse({ sample: null, hasAnySample: false }));
+    render(<ProcessDrilldownPanel deviceId="dev-1" at="2026-06-13T12:32:00.000Z" onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByTestId('process-drilldown-empty')).toBeInTheDocument());
+    expect(screen.getByTestId('process-drilldown-empty')).toHaveTextContent(/No process samples have been recorded for this device yet/i);
+    expect(screen.getByTestId('process-drilldown-sample-time')).toHaveTextContent(/No process samples recorded for this device yet/i);
+    // no data rows
+    expect(screen.queryByTestId('process-drilldown-row-0')).toBeNull();
+  });
+
+  it('shows the "none at/before this time" empty state when hasAnySample is true (#1722)', async () => {
+    fetchWithAuth.mockReturnValue(jsonResponse({ sample: null, hasAnySample: true }));
+    render(<ProcessDrilldownPanel deviceId="dev-1" at="2026-06-13T12:32:00.000Z" onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByTestId('process-drilldown-empty')).toBeInTheDocument());
+    expect(screen.getByTestId('process-drilldown-empty')).toHaveTextContent(/No process sample was recorded at or before this point/i);
+    expect(screen.getByTestId('process-drilldown-sample-time')).toHaveTextContent(/No process sample recorded at or before this time/i);
+  });
 });

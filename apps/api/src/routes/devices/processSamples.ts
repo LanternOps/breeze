@@ -53,13 +53,26 @@ processSamplesRoutes.get(
       .orderBy(desc(deviceProcessSamples.timestamp))
       .limit(1);
 
-    if (!sample) return c.json({ sample: null });
+    if (!sample) {
+      // Distinguish "this device has never recorded a process sample" from
+      // "samples exist, but none at-or-before the clicked time" so the UI can
+      // show a meaningful empty state instead of a single ambiguous blank
+      // message (issue #1722). A hit here is cheap: the same
+      // (device_id, timestamp DESC) index backs this existence probe.
+      const [anySample] = await db
+        .select({ timestamp: deviceProcessSamples.timestamp })
+        .from(deviceProcessSamples)
+        .where(eq(deviceProcessSamples.deviceId, deviceId))
+        .limit(1);
+      return c.json({ sample: null, hasAnySample: Boolean(anySample) });
+    }
     return c.json({
       sample: {
         timestamp: sample.timestamp.toISOString(),
         agentTimestamp: sample.agentTimestamp ? sample.agentTimestamp.toISOString() : null,
         topProcesses: sample.topProcesses
-      }
+      },
+      hasAnySample: true
     });
   }
 );

@@ -40,7 +40,13 @@ type EnrollRequest struct {
 	Architecture     string        `json:"architecture"`
 	AgentVersion     string        `json:"agentVersion,omitempty"`
 	DeviceRole       string        `json:"deviceRole,omitempty"`
-	HardwareInfo     *HardwareInfo `json:"hardwareInfo,omitempty"`
+	// IsVirtual / VirtualizationPlatform are the orthogonal "is this a VM and
+	// on what hypervisor" attribute (issue #1387), derived by the agent from
+	// the same hardware identity strings that drive DeviceRole. They are a
+	// second policy-targeting axis, not a role.
+	IsVirtual              bool          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string        `json:"virtualizationPlatform,omitempty"`
+	HardwareInfo           *HardwareInfo `json:"hardwareInfo,omitempty"`
 }
 
 type HardwareInfo struct {

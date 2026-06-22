@@ -48,6 +48,7 @@ const makeTicket = (overrides: Partial<TicketDetail> = {}): TicketDetail => ({
   assigneeName: null,
   categoryId: null,
   dueDate: null,
+  tags: [],
   slaBreachedAt: null,
   firstResponseAt: null,
   createdAt: '2026-06-01T10:00:00.000Z',
@@ -1072,5 +1073,583 @@ describe('TicketWorkbench custom-status select (config path)', () => {
     );
     expect(statusCalls).toHaveLength(1);
     expect(statusCalls[0][1]?.body).not.toContain('statusId');
+  });
+});
+
+// ─── Subject inline edit ──────────────────────────────────────────────────────
+
+const makeComment = (overrides: Partial<import('./ticketConfig').TicketComment> = {}): import('./ticketConfig').TicketComment => ({
+  id: 'c-1',
+  userId: 'u-1',
+  portalUserId: null,
+  authorName: 'Alice',
+  authorType: 'staff',
+  commentType: 'comment',
+  content: 'Hello world',
+  isPublic: true,
+  oldValue: null,
+  newValue: null,
+  createdAt: '2026-06-01T10:00:00.000Z',
+  editedAt: null,
+  deleted: false,
+  ...overrides,
+});
+
+describe('TicketWorkbench subject inline edit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Stub ResizeObserver in case any chart mounts in jsdom
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('renders an editable subject input with testid ticket-workbench-subject-edit', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-subject-edit');
+    expect(screen.getByTestId('ticket-workbench-subject-edit')).toBeInTheDocument();
+  });
+
+  it('saves an edited subject via PATCH /tickets/:id on blur', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.change(input, { target: { value: 'Printer is broken' } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ subject: 'Printer is broken' }) })
+      );
+    });
+  });
+
+  it('saves an edited subject via PATCH on Enter key', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.change(input, { target: { value: 'Network outage' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ subject: 'Network outage' }) })
+      );
+    });
+  });
+
+  it('does NOT PATCH when subject is unchanged on blur', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.blur(input); // blur without changing value
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'))
+    ).toHaveLength(0);
+  });
+
+  it('does NOT PATCH when subject is cleared (empty) on blur', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'))
+    ).toHaveLength(0);
+  });
+});
+
+// ─── Description inline edit ─────────────────────────────────────────────────
+
+describe('TicketWorkbench description inline edit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows an "Edit description" button when description is present', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ description: 'Existing description text' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-description-edit-btn')).toBeInTheDocument();
+  });
+
+  it('shows an "Add description" button when description is null', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ description: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-description-edit-btn')).toBeInTheDocument();
+  });
+
+  it('clicking edit button shows a textarea; saving PATCHes description', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ description: 'Old description' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-description-edit-btn'));
+
+    const textarea = screen.getByTestId('ticket-workbench-description-textarea');
+    expect(textarea).toBeInTheDocument();
+
+    fireEvent.change(textarea, { target: { value: 'Updated description' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-description-save-btn'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ description: 'Updated description' }) })
+      );
+    });
+  });
+
+  it('cancel button closes the description editor without saving', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ description: 'Old description' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-description-edit-btn'));
+    expect(screen.getByTestId('ticket-workbench-description-textarea')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-description-cancel-btn'));
+    expect(screen.queryByTestId('ticket-workbench-description-textarea')).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('description'))
+    ).toHaveLength(0);
+  });
+});
+
+// ─── Comment edit/delete handlers ────────────────────────────────────────────
+
+describe('TicketWorkbench comment edit/delete', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Stub ResizeObserver for jsdom
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('calls PATCH /tickets/:id/comments/:cid via inline editor: open → type → save', async () => {
+    const comment = makeComment({ id: 'c-42', content: 'Original text', portalUserId: null });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    // Click the edit button to open the inline editor
+    await screen.findByTestId('ticket-comment-edit-c-42');
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-c-42'));
+
+    // Textarea should appear pre-filled
+    const textarea = screen.getByTestId('ticket-comment-edit-textarea-c-42');
+    expect(textarea).toBeInTheDocument();
+    expect(textarea).toHaveValue('Original text');
+
+    // Type new content and save
+    fireEvent.change(textarea, { target: { value: 'Updated comment text' } });
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-save-c-42'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/comments/c-42',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ content: 'Updated comment text' }) })
+      );
+    });
+  });
+
+  it('does NOT PATCH when cancel is clicked in the inline editor', async () => {
+    const comment = makeComment({ id: 'c-42', content: 'Original text', portalUserId: null });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-comment-edit-c-42');
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-c-42'));
+
+    const textarea = screen.getByTestId('ticket-comment-edit-textarea-c-42');
+    fireEvent.change(textarea, { target: { value: 'Changed but cancelled' } });
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-cancel-c-42'));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url).includes('/comments/'))
+    ).toHaveLength(0);
+  });
+
+  it('calls DELETE /tickets/:id/comments/:cid via ConfirmDialog: open → confirm', async () => {
+    const comment = makeComment({ id: 'c-99', content: 'Delete me', portalUserId: null });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-comment-delete-c-99');
+    fireEvent.click(screen.getByTestId('ticket-comment-delete-c-99'));
+
+    // ConfirmDialog should be open; confirm it
+    const confirmBtn = screen.getByTestId('ticket-comment-delete-confirm');
+    expect(confirmBtn).toBeInTheDocument();
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/comments/c-99',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  it('does NOT DELETE when cancel is clicked in the ConfirmDialog', async () => {
+    const comment = makeComment({ id: 'c-99', content: 'Delete me', portalUserId: null });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-comment-delete-c-99');
+    fireEvent.click(screen.getByTestId('ticket-comment-delete-c-99'));
+
+    // Cancel the dialog
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-comment-delete-confirm')).toBeNull();
+    });
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'DELETE' && String(url).includes('/comments/'))
+    ).toHaveLength(0);
+  });
+
+  it('portal-authored comments do NOT show edit/delete controls (canManageComment gate)', async () => {
+    const comment = makeComment({ id: 'c-portal', content: 'Portal user comment', portalUserId: 'pu-1' });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-comment-c-portal');
+    expect(screen.queryByTestId('ticket-comment-edit-c-portal')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-c-portal')).toBeNull();
+  });
+
+  it('staff-authored comments DO show edit/delete controls', async () => {
+    const comment = makeComment({ id: 'c-staff', content: 'Staff comment', portalUserId: null });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-comment-edit-c-staff');
+    await screen.findByTestId('ticket-comment-delete-c-staff');
+    expect(screen.getByTestId('ticket-comment-edit-c-staff')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-comment-delete-c-staff')).toBeInTheDocument();
+  });
+});
+
+// ─── Due date, tags, device editors ──────────────────────────────────────────
+
+describe('TicketWorkbench due-date editor', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('renders a date input with testid ticket-workbench-due', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ dueDate: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-due')).toBeInTheDocument();
+  });
+
+  it('PATCHes dueDate when the date input changes', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ dueDate: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-due');
+    fireEvent.change(screen.getByTestId('ticket-workbench-due'), {
+      target: { value: '2026-07-15' },
+    });
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.dueDate).toBeTruthy();
+      expect(body.dueDate).toContain('2026-07-15');
+    });
+  });
+
+  it('PATCHes dueDate as null when the date input is cleared', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ dueDate: '2026-07-15T00:00:00.000Z' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-due');
+    fireEvent.change(screen.getByTestId('ticket-workbench-due'), {
+      target: { value: '' },
+    });
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.dueDate).toBeNull();
+    });
+  });
+});
+
+describe('TicketWorkbench tags editor', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('renders the tag editor container with testid ticket-workbench-tags', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: [] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-tags')).toBeInTheDocument();
+  });
+
+  it('PATCHes tags when a tag is added', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: ['existing'] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-tags');
+    const tagInput = screen.getByTestId('ticket-workbench-tag-input');
+    fireEvent.change(tagInput, { target: { value: 'urgent' } });
+    fireEvent.keyDown(tagInput, { key: 'Enter' });
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.tags).toEqual(['existing', 'urgent']);
+    });
+  });
+
+  it('does NOT add a duplicate tag', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: ['existing'] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-tags');
+    const tagInput = screen.getByTestId('ticket-workbench-tag-input');
+    fireEvent.change(tagInput, { target: { value: 'existing' } });
+    fireEvent.keyDown(tagInput, { key: 'Enter' });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('tags')
+      )
+    ).toHaveLength(0);
+  });
+
+  it('PATCHes tags when a chip is removed', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: ['alpha', 'beta'] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-tags');
+    fireEvent.click(screen.getByTestId('ticket-workbench-tag-remove-alpha'));
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.tags).toEqual(['beta']);
+    });
+  });
+});
+
+describe('TicketWorkbench device link/unlink', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('renders the device container with testid ticket-workbench-device', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-device')).toBeInTheDocument();
+  });
+
+  it('shows "No device" when deviceId is null', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.getByTestId('ticket-workbench-device')).toHaveTextContent('No device');
+  });
+
+  it('shows the device hostname when linked', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.getByTestId('ticket-workbench-device')).toHaveTextContent('DESKTOP-123');
+  });
+
+  it('clears the device link when Unlink is clicked (PATCHes {deviceId: null})', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-unlink'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ deviceId: null }) })
+      );
+    });
+  });
+
+  it('does NOT show an Unlink button when deviceId is null', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.queryByTestId('ticket-workbench-device-unlink')).toBeNull();
+  });
+});
+
+// ─── Move to another org ──────────────────────────────────────────────────────
+
+describe('TicketWorkbench move-org action', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  /** Sets up fetchWithAuth to handle ticket GET, /orgs/organizations, triage, and mutations. */
+  function mockTicketApiWithOrgs(
+    ticket: TicketDetail,
+    orgs: Array<{ id: string; name: string }> = [
+      { id: 'org-1', name: 'Acme Corp' },
+      { id: 'org-2', name: 'Globex Inc' },
+    ]
+  ) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/orgs/organizations')) {
+        return makeJsonResponse({ data: orgs });
+      }
+      if (!init?.method || init.method === 'GET') {
+        const match = url.match(/^\/tickets\/([^/]+)$/);
+        if (match && match[1] === ticket.id) {
+          return makeJsonResponse({ data: ticket });
+        }
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('POSTs move-org with the selected org', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+
+    // Open the move-org UI
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+
+    // The picker should appear; select org-2 (Globex Inc)
+    const picker = await screen.findByTestId('ticket-workbench-move-org-select');
+    fireEvent.change(picker, { target: { value: 'org-2' } });
+
+    // Confirm the move
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/move-org',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ orgId: 'org-2' }),
+        })
+      );
+    });
+  });
+
+  it('current org is excluded from the picker options', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+
+    const picker = await screen.findByTestId('ticket-workbench-move-org-select');
+    const options = Array.from(picker.querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value);
+    expect(options).not.toContain('org-1');
+    expect(options).toContain('org-2');
+  });
+
+  it('cancel button closes the move-org form without POSTing', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+
+    await screen.findByTestId('ticket-workbench-move-org-select');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-cancel'));
+
+    expect(screen.queryByTestId('ticket-workbench-move-org-select')).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/move-org'))
+    ).toHaveLength(0);
   });
 });

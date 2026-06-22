@@ -3,6 +3,7 @@ import { db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations } from '../db/schema';
 import { ContractServiceError, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
+import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
@@ -37,6 +38,7 @@ function assertEditable(c: { status: string }): void {
 export async function createContract(input: {
   orgId: string; name: string; billingTiming: 'advance' | 'arrears'; intervalMonths: number;
   startDate: string; endDate?: string | null; autoIssue?: boolean; currencyCode?: string; notes?: string | null; terms?: string | null;
+  autoRenew?: boolean; renewalTermMonths?: number | null; renewalNoticeDays?: number | null;
 }, actor: ContractActor) {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
@@ -49,7 +51,9 @@ export async function createContract(input: {
     billingTiming: input.billingTiming, intervalMonths: input.intervalMonths,
     startDate: input.startDate, endDate: input.endDate ?? null,
     autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? 'USD',
-    notes: input.notes ?? null, terms: input.terms ?? null, createdBy: actor.userId
+    notes: input.notes ?? null, terms: input.terms ?? null, createdBy: actor.userId,
+    autoRenew: input.autoRenew ?? false, renewalTermMonths: input.renewalTermMonths ?? null,
+    renewalNoticeDays: input.renewalNoticeDays ?? null,
   }).returning();
   return row!;
 }
@@ -172,6 +176,19 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
   if (patch.autoIssue !== undefined)      safeSet.autoIssue      = patch.autoIssue;
   if ('notes' in patch)                   safeSet.notes          = patch.notes ?? null;
   if ('terms' in patch)                   safeSet.terms          = patch.terms ?? null;
+  if (patch.autoRenew !== undefined)      safeSet.autoRenew      = patch.autoRenew;
+  if ('renewalTermMonths' in patch)       safeSet.renewalTermMonths = patch.renewalTermMonths ?? null;
+  if ('renewalNoticeDays' in patch)       safeSet.renewalNoticeDays = patch.renewalNoticeDays ?? null;
+  // Post-merge invariant: auto-renew requires both an end date and a renewal term.
+  // updateContractSchema is a bare object that cannot cross-validate against the persisted
+  // row (the patch may only send autoRenew:true without re-sending endDate). We compute
+  // the effective values by merging the patch over the persisted row and check here.
+  const effectiveAutoRenew   = safeSet.autoRenew   !== undefined ? safeSet.autoRenew   : c.autoRenew;
+  const effectiveEndDate     = safeSet.endDate      !== undefined ? safeSet.endDate     : c.endDate;
+  const effectiveTerm        = safeSet.renewalTermMonths !== undefined ? safeSet.renewalTermMonths : c.renewalTermMonths;
+  if (effectiveAutoRenew && (effectiveEndDate == null || effectiveTerm == null)) {
+    throw new ContractServiceError('auto-renew requires an end date and renewal term', 400);
+  }
   await db.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
   return getOwnedContractOr404(contractId, actor);
 }
@@ -407,4 +424,66 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
   return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor };
+}
+
+// INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.
+// Tenancy (orgId/partnerId) is already validated by the caller, so there is NO
+// actor guard here. MUST run inside an established system-scope DB context
+// (e.g. acceptQuote's withSystemDbAccessContext transaction) — do not call from
+// a bare request handler — a contextless/org-only call hits the partner-axis writes'
+// RLS WITH CHECK and fails (now a typed CONTRACT_CREATE_FAILED, previously a 0-row
+// silent write). Always lands status='draft'; the MSP activates later.
+export async function createContractWithLines(
+  spec: NewContractSpec,
+): Promise<typeof contracts.$inferSelect> {
+  const [contract] = await db
+    .insert(contracts)
+    .values({
+      partnerId: spec.partnerId,
+      orgId: spec.orgId,
+      name: spec.name,
+      status: 'draft',
+      billingTiming: spec.billingTiming,
+      intervalMonths: spec.intervalMonths,
+      startDate: spec.startDate,
+      endDate: spec.endDate ?? null,
+      autoIssue: false,
+      currencyCode: spec.currencyCode ?? 'USD',
+      notes: spec.notes ?? null,
+      terms: spec.terms ?? null,
+      createdBy: spec.createdBy ?? null,
+    })
+    .returning();
+
+  if (!contract) {
+    throw new ContractServiceError(
+      `contract insert returned 0 rows (org=${spec.orgId} partner=${spec.partnerId}) — likely an RLS WITH CHECK rejection from a non-system DB context`,
+      500, 'CONTRACT_CREATE_FAILED',
+    );
+  }
+
+  for (let i = 0; i < spec.lines.length; i++) {
+    const l = spec.lines[i]!;
+    const [insertedLine] = await db.insert(contractLines).values({
+      contractId: contract.id,
+      orgId: spec.orgId,
+      lineType: l.lineType,
+      description: l.description,
+      catalogItemId: l.catalogItemId ?? null,
+      unitPrice: l.unitPrice,
+      manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+      siteId: l.lineType === 'per_device' ? (l.siteId ?? null) : null,
+      taxable: l.taxable,
+      sortOrder: l.sortOrder ?? i,
+    }).returning({ id: contractLines.id });
+
+    if (!insertedLine) {
+      throw new ContractServiceError(
+        `contract line insert returned 0 rows (contractId=${contract.id} org=${spec.orgId} line[${i}]) — likely an RLS WITH CHECK rejection`,
+        500, 'CONTRACT_LINE_CREATE_FAILED',
+      );
+    }
+  }
+
+  return contract;
 }
