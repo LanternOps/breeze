@@ -244,6 +244,10 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   's1_actions',
   's1_agents',
   's1_integrations',
+  's1_org_mappings',
+  // s1_site_mappings is the legacy org-keyed mapping table retained as a
+  // forensic record post-migration (see 2026-06-27-a-sentinelone-partner-mapping.sql).
+  // It still carries org_id, so it must remain in the cascade list until dropped.
   's1_site_mappings',
   's1_threats',
   'saved_filters',

@@ -83,6 +83,10 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // quarantined Huntress orgs.
   'huntress_integrations',
   'huntress_org_mappings',
+  // SentinelOne credentials and discovered-site mappings are partner-scoped.
+  // org_id is retained only as legacy/mapping metadata and may be NULL.
+  's1_integrations',
+  's1_org_mappings',
   // Pax8 sync tables: partner-axis (Shape 3). The MSP partner owns the Pax8
   // integration; org_id is denormalized (nullable on mappings/snapshots, for the
   // resolved customer) for FK joins + filtering only — the RLS axis is partner_id
@@ -170,6 +174,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Functional cross-partner forge proof: update-rings-partner-scope.integration.test.ts.
   ['patch_policies', 'partner_id'],
   ['patch_approvals', 'partner_id'],
+  // SentinelOne (partner-wide re-key, #1735): credentials + site mappings are
+  // partner-axis (Shape 3). org_id is denormalized/nullable metadata only.
+  // Also listed in ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap).
+  ['s1_integrations', 'partner_id'],
+  ['s1_org_mappings', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
