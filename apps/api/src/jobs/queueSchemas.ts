@@ -88,6 +88,33 @@ export const discoveredHostResultSchema = z.object({
   lastSeen: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
+const lldpNeighborSchema = z.object({
+  localPort: z.string(),
+  localIfName: z.string().optional(),
+  remoteChassisId: z.string(),
+  remotePortId: z.string(),
+  remoteSysName: z.string().optional(),
+}).strict();
+const cdpNeighborSchema = z.object({
+  localPort: z.string(),
+  remoteDeviceId: z.string(),
+  remotePortId: z.string(),
+  remoteAddress: z.string().optional(),
+}).strict();
+const fdbEntrySchema = z.object({
+  mac: z.string(),
+  bridgePort: z.number().int(),
+  ifName: z.string().optional(),
+  vlan: z.number().int().optional(),
+}).strict();
+export const deviceAdjacencySchema = z.object({
+  sourceDeviceIp: z.string(),
+  sourceChassisId: z.string().optional(),
+  lldp: z.array(lldpNeighborSchema),
+  cdp: z.array(cdpNeighborSchema),
+  fdb: z.array(fdbEntrySchema),
+}).strict();
+
 export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('schedule-profiles'),
@@ -111,6 +138,7 @@ export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
     hosts: z.array(discoveredHostResultSchema),
     hostsScanned: z.number().int().nonnegative(),
     hostsDiscovered: z.number().int().nonnegative(),
+    adjacency: z.array(deviceAdjacencySchema).optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
 ]);

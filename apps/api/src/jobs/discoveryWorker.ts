@@ -87,6 +87,35 @@ interface ProcessResultsJobData {
   hosts: DiscoveredHostResult[];
   hostsScanned: number;
   hostsDiscovered: number;
+  adjacency?: DeviceAdjacency[];
+}
+
+// LLDP/CDP adjacency contract (mirrors the agent payload; see issue #1728).
+export interface LldpNeighbor {
+  localPort: string;
+  localIfName?: string;
+  remoteChassisId: string;
+  remotePortId: string;
+  remoteSysName?: string;
+}
+export interface CdpNeighbor {
+  localPort: string;
+  remoteDeviceId: string;
+  remotePortId: string;
+  remoteAddress?: string;
+}
+export interface FdbEntry {
+  mac: string;
+  bridgePort: number;
+  ifName?: string;
+  vlan?: number;
+}
+export interface DeviceAdjacency {
+  sourceDeviceIp: string;
+  sourceChassisId?: string;
+  lldp: LldpNeighbor[];
+  cdp: CdpNeighbor[];
+  fdb: FdbEntry[];
 }
 
 export interface DiscoveredHostResult {
@@ -1209,6 +1238,7 @@ export async function enqueueDiscoveryResults(
   hostsScanned: number,
   hostsDiscovered: number,
   profileId?: string,
+  adjacency?: DeviceAdjacency[],
   meta: QueueActorMeta = DISCOVERY_RESULT_META,
 ): Promise<string> {
   const queue = getDiscoveryQueue();
@@ -1223,7 +1253,8 @@ export async function enqueueDiscoveryResults(
       siteId,
       hosts,
       hostsScanned,
-      hostsDiscovered
+      hostsDiscovered,
+      adjacency
     }, meta)),
     `discovery-result-${jobId}`,
     {

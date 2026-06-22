@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   automationQueueJobDataSchema,
+  discoveryQueueJobDataSchema,
   sensitiveDataQueueJobDataSchema,
 } from './queueSchemas';
 
@@ -178,5 +179,27 @@ describe('sensitiveDataQueueJobDataSchema', () => {
 
   it.each(malformedCases)('rejects a malformed $name job', ({ payload }) => {
     expect(() => sensitiveDataQueueJobDataSchema.parse(payload)).toThrow();
+  });
+});
+
+describe('discovery process-results adjacency', () => {
+  const base = {
+    type: 'process-results' as const,
+    jobId: 'job-1', orgId: 'org-1', siteId: 'site-1',
+    hosts: [], hostsScanned: 0, hostsDiscovered: 0,
+  };
+  it('accepts an adjacency block with lldp/cdp/fdb', () => {
+    const parsed = discoveryQueueJobDataSchema.parse({
+      ...base,
+      adjacency: [{
+        sourceDeviceIp: '10.0.0.1', sourceChassisId: 'aa:bb:cc:dd:ee:ff',
+        lldp: [{ localPort: '1', remoteChassisId: 'a1:b2:c3:d4:e5:f6', remotePortId: 'Gi0/1', remoteSysName: 'core' }],
+        cdp: [], fdb: [],
+      }],
+    });
+    expect(parsed.type).toBe('process-results');
+  });
+  it('accepts a payload without adjacency (optional)', () => {
+    expect(() => discoveryQueueJobDataSchema.parse(base)).not.toThrow();
   });
 });
