@@ -495,34 +495,50 @@ export const submitSessionsSchema = z.object({
 // Patches
 // ============================================
 
+const patchSourceSchema = z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']);
+
+const pendingPatchSchema = z.object({
+  name: z.string().min(1),
+  version: z.string().optional(),
+  currentVersion: z.string().optional(),
+  packageId: z.string().max(256).optional(),
+  vendor: z.string().max(255).optional(),
+  kbNumber: z.string().optional(),
+  externalId: z.string().optional(),
+  category: z.string().optional(),
+  severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
+  size: z.number().int().optional(),
+  requiresRestart: z.boolean().optional(),
+  releaseDate: z.string().optional(),
+  description: z.string().optional(),
+  source: patchSourceSchema.default('custom')
+});
+
+const installedPatchSchema = z.object({
+  name: z.string().min(1),
+  version: z.string().optional(),
+  packageId: z.string().max(256).optional(),
+  vendor: z.string().max(255).optional(),
+  kbNumber: z.string().optional(),
+  externalId: z.string().optional(),
+  category: z.string().optional(),
+  source: patchSourceSchema.default('custom'),
+  installedAt: z.string().optional()
+});
+
+export const submitPendingPatchesSchema = z.object({
+  patches: z.array(pendingPatchSchema).max(5000),
+  source: patchSourceSchema.optional(),
+  full: z.boolean().optional().default(false)
+});
+
+export const submitInstalledPatchesSchema = z.object({
+  installed: z.array(installedPatchSchema).max(5000)
+});
+
 export const submitPatchesSchema = z.object({
-  patches: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    currentVersion: z.string().optional(),
-    packageId: z.string().max(256).optional(),
-    vendor: z.string().max(255).optional(),
-    kbNumber: z.string().optional(),
-    externalId: z.string().optional(),
-    category: z.string().optional(),
-    severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
-    size: z.number().int().optional(),
-    requiresRestart: z.boolean().optional(),
-    releaseDate: z.string().optional(),
-    description: z.string().optional(),
-    source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom')
-  })).max(5000),
-  installed: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    packageId: z.string().max(256).optional(),
-    vendor: z.string().max(255).optional(),
-    kbNumber: z.string().optional(),
-    externalId: z.string().optional(),
-    category: z.string().optional(),
-    source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
-    installedAt: z.string().optional()
-  })).max(5000).optional()
+  patches: z.array(pendingPatchSchema).max(5000),
+  installed: z.array(installedPatchSchema).max(5000).optional()
 });
 
 // ============================================
