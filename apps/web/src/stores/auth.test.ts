@@ -8,6 +8,7 @@ import {
   apiResetPassword,
   apiVerifyMFA,
   fetchWithAuth,
+  resolveApiOrigin,
   restoreAccessTokenFromCookie,
   useAuthStore,
   waitForPendingRefresh
@@ -548,5 +549,18 @@ describe('waitForPendingRefresh (#950)', () => {
 
     await expect(waitForPendingRefresh()).resolves.toBeUndefined();
     await inflight;
+  });
+});
+
+describe('resolveApiOrigin', () => {
+  // PUBLIC_API_URL is blank in the test/CI env (and in production behind Caddy),
+  // so this exercises exactly the production fallback path that makes the
+  // Huntress webhook URL region-correct (#1737): fall back to the page origin.
+  it('falls back to the current page origin when PUBLIC_API_URL is blank', () => {
+    const origin = resolveApiOrigin();
+    expect(origin).toBe(window.location.origin);
+    // Must be an absolute origin (scheme + host) with no path, so callers can
+    // safely append /api/v1/... without producing a scheme-less or doubled URL.
+    expect(origin).toMatch(/^https?:\/\/[^/]+$/);
   });
 });
