@@ -1,6 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, handleActionError } from '../../lib/runAction';
+import { navigateTo } from '@/lib/navigation';
+import { loginPathWithNext } from '../../lib/authScope';
+
+const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 type WarrantyEntitlement = {
   provider: string;
@@ -70,45 +75,96 @@ function timeAgo(dateStr: string | null): string {
   return `${days}d ago`;
 }
 
+// The refresh runs asynchronously in a BullMQ worker (the route returns 200 the
+// moment the job is queued), so we poll the warranty endpoint after queuing and
+// stop as soon as the worker stamps a newer lastSyncAt — that way the card
+// updates on its own instead of leaving the user to reload (#1723).
+const REFRESH_POLL_INTERVAL_MS = 2000;
+const REFRESH_POLL_TIMEOUT_MS = 30000;
+
 export default function DeviceWarrantyCard({ deviceId, compact = false }: DeviceWarrantyCardProps) {
   const [warranty, setWarranty] = useState<WarrantyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
+  // Cleared on unmount / deviceId change so a late poll tick can't setState on
+  // an unmounted card or bleed across devices.
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
-  const fetchWarranty = async () => {
+  const clearPoll = () => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  const fetchWarranty = async (): Promise<WarrantyData | null> => {
     try {
       const res = await fetchWithAuth(`/devices/${deviceId}/warranty`);
       if (res.ok) {
         const data = await res.json();
-        setWarranty(data.warranty);
-        setError(false);
-      } else {
-        setError(true);
+        if (mountedRef.current) {
+          setWarranty(data.warranty);
+          setError(false);
+        }
+        return data.warranty ?? null;
       }
+      if (mountedRef.current) setError(true);
+      return null;
     } catch {
-      setError(true);
+      if (mountedRef.current) setError(true);
+      return null;
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
+    mountedRef.current = true;
     fetchWarranty();
+    return () => {
+      mountedRef.current = false;
+      clearPoll();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId]);
 
   const handleRefresh = async () => {
+    if (refreshing) return;
+    clearPoll();
     setRefreshing(true);
+    // Capture the pre-refresh sync timestamp so we can detect when the worker
+    // produces a fresher result.
+    const previousSyncAt = warranty?.lastSyncAt ?? null;
     try {
-      await fetchWithAuth(`/devices/${deviceId}/warranty/refresh`, { method: 'POST' });
-      // Re-fetch after a short delay to allow the worker to process
-      setTimeout(() => {
-        fetchWarranty();
-        setRefreshing(false);
-      }, 3000);
-    } catch {
-      setRefreshing(false);
+      await runAction({
+        request: () => fetchWithAuth(`/devices/${deviceId}/warranty/refresh`, { method: 'POST' }),
+        errorFallback: 'Failed to queue warranty refresh',
+        successMessage: 'Refreshing warranty…',
+        onUnauthorized: UNAUTHORIZED,
+      });
+    } catch (err) {
+      handleActionError(err, 'Failed to queue warranty refresh');
+      if (mountedRef.current) setRefreshing(false);
+      return;
     }
+
+    // Poll until the worker stamps a newer lastSyncAt or we hit the timeout,
+    // then settle (success or "still working") and stop the spinner.
+    const startedAt = Date.now();
+    const poll = async () => {
+      const next = await fetchWarranty();
+      const advanced = next?.lastSyncAt && next.lastSyncAt !== previousSyncAt;
+      if (advanced || Date.now() - startedAt >= REFRESH_POLL_TIMEOUT_MS) {
+        if (mountedRef.current) setRefreshing(false);
+        return;
+      }
+      if (mountedRef.current) {
+        pollTimerRef.current = setTimeout(poll, REFRESH_POLL_INTERVAL_MS);
+      }
+    };
+    pollTimerRef.current = setTimeout(poll, REFRESH_POLL_INTERVAL_MS);
   };
 
   if (loading) {
@@ -201,7 +257,7 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
           className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-          {refreshing ? 'Refreshing...' : 'Refresh'}
+          {refreshing ? 'Checking…' : 'Refresh'}
         </button>
       </div>
 
