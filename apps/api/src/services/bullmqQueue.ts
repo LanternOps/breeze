@@ -50,10 +50,12 @@ export function createInstrumentedQueue<DataType = unknown, ResultType = unknown
   type Q = Queue<DataType, ResultType, NameType>;
 
   // Wrap each enqueue method in place. We only rebind a method that is actually
-  // a function so a partial test double (a mocked Queue that stubs only `add`,
-  // not `addBulk`) doesn't blow up on `.bind(undefined)`; the real BullMQ Queue
-  // always has both. Cast through the method's own type so the wrapper preserves
-  // the exact signature/overloads BullMQ exposes; the guard runs first.
+  // a function so a partial test double (a mocked Queue that omits one of these
+  // methods — e.g. the empty `class {}` / add-only doubles the worker tests use)
+  // doesn't blow up on `.bind(undefined)`; the real BullMQ Queue always has both
+  // on its prototype, so a real queue is always instrumented. Cast through the
+  // method's own type so the wrapper preserves the exact signature/overloads
+  // BullMQ exposes; the guard runs first.
   if (typeof queue.add === 'function') {
     const originalAdd = queue.add.bind(queue);
     queue.add = ((...args: Parameters<Q['add']>) => {
