@@ -75,6 +75,7 @@ vi.mock('../../middleware/auth', async () => ({
     await next();
   },
   requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
   // Real implementation, not a re-implementation: siteAccessCheck is a pure
   // function and the single source of truth for site-allowlist semantics —
   // re-exporting it keeps these route tests honest if those semantics change.

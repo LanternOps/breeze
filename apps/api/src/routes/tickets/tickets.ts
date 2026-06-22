@@ -85,7 +85,7 @@ export function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
   return { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
 }
 
-function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TicketServiceError) {
     return c.json({ error: err.message }, err.status);
   }
