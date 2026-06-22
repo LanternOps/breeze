@@ -132,6 +132,16 @@ copy at `/Users/toddhebebrand/breeze` is shared across sessions and drifts —
 **verify your base is fresh `main`** before branching (a stale base has nearly
 shipped dozens of unrelated commits in a PR).
 
+**Spawn-location trap (read this):** When an orchestrator fans you out, your
+CWD is very likely **already inside an existing worktree under
+`.claude/worktrees/` that belongs to a *different* task**. That is NOT your
+workspace. Do **not** edit there, and do **not** reach back into the shared
+`/Users/toddhebebrand/breeze` checkout (it may be on a stale branch). Always
+`git fetch origin main`, then create your **own** new worktree off
+`origin/main`, `cd` into it, and confirm `git rev-parse HEAD` equals
+`origin/main` before you branch. Editing the spawn worktree or the shared
+checkout has silently reverted other in-flight PRs' files.
+
 Branch naming (AGENTS.md — no `codex/` / `claude/` prefixes):
 `fix/N-short-slug`, `feat/N-short-slug`, `docs/short-slug`, `chore/short-slug`.
 
@@ -208,6 +218,7 @@ are the user's judgment calls — see the merge/hold rules. The issue stays
 - "Someone's assigned but they seem stalled, I'll take it." → **Abort & report** — don't poach. (But an issue assigned to the operator's own `@me` account is *not* poaching — work it; see step 1.)
 - "No *open* PR, so nobody's fixed it." → Check **merged/closed** PRs + commits on `main` too. Open-only is a blind spot.
 - "I'll skip the worktree, the main copy is fine." → No. Stale base + shared copy = wrong-commit PR.
+- "I'm already inside a worktree, I'll just use this one." → No — it's another task's worktree. Make your *own* off fresh `origin/main`.
 - "Affected tests pass, skip the rest / skip typecheck." → Run typecheck (and astro check) too.
 - "Posting 'ready for review' is enough." → No. Record *which review ran and what it found*.
 
