@@ -146,7 +146,8 @@ export default function DeviceWarrantyCard({
       mountedRef.current = false;
       clearPoll();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Re-run only when the device changes; fetchWarranty/clearPoll are stable
+    // closures recreated each render and intentionally excluded.
   }, [deviceId]);
 
   const handleRefresh = async () => {
