@@ -18,6 +18,7 @@ import type { LookupAddress } from 'dns';
 import https from 'https';
 import http from 'http';
 import type { LookupFunction } from 'net';
+import { assertOutsideHeldDbContext } from '../db';
 
 export class SsrfBlockedError extends Error {
   public readonly resolvedIps?: string[];
@@ -205,6 +206,15 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
  * for transport/TLS/timeout failures. Returns a standard `Response`.
  */
 export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promise<Response> {
+  // #1105 tripwire: an outbound HTTP request inside a held withDbAccessContext
+  // transaction pins a pooled connection idle-in-transaction across the network
+  // round-trip — the exact txn-around-slow-work pattern that poisoned the pool
+  // (and the #1697 integration-sync class). safeFetch is the single shared
+  // outbound-HTTP chokepoint, so guarding it here covers every caller. Warn-only
+  // in prod; throws in CI (strict) so a new violation fails the build instead of
+  // surfacing only in Sentry after an incident.
+  assertOutsideHeldDbContext('safeFetch');
+
   const u = new URL(urlStr);
 
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {

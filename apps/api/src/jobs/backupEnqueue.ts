@@ -6,7 +6,7 @@
  */
 
 import { Queue } from 'bullmq';
-import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import {
   backupQueueJobDataSchema,
   type QueueActorMeta,
@@ -26,9 +26,7 @@ let backupQueue: Queue | null = null;
 
 export function getBackupQueue(): Queue {
   if (!backupQueue) {
-    backupQueue = new Queue(BACKUP_QUEUE, {
-      connection: getBullMQConnection(),
-    });
+    backupQueue = createInstrumentedQueue(BACKUP_QUEUE);
   }
   return backupQueue;
 }

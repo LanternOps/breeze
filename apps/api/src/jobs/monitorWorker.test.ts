@@ -18,7 +18,10 @@ vi.mock('bullmq', () => ({
 
 vi.mock('../db', () => ({
   db: mockDb,
-  withSystemDbAccessContext: undefined
+  withSystemDbAccessContext: undefined,
+  // #1105 tripwire used by createInstrumentedQueue (getMonitorQueue now
+  // constructs through it). No-op here — no held context under test.
+  assertOutsideHeldDbContext: vi.fn()
 }));
 
 vi.mock('../db/schema', () => ({

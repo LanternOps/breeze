@@ -1,5 +1,5 @@
 import { Queue, type JobsOptions } from 'bullmq';
-import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
 
 const C2C_QUEUE = 'c2c-backup';
@@ -23,9 +23,7 @@ export interface ProcessRestoreData {
 
 export function getC2cQueue(): Queue {
   if (!c2cQueue) {
-    c2cQueue = new Queue(C2C_QUEUE, {
-      connection: getBullMQConnection(),
-    });
+    c2cQueue = createInstrumentedQueue(C2C_QUEUE);
   }
   return c2cQueue;
 }
