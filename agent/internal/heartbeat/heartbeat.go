@@ -285,6 +285,18 @@ type Heartbeat struct {
 	// installAndRestartWatchdog (which downloads the watchdog component, swaps
 	// the on-disk binary, and restarts the watchdog service). nil in production.
 	watchdogInstaller func(targetVersion string) error
+
+	// watchdog upgrade bookkeeping, guarded by watchdogUpgradeMu. The server
+	// keeps sending watchdogUpgradeTo until a watchdog FAILOVER heartbeat
+	// reports the new version — but a healthy (monitoring) watchdog doesn't
+	// heartbeat, so the signal can repeat indefinitely after a successful swap.
+	// watchdogInstalledVersion is a permanent (process-lifetime) skip for a
+	// target we already installed; watchdogLastAttempt* throttles retries of a
+	// FAILING target so we don't re-download + restart the service every tick.
+	watchdogUpgradeMu        sync.Mutex
+	watchdogInstalledVersion string
+	watchdogLastAttemptVer   string
+	watchdogLastAttemptAt    time.Time
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -3336,10 +3348,7 @@ func errorString(err error) string {
 func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 	defer observability.Recoverer("heartbeat.handleWatchdogUpgrade")
 
-	if targetVersion == "" || targetVersion == h.agentVersion {
-		// Already matches the running agent (the steady state once recovered) —
-		// nothing to do. The server stops sending watchdogUpgradeTo once the
-		// watchdog's failover heartbeat reports the new version.
+	if targetVersion == "" {
 		return
 	}
 
@@ -3353,12 +3362,33 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 	// binds manifest.Release == requested version, so a compromised/MITM'd
 	// control plane could otherwise replay an older, validly-signed,
 	// known-vulnerable watchdog. The watchdog ships in lockstep with the agent,
-	// so the running agent's version is a safe floor.
+	// so the running agent's version is a safe floor. (Note: the target normally
+	// EQUALS the agent version — both at latest — which is exactly when a stale
+	// watchdog needs swapping, so equality must NOT be treated as a no-op.)
 	if isDowngrade(targetVersion, h.agentVersion) {
 		log.Error("SECURITY: refusing server-directed watchdog downgrade",
 			"agentVersion", h.agentVersion, "targetVersion", targetVersion)
 		return
 	}
+
+	// Dedupe / throttle: the server re-sends watchdogUpgradeTo every heartbeat
+	// until a watchdog failover heartbeat reports the new version, but a healthy
+	// watchdog doesn't heartbeat — so guard against re-swapping on a loop.
+	h.watchdogUpgradeMu.Lock()
+	if h.watchdogInstalledVersion == targetVersion {
+		h.watchdogUpgradeMu.Unlock()
+		return // already installed this target this run
+	}
+	if h.watchdogLastAttemptVer == targetVersion &&
+		time.Since(h.watchdogLastAttemptAt) < watchdogUpgradeRetryCooldown {
+		h.watchdogUpgradeMu.Unlock()
+		log.Debug("watchdog upgrade recently attempted; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
+	h.watchdogLastAttemptVer = targetVersion
+	h.watchdogLastAttemptAt = time.Now()
+	h.watchdogUpgradeMu.Unlock()
 
 	if !h.watchdogUpgradeInProgress.CompareAndSwap(false, true) {
 		log.Debug("watchdog upgrade already in progress", "targetVersion", targetVersion)
@@ -3373,11 +3403,23 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 
 	log.Info("watchdog upgrade requested", "targetVersion", targetVersion)
 	if err := install(targetVersion); err != nil {
+		// Leave watchdogInstalledVersion unset so a transient failure retries
+		// after the cooldown rather than every tick.
 		log.Error("failed to update watchdog", "targetVersion", targetVersion, "error", err.Error())
 		return
 	}
+	h.watchdogUpgradeMu.Lock()
+	h.watchdogInstalledVersion = targetVersion
+	h.watchdogUpgradeMu.Unlock()
 	log.Info("watchdog upgrade applied", "targetVersion", targetVersion)
 }
+
+// watchdogUpgradeRetryCooldown bounds how often a FAILING watchdog upgrade
+// target is retried. A successful install is deduped permanently for the
+// process lifetime via watchdogInstalledVersion; this only throttles repeated
+// failures so a stuck device doesn't re-download + restart the watchdog service
+// every heartbeat.
+const watchdogUpgradeRetryCooldown = 30 * time.Minute
 
 // downloadWatchdogBinary fetches the watchdog component at targetVersion to a
 // temp file using the standard updater download path, which verifies the
