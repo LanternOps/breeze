@@ -313,7 +313,12 @@ describe('DiscoveryPage', () => {
       rerender(<DiscoveryPage />);
 
       // Prompt is gone, the profiles tab mounts, and the org-scoped fetch fires.
-      expect(await screen.findByText('HQ sweep')).toBeInTheDocument();
+      // 'HQ sweep' renders in BOTH the desktop table and the mobile cards
+      // (ResponsiveTable, #1760), so wait for the async render then scope the
+      // assertion to the desktop table — matches the sibling tests in this file
+      // which use findAllByText + desktop(). A bare findByText sees 2 matches.
+      await screen.findAllByText('HQ sweep');
+      expect(desktop().getByText('HQ sweep')).toBeInTheDocument();
       expect(
         screen.queryByText('Select an organization to view network discovery')
       ).not.toBeInTheDocument();

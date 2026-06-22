@@ -2,7 +2,8 @@
 // Money fields arrive from the API as numeric(12,2) strings (e.g. '123.40').
 
 // Intentional duplicate of SellerSnapshot in apps/api/src/services/sellerSnapshot.ts
-// and apps/portal/src/lib/api.ts — api/web/portal can't share a package; keep in sync.
+// and apps/portal/src/lib/api.ts — api/web/portal can't share a *runtime* package; keep in sync.
+// (Type-only `@breeze/shared` imports are fine — erased at build; see the enum import below.)
 /** Snapshot of the seller's contact info captured at invoice/quote creation time.
  *  Any field may be null if not filled in at the time. */
 export interface SellerSnapshot {
@@ -21,7 +22,8 @@ export interface SellerSnapshot {
 }
 
 // Intentional duplicate of sellerAddressLines in apps/api/src/services/sellerSnapshot.ts
-// and sellerLines in apps/portal/src/lib/api.ts — api/web/portal can't share a package; keep in sync.
+// and sellerLines in apps/portal/src/lib/api.ts — api/web/portal can't share a *runtime* package; keep in sync.
+// (Type-only `@breeze/shared` imports are fine — erased at build; see the enum import below.)
 /** Convert a SellerSnapshot address into an array of non-empty display lines. */
 export function sellerLines(a: SellerSnapshot['address'] | null | undefined): string[] {
   if (!a) return [];
@@ -29,10 +31,11 @@ export function sellerLines(a: SellerSnapshot['address'] | null | undefined): st
   return [a.line1, a.line2, cityLine, a.country].filter((s): s is string => !!s && s.trim().length > 0);
 }
 
-export type InvoiceStatus =
-  | 'draft' | 'sent' | 'partially_paid' | 'overdue' | 'paid' | 'void';
-
-export type PaymentMethod = 'cash' | 'check' | 'bank_transfer' | 'card' | 'other';
+// Invoice-domain enums come from the single source of truth in @breeze/shared
+// (packages/shared/src/types/billing-enums.ts). Imported for the Record maps
+// below and re-exported so existing './invoiceTypes' consumers are unaffected.
+import type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType } from '@breeze/shared';
+export type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType };
 
 export interface InvoiceSummary {
   id: string;
@@ -60,7 +63,7 @@ export interface InvoiceSummary {
 export interface InvoiceLine {
   id: string;
   invoiceId: string;
-  sourceType: 'time_entry' | 'part' | 'catalog' | 'bundle' | 'manual' | 'contract';
+  sourceType: InvoiceLineSourceType;
   parentLineId: string | null;
   catalogItemId: string | null;
   description: string;

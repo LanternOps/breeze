@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   assembleFromOrgSchema, manualLineSchema, recordPaymentSchema,
   partnerBillingSettingsSchema, orgBillingSettingsSchema,
-  createManualInvoiceSchema, updateInvoiceSchema
+  createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema
 } from './invoices';
+import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 
 describe('assembleFromOrgSchema', () => {
   it('accepts a valid org-run window', () => {
@@ -66,5 +67,26 @@ describe('invoice T&C field', () => {
   it('update accepts termsAndConditions', () => {
     const p = updateInvoiceSchema.parse({ termsAndConditions: 'Net 15' });
     expect(p.termsAndConditions).toBe('Net 15');
+  });
+});
+
+describe('invoice validators derive from the enum SSOT', () => {
+  it('recordPaymentSchema accepts every canonical payment method', () => {
+    for (const method of PAYMENT_METHODS) {
+      const parsed = recordPaymentSchema.parse({ amount: 10, method, receivedAt: '2026-06-21' });
+      expect(parsed.method).toBe(method);
+    }
+  });
+  it('recordPaymentSchema rejects an unknown method', () => {
+    expect(() => recordPaymentSchema.parse({ amount: 10, method: 'crypto', receivedAt: '2026-06-21' })).toThrow();
+  });
+  it('listInvoicesQuerySchema accepts every canonical status', () => {
+    for (const status of INVOICE_STATUSES) {
+      const parsed = listInvoicesQuerySchema.parse({ status });
+      expect(parsed.status).toBe(status);
+    }
+  });
+  it('listInvoicesQuerySchema rejects an unknown status', () => {
+    expect(() => listInvoicesQuerySchema.parse({ status: 'archived' })).toThrow();
   });
 });

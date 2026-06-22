@@ -14,6 +14,7 @@
  * to a JSON error string rather than propagated. Write tools are deferred.
  */
 
+import { INVOICE_STATUSES } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import { listInvoices, getInvoice } from './invoiceService';
@@ -48,7 +49,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           orgId: { type: 'string', description: 'Filter to a single organization (UUID)' },
           status: {
             type: 'string',
-            enum: ['draft', 'sent', 'partially_paid', 'overdue', 'paid', 'void'],
+            enum: [...INVOICE_STATUSES],
             description: 'Filter by invoice status'
           },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' }
