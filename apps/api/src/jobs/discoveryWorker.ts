@@ -38,6 +38,7 @@ import {
   type QueueActorMeta,
   withQueueMeta,
 } from './queueSchemas';
+import { reconcileTopology } from './reconcileTopology';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -1044,11 +1045,11 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     }
   }
 
-  // Enrich topology: link discovered routers/switches/gateways to other hosts
+  // Reconcile topology: materialize measured infra↔infra edges from LLDP/CDP adjacency.
   try {
-    await enrichTopology(data.orgId, data.siteId, data.hosts);
+    await reconcileTopology(data.orgId, data.siteId, data.hosts, data.adjacency ?? []);
   } catch (err) {
-    console.error(`[DiscoveryWorker] Topology enrichment failed for job ${data.jobId}:`, err);
+    console.error(`[DiscoveryWorker] Topology reconciliation failed for job ${data.jobId}:`, err);
   }
 
   // Update the job record
@@ -1161,25 +1162,6 @@ export async function cleanupSpeculativeTopologyLinks(
     .returning({ id: networkTopology.id });
 
   return deleted.length;
-}
-
-/**
- * Discovery no longer fabricates gateway-to-endpoint topology.
- * Instead, each scan removes the older speculative discovered-asset
- * edges for the current site until the topology model is rebuilt from
- * real neighbor/interface evidence.
- */
-async function enrichTopology(
-  orgId: string,
-  siteId: string,
-  _hosts: DiscoveredHostResult[]
-): Promise<void> {
-  const deletedCount = await cleanupSpeculativeTopologyLinks(orgId, siteId);
-  if (deletedCount > 0) {
-    console.log(
-      `[DiscoveryWorker] Removed ${deletedCount} speculative topology link(s) for org=${orgId} site=${siteId}`
-    );
-  }
 }
 
 async function markJobFailed(jobId: string, error: string): Promise<void> {
