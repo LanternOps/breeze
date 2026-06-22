@@ -53,7 +53,7 @@
     "@types/qrcode": "^1.5.6",
     "archiver": "^7.0.1",
     "argon2": "^0.44.0",
-    "bullmq": "^5.78.0",
+    "bullmq": "^5.79.1",
     "drizzle-orm": "^0.45.2",
     "firebase-admin": "^13.7.0",
     "google-auth-library": "^10.6.2",
