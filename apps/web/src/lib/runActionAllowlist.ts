@@ -21,7 +21,7 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   // DevicePatchStatusTab.tsx migrated to runAction (patch scan/install) — now in TARGET_GLOBS.
   'apps/web/src/components/devices/DeviceSecurityTab.tsx',
   'apps/web/src/components/devices/DeviceSettingsModal.tsx',
-  'apps/web/src/components/devices/DeviceWarrantyCard.tsx',
+  // DeviceWarrantyCard.tsx migrated to runAction (#1723) — now in TARGET_GLOBS.
   'apps/web/src/components/alerts/AlertCorrelationView.tsx',
   'apps/web/src/components/alerts/AlertRuleEditor.tsx',
   'apps/web/src/components/alerts/AlertRulesPage.tsx',
