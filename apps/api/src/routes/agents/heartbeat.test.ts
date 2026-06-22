@@ -1171,3 +1171,101 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
     expect(body.watchdogUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite manual
   });
 });
+
+// ---------------------------------------------------------------------
+// #1387 — orthogonal virtualization attribute persistence
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — virtualization attribute (#1387)', () => {
+  function arrange(deviceOverrides: Record<string, unknown> = {}) {
+    vi.clearAllMocks();
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'windows',
+          osVersion: 'Microsoft Windows 11 Pro',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'workstation',
+          deviceRoleSource: 'auto',
+          isVirtual: false,
+          virtualizationPlatform: null,
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+          ...deviceOverrides,
+        },
+      ]),
+    );
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+    return setSpy;
+  }
+
+  async function beat(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...body }),
+    });
+  }
+
+  it('persists isVirtual=true + platform when the agent reports a hypervisor', async () => {
+    const setSpy = arrange();
+    const resp = await beat({ isVirtual: true, virtualizationPlatform: 'vmware' });
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.isVirtual).toBe(true);
+    expect(updateArg.virtualizationPlatform).toBe('vmware');
+  });
+
+  it('clears the platform to NULL when the agent reports isVirtual=false', async () => {
+    const setSpy = arrange({ isVirtual: true, virtualizationPlatform: 'hyperv' });
+    await beat({ isVirtual: false });
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.isVirtual).toBe(false);
+    expect(updateArg.virtualizationPlatform).toBeNull();
+  });
+
+  it('clears the platform to NULL when isVirtual=true but no platform is identified', async () => {
+    const setSpy = arrange();
+    await beat({ isVirtual: true });
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.isVirtual).toBe(true);
+    expect(updateArg.virtualizationPlatform).toBeNull();
+  });
+
+  it('leaves stored virtualization untouched when an old agent omits the field', async () => {
+    const setSpy = arrange({ isVirtual: true, virtualizationPlatform: 'vmware' });
+    await beat({}); // no isVirtual in payload (also covers the agent's not-yet-classified startup window, where IsVirtual is nil)
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.isVirtual).toBeUndefined();
+    expect(updateArg.virtualizationPlatform).toBeUndefined();
+  });
+
+  it('persists virtualization independently of deviceRoleSource (admin-pinned role still updates the axis)', async () => {
+    // A VDI box with an operator-pinned role (deviceRoleSource='manual') must
+    // still have its orthogonal virtualization axis updated — the two are
+    // independent. Guards against a future refactor folding both under the
+    // deviceRole 'auto' gate.
+    const setSpy = arrange({ deviceRoleSource: 'manual', deviceRole: 'server' });
+    await beat({ deviceRole: 'workstation', isVirtual: true, virtualizationPlatform: 'vmware' });
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    // Role NOT updated (source is manual)...
+    expect(updateArg.deviceRole).toBeUndefined();
+    // ...but virtualization IS.
+    expect(updateArg.isVirtual).toBe(true);
+    expect(updateArg.virtualizationPlatform).toBe('vmware');
+  });
+
+  // NOTE: schema-level coercion (e.g. an unrecognized platform string being
+  // dropped to undefined by .catch) is asserted against the real schema in
+  // schemas.test.ts — this route test mocks zValidator out, so the handler
+  // here only ever sees already-validated `data`.
+});

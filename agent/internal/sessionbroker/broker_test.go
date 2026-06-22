@@ -870,8 +870,11 @@ func TestTimedRWMutexWarnsOnSlowAcquire(t *testing.T) {
 }
 
 func TestAssistScopesConstant(t *testing.T) {
-	if len(assistHelperScopes) != 1 || assistHelperScopes[0] != "assist" {
-		t.Fatalf("assistHelperScopes = %v, want [\"assist\"]", assistHelperScopes)
+	if !containsString(assistHelperScopes, ipc.ScopeAssist) {
+		t.Fatalf("assistHelperScopes = %v, must contain %q", assistHelperScopes, ipc.ScopeAssist)
+	}
+	if !containsString(assistHelperScopes, ipc.ScopeConsentUI) {
+		t.Fatalf("assistHelperScopes = %v, must contain %q", assistHelperScopes, ipc.ScopeConsentUI)
 	}
 	for _, s := range assistHelperScopes {
 		switch s {
@@ -884,8 +887,17 @@ func TestAssistScopesConstant(t *testing.T) {
 func TestScopesForRoleAssist(t *testing.T) {
 	b := &Broker{}
 	got := b.scopesForRole(ipc.HelperRoleAssist, ipc.HelperBinaryAssistHelper, "darwin", "/x")
-	if len(got) != 1 || got[0] != "assist" {
-		t.Fatalf("scopesForRole(assist) = %v, want [assist]", got)
+	if !containsString(got, ipc.ScopeAssist) {
+		t.Fatalf("scopesForRole(assist) = %v, must contain %q", got, ipc.ScopeAssist)
+	}
+	if !containsString(got, ipc.ScopeConsentUI) {
+		t.Fatalf("scopesForRole(assist) = %v, must contain %q", got, ipc.ScopeConsentUI)
+	}
+	for _, s := range got {
+		switch s {
+		case "desktop", "clipboard", "run_as_user", "notify", "tray":
+			t.Fatalf("scopesForRole(assist) must not include %q", s)
+		}
 	}
 }
 

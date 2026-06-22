@@ -13,6 +13,7 @@ import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '../../lib/authScope';
 import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
@@ -48,21 +49,29 @@ const DEVICE_SCAN_PAGE_LIMIT = 100;
 export default function PatchesPage() {
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
-  // "All orgs" mode: a partner/multi-org user with no specific org selected via
-  // the switcher. Single-org actions (create-ring, approve/decline/defer,
-  // compliance export) can't pick a target org here, so we disable them with a
-  // hint instead of firing a request that 400s ("orgId is required"). A
-  // single-org user always has an implicit org (currentOrgId set), so this is
-  // never true for them. The patch list + compliance READ views still work in
-  // this mode (partner scope returns the full catalog).
-  const allOrgsMode = currentOrgId === null;
-  const SELECT_ORG_HINT = 'Select an organization to perform this action';
+  const { scope } = getJwtClaims();
+  // Rings + approvals are partner-scoped: only partner/system users manage them.
+  const canManageRings = scope === 'partner' || scope === 'system';
+  const RING_SCOPE_HINT = 'Update rings are managed at the partner level';
 
-  const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
+  // If an org user lands with ?tab=rings (e.g. a bookmark), fall back to compliance
+  // so the rings body is never rendered without navigation access.
+  const [activeTab, setActiveTabState] = useState<TabKey>(() => {
+    const tab = getTabFromUrl();
+    return tab === 'rings' && !canManageRings ? 'compliance' : tab;
+  });
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
     setTabInUrl(tab);
   }, []);
+
+  // Guard against hash/search changes after mount that could re-introduce rings
+  // for an org-scoped user (e.g. back-navigation replaying the URL).
+  useEffect(() => {
+    if (activeTab === 'rings' && !canManageRings) {
+      setActiveTab('compliance');
+    }
+  }, [activeTab, canManageRings, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -86,9 +95,9 @@ export default function PatchesPage() {
     () => [
       { id: 'compliance' as TabKey, label: 'Compliance', icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: 'Patches', icon: <FileCog className="h-4 w-4" /> },
-      { id: 'rings' as TabKey, label: 'Update Rings', icon: <Layers className="h-4 w-4" /> }
+      ...(canManageRings ? [{ id: 'rings' as TabKey, label: 'Update Rings', icon: <Layers className="h-4 w-4" /> }] : [])
     ],
-    []
+    [canManageRings]
   );
 
   // Ring selector data (simplified for dropdown)
@@ -195,13 +204,11 @@ export default function PatchesPage() {
   // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
   // See spec 2026-05-15-ws-a-action-feedback-design.md (targeted scope; sweeping migration is a non-goal).
   const handleBulkApprove = async (patchIds: string[]) => {
-    // Approval needs a target org. With a specific org selected, fetchWithAuth
-    // auto-injects ?orgId=<currentOrgId>; a selected ring also resolves the org
-    // server-side. In All-orgs mode with no ring, there is nothing to attach the
-    // approval to and the API returns 400 ('orgId is required for partner/system
-    // scope'), so guard with a clear prompt instead of firing a doomed request.
-    if (!selectedRingId && !currentOrgId) {
-      throw new Error('Select an organization or update ring to approve patches');
+    // Partner/system users can approve partner-wide (the API derives the partner
+    // from auth.partnerId) or ring-scoped (when selectedRingId is set). Org-scoped
+    // users cannot manage approvals — those are governed at the partner level.
+    if (!canManageRings) {
+      throw new Error('Patch approvals are managed at the partner level');
     }
     // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
@@ -232,9 +239,9 @@ export default function PatchesPage() {
   };
 
   const handleBulkDecline = async (patchIds: string[]) => {
-    // Same ring/org context requirement as approve (see handleBulkApprove).
-    if (!selectedRingId && !currentOrgId) {
-      throw new Error('Select an organization or update ring to decline patches');
+    // Same partner-level scope requirement as approve (see handleBulkApprove).
+    if (!canManageRings) {
+      throw new Error('Patch approvals are managed at the partner level');
     }
     const failed: string[] = [];
     for (const id of patchIds) {
@@ -408,12 +415,11 @@ export default function PatchesPage() {
 
   const handleRingSubmit = async (values: UpdateRingFormValues) => {
     const isEditing = !!editingRing;
-    // Creating a ring needs a target org. With a specific org selected,
-    // fetchWithAuth auto-injects ?orgId=<currentOrgId>; in All-orgs mode there is
-    // no org to attach, so block early with a clear toast rather than 400ing.
-    // (Editing an existing ring resolves its org server-side from the ring id.)
-    if (!isEditing && allOrgsMode) {
-      showToast({ message: SELECT_ORG_HINT, type: 'error' });
+    // Rings are partner-scoped: only partner/system users can create/edit them.
+    // The UI already hides the rings tab and disables New Ring for org users, but
+    // guard here too in case the form is somehow reachable.
+    if (!canManageRings) {
+      showToast({ message: RING_SCOPE_HINT, type: 'error' });
       return;
     }
     setRingSubmitting(true);
@@ -517,8 +523,8 @@ export default function PatchesPage() {
                 setRingsError(undefined);
                 setRingModalOpen(true);
               }}
-              disabled={allOrgsMode}
-              title={allOrgsMode ? SELECT_ORG_HINT : undefined}
+              disabled={!canManageRings}
+              title={!canManageRings ? RING_SCOPE_HINT : undefined}
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />

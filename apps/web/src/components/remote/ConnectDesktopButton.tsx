@@ -83,7 +83,7 @@ function desktopAccessUnavailableReason(
 }
 
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null }: Props) {
-  const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
+  const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied'>('idle');
   const [error, setError] = useState<string | null>(null);
   // Populated when the VNC auto-fallback path times out — carries the info needed
   // for the "Open in Browser" fallback card so we don't navigate away automatically.
@@ -394,6 +394,11 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           if (res.ok) {
             const data = await res.json();
             const sessionStatus = data.status ?? data.data?.status;
+            if (sessionStatus === 'denied') {
+              // End user denied the consent prompt — surface an explicit message
+              setStatus('denied');
+              return;
+            }
             if (sessionStatus && sessionStatus !== 'pending') {
               // Viewer connected — silently go back to idle
               setStatus((cur) => cur === 'launching' || cur === 'fallback' ? 'idle' : cur);
@@ -456,6 +461,43 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     }
     setStatus('idle');
   }, [vncFallback]);
+
+  const handleDismissDenied = useCallback(() => {
+    setStatus('idle');
+  }, []);
+
+  // Shown when the end user on the managed device denied the consent prompt.
+  const deniedContent = status === 'denied' ? (
+    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-red-200 bg-red-50 p-3 text-sm shadow-lg dark:border-red-800 dark:bg-red-950">
+      <div className="flex items-start gap-2.5">
+        <MonitorOff className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+        <div className="flex-1">
+          <p className="font-medium text-red-800 dark:text-red-300">
+            Connection denied
+          </p>
+          <p className="mt-1 text-xs text-red-700 dark:text-red-400">
+            The user denied the remote connection.
+          </p>
+          <div className="mt-2.5">
+            <button
+              type="button"
+              onClick={handleDismissDenied}
+              className="text-xs text-muted-foreground transition hover:text-foreground"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleDismissDenied}
+          className="flex h-5 w-5 items-center justify-center rounded hover:bg-red-200 dark:hover:bg-red-800"
+        >
+          <X className="h-3 w-3 text-red-600 dark:text-red-400" />
+        </button>
+      </div>
+    </div>
+  ) : null;
 
   // Shared fallback content for both compact and full modes.
   // When the VNC auto-fallback path times out we show a "Open in Browser / Cancel"
@@ -650,6 +692,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           )}
         </button>
         {fallbackContent}
+        {deniedContent}
       </div>
     );
   }
@@ -671,6 +714,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
            'Connect Desktop'}
         </button>
         {fallbackContent}
+        {deniedContent}
       </div>
     );
   }
@@ -693,6 +737,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       </button>
 
       {fallbackContent}
+      {deniedContent}
     </div>
   );
 }

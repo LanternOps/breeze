@@ -30,7 +30,7 @@
  *   evaluated via evaluatePamToolActionRules, which only considers rules
  *   carrying a tool-action criterion.
  */
-import type { PamRule, PamRuleTimeWindow } from '../db/schema/pam';
+import type { PamRule, PamRuleNegateKey, PamRuleTimeWindow } from '../db/schema/pam';
 import { matchPathGlob } from './pamBridge';
 
 export interface PamRuleCandidate {
@@ -40,6 +40,8 @@ export interface PamRuleCandidate {
   targetExecutableSigner?: string;
   subjectUsername: string;
   parentImage?: string;
+  /** Launched process command line, when the agent captured it. */
+  commandLine?: string;
   /** AD/local group names of the subject, when known. */
   subjectAdGroups?: string[];
   /** ai_tool_action candidates: bare tool name (no mcp__ prefix). */
@@ -69,6 +71,7 @@ function hasAnyCriteria(rule: PamRule): boolean {
       rule.matchHash ||
       rule.matchPathGlob ||
       rule.matchParentImage ||
+      rule.matchCommandLine ||
       rule.matchUser ||
       rule.matchAdGroup ||
       rule.matchToolName ||
@@ -135,38 +138,65 @@ export function isWithinTimeWindow(window: PamRuleTimeWindow, at: Date): boolean
 function ruleMatches(rule: PamRule, candidate: PamRuleCandidate): boolean {
   if (!hasAnyCriteria(rule)) return false;
 
+  const negate = new Set<PamRuleNegateKey>(rule.matchNegate ?? []);
+  // A criterion is satisfied when its candidate data is PRESENT and the
+  // comparison holds (or, for a negated criterion, fails to hold). Absent
+  // candidate data NEVER satisfies a criterion — negation can't accidentally
+  // turn missing data into a tenant-wide grant.
+  const satisfied = (key: PamRuleNegateKey, present: boolean, positive: boolean): boolean => {
+    if (!present) return false;
+    return negate.has(key) ? !positive : positive;
+  };
+
   if (rule.matchHash) {
-    if (!candidate.targetExecutableHash) return false;
-    if (!eqCi(rule.matchHash, candidate.targetExecutableHash)) return false;
+    const present = candidate.targetExecutableHash != null;
+    const positive = present && eqCi(rule.matchHash, candidate.targetExecutableHash!);
+    if (!satisfied('hash', present, positive)) return false;
   }
   if (rule.matchSigner) {
-    if (!candidate.targetExecutableSigner) return false;
-    if (!eqCi(rule.matchSigner, candidate.targetExecutableSigner)) return false;
+    const present = candidate.targetExecutableSigner != null;
+    const positive = present && eqCi(rule.matchSigner, candidate.targetExecutableSigner!);
+    if (!satisfied('signer', present, positive)) return false;
   }
   if (rule.matchPathGlob) {
-    if (!candidate.targetExecutablePath) return false;
-    if (!matchPathGlob(rule.matchPathGlob, candidate.targetExecutablePath)) return false;
+    const present = candidate.targetExecutablePath != null;
+    const positive = present && matchPathGlob(rule.matchPathGlob, candidate.targetExecutablePath!);
+    if (!satisfied('pathGlob', present, positive)) return false;
   }
   if (rule.matchParentImage) {
-    if (!candidate.parentImage) return false;
-    if (!matchPathGlob(rule.matchParentImage, candidate.parentImage)) return false;
+    const present = candidate.parentImage != null;
+    const positive = present && matchPathGlob(rule.matchParentImage, candidate.parentImage!);
+    if (!satisfied('parentImage', present, positive)) return false;
+  }
+  if (rule.matchCommandLine) {
+    const present = candidate.commandLine != null;
+    const positive =
+      present && candidate.commandLine!.toLowerCase().includes(rule.matchCommandLine.toLowerCase());
+    if (!satisfied('commandLine', present, positive)) return false;
   }
   if (rule.matchUser) {
-    if (!eqCi(rule.matchUser, candidate.subjectUsername)) return false;
+    // subjectUsername is always present on a candidate.
+    const positive = eqCi(rule.matchUser, candidate.subjectUsername);
+    if (!satisfied('user', true, positive)) return false;
   }
   if (rule.matchAdGroup) {
-    const groups = candidate.subjectAdGroups ?? [];
-    if (!groups.some((g) => eqCi(g, rule.matchAdGroup!))) return false;
+    const present = candidate.subjectAdGroups !== undefined;
+    const positive =
+      present && candidate.subjectAdGroups!.some((g) => eqCi(g, rule.matchAdGroup!));
+    if (!satisfied('adGroup', present, positive)) return false;
   }
   if (rule.matchToolName) {
-    if (!candidate.toolName) return false;
-    if (!eqCi(rule.matchToolName, candidate.toolName)) return false;
+    const present = candidate.toolName != null;
+    const positive = present && eqCi(rule.matchToolName, candidate.toolName!);
+    if (!satisfied('toolName', present, positive)) return false;
   }
   if (rule.matchRiskTier != null) {
-    if (candidate.riskTier == null) return false;
-    if (rule.matchRiskTier !== candidate.riskTier) return false;
+    const present = candidate.riskTier != null;
+    const positive = present && rule.matchRiskTier === candidate.riskTier;
+    if (!satisfied('riskTier', present, positive)) return false;
   }
   if (rule.timeWindow) {
+    // A time window NARROWS; it is never negated.
     if (!isWithinTimeWindow(rule.timeWindow, candidate.at ?? new Date())) return false;
   }
   return true;

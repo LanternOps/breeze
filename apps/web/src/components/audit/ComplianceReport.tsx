@@ -135,7 +135,7 @@ export default function ComplianceReport() {
       <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-lg border bg-background p-4">
           <h3 className="text-sm font-semibold">Data Access Audit</h3>
-          <div className="mt-4 overflow-hidden rounded-md border">
+          <div className="mt-4 overflow-x-auto rounded-md border">
             <table className="min-w-full divide-y text-sm">
               <thead className="bg-muted/40">
                 <tr>

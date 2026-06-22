@@ -180,6 +180,9 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
       const params = new URLSearchParams();
       params.set('page', String(page));
       params.set('limit', '50');
+      // This view renders a total count and page-number pagination, so it needs
+      // the count(*). The lightweight overview feed omits it (issue #1726).
+      params.set('withTotal', 'true');
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (categoryFilter) params.set('category', categoryFilter);
       if (initiatedByFilter) params.set('initiatedBy', initiatedByFilter);

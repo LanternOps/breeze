@@ -37,6 +37,14 @@ const eventsParamSchema = z.object({
   id: z.string().guid(),
 });
 
+// Build a case-sensitive LIKE prefix pattern from a user-supplied action prefix.
+// The three LIKE metacharacters (% _ \) are escaped so a value like `device_x`
+// matches the literal underscore instead of acting as a single-char wildcard;
+// the trailing `%` makes it a prefix match. Postgres' default LIKE escape is `\`.
+export function likePrefixPattern(prefix: string): string {
+  return prefix.replace(/[%_\\]/g, '\\$&') + '%';
+}
+
 const eventsQuerySchema = z.object({
   search: z.string().max(200).optional(),
   category: eventCategoryEnum.optional(),
@@ -48,6 +56,31 @@ const eventsQuerySchema = z.object({
   to: z.coerce.date().optional(),
   page: z.coerce.number().int().min(1).max(10000).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  // Server-side "deliberate action" filter for the device-overview Activity
+  // pane (issue #1726). Comma-separated list of action prefixes; a row matches
+  // if its action starts with any of them. Lets the overview feed request only
+  // the rows it renders instead of over-fetching and filtering client-side.
+  actions: z
+    .string()
+    .max(500)
+    .optional()
+    .transform((v) =>
+      v
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined
+    ),
+  // Whether to run the parallel unbounded count(*) over the same predicate.
+  // Defaults to false so the common "last N" feed read does not pay for a full
+  // history count on every load (issue #1726). When false, pagination.total is
+  // null. Set true only when a total is actually rendered.
+  withTotal: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 // GET /devices/:id/events - Get activity feed for a device from audit logs
@@ -60,7 +93,8 @@ eventsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { search, category, result, initiatedBy, from, to, page, limit } = c.req.valid('query');
+    const { search, category, result, initiatedBy, from, to, page, limit, actions, withTotal } =
+      c.req.valid('query');
     const offset = (page - 1) * limit;
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
@@ -97,6 +131,16 @@ eventsRoutes.get(
       conditions.push(ilike(auditLogs.action, `${category}.%`));
     }
 
+    if (actions && actions.length > 0) {
+      // Match any of the supplied action prefixes (server-side equivalent of the
+      // overview pane's "deliberate action" filter). `LIKE` with an escaped
+      // prefix keeps it index-friendly and avoids ILIKE's case-fold cost — audit
+      // action keys are already lowercase dotted identifiers.
+      conditions.push(
+        or(...actions.map((prefix) => sql`${auditLogs.action} LIKE ${likePrefixPattern(prefix)}`))!
+      );
+    }
+
     if (result) {
       conditions.push(eq(auditLogs.result, result));
     }
@@ -114,13 +158,19 @@ eventsRoutes.get(
 
     const whereClause = and(...conditions);
 
-    // Count + fetch in parallel
+    // The total count is an unbounded count(*) over the device's whole audit
+    // history; only run it when the caller actually renders a total. The feed
+    // read itself is a bounded ORDER BY timestamp DESC LIMIT N (issue #1726).
+    const countPromise = withTotal
+      ? db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(auditLogs)
+          .where(whereClause)
+          .then((r) => r[0]?.count ?? 0)
+      : Promise.resolve(null);
+
     const [countResult, rows] = await Promise.all([
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(auditLogs)
-        .where(whereClause)
-        .then((r) => r[0]?.count ?? 0),
+      countPromise,
       db
         .select({
           id: auditLogs.id,
@@ -147,7 +197,7 @@ eventsRoutes.get(
         .offset(offset),
     ]);
 
-    const total = Number(countResult);
+    const total = countResult === null ? null : Number(countResult);
 
     const data = rows.map((row) => ({
       id: row.id,

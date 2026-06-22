@@ -300,7 +300,7 @@ export default function AlertCorrelationView() {
                   <Network className="h-4 w-4 text-muted-foreground" />
                   <h3 className="text-sm font-semibold">Correlation list</h3>
                 </div>
-                <div className="mt-4 overflow-hidden rounded-md border">
+                <div className="mt-4 overflow-x-auto rounded-md border">
                   <table className="min-w-full divide-y">
                     <thead className="bg-muted/40">
                       <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

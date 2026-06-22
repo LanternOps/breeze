@@ -1,4 +1,5 @@
 import { Loader2, Play, Pencil, Trash2, List } from 'lucide-react';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type DiscoveryProfileStatus = 'active' | 'paused' | 'draft' | 'error';
 
@@ -71,6 +72,99 @@ export default function DiscoveryProfileList({
     );
   }
 
+  // Row pieces shared by the desktop table and the mobile cards.
+  const renderSubnets = (profile: DiscoveryProfile) => (
+    <div className="flex flex-wrap gap-1">
+      {profile.subnets.map(subnet => (
+        <span
+          key={subnet}
+          className="rounded-full border border-muted bg-muted/60 px-2 py-0.5 text-xs"
+        >
+          {subnet}
+        </span>
+      ))}
+    </div>
+  );
+
+  const renderMethods = (profile: DiscoveryProfile) => (
+    <div className="flex flex-wrap gap-1">
+      {profile.methods.map(method => (
+        <span
+          key={method}
+          className="rounded-full border border-muted bg-background px-2 py-0.5 text-xs text-muted-foreground"
+        >
+          {method.toUpperCase()}
+        </span>
+      ))}
+    </div>
+  );
+
+  const renderSchedule = (profile: DiscoveryProfile) => (
+    <>
+      <div className="text-sm">{profile.schedule}</div>
+      {profile.nextRun && (
+        <div className="text-xs text-muted-foreground">Next: {profile.nextRun}</div>
+      )}
+    </>
+  );
+
+  const renderStatus = (profile: DiscoveryProfile) => (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
+        statusConfig[profile.status].color
+      }`}
+    >
+      {statusConfig[profile.status].label}
+    </span>
+  );
+
+  const renderActions = (profile: DiscoveryProfile) => {
+    const runLabel = runningProfileId === profile.id ? `Running ${profile.name}` : `Run ${profile.name}`;
+    return (
+    <div className="flex items-center justify-end gap-2">
+      <button
+        type="button"
+        onClick={() => onViewJobs?.(profile.id)}
+        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+        title="View jobs"
+      >
+        <List className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => onRun?.(profile)}
+        disabled={runningProfileId === profile.id}
+        aria-label={runLabel}
+        aria-busy={runningProfileId === profile.id}
+        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        title={runningProfileId === profile.id ? 'Running...' : 'Run now'}
+      >
+        {runningProfileId === profile.id ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Play className="h-4 w-4" />
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={() => onEdit?.(profile)}
+        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+        title="Edit profile"
+      >
+        <Pencil className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => onDelete?.(profile)}
+        className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10"
+        title="Delete profile"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+    );
+  };
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center justify-between">
@@ -91,122 +185,79 @@ export default function DiscoveryProfileList({
         </div>
       )}
 
-      <div className="mt-6 overflow-hidden rounded-md border">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Profile</th>
-              <th className="px-4 py-3">Subnets</th>
-              <th className="px-4 py-3">Methods</th>
-              <th className="px-4 py-3">Schedule</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {profiles.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No discovery profiles yet. Create your first profile to start scanning.
-                </td>
+      <ResponsiveTable
+        className="mt-6"
+        table={
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Profile</th>
+                <th className="px-4 py-3">Subnets</th>
+                <th className="px-4 py-3">Methods</th>
+                <th className="px-4 py-3">Schedule</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ) : (
-              profiles.map(profile => (
-                <tr key={profile.id} className="transition hover:bg-muted/40">
-                  <td className="px-4 py-3">
+            </thead>
+            <tbody className="divide-y">
+              {profiles.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    No discovery profiles yet. Create your first profile to start scanning.
+                  </td>
+                </tr>
+              ) : (
+                profiles.map(profile => (
+                  <tr key={profile.id} className="transition hover:bg-muted/40">
+                    <td className="px-4 py-3">
+                      <div className="text-sm font-medium">{profile.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {profile.lastRun ? `Last run ${profile.lastRun}` : 'Not run yet'}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">{renderSubnets(profile)}</td>
+                    <td className="px-4 py-3">{renderMethods(profile)}</td>
+                    <td className="px-4 py-3">{renderSchedule(profile)}</td>
+                    <td className="px-4 py-3">{renderStatus(profile)}</td>
+                    <td className="px-4 py-3">{renderActions(profile)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          profiles.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">
+                No discovery profiles yet. Create your first profile to start scanning.
+              </p>
+            </DataCard>
+          ) : (
+            profiles.map(profile => (
+              <DataCard key={profile.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
                     <div className="text-sm font-medium">{profile.name}</div>
                     <div className="text-xs text-muted-foreground">
                       {profile.lastRun ? `Last run ${profile.lastRun}` : 'Not run yet'}
                     </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {profile.subnets.map(subnet => (
-                        <span
-                          key={subnet}
-                          className="rounded-full border border-muted bg-muted/60 px-2 py-0.5 text-xs"
-                        >
-                          {subnet}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {profile.methods.map(method => (
-                        <span
-                          key={method}
-                          className="rounded-full border border-muted bg-background px-2 py-0.5 text-xs text-muted-foreground"
-                        >
-                          {method.toUpperCase()}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="text-sm">{profile.schedule}</div>
-                    {profile.nextRun && (
-                      <div className="text-xs text-muted-foreground">Next: {profile.nextRun}</div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
-                        statusConfig[profile.status].color
-                      }`}
-                    >
-                      {statusConfig[profile.status].label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onViewJobs?.(profile.id)}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                        title="View jobs"
-                      >
-                        <List className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onRun?.(profile)}
-                        disabled={runningProfileId === profile.id}
-                        aria-label={runningProfileId === profile.id ? `Running ${profile.name}` : `Run ${profile.name}`}
-                        aria-busy={runningProfileId === profile.id}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                        title={runningProfileId === profile.id ? 'Running...' : 'Run now'}
-                      >
-                        {runningProfileId === profile.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Play className="h-4 w-4" />
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onEdit?.(profile)}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                        title="Edit profile"
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDelete?.(profile)}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10"
-                        title="Delete profile"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+                  </div>
+                  {renderStatus(profile)}
+                </div>
+                <div className="mt-3 space-y-2 border-t pt-3">
+                  <CardField label="Subnets">{renderSubnets(profile)}</CardField>
+                  <CardField label="Methods">{renderMethods(profile)}</CardField>
+                  <CardField label="Schedule">
+                    <div>{renderSchedule(profile)}</div>
+                  </CardField>
+                </div>
+                <CardActions>{renderActions(profile)}</CardActions>
+              </DataCard>
+            ))
+          )
+        }
+      />
     </div>
   );
 }

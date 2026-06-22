@@ -5,6 +5,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 type TemplateRow = {
   id: string;
@@ -176,6 +177,50 @@ export default function SNMPTemplateList({
     [templates]
   );
 
+  const renderName = (template: TemplateRow) => (
+    <div className="flex items-center gap-2">
+      <span className="font-medium">{template.name}</span>
+      {template.source === 'builtin' && (
+        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+          Built-in
+        </span>
+      )}
+    </div>
+  );
+
+  const renderUsage = (template: TemplateRow) => (
+    <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
+      <Layers className="h-3 w-3" />
+      {template.usageCount}
+    </span>
+  );
+
+  const renderActions = (template: TemplateRow) => (
+    <>
+      <button
+        type="button"
+        onClick={() => handleSelectTemplate(template.id)}
+        className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs"
+      >
+        <Pencil className="h-3 w-3" />
+        Edit
+      </button>
+      {template.source === 'custom' && (
+        <button
+          type="button"
+          disabled={deletingId === template.id}
+          onClick={() => {
+            void handleDeleteTemplate(template);
+          }}
+          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-red-600 disabled:opacity-50"
+        >
+          {deletingId === template.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+          Delete
+        </button>
+      )}
+    </>
+  );
+
   if (loading) {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -211,78 +256,72 @@ export default function SNMPTemplateList({
         </div>
       )}
 
-      <div className="mt-6 overflow-hidden rounded-lg border">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Vendor</th>
-              <th className="px-4 py-3">Device type</th>
-              <th className="px-4 py-3">OID count</th>
-              <th className="px-4 py-3">Usage</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {sortedTemplates.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No SNMP templates found.
-                </td>
+      <ResponsiveTable
+        className="mt-6"
+        table={
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Vendor</th>
+                <th className="px-4 py-3">Device type</th>
+                <th className="px-4 py-3">OID count</th>
+                <th className="px-4 py-3">Usage</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ) : (
-              sortedTemplates.map((template) => (
-                <tr key={template.id} className={`bg-background ${selectedTemplateId === template.id ? 'bg-muted/30' : ''}`}>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{template.name}</span>
-                      {template.source === 'builtin' && (
-                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                          Built-in
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">{template.vendor || '—'}</td>
-                  <td className="px-4 py-3">{template.deviceType || '—'}</td>
-                  <td className="px-4 py-3">{template.oidCount}</td>
-                  <td className="px-4 py-3">
-                    <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
-                      <Layers className="h-3 w-3" />
-                      {template.usageCount}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleSelectTemplate(template.id)}
-                        className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs"
-                      >
-                        <Pencil className="h-3 w-3" />
-                        Edit
-                      </button>
-                      {template.source === 'custom' && (
-                        <button
-                          type="button"
-                          disabled={deletingId === template.id}
-                          onClick={() => {
-                            void handleDeleteTemplate(template);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-red-600 disabled:opacity-50"
-                        >
-                          {deletingId === template.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-                          Delete
-                        </button>
-                      )}
-                    </div>
+            </thead>
+            <tbody className="divide-y">
+              {sortedTemplates.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    No SNMP templates found.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                sortedTemplates.map((template) => (
+                  <tr key={template.id} className={`bg-background ${selectedTemplateId === template.id ? 'bg-muted/30' : ''}`}>
+                    <td className="px-4 py-3">{renderName(template)}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{template.vendor || '—'}</td>
+                    <td className="px-4 py-3">{template.deviceType || '—'}</td>
+                    <td className="px-4 py-3">{template.oidCount}</td>
+                    <td className="px-4 py-3">{renderUsage(template)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-2">{renderActions(template)}</div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          sortedTemplates.length === 0 ? (
+            <DataCard>
+              <span className="text-sm text-muted-foreground">No SNMP templates found.</span>
+            </DataCard>
+          ) : (
+            sortedTemplates.map((template) => (
+              <DataCard
+                key={template.id}
+                className={selectedTemplateId === template.id ? 'bg-muted/30' : undefined}
+              >
+                <div className="mb-3">{renderName(template)}</div>
+                <div className="space-y-2">
+                  <CardField label="Vendor">
+                    <span className="text-muted-foreground">{template.vendor || '—'}</span>
+                  </CardField>
+                  <CardField label="Device type">{template.deviceType || '—'}</CardField>
+                  <CardField label="OID count">{template.oidCount}</CardField>
+                  <CardField label="Usage">{renderUsage(template)}</CardField>
+                </div>
+                <CardActions className="flex flex-wrap justify-end gap-2">
+                  {renderActions(template)}
+                </CardActions>
+              </DataCard>
+            ))
+          )
+        }
+      />
     </div>
     <ConfirmDialog
       open={deleteTarget !== null}

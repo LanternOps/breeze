@@ -34,6 +34,11 @@ vi.mock('../../db/schema', () => ({
     enabled: 'enabled',
     priority: 'priority',
   },
+  pamOrgConfig: {
+    id: 'id',
+    orgId: 'orgId',
+    defaultUnmatchedVerdict: 'defaultUnmatchedVerdict',
+  },
 }));
 
 const pamMocks = vi.hoisted(() => ({
@@ -121,6 +126,34 @@ function mockSelects(
         })),
       }) as any,
   );
+}
+
+/**
+ * Rig db.select for the unmatched-default path, which fires three selects in
+ * order: (1) device lookup [.limit() -> deviceRows], (2) pam_rules load
+ * [.where() awaited -> [] (no rule matches)], (3) pam_org_config lookup
+ * [.where().limit() -> configRows]. Distinguishes the device and config selects
+ * (same chain shape) by call order.
+ */
+function mockSelectsWithConfig(
+  deviceRows: Array<{ id: string; orgId: string; siteId: string | null }>,
+  configRows: Array<{ verdict: string }>,
+) {
+  let call = 0;
+  vi.mocked(db.select).mockImplementation(() => {
+    call += 1;
+    const isConfig = call >= 3;
+    return {
+      from: vi.fn(() => ({
+        where: vi.fn(() => {
+          // pam_rules load awaits .from().where() directly → resolve [] (no match)
+          const thenable: any = Promise.resolve([]);
+          thenable.limit = vi.fn().mockResolvedValue(isConfig ? configRows : deviceRows);
+          return thenable;
+        }),
+      })),
+    } as any;
+  });
 }
 
 function happyPathInsert(returningRows: Array<{ id: string; status: string }>) {
@@ -439,6 +472,45 @@ describe('ingest decisioning (#1163)', () => {
     expect(await res.json()).toEqual({ id: null, status: 'ignored' });
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     expect(vi.mocked(writeAuditEvent)).toHaveBeenCalledOnce();
+  });
+
+  it('no policy + no rule + org default auto_deny -> denied (source default)', async () => {
+    mockSelectsWithConfig(
+      [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }],
+      [{ verdict: 'auto_deny' }],
+    );
+    const { values } = happyPathInsert([{ id: 'req-def', status: 'denied' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'denied',
+        denialReason: 'Blocked by org default (no matching policy or rule)',
+        softwarePolicyMatchId: null,
+      }),
+    );
+    expect(pamMocks.publishEvent).toHaveBeenCalledWith(
+      'elevation.denied',
+      'org-1',
+      expect.objectContaining({ elevationRequestId: 'req-def' }),
+      'pam-ingest',
+    );
+  });
+
+  it('no policy + no rule + no config row -> stays pending (historical default)', async () => {
+    mockSelectsWithConfig([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }], []);
+    const { values } = happyPathInsert([{ id: 'req-pend', status: 'pending' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' }));
+    expect(pamMocks.publishEvent).toHaveBeenCalledWith(
+      'elevation.requested',
+      'org-1',
+      expect.anything(),
+      'pam-ingest',
+    );
   });
 
   it('bridge failure fails SAFE to pending (never auto-approves on error)', async () => {

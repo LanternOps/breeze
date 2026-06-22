@@ -8,6 +8,7 @@ import {
   type ElevationStatus,
   type PamRule,
   type PamRuleDraft,
+  type PamRuleNegateKey,
   type PamVerdict,
   STATUS_LABELS,
   VERDICT_LABELS,
@@ -115,7 +116,12 @@ export default function PamRuleModal({
   const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? seedExec?.matchSigner ?? '');
   const [matchHash, setMatchHash] = useState(rule?.matchHash ?? seedExec?.matchHash ?? '');
   const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? seedExec?.matchPathGlob ?? '');
-  const [matchParentImage, setMatchParentImage] = useState(rule?.matchParentImage ?? '');
+  const [matchParentImage, setMatchParentImage] = useState(
+    rule?.matchParentImage ?? seedExec?.matchParentImage ?? '',
+  );
+  const [matchCommandLine, setMatchCommandLine] = useState(
+    rule?.matchCommandLine ?? seedExec?.matchCommandLine ?? '',
+  );
   const [matchUser, setMatchUser] = useState(rule?.matchUser ?? seedExec?.matchUser ?? '');
   const [matchAdGroup, setMatchAdGroup] = useState(rule?.matchAdGroup ?? '');
   const [matchToolName, setMatchToolName] = useState(rule?.matchToolName ?? seedTool?.matchToolName ?? '');
@@ -125,6 +131,12 @@ export default function PamRuleModal({
       : seedTool?.matchRiskTier !== null && seedTool?.matchRiskTier !== undefined
         ? String(seedTool.matchRiskTier)
         : '',
+  );
+  // Criterion keys the engine inverts ("does not match"). Same keys as the API's
+  // PAM_RULE_NEGATE_KEYS; only the keys whose criterion is actually populated
+  // are sent (see buildCriteria).
+  const [negate, setNegate] = useState<Set<PamRuleNegateKey>>(
+    () => new Set(rule?.matchNegate ?? []),
   );
   const [windowStart, setWindowStart] = useState(rule?.timeWindow?.start ?? '');
   const [windowEnd, setWindowEnd] = useState(rule?.timeWindow?.end ?? '');
@@ -229,10 +241,12 @@ export default function PamRuleModal({
     matchHash,
     matchPathGlob,
     matchParentImage,
+    matchCommandLine,
     matchUser,
     matchAdGroup,
     matchToolName,
     matchRiskTier,
+    negate,
     windowStart,
     windowEnd,
     windowDays,
@@ -244,6 +258,15 @@ export default function PamRuleModal({
     setWindowDays((prev) =>
       prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b),
     );
+  };
+
+  const toggleNegate = (key: PamRuleNegateKey) => {
+    setNegate((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   /**
@@ -262,6 +285,7 @@ export default function PamRuleModal({
       matchHash: matchHash.trim() || null,
       matchPathGlob: matchPathGlob.trim() || null,
       matchParentImage: matchParentImage.trim() || null,
+      matchCommandLine: matchCommandLine.trim() || null,
     };
     const tool = {
       matchToolName: matchToolName.trim() || null,
@@ -272,7 +296,7 @@ export default function PamRuleModal({
       matchAdGroup: matchAdGroup.trim() || null,
     };
 
-    const activeCriteria =
+    const activeCriteria: Record<string, unknown> =
       shape === 'executable'
         ? { ...executable, matchToolName: null, matchRiskTier: null, ...common }
         : {
@@ -280,6 +304,7 @@ export default function PamRuleModal({
             matchHash: null,
             matchPathGlob: null,
             matchParentImage: null,
+            matchCommandLine: null,
             ...tool,
             ...common,
           };
@@ -291,6 +316,26 @@ export default function PamRuleModal({
       setError('At least one match criterion is required.');
       return null;
     }
+
+    // Send negation only for criteria that are actually populated in this
+    // shape — a dangling negate key (its match* field cleared) would be a no-op
+    // and confuse the rule summary. Maps each negate key to its match* column.
+    const negateFieldByKey: Record<PamRuleNegateKey, string> = {
+      signer: 'matchSigner',
+      hash: 'matchHash',
+      pathGlob: 'matchPathGlob',
+      parentImage: 'matchParentImage',
+      commandLine: 'matchCommandLine',
+      user: 'matchUser',
+      adGroup: 'matchAdGroup',
+      toolName: 'matchToolName',
+      riskTier: 'matchRiskTier',
+    };
+    const matchNegate = [...negate].filter((key) => {
+      const v = activeCriteria[negateFieldByKey[key]];
+      return v !== null && v !== '' && v !== undefined;
+    });
+    activeCriteria.matchNegate = matchNegate.length > 0 ? matchNegate : null;
     if (Boolean(windowStart) !== Boolean(windowEnd)) {
       setError('Time window start and end must both be set (or both left empty).');
       return null;
@@ -573,14 +618,15 @@ export default function PamRuleModal({
 
         {shape === 'executable' ? (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Signer" value={matchSigner} onChange={setMatchSigner} placeholder="e.g. Microsoft Corporation" testId="pam-rule-signer" />
-            <Field label="SHA-256 hash" value={matchHash} onChange={setMatchHash} placeholder="64 hex chars" testId="pam-rule-hash" />
-            <Field label="Path glob" value={matchPathGlob} onChange={setMatchPathGlob} placeholder="C:\\Program Files\\**" testId="pam-rule-path" />
-            <Field label="Parent image" value={matchParentImage} onChange={setMatchParentImage} placeholder="explorer.exe" testId="pam-rule-parent" />
+            <Field label="Signer" value={matchSigner} onChange={setMatchSigner} placeholder="e.g. Microsoft Corporation" testId="pam-rule-signer" negateKey="signer" negated={negate.has('signer')} onToggleNegate={toggleNegate} />
+            <Field label="SHA-256 hash" value={matchHash} onChange={setMatchHash} placeholder="64 hex chars" testId="pam-rule-hash" negateKey="hash" negated={negate.has('hash')} onToggleNegate={toggleNegate} />
+            <Field label="Path glob" value={matchPathGlob} onChange={setMatchPathGlob} placeholder="C:\\Program Files\\**" testId="pam-rule-path" negateKey="pathGlob" negated={negate.has('pathGlob')} onToggleNegate={toggleNegate} />
+            <Field label="Parent image" value={matchParentImage} onChange={setMatchParentImage} placeholder="explorer.exe" testId="pam-rule-parent" negateKey="parentImage" negated={negate.has('parentImage')} onToggleNegate={toggleNegate} />
+            <Field label="Command line" value={matchCommandLine} onChange={setMatchCommandLine} placeholder="printui.dll,PrintUIEntry" testId="pam-rule-match-command-line" negateKey="commandLine" negated={negate.has('commandLine')} onToggleNegate={toggleNegate} />
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Tool name" value={matchToolName} onChange={setMatchToolName} placeholder="run_script" testId="pam-rule-toolname" />
+            <Field label="Tool name" value={matchToolName} onChange={setMatchToolName} placeholder="run_script" testId="pam-rule-toolname" negateKey="toolName" negated={negate.has('toolName')} onToggleNegate={toggleNegate} />
             <Field
               label="Risk tier (0-4)"
               value={matchRiskTier}
@@ -588,13 +634,16 @@ export default function PamRuleModal({
               placeholder="2"
               type="number"
               testId="pam-rule-risktier"
+              negateKey="riskTier"
+              negated={negate.has('riskTier')}
+              onToggleNegate={toggleNegate}
             />
           </div>
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="User (optional)" value={matchUser} onChange={setMatchUser} placeholder="DOMAIN\\user" testId="pam-rule-user" />
-          <Field label="AD group (optional)" value={matchAdGroup} onChange={setMatchAdGroup} placeholder="Helpdesk Tier 1" testId="pam-rule-adgroup" />
+          <Field label="User (optional)" value={matchUser} onChange={setMatchUser} placeholder="DOMAIN\\user" testId="pam-rule-user" negateKey="user" negated={negate.has('user')} onToggleNegate={toggleNegate} />
+          <Field label="AD group (optional)" value={matchAdGroup} onChange={setMatchAdGroup} placeholder="Helpdesk Tier 1" testId="pam-rule-adgroup" negateKey="adGroup" negated={negate.has('adGroup')} onToggleNegate={toggleNegate} />
         </div>
 
         <div className="grid gap-4 sm:grid-cols-3">
@@ -740,6 +789,9 @@ function Field({
   placeholder,
   testId,
   type = 'text',
+  negateKey,
+  negated,
+  onToggleNegate,
 }: {
   label: string;
   value: string;
@@ -747,6 +799,11 @@ function Field({
   placeholder?: string;
   testId: string;
   type?: string;
+  // When provided, a small "does not match" toggle renders under the input,
+  // marking this criterion for engine-side negation (PAM_RULE_NEGATE_KEYS).
+  negateKey?: PamRuleNegateKey;
+  negated?: boolean;
+  onToggleNegate?: (key: PamRuleNegateKey) => void;
 }) {
   const id = useId();
   return (
@@ -763,6 +820,17 @@ function Field({
         data-testid={testId}
         className="w-full rounded-md border bg-background px-3 py-2 text-sm"
       />
+      {negateKey && onToggleNegate && (
+        <label className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={negated ?? false}
+            onChange={() => onToggleNegate(negateKey)}
+            data-testid={`pam-rule-negate-${negateKey}`}
+          />
+          Negate (does not match)
+        </label>
+      )}
     </div>
   );
 }

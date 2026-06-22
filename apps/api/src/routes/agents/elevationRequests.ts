@@ -4,7 +4,7 @@ import { and, eq, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { db } from '../../db';
-import { devices, elevationAudit, elevationRequests, pamRules } from '../../db/schema';
+import { devices, elevationAudit, elevationRequests, pamOrgConfig, pamRules } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
@@ -66,7 +66,7 @@ type IngestDecision =
       rule?: PamRuleMatch;
       durationMinutes: number;
     }
-  | { kind: 'denied'; source: 'policy' | 'rule'; policyId?: string; rule?: PamRuleMatch }
+  | { kind: 'denied'; source: 'policy' | 'rule' | 'default'; policyId?: string; rule?: PamRuleMatch }
   | { kind: 'ignored'; rule: PamRuleMatch };
 
 /** Event emission must never fail ingest — the row is already committed. */
@@ -206,9 +206,23 @@ elevationRequestsRoutes.post(
           targetExecutableSigner: payload.target_executable_signer,
           subjectUsername: payload.subject_username,
           parentImage: payload.parent_image,
+          commandLine: payload.command_line,
           at: observedAt,
         });
-        if (ruleMatch) {
+        if (!ruleMatch) {
+          // No software policy and no PAM rule matched — apply the org's
+          // default verdict for unmatched elevations. The historical default
+          // (and the default when no config row exists) is require_approval,
+          // i.e. leave the request pending; an org can opt into auto_deny.
+          const [cfg] = await db
+            .select({ verdict: pamOrgConfig.defaultUnmatchedVerdict })
+            .from(pamOrgConfig)
+            .where(eq(pamOrgConfig.orgId, device.orgId))
+            .limit(1);
+          if (cfg?.verdict === 'auto_deny') {
+            decision = { kind: 'denied', source: 'default' };
+          }
+        } else {
           switch (ruleMatch.verdict) {
             case 'auto_approve':
               decision = {
@@ -297,7 +311,9 @@ elevationRequestsRoutes.post(
             decision.kind === 'denied'
               ? decision.source === 'policy'
                 ? 'Blocked by software policy'
-                : `Blocked by PAM rule "${decision.rule?.ruleName ?? ''}"`
+                : decision.source === 'default'
+                  ? 'Blocked by org default (no matching policy or rule)'
+                  : `Blocked by PAM rule "${decision.rule?.ruleName ?? ''}"`
               : null,
           softwarePolicyMatchId:
             decision.kind !== 'pending' && decision.source === 'policy'
@@ -348,10 +364,12 @@ elevationRequestsRoutes.post(
             details:
               decision.source === 'policy'
                 ? { software_policy_id: decision.policyId }
-                : {
-                    pam_rule_id: decision.rule?.ruleId,
-                    pam_rule_name: decision.rule?.ruleName,
-                  },
+                : decision.source === 'default'
+                  ? { default_unmatched_verdict: 'auto_deny' }
+                  : {
+                      pam_rule_id: decision.rule?.ruleId,
+                      pam_rule_name: decision.rule?.ruleName,
+                    },
             occurredAt: now,
           });
         }

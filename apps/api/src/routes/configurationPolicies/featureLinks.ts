@@ -14,6 +14,7 @@ import {
   listFeatureLinks,
   validateFeaturePolicyExists,
   pamInlineSettingsSchema,
+  remoteAccessInlineSettingsSchema,
 } from '../../services/configurationPolicy';
 import {
   addFeatureLinkSchema,
@@ -109,6 +110,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'remote_access' && data.inlineSettings) {
+      const parsed = remoteAccessInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          { error: 'Invalid remote access settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     try {
       const link = await addFeatureLink(
         id,
@@ -197,6 +209,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             { error: 'Invalid pam settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'remote_access') {
+        const parsed = remoteAccessInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            { error: 'Invalid remote access settings', details: parsed.error.flatten(), issues: parsed.error.issues },
             400
           );
         }

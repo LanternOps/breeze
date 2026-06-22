@@ -15,19 +15,27 @@
  *
  * B1 fix: POST /tickets delegates to createTicket (mock) with source: 'portal',
  *   submitter fields mapped, and the response shape preserved.
+ *
+ * Task 7: portal comment edit/delete within until-staff-reply window.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-// ── createTicket mock ─────────────────────────────────────────────────────────
+// ── service mocks ─────────────────────────────────────────────────────────────
 
-const { createTicketMock } = vi.hoisted(() => ({
-  createTicketMock: vi.fn()
+const { createTicketMock, portalCommentMutableMock, editTicketCommentMock, deleteTicketCommentMock } = vi.hoisted(() => ({
+  createTicketMock: vi.fn(),
+  portalCommentMutableMock: vi.fn(),
+  editTicketCommentMock: vi.fn(),
+  deleteTicketCommentMock: vi.fn(),
 }));
 
 vi.mock('../../services/ticketService', () => ({
   createTicket: createTicketMock,
+  portalCommentMutable: portalCommentMutableMock,
+  editTicketComment: editTicketCommentMock,
+  deleteTicketComment: deleteTicketCommentMock,
   TicketServiceError: class TicketServiceError extends Error {
     status: number;
     constructor(message: string, status = 400) {
@@ -78,6 +86,7 @@ vi.mock('./helpers', () => ({
 }));
 
 import { ticketRoutes } from './tickets';
+import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
 
 // ── Test app ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +103,7 @@ function buildApp() {
 }
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+const COMMENT_ID = 'aaaabbbb-1111-2222-3333-ccccdddd0000';
 
 const TICKET_ROW = {
   id: TICKET_ID,
@@ -104,6 +114,11 @@ const TICKET_ROW = {
   priority: 'normal',
   createdAt: new Date(),
   updatedAt: new Date()
+};
+
+// Valid UUID for route params (zValidator uses .guid())
+const portalJsonHeaders = {
+  'Content-Type': 'application/json',
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -340,5 +355,237 @@ describe('POST /tickets — delegates to createTicket', () => {
     expect(res.status).toBe(404);
     const body = await res.json() as { error: string };
     expect(body.error).toMatch(/organization not found/i);
+  });
+});
+
+// ── PATCH /tickets/:id/comments/:commentId — Task 7 ──────────────────────────
+
+describe('portal PATCH /tickets/:id/comments/:commentId', () => {
+  let app: ReturnType<typeof buildApp>;
+
+  const UPDATED_COMMENT = {
+    id: COMMENT_ID,
+    content: 'fixed typo',
+    editedAt: new Date(),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildApp();
+    // Default: window open
+    portalCommentMutableMock.mockResolvedValue({ ok: true });
+    editTicketCommentMock.mockResolvedValue(UPDATED_COMMENT);
+  });
+
+  it('edits own reply when window is open — 200', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'fixed typo' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toMatchObject({ id: COMMENT_ID, content: 'fixed typo' });
+  });
+
+  it('calls portalCommentMutable with (commentId, portalUserId)', async () => {
+    await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'fixed typo' }),
+    });
+    expect(portalCommentMutableMock).toHaveBeenCalledWith(COMMENT_ID, PORTAL_USER.id);
+  });
+
+  it('calls editTicketComment with canManageAny: true after ownership is proven', async () => {
+    await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'fixed typo' }),
+    });
+    expect(editTicketCommentMock).toHaveBeenCalledWith(
+      COMMENT_ID,
+      { content: 'fixed typo' },
+      expect.objectContaining({ userId: PORTAL_USER.id }),
+      { canManageAny: true, expectedTicketId: TICKET_ID }
+    );
+  });
+
+  it('writes portal audit on success', async () => {
+    await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'fixed typo' }),
+    });
+    expect(writePortalAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'portal.ticket.comment.edit',
+        resourceType: 'ticket_comment',
+        resourceId: COMMENT_ID,
+      })
+    );
+  });
+
+  it('409s once staff has replied (staff_replied)', async () => {
+    portalCommentMutableMock.mockResolvedValue({ ok: false, reason: 'staff_replied' });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'too late' }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('404s on another user\'s comment (not_author)', async () => {
+    portalCommentMutableMock.mockResolvedValue({ ok: false, reason: 'not_author' });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'x' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('404s when comment not found (not_found)', async () => {
+    portalCommentMutableMock.mockResolvedValue({ ok: false, reason: 'not_found' });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'x' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('403s on CSRF failure', async () => {
+    vi.mocked(validatePortalCookieCsrfRequest).mockReturnValueOnce('csrf token mismatch');
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'x' }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects content exceeding 5000 chars with 400 (portal cap)', async () => {
+    // Portal create caps content at 5000; portal edit must enforce the same cap
+    // even though the shared editCommentSchema allows 50k. Staff edit stays at 50k.
+    const overLimit = 'a'.repeat(5001);
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: overLimit }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toMatch(/5000/);
+    // editTicketComment must NOT have been called — rejection happens before service
+    expect(editTicketCommentMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts content of exactly 5000 chars (at boundary)', async () => {
+    const atLimit = 'b'.repeat(5000);
+    editTicketCommentMock.mockResolvedValueOnce({ id: COMMENT_ID, content: atLimit, editedAt: new Date() });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: atLimit }),
+    });
+    expect(res.status).toBe(200);
+  });
+});
+
+// ── DELETE /tickets/:id/comments/:commentId — Task 7 ─────────────────────────
+
+describe('portal DELETE /tickets/:id/comments/:commentId', () => {
+  let app: ReturnType<typeof buildApp>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildApp();
+    // Default: window open
+    portalCommentMutableMock.mockResolvedValue({ ok: true });
+    deleteTicketCommentMock.mockResolvedValue({ id: COMMENT_ID });
+  });
+
+  it('deletes own reply when window is open — 200', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { success: boolean };
+    expect(body.success).toBe(true);
+  });
+
+  it('calls portalCommentMutable with (commentId, portalUserId)', async () => {
+    await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(portalCommentMutableMock).toHaveBeenCalledWith(COMMENT_ID, PORTAL_USER.id);
+  });
+
+  it('calls deleteTicketComment with canManageAny: true after ownership is proven', async () => {
+    await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(deleteTicketCommentMock).toHaveBeenCalledWith(
+      COMMENT_ID,
+      expect.objectContaining({ userId: PORTAL_USER.id }),
+      { canManageAny: true, expectedTicketId: TICKET_ID }
+    );
+  });
+
+  it('writes portal audit on success', async () => {
+    await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(writePortalAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'portal.ticket.comment.delete',
+        resourceType: 'ticket_comment',
+        resourceId: COMMENT_ID,
+      })
+    );
+  });
+
+  it('409s once staff has replied (staff_replied)', async () => {
+    portalCommentMutableMock.mockResolvedValue({ ok: false, reason: 'staff_replied' });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('404s on another user\'s comment (not_author)', async () => {
+    portalCommentMutableMock.mockResolvedValue({ ok: false, reason: 'not_author' });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('404s when comment not found (not_found)', async () => {
+    portalCommentMutableMock.mockResolvedValue({ ok: false, reason: 'not_found' });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('403s on CSRF failure', async () => {
+    vi.mocked(validatePortalCookieCsrfRequest).mockReturnValueOnce('csrf token mismatch');
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: portalJsonHeaders,
+    });
+    expect(res.status).toBe(403);
   });
 });

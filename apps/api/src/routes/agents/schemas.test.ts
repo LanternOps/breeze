@@ -4,6 +4,8 @@ import {
   CHANGE_INGEST_MAX_ITEMS,
   __resolveChangeIngestMaxItemsForTests,
   agentWarrantyInfoSchema,
+  enrollSchema,
+  heartbeatSchema,
 } from './schemas';
 
 // Build a minimal valid change item the schema accepts.
@@ -111,5 +113,70 @@ describe('agentWarrantyInfoSchema — coverageKind acceptance', () => {
   it("still rejects an unknown non-empty coverageKind (e.g. 'lease')", () => {
     const parsed = agentWarrantyInfoSchema.safeParse({ ...base, coverageKind: 'lease' });
     expect(parsed.success).toBe(false);
+  });
+});
+
+// Issue #1387 — orthogonal virtualization attribute validation.
+describe('virtualization attribute — enrollSchema (strict)', () => {
+  const base = {
+    enrollmentKey: 'k',
+    hostname: 'host-1',
+    osType: 'windows' as const,
+    osVersion: 'Windows 11 Pro',
+    architecture: 'amd64',
+    agentVersion: '0.65.0',
+  };
+
+  it('accepts isVirtual + a known virtualizationPlatform', () => {
+    const parsed = enrollSchema.safeParse({ ...base, isVirtual: true, virtualizationPlatform: 'vmware' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.isVirtual).toBe(true);
+      expect(parsed.data.virtualizationPlatform).toBe('vmware');
+    }
+  });
+
+  it('treats the virtualization fields as optional (absent → undefined)', () => {
+    const parsed = enrollSchema.safeParse(base);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.isVirtual).toBeUndefined();
+      expect(parsed.data.virtualizationPlatform).toBeUndefined();
+    }
+  });
+
+  it('REJECTS an unrecognized platform (strict enroll path)', () => {
+    const parsed = enrollSchema.safeParse({ ...base, isVirtual: true, virtualizationPlatform: 'totally-made-up' });
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe('virtualization attribute — heartbeatSchema (tolerant)', () => {
+  const base = { status: 'ok' as const, agentVersion: '0.65.0' };
+
+  it('accepts isVirtual + a known virtualizationPlatform', () => {
+    const parsed = heartbeatSchema.safeParse({ ...base, isVirtual: true, virtualizationPlatform: 'hyperv' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.isVirtual).toBe(true);
+      expect(parsed.data.virtualizationPlatform).toBe('hyperv');
+    }
+  });
+
+  it('DROPS an unrecognized platform to undefined (does not reject the heartbeat)', () => {
+    const parsed = heartbeatSchema.safeParse({ ...base, isVirtual: true, virtualizationPlatform: 'totally-made-up' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.isVirtual).toBe(true);
+      expect(parsed.data.virtualizationPlatform).toBeUndefined();
+    }
+  });
+
+  it('drops a non-boolean isVirtual to undefined rather than rejecting', () => {
+    const parsed = heartbeatSchema.safeParse({ ...base, isVirtual: 'yes' as unknown as boolean });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.isVirtual).toBeUndefined();
+    }
   });
 });

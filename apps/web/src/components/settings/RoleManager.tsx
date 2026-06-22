@@ -237,7 +237,7 @@ export default function RoleManager({
         </div>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-md border">
+      <div className="mt-6 overflow-x-auto rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -997,7 +997,7 @@ export function RoleUsersModal({
             No users are assigned to this role.
           </div>
         ) : (
-          <div className="mt-4 overflow-hidden rounded-md border">
+          <div className="mt-4 overflow-x-auto rounded-md border">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

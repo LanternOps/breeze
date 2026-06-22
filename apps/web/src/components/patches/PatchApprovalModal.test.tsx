@@ -8,6 +8,13 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+vi.mock('../../lib/authScope', () => ({
+  getJwtClaims: vi.fn(),
+}));
+
+import { getJwtClaims } from '../../lib/authScope';
+const getJwtClaimsMock = vi.mocked(getJwtClaims);
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -18,10 +25,22 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
+const PATCH = {
+  id: 'patch-1',
+  title: 'Security Update',
+  severity: 'critical' as const,
+  source: 'Microsoft',
+  os: 'Windows',
+  releaseDate: '2026-04-01T00:00:00.000Z',
+  approvalStatus: 'pending' as const,
+};
+
 describe('PatchApprovalModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockResolvedValue(makeJsonResponse({ id: 'patch-1', status: 'deferred' }));
+    // Default: partner scope
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'partner-1', orgId: null });
   });
 
   it('sends deferUntil when deferring a patch', async () => {
@@ -30,15 +49,7 @@ describe('PatchApprovalModal', () => {
     render(
       <PatchApprovalModal
         open
-        patch={{
-          id: 'patch-1',
-          title: 'Security Update',
-          severity: 'critical',
-          source: 'Microsoft',
-          os: 'Windows',
-          releaseDate: '2026-04-01T00:00:00.000Z',
-          approvalStatus: 'pending',
-        }}
+        patch={PATCH}
         ringId="ring-1"
         onClose={() => {}}
       />
@@ -65,53 +76,40 @@ describe('PatchApprovalModal', () => {
     );
   });
 
-  it('disables the action and prompts for an org/ring when there is no ring or org context', async () => {
+  it('blocks org-scoped users with a partner-level message', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'org-1' });
+
     render(
       <PatchApprovalModal
         open
-        patch={{
-          id: 'patch-1',
-          title: 'Security Update',
-          severity: 'critical',
-          source: 'Microsoft',
-          os: 'Windows',
-          releaseDate: '2026-04-01T00:00:00.000Z',
-          approvalStatus: 'pending',
-        }}
+        patch={PATCH}
         ringId={null}
-        currentOrgId={null}
+        currentOrgId="org-1"
         onClose={() => {}}
       />
     );
 
-    // The hint is shown up-front and the submit button is disabled — no doomed
-    // request should fire even on click.
-    await screen.findByText(/select an organization \(or an update ring\)/i);
+    // The warning is shown up-front and the submit button is disabled.
+    await screen.findByText(/patch approvals are managed at the partner level/i);
     const submit = screen.getAllByRole('button', { name: /Approve/i }).at(-1)!;
     expect(submit).toBeDisabled();
-    fireEvent.click(submit);
 
+    // Even if clicked, no request fires.
+    fireEvent.click(submit);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId('confirm-fleet-action')).toBeNull();
   });
 
-  it('enables approve when a specific org is selected (orgId is auto-injected by fetchWithAuth)', async () => {
+  it('partner user can approve partner-wide with no ring and no org context', async () => {
     fetchMock.mockResolvedValue(makeJsonResponse({ id: 'patch-1', status: 'approved' }));
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'partner-1', orgId: null });
+
     render(
       <PatchApprovalModal
         open
-        patch={{
-          id: 'patch-1',
-          title: 'Security Update',
-          severity: 'critical',
-          source: 'Microsoft',
-          os: 'Windows',
-          releaseDate: '2026-04-01T00:00:00.000Z',
-          approvalStatus: 'pending',
-        }}
+        patch={PATCH}
         ringId={null}
-        currentOrgId="org-1"
-        orgName="Acme Corp"
+        currentOrgId={null}
         onClose={() => {}}
       />
     );
@@ -126,7 +124,40 @@ describe('PatchApprovalModal', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         '/patches/patch-1/approve',
-        expect.objectContaining({ method: 'POST' })
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ note: '' }),
+        })
+      )
+    );
+  });
+
+  it('partner user can approve ring-scoped (ringId sent, no orgId in body)', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ id: 'patch-1', status: 'approved' }));
+
+    render(
+      <PatchApprovalModal
+        open
+        patch={PATCH}
+        ringId="ring-1"
+        currentOrgId={null}
+        onClose={() => {}}
+      />
+    );
+
+    const submit = screen.getAllByRole('button', { name: /Approve/i }).at(-1)!;
+    expect(submit).not.toBeDisabled();
+    fireEvent.click(submit);
+
+    fireEvent.click(await screen.findByTestId('confirm-fleet-action'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/patch-1/approve',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ note: '', ringId: 'ring-1' }),
+        })
       )
     );
   });
@@ -137,15 +168,7 @@ describe('PatchApprovalModal', () => {
     render(
       <PatchApprovalModal
         open
-        patch={{
-          id: 'patch-1',
-          title: 'Security Update',
-          severity: 'critical',
-          source: 'Microsoft',
-          os: 'Windows',
-          releaseDate: '2026-04-01T00:00:00.000Z',
-          approvalStatus: 'pending',
-        }}
+        patch={PATCH}
         ringId="ring-1"
         onClose={() => {}}
       />

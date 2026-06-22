@@ -233,8 +233,15 @@ describe('ScriptForm availability picker — partner-scope gate', () => {
     expect(queryByText('Available to')).toBeNull();
   });
 
-  it('hides the picker when editing an existing script (not isNew)', async () => {
-    const { queryByText } = render(<ScriptForm />);
+  // Re-scope on edit (issue #1734): the picker now also renders when EDITING,
+  // so a partner-scope user can move a script org→org or promote it to All Orgs.
+  it('shows the "Available to" picker when editing an existing script (partner scope, >1 org)', async () => {
+    const { findByText } = render(<ScriptForm />);
+    expect(await findByText('Available to')).toBeTruthy();
+  });
+
+  it('hides the re-scope picker when editing a system script', async () => {
+    const { queryByText } = render(<ScriptForm isSystemScript />);
     await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
     expect(queryByText('Available to')).toBeNull();
   });

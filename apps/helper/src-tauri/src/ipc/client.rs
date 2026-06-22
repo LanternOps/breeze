@@ -14,11 +14,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use super::desktop::{self, ConsentBridge, ConsentDecision, ConsentRequest, ConsentResult};
 use super::envelope::{read_frame, write_frame, IpcError, PROTOCOL_VERSION};
 use super::token::HelperToken;
 use super::transport::{
     self_binary_hash, PeerIdentity,
 };
+use tauri::AppHandle;
 
 /// 32 zero bytes: the pre-auth HMAC key. The broker uses the same key until it
 /// sends `auth_response`.
@@ -167,6 +169,15 @@ fn parse_payload<T: for<'de> Deserialize<'de>>(
         .map_err(|e| IpcError::Protocol(format!("parse payload: {}", e)))
 }
 
+/// Tauri-side hooks the IPC session needs to drive the desktop consent/banner
+/// UI. Kept `Option`al so the protocol-level tests can run the session loop with
+/// no Tauri app handle (they exercise auth/token/ping paths only).
+#[derive(Clone)]
+pub struct DesktopCtx {
+    pub app: AppHandle,
+    pub bridge: std::sync::Arc<ConsentBridge>,
+}
+
 /// Run a single IPC session over an already-connected `stream` with an explicit
 /// identity: auth handshake, then a token-receipt loop until disconnect or error.
 ///
@@ -177,6 +188,7 @@ pub async fn run_session_with_identity<S>(
     stream: S,
     token: &HelperToken,
     identity: &PeerIdentity,
+    desktop_ctx: Option<&DesktopCtx>,
 ) -> Result<(), SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -238,11 +250,46 @@ where
         }
     };
 
+    // --- Consent decision bridge ---
+    // The `submit_consent` Tauri command runs on a different task; it can't touch
+    // this stream directly. Instead it sends a ConsentDecision through this
+    // channel, which we drain in the select! below and write back over the same
+    // socket (same send_seq / session_key) as a `consent_result` frame.
+    let (decision_tx, mut decision_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ConsentDecision>();
+    if let Some(ctx) = desktop_ctx {
+        ctx.bridge.set_sender(decision_tx);
+    }
+    // On any session-loop exit, clear the bridge so a later submit_consent on a
+    // dead session fails fast instead of writing into the orphaned channel.
+    let _bridge_guard = BridgeClearGuard {
+        bridge: desktop_ctx.map(|c| c.bridge.clone()),
+    };
+
     // --- Receive loop (session key) ---
     loop {
-        let res =
-            tokio::time::timeout(READ_IDLE_TIMEOUT, read_frame(&mut stream, &session_key, &mut recv_seq))
-                .await;
+        let res = tokio::select! {
+            // A consent verdict from the UI: write it back to the agent as the
+            // response to the pending `consent_request` (env id `consent-<id>`).
+            Some(decision) = decision_rx.recv() => {
+                let payload = to_raw_payload(&ConsentResult { decision: decision.decision })?;
+                let resp_id = format!("consent-{}", decision.session_id);
+                write_frame(
+                    &mut stream,
+                    &session_key,
+                    &mut send_seq,
+                    &resp_id,
+                    "consent_result",
+                    Some(payload),
+                )
+                .await?;
+                continue;
+            }
+            r = tokio::time::timeout(
+                READ_IDLE_TIMEOUT,
+                read_frame(&mut stream, &session_key, &mut recv_seq),
+            ) => r,
+        };
 
         let env = match res {
             // Idle: send a keepalive ping and keep listening.
@@ -270,6 +317,35 @@ where
                 // NEVER log the token value.
                 eprintln!("[helper] helper token received via IPC");
             }
+            "consent_request" => {
+                // Pop the always-on-top consent window. The user's verdict comes
+                // back asynchronously via the decision channel above; the agent's
+                // SendCommandAndWait has its own timeout fallback if no response
+                // arrives.
+                match parse_payload::<ConsentRequest>(&env.payload) {
+                    Ok(req) => {
+                        if let Some(ctx) = desktop_ctx {
+                            desktop::show_consent_window(&ctx.app, &req);
+                        }
+                    }
+                    Err(e) => eprintln!("[helper] bad consent_request payload: {}", e),
+                }
+            }
+            "banner_show" => {
+                match parse_payload::<desktop::BannerShowRequest>(&env.payload) {
+                    Ok(req) => {
+                        if let Some(ctx) = desktop_ctx {
+                            desktop::show_banner_window(&ctx.app, &req);
+                        }
+                    }
+                    Err(e) => eprintln!("[helper] bad banner_show payload: {}", e),
+                }
+            }
+            "banner_hide" => {
+                if let Some(ctx) = desktop_ctx {
+                    desktop::hide_banner_window(&ctx.app);
+                }
+            }
             "ping" => {
                 write_frame(
                     &mut stream,
@@ -291,6 +367,21 @@ where
     }
 }
 
+/// Clears the consent bridge's sender when the session loop exits (normal,
+/// error, or panic), so a `submit_consent` call after the socket is gone fails
+/// fast rather than queueing into a channel no one reads.
+struct BridgeClearGuard {
+    bridge: Option<std::sync::Arc<ConsentBridge>>,
+}
+
+impl Drop for BridgeClearGuard {
+    fn drop(&mut self) {
+        if let Some(bridge) = &self.bridge {
+            bridge.clear_sender();
+        }
+    }
+}
+
 /// Reconnect driver: connects, runs a session, backs off and retries on
 /// transient failure, and stops permanently on a permanent reject. Runs until
 /// `stop` flips to `true`.
@@ -298,7 +389,11 @@ where
 /// The session future is wrapped in `catch_unwind` so a panic inside a single
 /// session is caught, logged once, and treated as a transient failure (back off
 /// and reconnect) rather than killing the reconnect task.
-pub async fn run(token: HelperToken, mut stop: tokio::sync::watch::Receiver<bool>) {
+pub async fn run(
+    token: HelperToken,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    desktop_ctx: DesktopCtx,
+) {
     use super::transport::{connect, current_identity, default_socket_path};
 
     let mut backoff = BACKOFF_MIN;
@@ -345,9 +440,13 @@ pub async fn run(token: HelperToken, mut stop: tokio::sync::watch::Receiver<bool
         // The future is still `select!`ed against `stop.changed()` so a stop
         // request mid-session is honored promptly.
         use futures_util::FutureExt;
-        let session_fut =
-            std::panic::AssertUnwindSafe(run_session_with_identity(stream, &token, &identity))
-                .catch_unwind();
+        let session_fut = std::panic::AssertUnwindSafe(run_session_with_identity(
+            stream,
+            &token,
+            &identity,
+            Some(&desktop_ctx),
+        ))
+        .catch_unwind();
         let outcome = tokio::select! {
             r = session_fut => Some(r),
             _ = stop.changed() => None,
@@ -455,7 +554,7 @@ mod tests {
 
         let token_for_session = token.clone();
         let session = tokio::spawn(async move {
-            run_session_with_identity(client_half, &token_for_session, &id).await
+            run_session_with_identity(client_half, &token_for_session, &id, None).await
         });
 
         let mut broker_send = 0u64;
@@ -535,7 +634,7 @@ mod tests {
         let id = test_identity();
 
         let session = tokio::spawn(async move {
-            run_session_with_identity(client_half, &token, &id).await
+            run_session_with_identity(client_half, &token, &id, None).await
         });
 
         let mut broker_send = 0u64;
@@ -578,7 +677,7 @@ mod tests {
         let id = test_identity();
 
         let session = tokio::spawn(async move {
-            run_session_with_identity(client_half, &token, &id).await
+            run_session_with_identity(client_half, &token, &id, None).await
         });
 
         let mut broker_send = 0u64;
@@ -616,7 +715,7 @@ mod tests {
         let id = test_identity();
 
         let session = tokio::spawn(async move {
-            run_session_with_identity(client_half, &token, &id).await
+            run_session_with_identity(client_half, &token, &id, None).await
         });
 
         let mut broker_send = 0u64;

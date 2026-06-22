@@ -32,10 +32,16 @@ export const createContractSchema = z.object({
   autoIssue: z.boolean().optional(),
   currencyCode: z.string().length(3).optional(),
   notes: z.string().max(5000).nullable().optional(),
-  terms: z.string().max(5000).nullable().optional()
+  terms: z.string().max(5000).nullable().optional(),
+  autoRenew: z.boolean().optional(),
+  renewalTermMonths: z.number().int().min(1).max(120).nullable().optional(),
+  renewalNoticeDays: z.number().int().min(0).max(365).nullable().optional(),
 }).refine(
   (c) => c.endDate == null || c.endDate > c.startDate,
   { message: 'endDate must be after startDate', path: ['endDate'] }
+).refine(
+  (c) => !c.autoRenew || (c.endDate != null && c.renewalTermMonths != null),
+  { message: 'auto-renew requires both endDate and renewalTermMonths', path: ['autoRenew'] }
 );
 
 export const updateContractSchema = z.object({
@@ -46,7 +52,10 @@ export const updateContractSchema = z.object({
   endDate: isoDate.nullable().optional(),
   autoIssue: z.boolean().optional(),
   notes: z.string().max(5000).nullable().optional(),
-  terms: z.string().max(5000).nullable().optional()
+  terms: z.string().max(5000).nullable().optional(),
+  autoRenew: z.boolean().optional(),
+  renewalTermMonths: z.number().int().min(1).max(120).nullable().optional(),
+  renewalNoticeDays: z.number().int().min(0).max(365).nullable().optional(),
 });
 
 export const listContractsQuerySchema = z.object({

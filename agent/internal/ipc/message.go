@@ -73,6 +73,12 @@ const (
 	// exceeded, or binary path unknown). Distinct from AuthResponse so the
 	// helper can differentiate "never got to auth" from "auth was rejected".
 	TypePreAuthReject = "pre_auth_reject"
+
+	// Remote-session consent + banner
+	TypeConsentRequest = "consent_request"
+	TypeConsentResult  = "consent_result"
+	TypeBannerShow     = "banner_show"
+	TypeBannerHide     = "banner_hide"
 )
 
 // PreAuthReject codes identify why the broker rejected a connection.
@@ -122,8 +128,9 @@ const (
 
 // Scope constants identify the capabilities granted to a helper session.
 const (
-	ScopeAssist = "assist" // IPC scope granted to the assist helper
-	ScopePam    = "pam"    // IPC scope granted to the user helper for PAM dialogs
+	ScopeAssist    = "assist"     // IPC scope granted to the assist helper
+	ScopePam       = "pam"        // IPC scope granted to the user helper for PAM dialogs
+	ScopeConsentUI = "consent_ui" // narrow IPC scope: lets the assist helper receive remote-session consent prompt + active-session banner messages (UI only; NOT desktop/clipboard/notify)
 )
 
 const (
@@ -267,6 +274,9 @@ type DesktopStartRequest struct {
 	ClipboardViewerToHost   *bool `json:"clipboardViewerToHost,omitempty"`
 	IdleTimeoutMinutes      int   `json:"idleTimeoutMinutes,omitempty"`
 	MaxSessionDurationHours int   `json:"maxSessionDurationHours,omitempty"`
+	// Prompt carries the consent/notification configuration for the session.
+	// Nil means no prompt or banner is requested (legacy behaviour).
+	Prompt *DesktopPrompt `json:"prompt,omitempty"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the
@@ -406,4 +416,57 @@ type IntegrityCheck struct {
 // Tamper protection v2 — defined, not yet implemented.
 type IntegrityResult struct {
 	Results map[string]string `json:"results"`
+}
+
+// DesktopPrompt carries consent and notification configuration embedded in a
+// DesktopStartRequest. Pointer fields are optional so older services that omit
+// them leave the helper at safe defaults.
+type DesktopPrompt struct {
+	// Mode controls how the helper handles end-user consent: "off",
+	// "notify", or "consent".
+	Mode string `json:"mode"`
+	// TechnicianName is the display name of the connecting technician, shown
+	// in consent dialogs and the session banner.
+	TechnicianName *string `json:"technicianName,omitempty"`
+	// TechnicianEmail is the technician's email address, shown in dialogs.
+	TechnicianEmail *string `json:"technicianEmail,omitempty"`
+	// OrgName is the partner/MSP organisation name shown in dialogs.
+	OrgName *string `json:"orgName,omitempty"`
+	// ConsentUnavailableBehavior governs what happens when the helper cannot
+	// display a consent dialog (e.g. no interactive user): "proceed" or "block".
+	ConsentUnavailableBehavior string `json:"consentUnavailableBehavior"`
+	// ConsentTimeoutMs is how long (in ms) the helper waits for user input
+	// before applying ConsentUnavailableBehavior. 0 means no timeout.
+	ConsentTimeoutMs int `json:"consentTimeoutMs"`
+	// NotifyOnEnd controls whether the helper shows a notification when the
+	// remote session ends.
+	NotifyOnEnd bool `json:"notifyOnEnd"`
+	// ShowIndicator controls whether the on-screen session banner is displayed.
+	ShowIndicator bool `json:"showIndicator"`
+}
+
+// ConsentRequest is sent from the service (via the helper) to the desktop
+// prompt UI to ask the local user to allow or deny a remote session.
+type ConsentRequest struct {
+	SessionID       string `json:"sessionId"`
+	TechnicianName  string `json:"technicianName"`
+	TechnicianEmail string `json:"technicianEmail,omitempty"`
+	OrgName         string `json:"orgName,omitempty"`
+	TimeoutMs       int    `json:"timeoutMs"`
+	// OnTimeout is the behaviour when the dialog times out: "proceed" or "block".
+	OnTimeout string `json:"onTimeout"`
+}
+
+// ConsentResult is the user's decision returned from the desktop prompt UI.
+// Decision is "allow" or "deny".
+type ConsentResult struct {
+	Decision string `json:"decision"`
+}
+
+// BannerShowRequest tells the desktop helper to display the on-screen session
+// indicator banner.
+type BannerShowRequest struct {
+	SessionID       string `json:"sessionId"`
+	Label           string `json:"label"`
+	StartedAtUnixMs int64  `json:"startedAtUnixMs"`
 }
