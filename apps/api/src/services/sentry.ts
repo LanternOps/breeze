@@ -1,6 +1,14 @@
 import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { API_VERSION } from '../version';
+import { pgErrorCode } from '../utils/pgErrors';
+
+// SQLSTATE 42501 (insufficient_privilege) is what forced row-level security
+// raises when `breeze_app` is denied a row — the cross-tenant-isolation
+// tripwire. Tagging it (rather than leaving it buried in the message) makes a
+// spike of cross-tenant denials filterable in Sentry, which is the whole point
+// of the #1379 silent-failure surfacing work (#1375 was this class going unseen).
+const RLS_DENY_SQLSTATE = '42501';
 
 let initialized = false;
 
@@ -55,6 +63,20 @@ export function captureException(err: unknown, c?: Context): void {
         path: c.req.path,
         userAgent: c.req.header('user-agent') ?? undefined
       });
+    }
+
+    // Surface the Postgres SQLSTATE (unwrapping Drizzle's `.cause` chain) as a
+    // tag so DB errors are filterable. 42501 specifically flags an RLS denial,
+    // so a cross-tenant breach attempt — or a regression that strands a write
+    // on the bare `db` with no access context — shows up as a `rls_deny`
+    // spike instead of an anonymous 500. Best-effort: tagging never throws
+    // (pgErrorCode is total) and missing/non-pg errors are simply left untagged.
+    const sqlState = pgErrorCode(err);
+    if (sqlState) {
+      scope.setTag('pg_code', sqlState);
+      if (sqlState === RLS_DENY_SQLSTATE) {
+        scope.setTag('rls_deny', true);
+      }
     }
 
     Sentry.captureException(err);
