@@ -44,6 +44,8 @@ export interface TicketComment {
   oldValue: string | null;
   newValue: string | null;
   createdAt: string;
+  editedAt?: string | null;
+  deleted?: boolean;
 }
 
 export interface TicketDetail extends TicketSummary {

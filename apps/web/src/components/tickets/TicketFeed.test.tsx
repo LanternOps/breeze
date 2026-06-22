@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import TicketFeed from './TicketFeed';
 import type { TicketComment } from './ticketConfig';
@@ -124,5 +124,72 @@ describe('TicketFeed', () => {
       />
     );
     expect(screen.getByText('Technician logged time')).toBeInTheDocument();
+  });
+
+  it('shows an edited badge when editedAt is set', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-1', content: 'hi', editedAt: '2026-06-01T11:00:00.000Z' })]}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-edited-ed-1')).toBeInTheDocument();
+  });
+
+  it('does not show an edited badge when editedAt is absent', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-2', content: 'hi' })]}
+      />
+    );
+    expect(screen.queryByTestId('ticket-comment-edited-ed-2')).toBeNull();
+  });
+
+  it('renders a tombstone for a deleted comment and hides the body', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'del-1', content: '', deleted: true })]}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-deleted-del-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-comment-del-1')).toBeNull();
+  });
+
+  it('shows edit and delete controls when canManageComment returns true and handlers are provided', () => {
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ctrl-1', content: 'hi' })]}
+        onEditComment={onEdit}
+        onDeleteComment={onDelete}
+        canManageComment={() => true}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-edit-ctrl-1')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-comment-delete-ctrl-1')).toBeInTheDocument();
+  });
+
+  it('hides controls when canManageComment returns false', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ctrl-2', content: 'hi' })]}
+        onEditComment={vi.fn()}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => false}
+      />
+    );
+    expect(screen.queryByTestId('ticket-comment-edit-ctrl-2')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-ctrl-2')).toBeNull();
+  });
+
+  it('hides controls when handler props are not provided even if canManageComment returns true', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ctrl-3', content: 'hi' })]}
+        canManageComment={() => true}
+      />
+    );
+    expect(screen.queryByTestId('ticket-comment-edit-ctrl-3')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-ctrl-3')).toBeNull();
   });
 });

@@ -62,7 +62,17 @@ function SystemRun({ items }: { items: TicketComment[] }) {
   );
 }
 
-export default function TicketFeed({ comments }: { comments: TicketComment[] }) {
+export default function TicketFeed({
+  comments,
+  onEditComment,
+  onDeleteComment,
+  canManageComment,
+}: {
+  comments: TicketComment[];
+  onEditComment?: (id: string, content: string) => void;
+  onDeleteComment?: (id: string) => void;
+  canManageComment?: (c: TicketComment) => boolean;
+}) {
   const blocks = useMemo(() => groupFeed(comments), [comments]);
 
   if (comments.length === 0) {
@@ -74,6 +84,14 @@ export default function TicketFeed({ comments }: { comments: TicketComment[] }) 
       {blocks.map((b, i) =>
         b.kind === 'system-run' ? (
           <SystemRun key={`run-${i}`} items={b.items} />
+        ) : b.item.deleted ? (
+          <div
+            key={b.item.id}
+            className="rounded-lg border border-dashed p-3 text-sm italic text-muted-foreground"
+            data-testid={`ticket-comment-deleted-${b.item.id}`}
+          >
+            {(b.item.authorName ?? 'A comment')} — deleted
+          </div>
         ) : (
           <div
             key={b.item.id}
@@ -86,9 +104,32 @@ export default function TicketFeed({ comments }: { comments: TicketComment[] }) 
             <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">{b.item.authorName ?? (b.item.portalUserId ? 'Requester' : 'Technician')}</span>
               {!b.item.isPublic && <span className="font-medium text-warning">Internal</span>}
+              {b.item.editedAt && (
+                <span data-testid={`ticket-comment-edited-${b.item.id}`} title={formatDateTime(b.item.editedAt)}>edited</span>
+              )}
               <span className="ml-auto" title={formatDateTime(b.item.createdAt)}>
                 {formatDateTime(b.item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </span>
+              {canManageComment?.(b.item) && onEditComment && (
+                <button
+                  type="button"
+                  className="text-xs hover:text-foreground"
+                  data-testid={`ticket-comment-edit-${b.item.id}`}
+                  onClick={() => onEditComment(b.item.id, b.item.content)}
+                >
+                  Edit
+                </button>
+              )}
+              {canManageComment?.(b.item) && onDeleteComment && (
+                <button
+                  type="button"
+                  className="text-xs hover:text-destructive"
+                  data-testid={`ticket-comment-delete-${b.item.id}`}
+                  onClick={() => onDeleteComment(b.item.id)}
+                >
+                  Delete
+                </button>
+              )}
             </div>
             <p className="whitespace-pre-wrap text-sm">{b.item.content}</p>
           </div>
