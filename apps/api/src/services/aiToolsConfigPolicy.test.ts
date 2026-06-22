@@ -77,7 +77,7 @@ describe('configuration policy AI tools', () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: POLICY_ID, orgId: ORG_ID, name: 'Policy 1' }]),
+          limit: vi.fn().mockResolvedValue([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' }]),
         }),
       }),
     } as any);
@@ -98,7 +98,13 @@ describe('configuration policy AI tools', () => {
     expect(JSON.parse(output)).toEqual({
       error: 'Device target not found in the policy organization',
     });
-    expect(validateAssignmentTargetMock).toHaveBeenCalledWith(ORG_ID, 'device', DEVICE_ID);
+    // validateAssignmentTarget now takes the policy owner ({ orgId, partnerId })
+    // so it can gate partner-wide policies (#1724), not a bare orgId string.
+    expect(validateAssignmentTargetMock).toHaveBeenCalledWith(
+      { orgId: ORG_ID, partnerId: null },
+      'device',
+      DEVICE_ID
+    );
     expect(assignPolicyMock).not.toHaveBeenCalled();
   });
 });

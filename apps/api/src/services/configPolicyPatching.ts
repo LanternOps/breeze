@@ -316,8 +316,8 @@ export async function loadPolicyLocalPatchConfig(
   const partnerId = row.partnerId ?? (row.orgId ? await resolvePartnerIdForOrg(row.orgId) : null);
   if (!partnerId) {
     console.warn(
-      `[configPolicyPatching] config policy has no resolvable partner — cannot resolve patch ring`,
-      { orgId: row.orgId, partnerId: row.partnerId, configPolicyId: row.configPolicyId }
+      `[configPolicyPatching] orphaned org has no partner — cannot resolve patch ring`,
+      { orgId: row.orgId, configPolicyId: row.configPolicyId }
     );
     return null;
   }
@@ -407,8 +407,8 @@ async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow
     const rowPartnerId = row.partnerId ?? (row.orgId ? await resolvePartnerIdForOrg(row.orgId) : null);
     if (!rowPartnerId) {
       console.warn(
-        `[configPolicyPatching] config policy has no resolvable partner — classifying as missing_target`,
-        { orgId: row.orgId, partnerId: row.partnerId, configPolicyId: row.configPolicyId }
+        `[configPolicyPatching] orphaned org has no partner — classifying as missing_target`,
+        { orgId: row.orgId, configPolicyId: row.configPolicyId }
       );
     }
     const classification = rowPartnerId
