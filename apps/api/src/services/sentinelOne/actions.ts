@@ -1,6 +1,6 @@
 import { and, eq, inArray, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices, s1Actions, s1Agents, s1Integrations, s1Threats } from '../../db/schema';
+import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1OrgMappings, s1Threats } from '../../db/schema';
 import {
   dispatchS1Isolation,
   dispatchS1ThreatAction,
@@ -101,20 +101,52 @@ export function logActionDispatchFailureServerSide(
 }
 
 export async function getActiveS1IntegrationForOrg(orgId: string): Promise<S1ActiveIntegration | null> {
+  // Step 1: Resolve org → partner_id.
+  // s1_integrations is now partner-axis (legacyOrgId is often NULL after migration).
+  const [orgRow] = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!orgRow) return null;
+
+  // Step 2: Fetch the partner's active integration.
   const [integration] = await db
     .select({
       id: s1Integrations.id,
-      orgId: s1Integrations.orgId,
+      partnerId: s1Integrations.partnerId,
       name: s1Integrations.name,
       lastSyncAt: s1Integrations.lastSyncAt,
       lastSyncStatus: s1Integrations.lastSyncStatus,
       lastSyncError: s1Integrations.lastSyncError
     })
     .from(s1Integrations)
-    .where(and(eq(s1Integrations.orgId, orgId), eq(s1Integrations.isActive, true)))
+    .where(and(eq(s1Integrations.partnerId, orgRow.partnerId), eq(s1Integrations.isActive, true)))
     .limit(1);
 
-  return integration ?? null;
+  if (!integration) return null;
+
+  // Step 3 (defense-in-depth): Confirm the org has at least one s1_org_mappings row
+  // under this integration. Prevents acting on orgs the partner hasn't mapped.
+  const [mappingRow] = await db
+    .select({ id: s1OrgMappings.id })
+    .from(s1OrgMappings)
+    .where(and(eq(s1OrgMappings.integrationId, integration.id), eq(s1OrgMappings.orgId, orgId)))
+    .limit(1);
+
+  if (!mappingRow) return null;
+
+  // Preserve the caller's orgId in the return value — callers use this field as
+  // "the org I'm operating on"; the integration itself is partner-scoped.
+  return {
+    id: integration.id,
+    orgId,
+    name: integration.name,
+    lastSyncAt: integration.lastSyncAt,
+    lastSyncStatus: integration.lastSyncStatus,
+    lastSyncError: integration.lastSyncError,
+  };
 }
 
 export async function executeS1IsolationForOrg(params: {

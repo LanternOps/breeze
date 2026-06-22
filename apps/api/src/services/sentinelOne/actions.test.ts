@@ -1,16 +1,36 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SentinelOneHttpError } from './client';
 
 // actions.ts pulls in ../../db (and transitively ../../jobs/s1Sync) at import
 // time. We only exercise the pure helpers (truncateError /
 // logActionDispatchFailureServerSide), so stub the heavy deps to keep this a
 // fast unit test rather than wiring a full DB/queue mock.
-vi.mock('../../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-}));
+
+// Queued select results for getActiveS1IntegrationForOrg tests. Must be
+// declared via vi.hoisted so it is available inside the hoisted vi.mock factory.
+const { selectQueue } = vi.hoisted(() => {
+  const selectQueue: unknown[][] = [];
+  return { selectQueue };
+});
+
+vi.mock('../../db', () => {
+  const mockSelect = vi.fn(() => {
+    const rows = selectQueue.shift() ?? [];
+    const chain: Record<string, unknown> = {};
+    for (const method of ['from', 'where', 'innerJoin', 'leftJoin']) {
+      chain[method] = vi.fn().mockReturnValue(chain);
+    }
+    chain.limit = vi.fn().mockResolvedValue(rows);
+    chain.then = (resolve: (value: unknown[]) => unknown) => resolve(rows);
+    return chain;
+  });
+  return {
+    db: { select: mockSelect, insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
 
 vi.mock('../../jobs/s1Sync', () => ({
   dispatchS1Isolation: vi.fn(),
@@ -18,12 +38,82 @@ vi.mock('../../jobs/s1Sync', () => ({
   scheduleS1ActionPoll: vi.fn(),
 }));
 
-import { truncateError, logActionDispatchFailureServerSide } from './actions';
+import { truncateError, logActionDispatchFailureServerSide, getActiveS1IntegrationForOrg } from './actions';
 
 const UPSTREAM_BODY_MARKER = 'UPSTREAM_BODY_MARKER_should_never_reach_tenant';
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  selectQueue.length = 0;
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('getActiveS1IntegrationForOrg — partner-axis resolution', () => {
+  it('returns the partner active integration (with orgId = passed-in orgId) when org belongs to a partner with an active integration', async () => {
+    // Step 1: org lookup returns partner_id
+    selectQueue.push([{ id: 'org-1', partnerId: 'partner-1' }]);
+    // Step 2: active integration for partner
+    selectQueue.push([{
+      id: 'int-1',
+      partnerId: 'partner-1',
+      name: 'My S1 Integration',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    }]);
+    // Step 3: s1_org_mappings existence check
+    selectQueue.push([{ id: 'mapping-1' }]);
+
+    const result = await getActiveS1IntegrationForOrg('org-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe('int-1');
+    expect(result!.orgId).toBe('org-1'); // caller-provided orgId preserved in return
+    expect(result!.name).toBe('My S1 Integration');
+  });
+
+  it('returns null when the org is not found in the DB', async () => {
+    // org lookup returns empty
+    selectQueue.push([]);
+
+    const result = await getActiveS1IntegrationForOrg('org-missing');
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the partner has no active integration', async () => {
+    // org lookup returns partner_id
+    selectQueue.push([{ id: 'org-2', partnerId: 'partner-no-integration' }]);
+    // no active integration found
+    selectQueue.push([]);
+
+    const result = await getActiveS1IntegrationForOrg('org-2');
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the org has no s1_org_mappings row under the integration (defense-in-depth)', async () => {
+    // org lookup returns partner_id
+    selectQueue.push([{ id: 'org-3', partnerId: 'partner-1' }]);
+    // active integration exists
+    selectQueue.push([{
+      id: 'int-1',
+      partnerId: 'partner-1',
+      name: 'My S1 Integration',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    }]);
+    // but no s1_org_mappings row for this org
+    selectQueue.push([]);
+
+    const result = await getActiveS1IntegrationForOrg('org-3');
+
+    expect(result).toBeNull();
+  });
 });
 
 describe('truncateError', () => {
