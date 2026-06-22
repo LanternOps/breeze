@@ -1,34 +1,12 @@
 import { withBase } from '@/lib/basePath';
 import { Receipt, AlertCircle } from 'lucide-react';
-import { type InvoiceSummary, type InvoiceStatus } from '@/lib/api';
+import { type InvoiceSummary } from '@/lib/api';
+import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
 import { cn } from '@/lib/utils';
 
 interface InvoiceListProps {
   invoices: InvoiceSummary[];
   error?: string | null;
-}
-
-const STATUS_LABELS: Record<InvoiceStatus, string> = {
-  draft: 'Draft',
-  sent: 'Sent',
-  partially_paid: 'Partially paid',
-  overdue: 'Overdue',
-  paid: 'Paid',
-  void: 'Void',
-};
-
-function statusColor(status: InvoiceStatus): string {
-  switch (status) {
-    case 'paid':
-      return 'bg-success/10 text-success';
-    case 'overdue':
-      return 'bg-destructive/10 text-destructive';
-    case 'partially_paid':
-    case 'sent':
-      return 'bg-warning/10 text-warning';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
 }
 
 function money(value: string | number, currencyCode: string): string {

@@ -2,6 +2,7 @@ import { withBase } from '@/lib/basePath';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
 import { sellerLines } from '@/lib/sellerLines';
 import { cn } from '@/lib/utils';
 
@@ -11,29 +12,6 @@ const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially
 interface InvoiceDetailViewProps {
   detail: InvoiceDetail | null;
   error?: string | null;
-}
-
-const STATUS_LABELS: Record<InvoiceStatus, string> = {
-  draft: 'Draft',
-  sent: 'Sent',
-  partially_paid: 'Partially paid',
-  overdue: 'Overdue',
-  paid: 'Paid',
-  void: 'Void',
-};
-
-function statusColor(status: InvoiceStatus): string {
-  switch (status) {
-    case 'paid':
-      return 'bg-success/10 text-success';
-    case 'overdue':
-      return 'bg-destructive/10 text-destructive';
-    case 'partially_paid':
-    case 'sent':
-      return 'bg-warning/10 text-warning';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
 }
 
 function money(value: string | number, currencyCode: string): string {

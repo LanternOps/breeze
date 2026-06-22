@@ -25,6 +25,12 @@ export default defineConfig({
     setupFiles: ['src/__tests__/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     passWithNoTests: true,
+    // Reset mock call history + restore spied implementations between tests so a
+    // stub one test sets (e.g. fetchWithAuth.mockResolvedValue) can't leak into
+    // the next and break it. Without this the suite has order-dependent
+    // cross-file failures whose victim varies by shard ordering.
+    clearMocks: true,
+    restoreMocks: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

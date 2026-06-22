@@ -9,10 +9,12 @@ import {
   type InvoiceStatus,
   type InvoiceSummary,
   STATUS_COLORS,
+  STATUS_LABELS,
   statusLabel,
   formatDate,
   formatMoney,
 } from './invoiceTypes';
+import { INVOICE_STATUSES } from '@breeze/shared';
 
 interface Organization {
   id: string;
@@ -25,12 +27,7 @@ interface Site {
 
 const STATUS_OPTIONS: { value: '' | InvoiceStatus; label: string }[] = [
   { value: '', label: 'All statuses' },
-  { value: 'draft', label: 'Draft' },
-  { value: 'sent', label: 'Sent' },
-  { value: 'partially_paid', label: 'Partially paid' },
-  { value: 'overdue', label: 'Overdue' },
-  { value: 'paid', label: 'Paid' },
-  { value: 'void', label: 'Void' },
+  ...INVOICE_STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s] })),
 ];
 
 type SortKey = 'issued' | 'due' | 'total' | 'balance';
