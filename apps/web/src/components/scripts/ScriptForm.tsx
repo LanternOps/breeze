@@ -125,34 +125,12 @@ export default function ScriptForm({
     return () => document.removeEventListener('astro:page-load', forceLayout);
   }, []);
 
-  // Preserve Monaco's theme colors across View Transition swaps (issue #1589,
-  // follow-up to #1186). The #1186 fix made Monaco's *structural* stylesheet
-  // (editor.main.css) a build-time <link> so it survives Astro rebuilding <head>
-  // from the new page's server markup. But Monaco injects its *theme* colors
-  // (vs-dark token colors, selection background) as a separate runtime <style
-  // class="monaco-colors"> appended to document.head — that one is still dropped
-  // by the swap. Monaco's standalone theme service is a module singleton that
-  // survives SPA navigation, and it only creates that global style element once
-  // (`if (!this._globalStyleElement)`) and short-circuits setTheme when the theme
-  // is unchanged (`this._theme === desiredTheme`), so the recreated editor never
-  // re-injects it. The editor then renders un-themed (white text, invisible
-  // selection) until a full refresh. Clone the live style into the incoming
-  // document on `astro:before-swap` so the rebuilt <head> keeps the colors.
-  useEffect(() => {
-    const preserveMonacoColors = (event: Event) => {
-      const newDocument = (event as Event & { newDocument?: Document }).newDocument;
-      if (!newDocument) return;
-      if (newDocument.head.querySelector('style.monaco-colors')) return;
-      const live = document.head.querySelector('style.monaco-colors');
-      if (!live) return;
-      const clone = newDocument.createElement('style');
-      clone.className = 'monaco-colors';
-      clone.textContent = live.textContent;
-      newDocument.head.appendChild(clone);
-    };
-    document.addEventListener('astro:before-swap', preserveMonacoColors);
-    return () => document.removeEventListener('astro:before-swap', preserveMonacoColors);
-  }, []);
+  // Monaco's runtime theme colors (issue #1589) are preserved across View
+  // Transition swaps by the always-present global handler in
+  // public/monaco-theme-persist.js (wired into Layout.astro), NOT here. The
+  // earlier in-component listener (#1593) could not fire on the failing
+  // navigation — scripts-list -> editor — because this component is unmounted
+  // on the list page. See that file for the full rationale.
 
   const {
     register,
