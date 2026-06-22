@@ -334,6 +334,7 @@ discoveryRoutes.get(
           schedule: p.schedule,
           deepScan: p.deepScan,
           resolveHostnames: p.resolveHostnames,
+          alertSettings: p.alertSettings ?? null,
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
           lastRunAt: row.lastRunAt ? new Date(row.lastRunAt).toISOString() : null

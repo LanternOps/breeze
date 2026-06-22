@@ -20,6 +20,7 @@ type SiteOption = {
 type ProfileOption = {
   id: string;
   name: string;
+  alertingEnabled: boolean;
 };
 
 type NetworkChangesPanelProps = {
@@ -126,7 +127,10 @@ export default function NetworkChangesPanel({
         const id = typeof row.id === 'string' ? row.id : null;
         const name = typeof row.name === 'string' ? row.name : null;
         if (!id || !name) return null;
-        return { id, name };
+        const alert = row.alertSettings;
+        const alertingEnabled = !!(alert && typeof alert === 'object'
+          && (alert as Record<string, unknown>).enabled === true);
+        return { id, name, alertingEnabled };
       })
       .filter((row: ProfileOption | null): row is ProfileOption => row !== null);
 
@@ -217,6 +221,32 @@ export default function NetworkChangesPanel({
     () => new Map(profiles.map((profile) => [profile.id, profile])),
     [profiles]
   );
+
+  // Discovery-scan change events are only recorded for profiles that have
+  // Alerting enabled (assetApproval.ts gates `shouldAlert` on
+  // `alertSettings.enabled`, and discoveryWorker.ts only inserts a
+  // network_change_event when `shouldAlert` is true). Surface that prerequisite
+  // in the empty state so an empty Changes tab isn't misread as a bug.
+  const alertingPrerequisite = useMemo<
+    { state: 'profile-disabled' | 'all-disabled'; profileName?: string } | null
+  >(() => {
+    if (profiles.length === 0) return null;
+
+    if (filters.profileId !== 'all') {
+      const selected = profileById.get(filters.profileId);
+      if (selected && !selected.alertingEnabled) {
+        return { state: 'profile-disabled', profileName: selected.name };
+      }
+      return null;
+    }
+
+    // No specific profile selected: flag the prerequisite only when no loaded
+    // profile has Alerting enabled, so discovery scans can't record anything.
+    if (profiles.every((profile) => !profile.alertingEnabled)) {
+      return { state: 'all-disabled' };
+    }
+    return null;
+  }, [profiles, profileById, filters.profileId]);
 
   const deviceById = useMemo(
     () => new Map(devices.map((device) => [device.id, device])),
@@ -422,6 +452,22 @@ export default function NetworkChangesPanel({
     </div>
   );
 
+  const renderEmptyState = () =>
+    alertingPrerequisite ? (
+      <div className="mx-auto max-w-xl space-y-1 text-sm text-muted-foreground" data-testid="changes-alerting-hint">
+        <p className="font-medium text-foreground">No change events recorded yet.</p>
+        <p>
+          {alertingPrerequisite.state === 'profile-disabled'
+            ? `Discovery scans on “${alertingPrerequisite.profileName}” won’t record changes until Alerting is enabled on that profile.`
+            : 'Discovery scans won’t record changes until Alerting is enabled on a discovery profile.'}
+          {' '}Enable <span className="font-medium text-foreground">Alerting</span> in the profile’s
+          settings (Profiles tab) to start tracking network changes.
+        </p>
+      </div>
+    ) : (
+      <span className="text-sm text-muted-foreground">No change events match the selected filters.</span>
+    );
+
   return (
     <div className="space-y-6">
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -600,8 +646,8 @@ export default function NetworkChangesPanel({
                   </tr>
                 ) : changes.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No change events match the selected filters.
+                    <td colSpan={7} className="px-4 py-6 text-center">
+                      {renderEmptyState()}
                     </td>
                   </tr>
                 ) : (
@@ -634,9 +680,7 @@ export default function NetworkChangesPanel({
               </DataCard>
             ) : changes.length === 0 ? (
               <DataCard>
-                <p className="py-2 text-center text-sm text-muted-foreground">
-                  No change events match the selected filters.
-                </p>
+                <div className="py-2 text-center">{renderEmptyState()}</div>
               </DataCard>
             ) : (
               changes.map((change) => {

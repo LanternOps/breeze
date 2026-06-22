@@ -363,6 +363,98 @@ describe('discovery routes', () => {
     });
   });
 
+  describe('GET /discovery/profiles', () => {
+    // Regression: the Changes tab differentiates "Alerting disabled" from "no
+    // changes yet" using each profile's alertSettings, so the list response must
+    // project alertSettings (#1729).
+    it('projects alertSettings in the profile list response', async () => {
+      const now = new Date();
+      const row = {
+        profile: {
+          id: 'profile-001',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          name: 'Nightly Scan',
+          description: null,
+          enabled: true,
+          subnets: ['10.0.2.0/24'],
+          methods: ['ping'],
+          schedule: { type: 'manual' },
+          deepScan: false,
+          resolveHostnames: true,
+          alertSettings: {
+            enabled: false,
+            alertOnNew: true,
+            alertOnDisappeared: true,
+            alertOnChanged: true,
+            changeRetentionDays: 90
+          },
+          createdAt: now,
+          updatedAt: now,
+        },
+        lastRunAt: null,
+      };
+
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([row]),
+          }),
+        }),
+      });
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].alertSettings).toEqual(row.profile.alertSettings);
+    });
+
+    it('returns alertSettings as null when a profile has none', async () => {
+      const now = new Date();
+      const row = {
+        profile: {
+          id: 'profile-002',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          name: 'Legacy Scan',
+          description: null,
+          enabled: true,
+          subnets: ['10.0.3.0/24'],
+          methods: ['ping'],
+          schedule: { type: 'manual' },
+          deepScan: false,
+          resolveHostnames: true,
+          alertSettings: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        lastRunAt: null,
+      };
+
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([row]),
+          }),
+        }),
+      });
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].alertSettings).toBeNull();
+    });
+  });
+
   describe('POST /discovery/profiles', () => {
     it('should create a discovery profile with schedule configuration', async () => {
       const res = await app.request('/discovery/profiles', {
