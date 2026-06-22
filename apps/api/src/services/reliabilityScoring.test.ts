@@ -399,7 +399,7 @@ describe('computeTopIssues', () => {
 // Issue #1721: device-type-aware reliability weight profiles.
 describe('device-role weight profiles', () => {
   const {
-    resolveFactorWeights,
+    resolveWeightProfile,
     isWorkstationRole,
     INFRA_FACTOR_WEIGHTS,
     WORKSTATION_FACTOR_WEIGHTS,
@@ -430,14 +430,18 @@ describe('device-role weight profiles', () => {
     expect(isWorkstationRole(undefined)).toBe(false);
   });
 
-  it('resolves the workstation profile for workstation devices', () => {
-    expect(resolveFactorWeights('workstation')).toBe(WORKSTATION_FACTOR_WEIGHTS);
+  it('resolves the workstation profile (name + weights) for workstation devices', () => {
+    const profile = resolveWeightProfile('workstation');
+    expect(profile.name).toBe('workstation');
+    expect(profile.weights).toBe(WORKSTATION_FACTOR_WEIGHTS);
   });
 
   it.each(['server', 'nas', 'router', 'switch', 'firewall', 'printer', 'unknown', null, undefined])(
-    'resolves the infra profile for role %s',
+    'resolves the infra profile (name + weights) for role %s',
     (role) => {
-      expect(resolveFactorWeights(role as string | null | undefined)).toBe(INFRA_FACTOR_WEIGHTS);
+      const profile = resolveWeightProfile(role as string | null | undefined);
+      expect(profile.name).toBe('infra');
+      expect(profile.weights).toBe(INFRA_FACTOR_WEIGHTS);
     }
   );
 

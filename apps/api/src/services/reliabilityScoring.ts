@@ -43,8 +43,10 @@ const INFRA_FACTOR_WEIGHTS: ReliabilityFactorWeights = {
 };
 
 // Workstations/laptops: uptime is not a fault signal, so its 30 points are
-// redistributed onto the remaining factors (proportionally to the infra
-// profile's non-uptime weights: 25/15/15/15 of 70 → +10.7/+6.4/+6.4/+6.4).
+// redistributed onto the remaining factors, roughly in proportion to the infra
+// profile's non-uptime weights (25/15/15/15 of 70 → ≈ +10.7/+6.4/+6.4/+6.4),
+// with the leftover rounding point assigned to hardwareErrors so the profile
+// sums to exactly 100.
 const WORKSTATION_FACTOR_WEIGHTS: ReliabilityFactorWeights = {
   uptime: 0,
   crashes: 36,
@@ -52,6 +54,8 @@ const WORKSTATION_FACTOR_WEIGHTS: ReliabilityFactorWeights = {
   serviceFailures: 21,
   hardwareErrors: 22,
 };
+
+type ReliabilityWeightProfileName = 'infra' | 'workstation';
 
 function assertWeightsSumTo100(label: string, weights: ReliabilityFactorWeights): void {
   const total = weights.uptime + weights.crashes + weights.hangs + weights.serviceFailures + weights.hardwareErrors;
@@ -74,9 +78,16 @@ function isWorkstationRole(deviceRole: string | null | undefined): boolean {
 /**
  * Pick the reliability weight profile for a device role. Workstation-class roles
  * drop the uptime factor; all other roles use the always-on infra profile.
+ * Returns both the weights and the profile name so callers persist a label that
+ * cannot drift from the weights actually applied.
  */
-function resolveFactorWeights(deviceRole: string | null | undefined): ReliabilityFactorWeights {
-  return isWorkstationRole(deviceRole) ? WORKSTATION_FACTOR_WEIGHTS : INFRA_FACTOR_WEIGHTS;
+function resolveWeightProfile(deviceRole: string | null | undefined): {
+  name: ReliabilityWeightProfileName;
+  weights: ReliabilityFactorWeights;
+} {
+  return isWorkstationRole(deviceRole)
+    ? { name: 'workstation', weights: WORKSTATION_FACTOR_WEIGHTS }
+    : { name: 'infra', weights: INFRA_FACTOR_WEIGHTS };
 }
 
 export type ReliabilityTrendDirection = 'improving' | 'stable' | 'degrading';
@@ -964,7 +975,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
 
   // Issue #1721: pick a device-type-aware weight profile so a normally-rebooting
   // workstation/laptop isn't penalised on uptime the way an always-on server is.
-  const weights = resolveFactorWeights(device.deviceRole);
+  const { name: weightProfile, weights } = resolveWeightProfile(device.deviceRole);
   const suppressUptimeIssue = isWorkstationRole(device.deviceRole);
 
   const reliabilityScore = clampScore(
@@ -999,7 +1010,9 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     // Issue #1721: record which device-type-aware weight profile was applied so
     // the card's per-factor "% weight" (read from factors[*].weight) and any
     // downstream consumer can see the role-specific weighting that was used.
-    weightProfile: isWorkstationRole(device.deviceRole) ? 'workstation' : 'infra',
+    // Derived from the same resolveWeightProfile() result as `weights` above so
+    // the label can never drift from the weights actually applied.
+    weightProfile,
     factors: {
       uptime: { score: uptimeScore, weight: weights.uptime, uptime7d, uptime30d, uptime90d },
       crashes: { score: crashScore, weight: weights.crashes, crashCount7d, crashCount30d, crashCount90d },
@@ -1528,7 +1541,7 @@ export const reliabilityScoringInternals = {
   computeTopIssues,
   buildReliabilityDrivers,
   computeReliabilityEvaluationSummary,
-  resolveFactorWeights,
+  resolveWeightProfile,
   isWorkstationRole,
   INFRA_FACTOR_WEIGHTS,
   WORKSTATION_FACTOR_WEIGHTS,
