@@ -118,6 +118,22 @@ func (c *SNMPClient) GetMulti(oids []string) ([]gosnmp.SnmpPDU, error) {
 	return packet.Variables, nil
 }
 
+// Walk returns every PDU in the subtree rooted at rootOID using a BULK walk.
+// Works for v2c and v3; callers parse the returned index suffixes.
+func (c *SNMPClient) Walk(rootOID string) ([]gosnmp.SnmpPDU, error) {
+	if rootOID == "" {
+		return nil, errors.New("root OID is required")
+	}
+	if c == nil || c.client == nil {
+		return nil, errors.New("SNMP client is not connected")
+	}
+	pdus, err := c.client.BulkWalkAll(rootOID)
+	if err != nil {
+		return nil, fmt.Errorf("SNMP walk of %s failed: %w", rootOID, err)
+	}
+	return pdus, nil
+}
+
 func normalizeClientConfig(config SNMPClientConfig) SNMPClientConfig {
 	if config.Port == 0 {
 		config.Port = 161
