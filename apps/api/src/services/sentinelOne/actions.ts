@@ -1,5 +1,5 @@
 import { and, eq, inArray, or, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1OrgMappings, s1Threats } from '../../db/schema';
 import {
   dispatchS1Isolation,
@@ -111,29 +111,44 @@ export async function getActiveS1IntegrationForOrg(orgId: string): Promise<S1Act
 
   if (!orgRow) return null;
 
-  // Step 2: Fetch the partner's active integration.
-  const [integration] = await db
-    .select({
-      id: s1Integrations.id,
-      partnerId: s1Integrations.partnerId,
-      name: s1Integrations.name,
-      lastSyncAt: s1Integrations.lastSyncAt,
-      lastSyncStatus: s1Integrations.lastSyncStatus,
-      lastSyncError: s1Integrations.lastSyncError
-    })
-    .from(s1Integrations)
-    .where(and(eq(s1Integrations.partnerId, orgRow.partnerId), eq(s1Integrations.isActive, true)))
-    .limit(1);
+  // Steps 2 & 3 read partner-axis tables (s1_integrations, s1_org_mappings) gated
+  // by breeze_has_partner_access(partner_id). An org-scoped caller's request DB
+  // context has no partner access (accessiblePartnerIds = []), so those reads would
+  // return 0 rows under RLS. The org lookup above (Step 1) IS the security gate —
+  // it runs in the caller's context so org RLS ensures orgRow.partnerId belongs to a
+  // partner the caller can see. After that gate, we escalate to system context for
+  // the partner-axis reads. Pattern mirrors mobileDeviceBlocked.ts.
+  const [integration] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      // Step 2: Fetch the partner's active integration.
+      db
+        .select({
+          id: s1Integrations.id,
+          partnerId: s1Integrations.partnerId,
+          name: s1Integrations.name,
+          lastSyncAt: s1Integrations.lastSyncAt,
+          lastSyncStatus: s1Integrations.lastSyncStatus,
+          lastSyncError: s1Integrations.lastSyncError
+        })
+        .from(s1Integrations)
+        .where(and(eq(s1Integrations.partnerId, orgRow.partnerId), eq(s1Integrations.isActive, true)))
+        .limit(1)
+    )
+  );
 
   if (!integration) return null;
 
-  // Step 3 (defense-in-depth): Confirm the org has at least one s1_org_mappings row
-  // under this integration. Prevents acting on orgs the partner hasn't mapped.
-  const [mappingRow] = await db
-    .select({ id: s1OrgMappings.id })
-    .from(s1OrgMappings)
-    .where(and(eq(s1OrgMappings.integrationId, integration.id), eq(s1OrgMappings.orgId, orgId)))
-    .limit(1);
+  const [mappingRow] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      // Step 3 (defense-in-depth): Confirm the org has at least one s1_org_mappings row
+      // under this integration. Prevents acting on orgs the partner hasn't mapped.
+      db
+        .select({ id: s1OrgMappings.id })
+        .from(s1OrgMappings)
+        .where(and(eq(s1OrgMappings.integrationId, integration.id), eq(s1OrgMappings.orgId, orgId)))
+        .limit(1)
+    )
+  );
 
   if (!mappingRow) return null;
 

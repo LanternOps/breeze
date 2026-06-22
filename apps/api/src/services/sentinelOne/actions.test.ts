@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as DbModule from '../../db';
 import { SentinelOneHttpError } from './client';
 
 // actions.ts pulls in ../../db (and transitively ../../jobs/s1Sync) at import
@@ -113,6 +114,43 @@ describe('getActiveS1IntegrationForOrg — partner-axis resolution', () => {
     const result = await getActiveS1IntegrationForOrg('org-3');
 
     expect(result).toBeNull();
+  });
+
+  it('regression(#1735): partner-axis reads (steps 2&3) use system DB context so org-scoped callers are not blocked by RLS', async () => {
+    // Arrange: all three steps return data so the function returns a result.
+    selectQueue.push([{ id: 'org-1', partnerId: 'partner-1' }]);
+    selectQueue.push([{
+      id: 'int-1',
+      partnerId: 'partner-1',
+      name: 'My S1 Integration',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    }]);
+    selectQueue.push([{ id: 'mapping-1' }]);
+
+    // Import the mocked db module so we can inspect call counts.
+    const dbMod = await import('../../db') as unknown as typeof DbModule & {
+      runOutsideDbContext: ReturnType<typeof vi.fn>;
+      withSystemDbAccessContext: ReturnType<typeof vi.fn>;
+    };
+
+    const result = await getActiveS1IntegrationForOrg('org-1');
+
+    // The function must return the integration (not null, which would be the
+    // buggy org-scoped-caller outcome when partner rows are hidden by RLS).
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe('int-1');
+
+    // CRITICAL: runOutsideDbContext + withSystemDbAccessContext must have been
+    // called for steps 2 & 3. This test FAILS if the system-scope wrap is
+    // removed, proving the regression guard is not vacuous.
+    expect(dbMod.runOutsideDbContext).toHaveBeenCalled();
+    expect(dbMod.withSystemDbAccessContext).toHaveBeenCalled();
+    // Both step 2 (integration lookup) and step 3 (mapping check) each call the
+    // pair once, so we expect at least 2 calls each.
+    expect(dbMod.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    expect(dbMod.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
   });
 });
 
