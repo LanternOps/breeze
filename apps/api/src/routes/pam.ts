@@ -34,6 +34,7 @@ import {
   PAM_RULE_NEGATE_KEYS,
   pamOrgConfig,
   pamRules,
+  pamSignerGroups,
   sites,
   softwarePolicies,
   users,
@@ -803,6 +804,7 @@ pamRoutes.post(
 
 const ruleCriteriaFields = [
   'matchSigner',
+  'matchSignerGroupId',
   'matchHash',
   'matchPathGlob',
   'matchParentImage',
@@ -823,6 +825,7 @@ const timeWindowSchema = z.object({
 const ruleCriteriaValidators = {
   siteId: z.string().guid().nullable().optional(),
   matchSigner: z.string().min(1).max(255).nullable().optional(),
+  matchSignerGroupId: z.string().guid().nullable().optional(),
   matchHash: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, 'must be a sha256 hex digest')
@@ -858,6 +861,7 @@ const ruleBaseSchema = z.object({
 
 type RuleCriteriaShape = {
   matchSigner?: string | null;
+  matchSignerGroupId?: string | null;
   matchHash?: string | null;
   matchPathGlob?: string | null;
   matchParentImage?: string | null;
@@ -880,6 +884,7 @@ function hasAnyCriterion(rule: RuleCriteriaShape): boolean {
 // group/time only narrow; they don't identify a binary).
 const executableCriteriaFields = [
   'matchSigner',
+  'matchSignerGroupId',
   'matchHash',
   'matchPathGlob',
   'matchParentImage',
@@ -906,6 +911,9 @@ function validateRuleShape(rule: RuleCriteriaShape): string | null {
   }
   if (hasExecutableShapeCriteria(rule) && hasToolActionCriteria(rule)) {
     return 'A rule cannot mix executable criteria with tool-action criteria';
+  }
+  if (rule.matchSigner && rule.matchSignerGroupId) {
+    return 'A rule cannot set both matchSigner and matchSignerGroupId — use one or the other';
   }
   if (hasToolActionCriteria(rule) && rule.verdict === 'ignore') {
     return "verdict 'ignore' is not valid for tool-action rules — a tool action must be decided";
@@ -965,6 +973,7 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
       enabled: payload.enabled ?? true,
       priority: payload.priority ?? 100,
       matchSigner: payload.matchSigner ?? null,
+      matchSignerGroupId: payload.matchSignerGroupId ?? null,
       matchHash: payload.matchHash ? payload.matchHash.toLowerCase() : null,
       matchPathGlob: payload.matchPathGlob ?? null,
       matchParentImage: payload.matchParentImage ?? null,
@@ -1066,6 +1075,7 @@ pamRoutes.post(
       createdAt: new Date(),
       updatedAt: new Date(),
       matchSigner: body.matchSigner ?? null,
+      matchSignerGroupId: body.matchSignerGroupId ?? null,
       matchHash: body.matchHash ? body.matchHash.toLowerCase() : null,
       matchPathGlob: body.matchPathGlob ?? null,
       matchParentImage: body.matchParentImage ?? null,
@@ -1077,6 +1087,19 @@ pamRoutes.post(
       matchNegate: body.matchNegate ?? null,
       timeWindow: body.timeWindow ?? null,
     };
+
+    // Resolve the draft's signer group (if any) so the preview can match it.
+    // Org-scoped by RLS — a group the caller can't see yields no resolution
+    // and the draft's group criterion fails closed.
+    let previewSignerGroups: Map<string, string[]> | undefined;
+    if (draftRule.matchSignerGroupId) {
+      const [grp] = await db
+        .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
+        .from(pamSignerGroups)
+        .where(eq(pamSignerGroups.id, draftRule.matchSignerGroupId))
+        .limit(1);
+      if (grp) previewSignerGroups = new Map([[grp.id, grp.signers]]);
+    }
 
     let totalMatched = 0;
     const statusBreakdown: Record<string, number> = {
@@ -1103,7 +1126,7 @@ pamRoutes.post(
         riskTier: r.riskTier ?? undefined,
         at: r.requestedAt,
       };
-      if (evaluatePamRules([draftRule], candidate)) {
+      if (evaluatePamRules([draftRule], candidate, previewSignerGroups)) {
         totalMatched++;
         statusBreakdown[r.status] = (statusBreakdown[r.status] ?? 0) + 1;
         if (sample.length < PREVIEW_SAMPLE_CAP) {
@@ -1164,6 +1187,9 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
       ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
       ...(payload.priority !== undefined ? { priority: payload.priority } : {}),
       ...(payload.matchSigner !== undefined ? { matchSigner: payload.matchSigner } : {}),
+      ...(payload.matchSignerGroupId !== undefined
+        ? { matchSignerGroupId: payload.matchSignerGroupId }
+        : {}),
       ...(payload.matchHash !== undefined
         ? { matchHash: payload.matchHash ? payload.matchHash.toLowerCase() : null }
         : {}),
@@ -1305,3 +1331,172 @@ pamRoutes.put(
     return c.json({ success: true, config: saved });
   },
 );
+
+// ============================================================
+// Signer groups — reusable trusted-publisher catalog
+// ============================================================
+// A named, org-scoped set of signer (subject CN) patterns referenced from
+// rules via matchSignerGroupId. Manage vendors once, reference everywhere.
+const signerListSchema = z
+  .array(z.string().trim().min(1).max(255))
+  .max(500)
+  // Drop blanks and de-duplicate case-insensitively, preserving first spelling.
+  .transform((arr) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const s of arr) {
+      const key = s.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(s);
+      }
+    }
+    return out;
+  });
+
+const createSignerGroupSchema = z.object({
+  orgId: z.string().guid().optional(),
+  name: z.string().trim().min(1).max(255),
+  description: z.string().max(2000).nullable().optional(),
+  signers: signerListSchema.optional(),
+});
+
+const updateSignerGroupSchema = z.object({
+  name: z.string().trim().min(1).max(255).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  signers: signerListSchema.optional(),
+});
+
+pamRoutes.get('/signer-groups', requirePamRead, async (c) => {
+  const auth = c.get('auth');
+  const rows = await db
+    .select()
+    .from(pamSignerGroups)
+    .where(auth.orgCondition(pamSignerGroups.orgId))
+    .orderBy(pamSignerGroups.name);
+  return c.json({ success: true, signerGroups: rows });
+});
+
+pamRoutes.post(
+  '/signer-groups',
+  requirePamWrite,
+  requireMfa(),
+  zValidator('json', createSignerGroupSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const payload = c.req.valid('json');
+    const resolvedOrg = resolveOrgIdForWrite(
+      auth,
+      payload.orgId ?? c.req.query('orgId') ?? undefined,
+    );
+    if (!resolvedOrg.orgId) {
+      return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
+    }
+    const [created] = await db
+      .insert(pamSignerGroups)
+      .values({
+        orgId: resolvedOrg.orgId,
+        name: payload.name,
+        description: payload.description ?? null,
+        signers: payload.signers ?? [],
+        createdByUserId: auth.user.id,
+      })
+      .returning();
+    if (!created) {
+      return c.json({ error: 'Signer group insert returned no row' }, 500);
+    }
+    writeAuditEvent(c, {
+      orgId: resolvedOrg.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      action: 'pam.signer_group.create',
+      resourceType: 'pam_signer_group',
+      resourceId: created.id,
+      details: { name: created.name, signerCount: created.signers.length },
+    });
+    return c.json({ success: true, signerGroup: created }, 201);
+  },
+);
+
+pamRoutes.patch(
+  '/signer-groups/:id',
+  requirePamWrite,
+  requireMfa(),
+  zValidator('json', updateSignerGroupSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id');
+    const payload = c.req.valid('json');
+    if (!z.string().guid().safeParse(id).success) {
+      return c.json({ error: 'Invalid signer group id' }, 400);
+    }
+    const [existing] = await db
+      .select()
+      .from(pamSignerGroups)
+      .where(eq(pamSignerGroups.id, id!))
+      .limit(1);
+    if (!existing || !auth.canAccessOrg(existing.orgId)) {
+      return c.json({ error: 'Signer group not found' }, 404);
+    }
+    const [updated] = await db
+      .update(pamSignerGroups)
+      .set({
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
+        ...(payload.description !== undefined ? { description: payload.description } : {}),
+        ...(payload.signers !== undefined ? { signers: payload.signers } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(pamSignerGroups.id, id!))
+      .returning();
+    writeAuditEvent(c, {
+      orgId: existing.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      action: 'pam.signer_group.update',
+      resourceType: 'pam_signer_group',
+      resourceId: id,
+      details: { changed: Object.keys(payload) },
+    });
+    return c.json({ success: true, signerGroup: updated });
+  },
+);
+
+pamRoutes.delete('/signer-groups/:id', requirePamWrite, requireMfa(), async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+  if (!z.string().guid().safeParse(id).success) {
+    return c.json({ error: 'Invalid signer group id' }, 400);
+  }
+  const [existing] = await db
+    .select()
+    .from(pamSignerGroups)
+    .where(eq(pamSignerGroups.id, id!))
+    .limit(1);
+  if (!existing || !auth.canAccessOrg(existing.orgId)) {
+    return c.json({ error: 'Signer group not found' }, 404);
+  }
+  // A group referenced by any rule cannot be deleted (would orphan the rule's
+  // only signer criterion). Surface a clean 409 instead of an FK error.
+  const refsRows = await db
+    .select({ refs: sql<number>`count(*)::int` })
+    .from(pamRules)
+    .where(eq(pamRules.matchSignerGroupId, id!));
+  const refs = refsRows[0]?.refs ?? 0;
+  if (refs > 0) {
+    return c.json(
+      { error: `Signer group is used by ${refs} rule(s); remove those references first` },
+      409,
+    );
+  }
+  await db.delete(pamSignerGroups).where(eq(pamSignerGroups.id, id!));
+  writeAuditEvent(c, {
+    orgId: existing.orgId,
+    actorType: 'user',
+    actorId: auth.user.id,
+    action: 'pam.signer_group.delete',
+    resourceType: 'pam_signer_group',
+    resourceId: id,
+    details: { name: existing.name },
+  });
+  return c.json({ success: true });
+});

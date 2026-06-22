@@ -54,6 +54,7 @@ export interface PamRuleTimeWindow {
  */
 export const PAM_RULE_NEGATE_KEYS = [
   'signer',
+  'signerGroup',
   'hash',
   'pathGlob',
   'parentImage',
@@ -70,6 +71,45 @@ export const pamUnmatchedVerdictEnum = pgEnum('pam_unmatched_verdict', [
   'require_approval',
   'auto_deny',
 ]);
+
+/**
+ * Reusable trusted-publisher catalog (signer groups). An org maintains a named
+ * set of Authenticode signer (subject CN) patterns once — e.g. a "Trusted
+ * Vendors" group with Intuit Inc., Microsoft Corporation, TeamViewer GmbH —
+ * and references it from many rules via pam_rules.match_signer_group_id. A rule
+ * with a group matches when the candidate's signer equals ANY member (OR within
+ * the group), while the rule's other criteria still AND. Resolution is entirely
+ * server-side (the engine receives the resolved member list); the agent never
+ * sees groups. Tenancy: Shape 1 (direct org_id), RLS mirrors pam_rules.
+ */
+export const pamSignerGroups = pgTable(
+  'pam_signer_groups',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 255 }).notNull(),
+    description: text('description'),
+    // Signer subject-CN patterns; matched case-insensitively, exact (same
+    // semantics as pam_rules.match_signer). Empty = matches nothing.
+    signers: jsonb('signers').$type<string[]>().notNull().default([]),
+    createdByUserId: uuid('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orgNameUnique: uniqueIndex('pam_signer_groups_org_id_name_unique').on(
+      table.orgId,
+      table.name,
+    ),
+  }),
+);
+
+export type PamSignerGroup = typeof pamSignerGroups.$inferSelect;
+export type NewPamSignerGroup = typeof pamSignerGroups.$inferInsert;
 
 export const pamRules = pgTable(
   'pam_rules',
@@ -90,6 +130,13 @@ export const pamRules = pgTable(
     // Match criteria — all provided criteria must match (AND). A rule with
     // no criteria matches nothing (guarded at the API layer).
     matchSigner: varchar('match_signer', { length: 255 }),
+    // Alternative to matchSigner: match the candidate signer against ANY member
+    // of a reusable signer group (pam_signer_groups). Mutually exclusive with
+    // matchSigner (the API rejects setting both). Resolved server-side.
+    matchSignerGroupId: uuid('match_signer_group_id').references(
+      () => pamSignerGroups.id,
+      { onDelete: 'restrict' },
+    ),
     matchHash: varchar('match_hash', { length: 64 }),
     matchPathGlob: text('match_path_glob'),
     matchParentImage: text('match_parent_image'),

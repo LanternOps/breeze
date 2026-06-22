@@ -40,6 +40,12 @@ vi.mock('../../db/schema', () => ({
     siteId: 'siteId',
     enabled: 'enabled',
     priority: 'priority',
+    matchSignerGroupId: 'matchSignerGroupId',
+  },
+  pamSignerGroups: {
+    id: 'id',
+    orgId: 'orgId',
+    signers: 'signers',
   },
   pamOrgConfig: {
     id: 'id',
@@ -171,6 +177,33 @@ function mockSelectsWithConfig(
           // pam_rules load awaits .from().where() directly → resolve [] (no match)
           const thenable: any = Promise.resolve([]);
           thenable.limit = vi.fn().mockResolvedValue(isConfig ? configRows : deviceRows);
+          return thenable;
+        }),
+      })),
+    } as any;
+  });
+}
+
+/**
+ * Rig db.select for the signer-group resolution path, which fires three selects
+ * in order: (1) device lookup [.limit() -> deviceRows], (2) pam_rules load
+ * [.where() awaited -> ruleRows], (3) pam_signer_groups load [.where() awaited
+ * -> groupRows]. Distinguishes (2) from (3) by call order.
+ */
+function mockSelectsWithSignerGroups(
+  deviceRows: Array<{ id: string; orgId: string; siteId: string | null }>,
+  ruleRows: unknown[],
+  groupRows: Array<{ id: string; signers: string[] }>,
+) {
+  let call = 0;
+  vi.mocked(db.select).mockImplementation(() => {
+    call += 1;
+    const isSignerGroupSelect = call >= 3;
+    return {
+      from: vi.fn(() => ({
+        where: vi.fn(() => {
+          const thenable: any = Promise.resolve(isSignerGroupSelect ? groupRows : ruleRows);
+          thenable.limit = vi.fn().mockResolvedValue(deviceRows);
           return thenable;
         }),
       })),
@@ -468,6 +501,69 @@ describe('ingest decisioning (#1163)', () => {
         denialReason: 'Blocked by PAM rule "Block mmc"',
         softwarePolicyMatchId: null,
       }),
+    );
+  });
+
+  it('pam rule matchSignerGroupId resolves the group -> auto_approved', async () => {
+    const rule = {
+      id: 'rule-sg',
+      orgId: 'org-1',
+      siteId: null,
+      name: 'Trusted vendors',
+      description: null,
+      enabled: true,
+      priority: 10,
+      matchSigner: null,
+      matchSignerGroupId: 'grp-1',
+      matchHash: null,
+      matchPathGlob: null,
+      matchParentImage: null,
+      matchCommandLine: null,
+      matchUser: null,
+      matchAdGroup: null,
+      matchToolName: null,
+      matchRiskTier: null,
+      matchNegate: null,
+      timeWindow: null,
+      verdict: 'auto_approve',
+      approvalDurationMinutes: null,
+      createdByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    // The group's members include the candidate's signer (matched case-insensitively).
+    mockSelectsWithSignerGroups(
+      [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }],
+      [rule],
+      [{ id: 'grp-1', signers: ['Other Vendor', 'Acme Corp'] }],
+    );
+    const { values } = happyPathInsert([{ id: 'req-sg', status: 'auto_approved' }]);
+
+    const res = await buildApp().request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...goodPayload, target_executable_signer: 'acme corp' }),
+    });
+
+    expect(res.status).toBe(201);
+    const call = vi
+      .mocked(values)
+      .mock.calls.find((args) => (args[0] as { status?: string }).status === 'auto_approved');
+    expect(call).toBeTruthy();
+    const inserted = call![0] as {
+      approvedAt: Date;
+      expiresAt: Date;
+      metadata: { pam_rule_id: string };
+    };
+    // The signer group resolved the candidate signer -> the rule matched.
+    expect(inserted.metadata.pam_rule_id).toBe('rule-sg');
+    expect(inserted.approvedAt).toBeInstanceOf(Date);
+    expect(inserted.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(pamMocks.publishEvent).toHaveBeenCalledWith(
+      'elevation.auto_approved',
+      'org-1',
+      expect.objectContaining({ elevationRequestId: 'req-sg' }),
+      'pam-ingest',
     );
   });
 

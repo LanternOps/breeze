@@ -61,6 +61,14 @@ export interface PamRuleMatch {
 
 const eqCi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
+/**
+ * Resolved signer groups: groupId → member signer patterns. The caller
+ * (ingest / preview) fetches the org's referenced pam_signer_groups and passes
+ * this map so the pure engine can evaluate matchSignerGroupId without DB access.
+ * A rule whose group is absent from the map (or has no members) fails closed.
+ */
+export type SignerGroupResolver = ReadonlyMap<string, readonly string[]>;
+
 // A time window NARROWS a rule; it is not an identifying criterion on its
 // own. A rule whose only "criterion" is a time window would match every
 // elevation in the org while active — catastrophic for verdict=auto_approve.
@@ -68,6 +76,7 @@ const eqCi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 function hasAnyCriteria(rule: PamRule): boolean {
   return Boolean(
     rule.matchSigner ||
+      rule.matchSignerGroupId ||
       rule.matchHash ||
       rule.matchPathGlob ||
       rule.matchParentImage ||
@@ -135,7 +144,11 @@ export function isWithinTimeWindow(window: PamRuleTimeWindow, at: Date): boolean
     : minutes >= start || minutes <= end;
 }
 
-function ruleMatches(rule: PamRule, candidate: PamRuleCandidate): boolean {
+function ruleMatches(
+  rule: PamRule,
+  candidate: PamRuleCandidate,
+  signerGroups?: SignerGroupResolver,
+): boolean {
   if (!hasAnyCriteria(rule)) return false;
 
   const negate = new Set<PamRuleNegateKey>(rule.matchNegate ?? []);
@@ -157,6 +170,17 @@ function ruleMatches(rule: PamRule, candidate: PamRuleCandidate): boolean {
     const present = candidate.targetExecutableSigner != null;
     const positive = present && eqCi(rule.matchSigner, candidate.targetExecutableSigner!);
     if (!satisfied('signer', present, positive)) return false;
+  }
+  if (rule.matchSignerGroupId) {
+    // Match the candidate signer against ANY member of the resolved group.
+    // Unresolvable (group missing from the map or empty) or no candidate signer
+    // → not present → fails closed, even when negated.
+    const members = signerGroups?.get(rule.matchSignerGroupId);
+    const present =
+      candidate.targetExecutableSigner != null && members != null && members.length > 0;
+    const positive =
+      present && members!.some((s) => eqCi(s, candidate.targetExecutableSigner!));
+    if (!satisfied('signerGroup', present, positive)) return false;
   }
   if (rule.matchPathGlob) {
     const present = candidate.targetExecutablePath != null;
@@ -211,6 +235,7 @@ function ruleMatches(rule: PamRule, candidate: PamRuleCandidate): boolean {
 export function evaluatePamRules(
   rules: PamRule[],
   candidate: PamRuleCandidate,
+  signerGroups?: SignerGroupResolver,
 ): PamRuleMatch | null {
   const ordered = [...rules].sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority;
@@ -221,7 +246,7 @@ export function evaluatePamRules(
   });
   for (const rule of ordered) {
     if (!rule.enabled) continue;
-    if (ruleMatches(rule, candidate)) {
+    if (ruleMatches(rule, candidate, signerGroups)) {
       return {
         ruleId: rule.id,
         ruleName: rule.name,

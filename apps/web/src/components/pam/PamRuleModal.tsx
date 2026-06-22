@@ -9,6 +9,7 @@ import {
   type PamRule,
   type PamRuleDraft,
   type PamRuleNegateKey,
+  type PamSignerGroup,
   type PamVerdict,
   STATUS_LABELS,
   VERDICT_LABELS,
@@ -114,6 +115,12 @@ export default function PamRuleModal({
       : seed?.shape ?? 'executable',
   );
   const [matchSigner, setMatchSigner] = useState(rule?.matchSigner ?? seedExec?.matchSigner ?? '');
+  // Alternative to the free-text signer: reference a reusable signer group.
+  // Mutually exclusive with matchSigner (mirrors validateRuleShape).
+  const [matchSignerGroupId, setMatchSignerGroupId] = useState(
+    rule?.matchSignerGroupId ?? seedExec?.matchSignerGroupId ?? '',
+  );
+  const [signerGroups, setSignerGroups] = useState<PamSignerGroup[]>([]);
   const [matchHash, setMatchHash] = useState(rule?.matchHash ?? seedExec?.matchHash ?? '');
   const [matchPathGlob, setMatchPathGlob] = useState(rule?.matchPathGlob ?? seedExec?.matchPathGlob ?? '');
   const [matchParentImage, setMatchParentImage] = useState(
@@ -170,6 +177,7 @@ export default function PamRuleModal({
   const verdictId = useId();
   const orgSelectId = useId();
   const siteSelectId = useId();
+  const signerGroupSelectId = useId();
   const timezoneId = useId();
 
   useEffect(() => {
@@ -220,6 +228,22 @@ export default function PamRuleModal({
       .catch(() => {});
   }, [isEdit, orgsLoaded, sitesOrgId]);
 
+  // Signer groups belong to the rule's org (same scoping as sites). A selected
+  // group that no longer belongs to the org is left as-is for display; the
+  // server rejects a cross-org reference on submit.
+  useEffect(() => {
+    if (!isEdit && !orgsLoaded) return;
+    const query = sitesOrgId ? `?orgId=${encodeURIComponent(sitesOrgId)}` : '';
+    fetchWithAuth(`/pam/signer-groups${query}`)
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          setSignerGroups((data.signerGroups ?? []) as PamSignerGroup[]);
+        }
+      })
+      .catch(() => {});
+  }, [isEdit, orgsLoaded, sitesOrgId]);
+
   // Reset days/tz when the time window is fully cleared so stale values don't
   // invisibly resurface if a start/end is re-entered later. Safe on mount: a
   // rule without a window initializes these empty anyway, and a rule with a
@@ -238,6 +262,7 @@ export default function PamRuleModal({
   }, [
     shape,
     matchSigner,
+    matchSignerGroupId,
     matchHash,
     matchPathGlob,
     matchParentImage,
@@ -282,6 +307,7 @@ export default function PamRuleModal({
   } | null => {
     const executable = {
       matchSigner: matchSigner.trim() || null,
+      matchSignerGroupId: matchSignerGroupId || null,
       matchHash: matchHash.trim() || null,
       matchPathGlob: matchPathGlob.trim() || null,
       matchParentImage: matchParentImage.trim() || null,
@@ -301,6 +327,7 @@ export default function PamRuleModal({
         ? { ...executable, matchToolName: null, matchRiskTier: null, ...common }
         : {
             matchSigner: null,
+            matchSignerGroupId: null,
             matchHash: null,
             matchPathGlob: null,
             matchParentImage: null,
@@ -618,7 +645,44 @@ export default function PamRuleModal({
 
         {shape === 'executable' ? (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Signer" value={matchSigner} onChange={setMatchSigner} placeholder="e.g. Microsoft Corporation" testId="pam-rule-signer" negateKey="signer" negated={negate.has('signer')} onToggleNegate={toggleNegate} />
+            <Field
+              label="Signer"
+              value={matchSigner}
+              onChange={(v) => {
+                setMatchSigner(v);
+                // Mutually exclusive with a signer group (mirrors the server).
+                if (v) setMatchSignerGroupId('');
+              }}
+              placeholder="e.g. Microsoft Corporation"
+              testId="pam-rule-signer"
+              disabled={Boolean(matchSignerGroupId)}
+              negateKey="signer"
+              negated={negate.has('signer')}
+              onToggleNegate={toggleNegate}
+            />
+            <div>
+              <label htmlFor={signerGroupSelectId} className="mb-1 block text-sm font-medium">
+                Signer group
+              </label>
+              <select
+                id={signerGroupSelectId}
+                value={matchSignerGroupId}
+                onChange={(e) => {
+                  setMatchSignerGroupId(e.target.value);
+                  // Picking a group clears (and disables) the free-text signer.
+                  if (e.target.value) setMatchSigner('');
+                }}
+                data-testid="pam-rule-match-signer-group"
+                className={inputClass}
+              >
+                <option value="">— none —</option>
+                {signerGroups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </div>
             <Field label="SHA-256 hash" value={matchHash} onChange={setMatchHash} placeholder="64 hex chars" testId="pam-rule-hash" negateKey="hash" negated={negate.has('hash')} onToggleNegate={toggleNegate} />
             <Field label="Path glob" value={matchPathGlob} onChange={setMatchPathGlob} placeholder="C:\\Program Files\\**" testId="pam-rule-path" negateKey="pathGlob" negated={negate.has('pathGlob')} onToggleNegate={toggleNegate} />
             <Field label="Parent image" value={matchParentImage} onChange={setMatchParentImage} placeholder="explorer.exe" testId="pam-rule-parent" negateKey="parentImage" negated={negate.has('parentImage')} onToggleNegate={toggleNegate} />
@@ -789,6 +853,7 @@ function Field({
   placeholder,
   testId,
   type = 'text',
+  disabled = false,
   negateKey,
   negated,
   onToggleNegate,
@@ -799,6 +864,7 @@ function Field({
   placeholder?: string;
   testId: string;
   type?: string;
+  disabled?: boolean;
   // When provided, a small "does not match" toggle renders under the input,
   // marking this criterion for engine-side negation (PAM_RULE_NEGATE_KEYS).
   negateKey?: PamRuleNegateKey;
@@ -817,8 +883,9 @@ function Field({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        disabled={disabled}
         data-testid={testId}
-        className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+        className="w-full rounded-md border bg-background px-3 py-2 text-sm disabled:opacity-50"
       />
       {negateKey && onToggleNegate && (
         <label className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">

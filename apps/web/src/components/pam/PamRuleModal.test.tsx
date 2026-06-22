@@ -324,4 +324,118 @@ describe('PamRuleModal', () => {
       expect(screen.getByRole('alert').textContent).not.toContain('HTTP 400');
     });
   });
+
+  describe('signer group selector', () => {
+    const signerGroups = [
+      { id: 'grp-1', orgId: 'org-1', name: 'Trusted vendors', signers: ['Acme Corp'], createdAt: '', updatedAt: '' },
+      { id: 'grp-2', orgId: 'org-1', name: 'Microsoft', signers: ['Microsoft Corporation'], createdAt: '', updatedAt: '' },
+    ];
+
+    function installWithGroups(captured: { postBody: Record<string, unknown> | null }) {
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+        if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/pam/signer-groups') && method === 'GET') {
+          return makeJsonResponse({ success: true, signerGroups });
+        }
+        if (url === '/pam/rules' && method === 'POST') {
+          captured.postBody = JSON.parse(init!.body as string);
+          return makeJsonResponse({ success: true, rule: {} }, true, 201);
+        }
+        return makeJsonResponse({ success: true });
+      });
+    }
+
+    it('fetches and lists the org signer groups as options', async () => {
+      installWithGroups({ postBody: null });
+      render(<PamRuleModal rule={null} onClose={() => {}} onSaved={() => {}} />);
+
+      await waitFor(() => {
+        const select = screen.getByTestId('pam-rule-match-signer-group') as HTMLSelectElement;
+        // blank "— none —" plus the two groups
+        expect(select.options.length).toBe(3);
+      });
+      const select = screen.getByTestId('pam-rule-match-signer-group') as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.value)).toEqual(['', 'grp-1', 'grp-2']);
+    });
+
+    it('picking a group clears and disables the free-text signer, and sends matchSignerGroupId', async () => {
+      const user = userEvent.setup();
+      const captured: { postBody: Record<string, unknown> | null } = { postBody: null };
+      installWithGroups(captured);
+      render(<PamRuleModal rule={null} onClose={() => {}} onSaved={() => {}} />);
+
+      await waitFor(() => {
+        expect(
+          (screen.getByTestId('pam-rule-match-signer-group') as HTMLSelectElement).options.length,
+        ).toBe(3);
+      });
+
+      // Type a signer first, then pick a group — the signer must be cleared.
+      await user.type(screen.getByTestId('pam-rule-signer'), 'Some Corp');
+      await user.selectOptions(screen.getByTestId('pam-rule-match-signer-group'), 'grp-1');
+
+      expect((screen.getByTestId('pam-rule-signer') as HTMLInputElement).value).toBe('');
+      expect((screen.getByTestId('pam-rule-signer') as HTMLInputElement).disabled).toBe(true);
+
+      await user.type(screen.getByTestId('pam-rule-name'), 'Vendor group rule');
+      await user.click(screen.getByTestId('pam-rule-submit'));
+
+      await waitFor(() => expect(captured.postBody).not.toBeNull());
+      expect(captured.postBody!.matchSignerGroupId).toBe('grp-1');
+      expect(captured.postBody!.matchSigner).toBe(null);
+    });
+
+    it('typing a signer clears a previously selected group', async () => {
+      const user = userEvent.setup();
+      const captured: { postBody: Record<string, unknown> | null } = { postBody: null };
+      installWithGroups(captured);
+      render(<PamRuleModal rule={null} onClose={() => {}} onSaved={() => {}} />);
+
+      await waitFor(() => {
+        expect(
+          (screen.getByTestId('pam-rule-match-signer-group') as HTMLSelectElement).options.length,
+        ).toBe(3);
+      });
+
+      await user.selectOptions(screen.getByTestId('pam-rule-match-signer-group'), 'grp-2');
+      expect((screen.getByTestId('pam-rule-match-signer-group') as HTMLSelectElement).value).toBe('grp-2');
+
+      // The signer input is disabled while a group is set; clearing the group
+      // re-enables it. Reset the select, then type.
+      await user.selectOptions(screen.getByTestId('pam-rule-match-signer-group'), '');
+      await user.type(screen.getByTestId('pam-rule-signer'), 'Acme Corp');
+      expect((screen.getByTestId('pam-rule-match-signer-group') as HTMLSelectElement).value).toBe('');
+
+      await user.type(screen.getByTestId('pam-rule-name'), 'Signer text rule');
+      await user.click(screen.getByTestId('pam-rule-submit'));
+
+      await waitFor(() => expect(captured.postBody).not.toBeNull());
+      expect(captured.postBody!.matchSigner).toBe('Acme Corp');
+      expect(captured.postBody!.matchSignerGroupId).toBe(null);
+    });
+
+    it('seeds the selected group from rule.matchSignerGroupId on edit', async () => {
+      installWithGroups({ postBody: null });
+      const rule = {
+        id: 'rule-g',
+        orgId: 'org-1',
+        name: 'Existing group rule',
+        enabled: true,
+        priority: 10,
+        matchSignerGroupId: 'grp-2',
+        verdict: 'auto_approve' as const,
+        createdAt: '2026-06-10T00:00:00.000Z',
+        updatedAt: '2026-06-10T00:00:00.000Z',
+      };
+      render(<PamRuleModal rule={rule} onClose={() => {}} onSaved={() => {}} />);
+
+      await waitFor(() => {
+        expect((screen.getByTestId('pam-rule-match-signer-group') as HTMLSelectElement).value).toBe('grp-2');
+      });
+      // Signer text is disabled because a group is selected.
+      expect((screen.getByTestId('pam-rule-signer') as HTMLInputElement).disabled).toBe(true);
+    });
+  });
 });

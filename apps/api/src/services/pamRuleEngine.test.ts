@@ -22,6 +22,7 @@ function rule(overrides: Partial<PamRule>): PamRule {
     enabled: true,
     priority: 100,
     matchSigner: null,
+    matchSignerGroupId: null,
     matchHash: null,
     matchPathGlob: null,
     matchParentImage: null,
@@ -415,5 +416,96 @@ describe('rule negation (match_negate)', () => {
     const uninstalling: PamRuleCandidate = { ...installing, commandLine: 'setup.exe --uninstall' };
     expect(evaluatePamRules([r], installing)?.verdict).toBe('auto_approve');
     expect(evaluatePamRules([r], uninstalling)).toBeNull();
+  });
+});
+
+describe('signer group matching (matchSignerGroupId)', () => {
+  const GROUP_ID = '11111111-1111-1111-1111-111111111111';
+  const groups = new Map<string, readonly string[]>([
+    [GROUP_ID, ['Intuit Inc.', 'Microsoft Corporation', 'TeamViewer GmbH']],
+  ]);
+
+  it('matches when the candidate signer is any member of the group', () => {
+    const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Microsoft Corporation' }, groups)
+        ?.verdict,
+    ).toBe('auto_approve');
+    // case-insensitive
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'intuit inc.' }, groups),
+    ).not.toBeNull();
+  });
+
+  it('does not match a signer outside the group', () => {
+    const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Evil Corp' }, groups),
+    ).toBeNull();
+  });
+
+  it('fails closed when the group is not provided to the engine', () => {
+    const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+    // no resolver passed → unresolvable → no match
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Intuit Inc.' }),
+    ).toBeNull();
+    // empty group → no match
+    const empty = new Map<string, readonly string[]>([[GROUP_ID, []]]);
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Intuit Inc.' }, empty),
+    ).toBeNull();
+  });
+
+  it('fails closed when the candidate has no signer', () => {
+    const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+    expect(
+      evaluatePamRules([r], { subjectUsername: 'CORP\\x', targetExecutablePath: 'C:\\a.exe' }, groups),
+    ).toBeNull();
+  });
+
+  it('ANDs with other criteria', () => {
+    const r = rule({
+      matchSignerGroupId: GROUP_ID,
+      matchPathGlob: 'C:\\Program Files\\**',
+      verdict: 'auto_approve',
+    });
+    expect(
+      evaluatePamRules(
+        [r],
+        {
+          ...candidate,
+          targetExecutableSigner: 'TeamViewer GmbH',
+          targetExecutablePath: 'C:\\Program Files\\TeamViewer\\tv.exe',
+        },
+        groups,
+      ),
+    ).not.toBeNull();
+    // signer in group but path doesn't match → no match
+    expect(
+      evaluatePamRules(
+        [r],
+        { ...candidate, targetExecutableSigner: 'TeamViewer GmbH', targetExecutablePath: 'C:\\Temp\\tv.exe' },
+        groups,
+      ),
+    ).toBeNull();
+  });
+
+  it('inverts via negation (signer NOT in the group)', () => {
+    const r = rule({
+      matchPathGlob: 'C:\\**',
+      matchSignerGroupId: GROUP_ID,
+      matchNegate: ['signerGroup'],
+      verdict: 'auto_deny',
+    });
+    // signer is a member → negated criterion fails → no match
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Intuit Inc.', targetExecutablePath: 'C:\\a.exe' }, groups),
+    ).toBeNull();
+    // signer not a member → negated criterion holds → match
+    expect(
+      evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Random LLC', targetExecutablePath: 'C:\\a.exe' }, groups)
+        ?.verdict,
+    ).toBe('auto_deny');
   });
 });

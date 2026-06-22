@@ -8,9 +8,11 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import PamRuleModal from './PamRuleModal';
 import { type PamRule, type PamUnmatchedVerdict, VERDICT_LABELS } from './types';
 
-function ruleCriteriaSummary(rule: PamRule): string {
+function ruleCriteriaSummary(rule: PamRule, signerGroupNames: Record<string, string> = {}): string {
   const parts: string[] = [];
   if (rule.matchSigner) parts.push(`signer=${rule.matchSigner}`);
+  if (rule.matchSignerGroupId)
+    parts.push(`signer group=${signerGroupNames[rule.matchSignerGroupId] ?? rule.matchSignerGroupId}`);
   if (rule.matchHash) parts.push(`hash=${rule.matchHash.slice(0, 12)}…`);
   if (rule.matchPathGlob) parts.push(`path=${rule.matchPathGlob}`);
   if (rule.matchParentImage) parts.push(`parent=${rule.matchParentImage}`);
@@ -35,6 +37,9 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
   // siteId → name, resolved once for the Scope column (GET /pam/rules returns
   // only siteId; no per-row lookups).
   const [siteNames, setSiteNames] = useState<Record<string, string>>({});
+  // signerGroupId → name, resolved once so the Criteria cell can show a group's
+  // name instead of a bare uuid (GET /pam/rules returns only the id).
+  const [signerGroupNames, setSignerGroupNames] = useState<Record<string, string>>({});
   // Org default verdict for an elevation matching no policy and no rule.
   const [defaultVerdict, setDefaultVerdict] = useState<PamUnmatchedVerdict>('require_approval');
   const [savingDefault, setSavingDefault] = useState(false);
@@ -46,6 +51,17 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
         const data = await res.json();
         const list = (data.data ?? data.sites ?? data ?? []) as Array<{ id: string; name: string }>;
         setSiteNames(Object.fromEntries(list.map((s) => [s.id, s.name])));
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetchWithAuth('/pam/signer-groups')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const body = await res.json();
+        const list = (body.signerGroups ?? []) as Array<{ id: string; name: string }>;
+        setSignerGroupNames(Object.fromEntries(list.map((g) => [g.id, g.name])));
       })
       .catch(() => {});
   }, []);
@@ -251,8 +267,8 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                       </div>
                     )}
                   </td>
-                  <td className="max-w-[320px] truncate px-3 py-2 text-xs text-muted-foreground" title={ruleCriteriaSummary(rule)}>
-                    {ruleCriteriaSummary(rule) || '—'}
+                  <td className="max-w-[320px] truncate px-3 py-2 text-xs text-muted-foreground" title={ruleCriteriaSummary(rule, signerGroupNames)}>
+                    {ruleCriteriaSummary(rule, signerGroupNames) || '—'}
                   </td>
                   <td
                     className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"

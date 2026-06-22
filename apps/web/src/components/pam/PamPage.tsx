@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Inbox, ListChecks, ScrollText } from 'lucide-react';
+import { Activity, Inbox, ListChecks, ScrollText, ShieldCheck } from 'lucide-react';
 import { useEventStream } from '../../hooks/useEventStream';
 import PamOverviewTab from './PamOverviewTab';
 import PamRequestsTab from './PamRequestsTab';
 import PamRulesTab from './PamRulesTab';
+import PamSignerGroupsTab from './PamSignerGroupsTab';
 import PamAuditTab from './PamAuditTab';
 
-const VALID_TABS = ['overview', 'requests', 'rules', 'audit'] as const;
+const VALID_TABS = ['overview', 'requests', 'rules', 'signer-groups', 'audit'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
 const ELEVATION_EVENTS = [
@@ -111,6 +112,14 @@ export default function PamPage() {
           Rules
         </TabButton>
         <TabButton
+          active={activeTab === 'signer-groups'}
+          onClick={() => switchTab('signer-groups')}
+          icon={<ShieldCheck className="h-4 w-4" />}
+          testId="pam-tab-signer-groups"
+        >
+          Signer Groups
+        </TabButton>
+        <TabButton
           active={activeTab === 'audit'}
           onClick={() => switchTab('audit')}
           icon={<ScrollText className="h-4 w-4" />}
@@ -123,6 +132,7 @@ export default function PamPage() {
       {activeTab === 'overview' && <PamOverviewTab liveTick={liveTick} />}
       {activeTab === 'requests' && <PamRequestsTab liveTick={liveTick} />}
       {activeTab === 'rules' && <PamRulesTab liveTick={liveTick} />}
+      {activeTab === 'signer-groups' && <PamSignerGroupsTab liveTick={liveTick} />}
       {activeTab === 'audit' && <PamAuditTab liveTick={liveTick} />}
     </div>
   );

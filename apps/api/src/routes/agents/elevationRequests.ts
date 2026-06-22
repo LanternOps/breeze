@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -11,6 +11,7 @@ import {
   elevationRequests,
   pamOrgConfig,
   pamRules,
+  pamSignerGroups,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
@@ -366,15 +367,41 @@ elevationRequestsRoutes.post(
                 : isNull(pamRules.siteId),
             ),
           );
-        const ruleMatch = evaluatePamRules(orgRules, {
-          targetExecutablePath: payload.target_executable_path,
-          targetExecutableHash: payload.target_executable_hash,
-          targetExecutableSigner: payload.target_executable_signer,
-          subjectUsername: payload.subject_username,
-          parentImage: payload.parent_image,
-          commandLine: payload.command_line,
-          at: observedAt,
-        });
+        // Resolve any signer groups referenced by the candidate rules so the
+        // engine can match matchSignerGroupId against the group's members.
+        const signerGroupIds = [
+          ...new Set(
+            orgRules
+              .map((r) => r.matchSignerGroupId)
+              .filter((x): x is string => x != null),
+          ),
+        ];
+        let signerGroups: Map<string, string[]> | undefined;
+        if (signerGroupIds.length > 0) {
+          const groups = await db
+            .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
+            .from(pamSignerGroups)
+            .where(
+              and(
+                eq(pamSignerGroups.orgId, device.orgId),
+                inArray(pamSignerGroups.id, signerGroupIds),
+              ),
+            );
+          signerGroups = new Map(groups.map((g) => [g.id, g.signers]));
+        }
+        const ruleMatch = evaluatePamRules(
+          orgRules,
+          {
+            targetExecutablePath: payload.target_executable_path,
+            targetExecutableHash: payload.target_executable_hash,
+            targetExecutableSigner: payload.target_executable_signer,
+            subjectUsername: payload.subject_username,
+            parentImage: payload.parent_image,
+            commandLine: payload.command_line,
+            at: observedAt,
+          },
+          signerGroups,
+        );
         if (!ruleMatch) {
           // No software policy and no PAM rule matched — apply the org's
           // default verdict for unmatched elevations. The historical default

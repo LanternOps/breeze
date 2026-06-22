@@ -67,6 +67,17 @@ vi.mock('../db/schema', () => ({
     orgId: 'orgId',
     priority: 'priority',
     createdAt: 'createdAt',
+    matchSignerGroupId: 'matchSignerGroupId',
+  },
+  pamSignerGroups: {
+    id: 'id',
+    orgId: 'orgId',
+    name: 'name',
+    description: 'description',
+    signers: 'signers',
+    createdByUserId: 'createdByUserId',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt',
   },
   pamOrgConfig: {
     id: 'id',
@@ -1733,6 +1744,175 @@ describe('PAM org config — default unmatched verdict', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ defaultUnmatchedVerdict: 'auto_approve' }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+});
+
+describe('Signer groups', () => {
+  const GROUP_ID = '7b41c9a2-0000-4000-8000-00000000000a';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  it('GET /signer-groups lists the org groups', async () => {
+    const rows = [
+      { id: GROUP_ID, orgId: ORG_ID, name: 'Trusted vendors', description: null, signers: ['Acme Corp'] },
+    ];
+    // .select().from().where().orderBy() is awaited directly.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn().mockResolvedValue(rows),
+        })),
+      })),
+    } as any);
+
+    const res = await app().request('/pam/signer-groups');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.signerGroups).toHaveLength(1);
+    expect(body.signerGroups[0].name).toBe('Trusted vendors');
+  });
+
+  it('POST /signer-groups trims and de-dupes signers before insert', async () => {
+    const returning = vi.fn().mockResolvedValue([
+      { id: GROUP_ID, name: 'Trusted vendors', signers: ['Acme Corp', 'Beta Inc'] },
+    ]);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({ returning })),
+    } as any);
+
+    const res = await app().request('/pam/signer-groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Trusted vendors',
+        // Whitespace + case-insensitive duplicate must be cleaned by the schema.
+        signers: ['  Acme Corp  ', 'ACME CORP', 'Beta Inc'],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { signers: string[]; orgId: string };
+    expect(valuesArg.signers).toEqual(['Acme Corp', 'Beta Inc']);
+    expect(valuesArg.orgId).toBe(ORG_ID);
+  });
+
+  it('PATCH /signer-groups/:id updates name and signers', async () => {
+    // (1) existing-row lookup .from().where().limit(), (2) update .returning().
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([{ id: GROUP_ID, orgId: ORG_ID, name: 'old' }]),
+        })),
+      })),
+    } as any);
+    const returning = vi.fn().mockResolvedValue([
+      { id: GROUP_ID, name: 'new name', signers: ['Gamma LLC'] },
+    ]);
+    const set = vi.fn(() => ({ where: vi.fn(() => ({ returning })) }));
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+
+    const res = await app().request(`/pam/signer-groups/${GROUP_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'new name', signers: ['Gamma LLC', 'gamma llc'] }),
+    });
+
+    expect(res.status).toBe(200);
+    const setArg = (set as any).mock.calls[0][0] as { name: string; signers: string[] };
+    expect(setArg.name).toBe('new name');
+    expect(setArg.signers).toEqual(['Gamma LLC']);
+  });
+
+  it('DELETE /signer-groups/:id returns 200 when no rule references it', async () => {
+    // (1) existing-row lookup .limit(), (2) refs count .from().where() awaited -> 0.
+    let call = 0;
+    vi.mocked(db.select).mockImplementation((() => {
+      call += 1;
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => {
+            const thenable: any = Promise.resolve([{ refs: 0 }]);
+            thenable.limit = vi
+              .fn()
+              .mockResolvedValue([{ id: GROUP_ID, orgId: ORG_ID, name: 'Trusted vendors' }]);
+            return thenable;
+          }),
+        })),
+      };
+    }) as any);
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.delete).mockReturnValue({ where: deleteWhere } as any);
+
+    const res = await app().request(`/pam/signer-groups/${GROUP_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(deleteWhere).toHaveBeenCalledOnce();
+    void call;
+  });
+
+  it('DELETE /signer-groups/:id returns 409 when a rule references it', async () => {
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => {
+          const thenable: any = Promise.resolve([{ refs: 2 }]);
+          thenable.limit = vi
+            .fn()
+            .mockResolvedValue([{ id: GROUP_ID, orgId: ORG_ID, name: 'Trusted vendors' }]);
+          return thenable;
+        }),
+      })),
+    })) as any);
+    vi.mocked(db.delete).mockReturnValue({ where: vi.fn() } as any);
+
+    const res = await app().request(`/pam/signer-groups/${GROUP_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('2 rule(s)');
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
+  it('POST /rules accepts matchSignerGroupId and passes it to the insert', async () => {
+    const returning = vi.fn().mockResolvedValue([
+      { id: 'rule-sg', name: 'allow vendor group', verdict: 'auto_approve', priority: 100 },
+    ]);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({ returning })),
+    } as any);
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'allow vendor group',
+        verdict: 'auto_approve',
+        matchSignerGroupId: GROUP_ID,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { matchSignerGroupId: string };
+    expect(valuesArg.matchSignerGroupId).toBe(GROUP_ID);
+  });
+
+  it('POST /rules rejects setting both matchSigner and matchSignerGroupId (400)', async () => {
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'conflicting signer rule',
+        verdict: 'auto_approve',
+        matchSigner: 'Acme Corp',
+        matchSignerGroupId: GROUP_ID,
+      }),
     });
     expect(res.status).toBe(400);
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();

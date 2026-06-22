@@ -102,6 +102,7 @@ export interface PamRule {
   enabled: boolean;
   priority: number;
   matchSigner?: string | null;
+  matchSignerGroupId?: string | null;
   matchHash?: string | null;
   matchPathGlob?: string | null;
   matchParentImage?: string | null;
@@ -114,6 +115,21 @@ export interface PamRule {
   timeWindow?: PamTimeWindow | null;
   verdict: PamVerdict;
   approvalDurationMinutes?: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A reusable, org-scoped catalog of signer (subject CN) patterns. A rule
+ * references one via matchSignerGroupId; the engine matches when the candidate
+ * signer equals ANY member. Mirrors routes/pam.ts signer-group responses.
+ */
+export interface PamSignerGroup {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string | null;
+  signers: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -131,6 +147,7 @@ export type PamRuleDraft =
       orgId?: string;
       siteId?: string | null;
       matchSigner?: string | null;
+      matchSignerGroupId?: string | null;
       matchHash?: string | null;
       matchPathGlob?: string | null;
       matchParentImage?: string | null;

@@ -210,6 +210,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'organization_users',
   'pam_org_config',
   'pam_rules',
+  'pam_signer_groups',
   'patch_compliance_reports',
   'patch_compliance_snapshots',
   'patch_jobs',
