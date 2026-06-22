@@ -986,6 +986,28 @@ func TestExpectedReleaseAssetNames_Agent(t *testing.T) {
 	}
 }
 
+// TestExpectedReleaseAssetNames_Watchdog covers the component=watchdog branch.
+// Unlike user-helper, the watchdog ships per-arch on every platform, so the
+// allowlist must be populated on all GOOS. Without this case the GitHub
+// multi-asset manifest verification fails ("no expected release asset names
+// configured for component watchdog") — the root cause of watchdog auto-update
+// never working on the hosted path.
+func TestExpectedReleaseAssetNames_Watchdog(t *testing.T) {
+	u := &Updater{config: &Config{Component: "watchdog"}}
+	got := u.expectedReleaseAssetNames()
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	expected := "breeze-watchdog-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 watchdog asset name on %s, got %d (%v)", runtime.GOOS, len(got), got)
+	}
+	if _, ok := got[expected]; !ok {
+		t.Fatalf("expected %q in watchdog asset name set, got %v", expected, got)
+	}
+}
+
 // TestUpdateToWithOptions_CleansHelperTempOnFailure regression-tests the
 // fix for the orphan-temp-file bug flagged in the #845 follow-up review:
 // when UpdateTo returns an error AND the caller pre-downloaded a user-helper

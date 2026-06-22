@@ -10,6 +10,7 @@ vi.mock('../../services/binarySource', () => ({
   getGithubAgentUrl: vi.fn(),
   getGithubAgentPkgUrl: vi.fn(),
   getGithubHelperUrl: vi.fn(),
+  getGithubWatchdogUrl: vi.fn(),
   HELPER_FILENAMES: {
     linux: 'breeze-desktop-helper-linux-amd64',
     darwin: 'breeze-desktop-helper-darwin',
@@ -24,7 +25,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadRoutes } from './download';
-import { getBinarySource, getGithubAgentPkgUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubAgentPkgUrl, getGithubWatchdogUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
 
 describe('public agent binary downloads', () => {
@@ -69,6 +70,50 @@ describe('public agent binary downloads', () => {
       '[helper-download] Local binary missing',
       { filename: 'breeze-desktop-helper-linux-amd64' },
     );
+  });
+
+  it('does not disclose AGENT_BINARY_DIR in public watchdog 404 responses', async () => {
+    // The watchdog binary is served from the same dir as the agent. The route
+    // must exist (404, not 404-route-not-found) and not leak the path.
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+    const body = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
+    expect(console.warn).toHaveBeenCalledWith(
+      '[watchdog-download] Local binary missing',
+      { filename: 'breeze-watchdog-linux-amd64' },
+    );
+  });
+
+  it('redirects watchdog downloads to GitHub in github mode (per-arch, .exe on windows)', async () => {
+    vi.mocked(getBinarySource).mockReturnValue('github');
+    vi.mocked(getGithubWatchdogUrl).mockImplementation(
+      (os: string, arch: string) =>
+        `https://github.test/${os}-${arch}/breeze-watchdog`,
+    );
+
+    try {
+      const lin = await downloadRoutes.request('/download/watchdog/linux/amd64');
+      expect(lin.status).toBe(302);
+      expect(lin.headers.get('location')).toBe('https://github.test/linux-amd64/breeze-watchdog');
+      expect(getGithubWatchdogUrl).toHaveBeenCalledWith('linux', 'amd64');
+
+      const win = await downloadRoutes.request('/download/watchdog/windows/amd64');
+      expect(win.status).toBe(302);
+      expect(getGithubWatchdogUrl).toHaveBeenCalledWith('windows', 'amd64');
+    } finally {
+      // Restore the module-mock default so later tests still see 'local'
+      // (vi.restoreAllMocks does not reset vi.mock factory fns).
+      vi.mocked(getBinarySource).mockReturnValue('local');
+    }
+  });
+
+  it('rejects invalid OS/arch on the watchdog route', async () => {
+    const badOs = await downloadRoutes.request('/download/watchdog/solaris/amd64');
+    expect(badOs.status).toBe(400);
+    const badArch = await downloadRoutes.request('/download/watchdog/linux/sparc');
+    expect(badArch.status).toBe(400);
   });
 
   it('serves the architecture-matched pkg from local disk in non-github mode', async () => {

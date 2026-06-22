@@ -70,6 +70,12 @@ export function getGithubAgentPkgUrl(os: string, arch: string): string {
   return `${githubDownloadBase()}/${filename}`;
 }
 
+export function getGithubWatchdogUrl(os: string, arch: string): string {
+  const extension = os === 'windows' ? '.exe' : '';
+  const filename = `breeze-watchdog-${os}-${arch}${extension}`;
+  return `${githubDownloadBase()}/${filename}`;
+}
+
 export function getGithubRegularMsiUrl(): string {
   return `${githubDownloadBase()}/breeze-agent.msi`;
 }
