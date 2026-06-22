@@ -20,7 +20,8 @@ type SiteOption = {
 type ProfileOption = {
   id: string;
   name: string;
-  alertingEnabled: boolean;
+  siteId: string | null;
+  recordsChanges: boolean;
 };
 
 type NetworkChangesPanelProps = {
@@ -127,10 +128,20 @@ export default function NetworkChangesPanel({
         const id = typeof row.id === 'string' ? row.id : null;
         const name = typeof row.name === 'string' ? row.name : null;
         if (!id || !name) return null;
+        // A profile records discovery-scan change events only when the master
+        // Alerting switch is on AND at least one recording sub-toggle is set —
+        // the worker gates each insert on `enabled && alertOn{New,Changed,...}`
+        // (assetApproval.ts), so `enabled: true` with every sub-toggle off
+        // still records nothing. Mirror that here so the hint stays accurate.
         const alert = row.alertSettings;
-        const alertingEnabled = !!(alert && typeof alert === 'object'
-          && (alert as Record<string, unknown>).enabled === true);
-        return { id, name, alertingEnabled };
+        const recordsChanges = !!(alert && typeof alert === 'object'
+          && (alert as Record<string, unknown>).enabled === true
+          && [(alert as Record<string, unknown>).alertOnNew,
+            (alert as Record<string, unknown>).alertOnChanged,
+            (alert as Record<string, unknown>).alertOnDisappeared]
+            .some((flag) => flag === true));
+        const siteId = typeof row.siteId === 'string' ? row.siteId : null;
+        return { id, name, siteId, recordsChanges };
       })
       .filter((row: ProfileOption | null): row is ProfileOption => row !== null);
 
@@ -223,10 +234,12 @@ export default function NetworkChangesPanel({
   );
 
   // Discovery-scan change events are only recorded for profiles that have
-  // Alerting enabled (assetApproval.ts gates `shouldAlert` on
-  // `alertSettings.enabled`, and discoveryWorker.ts only inserts a
-  // network_change_event when `shouldAlert` is true). Surface that prerequisite
-  // in the empty state so an empty Changes tab isn't misread as a bug.
+  // Alerting enabled with a recording sub-toggle on (assetApproval.ts gates
+  // `shouldAlert` on `alertSettings.enabled && alertOn*`, and discoveryWorker.ts
+  // only inserts a network_change_event when `shouldAlert` is true). Surface
+  // that prerequisite in the empty state so an empty Changes tab isn't misread
+  // as a bug. Assumes the profile list from /discovery/profiles is complete
+  // (it is currently unpaginated).
   const alertingPrerequisite = useMemo<
     { state: 'profile-disabled' | 'all-disabled'; profileName?: string } | null
   >(() => {
@@ -234,19 +247,22 @@ export default function NetworkChangesPanel({
 
     if (filters.profileId !== 'all') {
       const selected = profileById.get(filters.profileId);
-      if (selected && !selected.alertingEnabled) {
+      if (selected && !selected.recordsChanges) {
         return { state: 'profile-disabled', profileName: selected.name };
       }
       return null;
     }
 
-    // No specific profile selected: flag the prerequisite only when no loaded
-    // profile has Alerting enabled, so discovery scans can't record anything.
-    if (profiles.every((profile) => !profile.alertingEnabled)) {
+    // No specific profile selected: scope the check to the active site filter so
+    // a disabled site isn't masked by an enabled profile elsewhere in the org.
+    const inScope = filters.siteId === 'all'
+      ? profiles
+      : profiles.filter((profile) => profile.siteId === filters.siteId);
+    if (inScope.length > 0 && inScope.every((profile) => !profile.recordsChanges)) {
       return { state: 'all-disabled' };
     }
     return null;
-  }, [profiles, profileById, filters.profileId]);
+  }, [profiles, profileById, filters.profileId, filters.siteId]);
 
   const deviceById = useMemo(
     () => new Map(devices.map((device) => [device.id, device])),
@@ -492,6 +508,7 @@ export default function NetworkChangesPanel({
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Site</label>
             <select
+              aria-label="Site"
               value={filters.siteId}
               onChange={(event) => setFilters((previous) => ({ ...previous, siteId: event.target.value }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
@@ -508,6 +525,7 @@ export default function NetworkChangesPanel({
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Profile</label>
             <select
+              aria-label="Profile"
               value={filters.profileId}
               onChange={(event) => setFilters((previous) => ({ ...previous, profileId: event.target.value }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"

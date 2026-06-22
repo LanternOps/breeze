@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import NetworkChangesPanel from './NetworkChangesPanel';
@@ -22,11 +22,22 @@ function jsonResponse(body: unknown): Response {
   } as unknown as Response;
 }
 
+type AlertSettingsSeed = {
+  enabled?: boolean;
+  alertOnNew?: boolean;
+  alertOnChanged?: boolean;
+  alertOnDisappeared?: boolean;
+};
+
 type ProfileSeed = {
   id: string;
   name: string;
-  alertSettings?: { enabled: boolean } | null;
+  siteId?: string;
+  alertSettings?: AlertSettingsSeed | null;
 };
+
+// A profile that actually records changes: master switch on + a recording toggle.
+const RECORDING: AlertSettingsSeed = { enabled: true, alertOnNew: true };
 
 function mockEndpoints(options: { profiles: ProfileSeed[]; changes?: unknown[] }) {
   fetchWithAuthMock.mockImplementation((url: string) => {
@@ -46,7 +57,10 @@ function mockEndpoints(options: { profiles: ProfileSeed[]; changes?: unknown[] }
 const baseProps = {
   currentOrgId: 'org-1',
   currentSiteId: null,
-  siteOptions: [],
+  siteOptions: [
+    { id: 'site-1', name: 'Site One' },
+    { id: 'site-2', name: 'Site Two' }
+  ],
   timezone: 'UTC'
 };
 
@@ -57,12 +71,22 @@ function desktop() {
   return within(screen.getByTestId('responsive-table-desktop'));
 }
 
+async function selectProfile(profileId: string) {
+  const select = screen.getByLabelText('Profile') as HTMLSelectElement;
+  fireEvent.change(select, { target: { value: profileId } });
+}
+
+async function selectSite(siteId: string) {
+  const select = screen.getByLabelText('Site') as HTMLSelectElement;
+  fireEvent.change(select, { target: { value: siteId } });
+}
+
 describe('NetworkChangesPanel empty state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('shows the Alerting prerequisite hint when no loaded profile has Alerting enabled', async () => {
+  it('shows the prerequisite hint when no loaded profile records changes', async () => {
     mockEndpoints({
       profiles: [{ id: 'p1', name: 'HQ sweep', alertSettings: { enabled: false } }],
       changes: []
@@ -73,13 +97,12 @@ describe('NetworkChangesPanel empty state', () => {
     await waitFor(() => {
       expect(desktop().getByTestId('changes-alerting-hint')).toBeInTheDocument();
     });
-    expect(desktop().getByText(/Enable/)).toBeInTheDocument();
     expect(
       desktop().queryByText('No change events match the selected filters.')
     ).not.toBeInTheDocument();
   });
 
-  it('treats a missing alertSettings object as Alerting disabled', async () => {
+  it('treats a missing alertSettings object as not recording', async () => {
     mockEndpoints({
       profiles: [{ id: 'p1', name: 'HQ sweep' }],
       changes: []
@@ -92,14 +115,126 @@ describe('NetworkChangesPanel empty state', () => {
     });
   });
 
-  it('shows the generic "no match" empty state when at least one profile has Alerting enabled', async () => {
+  it('treats master-enabled-but-all-sub-toggles-off as not recording', async () => {
+    mockEndpoints({
+      profiles: [{
+        id: 'p1',
+        name: 'HQ sweep',
+        alertSettings: {
+          enabled: true,
+          alertOnNew: false,
+          alertOnChanged: false,
+          alertOnDisappeared: false
+        }
+      }],
+      changes: []
+    });
+
+    render(<NetworkChangesPanel {...baseProps} />);
+
+    await waitFor(() => {
+      expect(desktop().getByTestId('changes-alerting-hint')).toBeInTheDocument();
+    });
+  });
+
+  it('shows the generic empty state when at least one profile records changes', async () => {
     mockEndpoints({
       profiles: [
         { id: 'p1', name: 'HQ sweep', alertSettings: { enabled: false } },
-        { id: 'p2', name: 'Branch sweep', alertSettings: { enabled: true } }
+        { id: 'p2', name: 'Branch sweep', alertSettings: RECORDING }
       ],
       changes: []
     });
+
+    render(<NetworkChangesPanel {...baseProps} />);
+
+    await waitFor(() => {
+      expect(
+        desktop().getByText('No change events match the selected filters.')
+      ).toBeInTheDocument();
+    });
+    expect(desktop().queryByTestId('changes-alerting-hint')).not.toBeInTheDocument();
+  });
+
+  it('shows the profile-named hint when a selected profile does not record changes', async () => {
+    mockEndpoints({
+      profiles: [
+        { id: 'p1', name: 'HQ sweep', alertSettings: { enabled: false } },
+        { id: 'p2', name: 'Branch sweep', alertSettings: RECORDING }
+      ],
+      changes: []
+    });
+
+    render(<NetworkChangesPanel {...baseProps} />);
+
+    // With p2 recording, the default 'all' view shows the generic message.
+    await waitFor(() => {
+      expect(
+        desktop().getByText('No change events match the selected filters.')
+      ).toBeInTheDocument();
+    });
+
+    await selectProfile('p1');
+
+    await waitFor(() => {
+      expect(desktop().getByTestId('changes-alerting-hint')).toBeInTheDocument();
+    });
+    // Names the specific profile, not the generic copy.
+    expect(desktop().getByText(/HQ sweep/)).toBeInTheDocument();
+  });
+
+  it('shows the generic empty state when a selected profile records changes', async () => {
+    mockEndpoints({
+      profiles: [
+        { id: 'p1', name: 'HQ sweep', alertSettings: { enabled: false } },
+        { id: 'p2', name: 'Branch sweep', alertSettings: RECORDING }
+      ],
+      changes: []
+    });
+
+    render(<NetworkChangesPanel {...baseProps} />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Profile')).toBeInTheDocument();
+    });
+
+    await selectProfile('p2');
+
+    await waitFor(() => {
+      expect(
+        desktop().getByText('No change events match the selected filters.')
+      ).toBeInTheDocument();
+    });
+    expect(desktop().queryByTestId('changes-alerting-hint')).not.toBeInTheDocument();
+  });
+
+  it('scopes the all-disabled hint to the active site filter', async () => {
+    mockEndpoints({
+      profiles: [
+        { id: 'p1', name: 'Site1 sweep', siteId: 'site-1', alertSettings: { enabled: false } },
+        { id: 'p2', name: 'Site2 sweep', siteId: 'site-2', alertSettings: RECORDING }
+      ],
+      changes: []
+    });
+
+    render(<NetworkChangesPanel {...baseProps} />);
+
+    // 'all' sites + one recording profile → generic message.
+    await waitFor(() => {
+      expect(
+        desktop().getByText('No change events match the selected filters.')
+      ).toBeInTheDocument();
+    });
+
+    // Narrow to site-1, whose only profile is disabled → hint appears.
+    await selectSite('site-1');
+
+    await waitFor(() => {
+      expect(desktop().getByTestId('changes-alerting-hint')).toBeInTheDocument();
+    });
+  });
+
+  it('shows no hint when profiles fail to load (empty list)', async () => {
+    mockEndpoints({ profiles: [], changes: [] });
 
     render(<NetworkChangesPanel {...baseProps} />);
 
