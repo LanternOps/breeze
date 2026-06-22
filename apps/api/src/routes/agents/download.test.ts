@@ -182,12 +182,39 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
     );
   });
 
-  it('still falls back to disk and 404s when the S3 object genuinely does not exist', async () => {
-    vi.mocked(getPresignedUrl).mockRejectedValue(
-      Object.assign(new Error('missing'), { name: 'NotFound' }),
-    );
+  it.each([
+    ['agent', '/download/linux/amd64', '[agent-download]', 'NotFound'],
+    ['helper', '/download/helper/linux/amd64', '[helper-download]', 'NoSuchKey'],
+    ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]', 'NotFound'],
+  ])(
+    'still falls back to disk and 404s for the %s route when the S3 object genuinely does not exist',
+    async (_name, path, logTag, errName) => {
+      vi.mocked(getPresignedUrl).mockRejectedValue(
+        Object.assign(new Error('missing'), { name: errName }),
+      );
+      const res = await downloadRoutes.request(path);
+
+      expect(res.status).toBe(404);
+      // The genuine miss must be a warn-level fall-through, never the 500 error path.
+      expect(console.error).not.toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining(`${logTag} S3 object missing`),
+        expect.anything(),
+      );
+    },
+  );
+
+  it('treats an S3 error with no identifiable name as a transport fault (500), not a missing object', async () => {
+    // The whole fix hinges on the conservative default: anything we cannot
+    // positively classify as NotFound/NoSuchKey must surface as a 500, never be
+    // swallowed by the disk fallback. A future refactor that defaulted unknown
+    // errors to "not found" would silently reintroduce the #1802 masking bug —
+    // this pins the boundary. A bare Error has name 'Error' (not NotFound).
+    vi.mocked(getPresignedUrl).mockRejectedValue(new Error('opaque failure'));
     const res = await downloadRoutes.request('/download/linux/amd64');
-    expect(res.status).toBe(404);
+
+    expect(res.status).toBe(500);
+    expect(console.error).toHaveBeenCalled();
   });
 });
 
