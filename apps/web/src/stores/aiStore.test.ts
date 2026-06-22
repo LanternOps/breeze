@@ -122,4 +122,47 @@ describe('ai store', () => {
     expect(useAiStore.getState().isStreaming).toBe(false);
     expect(useAiStore.getState().error).toContain('already being processed');
   });
+
+  it('startDeviceTask forwards initialMessage to sendMessage', async () => {
+    const state = useAiStore.getState();
+    const createSpy = vi.spyOn(state, 'createSession').mockImplementation(async () => {
+      useAiStore.setState({ sessionId: 'session-x' });
+    });
+    const sendSpy = vi.spyOn(state, 'sendMessage').mockResolvedValue();
+
+    await useAiStore.getState().startDeviceTask(
+      'dev-1',
+      { type: 'device', id: 'dev-1', hostname: 'host-1' },
+      'seed prompt',
+    );
+
+    expect(createSpy).toHaveBeenCalledWith({ deviceId: 'dev-1' });
+    expect(sendSpy).toHaveBeenCalledWith('seed prompt');
+    expect(useAiStore.getState().isOpen).toBe(true);
+    expect(useAiStore.getState().pageContext).toEqual({ type: 'device', id: 'dev-1', hostname: 'host-1' });
+  });
+
+  it('startDeviceTask does not send when initialMessage is omitted', async () => {
+    const state = useAiStore.getState();
+    vi.spyOn(state, 'createSession').mockImplementation(async () => {
+      useAiStore.setState({ sessionId: 'session-x' });
+    });
+    const sendSpy = vi.spyOn(state, 'sendMessage').mockResolvedValue();
+
+    await useAiStore.getState().startDeviceTask('dev-1', { type: 'device', id: 'dev-1', hostname: 'host-1' });
+
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('startDeviceTask does not send when session creation failed', async () => {
+    const state = useAiStore.getState();
+    vi.spyOn(state, 'createSession').mockImplementation(async () => {
+      useAiStore.setState({ sessionId: null, error: 'nope' });
+    });
+    const sendSpy = vi.spyOn(state, 'sendMessage').mockResolvedValue();
+
+    await useAiStore.getState().startDeviceTask('dev-1', { type: 'device', id: 'dev-1', hostname: 'host-1' }, 'seed prompt');
+
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
 });
