@@ -110,6 +110,7 @@ export const ticketComments = pgTable('ticket_comments', {
   oldValue: text('old_value'),
   newValue: text('new_value'),
   deletedAt: timestamp('deleted_at'),
+  editedAt: timestamp('edited_at'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 

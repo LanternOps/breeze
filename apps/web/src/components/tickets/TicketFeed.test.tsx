@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 
 import TicketFeed from './TicketFeed';
 import type { TicketComment } from './ticketConfig';
@@ -124,5 +124,232 @@ describe('TicketFeed', () => {
       />
     );
     expect(screen.getByText('Technician logged time')).toBeInTheDocument();
+  });
+
+  it('shows an edited badge when editedAt is set', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-1', content: 'hi', editedAt: '2026-06-01T11:00:00.000Z' })]}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-edited-ed-1')).toBeInTheDocument();
+  });
+
+  it('does not show an edited badge when editedAt is absent', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-2', content: 'hi' })]}
+      />
+    );
+    expect(screen.queryByTestId('ticket-comment-edited-ed-2')).toBeNull();
+  });
+
+  it('renders a tombstone for a deleted comment and hides the body', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'del-1', content: '', deleted: true })]}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-deleted-del-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-comment-del-1')).toBeNull();
+  });
+
+  it('shows edit and delete controls when canManageComment returns true and handlers are provided', () => {
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ctrl-1', content: 'hi' })]}
+        onEditComment={onEdit}
+        onDeleteComment={onDelete}
+        canManageComment={() => true}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-edit-ctrl-1')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-comment-delete-ctrl-1')).toBeInTheDocument();
+  });
+
+  it('hides controls when canManageComment returns false', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ctrl-2', content: 'hi' })]}
+        onEditComment={vi.fn()}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => false}
+      />
+    );
+    expect(screen.queryByTestId('ticket-comment-edit-ctrl-2')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-ctrl-2')).toBeNull();
+  });
+
+  it('hides controls when handler props are not provided even if canManageComment returns true', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ctrl-3', content: 'hi' })]}
+        canManageComment={() => true}
+      />
+    );
+    expect(screen.queryByTestId('ticket-comment-edit-ctrl-3')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-ctrl-3')).toBeNull();
+  });
+});
+
+// ─── Inline comment editor ────────────────────────────────────────────────────
+
+describe('TicketFeed inline comment editor', () => {
+  it('clicking edit opens an inline textarea pre-filled with comment content', () => {
+    const onEdit = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-open', content: 'Original text' })]}
+        onEditComment={onEdit}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-ed-open'));
+
+    const textarea = screen.getByTestId('ticket-comment-edit-textarea-ed-open');
+    expect(textarea).toBeInTheDocument();
+    expect(textarea).toHaveValue('Original text');
+  });
+
+  it('save calls onEditComment with id and new text, then closes the editor', async () => {
+    const onEdit = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-save', content: 'Original text' })]}
+        onEditComment={onEdit}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-ed-save'));
+    const textarea = screen.getByTestId('ticket-comment-edit-textarea-ed-save');
+    fireEvent.change(textarea, { target: { value: 'Updated text' } });
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-save-ed-save'));
+
+    expect(onEdit).toHaveBeenCalledWith('ed-save', 'Updated text');
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-comment-edit-textarea-ed-save')).toBeNull();
+    });
+  });
+
+  it('cancel closes the editor without calling onEditComment', () => {
+    const onEdit = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-cancel', content: 'Original text' })]}
+        onEditComment={onEdit}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-ed-cancel'));
+    const textarea = screen.getByTestId('ticket-comment-edit-textarea-ed-cancel');
+    fireEvent.change(textarea, { target: { value: 'Changed text' } });
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-cancel-ed-cancel'));
+
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ticket-comment-edit-textarea-ed-cancel')).toBeNull();
+  });
+
+  it('save is a no-op if draft is unchanged', () => {
+    const onEdit = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-noop', content: 'Same text' })]}
+        onEditComment={onEdit}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-ed-noop'));
+    // Don't change the textarea value — leave it as-is
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-save-ed-noop'));
+
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it('save is a no-op if draft is empty', () => {
+    const onEdit = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'ed-empty', content: 'Some text' })]}
+        onEditComment={onEdit}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-ed-empty'));
+    fireEvent.change(screen.getByTestId('ticket-comment-edit-textarea-ed-empty'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-save-ed-empty'));
+
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Delete confirm dialog ────────────────────────────────────────────────────
+
+describe('TicketFeed delete confirm dialog', () => {
+  it('clicking delete opens a ConfirmDialog without calling onDeleteComment', () => {
+    const onDelete = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'del-dlg', content: 'Bye' })]}
+        onEditComment={vi.fn()}
+        onDeleteComment={onDelete}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-delete-del-dlg'));
+
+    // The confirm dialog should appear
+    expect(screen.getByText('Delete comment')).toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it('confirming the dialog calls onDeleteComment with the comment id', () => {
+    const onDelete = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'del-confirm', content: 'Bye' })]}
+        onEditComment={vi.fn()}
+        onDeleteComment={onDelete}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-delete-del-confirm'));
+    fireEvent.click(screen.getByTestId('ticket-comment-delete-confirm'));
+
+    expect(onDelete).toHaveBeenCalledWith('del-confirm');
+  });
+
+  it('cancelling the dialog does NOT call onDeleteComment', async () => {
+    const onDelete = vi.fn();
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'del-cancel-dlg', content: 'Bye' })]}
+        onEditComment={vi.fn()}
+        onDeleteComment={onDelete}
+        canManageComment={() => true}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('ticket-comment-delete-del-cancel-dlg'));
+    // Click the Cancel button in the dialog
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Delete comment')).toBeNull();
+    });
+    expect(onDelete).not.toHaveBeenCalled();
   });
 });

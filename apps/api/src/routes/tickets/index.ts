@@ -4,6 +4,7 @@ import { ticketsRoutes as ticketsApiRoutes } from './tickets';
 import { ticketsBulkRoutes } from './bulk';
 import { ticketExportRoutes } from './export';
 import { ticketPartsRoutes } from './parts';
+import { ticketMoveOrgRoutes } from './moveOrg';
 
 export const ticketsRoutes = new Hono();
 
@@ -16,4 +17,7 @@ ticketsRoutes.use('*', authMiddleware);
 ticketsRoutes.route('/', ticketExportRoutes);  // /export/... before /:id
 ticketsRoutes.route('/', ticketPartsRoutes);   // /parts/:id + /:id/parts before generic /:id
 ticketsRoutes.route('/', ticketsBulkRoutes);   // /bulk before /:id
+// move-org BEFORE core /:id routes so POST /:id/move-org is not captured by
+// the generic /:id param matcher (mirrors devices/index.ts mount ordering).
+ticketsRoutes.route('/', ticketMoveOrgRoutes);
 ticketsRoutes.route('/', ticketsApiRoutes);
