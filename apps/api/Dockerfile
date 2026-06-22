@@ -45,8 +45,10 @@ RUN pnpm build
 FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS runner
 WORKDIR /app
 
-# Install wget for healthcheck
-RUN apk add --no-cache wget
+# Install wget for healthcheck; remove the bundled npm (and its vendored undici,
+# CVE-2026-12151) since the runtime entrypoint is `node`, not npm.
+RUN apk add --no-cache wget && \
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Set production environment
 ENV NODE_ENV=production
