@@ -1538,3 +1538,102 @@ describe('TicketWorkbench device link/unlink', () => {
     expect(screen.queryByTestId('ticket-workbench-device-unlink')).toBeNull();
   });
 });
+
+// ─── Move to another org ──────────────────────────────────────────────────────
+
+describe('TicketWorkbench move-org action', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  /** Sets up fetchWithAuth to handle ticket GET, /orgs/organizations, triage, and mutations. */
+  function mockTicketApiWithOrgs(
+    ticket: TicketDetail,
+    orgs: Array<{ id: string; name: string }> = [
+      { id: 'org-1', name: 'Acme Corp' },
+      { id: 'org-2', name: 'Globex Inc' },
+    ]
+  ) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/orgs/organizations')) {
+        return makeJsonResponse({ data: orgs });
+      }
+      if (!init?.method || init.method === 'GET') {
+        const match = url.match(/^\/tickets\/([^/]+)$/);
+        if (match && match[1] === ticket.id) {
+          return makeJsonResponse({ data: ticket });
+        }
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('POSTs move-org with the selected org', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+
+    // Open the move-org UI
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+
+    // The picker should appear; select org-2 (Globex Inc)
+    const picker = await screen.findByTestId('ticket-workbench-move-org-select');
+    fireEvent.change(picker, { target: { value: 'org-2' } });
+
+    // Confirm the move
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/move-org',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ orgId: 'org-2' }),
+        })
+      );
+    });
+  });
+
+  it('current org is excluded from the picker options', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+
+    const picker = await screen.findByTestId('ticket-workbench-move-org-select');
+    const options = Array.from(picker.querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value);
+    expect(options).not.toContain('org-1');
+    expect(options).toContain('org-2');
+  });
+
+  it('cancel button closes the move-org form without POSTing', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+
+    await screen.findByTestId('ticket-workbench-move-org-select');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-cancel'));
+
+    expect(screen.queryByTestId('ticket-workbench-move-org-select')).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/move-org'))
+    ).toHaveLength(0);
+  });
+});

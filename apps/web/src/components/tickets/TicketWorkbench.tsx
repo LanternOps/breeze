@@ -117,6 +117,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
   const [railOpen] = useState(true);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
+  const [moveOrgOpen, setMoveOrgOpen] = useState(false);
+  const [moveOrgTargetId, setMoveOrgTargetId] = useState('');
+  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
@@ -236,6 +239,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     return () => { cancelled = true; };
   }, [assigneesProvided]);
 
+  // Fetch org list for the move-org picker. Fails gracefully — if unavailable
+  // the picker just won't show any options (degrade to empty select).
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWithAuth('/orgs/organizations?limit=100')
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled || !body) return;
+        const rows = (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).data
+          ?? (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).organizations
+          ?? [];
+        if (Array.isArray(rows)) setOrgs((rows as Array<{ id: string; name: string }>).filter((o) => o.id && o.name));
+      })
+      .catch(() => { /* degrade gracefully */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // Fetch ticket config once (module-cached across islands). Failure leaves
   // config null, which keeps the six-core-status fallback select fully working.
   useEffect(() => {
@@ -303,6 +323,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       setCreatingInvoice(false);
     }
   }, [ticketId, creatingInvoice]);
+
+  const handleMoveOrg = useCallback((targetOrgId: string) => {
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, { method: 'POST', body: JSON.stringify({ orgId: targetOrgId }) }),
+      errorFallback: 'Move failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, load]);
 
   const applyTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || applyingTriage) return;
@@ -646,7 +674,51 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           >
             {creatingInvoice ? 'Creating…' : 'Create invoice'}
           </button>
+          <button
+            type="button"
+            data-testid="ticket-workbench-move-org"
+            className="text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => { setMoveOrgOpen(true); setMoveOrgTargetId(''); }}
+          >
+            Move to another org…
+          </button>
         </div>
+        {moveOrgOpen && (
+          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
+            <label className="text-xs font-medium" htmlFor="move-org-select">Move to organization</label>
+            <select
+              id="move-org-select"
+              data-testid="ticket-workbench-move-org-select"
+              value={moveOrgTargetId}
+              onChange={(e) => setMoveOrgTargetId(e.target.value)}
+              className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-xs"
+            >
+              <option value="">Select organization…</option>
+              {orgs.filter((o) => o.id !== ticket.orgId).map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+            <div className="mt-1.5 flex justify-end gap-2">
+              <button
+                type="button"
+                data-testid="ticket-workbench-move-org-cancel"
+                onClick={() => setMoveOrgOpen(false)}
+                className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="ticket-workbench-move-org-confirm"
+                disabled={!moveOrgTargetId}
+                onClick={() => { if (moveOrgTargetId) { handleMoveOrg(moveOrgTargetId); setMoveOrgOpen(false); } }}
+                className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+              >
+                Move
+              </button>
+            </div>
+          </div>
+        )}
         {(triageSuggestion || triageLoading) && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-triage-suggestion">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
