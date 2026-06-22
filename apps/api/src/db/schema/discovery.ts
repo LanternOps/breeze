@@ -250,7 +250,15 @@ export const networkTopology = pgTable('network_topology', {
   vlan: integer('vlan'),
   bandwidth: integer('bandwidth'),
   latency: real('latency'),
+  method: text('method'),
+  confidence: text('confidence'),
+  createdBy: uuid('created_by'),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow(),
   lastVerifiedAt: timestamp('last_verified_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  provenanceUnique: uniqueIndex('ux_network_topology_provenance').on(
+    table.orgId, table.siteId, table.sourceType, table.sourceId, table.targetType, table.targetId, table.method
+  )
+}));
