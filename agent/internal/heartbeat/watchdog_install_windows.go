@@ -49,22 +49,42 @@ func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 	// may already be stopped), then wait for it to actually reach Stopped.
 	_, _ = s.Control(svc.Stop)
 	deadline := time.Now().Add(15 * time.Second)
+	stopped := false
 	for time.Now().Before(deadline) {
 		st, qErr := s.Query()
 		if qErr != nil {
 			return fmt.Errorf("query service state: %w", qErr)
 		}
 		if st.State == svc.Stopped {
+			stopped = true
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	if !stopped {
+		// Do NOT attempt the swap against a still-running (locked) .exe: the
+		// rename would fail with a sharing violation and the real cause (the
+		// service never stopped — e.g. a hung shutdown or an ACCESS_DENIED on
+		// the stop control) would be lost. The service is left running on the
+		// OLD binary, which is the safe state.
+		return fmt.Errorf(
+			"watchdog service %q did not reach Stopped within 15s; aborting swap (left running on old binary)",
+			windowsWatchdogServiceName,
+		)
+	}
 
 	if err := replaceWatchdogBinaryWindows(tempPath, dest); err != nil {
-		// Best effort: bring the service back up on the OLD binary so a failed
-		// swap doesn't leave the watchdog down.
-		_ = s.Start()
-		return err
+		// Bring the service back up on the OLD binary so a failed swap doesn't
+		// leave the watchdog down. If that recovery ALSO fails, the watchdog is
+		// now down with no supervisor — surface both errors so the DOWN state is
+		// greppable in agent_logs rather than silently swallowed.
+		if startErr := s.Start(); startErr != nil {
+			return fmt.Errorf(
+				"watchdog swap failed AND recovery restart failed — watchdog is DOWN: swap=%w; recoveryStart=%v",
+				err, startErr,
+			)
+		}
+		return fmt.Errorf("watchdog swap failed (service restarted on old binary): %w", err)
 	}
 
 	if err := s.Start(); err != nil {

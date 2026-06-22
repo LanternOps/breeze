@@ -56,7 +56,7 @@ const USER_HELPER_TARGETS = [
 // stayed frozen at install-time version (the agent's in-place upgrade never
 // touched it, and the watchdog component was never registered here). Registering
 // it lets the server drive watchdog upgrades (heartbeat.ts watchdogUpgradeTo)
-// and lets the agent's reconcileWatchdog self-heal fetch the matching binary.
+// and lets the agent's handleWatchdogUpgrade self-heal fetch the matching binary.
 // Same asset-name shape as the agent: breeze-watchdog-{goos}-{goarch}[.exe].
 const WATCHDOG_TARGETS = AGENT_TARGETS;
 

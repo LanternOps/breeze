@@ -181,7 +181,7 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 		// breeze-watchdog is the supervisor sibling of breeze-agent, shipped
 		// per-arch on every platform with the same asset-name shape as the
 		// agent. Used by doUpdateWatchdog (the watchdog's failover self-update)
-		// and by the agent's reconcileWatchdog self-heal. Without this case the
+		// and by the agent's handleWatchdogUpgrade self-heal. Without this case the
 		// GitHub multi-asset manifest verification fails ("no expected release
 		// asset names configured for component watchdog"), which is why watchdog
 		// auto-update never worked on the hosted (BINARY_SOURCE=github) path.

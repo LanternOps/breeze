@@ -2478,9 +2478,12 @@ func (h *Heartbeat) sendHeartbeat() {
 	// that the on-disk watchdog is behind the latest published watchdog
 	// component — see apps/api heartbeat.ts. The watchdog historically could not
 	// self-update on the hosted (BINARY_SOURCE=github) path (its bundled updater
-	// had no watchdog asset-name case, and the component was never registered),
-	// so the reliably-updating agent drives it instead, recovering already-stuck
-	// fleets whose watchdog is frozen at install-time version.
+	// had no watchdog asset-name case, and the component was never registered) —
+	// and even fully wired up, the watchdog's own doUpdateWatchdog only runs
+	// while it is in FAILOVER (the only state in which it heartbeats and receives
+	// WatchdogUpgradeTo), so a HEALTHY watchdog would never self-heal. The
+	// reliably-updating agent drives it instead, recovering already-stuck fleets
+	// whose watchdog is frozen at install-time version.
 	if response.WatchdogUpgradeTo != "" {
 		go h.handleWatchdogUpgrade(response.WatchdogUpgradeTo)
 	}
@@ -3354,6 +3357,18 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 
 	if !h.config.AutoUpdate {
 		log.Info("watchdog upgrade available but auto_update is disabled",
+			"targetVersion", targetVersion)
+		return
+	}
+
+	// SECURITY: the target always originates from the control plane and must be
+	// a real release semver. Fail CLOSED on an unparseable target (matching the
+	// helper-upgrade guard's posture) so a compromised/MITM'd control plane
+	// can't slip a non-semver value past the downgrade check below — isDowngrade
+	// fails OPEN on unparseable input, which is the right call for agent "dev"
+	// builds but wrong for a server-directed privileged swap.
+	if _, _, _, ok := parseSemver(targetVersion); !ok {
+		log.Error("SECURITY: refusing watchdog upgrade to non-semver target",
 			"targetVersion", targetVersion)
 		return
 	}
