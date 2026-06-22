@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/snmppoll"
 	"github.com/gosnmp/gosnmp"
@@ -175,4 +176,36 @@ func collectDeviceAdjacency(client *snmppoll.SNMPClient, sourceIP string) Device
 	}
 
 	return adj
+}
+
+// collectAdjacencyFor is the per-host network seam (stubbed in tests).
+var collectAdjacencyFor = collectDeviceAdjacencyForHost
+
+// collectDeviceAdjacencyForHost connects via the first usable community and walks LLDP/CDP.
+func collectDeviceAdjacencyForHost(ip string, communities []string, timeout time.Duration) DeviceAdjacency {
+	empty := DeviceAdjacency{SourceDeviceIP: ip, Lldp: []LldpNeighbor{}, Cdp: []CdpNeighbor{}, Fdb: []FdbEntry{}}
+	for _, community := range communities {
+		community = strings.TrimSpace(community)
+		if community == "" {
+			continue
+		}
+		cfg := snmppoll.SNMPClientConfig{Target: ip, Timeout: timeout}
+		if strings.HasPrefix(strings.ToLower(community), "v3:") {
+			cfg.Version = gosnmp.Version3
+			cfg.Auth = snmppoll.SNMPAuth{Username: strings.TrimPrefix(community, "v3:")}
+		} else {
+			cfg.Version = gosnmp.Version2c
+			cfg.Auth = snmppoll.SNMPAuth{Community: community}
+		}
+		client, err := snmppoll.NewClient(cfg)
+		if err != nil {
+			continue
+		}
+		adj := collectDeviceAdjacency(client, ip)
+		client.Close()
+		if len(adj.Lldp) > 0 || len(adj.Cdp) > 0 {
+			return adj
+		}
+	}
+	return empty
 }

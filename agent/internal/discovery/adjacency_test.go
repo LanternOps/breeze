@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"testing"
+	"time"
 
 	"github.com/gosnmp/gosnmp"
 )
@@ -62,5 +63,36 @@ func TestParseCDPNeighbors(t *testing.T) {
 	}
 	if got[0].RemoteAddress != "10.0.0.2" {
 		t.Errorf("address = %q", got[0].RemoteAddress)
+	}
+}
+
+func TestCollectAdjacencyFiltersAndStubs(t *testing.T) {
+	orig := collectAdjacencyFor
+	t.Cleanup(func() { collectAdjacencyFor = orig })
+
+	collectAdjacencyFor = func(ip string, communities []string, timeout time.Duration) DeviceAdjacency {
+		if ip == "10.0.0.1" {
+			return DeviceAdjacency{
+				SourceDeviceIP: ip,
+				Lldp:           []LldpNeighbor{{LocalPort: "1", RemoteChassisID: "aa:bb:cc:dd:ee:ff", RemotePortID: "Gi0/1"}},
+				Cdp:            []CdpNeighbor{},
+				Fdb:            []FdbEntry{},
+			}
+		}
+		return DeviceAdjacency{SourceDeviceIP: ip, Lldp: []LldpNeighbor{}, Cdp: []CdpNeighbor{}, Fdb: []FdbEntry{}}
+	}
+
+	s := NewScanner(ScanConfig{SNMPCommunities: []string{"public"}})
+	hosts := []DiscoveredHost{
+		{IP: "10.0.0.1", Methods: []string{"snmp"}, SNMPData: &SNMPInfo{SysName: "core"}},
+		{IP: "10.0.0.2", Methods: []string{"snmp"}, SNMPData: &SNMPInfo{SysName: "edge"}}, // no neighbors → dropped
+		{IP: "10.0.0.3", Methods: []string{"ping"}},                                       // not snmp → skipped
+	}
+	got := s.CollectAdjacency(hosts)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 adjacency block, got %d", len(got))
+	}
+	if got[0].SourceDeviceIP != "10.0.0.1" || len(got[0].Lldp) != 1 {
+		t.Fatalf("unexpected adjacency: %+v", got[0])
 	}
 }
