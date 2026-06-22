@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Info, Link2, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import NetworkChangeDetailModal from './NetworkChangeDetailModal';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import {
   eventTypeConfig,
   formatDateTime,
@@ -344,6 +345,83 @@ export default function NetworkChangesPanel({
     }
   };
 
+  // Row pieces shared by the desktop table and the mobile cards.
+  const renderSelectCheckbox = (change: NetworkChangeEvent) => (
+    <input
+      type="checkbox"
+      checked={selectedEventIds.has(change.id)}
+      onChange={() => toggleRowSelection(change.id)}
+      disabled={change.acknowledged}
+      className="h-4 w-4 rounded border disabled:opacity-40"
+    />
+  );
+
+  const renderEventInfo = (change: NetworkChangeEvent) => {
+    const type = eventTypeConfig[change.eventType];
+    return (
+      <>
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${type.color}`}>
+            {type.label}
+          </span>
+          <span className="font-mono text-sm">{change.ipAddress}</span>
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {change.hostname ?? 'Unknown host'} • {change.macAddress ?? 'No MAC'}
+        </div>
+      </>
+    );
+  };
+
+  const renderStatusBadge = (change: NetworkChangeEvent) => (
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
+        change.acknowledged
+          ? 'bg-success/15 text-success border-success/30'
+          : 'bg-warning/15 text-warning border-warning/30'
+      }`}
+    >
+      {change.acknowledged ? 'Acknowledged' : 'Unacknowledged'}
+    </span>
+  );
+
+  const renderActions = (change: NetworkChangeEvent) => (
+    <div className="flex items-center justify-end gap-2">
+      <button
+        type="button"
+        onClick={() => setDetailEventId(change.id)}
+        className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
+      >
+        <Info className="h-3.5 w-3.5" />
+        Details
+      </button>
+      {!change.acknowledged && canAcknowledge && (
+        <button
+          type="button"
+          onClick={() => {
+            acknowledgeEvent(change.id).catch((ackError) => {
+              setError(ackError instanceof Error ? ackError.message : 'Failed to acknowledge event');
+            });
+          }}
+          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          Ack
+        </button>
+      )}
+      {canLinkDevice && (
+        <button
+          type="button"
+          onClick={() => setDetailEventId(change.id)}
+          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
+        >
+          <Link2 className="h-3.5 w-3.5" />
+          Link
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -491,126 +569,101 @@ export default function NetworkChangesPanel({
           </button>
         </div>
 
-        <div className="mt-6 overflow-hidden rounded-md border">
-          <table className="min-w-full divide-y">
-            <thead className="bg-muted/40">
-              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={allSelectableSelected}
-                    onChange={toggleSelectAll}
-                    className="h-4 w-4 rounded border"
-                  />
-                </th>
-                <th className="px-4 py-3">Event</th>
-                <th className="px-4 py-3">Profile</th>
-                <th className="px-4 py-3">Detected</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Linked Device</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {loading && changes.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    Loading network changes...
-                  </td>
+        <ResponsiveTable
+          className="mt-6"
+          table={
+            <table className="min-w-full divide-y">
+              <thead className="bg-muted/40">
+                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={allSelectableSelected}
+                      onChange={toggleSelectAll}
+                      className="h-4 w-4 rounded border"
+                    />
+                  </th>
+                  <th className="px-4 py-3">Event</th>
+                  <th className="px-4 py-3">Profile</th>
+                  <th className="px-4 py-3">Detected</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Linked Device</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
-              ) : changes.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No change events match the selected filters.
-                  </td>
-                </tr>
-              ) : (
-                changes.map((change) => {
-                  const type = eventTypeConfig[change.eventType];
-                  const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? 'Unknown') : 'Unknown';
-                  const linkedDeviceLabel = change.linkedDeviceId
-                    ? (deviceById.get(change.linkedDeviceId)?.label ?? change.linkedDeviceId)
-                    : 'Not linked';
+              </thead>
+              <tbody className="divide-y">
+                {loading && changes.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      Loading network changes...
+                    </td>
+                  </tr>
+                ) : changes.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      No change events match the selected filters.
+                    </td>
+                  </tr>
+                ) : (
+                  changes.map((change) => {
+                    const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? 'Unknown') : 'Unknown';
+                    const linkedDeviceLabel = change.linkedDeviceId
+                      ? (deviceById.get(change.linkedDeviceId)?.label ?? change.linkedDeviceId)
+                      : 'Not linked';
 
-                  return (
-                    <tr key={change.id} className="transition hover:bg-muted/40">
-                      <td className="px-4 py-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedEventIds.has(change.id)}
-                          onChange={() => toggleRowSelection(change.id)}
-                          disabled={change.acknowledged}
-                          className="h-4 w-4 rounded border disabled:opacity-40"
-                        />
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${type.color}`}>
-                            {type.label}
-                          </span>
-                          <span className="font-mono text-sm">{change.ipAddress}</span>
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {change.hostname ?? 'Unknown host'} • {change.macAddress ?? 'No MAC'}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm">{profileName}</td>
-                      <td className="px-4 py-3 text-sm">{formatDateTime(change.detectedAt, timezone)}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
-                            change.acknowledged
-                              ? 'bg-success/15 text-success border-success/30'
-                              : 'bg-warning/15 text-warning border-warning/30'
-                          }`}
-                        >
-                          {change.acknowledged ? 'Acknowledged' : 'Unacknowledged'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm">{linkedDeviceLabel}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setDetailEventId(change.id)}
-                            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
-                          >
-                            <Info className="h-3.5 w-3.5" />
-                            Details
-                          </button>
-                          {!change.acknowledged && canAcknowledge && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                acknowledgeEvent(change.id).catch((ackError) => {
-                                  setError(ackError instanceof Error ? ackError.message : 'Failed to acknowledge event');
-                                });
-                              }}
-                              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              Ack
-                            </button>
-                          )}
-                          {canLinkDevice && (
-                            <button
-                              type="button"
-                              onClick={() => setDetailEventId(change.id)}
-                              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
-                            >
-                              <Link2 className="h-3.5 w-3.5" />
-                              Link
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                    return (
+                      <tr key={change.id} className="transition hover:bg-muted/40">
+                        <td className="px-4 py-3">{renderSelectCheckbox(change)}</td>
+                        <td className="px-4 py-3">{renderEventInfo(change)}</td>
+                        <td className="px-4 py-3 text-sm">{profileName}</td>
+                        <td className="px-4 py-3 text-sm">{formatDateTime(change.detectedAt, timezone)}</td>
+                        <td className="px-4 py-3">{renderStatusBadge(change)}</td>
+                        <td className="px-4 py-3 text-sm">{linkedDeviceLabel}</td>
+                        <td className="px-4 py-3">{renderActions(change)}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          }
+          cards={
+            loading && changes.length === 0 ? (
+              <DataCard>
+                <p className="py-2 text-center text-sm text-muted-foreground">Loading network changes...</p>
+              </DataCard>
+            ) : changes.length === 0 ? (
+              <DataCard>
+                <p className="py-2 text-center text-sm text-muted-foreground">
+                  No change events match the selected filters.
+                </p>
+              </DataCard>
+            ) : (
+              changes.map((change) => {
+                const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? 'Unknown') : 'Unknown';
+                const linkedDeviceLabel = change.linkedDeviceId
+                  ? (deviceById.get(change.linkedDeviceId)?.label ?? change.linkedDeviceId)
+                  : 'Not linked';
+
+                return (
+                  <DataCard key={change.id}>
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 shrink-0">{renderSelectCheckbox(change)}</div>
+                      <div className="min-w-0 flex-1">{renderEventInfo(change)}</div>
+                    </div>
+                    <div className="mt-3 space-y-2 border-t pt-3">
+                      <CardField label="Profile">{profileName}</CardField>
+                      <CardField label="Detected">{formatDateTime(change.detectedAt, timezone)}</CardField>
+                      <CardField label="Status">{renderStatusBadge(change)}</CardField>
+                      <CardField label="Linked Device">{linkedDeviceLabel}</CardField>
+                    </div>
+                    <CardActions>{renderActions(change)}</CardActions>
+                  </DataCard>
+                );
+              })
+            )
+          }
+        />
       </div>
 
       <NetworkChangeDetailModal

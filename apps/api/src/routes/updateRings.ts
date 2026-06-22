@@ -7,12 +7,10 @@ import {
   patchPolicies,
   patchApprovals,
   patchJobs,
-  patchComplianceSnapshots,
   patches,
   devicePatches,
-  devices
 } from '../db/schema';
-import { resolveRingDeviceCounts } from './updateRingsHelpers';
+import { resolveRingDeviceCounts, resolveRingDeviceIds } from './updateRingsHelpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -38,93 +36,39 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-function resolveOrgId(
-  auth: {
-    scope: 'system' | 'partner' | 'organization';
-    orgId: string | null;
-    accessibleOrgIds: string[] | null;
-    canAccessOrg: (orgId: string) => boolean;
-  },
-  requestedOrgId?: string
-): { orgId: string } | { error: string; status: 400 | 403 } {
-  if (requestedOrgId) {
-    if (!auth.canAccessOrg(requestedOrgId)) {
-      return { error: 'Access denied to this organization', status: 403 };
+function resolvePartnerId(
+  auth: { scope: 'system' | 'partner' | 'organization'; partnerId: string | null },
+  requestedPartnerId?: string
+): { partnerId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    return { error: 'Update rings are managed at partner scope', status: 403 };
+  }
+  if (requestedPartnerId) {
+    if (auth.scope === 'partner' && auth.partnerId !== requestedPartnerId) {
+      return { error: 'Access denied to this partner', status: 403 };
     }
-    return { orgId: requestedOrgId };
+    return { partnerId: requestedPartnerId };
   }
-  if (auth.orgId) return { orgId: auth.orgId };
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0]! };
-  }
-  return { error: 'orgId is required', status: 400 };
+  if (auth.partnerId) return { partnerId: auth.partnerId };
+  return { error: 'partnerId is required', status: 400 };
 }
 
-function resolveListOrgIds(
-  auth: {
-    scope: 'system' | 'partner' | 'organization';
-    orgId: string | null;
-    accessibleOrgIds: string[] | null;
-    canAccessOrg: (orgId: string) => boolean;
-  },
-  requestedOrgId?: string
-): { orgIds: string[] | null } | { error: string; status: 400 | 403 } {
-  if (requestedOrgId) {
-    if (!auth.canAccessOrg(requestedOrgId)) {
-      return { error: 'Access denied to this organization', status: 403 };
-    }
-    return { orgIds: [requestedOrgId] };
+function resolveListPartnerIds(
+  auth: { scope: 'system' | 'partner' | 'organization'; partnerId: string | null },
+  requestedPartnerId?: string
+): { partnerIds: string[] | null } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    return { error: 'Update rings are managed at partner scope', status: 403 };
   }
-  if (auth.orgId) return { orgIds: [auth.orgId] };
-  if (auth.scope === 'partner') return { orgIds: auth.accessibleOrgIds ?? [] };
-  if (auth.scope === 'system') return { orgIds: null };
-  return { error: 'orgId is required', status: 400 };
-}
-
-const NIL_UUID = '00000000-0000-0000-0000-000000000000';
-
-async function ensureDefaultRing(orgId: string, userId?: string): Promise<string> {
-  // Check if a default ring already exists
-  const [existing] = await db
-    .select({ id: patchPolicies.id })
-    .from(patchPolicies)
-    .where(
-      and(
-        eq(patchPolicies.orgId, orgId),
-        eq(patchPolicies.kind, 'ring'),
-        eq(patchPolicies.ringOrder, 0),
-        eq(patchPolicies.name, 'Default')
-      )
-    )
-    .limit(1);
-
-  if (existing) return existing.id;
-
-  // Auto-create default ring
-  const [created] = await db
-    .insert(patchPolicies)
-    .values({
-      orgId,
-      kind: 'ring',
-      name: 'Default',
-      description: 'Default update ring — all patches require manual approval',
-      enabled: true,
-      targets: {},
-      autoApprove: DEFAULT_RING_AUTO_APPROVE,
-      schedule: {},
-      rebootPolicy: {},
-      categoryRules: [],
-      ringOrder: 0,
-      deferralDays: 0,
-      deadlineDays: null,
-      gracePeriodHours: 4,
-      categories: [],
-      excludeCategories: [],
-      createdBy: userId ?? null,
-    })
-    .returning({ id: patchPolicies.id });
-
-  return created!.id;
+  if (requestedPartnerId) {
+    if (auth.scope === 'partner' && auth.partnerId !== requestedPartnerId) {
+      return { error: 'Access denied to this partner', status: 403 };
+    }
+    return { partnerIds: [requestedPartnerId] };
+  }
+  if (auth.partnerId) return { partnerIds: [auth.partnerId] };
+  if (auth.scope === 'system') return { partnerIds: null }; // all partners
+  return { error: 'partnerId is required', status: 400 };
 }
 
 // ============================================
@@ -132,7 +76,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
 // ============================================
 
 const listRingsSchema = z.object({
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
 });
 
 const categoryRuleSchema = z.object({
@@ -143,7 +87,7 @@ const categoryRuleSchema = z.object({
 });
 
 const createRingSchema = z.object({
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().max(2000).optional(),
   enabled: z.boolean().optional(),
@@ -196,40 +140,36 @@ const ringPatchesQuerySchema = z.object({
 // GET /update-rings — List rings sorted by ringOrder
 updateRingRoutes.get(
   '/',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requireUpdateRingRead,
   zValidator('query', listRingsSchema),
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
 
-    const orgResult = resolveListOrgIds(auth, query.orgId);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgIds } = orgResult;
+    const listResult = resolveListPartnerIds(auth, query.partnerId);
+    if ('error' in listResult) return c.json({ error: listResult.error }, listResult.status);
+    const { partnerIds } = listResult;
 
-    if (Array.isArray(orgIds) && orgIds.length === 0) {
+    if (Array.isArray(partnerIds) && partnerIds.length === 0) {
       return c.json({ data: [] });
     }
 
-    // Preserve the legacy single-org default-ring behavior without implicitly
-    // creating a ring in every org when a partner views the global list.
-    if (Array.isArray(orgIds) && orgIds.length === 1) {
-      await ensureDefaultRing(orgIds[0]!, auth.user.id);
-    }
+    const partnerCond = partnerIds === null
+      ? undefined
+      : partnerIds.length === 1
+        ? eq(patchPolicies.partnerId, partnerIds[0]!)
+        : inArray(patchPolicies.partnerId, partnerIds);
 
     const conditions = [eq(patchPolicies.kind, 'ring'), eq(patchPolicies.enabled, true)];
-    if (Array.isArray(orgIds)) {
-      conditions.push(
-        orgIds.length === 1
-          ? eq(patchPolicies.orgId, orgIds[0]!)
-          : inArray(patchPolicies.orgId, orgIds)
-      );
+    if (partnerCond) {
+      conditions.push(partnerCond);
     }
 
     const rings = await db
       .select({
         id: patchPolicies.id,
-        orgId: patchPolicies.orgId,
+        partnerId: patchPolicies.partnerId,
         name: patchPolicies.name,
         description: patchPolicies.description,
         enabled: patchPolicies.enabled,
@@ -264,7 +204,7 @@ updateRingRoutes.get(
 // POST /update-rings — Create ring
 updateRingRoutes.post(
   '/',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requireUpdateRingWrite,
   requireMfa(),
   zValidator('json', createRingSchema),
@@ -272,16 +212,14 @@ updateRingRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // fetchWithAuth injects the selected org as a query param for partner/system
-    // users, so fall back to it when the body omits orgId (matches the GET handler).
-    const orgResult = resolveOrgId(auth, data.orgId ?? c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
+    const partnerResult = resolvePartnerId(auth, data.partnerId ?? c.req.query('partnerId'));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+    const { partnerId } = partnerResult;
 
     const [ring] = await db
       .insert(patchPolicies)
       .values({
-        orgId,
+        partnerId,
         kind: 'ring',
         name: data.name,
         description: data.description ?? null,
@@ -301,12 +239,12 @@ updateRingRoutes.post(
       .returning();
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: null,
       action: 'update_ring.create',
       resourceType: 'update_ring',
       resourceId: ring!.id,
       resourceName: data.name,
-      details: { ringOrder: ring!.ringOrder, deferralDays: ring!.deferralDays },
+      details: { partnerId, ringOrder: ring!.ringOrder, deferralDays: ring!.deferralDays },
     });
 
     return c.json(ring, 201);
@@ -316,7 +254,7 @@ updateRingRoutes.post(
 // GET /update-rings/:id — Ring detail + compliance summary
 updateRingRoutes.get(
   '/:id',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requireUpdateRingRead,
   zValidator('param', ringIdParamSchema),
   async (c) => {
@@ -330,7 +268,9 @@ updateRingRoutes.get(
       .limit(1);
 
     if (!ring) return c.json({ error: 'Update ring not found' }, 404);
-    if (!auth.canAccessOrg(ring.orgId)) return c.json({ error: 'Access denied' }, 403);
+    if (auth.scope !== 'system' && auth.partnerId !== ring.partnerId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Get approval counts for this ring
     const approvalCounts = await db
@@ -339,7 +279,7 @@ updateRingRoutes.get(
         count: sql<number>`count(*)`,
       })
       .from(patchApprovals)
-      .where(and(eq(patchApprovals.orgId, ring.orgId), eq(patchApprovals.ringId, id)))
+      .where(and(eq(patchApprovals.partnerId, ring.partnerId), eq(patchApprovals.ringId, id)))
       .groupBy(patchApprovals.status);
 
     const approvalSummary: Record<string, number> = {};
@@ -374,7 +314,7 @@ updateRingRoutes.get(
 // PATCH /update-rings/:id — Update ring
 updateRingRoutes.patch(
   '/:id',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requireUpdateRingWrite,
   requireMfa(),
   zValidator('param', ringIdParamSchema),
@@ -385,13 +325,15 @@ updateRingRoutes.patch(
     const data = c.req.valid('json');
 
     const [existing] = await db
-      .select({ id: patchPolicies.id, orgId: patchPolicies.orgId })
+      .select({ id: patchPolicies.id, partnerId: patchPolicies.partnerId })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!existing) return c.json({ error: 'Update ring not found' }, 404);
-    if (!auth.canAccessOrg(existing.orgId)) return c.json({ error: 'Access denied' }, 403);
+    if (auth.scope !== 'system' && auth.partnerId !== existing.partnerId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
     if (data.name !== undefined) updateFields.name = data.name;
@@ -415,11 +357,11 @@ updateRingRoutes.patch(
       .returning();
 
     writeRouteAudit(c, {
-      orgId: existing.orgId,
+      orgId: null,
       action: 'update_ring.update',
       resourceType: 'update_ring',
       resourceId: id,
-      details: { changes: Object.keys(data) },
+      details: { partnerId: existing.partnerId, changes: Object.keys(data) },
     });
 
     return c.json(updated);
@@ -429,7 +371,7 @@ updateRingRoutes.patch(
 // DELETE /update-rings/:id — Soft delete (enabled=false)
 updateRingRoutes.delete(
   '/:id',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requireUpdateRingWrite,
   requireMfa(),
   zValidator('param', ringIdParamSchema),
@@ -438,13 +380,15 @@ updateRingRoutes.delete(
     const { id } = c.req.valid('param');
 
     const [existing] = await db
-      .select({ id: patchPolicies.id, orgId: patchPolicies.orgId, name: patchPolicies.name })
+      .select({ id: patchPolicies.id, partnerId: patchPolicies.partnerId, name: patchPolicies.name })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!existing) return c.json({ error: 'Update ring not found' }, 404);
-    if (!auth.canAccessOrg(existing.orgId)) return c.json({ error: 'Access denied' }, 403);
+    if (auth.scope !== 'system' && auth.partnerId !== existing.partnerId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     await db
       .update(patchPolicies)
@@ -452,11 +396,12 @@ updateRingRoutes.delete(
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')));
 
     writeRouteAudit(c, {
-      orgId: existing.orgId,
+      orgId: null,
       action: 'update_ring.delete',
       resourceType: 'update_ring',
       resourceId: id,
       resourceName: existing.name,
+      details: { partnerId: existing.partnerId },
     });
 
     return c.json({ success: true });
@@ -466,7 +411,7 @@ updateRingRoutes.delete(
 // GET /update-rings/:id/patches — Patches with ring-scoped approval status
 updateRingRoutes.get(
   '/:id/patches',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requireUpdateRingRead,
   zValidator('param', ringIdParamSchema),
   zValidator('query', ringPatchesQuerySchema),
@@ -476,13 +421,15 @@ updateRingRoutes.get(
     const query = c.req.valid('query');
 
     const [ring] = await db
-      .select({ id: patchPolicies.id, orgId: patchPolicies.orgId })
+      .select({ id: patchPolicies.id, partnerId: patchPolicies.partnerId })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!ring) return c.json({ error: 'Update ring not found' }, 404);
-    if (!auth.canAccessOrg(ring.orgId)) return c.json({ error: 'Access denied' }, 403);
+    if (auth.scope !== 'system' && auth.partnerId !== ring.partnerId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     const { page, limit, offset } = getPagination(query);
 
@@ -530,7 +477,7 @@ updateRingRoutes.get(
         .from(patchApprovals)
         .where(
           and(
-            eq(patchApprovals.orgId, ring.orgId),
+            eq(patchApprovals.partnerId, ring.partnerId),
             eq(patchApprovals.ringId, id),
             inArray(patchApprovals.patchId, patchIdsInPage)
           )
@@ -554,7 +501,7 @@ updateRingRoutes.get(
 // GET /update-rings/:id/compliance — Ring-specific compliance
 updateRingRoutes.get(
   '/:id/compliance',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requireUpdateRingRead,
   zValidator('param', ringIdParamSchema),
   async (c) => {
@@ -562,20 +509,19 @@ updateRingRoutes.get(
     const { id } = c.req.valid('param');
 
     const [ring] = await db
-      .select({ id: patchPolicies.id, orgId: patchPolicies.orgId, name: patchPolicies.name })
+      .select({ id: patchPolicies.id, partnerId: patchPolicies.partnerId, name: patchPolicies.name })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!ring) return c.json({ error: 'Update ring not found' }, 404);
-    if (!auth.canAccessOrg(ring.orgId)) return c.json({ error: 'Access denied' }, 403);
+    if (auth.scope !== 'system' && auth.partnerId !== ring.partnerId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
-    // Get devices in org
-    const orgDevices = await db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(eq(devices.orgId, ring.orgId));
-    const deviceIds = orgDevices.map((d) => d.id);
+    // Resolve devices assigned to this ring via config-policy assignments.
+    // A partner ring spans many orgs, so org-scoped device queries are incorrect.
+    const deviceIds = await resolveRingDeviceIds(id);
 
     if (deviceIds.length === 0) {
       return c.json({
@@ -588,13 +534,13 @@ updateRingRoutes.get(
       });
     }
 
-    // Get ring-approved patch IDs
+    // Get ring-approved patch IDs (partner-scoped)
     const approvedPatches = await db
       .select({ patchId: patchApprovals.patchId })
       .from(patchApprovals)
       .where(
         and(
-          eq(patchApprovals.orgId, ring.orgId),
+          eq(patchApprovals.partnerId, ring.partnerId),
           eq(patchApprovals.ringId, id),
           eq(patchApprovals.status, 'approved')
         )

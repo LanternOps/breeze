@@ -274,7 +274,7 @@ export default function PSAConnectionWizard() {
               <CheckCircle2 className="h-4 w-4 text-primary" />
               Field mapping preview
             </div>
-            <div className="overflow-hidden rounded-lg border">
+            <div className="overflow-x-auto rounded-lg border">
               <table className="min-w-full divide-y text-sm">
                 <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
                   <tr>

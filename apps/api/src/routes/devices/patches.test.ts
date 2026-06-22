@@ -48,7 +48,7 @@ vi.mock('../../db/schema', () => ({
     deviceId: 'devicePatches.deviceId'
   },
   patchApprovals: {
-    orgId: 'patchApprovals.orgId',
+    partnerId: 'patchApprovals.partnerId',
     patchId: 'patchApprovals.patchId',
     status: 'patchApprovals.status'
   }
@@ -78,6 +78,10 @@ vi.mock('./helpers', async () => {
   };
 });
 
+vi.mock('../patches/helpers', () => ({
+  resolvePartnerIdForOrg: vi.fn().mockResolvedValue('dddddddd-dddd-dddd-dddd-dddddddddddd'),
+}));
+
 vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn()
 }));
@@ -85,6 +89,7 @@ vi.mock('../../services/commandQueue', () => ({
 import { db } from '../../db';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { resolvePartnerIdForOrg } from '../patches/helpers';
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -270,6 +275,26 @@ describe('device patch routes', () => {
     expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 
+  it('returns 409 and does not queue when resolvePartnerIdForOrg returns null (orphaned org fail-safe)', async () => {
+    vi.mocked(resolvePartnerIdForOrg).mockResolvedValueOnce(null);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereResult([
+      { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
+    ]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('Only approved patches can be installed');
+    expect(body.unapprovedPatchIds).toEqual([PATCH_ID]);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when install patch IDs do not resolve to patch records', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select).mockReturnValueOnce(selectWhereResult([]) as any);
@@ -312,7 +337,7 @@ describe('device patch routes', () => {
   it('does not issue the approvals query when a device has no patches', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     // Device-patch list resolves to an empty array → patchIds is empty →
-    // getApprovedPatchIdsForOrg short-circuits without a second db.select call.
+    // getApprovedPatchIdsForPartner short-circuits without a second db.select call.
     vi.mocked(db.select).mockReturnValueOnce(selectPatchStatusResult([]) as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches`, {

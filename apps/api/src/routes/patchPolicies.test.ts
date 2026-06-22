@@ -19,7 +19,8 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   patchPolicies: {
     id: 'id',
-    orgId: 'orgId',
+    partnerId: 'partnerId',
+    kind: 'kind',
     enabled: 'enabled',
     updatedAt: 'updatedAt'
   },

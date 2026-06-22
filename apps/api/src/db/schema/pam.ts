@@ -20,6 +20,7 @@ import {
   smallint,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -46,6 +47,30 @@ export interface PamRuleTimeWindow {
   timezone?: string;
 }
 
+/**
+ * Criterion keys eligible for negation via pam_rules.match_negate. Each maps
+ * to a single match* column; the engine inverts that criterion's result.
+ * time_window is deliberately excluded (it narrows, it doesn't identify).
+ */
+export const PAM_RULE_NEGATE_KEYS = [
+  'signer',
+  'hash',
+  'pathGlob',
+  'parentImage',
+  'commandLine',
+  'user',
+  'adGroup',
+  'toolName',
+  'riskTier',
+] as const;
+export type PamRuleNegateKey = (typeof PAM_RULE_NEGATE_KEYS)[number];
+
+/** Default verdict applied when no software policy or PAM rule matches. */
+export const pamUnmatchedVerdictEnum = pgEnum('pam_unmatched_verdict', [
+  'require_approval',
+  'auto_deny',
+]);
+
 export const pamRules = pgTable(
   'pam_rules',
   {
@@ -68,6 +93,11 @@ export const pamRules = pgTable(
     matchHash: varchar('match_hash', { length: 64 }),
     matchPathGlob: text('match_path_glob'),
     matchParentImage: text('match_parent_image'),
+    // Case-insensitive substring of the launched process command line. Lets a
+    // rule scope auto-elevation to a specific invocation of an otherwise broad
+    // binary — e.g. only `rundll32 ... printui.dll,PrintUIEntry`, not all of
+    // rundll32. The uac_intercept payload carries `command_line`.
+    matchCommandLine: text('match_command_line'),
     matchUser: varchar('match_user', { length: 255 }),
     matchAdGroup: varchar('match_ad_group', { length: 255 }),
     // Tool-action criteria (Phase 1 Helper governance). A rule is either
@@ -75,6 +105,12 @@ export const pamRules = pgTable(
     // (tool name / risk tier) — the API layer rejects mixing the two.
     matchToolName: varchar('match_tool_name', { length: 100 }),
     matchRiskTier: smallint('match_risk_tier'),
+    // Criterion keys whose match the engine INVERTS ("does NOT match"), e.g.
+    // ["pathGlob"] turns a path-glob criterion into an exclusion. Negation
+    // requires the candidate field to be present (absent data never satisfies
+    // a negated criterion — it can't accidentally over-grant). See
+    // pamRuleEngine.ruleMatches.
+    matchNegate: jsonb('match_negate').$type<PamRuleNegateKey[] | null>(),
     timeWindow: jsonb('time_window').$type<PamRuleTimeWindow | null>(),
 
     verdict: pamRuleVerdictEnum('verdict').notNull(),
@@ -102,3 +138,38 @@ export const pamRules = pgTable(
 
 export type PamRule = typeof pamRules.$inferSelect;
 export type NewPamRule = typeof pamRules.$inferInsert;
+
+/**
+ * Per-org PAM configuration (#PAM matching cluster).
+ *
+ * Today: the default verdict for an elevation that matches no software policy
+ * and no PAM rule. The historical behavior is `require_approval` (the request
+ * waits for a human); an org can opt into `auto_deny` (block-by-default).
+ *
+ * Tenancy: Shape 1 (direct org_id) — RLS policies in the migration use
+ * breeze_has_org_access(org_id), mirroring pam_rules. One row per org
+ * (unique org_id); absence of a row means the `require_approval` default.
+ */
+export const pamOrgConfig = pgTable(
+  'pam_org_config',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    defaultUnmatchedVerdict: pamUnmatchedVerdictEnum('default_unmatched_verdict')
+      .notNull()
+      .default('require_approval'),
+    updatedByUserId: uuid('updated_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orgIdUnique: uniqueIndex('pam_org_config_org_id_unique').on(table.orgId),
+  }),
+);
+
+export type PamOrgConfig = typeof pamOrgConfig.$inferSelect;
+export type NewPamOrgConfig = typeof pamOrgConfig.$inferInsert;

@@ -14,6 +14,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import CreateMonitorForm from '../monitors/CreateMonitorForm';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 type MonitoringAsset = {
   id: string;
@@ -268,6 +269,96 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
     }
   };
 
+  // Row pieces shared by the desktop table and the mobile cards so the two
+  // representations can never drift. Each takes a single asset.
+  const renderOverallBadge = (asset: MonitoringAsset) => {
+    const overall = asset.monitoring.configured
+      ? (asset.monitoring.active ? 'active' : 'paused')
+      : 'unconfigured';
+    return (
+      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
+        overall === 'active'
+          ? 'bg-success/15 text-success border-success/30'
+          : overall === 'paused'
+            ? 'bg-warning/15 text-warning border-warning/30'
+            : 'bg-muted text-muted-foreground border-muted'
+      }`}>
+        {overall === 'active' ? 'Active' : overall === 'paused' ? 'Configured (Paused)' : 'Not configured'}
+      </span>
+    );
+  };
+
+  const renderSnmpCell = (asset: MonitoringAsset) => {
+    if (!asset.snmp.configured) {
+      return <span className="text-xs text-muted-foreground">Not configured</span>;
+    }
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
+            !asset.snmp.isActive
+              ? statusColors.unknown
+              : statusColors[asset.snmp.lastStatus ?? 'unknown'] ?? statusColors.unknown
+          }`}>
+            {!asset.snmp.isActive
+              ? 'Paused'
+              : statusLabel[asset.snmp.lastStatus ?? 'unknown'] ?? 'Unknown'}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {asset.snmp.snmpVersion ?? '—'} • every {formatInterval(asset.snmp.pollingInterval)}
+          </span>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Last polled {formatRelativeTime(asset.snmp.lastPolled)}
+        </div>
+      </div>
+    );
+  };
+
+  const renderActions = (asset: MonitoringAsset) => {
+    const isLoadingAction = actionLoading === asset.id;
+    return (
+      <div className="flex items-center justify-end gap-1">
+        <button
+          type="button"
+          onClick={() => setEditingAssetId(asset.id)}
+          className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+          title="Configure monitoring"
+        >
+          <Settings className="h-4 w-4" />
+        </button>
+        {asset.snmp.configured && (
+          <button
+            type="button"
+            onClick={() => handleToggleSnmpActive(asset.id, !asset.snmp.isActive)}
+            disabled={isLoadingAction}
+            className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
+            title={asset.snmp.isActive ? 'Pause SNMP polling' : 'Resume SNMP polling'}
+          >
+            {isLoadingAction ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : asset.snmp.isActive ? (
+              <PowerOff className="h-4 w-4 text-yellow-600" />
+            ) : (
+              <Power className="h-4 w-4 text-green-600" />
+            )}
+          </button>
+        )}
+        {asset.monitoring.active && (
+          <button
+            type="button"
+            onClick={() => handleDisableAll(asset.id)}
+            disabled={isLoadingAction}
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            title="Disable all active monitoring for this asset"
+          >
+            <XCircle className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+    );
+  };
+
   if (needsOrgSelection) {
     return (
       <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
@@ -401,33 +492,30 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
           </div>
         </div>
 
-        <div className="mt-6 overflow-hidden rounded-md border">
-          <table className="min-w-full divide-y">
-            <thead className="bg-muted/40">
-              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Asset</th>
-                <th className="px-4 py-3">IP</th>
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Overall</th>
-                <th className="px-4 py-3">SNMP</th>
-                <th className="px-4 py-3">Network Checks</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {assets.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No assets found.
-                  </td>
+        <ResponsiveTable
+          className="mt-6"
+          table={
+            <table className="min-w-full divide-y">
+              <thead className="bg-muted/40">
+                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3">Asset</th>
+                  <th className="px-4 py-3">IP</th>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Overall</th>
+                  <th className="px-4 py-3">SNMP</th>
+                  <th className="px-4 py-3">Network Checks</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
-              ) : (
-                assets.map((asset) => {
-                  const isLoadingAction = actionLoading === asset.id;
-                  const overall = asset.monitoring.configured
-                    ? (asset.monitoring.active ? 'active' : 'paused')
-                    : 'unconfigured';
-                  return (
+              </thead>
+              <tbody className="divide-y">
+                {assets.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      No assets found.
+                    </td>
+                  </tr>
+                ) : (
+                  assets.map((asset) => (
                     <tr key={asset.id} className="transition hover:bg-muted/40">
                       <td className="px-4 py-3">
                         <div className="min-w-0">
@@ -441,94 +529,62 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                       </td>
                       <td className="px-4 py-3 text-sm font-mono">{asset.ipAddress || '—'}</td>
                       <td className="px-4 py-3 text-sm capitalize">{asset.assetType}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
-                          overall === 'active'
-                            ? 'bg-success/15 text-success border-success/30'
-                            : overall === 'paused'
-                              ? 'bg-warning/15 text-warning border-warning/30'
-                              : 'bg-muted text-muted-foreground border-muted'
-                        }`}>
-                          {overall === 'active' ? 'Active' : overall === 'paused' ? 'Configured (Paused)' : 'Not configured'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {!asset.snmp.configured ? (
-                          <span className="text-xs text-muted-foreground">Not configured</span>
-                        ) : (
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
-                                !asset.snmp.isActive
-                                  ? statusColors.unknown
-                                  : statusColors[asset.snmp.lastStatus ?? 'unknown'] ?? statusColors.unknown
-                              }`}>
-                                {!asset.snmp.isActive
-                                  ? 'Paused'
-                                  : statusLabel[asset.snmp.lastStatus ?? 'unknown'] ?? 'Unknown'}
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                {asset.snmp.snmpVersion ?? '—'} • every {formatInterval(asset.snmp.pollingInterval)}
-                              </span>
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              Last polled {formatRelativeTime(asset.snmp.lastPolled)}
-                            </div>
-                          </div>
-                        )}
-                      </td>
+                      <td className="px-4 py-3">{renderOverallBadge(asset)}</td>
+                      <td className="px-4 py-3">{renderSnmpCell(asset)}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {asset.network.totalCount > 0
                           ? `${asset.network.activeCount}/${asset.network.totalCount} active`
                           : '—'}
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setEditingAssetId(asset.id)}
-                            className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                            title="Configure monitoring"
-                          >
-                            <Settings className="h-4 w-4" />
-                          </button>
-                          {asset.snmp.configured && (
-                            <button
-                              type="button"
-                              onClick={() => handleToggleSnmpActive(asset.id, !asset.snmp.isActive)}
-                              disabled={isLoadingAction}
-                              className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
-                              title={asset.snmp.isActive ? 'Pause SNMP polling' : 'Resume SNMP polling'}
-                            >
-                              {isLoadingAction ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : asset.snmp.isActive ? (
-                                <PowerOff className="h-4 w-4 text-yellow-600" />
-                              ) : (
-                                <Power className="h-4 w-4 text-green-600" />
-                              )}
-                            </button>
-                          )}
-                          {asset.monitoring.active && (
-                            <button
-                              type="button"
-                              onClick={() => handleDisableAll(asset.id)}
-                              disabled={isLoadingAction}
-                              className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                              title="Disable all active monitoring for this asset"
-                            >
-                              <XCircle className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
+                      <td className="px-4 py-3">{renderActions(asset)}</td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                  ))
+                )}
+              </tbody>
+            </table>
+          }
+          cards={
+            assets.length === 0 ? (
+              <DataCard>
+                <p className="py-2 text-center text-sm text-muted-foreground">No assets found.</p>
+              </DataCard>
+            ) : (
+              assets.map((asset) => (
+                <DataCard key={asset.id}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{asset.hostname || asset.ipAddress || '—'}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        Last seen {formatRelativeTime(asset.lastSeenAt)}
+                      </p>
+                    </div>
+                    {renderOverallBadge(asset)}
+                  </div>
+                  <div className="mt-3 space-y-2 border-t pt-3">
+                    <CardField label="IP">
+                      <span className="font-mono text-sm">{asset.ipAddress || '—'}</span>
+                    </CardField>
+                    <CardField label="Type">
+                      <span className="text-sm capitalize">{asset.assetType}</span>
+                    </CardField>
+                    <CardField label="Network checks">
+                      <span className="text-sm text-muted-foreground">
+                        {asset.network.totalCount > 0
+                          ? `${asset.network.activeCount}/${asset.network.totalCount} active`
+                          : '—'}
+                      </span>
+                    </CardField>
+                    <div>
+                      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">SNMP</span>
+                      <div className="mt-1">{renderSnmpCell(asset)}</div>
+                    </div>
+                  </div>
+                  <CardActions>{renderActions(asset)}</CardActions>
+                </DataCard>
+              ))
+            )
+          }
+        />
       </div>
 
       {editingAssetId && (

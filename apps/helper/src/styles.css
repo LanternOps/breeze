@@ -1084,3 +1084,64 @@ body {
 .helper-btn-allow:hover {
   background: rgba(255, 191, 0, 0.25);
 }
+
+/* ----------------------------------------------------------
+   Consent Dialog (Remote Session)
+   ---------------------------------------------------------- */
+.helper-consent-overlay { position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; background: rgba(0,0,0,.55); animation: fadeIn 150ms ease-out; }
+.helper-consent-card { width: calc(100% - 32px); max-width: 348px; display: flex; flex-direction: column;
+  background: var(--bg-secondary); border: 1px solid rgba(76,154,255,.30); border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0,0,0,.5); overflow: hidden; animation: slideUp 200ms ease-out; }
+.helper-consent-header { display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+  background: rgba(76,154,255,.08); border-bottom: 1px solid rgba(76,154,255,.15); }
+.helper-consent-icon { font-size: 16px; color: var(--accent); line-height: 1; }
+.helper-consent-title { font-size: 13px; font-weight: 600; color: var(--accent); }
+.helper-consent-body { padding: 16px 14px; display: flex; flex-direction: column; gap: 12px; }
+.helper-consent-identity { display: flex; align-items: center; gap: 12px; }
+.helper-consent-avatar { width: 40px; height: 40px; flex-shrink: 0; display: grid; place-items: center;
+  border-radius: var(--radius-md); background: var(--accent-subtle); color: var(--accent);
+  font-size: 14px; font-weight: 600; }
+.helper-consent-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.helper-consent-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.helper-consent-email { font-size: 12px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.helper-consent-desc { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+.helper-consent-meta { font-size: 11px; color: var(--text-muted); }
+.helper-consent-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 14px; border-top: 1px solid var(--border-light); }
+.helper-consent-countdown { font-size: 11px; color: var(--text-muted); }
+.helper-consent-countdown.is-urgent { color: #ffbf00; }
+.helper-consent-actions { display: flex; gap: 8px; }
+.helper-btn-accept { padding: 5px 14px; border: 1px solid rgba(76,154,255,.4); border-radius: var(--radius-sm);
+  background: var(--accent-subtle); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: background var(--transition-fast); }
+.helper-btn-accept:hover { background: rgba(76,154,255,.25); }
+@media (prefers-reduced-motion: reduce) {
+  .helper-consent-overlay, .helper-consent-card { animation: none; }
+}
+
+/* ----------------------------------------------------------
+   Active-Session Banner (Remote Session)
+   ---------------------------------------------------------- */
+.banner-root, .banner-root body { background: transparent; }
+.helper-sessionbanner { display: inline-flex; align-items: center; gap: 8px; margin: 8px auto 0;
+  padding: 7px 14px; background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: 0 4px 16px rgba(0,0,0,.45); font-size: 12px;
+  color: var(--text-primary); user-select: none; animation: slideDown 220ms cubic-bezier(.22,1,.36,1); }
+.helper-sessionbanner-dot { width: 8px; height: 8px; border-radius: 999px; background: #ff5f57;
+  animation: livePulse 2s ease-out infinite; }
+.helper-sessionbanner-label { font-weight: 500; }
+.helper-sessionbanner-sep { color: var(--text-muted); }
+.helper-sessionbanner-time { font-family: var(--font-mono); color: var(--text-muted);
+  font-variant-numeric: tabular-nums; }
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 rgba(255,95,87,.5); }
+  70% { box-shadow: 0 0 0 6px rgba(255,95,87,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,95,87,0); }
+}
+@keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .helper-sessionbanner { animation: none; }
+  .helper-sessionbanner-dot { animation: none; }
+}

@@ -30,6 +30,9 @@ export interface ContractSummary {
   endDate: string | null;
   nextBillingAt: string | null;
   autoIssue: boolean;
+  autoRenew: boolean;
+  renewalTermMonths: number | null;
+  renewalNoticeDays: number | null;
   currencyCode: string;
   notes: string | null;
   terms: string | null;

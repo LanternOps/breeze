@@ -1,11 +1,11 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu } from 'lucide-react';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
-import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
+import { getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
 import {
   PAGE_SIZE_OPTIONS,
   readPageSizePreference,
@@ -28,6 +28,7 @@ import {
 } from '@/lib/density';
 import { OSIcon } from './osIcons';
 import { formatDeviceOsVersion } from './osDisplay';
+import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -106,6 +107,15 @@ export type Device = {
     ramTotalMb?: number;
     diskTotalGb?: number;
   };
+  /**
+   * Headline device reliability score (0-100) from the existing
+   * device_reliability subsystem (#1720). Null/undefined when no score has
+   * been computed yet (newly enrolled, or before the reliability worker runs)
+   * — the Reliability column renders a dash and sorts those rows last.
+   */
+  reliabilityScore?: number | null;
+  /** Reliability trend from the same subsystem; drives the small arrow indicator. */
+  reliabilityTrend?: 'improving' | 'stable' | 'degrading' | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -117,6 +127,8 @@ type DeviceListProps = {
   orgs?: { id: string; name: string }[];
   sites?: { id: string; name: string }[];
   groups?: { id: string; name: string; type: 'static' | 'dynamic'; deviceCount: number }[];
+  // Still accepted by callers, but the device-group filter now lives in the
+  // chip bar (server-resolved), so DeviceList no longer filters by membership.
   groupMembershipMap?: Map<string, Set<string>>;
   onCreateGroup?: () => void;
   autoSelectGroupId?: string | null;
@@ -125,6 +137,14 @@ type DeviceListProps = {
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
+  // Controlled inline filter state — now just the hostname search box, owned by
+  // DevicesPage and shared with DeviceFilterToolbar. Every other structured
+  // filter lives in the server-resolved group (serverFilterIds). Defaults keep
+  // DeviceList usable on its own (tests render it standalone).
+  // `onListFiltersChange` is accepted for API symmetry; DeviceList itself no
+  // longer mutates the search filter (the toolbar owns the input).
+  listFilters?: ListFilters;
+  onListFiltersChange?: (next: ListFilters) => void;
   // Initial page size if the user has no stored preference for this browser.
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
@@ -134,6 +154,11 @@ type DeviceListProps = {
   // grid views filter against the same complete, uncapped id set.
   serverFilterIds?: Set<string> | null;
   serverFilterLoading?: boolean;
+  // When false (default), decommissioned devices are hidden — matching the old
+  // default view (status='all' implicitly excluded them). DevicesPage sets this
+  // true only when the active filter group explicitly targets the
+  // 'decommissioned' status, so filtering FOR decommissioned still shows them.
+  includeDecommissioned?: boolean;
   // Unified-list network arm (#1322). Off by default behind a build-time flag
   // (PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST); when false the Class/Type columns
   // and the All/Agent/Network facet are hidden entirely so the list is the
@@ -262,15 +287,14 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   uptime: d => (d.status === 'online' && d.uptimeSeconds != null ? d.uptimeSeconds : null),
   enrolled: d => (d.enrolledAt ? new Date(d.enrolledAt).getTime() || null : null),
   desktopAccess: d => d.desktopAccess?.mode || null,
+  // No computed score yet (newly enrolled / pre-worker, or a network device)
+  // sorts as a blank-last null to match the dash the cell renders (#1284).
+  reliability: d => (typeof d.reliabilityScore === 'number' ? d.reliabilityScore : null),
 };
 
 export default function DeviceList({
   devices,
-  orgs = [],
-  sites = [],
   groups = [],
-  groupMembershipMap = new Map(),
-  onCreateGroup,
   autoSelectGroupId,
   onAutoSelectConsumed,
   timezone,
@@ -278,24 +302,25 @@ export default function DeviceList({
   onAction,
   onBulkAction,
   pageSize = 10,
+  includeDecommissioned = false,
   serverFilterIds = null,
   serverFilterLoading = false,
-  networkDevicesEnabled = false
+  networkDevicesEnabled = false,
+  listFilters,
 }: DeviceListProps) {
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  const [query, setQuery] = useState('');
-  // Unified-list class facet (#1322): All / Agent-managed / Network.
+  // The only inline (instant, client-side) filter is the hostname search box,
+  // owned by DevicesPage and shared with DeviceFilterToolbar. Every other
+  // structured filter (status/os/role/org/site/group/…) now lives in the
+  // server-resolved group and arrives pre-resolved as `serverFilterIds`. When
+  // rendered standalone (tests), fall back to the default so search is a no-op.
+  const filters = listFilters ?? DEFAULT_LIST_FILTERS;
+  const { search: query } = filters;
+  // Unified-list class facet (#1322): All / Agent-managed / Network. Kept
+  // local to DeviceList (it lives next to the count, not in the toolbar).
   const [classFilter, setClassFilter] = useState<'all' | 'agent' | 'network'>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [osFilter, setOsFilter] = useState<string>('all');
-  const [roleFilter, setRoleFilter] = useState<string>('all');
-  const [orgFilter, setOrgFilter] = useState<string>('all');
-  const [siteFilter, setSiteFilter] = useState<string>('all');
-  const [groupFilter, setGroupFilter] = useState<string[]>([]);
-  const [groupDropdownOpen, setGroupDropdownOpen] = useState(false);
-  const groupDropdownRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   // Live, user-controllable page size. Initialized from localStorage; the
   // pageSize prop is just the fallback when no preference is stored.
@@ -329,7 +354,6 @@ export default function DeviceList({
   const [rowMenuAnchor, setRowMenuAnchor] = useState<{ top: number; bottom: number; right: number } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
   const rowMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
@@ -353,18 +377,6 @@ export default function DeviceList({
       window.removeEventListener('resize', handleScroll);
     };
   }, [rowMenuOpenId]);
-
-  // Close group dropdown on outside click
-  useEffect(() => {
-    if (!groupDropdownOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (groupDropdownRef.current && !groupDropdownRef.current.contains(e.target as Node)) {
-        setGroupDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [groupDropdownOpen]);
 
   // Close columns visibility menu on outside click
   useEffect(() => {
@@ -409,21 +421,36 @@ export default function DeviceList({
     });
   };
 
-  // Auto-select a newly created group
+  // Notify the parent that a freshly-created group has been handled. The group
+  // filter itself now lives in the chip bar (server-resolved), so there is no
+  // local group selection to toggle here — just consume the one-shot signal.
   useEffect(() => {
     if (autoSelectGroupId && groups.some(g => g.id === autoSelectGroupId)) {
-      setGroupFilter(prev =>
-        prev.includes(autoSelectGroupId) ? prev : [...prev, autoSelectGroupId]
-      );
       onAutoSelectConsumed?.();
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
+
+  // Reset to page 1 whenever the active filters change (the hostname search, the
+  // class facet, and the server-resolved id set are the only things that narrow
+  // the list now). This replaces the per-control setCurrentPage(1) calls that
+  // lived on each filter input before the toolbar was extracted.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [query, classFilter, serverFilterIds]);
 
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter(device => {
-      // Apply server-side advanced filter
+      // Hide decommissioned by default — preserves the old list's hygiene
+      // (status='all' implicitly excluded them). Filtering FOR decommissioned
+      // via a status chip flips includeDecommissioned true upstream.
+      if (!includeDecommissioned && device.status === 'decommissioned') {
+        return false;
+      }
+
+      // Apply server-side advanced filter (status/os/role/org/site/group/… all
+      // resolve through this id set now — they are no longer client-side).
       if (serverFilterIds !== null && !serverFilterIds.has(device.id)) {
         return false;
       }
@@ -435,24 +462,10 @@ export default function DeviceList({
         ? true
         : device.hostname.toLowerCase().includes(normalizedQuery) ||
           (device.displayName?.toLowerCase().includes(normalizedQuery) ?? false);
-      const matchesStatus = statusFilter === 'all'
-        ? device.status !== 'decommissioned'
-        : device.status === statusFilter;
-      // OS is an agent-only attribute; an active OS facet narrows agent rows
-      // but never filters out network devices (they have no OS).
-      const matchesOs = osFilter === 'all'
-        ? true
-        : deviceClass === 'network' ? true : device.os === osFilter;
-      const matchesRole = roleFilter === 'all' ? true : device.deviceRole === roleFilter;
-      const matchesOrg = orgFilter === 'all' ? true : device.orgId === orgFilter;
-      const matchesSite = siteFilter === 'all' ? true : device.siteId === siteFilter;
-      const matchesGroup = groupFilter.length === 0
-        ? true
-        : groupFilter.some(gId => groupMembershipMap.get(gId)?.has(device.id));
 
-      return matchesClass && matchesQuery && matchesStatus && matchesOs && matchesRole && matchesOrg && matchesSite && matchesGroup;
+      return matchesClass && matchesQuery;
     });
-  }, [devices, query, classFilter, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, groupFilter, groupMembershipMap, serverFilterIds]);
+  }, [devices, query, classFilter, serverFilterIds, includeDecommissioned]);
 
   const handleSort = (field: ColumnId) => {
     if (sortField === field) {
@@ -488,8 +501,6 @@ export default function DeviceList({
       return dir * cmp;
     });
   }, [filteredDevices, sortField, sortDirection]);
-
-  const moreFiltersCount = [roleFilter, orgFilter, siteFilter].filter(f => f !== 'all').length + (groupFilter.length > 0 ? 1 : 0);
 
   const totalPages = Math.ceil(sortedDevices.length / effectivePageSize);
 
@@ -570,15 +581,21 @@ export default function DeviceList({
     </th>
   );
 
-  // metricBar renders the colored CPU/RAM percent bar with em-dash
-  // fallback for non-online devices. Extracted so the cpu and ram column
-  // cells stay small.
+  // metricBar renders the CPU/RAM percent bar with em-dash fallback for
+  // non-online devices. Extracted so the cpu and ram column cells stay small.
+  //
+  // Color intent: green/red are reserved for *device status* (the Up/Down
+  // pills), so a calm brand fill carries normal utilization here — a 45%-RAM
+  // bar shouldn't read as "healthy green" and visually rhyme with an Up pill.
+  // We still escalate amber → red at genuine pressure (≥75% / ≥90%) because a
+  // pegged box is exactly what a tech must catch at a glance; the bar width
+  // and the trailing number carry the exact value at every level.
   const metricBar = (percent: number, online: boolean) =>
     online ? (
       <div className="flex items-center gap-2">
         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
           <div
-            className={`h-full rounded-full ${percent > 80 ? 'bg-destructive' : percent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(percent)}`}
+            className={`h-full rounded-full ${percent >= 90 ? 'bg-destructive' : percent >= 75 ? 'bg-warning' : 'bg-primary/70'} ${widthPercentClass(percent)}`}
           />
         </div>
         <span className="w-10 text-right tabular-nums">{percent}%</span>
@@ -601,6 +618,22 @@ export default function DeviceList({
   const fmtWatchdogVersion = (raw: string | null | undefined) => {
     const version = raw?.trim();
     return version ? version : 'N/A';
+  };
+
+  // Reliability score band → badge classes. Thresholds mirror
+  // DeviceReliabilityPanel.tsx (scoreClass): ≤50 critical, ≤70 warning,
+  // ≤85 info, else healthy — keep the two in sync so the list badge and the
+  // drill-down panel tell the same story (#1720).
+  const reliabilityBandClass = (score: number): string => {
+    if (score <= 50) return 'bg-destructive/15 text-destructive border-destructive/30';
+    if (score <= 70) return 'bg-warning/15 text-warning border-warning/30';
+    if (score <= 85) return 'bg-info/15 text-info border-info/30';
+    return 'bg-success/15 text-success border-success/30';
+  };
+  const reliabilityTrendGlyph: Record<NonNullable<Device['reliabilityTrend']>, { glyph: string; label: string }> = {
+    improving: { glyph: '↑', label: 'Improving' },
+    stable: { glyph: '→', label: 'Stable' },
+    degrading: { glyph: '↓', label: 'Degrading' },
   };
 
   // columnDefs is the single source of truth for each toggleable column's
@@ -930,6 +963,38 @@ export default function DeviceList({
         );
       },
     },
+    reliability: {
+      header: () => sortHeader('reliability', 'Reliability', 'Sort by reliability score', true),
+      cell: (device) => {
+        const score = device.reliabilityScore;
+        if (typeof score !== 'number') {
+          // No score computed yet (newly enrolled, pre-worker) or a network
+          // device — render a dash; sortValue maps these to null so they sort
+          // last in both directions (#1284 dash convention).
+          return (
+            <td key="reliability" className="px-3 py-3 text-right text-sm tabular-nums" data-testid={`device-${device.id}-reliability`}>
+              {dash}
+            </td>
+          );
+        }
+        const trend = device.reliabilityTrend ? reliabilityTrendGlyph[device.reliabilityTrend] : null;
+        return (
+          <td key="reliability" className="px-3 py-3 text-right text-sm" data-testid={`device-${device.id}-reliability`}>
+            <span
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium tabular-nums ${reliabilityBandClass(score)}`}
+              title={trend ? `Reliability ${score}/100 · ${trend.label}` : `Reliability ${score}/100`}
+            >
+              {score}
+              {trend && (
+                <span aria-label={trend.label} className="opacity-80">
+                  {trend.glyph}
+                </span>
+              )}
+            </span>
+          </td>
+        );
+      },
+    },
   };
 
   return (
@@ -937,7 +1002,7 @@ export default function DeviceList({
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            {filteredDevices.length} of {statusFilter === 'all' ? devices.filter(d => d.status !== 'decommissioned').length : devices.length} devices
+            {filteredDevices.length} of {includeDecommissioned ? devices.length : devices.filter(d => d.status !== 'decommissioned').length} devices
             {serverFilterIds !== null && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                 <Filter className="h-3 w-3" />
@@ -946,6 +1011,9 @@ export default function DeviceList({
               </span>
             )}
           </p>
+          {/* Search / Status / OS / quick chips / More / Advanced now live in
+              DeviceFilterToolbar (rendered by DevicesPage). DeviceList keeps
+              only the class facet and the Columns menu next to the count. */}
           <div className="flex flex-wrap items-center gap-2">
             {hasNetworkDevices && (
               <div
@@ -963,10 +1031,7 @@ export default function DeviceList({
                     type="button"
                     data-testid={`device-class-filter-${value}`}
                     aria-pressed={classFilter === value}
-                    onClick={() => {
-                      setClassFilter(value);
-                      setCurrentPage(1);
-                    }}
+                    onClick={() => setClassFilter(value)}
                     className={`h-full rounded px-3 font-medium transition ${
                       classFilter === value
                         ? 'bg-primary text-primary-foreground'
@@ -978,61 +1043,6 @@ export default function DeviceList({
                 ))}
               </div>
             )}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="search"
-                placeholder="Search by hostname"
-                value={query}
-                onChange={event => {
-                  setQuery(event.target.value);
-                  setCurrentPage(1);
-                }}
-                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
-              />
-            </div>
-            <select
-              value={statusFilter}
-              aria-label="Filter by status"
-              onChange={event => {
-                setStatusFilter(event.target.value);
-                setCurrentPage(1);
-              }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
-            >
-              <option value="all">All Status</option>
-              <option value="online">Online</option>
-              <option value="offline">Offline</option>
-              <option value="maintenance">Maintenance</option>
-              <option value="decommissioned">Decommissioned</option>
-            </select>
-            <select
-              value={osFilter}
-              aria-label="Filter by operating system"
-              onChange={event => {
-                setOsFilter(event.target.value);
-                setCurrentPage(1);
-              }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
-            >
-              <option value="all">All OS</option>
-              <option value="windows">Windows</option>
-              <option value="macos">macOS</option>
-              <option value="linux">Linux</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => setShowMoreFilters(!showMoreFilters)}
-              className="h-10 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
-            >
-              <Filter className="h-3.5 w-3.5" />
-              More
-              {moreFiltersCount > 0 && (
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
-                  {moreFiltersCount}
-                </span>
-              )}
-            </button>
             {/* Interface density is now an account-wide control in the
                 top-bar theme/display menu (Header.tsx). The table still
                 reflects the saved preference via densityTableClasses +
@@ -1109,142 +1119,6 @@ export default function DeviceList({
                       <span>{COLUMN_LABELS[id]}</span>
                     </label>
                   ))}
-                </div>
-              )}
-            </div>
-            {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all' || groupFilter.length > 0) && (
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery('');
-                  setStatusFilter('all');
-                  setOsFilter('all');
-                  setRoleFilter('all');
-                  setOrgFilter('all');
-                  setSiteFilter('all');
-                  setGroupFilter([]);
-                  setCurrentPage(1);
-                }}
-                className="h-10 whitespace-nowrap rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
-              >
-                Clear filters
-              </button>
-            )}
-          </div>
-        </div>
-        <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${showMoreFilters ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-          <div className="overflow-hidden">
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <select
-                value={roleFilter}
-                aria-label="Filter by device role"
-                onChange={event => {
-                  setRoleFilter(event.target.value);
-                  setCurrentPage(1);
-                }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
-              >
-                <option value="all">All Roles</option>
-                {DEVICE_ROLES.map(role => (
-                  <option key={role} value={role}>
-                    {getDeviceRoleLabel(role)}
-                  </option>
-                ))}
-              </select>
-              {orgs.length > 0 && (
-                <select
-                  value={orgFilter}
-                  aria-label="Filter by organization"
-                  onChange={event => {
-                    setOrgFilter(event.target.value);
-                    setCurrentPage(1);
-                  }}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
-                >
-                  <option value="all">All Orgs</option>
-                  {orgs.map(org => (
-                    <option key={org.id} value={org.id}>
-                      {org.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {sites.length > 0 && (
-                <select
-                  value={siteFilter}
-                  aria-label="Filter by site"
-                  onChange={event => {
-                    setSiteFilter(event.target.value);
-                    setCurrentPage(1);
-                  }}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
-                >
-                  <option value="all">All Sites</option>
-                  {sites.map(site => (
-                    <option key={site.id} value={site.id}>
-                      {site.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {groups.length > 0 && (
-                <div className="relative" ref={groupDropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => setGroupDropdownOpen(!groupDropdownOpen)}
-                    className="h-10 whitespace-nowrap rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
-                  >
-                    Groups
-                    {groupFilter.length > 0 && (
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
-                        {groupFilter.length}
-                      </span>
-                    )}
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  </button>
-                  {groupDropdownOpen && (
-                    <div className="absolute left-0 top-full z-20 mt-1 w-64 rounded-md border bg-card shadow-lg">
-                      <div className="max-h-48 overflow-y-auto p-2">
-                        {groups.map(group => (
-                          <label key={group.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted">
-                            <input
-                              type="checkbox"
-                              checked={groupFilter.includes(group.id)}
-                              onChange={() => {
-                                setGroupFilter(prev =>
-                                  prev.includes(group.id)
-                                    ? prev.filter(id => id !== group.id)
-                                    : [...prev, group.id]
-                                );
-                                setCurrentPage(1);
-                              }}
-                              className="h-4 w-4 rounded border-border"
-                            />
-                            <span className="text-sm truncate">{group.name}</span>
-                            <span className="ml-auto text-[10px] text-muted-foreground">{group.type}</span>
-                          </label>
-                        ))}
-                      </div>
-                      <div className="border-t px-2 py-2 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setGroupDropdownOpen(false);
-                            onCreateGroup?.();
-                          }}
-                          className="text-xs font-medium text-primary hover:underline"
-                        >
-                          + New Group
-                        </button>
-                        <a
-                          href="/devices/groups"
-                          className="text-xs text-muted-foreground hover:text-foreground ml-auto"
-                        >
-                          Manage Groups
-                        </a>
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </div>

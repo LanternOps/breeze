@@ -1,4 +1,16 @@
 /**
+ * HISTORICAL ONE-SHOT MIGRATION — already run in production. DO NOT re-run.
+ *
+ * After the 2026-06 partner-scoping of update rings, patch_policies no longer
+ * carries org_id; ring discovery in migratePatchPoliciesLive now resolves by
+ * partner_id. Per-org ring selection is therefore BEST-EFFORT: a partner with
+ * multiple rings across orgs may resolve the same ring for every org.
+ *
+ * Retained for historical reference and to keep the build green. For any fresh
+ * migration, write a new script that accounts for the current schema.
+ */
+
+/**
  * One-shot data migration script: Standalone feature tables -> Configuration Policies.
  *
  * Reads standalone feature tables (alertRules, automations, automationPolicies,
@@ -168,17 +180,18 @@ async function migrate() {
   }
 
   // 1. Collect all unique orgIds that have any legacy feature data.
+  // NOTE: patchPolicies is now partner-scoped (no orgId column) — it is not used
+  // for org discovery here. Orgs that only had patch policies will be skipped,
+  // which is correct: their settings are now managed at partner scope.
   const [
     orgFromAlertRules,
     orgFromAutomations,
     orgFromAutomationPolicies,
-    orgFromPatchPolicies,
     orgFromMaintenanceWindows,
   ] = await Promise.all([
     db.selectDistinct({ orgId: alertRules.orgId }).from(alertRules),
     db.selectDistinct({ orgId: automations.orgId }).from(automations),
     db.selectDistinct({ orgId: automationPolicies.orgId }).from(automationPolicies),
-    db.selectDistinct({ orgId: patchPolicies.orgId }).from(patchPolicies),
     db.selectDistinct({ orgId: maintenanceWindows.orgId }).from(maintenanceWindows),
   ]);
 
@@ -187,7 +200,6 @@ async function migrate() {
     ...orgFromAlertRules,
     ...orgFromAutomations,
     ...orgFromAutomationPolicies,
-    ...orgFromPatchPolicies,
     ...orgFromMaintenanceWindows,
   ]) {
     orgIdSet.add(row.orgId);
@@ -454,7 +466,10 @@ async function migratePatchPoliciesLive(
   policyId: string,
   createAssignment: (level: 'partner' | 'organization' | 'site' | 'device_group' | 'device', targetId: string) => Promise<void>,
 ) {
-  const legacyPatches = await tx.select().from(patchPolicies).where(eq(patchPolicies.orgId, orgId));
+  // Rings are partner-scoped; derive partnerId from org before querying.
+  const [orgRow] = await tx.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+  if (!orgRow?.partnerId) return;
+  const legacyPatches = await tx.select().from(patchPolicies).where(eq(patchPolicies.partnerId, orgRow.partnerId));
   if (legacyPatches.length === 0) return;
 
   // One feature link for patch; take the first enabled policy (or just the first).
@@ -603,11 +618,17 @@ async function migrateOrgDryRun(orgId: string) {
 
   log(`  Org "${org.name}" (${orgId}):`);
 
+  // Rings are partner-scoped; derive partnerId from org before querying.
+  const [orgForPartner] = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+  const orgPartnerId = orgForPartner?.partnerId ?? null;
+
   const [legacyAlerts, legacyAutos, legacyPatches, legacyMaint, legacyComp] =
     await Promise.all([
       db.select().from(alertRules).where(eq(alertRules.orgId, orgId)),
       db.select().from(automations).where(eq(automations.orgId, orgId)),
-      db.select().from(patchPolicies).where(eq(patchPolicies.orgId, orgId)),
+      orgPartnerId
+        ? db.select().from(patchPolicies).where(eq(patchPolicies.partnerId, orgPartnerId))
+        : Promise.resolve([]),
       db.select().from(maintenanceWindows).where(eq(maintenanceWindows.orgId, orgId)),
       db.select().from(automationPolicies).where(eq(automationPolicies.orgId, orgId)),
     ]);

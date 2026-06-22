@@ -4,6 +4,7 @@ import { Filter, Loader2, Search, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { cn, friendlyFetchError } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { ResponsiveTable, DataCard, CardField } from '../shared/ResponsiveTable';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
 type ThreatStatus = 'active' | 'quarantined' | 'removed';
@@ -148,6 +149,28 @@ export default function ThreatList({ timezone }: ThreatListProps) {
   const allSelected = threats.length > 0 && threats.every((threat) => selectedIds.has(threat.id));
   const someSelected = threats.some((threat) => selectedIds.has(threat.id));
 
+  // Row pieces shared by the desktop table and the mobile cards.
+  const renderSelectCheckbox = (threat: Threat) => (
+    <input
+      type="checkbox"
+      checked={selectedIds.has(threat.id)}
+      onChange={(event) => handleSelectOne(threat.id, event.target.checked)}
+      className="h-4 w-4 rounded border-border"
+    />
+  );
+
+  const renderSeverityBadge = (threat: Threat) => (
+    <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', severityBadge[threat.severity])}>
+      {threat.severity}
+    </span>
+  );
+
+  const renderStatusBadge = (threat: Threat) => (
+    <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', statusBadge[threat.status])}>
+      {threat.status}
+    </span>
+  );
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       {error && (
@@ -264,74 +287,102 @@ export default function ThreatList({ timezone }: ThreatListProps) {
         </div>
       )}
 
-      <div className="mt-6 overflow-hidden rounded-md border">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  ref={(element) => {
-                    if (element) element.indeterminate = someSelected && !allSelected;
-                  }}
-                  onChange={(event) => handleSelectAll(event.target.checked)}
-                  className="h-4 w-4 rounded border-border"
-                />
-              </th>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Threat</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Severity</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Detected</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {loading ? (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  <span className="inline-flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading threats...
-                  </span>
-                </td>
+      <ResponsiveTable
+        className="mt-6"
+        table={
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(element) => {
+                      if (element) element.indeterminate = someSelected && !allSelected;
+                    }}
+                    onChange={(event) => handleSelectAll(event.target.checked)}
+                    className="h-4 w-4 rounded border-border"
+                  />
+                </th>
+                <th className="px-4 py-3">Device</th>
+                <th className="px-4 py-3">Threat</th>
+                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3">Severity</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Detected</th>
               </tr>
-            ) : threats.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No threats found.</td>
-              </tr>
-            ) : (
-              threats.map((threat) => (
-                <tr key={threat.id} className="text-sm">
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(threat.id)}
-                      onChange={(event) => handleSelectOne(threat.id, event.target.checked)}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                  </td>
-                  <td className="px-4 py-3 font-medium">{threat.deviceName}</td>
-                  <td className="px-4 py-3">{threat.name}</td>
-                  <td className="px-4 py-3 capitalize text-muted-foreground">{threat.category}</td>
-                  <td className="px-4 py-3">
-                    <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', severityBadge[threat.severity])}>
-                      {threat.severity}
+            </thead>
+            <tbody className="divide-y">
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading threats...
                     </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', statusBadge[threat.status])}>
-                      {threat.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{formatDetectedAt(threat.detectedAt, timezone)}</td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : threats.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No threats found.</td>
+                </tr>
+              ) : (
+                threats.map((threat) => (
+                  <tr key={threat.id} className="text-sm">
+                    <td className="px-4 py-3">{renderSelectCheckbox(threat)}</td>
+                    <td className="px-4 py-3 font-medium">{threat.deviceName}</td>
+                    <td className="px-4 py-3">{threat.name}</td>
+                    <td className="px-4 py-3 capitalize text-muted-foreground">{threat.category}</td>
+                    <td className="px-4 py-3">{renderSeverityBadge(threat)}</td>
+                    <td className="px-4 py-3">{renderStatusBadge(threat)}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatDetectedAt(threat.detectedAt, timezone)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          loading ? (
+            <DataCard>
+              <p className="inline-flex items-center justify-center gap-2 py-2 text-center text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading threats...
+              </p>
+            </DataCard>
+          ) : threats.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">No threats found.</p>
+            </DataCard>
+          ) : (
+            threats.map((threat) => (
+              <DataCard key={threat.id}>
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 shrink-0">{renderSelectCheckbox(threat)}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold">{threat.name}</div>
+                        <div className="truncate text-xs capitalize text-muted-foreground">{threat.category}</div>
+                      </div>
+                      <div className="shrink-0">{renderSeverityBadge(threat)}</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 space-y-2 border-t pt-3">
+                  <CardField label="Device">
+                    <span className="font-medium">{threat.deviceName}</span>
+                  </CardField>
+                  <CardField label="Status">{renderStatusBadge(threat)}</CardField>
+                  <CardField label="Detected">
+                    <span className="text-xs text-muted-foreground">{formatDetectedAt(threat.detectedAt, timezone)}</span>
+                  </CardField>
+                </div>
+              </DataCard>
+            ))
+          )
+        }
+      />
     </div>
   );
 }

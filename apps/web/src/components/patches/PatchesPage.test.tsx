@@ -1,5 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// PatchList renders through ResponsiveTable — a desktop <table> and a mobile
+// card list are both in the DOM at once (the sm: breakpoint is CSS-only, invisible
+// to jsdom), so row text/labels appear twice. Scope row-level interactions to the
+// desktop surface; use findAllByText for render-wait gates that tolerate the dupe.
+const desktop = () => within(screen.getByTestId('responsive-table-desktop'));
 
 // Mock showToast before importing PatchesPage so runAction uses the mock
 const showToast = vi.fn();
@@ -25,6 +31,17 @@ vi.mock('../../stores/orgStore', () => {
   return { useOrgStore: Object.assign(read, { getState: read }) };
 });
 
+// Mutable JWT scope so individual tests can simulate partner vs. org-scoped sessions.
+const jwtScope = vi.hoisted(() => ({ scope: 'partner' as 'partner' | 'system' | 'organization' | null }));
+
+vi.mock('../../lib/authScope', () => ({
+  getJwtClaims: () => ({
+    scope: jwtScope.scope,
+    partnerId: jwtScope.scope !== 'organization' ? 'p1' : null,
+    orgId: jwtScope.scope === 'organization' ? 'org-1' : null,
+  }),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -39,6 +56,7 @@ describe('PatchesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     orgState.currentOrgId = null;
+    jwtScope.scope = 'partner';
     window.history.replaceState({}, '', '/?tab=patches');
   });
 
@@ -91,11 +109,12 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('Critical Security Update');
+    await screen.findAllByText('Critical Security Update');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Select Feature Update' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Approve 2' }));
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Feature Update' }));
+    // Wait for selection state to commit before clicking the conditionally-rendered Approve button.
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve 2' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -110,15 +129,60 @@ describe('PatchesPage', () => {
     });
 
     await screen.findByText('Failed to approve 1 patch');
-    expect(screen.getAllByRole('button', { name: 'Deploy' })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: 'Review' })).toHaveLength(1);
+    expect(desktop().getAllByRole('button', { name: 'Deploy' })).toHaveLength(1);
+    expect(desktop().getAllByRole('button', { name: 'Review' })).toHaveLength(1);
   });
 
-  it('blocks bulk approve and prompts for an update ring when there is no org context', async () => {
-    // Partner on the global /patches view: no current org and no ring selected.
-    // Approval is ring-scoped, so the request would 400 ('orgId is required for
-    // partner/system scope') — guard it client-side with a clear prompt instead.
+  it('partner scope: allows bulk approve in all-orgs mode (no org, no ring) — request fires partner-wide', async () => {
+    // After the partner-scoping migration, the API derives the partner from
+    // auth.partnerId. A partner user in all-orgs mode (no org, no ring) is valid —
+    // the old "select an org or ring" guard was a UX regression.
+    jwtScope.scope = 'partner';
     orgState.currentOrgId = null;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'Critical Security Update',
+              severity: 'critical',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'pending',
+            },
+          ],
+        });
+      }
+      if (url === '/patches/bulk-approve') {
+        return makeJsonResponse({ approved: ['patch-1'], failed: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findAllByText('Critical Security Update');
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
+    // Wait for selection state to commit before clicking the conditionally-rendered Approve button.
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve 1' }));
+
+    // Guard must NOT throw — the request must fire
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/bulk-approve',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+  });
+
+  it('org scope: blocks bulk approve with partner-level message', async () => {
+    // Org-scoped users cannot manage approvals (rings are partner-scoped).
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
@@ -142,11 +206,12 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('Critical Security Update');
-    fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
+    await screen.findAllByText('Critical Security Update');
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
+    // Wait for selection state to commit before clicking the conditionally-rendered Approve button.
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve 1' }));
 
-    await screen.findByText(/select an organization or update ring/i);
+    await screen.findByText(/patch approvals are managed at the partner level/i);
     expect(fetchMock).not.toHaveBeenCalledWith('/patches/bulk-approve', expect.anything());
   });
 
@@ -181,7 +246,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    const deploy = await screen.findByRole('button', { name: 'Deploy' });
+    const deploy = (await screen.findAllByRole('button', { name: 'Deploy' }))[0];
     fireEvent.click(deploy);
 
     // Feedback toast fires and the Compliance tab content renders.
@@ -192,7 +257,10 @@ describe('PatchesPage', () => {
     });
   });
 
-  it('disables New Ring in All-orgs mode (currentOrgId null) with a select-an-org hint', async () => {
+  it('partner scope: shows Update Rings tab and enables New Ring even in All-orgs mode', async () => {
+    // Rings are partner-scoped — a partner user in all-orgs mode (no org selected)
+    // should see the tab and be able to open the create form.
+    jwtScope.scope = 'partner';
     orgState.currentOrgId = null;
     window.history.replaceState({}, '', '/?tab=rings');
     fetchMock.mockImplementation(async (input) => {
@@ -204,9 +272,62 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
+    // The Update Rings tab must be visible.
+    expect(await screen.findByRole('button', { name: /Update Rings/i })).toBeInTheDocument();
+
+    // The New Ring button must be enabled (no disabled, no select-an-org hint).
     const newRing = await screen.findByRole('button', { name: /New Ring/i });
-    expect(newRing).toBeDisabled();
-    expect(newRing).toHaveAttribute('title', expect.stringMatching(/select an organization/i));
+    expect(newRing).not.toBeDisabled();
+    expect(newRing).not.toHaveAttribute('title');
+  });
+
+  it('org scope: hides the Update Rings tab and disables New Ring with partner-level hint', async () => {
+    // Org-scoped users don't manage rings — they should not see the tab at all.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/?tab=compliance');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    // Wait for the page to render (compliance tab is default here).
+    await screen.findByRole('button', { name: /Compliance/i });
+
+    // The Update Rings tab must NOT be rendered.
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
+  });
+
+  it('org scope: falls back to compliance when URL contains ?tab=rings (bookmark guard)', async () => {
+    // If an org user navigates to /patches?tab=rings (e.g. a stale bookmark or
+    // shared link from a partner), the initializer guard must redirect to compliance
+    // so rings body content (UpdateRingList / New Ring button) is never rendered.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/?tab=rings');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    // The Compliance tab nav button must be present (page fell back to compliance).
+    expect(await screen.findByRole('button', { name: /Compliance/i })).toBeInTheDocument();
+
+    // Rings-only body content must NOT be rendered.
+    expect(screen.queryByRole('button', { name: /New Ring/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
   });
 
   it('enables New Ring when a specific org is selected and creates the ring (orgId auto-injected) with a success toast', async () => {
@@ -300,7 +421,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
 
     // Click "Run Scan" — this should NOT yet fire the POST
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
@@ -379,7 +500,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -431,7 +552,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -470,7 +591,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     await waitFor(() => {
@@ -507,7 +628,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     await waitFor(() => {
@@ -553,7 +674,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -601,7 +722,7 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -650,7 +771,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -706,7 +827,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm
@@ -757,7 +878,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Confirmation must reflect the two actual target orgs
@@ -801,7 +922,7 @@ describe('PatchesPage', () => {
     });
 
     render(<PatchesPage />);
-    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    await screen.findAllByText('No patches found. Try adjusting your search or filters.');
     fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
 
     // Wait for confirm dialog and click confirm

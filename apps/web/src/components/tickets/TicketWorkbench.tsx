@@ -16,6 +16,63 @@ import { fetchTicketConfig, statusLabel, priorityLabel, activeStatusesByCore, ty
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
+// ─── TagEditor ───────────────────────────────────────────────────────────────
+
+interface TagEditorProps {
+  value: string[];
+  max?: number;
+  onChange: (tags: string[]) => void;
+  'data-testid'?: string;
+}
+
+function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEditorProps) {
+  const [input, setInput] = useState('');
+
+  const addTag = () => {
+    const trimmed = input.trim().slice(0, 50);
+    if (!trimmed || value.includes(trimmed) || value.length >= max) return;
+    onChange([...value, trimmed]);
+    setInput('');
+  };
+
+  return (
+    <div data-testid={testId} className="flex flex-wrap gap-1">
+      {value.map((tag) => (
+        <span key={tag} className="flex items-center gap-0.5 rounded border bg-muted px-1.5 py-0.5 text-xs">
+          {tag}
+          <button
+            type="button"
+            data-testid={`ticket-workbench-tag-remove-${tag}`}
+            className="ml-0.5 hover:text-destructive"
+            onClick={() => onChange(value.filter((t) => t !== tag))}
+            aria-label={`Remove tag ${tag}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      {value.length < max && (
+        <input
+          type="text"
+          data-testid="ticket-workbench-tag-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); addTag(); }
+          }}
+          onBlur={addTag}
+          placeholder="Add tag…"
+          maxLength={50}
+          className="rounded border bg-background px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          aria-label="Add tag"
+        />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface Props {
   ticketId: string;
   onChanged?: () => void;       // queue refresh hook (debounced background reconcile)
@@ -60,9 +117,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
   const [railOpen] = useState(true);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
+  const [moveOrgOpen, setMoveOrgOpen] = useState(false);
+  const [moveOrgTargetId, setMoveOrgTargetId] = useState('');
+  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [triageSuggestion, setTriageSuggestion] = useState<TicketTriageSuggestion | null>(null);
   const [triageLoading, setTriageLoading] = useState(false);
   const [applyingTriage, setApplyingTriage] = useState(false);
@@ -177,6 +239,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     return () => { cancelled = true; };
   }, [assigneesProvided]);
 
+  // Fetch org list for the move-org picker. Fails gracefully — if unavailable
+  // the picker just won't show any options (degrade to empty select).
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWithAuth('/orgs/organizations?limit=100')
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled || !body) return;
+        const rows = (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).data
+          ?? (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).organizations
+          ?? [];
+        if (Array.isArray(rows)) setOrgs((rows as Array<{ id: string; name: string }>).filter((o) => o.id && o.name));
+      })
+      .catch(() => { /* degrade gracefully */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // Fetch ticket config once (module-cached across islands). Failure leaves
   // config null, which keeps the six-core-status fallback select fully working.
   useEffect(() => {
@@ -244,6 +323,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       setCreatingInvoice(false);
     }
   }, [ticketId, creatingInvoice]);
+
+  const handleMoveOrg = useCallback((targetOrgId: string) => {
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, { method: 'POST', body: JSON.stringify({ orgId: targetOrgId }) }),
+      errorFallback: 'Move failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, load]);
 
   const applyTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || applyingTriage) return;
@@ -351,6 +438,33 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     afterMutation();
   }, [ticketId, afterMutation]);
 
+  // Generic field PATCH — saves any { subject } / { description } / etc. patch.
+  // afterMutation with the optimistic patch paints the change locally and
+  // reconciles in the background (same pattern as priority/category PATCHes).
+  const handleFieldSave = useCallback((patch: Record<string, unknown>) => {
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+      errorFallback: 'Update failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => afterMutation(patch as Partial<TicketDetail>)).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, afterMutation]);
+
+  const handleEditComment = useCallback((commentId: string, content: string) => {
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
+      errorFallback: 'Comment edit failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, load]);
+
+  const handleDeleteComment = useCallback((commentId: string) => {
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'DELETE' }),
+      errorFallback: 'Comment delete failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, load]);
+
   // Skeleton only on the first load of a ticket. Refreshes (send, status
   // change, refreshToken bump) keep the tree mounted so composer state —
   // the public/internal tab in particular — survives; aria-busy marks them.
@@ -392,7 +506,32 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       <div className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm text-muted-foreground" data-testid="ticket-workbench-number">{ticket.internalNumber ?? ticket.id.slice(0, 8)}</span>
-          <h2 className="truncate text-base font-semibold">{ticket.subject}</h2>
+          <input
+            type="text"
+            defaultValue={ticket.subject}
+            key={ticket.subject}
+            className="min-w-0 flex-1 truncate bg-transparent text-base font-semibold outline-none hover:bg-muted/30 focus:bg-muted/30 focus:ring-1 focus:ring-ring rounded px-1 -mx-1"
+            data-testid="ticket-workbench-subject-edit"
+            aria-label="Ticket subject"
+            onBlur={(e) => {
+              const next = e.target.value.trim();
+              if (!next || next === ticket.subject) return;
+              handleFieldSave({ subject: next });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                const next = (e.target as HTMLInputElement).value.trim();
+                if (!next || next === ticket.subject) return;
+                handleFieldSave({ subject: next });
+                (e.target as HTMLInputElement).blur();
+              }
+              if (e.key === 'Escape') {
+                (e.target as HTMLInputElement).value = ticket.subject;
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
           {!expanded && (
             <a href={`/tickets/${ticket.id}`} className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground" title="Open full page" data-testid="ticket-workbench-expand">
               <ExternalLink className="h-4 w-4" />
@@ -532,7 +671,51 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           >
             {creatingInvoice ? 'Creating…' : 'Create invoice'}
           </button>
+          <button
+            type="button"
+            data-testid="ticket-workbench-move-org"
+            className="text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => { setMoveOrgOpen(true); setMoveOrgTargetId(''); }}
+          >
+            Move to another org…
+          </button>
         </div>
+        {moveOrgOpen && (
+          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
+            <label className="text-xs font-medium" htmlFor="move-org-select">Move to organization</label>
+            <select
+              id="move-org-select"
+              data-testid="ticket-workbench-move-org-select"
+              value={moveOrgTargetId}
+              onChange={(e) => setMoveOrgTargetId(e.target.value)}
+              className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-xs"
+            >
+              <option value="">Select organization…</option>
+              {orgs.filter((o) => o.id !== ticket.orgId).map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+            <div className="mt-1.5 flex justify-end gap-2">
+              <button
+                type="button"
+                data-testid="ticket-workbench-move-org-cancel"
+                onClick={() => setMoveOrgOpen(false)}
+                className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="ticket-workbench-move-org-confirm"
+                disabled={!moveOrgTargetId}
+                onClick={() => { if (moveOrgTargetId) { handleMoveOrg(moveOrgTargetId); setMoveOrgOpen(false); } }}
+                className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+              >
+                Move
+              </button>
+            </div>
+          </div>
+        )}
         {(triageSuggestion || triageLoading) && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-triage-suggestion">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -646,12 +829,64 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {ticket.description && (
-              <div className="border-b p-4">
-                <p className="whitespace-pre-wrap text-sm">{ticket.description}</p>
-              </div>
-            )}
-            <TicketFeed comments={ticket.comments} />
+            <div className="border-b p-4">
+              {editingDescription ? (
+                <div className="space-y-2">
+                  <textarea
+                    ref={descriptionTextareaRef}
+                    className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                    rows={4}
+                    defaultValue={ticket.description ?? ''}
+                    data-testid="ticket-workbench-description-textarea"
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingDescription(false)}
+                      className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+                      data-testid="ticket-workbench-description-cancel-btn"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = descriptionTextareaRef.current?.value ?? '';
+                        handleFieldSave({ description: next });
+                        setEditingDescription(false);
+                      }}
+                      className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
+                      data-testid="ticket-workbench-description-save-btn"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="group flex items-start gap-2">
+                  {ticket.description ? (
+                    <p className="flex-1 whitespace-pre-wrap text-sm">{ticket.description}</p>
+                  ) : (
+                    <p className="flex-1 text-sm text-muted-foreground italic">No description.</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setEditingDescription(true); }}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
+                    data-testid="ticket-workbench-description-edit-btn"
+                  >
+                    {ticket.description ? 'Edit' : 'Add description'}
+                  </button>
+                </div>
+              )}
+            </div>
+            <TicketFeed
+              comments={ticket.comments}
+              onEditComment={handleEditComment}
+              onDeleteComment={handleDeleteComment}
+              canManageComment={(c) => !c.portalUserId}
+            />
           </div>
           <TicketComposer requesterName={ticket.submitterName} onSend={sendComment} />
         </div>
@@ -666,7 +901,48 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 <div><dt className="text-xs text-muted-foreground">Requester</dt><dd>{ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}</dd></div>
                 <div><dt className="text-xs text-muted-foreground">Source</dt><dd className="capitalize">{ticket.source}</dd></div>
                 <div><dt className="text-xs text-muted-foreground">Created</dt><dd>{formatDateTime(ticket.createdAt)}</dd></div>
-                {ticket.dueDate && <div><dt className="text-xs text-muted-foreground">Due</dt><dd>{formatDateTime(ticket.dueDate)}</dd></div>}
+                <div>
+                  <dt className="text-xs text-muted-foreground">Due date</dt>
+                  <dd>
+                    <input
+                      type="date"
+                      data-testid="ticket-workbench-due"
+                      aria-label="Due date"
+                      value={ticket.dueDate ? ticket.dueDate.slice(0, 10) : ''}
+                      onChange={(e) => handleFieldSave({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                      className="rounded-md border bg-background px-2 py-1 text-xs"
+                    />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Tags</dt>
+                  <dd>
+                    <TagEditor
+                      data-testid="ticket-workbench-tags"
+                      value={ticket.tags ?? []}
+                      max={20}
+                      onChange={(tags) => handleFieldSave({ tags })}
+                    />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Device</dt>
+                  <dd>
+                    <div data-testid="ticket-workbench-device" className="flex items-center gap-2 text-xs">
+                      <span>{ticket.deviceHostname ?? 'No device'}</span>
+                      {ticket.deviceId && (
+                        <button
+                          type="button"
+                          data-testid="ticket-workbench-device-unlink"
+                          className="hover:text-destructive"
+                          onClick={() => handleFieldSave({ deviceId: null })}
+                        >
+                          Unlink
+                        </button>
+                      )}
+                    </div>
+                  </dd>
+                </div>
                 {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">Waiting on</dt><dd>{ticket.pendingReason}</dd></div>}
                 {ticket.resolutionNote && (ticket.status === 'resolved' || ticket.status === 'closed') && (
                   <div><dt className="text-xs text-muted-foreground">Resolution</dt><dd>{ticket.resolutionNote}</dd></div>

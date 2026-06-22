@@ -33,6 +33,16 @@ export const DEVICE_ROLES = [
 ] as const;
 export type DeviceRole = typeof DEVICE_ROLES[number];
 
+// Orthogonal virtualization attribute (issue #1387). A virtual/VDI box is still
+// a workstation (or server) — virtualization is a SECOND targeting axis, not a
+// device role. The agent derives the platform from SMBIOS hardware identity
+// strings (Manufacturer/Model/BIOS); these tokens are kept in sync with the
+// agent's classify.go virtualizationMarkers list.
+export const VIRTUALIZATION_PLATFORMS = [
+  'vmware', 'hyperv', 'virtualbox', 'qemu', 'kvm', 'xen', 'bochs', 'parallels'
+] as const;
+export type VirtualizationPlatform = typeof VIRTUALIZATION_PLATFORMS[number];
+
 // ============================================
 // Common Validators
 // ============================================

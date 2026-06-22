@@ -246,6 +246,21 @@ function buildApiUrl(path: string): string {
   return `${apiHost}/api/v1${cleanPath}`;
 }
 
+/**
+ * Resolve the absolute origin (scheme + host) that serves the API, for building
+ * user-facing copyable URLs (e.g. inbound webhook endpoints to paste into a
+ * third-party integration). Unlike `resolveApiHost`, this never returns an empty
+ * string: in production `PUBLIC_API_URL` is blank (relative paths behind Caddy),
+ * so it falls back to the current page origin, which is region-correct
+ * (us.2breeze.app / eu.2breeze.app). Returns '' only during SSR with no host.
+ */
+export function resolveApiOrigin(): string {
+  const apiHost = resolveApiHost();
+  if (apiHost) return apiHost;
+  if (typeof window !== 'undefined') return window.location.origin;
+  return '';
+}
+
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
