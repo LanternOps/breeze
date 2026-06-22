@@ -120,6 +120,7 @@ describe('DeviceReliabilityPanel', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
     await openOutcomeMenu();
+    expect(screen.getByTestId('reliability-outcome-menu')).toBeTruthy();
     fireEvent.click(screen.getByTestId('reliability-outcome-false_alarm'));
 
     await waitFor(() => {
@@ -138,6 +139,11 @@ describe('DeviceReliabilityPanel', () => {
       type: 'success',
       message: 'False alarm label saved',
     }));
+
+    // Menu closes after selecting an outcome (close-on-select).
+    await waitFor(() => {
+      expect(screen.queryByTestId('reliability-outcome-menu')).toBeNull();
+    });
   });
 
   it('toasts an error when feedback submission fails (non-2xx)', async () => {
@@ -233,6 +239,41 @@ describe('DeviceReliabilityPanel', () => {
     expect(ctx).toMatchObject({ type: 'device', id: 'dev-1', hostname: 'host-1', os: 'windows', status: 'online' });
     expect(seed).toContain('44/100');
     expect(seed).toContain('Crashes');
+  });
+
+  it('seeds the AI prompt with healthy-device fallbacks (no MTBF, no drivers)', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        snapshot: {
+          deviceId: 'dev-1',
+          hostname: 'host-1',
+          osType: 'macos',
+          status: 'online',
+          reliabilityScore: 98,
+          trendDirection: 'stable',
+          trendConfidence: 0.2,
+          uptime30d: 99.9,
+          crashCount30d: 0,
+          hangCount30d: 0,
+          serviceFailureCount30d: 0,
+          hardwareErrorCount30d: 0,
+          mtbfHours: null,
+          topIssues: [],
+          drivers: [],
+          computedAt: '2026-06-18T12:00:00.000Z',
+        },
+        history: [],
+      }),
+    );
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+
+    fireEvent.click(await screen.findByTestId('reliability-ask-ai'));
+
+    const [, , seed] = startDeviceTaskMock.mock.calls[0];
+    expect(seed).toContain('98/100');
+    expect(seed).toContain('MTBF unknown');
+    expect(seed).toContain('none flagged');
   });
 
   it('shows a disabled state without fetching reliability when the feature flag is off', async () => {
