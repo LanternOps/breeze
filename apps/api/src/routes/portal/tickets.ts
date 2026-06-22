@@ -295,6 +295,13 @@ ticketRoutes.patch(
     const { id, commentId } = c.req.valid('param');
     const body = c.req.valid('json');
 
+    // Portal edit uses the shared editCommentSchema (50k), but portal CREATE caps
+    // content at 5,000 chars (commentSchema). Enforce the same 5k limit here so
+    // portal customers can't bypass it by editing instead of creating.
+    if (body.content.length > 5000) {
+      return c.json({ error: 'Comment content must be 5000 characters or fewer' }, 400);
+    }
+
     const mutable = await portalCommentMutable(commentId, auth.user.id);
     if (!mutable.ok) {
       if (mutable.reason === 'staff_replied') {

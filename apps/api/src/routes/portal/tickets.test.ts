@@ -466,6 +466,33 @@ describe('portal PATCH /tickets/:id/comments/:commentId', () => {
     });
     expect(res.status).toBe(403);
   });
+
+  it('rejects content exceeding 5000 chars with 400 (portal cap)', async () => {
+    // Portal create caps content at 5000; portal edit must enforce the same cap
+    // even though the shared editCommentSchema allows 50k. Staff edit stays at 50k.
+    const overLimit = 'a'.repeat(5001);
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: overLimit }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toMatch(/5000/);
+    // editTicketComment must NOT have been called — rejection happens before service
+    expect(editTicketCommentMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts content of exactly 5000 chars (at boundary)', async () => {
+    const atLimit = 'b'.repeat(5000);
+    editTicketCommentMock.mockResolvedValueOnce({ id: COMMENT_ID, content: atLimit, editedAt: new Date() });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: atLimit }),
+    });
+    expect(res.status).toBe(200);
+  });
 });
 
 // ── DELETE /tickets/:id/comments/:commentId — Task 7 ─────────────────────────

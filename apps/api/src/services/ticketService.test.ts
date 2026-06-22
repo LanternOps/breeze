@@ -1706,6 +1706,11 @@ describe('editTicketComment', () => {
       details: expect.objectContaining({ commentId: 'c1', previousContent: 'old' }),
       result: 'success'
     }));
+
+    // Fix 1: edit must NOT emit a ticket event — doing so re-triggers "new reply"
+    // emails to the portal requester. Regression guard: if emitMock is called here
+    // the spurious customer notification bug has returned.
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('rejects a non-author without canManageAny (403)', async () => {
@@ -1800,6 +1805,11 @@ describe('deleteTicketComment', () => {
       details: expect.objectContaining({ commentId: 'c1', previousContent: 'old' }),
       result: 'success'
     }));
+
+    // Fix 1: delete must NOT emit a ticket event — doing so sends a ghost "new
+    // reply" email to the portal requester. Regression guard: if emitMock is called
+    // here the spurious customer notification bug has returned.
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('rejects a non-author without canManageAny (403)', async () => {

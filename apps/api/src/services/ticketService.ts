@@ -954,14 +954,11 @@ export async function editTicketComment(
   const row = updated[0];
   if (!row) throw new TicketServiceError('Comment not found', 404);
 
-  await emitTicketEvent({
-    type: 'ticket.commented',
-    ticketId: ticket.id,
-    orgId: ticket.orgId,
-    partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
-    payload: { commentId, isPublic: row.isPublic }
-  });
+  // NOTE: no emitTicketEvent here — emitting 'ticket.commented' on an edit
+  // would re-trigger the notify worker's "new reply" email to the portal
+  // requester. The web UI re-fetches via load({background:true}) after edit.
+  // A future 'ticket.comment_edited' event type can be added when automation
+  // consumers need it.
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -992,14 +989,11 @@ export async function deleteTicketComment(
     throw new TicketServiceError('Comment not found or already deleted', 409);
   }
 
-  await emitTicketEvent({
-    type: 'ticket.commented',
-    ticketId: ticket.id,
-    orgId: ticket.orgId,
-    partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
-    payload: { commentId, isPublic: comment.isPublic }
-  });
+  // NOTE: no emitTicketEvent here — emitting 'ticket.commented' on a delete
+  // would send a ghost "new reply" email to the portal requester. The web UI
+  // re-fetches via load({background:true}) after delete.
+  // A future 'ticket.comment_deleted' event type can be added when automation
+  // consumers need it.
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -1017,6 +1011,9 @@ export async function deleteTicketComment(
 // Child tables that denormalize org_id and reference a ticket. Mirrors the
 // device-move CUSTOM_ORG_REWRITE_TABLES set (core.ts) — keep in lockstep.
 // ticket_comments is intentionally absent: it has no org_id (child-via-parent).
+// invoice_lines is intentionally excluded: issued billing history must remain
+// stamped with the org that was billed (matches device CUSTOM_ORG_REWRITE_TABLES
+// exclusion); its ticket_id FK is ON DELETE SET NULL so moves do not orphan it.
 const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links'] as const;
 
 /**
