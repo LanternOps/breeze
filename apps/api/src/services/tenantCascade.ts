@@ -207,6 +207,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'onedrive_device_state',
   'org_ticket_settings',
   'organization_users',
+  'pam_org_config',
   'pam_rules',
   'patch_approvals',
   'patch_compliance_reports',
