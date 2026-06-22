@@ -18,6 +18,17 @@ export type AssetDetail = DiscoveredAsset & {
   tags?: string[];
 };
 
+// Friendly labels for the scalar SNMP system OIDs the discovery scan collects.
+const SNMP_FIELD_LABELS: Record<string, string> = {
+  sysName: 'System Name',
+  sysDescr: 'Description',
+  sysObjectId: 'Object ID'
+};
+
+function snmpFieldLabel(key: string): string {
+  return SNMP_FIELD_LABELS[key] ?? key;
+}
+
 type AssetDetailModalProps = {
   open: boolean;
   asset?: AssetDetail | null;
@@ -232,6 +243,7 @@ export default function AssetDetailModal({
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';
   const snmpData = asset.snmpData ?? {};
+  const snmpAttempted = (asset.discoveryMethods ?? []).includes('snmp');
 
   return (
     <Dialog open={open} onClose={onClose} title={asset.label || asset.hostname || asset.ip} maxWidth="5xl" alignTop className="flex flex-col max-h-[calc(100vh-4rem)]">
@@ -307,12 +319,16 @@ export default function AssetDetailModal({
               <h3 className="text-sm font-semibold">SNMP Data</h3>
               <dl className="mt-3 space-y-2 text-sm">
                 {Object.keys(snmpData).length === 0 ? (
-                  <div className="text-xs text-muted-foreground">No SNMP data available.</div>
+                  <div className="text-xs text-muted-foreground">
+                    {snmpAttempted
+                      ? 'No SNMP response — the asset did not answer the SNMP probe (check the community string in the discovery profile, or it may not have SNMP enabled).'
+                      : 'SNMP was not probed for this asset. Enable the SNMP method on the discovery profile to collect SNMP data.'}
+                  </div>
                 ) : (
                   Object.entries(snmpData).map(([key, value]) => (
-                    <div key={key} className="flex items-center justify-between">
-                      <dt className="text-muted-foreground">{key}</dt>
-                      <dd className="font-medium text-right">{value}</dd>
+                    <div key={key} className="flex items-center justify-between gap-4">
+                      <dt className="text-muted-foreground">{snmpFieldLabel(key)}</dt>
+                      <dd className="font-medium text-right break-all">{value}</dd>
                     </div>
                   ))
                 )}

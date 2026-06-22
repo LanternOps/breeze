@@ -120,3 +120,35 @@ describe('AssetDetailModal — link to managed device', () => {
     });
   });
 });
+
+describe('AssetDetailModal — SNMP data card', () => {
+  it('renders collected SNMP fields with friendly labels (#1731)', () => {
+    const snmpAsset: AssetDetail = {
+      ...asset,
+      discoveryMethods: ['ping', 'snmp'],
+      snmpData: { sysName: 'core-sw-01', sysDescr: 'Cisco IOS', sysObjectId: '1.3.6.1.4.1.9.1.1' },
+    };
+    render(<AssetDetailModal open asset={snmpAsset} devices={devices} onClose={() => {}} />);
+
+    expect(screen.getByText('System Name')).toBeInTheDocument();
+    expect(screen.getByText('core-sw-01')).toBeInTheDocument();
+    expect(screen.getByText('Description')).toBeInTheDocument();
+    expect(screen.getByText('Cisco IOS')).toBeInTheDocument();
+    expect(screen.getByText('Object ID')).toBeInTheDocument();
+    expect(screen.queryByText(/No SNMP/i)).not.toBeInTheDocument();
+  });
+
+  it('explains a blank card when SNMP was attempted but got no response', () => {
+    const noResponse: AssetDetail = { ...asset, discoveryMethods: ['ping', 'snmp'], snmpData: {} };
+    render(<AssetDetailModal open asset={noResponse} devices={devices} onClose={() => {}} />);
+
+    expect(screen.getByText(/No SNMP response/i)).toBeInTheDocument();
+  });
+
+  it('explains a blank card when SNMP was not probed at all', () => {
+    const notProbed: AssetDetail = { ...asset, discoveryMethods: ['ping'], snmpData: {} };
+    render(<AssetDetailModal open asset={notProbed} devices={devices} onClose={() => {}} />);
+
+    expect(screen.getByText(/SNMP was not probed/i)).toBeInTheDocument();
+  });
+});

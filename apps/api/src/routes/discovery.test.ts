@@ -182,6 +182,70 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.data).toEqual([]);
     });
+
+    // Regression: GET /discovery/assets must project snmp_data so the detail
+    // modal can render it. It was collected + stored but dropped here (#1731).
+    it('projects snmpData in the asset list response', async () => {
+      const now = new Date();
+      const snmp = { sysName: 'core-sw-01', sysDescr: 'Cisco IOS', sysObjectId: '1.3.6.1.4.1.9.1.1' };
+      const row = {
+        asset: {
+          id: 'asset-001',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          assetType: 'switch',
+          approvalStatus: 'pending',
+          isOnline: true,
+          hostname: 'core-sw-01',
+          label: null,
+          ipAddress: '10.0.2.1',
+          macAddress: 'aa:bb:cc:dd:ee:ff',
+          manufacturer: 'Cisco',
+          model: 'C9300',
+          openPorts: [],
+          snmpData: snmp,
+          responseTimeMs: 2,
+          linkedDeviceId: null,
+          discoveryMethods: ['ping', 'snmp'],
+          notes: null,
+          tags: [],
+          firstSeenAt: now,
+          lastSeenAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+        linkedDeviceHostname: null,
+        linkedDeviceDisplayName: null,
+        profileId: null,
+        profileName: null,
+        profileSubnets: null,
+      };
+
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            leftJoin: () => ({
+              leftJoin: () => ({
+                where: () => ({
+                  orderBy: () => Promise.resolve([row]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const res = await app.request('/discovery/assets', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].snmpData).toEqual(snmp);
+      expect(body.data[0].discoveryMethods).toEqual(['ping', 'snmp']);
+    });
   });
 
   describe('POST /discovery/scan', () => {

@@ -892,6 +892,7 @@ discoveryRoutes.get(
           manufacturer: a.manufacturer,
           model: a.model,
           openPorts: a.openPorts,
+          snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
           linkedDeviceId: a.linkedDeviceId,
           linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
