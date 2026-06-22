@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, permsState, authState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   mfaGate: { deny: false },
-  permsState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
+  permsState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined },
+  authState: {
+    scope: 'organization' as string,
+    orgId: '11111111-1111-4111-8111-111111111111' as string | undefined,
+    partnerId: 'a0000000-0000-4000-8000-000000000001' as string | undefined,
+    accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'] as string[],
+    canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
+    orgCondition: () => undefined as any,
+  }
 }));
 
 vi.mock('../db', () => ({
@@ -13,8 +21,7 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn()
-  }
-,
+  },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -22,6 +29,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   devices: { id: 'id', orgId: 'orgId', hostname: 'hostname', siteId: 'siteId' },
+  organizations: { id: 'id', name: 'name', partnerId: 'partnerId' },
   s1Actions: {
     id: 'id',
     orgId: 'orgId',
@@ -43,7 +51,8 @@ vi.mock('../db/schema', () => ({
   },
   s1Integrations: {
     id: 'id',
-    orgId: 'orgId',
+    partnerId: 'partnerId',
+    legacyOrgId: 'legacyOrgId',
     name: 'name',
     managementUrl: 'managementUrl',
     apiTokenEncrypted: 'apiTokenEncrypted',
@@ -54,6 +63,19 @@ vi.mock('../db/schema', () => ({
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
     createdBy: 'createdBy'
+  },
+  s1OrgMappings: {
+    id: 'id',
+    integrationId: 'integrationId',
+    partnerId: 'partnerId',
+    s1SiteId: 's1SiteId',
+    s1SiteName: 's1SiteName',
+    orgId: 'orgId',
+    agentsCount: 'agentsCount',
+    metadata: 'metadata',
+    lastSeenAt: 'lastSeenAt',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt',
   },
   s1Threats: {
     id: 'id',
@@ -69,11 +91,12 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      scope: 'organization',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
-      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
-      orgCondition: () => undefined,
+      scope: authState.scope,
+      orgId: authState.orgId,
+      partnerId: authState.partnerId,
+      accessibleOrgIds: authState.accessibleOrgIds,
+      canAccessOrg: authState.canAccessOrg,
+      orgCondition: authState.orgCondition,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -126,7 +149,7 @@ vi.mock('../services/permissions', () => ({
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)
 }));
 
-import { sentinelOneRoutes } from './sentinelOne';
+import { sentinelOneRoutes, requirePartnerManager, resolvePartnerId, resolveOrgId } from './sentinelOne';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import {
@@ -136,6 +159,12 @@ import {
 } from '../services/sentinelOne/actions';
 import { encryptSecret } from '../services/secretCrypto';
 
+const PARTNER_ID = 'a0000000-0000-4000-8000-000000000001';
+const OTHER_PARTNER_ID = 'a0000000-0000-4000-8000-000000000002';
+const ORG_ID = '11111111-1111-4111-8111-111111111111';
+const INTEGRATION_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const S1_SITE_ID = 's1-site-abc123';
+
 describe('sentinel one routes', () => {
   let app: Hono;
 
@@ -143,244 +172,935 @@ describe('sentinel one routes', () => {
     vi.clearAllMocks();
     permissionGate.deny = false;
     mfaGate.deny = false;
+    // Default: org-scope caller (reset all authState fields)
+    authState.scope = 'organization';
+    authState.orgId = ORG_ID;
+    authState.partnerId = PARTNER_ID;
+    authState.accessibleOrgIds = [ORG_ID];
+    authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
+    authState.orgCondition = () => undefined as any;
+    permsState.permissions = undefined;
 
     app = new Hono();
     app.route('/s1', sentinelOneRoutes);
   });
 
-  it('rejects integration save when permission check fails', async () => {
-    permissionGate.deny = true;
-
-    const res = await app.request('/s1/integration', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'SentinelOne Prod',
-        managementUrl: 'https://example.sentinelone.net',
-        apiToken: 'token'
-      })
+  // ───────────────────── B1: Helper unit tests ─────────────────────
+  describe('requirePartnerManager', () => {
+    it('rejects organization scope', () => {
+      const r = requirePartnerManager({ scope: 'organization', partnerId: 'p1' } as any);
+      expect(r).toEqual({ error: 'SentinelOne credentials and mappings are managed at partner scope', status: 403 });
     });
-
-    expect(res.status).toBe(403);
+    it('pins partner scope to its partnerId', () => {
+      const r = requirePartnerManager({ scope: 'partner', partnerId: 'p1' } as any);
+      expect(r).toEqual({ partnerId: 'p1' });
+    });
+    it('system scope requires explicit partnerId', () => {
+      const r = requirePartnerManager({ scope: 'system' } as any);
+      expect(r).toEqual({ error: 'partnerId is required for system scope', status: 400 });
+    });
+    it('system scope with explicit partnerId resolves', () => {
+      const r = requirePartnerManager({ scope: 'system' } as any, 'p1');
+      expect(r).toEqual({ partnerId: 'p1' });
+    });
+    it('rejects partner trying to access another partner', () => {
+      const r = requirePartnerManager({ scope: 'partner', partnerId: 'p1' } as any, 'p2');
+      expect(r).toEqual({ error: 'Access to this partner denied', status: 403 });
+    });
   });
 
-  it('fails integration save when token encryption fails', async () => {
-    vi.mocked(encryptSecret).mockReturnValueOnce(null);
-
-    const res = await app.request('/s1/integration', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'SentinelOne Prod',
-        managementUrl: 'https://example.sentinelone.net',
-        apiToken: 'token'
-      })
+  describe('resolvePartnerId', () => {
+    it('resolves org scope to its partnerId', () => {
+      const r = resolvePartnerId({ scope: 'organization', partnerId: 'p1' } as any);
+      expect(r).toEqual({ partnerId: 'p1' });
     });
-
-    expect(res.status).toBe(500);
+    it('org scope rejects cross-partner request', () => {
+      const r = resolvePartnerId({ scope: 'organization', partnerId: 'p1' } as any, 'p2');
+      expect(r).toEqual({ error: 'Access to this partner denied', status: 403 });
+    });
+    it('system scope with no requested partnerId returns error', () => {
+      const r = resolvePartnerId({ scope: 'system' } as any);
+      expect(r).toEqual({ error: 'partnerId is required for system scope', status: 400 });
+    });
   });
 
-  it('rejects non-HTTPS management URLs', async () => {
-    const res = await app.request('/s1/integration', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'SentinelOne Prod',
-        managementUrl: 'http://example.sentinelone.net',
-        apiToken: 'token'
-      })
+  describe('resolveOrgId', () => {
+    it('org scope returns its orgId', () => {
+      const r = resolveOrgId({ scope: 'organization', orgId: 'o1', accessibleOrgIds: ['o1'], canAccessOrg: () => true } as any);
+      expect(r).toEqual({ orgId: 'o1' });
     });
-
-    expect(res.status).toBe(400);
+    it('org scope rejects cross-org access', () => {
+      const r = resolveOrgId({ scope: 'organization', orgId: 'o1', accessibleOrgIds: ['o1'], canAccessOrg: (id: string) => id === 'o1' } as any, 'o2');
+      expect(r).toEqual({ error: 'Access to this organization denied', status: 403 });
+    });
   });
 
-  it('rejects management URLs not on the sentinelone.net allowlist (SSRF)', async () => {
-    const res = await app.request('/s1/integration', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'SentinelOne Prod',
-        managementUrl: 'https://internal-vault.cluster.local/',
-        apiToken: 'token'
-      })
+  // ───────────────────── B2: POST /integration ─────────────────────
+  describe('POST /integration', () => {
+    it('rejects org scope with 403', async () => {
+      // requireScope is mocked to always pass, but our route logic rejects org scope
+      authState.scope = 'organization';
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://example.sentinelone.net',
+          apiToken: 'token'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('partner scope');
     });
 
-    expect(res.status).toBe(400);
-  });
+    it('allows partner scope and inserts with partnerId', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
 
-  it('rejects management URLs pointing at cloud-metadata (SSRF)', async () => {
-    const res = await app.request('/s1/integration', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'SentinelOne Prod',
-        managementUrl: 'https://169.254.169.254/latest/meta-data/',
-        apiToken: 'token'
-      })
-    });
-
-    expect(res.status).toBe(400);
-  });
-
-  it('requires token re-entry when changing the SentinelOne management host', async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(async () => [{
-            id: 'integration-1',
-            managementUrl: 'https://old.sentinelone.net',
-            apiTokenEncrypted: 'enc:stored-token'
+      // First select: check existing (returns nothing)
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+      // insert returning
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: INTEGRATION_ID,
+            partnerId: PARTNER_ID,
+            name: 'SentinelOne Prod',
+            managementUrl: 'https://example.sentinelone.net',
+            isActive: true,
+            lastSyncAt: null,
+            lastSyncStatus: null,
+            lastSyncError: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
           }])
+        })
+      } as any);
+
+      const { scheduleS1Sync } = await import('../jobs/s1Sync');
+      vi.mocked(scheduleS1Sync).mockResolvedValueOnce('job-1');
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://example.sentinelone.net',
+          apiToken: 'token'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const resBody = await res.json();
+      expect(resBody.data.partnerId).toBe(PARTNER_ID);
+    });
+
+    it('updates when existing integration found (filters by partner_id)', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+
+      // First select: returns existing integration
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              managementUrl: 'https://example.sentinelone.net',
+              apiTokenEncrypted: 'enc:stored-token'
+            }])
+          })
+        })
+      } as any);
+      // update returning
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+              name: 'SentinelOne Prod',
+              managementUrl: 'https://example.sentinelone.net',
+              isActive: true,
+              lastSyncAt: null,
+              lastSyncStatus: null,
+              lastSyncError: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            }])
+          })
+        })
+      } as any);
+
+      const { scheduleS1Sync } = await import('../jobs/s1Sync');
+      vi.mocked(scheduleS1Sync).mockResolvedValueOnce('job-2');
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://example.sentinelone.net',
+          apiToken: 'new-token'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      // update was called (not insert)
+      expect(db.update).toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects integration save when permission check fails', async () => {
+      permissionGate.deny = true;
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://example.sentinelone.net',
+          apiToken: 'token'
+        })
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('fails integration save when token encryption fails', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      vi.mocked(encryptSecret).mockReturnValueOnce(null);
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://example.sentinelone.net',
+          apiToken: 'token'
+        })
+      });
+
+      expect(res.status).toBe(500);
+    });
+
+    it('rejects non-HTTPS management URLs', async () => {
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'http://example.sentinelone.net',
+          apiToken: 'token'
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects management URLs not on the sentinelone.net allowlist (SSRF)', async () => {
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://internal-vault.cluster.local/',
+          apiToken: 'token'
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects management URLs pointing at cloud-metadata (SSRF)', async () => {
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://169.254.169.254/latest/meta-data/',
+          apiToken: 'token'
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('requires token re-entry when changing the SentinelOne management host', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => [{
+              id: 'integration-1',
+              managementUrl: 'https://old.sentinelone.net',
+              apiTokenEncrypted: 'enc:stored-token'
+            }])
+          }))
         }))
-      }))
-    } as any);
+      } as any);
 
-    const res = await app.request('/s1/integration', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'SentinelOne Prod',
-        managementUrl: 'https://new.sentinelone.net'
-      })
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'SentinelOne Prod',
+          managementUrl: 'https://new.sentinelone.net'
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(String(body.error)).toContain('re-entered');
+      expect(db.insert).not.toHaveBeenCalled();
     });
-
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(String(body.error)).toContain('re-entered');
-    expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('rejects isolate action when MFA check fails', async () => {
-    mfaGate.deny = true;
+  // ───────────────────── B3: POST /organizations/map ─────────────────────
+  describe('POST /organizations/map', () => {
+    it('rejects org scope with 403', async () => {
+      authState.scope = 'organization';
 
-    const res = await app.request('/s1/isolate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        deviceIds: ['11111111-1111-1111-1111-111111111111']
-      })
+      const res = await app.request('/s1/organizations/map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationId: INTEGRATION_ID,
+          s1SiteId: S1_SITE_ID,
+          orgId: ORG_ID
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('partner scope');
     });
 
-    expect(res.status).toBe(403);
-  });
+    it('partner maps own site to org successfully', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
 
-  it('rejects cross-org status access', async () => {
-    const res = await app.request('/s1/status?orgId=22222222-2222-2222-2222-222222222222');
-    expect(res.status).toBe(403);
-  });
+      // 1. Integration lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+            }])
+          })
+        })
+      } as any);
+      // 2. Target org lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ORG_ID,
+              partnerId: PARTNER_ID,
+            }])
+          })
+        })
+      } as any);
+      // 3. Update s1OrgMappings
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              s1SiteId: S1_SITE_ID,
+              mappedOrgId: ORG_ID,
+            }])
+          })
+        })
+      } as any);
 
-  it('returns warning when isolate dispatch has no provider activity id', async () => {
-    vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
-      id: 'int-1',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      name: 'S1',
-      lastSyncAt: null,
-      lastSyncStatus: null,
-      lastSyncError: null
-    } as any);
-    vi.mocked(executeS1IsolationForOrg).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      data: {
-        requestedDeviceIds: ['11111111-1111-1111-1111-111111111111'],
-        inaccessibleDeviceIds: [],
-        unmappedAccessibleDeviceIds: [],
-        requestedDevices: 1,
-        mappedAgents: 1,
-        providerActionId: null,
-        actions: [{ id: 'action-1', deviceId: '11111111-1111-1111-1111-111111111111' }],
-        warning: 'Provider did not return activityId; action cannot be tracked'
-      }
-    } as any);
+      const res = await app.request('/s1/organizations/map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationId: INTEGRATION_ID,
+          s1SiteId: S1_SITE_ID,
+          orgId: ORG_ID
+        })
+      });
 
-    const res = await app.request('/s1/isolate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        deviceIds: ['11111111-1111-1111-1111-111111111111']
-      })
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.s1SiteId).toBe(S1_SITE_ID);
+      expect(body.data.mappedOrgId).toBe(ORG_ID);
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.warnings).toEqual(['Provider did not return activityId; action cannot be tracked']);
-    expect(body.data.providerActionId).toBeNull();
-  });
+    it('rejects mapping an org from a different partner (cross-partner org)', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
 
-  it('returns 502 with persisted action details when isolate dispatch fails', async () => {
-    vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
-      id: 'int-1',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      name: 'S1',
-      lastSyncAt: null,
-      lastSyncStatus: null,
-      lastSyncError: null
-    } as any);
-    vi.mocked(executeS1IsolationForOrg).mockResolvedValueOnce({
-      ok: true,
-      status: 502,
-      data: {
-        requestedDeviceIds: ['11111111-1111-1111-1111-111111111111'],
-        inaccessibleDeviceIds: [],
-        unmappedAccessibleDeviceIds: [],
-        requestedDevices: 1,
-        mappedAgents: 1,
-        providerActionId: null,
-        actions: [{ id: 'action-err-1', deviceId: '11111111-1111-1111-1111-111111111111' }],
-        warning: 'SentinelOne action dispatch failed: provider timeout'
-      }
-    } as any);
+      // Integration belongs to PARTNER_ID
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+            }])
+          })
+        })
+      } as any);
+      // Target org belongs to OTHER_PARTNER_ID
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ORG_ID,
+              partnerId: OTHER_PARTNER_ID,
+            }])
+          })
+        })
+      } as any);
 
-    const res = await app.request('/s1/isolate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        deviceIds: ['11111111-1111-1111-1111-111111111111']
-      })
+      const res = await app.request('/s1/organizations/map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationId: INTEGRATION_ID,
+          s1SiteId: S1_SITE_ID,
+          orgId: ORG_ID
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('does not belong to this partner');
     });
 
-    expect(res.status).toBe(502);
-    const body = await res.json();
-    expect(body.error).toContain('SentinelOne action dispatch failed');
-    expect(body.data.actions).toHaveLength(1);
-  });
+    it('returns 404 when discovered site not found (non-existent s1SiteId)', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
 
-  it('returns partial threat action results with unmatched threat ids', async () => {
-    vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
-      id: 'int-1',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      name: 'S1',
-      lastSyncAt: null,
-      lastSyncStatus: null,
-      lastSyncError: null
-    } as any);
-    vi.mocked(executeS1ThreatActionForOrg).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      data: {
-        action: 'kill',
-        requestedThreats: 2,
-        matchedThreats: 1,
-        matchedThreatIds: ['s1-threat-1'],
-        unmatchedThreatIds: ['missing-threat'],
-        providerActionId: 'activity-1',
-        actions: [{ id: 'action-1', deviceId: 'device-1' }]
-      }
-    } as any);
+      // Integration lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+            }])
+          })
+        })
+      } as any);
+      // Target org lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ORG_ID,
+              partnerId: PARTNER_ID,
+            }])
+          })
+        })
+      } as any);
+      // Update returns empty (no matching row)
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
 
-    const res = await app.request('/s1/threat-action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'kill',
-        threatIds: ['s1-threat-1', 'missing-threat']
-      })
+      const res = await app.request('/s1/organizations/map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationId: INTEGRATION_ID,
+          s1SiteId: 'nonexistent-site-id',
+          orgId: ORG_ID
+        })
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toContain('Run sync first to discover sites');
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data.unmatchedThreatIds).toEqual(['missing-threat']);
-    expect(body.data.matchedThreatIds).toEqual(['s1-threat-1']);
+    it('partner can unmap by passing orgId=null', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
+
+      // Integration lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+            }])
+          })
+        })
+      } as any);
+      // Update returns row with null orgId
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              s1SiteId: S1_SITE_ID,
+              mappedOrgId: null,
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/s1/organizations/map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationId: INTEGRATION_ID,
+          s1SiteId: S1_SITE_ID,
+          orgId: null
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.mappedOrgId).toBeNull();
+    });
+  });
+
+  // ───────────────────── B4: /status ─────────────────────
+  describe('GET /status', () => {
+    it('returns empty summary when no integration found', async () => {
+      authState.scope = 'organization';
+      authState.partnerId = PARTNER_ID;
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/s1/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.integration).toBeNull();
+      expect(body.summary.totalAgents).toBe(0);
+    });
+
+    it('org scope returns empty summary when org is not mapped', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      authState.partnerId = PARTNER_ID;
+
+      // Integration found
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+              name: 'S1',
+              managementUrl: 'https://example.sentinelone.net',
+              isActive: true,
+              lastSyncAt: null,
+              lastSyncStatus: null,
+              lastSyncError: null,
+            }])
+          })
+        })
+      } as any);
+      // No mapping for this org
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/s1/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.mapped).toBe(false);
+      expect(body.summary.totalAgents).toBe(0);
+    });
+
+    it('partner scope returns cross-org coverage', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+
+      // Integration found
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+              name: 'S1',
+              managementUrl: 'https://example.sentinelone.net',
+              isActive: true,
+              lastSyncAt: null,
+              lastSyncStatus: null,
+              lastSyncError: null,
+            }])
+          })
+        })
+      } as any);
+
+      // Agent summary
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            totalAgents: 5,
+            mappedDevices: 3,
+            infectedAgents: 1,
+            totalThreatCount: 2
+          }])
+        })
+      } as any);
+      // Threat summary
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            activeThreats: 2,
+            highOrCritical: 1
+          }])
+        })
+      } as any);
+      // Action summary
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            pendingActions: 0
+          }])
+        })
+      } as any);
+
+      const res = await app.request('/s1/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.mapped).toBe(true);
+      expect(body.summary.totalAgents).toBe(5);
+      expect(body.summary.activeThreats).toBe(2);
+    });
+
+    it('rejects cross-org status access for org scope', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
+
+      const res = await app.request('/s1/status?orgId=b0000000-0000-4000-8000-000000000099');
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // ───────────────────── B4: /isolate ─────────────────────
+  describe('POST /isolate', () => {
+    it('rejects isolate action when MFA check fails', async () => {
+      mfaGate.deny = true;
+
+      const res = await app.request('/s1/isolate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [ORG_ID]
+        })
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('calls getActiveS1IntegrationForOrg with orgId and writes audit with orgId', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
+        id: INTEGRATION_ID,
+        orgId: ORG_ID,
+        name: 'S1',
+        lastSyncAt: null,
+        lastSyncStatus: null,
+        lastSyncError: null
+      } as any);
+      vi.mocked(executeS1IsolationForOrg).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: {
+          requestedDeviceIds: [ORG_ID],
+          inaccessibleDeviceIds: [],
+          unmappedAccessibleDeviceIds: [],
+          requestedDevices: 1,
+          mappedAgents: 1,
+          providerActionId: 'activity-1',
+          actions: [{ id: 'action-1', deviceId: ORG_ID }],
+          warning: null
+        }
+      } as any);
+
+      const { writeRouteAudit } = await import('../services/auditEvents');
+
+      const res = await app.request('/s1/isolate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [ORG_ID]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(getActiveS1IntegrationForOrg).toHaveBeenCalledWith(ORG_ID);
+      // Audit written with orgId
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID })
+      );
+    });
+
+    it('returns warning when isolate dispatch has no provider activity id', async () => {
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
+        id: 'int-1',
+        orgId: ORG_ID,
+        name: 'S1',
+        lastSyncAt: null,
+        lastSyncStatus: null,
+        lastSyncError: null
+      } as any);
+      vi.mocked(executeS1IsolationForOrg).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: {
+          requestedDeviceIds: [ORG_ID],
+          inaccessibleDeviceIds: [],
+          unmappedAccessibleDeviceIds: [],
+          requestedDevices: 1,
+          mappedAgents: 1,
+          providerActionId: null,
+          actions: [{ id: 'action-1', deviceId: ORG_ID }],
+          warning: 'Provider did not return activityId; action cannot be tracked'
+        }
+      } as any);
+
+      const res = await app.request('/s1/isolate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [ORG_ID]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.warnings).toEqual(['Provider did not return activityId; action cannot be tracked']);
+      expect(body.data.providerActionId).toBeNull();
+    });
+
+    it('returns 502 with persisted action details when isolate dispatch fails', async () => {
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
+        id: 'int-1',
+        orgId: ORG_ID,
+        name: 'S1',
+        lastSyncAt: null,
+        lastSyncStatus: null,
+        lastSyncError: null
+      } as any);
+      vi.mocked(executeS1IsolationForOrg).mockResolvedValueOnce({
+        ok: true,
+        status: 502,
+        data: {
+          requestedDeviceIds: [ORG_ID],
+          inaccessibleDeviceIds: [],
+          unmappedAccessibleDeviceIds: [],
+          requestedDevices: 1,
+          mappedAgents: 1,
+          providerActionId: null,
+          actions: [{ id: 'action-err-1', deviceId: ORG_ID }],
+          warning: 'SentinelOne action dispatch failed: provider timeout'
+        }
+      } as any);
+
+      const res = await app.request('/s1/isolate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [ORG_ID]
+        })
+      });
+
+      expect(res.status).toBe(502);
+      const body = await res.json();
+      expect(body.error).toContain('SentinelOne action dispatch failed');
+      expect(body.data.actions).toHaveLength(1);
+    });
+  });
+
+  // ───────────────────── B4: /threat-action ─────────────────────
+  describe('POST /threat-action', () => {
+    it('calls getActiveS1IntegrationForOrg and writes audit with orgId', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
+        id: INTEGRATION_ID,
+        orgId: ORG_ID,
+        name: 'S1',
+        lastSyncAt: null,
+        lastSyncStatus: null,
+        lastSyncError: null
+      } as any);
+      vi.mocked(executeS1ThreatActionForOrg).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: {
+          action: 'kill',
+          requestedThreats: 1,
+          matchedThreats: 1,
+          matchedThreatIds: ['s1-threat-1'],
+          unmatchedThreatIds: [],
+          providerActionId: 'activity-2',
+          actions: [{ id: 'action-2', deviceId: 'device-1' }]
+        }
+      } as any);
+
+      const { writeRouteAudit } = await import('../services/auditEvents');
+
+      const res = await app.request('/s1/threat-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'kill',
+          threatIds: ['s1-threat-1']
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(getActiveS1IntegrationForOrg).toHaveBeenCalledWith(ORG_ID);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID })
+      );
+    });
+
+    it('returns partial threat action results with unmatched threat ids', async () => {
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce({
+        id: 'int-1',
+        orgId: ORG_ID,
+        name: 'S1',
+        lastSyncAt: null,
+        lastSyncStatus: null,
+        lastSyncError: null
+      } as any);
+      vi.mocked(executeS1ThreatActionForOrg).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: {
+          action: 'kill',
+          requestedThreats: 2,
+          matchedThreats: 1,
+          matchedThreatIds: ['s1-threat-1'],
+          unmatchedThreatIds: ['missing-threat'],
+          providerActionId: 'activity-1',
+          actions: [{ id: 'action-1', deviceId: 'device-1' }]
+        }
+      } as any);
+
+      const res = await app.request('/s1/threat-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'kill',
+          threatIds: ['s1-threat-1', 'missing-threat']
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.unmatchedThreatIds).toEqual(['missing-threat']);
+      expect(body.data.matchedThreatIds).toEqual(['s1-threat-1']);
+    });
+  });
+
+  // ───────────────────── B4: POST /sync ─────────────────────
+  describe('POST /sync', () => {
+    it('rejects org scope with 403', async () => {
+      authState.scope = 'organization';
+
+      const res = await app.request('/s1/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('partner scope');
+    });
+
+    it('partner scope finds active integration and schedules sync', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID,
+              partnerId: PARTNER_ID,
+              name: 'S1',
+              isActive: true,
+            }])
+          })
+        })
+      } as any);
+
+      const { scheduleS1Sync } = await import('../jobs/s1Sync');
+      vi.mocked(scheduleS1Sync).mockResolvedValueOnce('sync-job-1');
+
+      const res = await app.request('/s1/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.integrationId).toBe(INTEGRATION_ID);
+      expect(body.data.jobId).toBe('sync-job-1');
+    });
+
+    it('returns 404 when no active integration found for partner', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/s1/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(404);
+    });
   });
 
   // ───────────────────── GET /threats — site scope ─────────────────────
@@ -389,28 +1109,21 @@ describe('sentinel one routes', () => {
   // their allowlist, nor target a foreign-site device via ?deviceId=.
   // Site is an app-layer concept only — Postgres RLS does not defend it.
   describe('GET /threats — site scope', () => {
-    const ORG_ID = '11111111-1111-1111-1111-111111111111';
     const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
     const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
-    const DEVICE_ALLOWED = '33333333-3333-3333-3333-333333333333';
-    const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
+    const DEVICE_ALLOWED = 'd0000000-0000-4000-8000-000000000001';
+    const DEVICE_DENIED = 'd0000000-0000-4000-8000-000000000002';
 
     function setAuth(allowedSiteIds?: string[]) {
       // `permissions` is populated by requirePermission (see global mock), not
       // authMiddleware — faithful to prod, so a route lacking the permission
       // gate will not receive site scoping and its tests will fail.
       permsState.permissions = allowedSiteIds ? { allowedSiteIds } : undefined;
-      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-        c.set('auth', {
-          scope: 'organization',
-          orgId: ORG_ID,
-          accessibleOrgIds: [ORG_ID],
-          canAccessOrg: (orgId: string) => orgId === ORG_ID,
-          orgCondition: () => undefined,
-          user: { id: 'user-123', email: 'test@example.com' }
-        });
-        return next();
-      });
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      authState.accessibleOrgIds = [ORG_ID];
+      authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
+      authState.orgCondition = () => undefined as any;
     }
     const setRestricted = (allowedSiteIds: string[]) => setAuth(allowedSiteIds);
 
