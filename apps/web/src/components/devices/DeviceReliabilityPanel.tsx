@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, RefreshCw, ShieldCheck, Sparkles, Wrench, XCircle } from 'lucide-react';
 
+import type { AiPageContext } from '@breeze/shared';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
+import { useAiStore } from '../../stores/aiStore';
 
 type ReliabilityTopIssue = {
   type: 'crashes' | 'hangs' | 'services' | 'hardware' | 'uptime';
@@ -24,6 +26,9 @@ type ReliabilityDriver = {
 
 type ReliabilitySnapshot = {
   deviceId: string;
+  hostname?: string;
+  osType?: 'windows' | 'macos' | 'linux';
+  status?: string;
   reliabilityScore: number;
   trendDirection: 'improving' | 'stable' | 'degrading';
   trendConfidence: number;
@@ -62,6 +67,27 @@ function scoreBarClass(score: number): string {
   if (score <= 70) return 'bg-warning';
   if (score <= 85) return 'bg-info';
   return 'bg-success';
+}
+
+function scoreBandLabel(score: number): string {
+  if (score <= 50) return 'critical';
+  if (score <= 70) return 'poor';
+  if (score <= 85) return 'fair';
+  return 'good';
+}
+
+function buildReliabilitySeedPrompt(snapshot: ReliabilitySnapshot, drivers: ReliabilityDriver[]): string {
+  const mtbf = snapshot.mtbfHours === null ? 'unknown' : `${Math.round(snapshot.mtbfHours)}h`;
+  const driverText = drivers.length > 0
+    ? drivers.map((d) => `${d.label} (score ${d.score})`).join('; ')
+    : 'none flagged';
+  return [
+    `Review this device's reliability and recommend what to do.`,
+    `Score ${snapshot.reliabilityScore}/100 (${scoreBandLabel(snapshot.reliabilityScore)}), trend ${snapshot.trendDirection}.`,
+    `30-day uptime ${snapshot.uptime30d.toFixed(1)}%, MTBF ${mtbf}.`,
+    `Top factors dragging the score: ${driverText}.`,
+    `What are the likely root causes, and what remediation — scripts, checks, or a ticket — do you recommend?`,
+  ].join(' ');
 }
 
 function formatDate(value: string): string {
@@ -121,6 +147,20 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   }, [fetchReliability, mlFlags.loaded, reliabilityDisabled]);
 
   const drivers = useMemo(() => (snapshot?.drivers ?? []).slice(0, 3), [snapshot?.drivers]);
+
+  const startDeviceTask = useAiStore((s) => s.startDeviceTask);
+
+  const askAi = useCallback(() => {
+    if (!snapshot) return;
+    const ctx: AiPageContext = {
+      type: 'device',
+      id: deviceId,
+      hostname: snapshot.hostname ?? deviceId,
+      os: snapshot.osType,
+      status: snapshot.status,
+    };
+    void startDeviceTask(deviceId, ctx, buildReliabilitySeedPrompt(snapshot, drivers));
+  }, [snapshot, deviceId, drivers, startDeviceTask]);
 
   async function submitFeedback(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
     setLabeling(outcome);
@@ -246,34 +286,45 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           <p className="mt-2 text-xs text-muted-foreground">Updated {formatDate(snapshot.computedAt)}</p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-col items-start gap-2 xl:items-end">
           <button
             type="button"
-            onClick={() => void submitFeedback('failure_confirmed')}
-            disabled={labeling !== null}
-            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="reliability-ask-ai"
+            onClick={askAi}
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            <CheckCircle className="h-4 w-4" />
-            Failure
+            <Sparkles className="h-4 w-4" />
+            Ask AI about reliability
           </button>
-          <button
-            type="button"
-            onClick={() => void submitFeedback('replaced')}
-            disabled={labeling !== null}
-            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Wrench className="h-4 w-4" />
-            Replaced
-          </button>
-          <button
-            type="button"
-            onClick={() => void submitFeedback('false_alarm')}
-            disabled={labeling !== null}
-            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <XCircle className="h-4 w-4" />
-            False alarm
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void submitFeedback('failure_confirmed')}
+              disabled={labeling !== null}
+              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <CheckCircle className="h-4 w-4" />
+              Failure
+            </button>
+            <button
+              type="button"
+              onClick={() => void submitFeedback('replaced')}
+              disabled={labeling !== null}
+              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Wrench className="h-4 w-4" />
+              Replaced
+            </button>
+            <button
+              type="button"
+              onClick={() => void submitFeedback('false_alarm')}
+              disabled={labeling !== null}
+              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <XCircle className="h-4 w-4" />
+              False alarm
+            </button>
+          </div>
         </div>
       </div>
 

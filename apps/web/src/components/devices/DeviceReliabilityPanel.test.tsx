@@ -6,9 +6,15 @@ import { fetchWithAuth } from '../../stores/auth';
 
 const showToast = vi.fn();
 const useMlFeatureFlagsMock = vi.hoisted(() => vi.fn());
+const startDeviceTaskMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+}));
+
+vi.mock('../../stores/aiStore', () => ({
+  useAiStore: (selector: (s: { startDeviceTask: unknown }) => unknown) =>
+    selector({ startDeviceTask: startDeviceTaskMock }),
 }));
 
 vi.mock('../../hooks/useMlFeatureFlags', () => ({
@@ -183,6 +189,45 @@ describe('DeviceReliabilityPanel', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
     await screen.findByText('No reliability snapshot available yet.');
+  });
+
+  it('Ask AI button starts a device task seeded with the snapshot', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        snapshot: {
+          deviceId: 'dev-1',
+          hostname: 'host-1',
+          osType: 'windows',
+          status: 'online',
+          reliabilityScore: 44,
+          trendDirection: 'degrading',
+          trendConfidence: 0.8,
+          uptime30d: 94.2,
+          crashCount30d: 4,
+          hangCount30d: 1,
+          serviceFailureCount30d: 0,
+          hardwareErrorCount30d: 1,
+          mtbfHours: 72,
+          topIssues: [{ type: 'crashes', count: 4, severity: 'critical' }],
+          drivers: [
+            { factor: 'crashes', label: 'Crashes', score: 20, weight: 36, lostPoints: 28.8, evidence: { crashCount30d: 4 } },
+          ],
+          computedAt: '2026-06-18T12:00:00.000Z',
+        },
+        history: [],
+      }),
+    );
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+
+    fireEvent.click(await screen.findByTestId('reliability-ask-ai'));
+
+    expect(startDeviceTaskMock).toHaveBeenCalledTimes(1);
+    const [deviceId, ctx, seed] = startDeviceTaskMock.mock.calls[0];
+    expect(deviceId).toBe('dev-1');
+    expect(ctx).toMatchObject({ type: 'device', id: 'dev-1', hostname: 'host-1', os: 'windows', status: 'online' });
+    expect(seed).toContain('44/100');
+    expect(seed).toContain('Crashes');
   });
 
   it('shows a disabled state without fetching reliability when the feature flag is off', async () => {
