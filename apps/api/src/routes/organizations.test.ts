@@ -49,6 +49,8 @@ vi.mock('../db/schema', () => ({
   partners: {},
   organizations: {},
   sites: {},
+  // GET /orgs/sites enriches each site with a grouped device count (#1790).
+  devices: { siteId: { __column: 'devices.siteId' } },
   partnerUsers: { partnerId: 'partner_id', userId: 'user_id' },
   organizationUsers: { orgId: 'org_id', userId: 'user_id' },
   apiKeys: { id: 'id', orgId: 'org_id', status: 'status', updatedAt: 'updated_at' },
@@ -454,6 +456,14 @@ describe('organization routes', () => {
                   orderBy: vi.fn().mockResolvedValue(sites)
                 })
               })
+            })
+          })
+        } as any)
+        // Per-site device-count query (#1790): db.select().from(devices).where().groupBy().
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 1 }])
             })
           })
         } as any);
