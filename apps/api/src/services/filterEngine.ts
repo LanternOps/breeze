@@ -358,12 +358,23 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
       return sql`${columnRef} ~ ${value}`;
     case 'in':
       if (Array.isArray(value)) {
-        return sql`${columnRef} = ANY(${value})`;
+        // Empty IN matches nothing. Build an explicit IN list (each value bound
+        // separately) rather than `= ANY($1)`: postgres.js interpolates a JS
+        // array as a row tuple `($1, $2)`, which Postgres rejects with "op
+        // ANY/ALL (array) requires array on right side". Mirrors the software
+        // `in` path above.
+        if (value.length === 0) return sql`FALSE`;
+        const items = (value as unknown[]).map((v) => sql`${v}`);
+        return sql`${columnRef} IN (${sql.join(items, sql`, `)})`;
       }
       throw new Error('Value must be array for "in" operator');
     case 'notIn':
       if (Array.isArray(value)) {
-        return sql`${columnRef} != ALL(${value})`;
+        // Empty NOT IN matches everything; otherwise an explicit NOT IN list
+        // for the same reason as `in` above.
+        if (value.length === 0) return sql`TRUE`;
+        const items = (value as unknown[]).map((v) => sql`${v}`);
+        return sql`${columnRef} NOT IN (${sql.join(items, sql`, `)})`;
       }
       throw new Error('Value must be array for "notIn" operator');
     case 'hasAny':
