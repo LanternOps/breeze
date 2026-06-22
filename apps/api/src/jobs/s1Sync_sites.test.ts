@@ -101,13 +101,14 @@ vi.mock('../services/sentinelOne/metrics', () => ({
 
 const listAgentsMock = vi.fn();
 const listThreatsMock = vi.fn().mockResolvedValue({ results: [], truncated: false });
+const getActivityStatusMock = vi.fn();
 
 vi.mock('../services/sentinelOne/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/sentinelOne/client')>();
   class MockSentinelOneClient {
     listAgents = listAgentsMock;
     listThreats = listThreatsMock;
-    getActivityStatus = vi.fn();
+    getActivityStatus = getActivityStatusMock;
   }
   return { ...actual, SentinelOneClient: MockSentinelOneClient };
 });
@@ -118,6 +119,7 @@ const {
   upsertDiscoveredSites,
   reconcileProvisionalSiteMappings,
   processSyncIntegration,
+  processPollActions,
 } = await import('./s1Sync');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -343,5 +345,107 @@ describe('C2 sync: unmapped agents are skipped (not written to a fallback org)',
     expect(unmappedInsert).toBeUndefined();
     expect(mappedInsert).toBeDefined();
     expect(mappedInsert!.orgId).toBe('org-1');
+  });
+});
+
+describe('processPollActions — partner-axis integration resolution', () => {
+  /**
+   * Fix 1 regression guard: processPollActions must resolve integrations via
+   * org → partner → active integration, NOT via legacyOrgId. A partner-wide
+   * integration with legacyOrgId NULL was previously missed, causing pending
+   * actions to be permanently marked failed.
+   *
+   * SELECT call sequence inside processPollActions:
+   *   1. s1_actions WHERE status IN ('queued','in_progress') AND providerActionId IS NOT NULL
+   *   2. organizations WHERE id IN (orgIds) → partner_id lookup
+   *   3. s1_integrations WHERE partner_id IN (partnerIds) AND is_active = true
+   *   4. client.getActivityStatus() is called for each action
+   */
+
+  it('resolves a partner-wide integration (legacyOrgId NULL) and polls the action — not marked failed', async () => {
+    // Pending action under org-1
+    mockDb.select
+      // 1. pending actions
+      .mockReturnValueOnce(
+        selectReturning([{
+          id: 'action-1',
+          orgId: 'org-1',
+          deviceId: 'device-1',
+          action: 'quarantine',
+          payload: {},
+          providerActionId: 'provider-act-1',
+          status: 'queued',
+        }])
+      )
+      // 2. organizations lookup: org-1 → partner-A
+      .mockReturnValueOnce(
+        selectReturning([{ id: 'org-1', partnerId: 'partner-A' }])
+      )
+      // 3. s1_integrations: partner-A has active integration with legacyOrgId NULL
+      .mockReturnValueOnce(
+        selectReturning([{
+          partnerId: 'partner-A',
+          managementUrl: 'https://s1.example.com',
+          apiTokenEncrypted: 'enc',
+          legacyOrgId: null, // partner-wide: no legacy org_id
+        }])
+      )
+      .mockReturnValue(selectReturning([]));
+
+    // Client returns a successful poll result
+    getActivityStatusMock.mockResolvedValue({
+      status: 'completed',
+      details: null,
+    });
+
+    const result = await processPollActions();
+
+    // Action was polled (not skipped as "no integration")
+    expect(result.polled).toBe(1);
+    expect(result.updated).toBe(1);
+
+    // The DB update must have been called with 'completed', NOT 'failed'
+    const failedUpdate = updatedPayloads.find(
+      (p) => p.status === 'failed' && String(p.error ?? '').includes('no active SentinelOne integration')
+    );
+    expect(failedUpdate).toBeUndefined();
+
+    const completedUpdate = updatedPayloads.find((p) => p.status === 'completed');
+    expect(completedUpdate).toBeDefined();
+  });
+
+  it('marks an action failed when the org partner genuinely has no active integration', async () => {
+    // Pending action under org-2
+    mockDb.select
+      // 1. pending actions
+      .mockReturnValueOnce(
+        selectReturning([{
+          id: 'action-2',
+          orgId: 'org-2',
+          deviceId: 'device-2',
+          action: 'quarantine',
+          payload: {},
+          providerActionId: 'provider-act-2',
+          status: 'queued',
+        }])
+      )
+      // 2. organizations lookup: org-2 → partner-B
+      .mockReturnValueOnce(
+        selectReturning([{ id: 'org-2', partnerId: 'partner-B' }])
+      )
+      // 3. s1_integrations: no active integration for partner-B
+      .mockReturnValueOnce(selectReturning([]))
+      .mockReturnValue(selectReturning([]));
+
+    const result = await processPollActions();
+
+    expect(result.polled).toBe(1);
+    expect(result.updated).toBe(1);
+
+    // The action must be marked failed with the "no integration" message
+    const failedUpdate = updatedPayloads.find(
+      (p) => p.status === 'failed' && String(p.error ?? '').includes('no active SentinelOne integration')
+    );
+    expect(failedUpdate).toBeDefined();
   });
 });

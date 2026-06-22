@@ -4,6 +4,7 @@ import * as dbModule from '../db';
 import {
   devices,
   deviceNetwork,
+  organizations,
   s1Actions,
   s1Agents,
   s1Integrations,
@@ -320,15 +321,6 @@ export function resolveAgentSyncTarget(
   };
 }
 
-export function resolveThreatSyncTarget(
-  agentId: string | null | undefined,
-  defaultOrgId: string,
-  agentContextByAgentId: Map<string, AgentContext>
-): AgentContext {
-  const agentContext = agentContextByAgentId.get(agentId ?? '');
-  return agentContext ?? { orgId: defaultOrgId, deviceId: null };
-}
-
 /**
  * Load s1_org_mappings rows that have a mapped org, keyed by s1_site_id.
  * Only includes rows with non-null org_id (mirrors huntressSync loadMappedOrgIds).
@@ -557,9 +549,14 @@ async function syncAgentsForIntegration(
   }));
 
   // Step 1: Reconcile provisional mappings BEFORE upsert so carried org_id survives.
+  // Skip sites with no siteName — a null siteName can never match a provisional row
+  // (which is keyed as 'name:<siteName>'), so attempting reconciliation would silently
+  // miss and build a 'name:<siteId>' key that matches nothing.
   await reconcileProvisionalSiteMappings(
     integration.id,
-    discoveredSites.map((s) => ({ siteId: s.siteId, siteName: s.siteName ?? s.siteId }))
+    discoveredSites
+      .filter((s): s is { siteId: string; siteName: string; count: number } => typeof s.siteName === 'string' && s.siteName.length > 0)
+      .map((s) => ({ siteId: s.siteId, siteName: s.siteName }))
   );
 
   // Step 2: Upsert discovered sites (sets agents_count, last_seen_at; preserves org_id).
@@ -926,7 +923,7 @@ async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
   return { queued: integrations.length };
 }
 
-async function processPollActions() {
+export async function processPollActions() {
   const pendingActions = await db
     .select({
       id: s1Actions.id,
@@ -949,44 +946,76 @@ async function processPollActions() {
     return { polled: 0, updated: 0 };
   }
 
-  // Legacy action polling: actions still carry org_id; find the integration via legacyOrgId.
-  // The partner-wide migration (C3+) will rework action dispatch; until then this uses the
-  // legacy org_id column that was preserved as s1Integrations.legacyOrgId.
+  // Resolve each action's org → partner → active integration.
+  // Actions carry org_id; s1_integrations is now partner-axis (legacyOrgId is often NULL).
+  // We look up partner_id via the organizations table, then fetch the active integration
+  // for each distinct partner. This correctly handles partner-wide integrations whose
+  // legacyOrgId is NULL (they would never be found by a legacyOrgId lookup).
   const orgIds = Array.from(new Set(pendingActions.map((row) => row.orgId)));
-  const integrations = await db
-    .select({
-      orgId: s1Integrations.legacyOrgId,
-      managementUrl: s1Integrations.managementUrl,
-      apiTokenEncrypted: s1Integrations.apiTokenEncrypted
-    })
-    .from(s1Integrations)
-    .where(and(isNotNull(s1Integrations.legacyOrgId), eq(s1Integrations.isActive, true)));
 
-  // Build a reusable client per org to avoid redundant decrypt + instantiation per action
-  const clientByOrg = new Map<string, SentinelOneClient | null>();
-  const clientErrorByOrg = new Map<string, string>();
-  for (const integration of integrations) {
-    if (!integration.orgId) continue; // type guard: isNotNull filter ensures this
-    // Only include integrations whose legacy org_id matches a pending action
-    if (!orgIds.includes(integration.orgId)) continue;
+  // Step 1: Resolve org_id → partner_id
+  const orgRows = await db
+    .select({
+      id: organizations.id,
+      partnerId: organizations.partnerId,
+    })
+    .from(organizations)
+    .where(inArray(organizations.id, orgIds));
+
+  const partnerIdByOrg = new Map<string, string>();
+  for (const row of orgRows) {
+    partnerIdByOrg.set(row.id, row.partnerId);
+  }
+
+  // Step 2: Fetch the active integration for each distinct partner (deduplicated)
+  const distinctPartnerIds = Array.from(new Set([...partnerIdByOrg.values()]));
+  const partnerIntegrations = distinctPartnerIds.length > 0
+    ? await db
+        .select({
+          partnerId: s1Integrations.partnerId,
+          managementUrl: s1Integrations.managementUrl,
+          apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
+        })
+        .from(s1Integrations)
+        .where(and(inArray(s1Integrations.partnerId, distinctPartnerIds), eq(s1Integrations.isActive, true)))
+    : [];
+
+  // Step 3: Build a reusable client per partner to avoid redundant decrypt + instantiation
+  const clientByPartner = new Map<string, SentinelOneClient | null>();
+  const clientErrorByPartner = new Map<string, string>();
+  for (const integration of partnerIntegrations) {
     let token: string | null;
     try {
       token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
     } catch (cryptoError) {
-      // Permanent failure — don't retry actions tied to this org
-      clientByOrg.set(integration.orgId, null);
-      clientErrorByOrg.set(integration.orgId, `Token decryption failed: ${truncateError(cryptoError)}`);
+      clientByPartner.set(integration.partnerId, null);
+      clientErrorByPartner.set(integration.partnerId, `Token decryption failed: ${truncateError(cryptoError)}`);
       continue;
     }
     if (!token) {
-      clientByOrg.set(integration.orgId, null);
-      clientErrorByOrg.set(integration.orgId, 'SentinelOne integration token is missing or invalid');
+      clientByPartner.set(integration.partnerId, null);
+      clientErrorByPartner.set(integration.partnerId, 'SentinelOne integration token is missing or invalid');
       continue;
     }
-    clientByOrg.set(integration.orgId, new SentinelOneClient({
+    clientByPartner.set(integration.partnerId, new SentinelOneClient({
       managementUrl: integration.managementUrl,
-      apiToken: token
+      apiToken: token,
     }));
+  }
+
+  // Step 4: Map each org to its partner's client (multiple orgs share one client)
+  const clientByOrg = new Map<string, SentinelOneClient | null>();
+  const clientErrorByOrg = new Map<string, string>();
+  for (const orgId of orgIds) {
+    const partnerId = partnerIdByOrg.get(orgId);
+    if (!partnerId) continue; // org not found in DB — leave clientByOrg undefined for this org
+    if (clientByPartner.has(partnerId)) {
+      clientByOrg.set(orgId, clientByPartner.get(partnerId) ?? null);
+      const err = clientErrorByPartner.get(partnerId);
+      if (err) clientErrorByOrg.set(orgId, err);
+    }
+    // If partner has no active integration, clientByOrg remains undefined for this org
+    // → will hit the "No integration found" branch below
   }
 
   let updated = 0;

@@ -8,7 +8,6 @@ import {
   normalizeS1SiteName,
   resolveAgentSyncTarget,
   resolveOrgIdForAgentSite,
-  resolveThreatSyncTarget,
   resolveDeviceIdForAgent,
   resolveAgentSyncTargetById,
   truncateError
@@ -239,21 +238,6 @@ describe('SentinelOne site-to-org mapping helpers', () => {
     expect(target).toEqual({ orgId: 'org-denver', deviceId: 'device-denver' });
   });
 
-  it('uses the integration org and null device for unmapped threat agents', () => {
-    const mapped = resolveThreatSyncTarget(
-      'agent-denver',
-      'org-default',
-      new Map([['agent-denver', { orgId: 'org-denver', deviceId: 'device-denver' }]])
-    );
-    const unmapped = resolveThreatSyncTarget(
-      'missing-agent',
-      'org-default',
-      new Map([['agent-denver', { orgId: 'org-denver', deviceId: 'device-denver' }]])
-    );
-
-    expect(mapped).toEqual({ orgId: 'org-denver', deviceId: 'device-denver' });
-    expect(unmapped).toEqual({ orgId: 'org-default', deviceId: null });
-  });
 });
 
 describe('C2 site-id based routing helpers', () => {
