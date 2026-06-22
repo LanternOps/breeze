@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 const initMock = vi.fn();
 const captureMock = vi.fn();
 const flushMock = vi.fn().mockResolvedValue(true);
+const setTagMock = vi.fn();
 const withScopeMock = vi.fn((cb: (scope: unknown) => void) =>
-  cb({ setTag: vi.fn(), setContext: vi.fn() }),
+  cb({ setTag: setTagMock, setContext: vi.fn() }),
 );
 
 vi.mock('@sentry/node', () => ({
@@ -26,6 +27,7 @@ describe('sentry service', () => {
     initMock.mockClear();
     captureMock.mockClear();
     flushMock.mockClear();
+    setTagMock.mockClear();
     withScopeMock.mockClear();
     process.env = { ...ORIGINAL_ENV };
   });
@@ -65,9 +67,68 @@ describe('sentry service', () => {
 
     captureException(new Error('before init'));
     expect(captureMock).not.toHaveBeenCalled();
+    // The tag logic lives inside withScope, past the init guard — it must not
+    // run (against an undefined scope) before initSentry.
+    expect(setTagMock).not.toHaveBeenCalled();
 
     initSentry();
     captureException(new Error('after init'));
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('tags an RLS-deny (SQLSTATE 42501) error with pg_code + rls_deny so cross-tenant spikes are filterable', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    const denial = Object.assign(new Error('permission denied for table devices'), {
+      code: '42501',
+    });
+    captureException(denial);
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', '42501');
+    expect(setTagMock).toHaveBeenCalledWith('rls_deny', true);
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('unwraps the Drizzle .cause chain to find the SQLSTATE', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    // DrizzleQueryError shape: top-level code undefined, real SQLSTATE on .cause.
+    const wrapped = Object.assign(new Error('Failed query'), {
+      cause: Object.assign(new Error('permission denied'), { code: '42501' }),
+    });
+    captureException(wrapped);
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', '42501');
+    expect(setTagMock).toHaveBeenCalledWith('rls_deny', true);
+  });
+
+  it('tags a non-RLS Postgres error with pg_code only (no rls_deny)', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    const conflict = Object.assign(new Error('duplicate key'), { code: '23505' });
+    captureException(conflict);
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', '23505');
+    expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', expect.anything());
+    // Tagging must never gate the capture itself.
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a plain non-Postgres error untagged', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    captureException(new Error('something unrelated'));
+
+    expect(setTagMock).not.toHaveBeenCalledWith('pg_code', expect.anything());
+    expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', expect.anything());
     expect(captureMock).toHaveBeenCalledTimes(1);
   });
 });

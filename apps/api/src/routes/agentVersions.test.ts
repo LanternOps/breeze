@@ -507,6 +507,57 @@ describe("agentVersions routes", () => {
       }
     });
 
+    it("rewrites downloadUrl to server-relative for component=watchdog (so the agent host-match guard accepts the watchdog download)", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-watchdog-linux-amd64";
+      const checksum = "c".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "watchdog",
+        platform: "linux",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "watchdog",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=watchdog",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/watchdog/linux/amd64",
+        );
+        expect(body.checksum).toBe(checksum);
+        expect(body.manifest).toBe(signed.manifest);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
     it("maps platform=macos to /darwin in the server-relative helper URL", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-helper-macos.dmg";

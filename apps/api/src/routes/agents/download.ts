@@ -3,9 +3,20 @@ import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
-import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubWatchdogUrl, HELPER_FILENAMES } from '../../services/binarySource';
 
 export const downloadRoutes = new Hono();
+
+// A presigned-URL failure is only "the object isn't there" for NotFound /
+// NoSuchKey — anything else (network, credentials, throttling, DNS) is a real
+// S3 transport/auth fault. Distinguishing them matters because the disk
+// fallback below 404s when the binary isn't on local disk: on hosted infra
+// (S3-only, no binaries on disk) a transport fault would otherwise be masked as
+// a misleading "binary not found" 404 instead of surfacing as a 500 (issue #1802).
+function isS3NotFound(err: unknown): boolean {
+  const errName = (err as { name?: string }).name;
+  return errName === 'NotFound' || errName === 'NoSuchKey';
+}
 
 // ============================================
 // Agent Binary Download (public, no auth)
@@ -50,10 +61,13 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[agent-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        // Real S3 transport/auth fault — surface it instead of masking it as a
+        // disk-fallback 404. The binary may well exist in S3; we just couldn't reach it.
+        console.error(`[agent-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+      }
+      console.warn(`[agent-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -141,10 +155,11 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
       const url = await getPresignedUrl(`agent/${filename}`);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[pkg-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        console.error(`[pkg-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve installer package' }, 500);
+      }
+      console.warn(`[pkg-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -230,10 +245,11 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[helper-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        console.error(`[helper-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+      }
+      console.warn(`[helper-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -267,6 +283,94 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
       stream.on('end', () => { controller.close(); });
       stream.on('error', (err) => {
         console.error(`[helper-download] Stream error while serving ${filename}:`, err);
+        controller.error(err);
+      });
+    },
+    cancel() { stream.destroy(); },
+  });
+
+  return new Response(webStream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': String(fileStat.size),
+      'Cache-Control': 'no-cache',
+    },
+  });
+});
+
+// ============================================
+// Watchdog Binary Download (public, no auth)
+// ============================================
+// Per-arch like the agent (breeze-watchdog-{os}-{arch}[.exe]). The agent's
+// reconcileWatchdog and the watchdog's own failover self-update fetch this via
+// /agent-versions/:version/download?component=watchdog, which hands back this
+// same-origin URL so the downloader's host-match guard passes (see
+// buildServerRelativeAgentDownloadUrl + issue #646).
+downloadRoutes.get('/download/watchdog/:os/:arch', async (c) => {
+  const os = c.req.param('os');
+  const arch = c.req.param('arch');
+
+  if (!VALID_OS.has(os)) {
+    return c.json({ error: 'Invalid OS', message: `Supported values: linux, darwin, windows. Got: ${os}` }, 400);
+  }
+
+  if (!VALID_ARCH.has(arch)) {
+    return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
+  }
+
+  const extension = os === 'windows' ? '.exe' : '';
+  const filename = `breeze-watchdog-${os}-${arch}${extension}`;
+
+  if (getBinarySource() === 'github') {
+    return c.redirect(getGithubWatchdogUrl(os, arch), 302);
+  }
+
+  if (isS3Configured()) {
+    try {
+      const s3Key = `watchdog/${filename}`;
+      const url = await getPresignedUrl(s3Key);
+      return c.redirect(url, 302);
+    } catch (err) {
+      if (!isS3NotFound(err)) {
+        console.error(`[watchdog-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+      }
+      console.warn(`[watchdog-download] S3 object missing for ${filename}, falling back to disk:`, err);
+    }
+  }
+
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const filePath = join(binaryDir, filename);
+
+  let fileStat: ReturnType<typeof statSync>;
+  let stream: ReturnType<typeof createReadStream>;
+  try {
+    fileStat = statSync(filePath);
+    stream = createReadStream(filePath);
+  } catch (err) {
+    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!isNotFound) {
+      console.error(`[watchdog-download] Failed to read binary ${filename}:`, err);
+      return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
+    }
+    console.warn('[watchdog-download] Local binary missing', { filename });
+    return c.json({
+      error: 'Binary not found',
+      message: `Watchdog binary "${filename}" is not available.`,
+    }, 404);
+  }
+
+  const webStream = new ReadableStream({
+    start(controller) {
+      stream.on('data', (chunk: string | Buffer) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        controller.enqueue(new Uint8Array(bytes));
+      });
+      stream.on('end', () => { controller.close(); });
+      stream.on('error', (err) => {
+        console.error(`[watchdog-download] Stream error while serving ${filename}:`, err);
         controller.error(err);
       });
     },

@@ -105,6 +105,7 @@ type HeartbeatResponse struct {
 	UacInterceptionEnabled *bool                  `json:"uacInterceptionEnabled,omitempty"`
 	HelperSettings         *HelperSettings        `json:"helperSettings,omitempty"`
 	HelperUpgradeTo        string                 `json:"helperUpgradeTo,omitempty"`
+	WatchdogUpgradeTo      string                 `json:"watchdogUpgradeTo,omitempty"`
 	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
 	ManifestTrustKeys      []api.ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
 }
@@ -299,6 +300,29 @@ type Heartbeat struct {
 	// distinct, greppable ERROR instead of looping at WARN forever. Reset to 0
 	// on the first success.
 	userHelperReconcileFailures atomic.Int32
+
+	// watchdogUpgradeInProgress guards handleWatchdogUpgrade so overlapping
+	// heartbeat-delivered watchdogUpgradeTo signals don't run the
+	// download→replace→service-restart sequence concurrently.
+	watchdogUpgradeInProgress atomic.Bool
+
+	// watchdogInstaller is an optional test seam: when non-nil,
+	// handleWatchdogUpgrade calls this instead of the real platform-specific
+	// installAndRestartWatchdog (which downloads the watchdog component, swaps
+	// the on-disk binary, and restarts the watchdog service). nil in production.
+	watchdogInstaller func(targetVersion string) error
+
+	// watchdog upgrade bookkeeping, guarded by watchdogUpgradeMu. The server
+	// keeps sending watchdogUpgradeTo until a watchdog FAILOVER heartbeat
+	// reports the new version — but a healthy (monitoring) watchdog doesn't
+	// heartbeat, so the signal can repeat indefinitely after a successful swap.
+	// watchdogInstalledVersion is a permanent (process-lifetime) skip for a
+	// target we already installed; watchdogLastAttempt* throttles retries of a
+	// FAILING target so we don't re-download + restart the service every tick.
+	watchdogUpgradeMu        sync.Mutex
+	watchdogInstalledVersion string
+	watchdogLastAttemptVer   string
+	watchdogLastAttemptAt    time.Time
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -2499,6 +2523,21 @@ func (h *Heartbeat) sendHeartbeat() {
 		}
 	}
 
+	// Handle watchdog upgrade if requested. The server only sets
+	// watchdogUpgradeTo once it has learned (from a watchdog failover heartbeat)
+	// that the on-disk watchdog is behind the latest published watchdog
+	// component — see apps/api heartbeat.ts. The watchdog historically could not
+	// self-update on the hosted (BINARY_SOURCE=github) path (its bundled updater
+	// had no watchdog asset-name case, and the component was never registered) —
+	// and even fully wired up, the watchdog's own doUpdateWatchdog only runs
+	// while it is in FAILOVER (the only state in which it heartbeats and receives
+	// WatchdogUpgradeTo), so a HEALTHY watchdog would never self-heal. The
+	// reliably-updating agent drives it instead, recovering already-stuck fleets
+	// whose watchdog is frozen at install-time version.
+	if response.WatchdogUpgradeTo != "" {
+		go h.handleWatchdogUpgrade(response.WatchdogUpgradeTo)
+	}
+
 	// Update tunnel manager policy flag
 	h.tunnelMgr.SetManagedByPolicy(response.ManageRemoteManagement)
 
@@ -3348,6 +3387,121 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// handleWatchdogUpgrade swaps the on-disk breeze-watchdog binary to
+// targetVersion and restarts the watchdog service. Invoked when the server sets
+// watchdogUpgradeTo in the heartbeat response (it does so only after a watchdog
+// failover heartbeat told it the on-disk watchdog is behind the latest
+// published watchdog component). Mirrors the helper-upgrade flow's security
+// posture: refuses to install a watchdog OLDER than the running agent so a
+// compromised/replayed control-plane response can't push a known-vulnerable,
+// validly-signed older watchdog. The actual binary fetch is signature- and
+// checksum-verified by the updater against the signed release manifest.
+func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
+	defer observability.Recoverer("heartbeat.handleWatchdogUpgrade")
+
+	if targetVersion == "" {
+		return
+	}
+
+	if !h.config.AutoUpdate {
+		log.Info("watchdog upgrade available but auto_update is disabled",
+			"targetVersion", targetVersion)
+		return
+	}
+
+	// SECURITY: the target always originates from the control plane and must be
+	// a real release semver. Fail CLOSED on an unparseable target (matching the
+	// helper-upgrade guard's posture) so a compromised/MITM'd control plane
+	// can't slip a non-semver value past the downgrade check below — isDowngrade
+	// fails OPEN on unparseable input, which is the right call for agent "dev"
+	// builds but wrong for a server-directed privileged swap.
+	if _, _, _, ok := parseSemver(targetVersion); !ok {
+		log.Error("SECURITY: refusing watchdog upgrade to non-semver target",
+			"targetVersion", targetVersion)
+		return
+	}
+
+	// SECURITY: never auto-downgrade the watchdog. The signed manifest only
+	// binds manifest.Release == requested version, so a compromised/MITM'd
+	// control plane could otherwise replay an older, validly-signed,
+	// known-vulnerable watchdog. The watchdog ships in lockstep with the agent,
+	// so the running agent's version is a safe floor. (Note: the target normally
+	// EQUALS the agent version — both at latest — which is exactly when a stale
+	// watchdog needs swapping, so equality must NOT be treated as a no-op.)
+	if isDowngrade(targetVersion, h.agentVersion) {
+		log.Error("SECURITY: refusing server-directed watchdog downgrade",
+			"agentVersion", h.agentVersion, "targetVersion", targetVersion)
+		return
+	}
+
+	// Dedupe / throttle: the server re-sends watchdogUpgradeTo every heartbeat
+	// until a watchdog failover heartbeat reports the new version, but a healthy
+	// watchdog doesn't heartbeat — so guard against re-swapping on a loop.
+	h.watchdogUpgradeMu.Lock()
+	if h.watchdogInstalledVersion == targetVersion {
+		h.watchdogUpgradeMu.Unlock()
+		return // already installed this target this run
+	}
+	if h.watchdogLastAttemptVer == targetVersion &&
+		time.Since(h.watchdogLastAttemptAt) < watchdogUpgradeRetryCooldown {
+		h.watchdogUpgradeMu.Unlock()
+		log.Debug("watchdog upgrade recently attempted; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
+	h.watchdogLastAttemptVer = targetVersion
+	h.watchdogLastAttemptAt = time.Now()
+	h.watchdogUpgradeMu.Unlock()
+
+	if !h.watchdogUpgradeInProgress.CompareAndSwap(false, true) {
+		log.Debug("watchdog upgrade already in progress", "targetVersion", targetVersion)
+		return
+	}
+	defer h.watchdogUpgradeInProgress.Store(false)
+
+	install := h.watchdogInstaller
+	if install == nil {
+		install = h.installAndRestartWatchdog
+	}
+
+	log.Info("watchdog upgrade requested", "targetVersion", targetVersion)
+	if err := install(targetVersion); err != nil {
+		// Leave watchdogInstalledVersion unset so a transient failure retries
+		// after the cooldown rather than every tick.
+		log.Error("failed to update watchdog", "targetVersion", targetVersion, "error", err.Error())
+		return
+	}
+	h.watchdogUpgradeMu.Lock()
+	h.watchdogInstalledVersion = targetVersion
+	h.watchdogUpgradeMu.Unlock()
+	log.Info("watchdog upgrade applied", "targetVersion", targetVersion)
+}
+
+// watchdogUpgradeRetryCooldown bounds how often a FAILING watchdog upgrade
+// target is retried. A successful install is deduped permanently for the
+// process lifetime via watchdogInstalledVersion; this only throttles repeated
+// failures so a stuck device doesn't re-download + restart the watchdog service
+// every heartbeat.
+const watchdogUpgradeRetryCooldown = 30 * time.Minute
+
+// downloadWatchdogBinary fetches the watchdog component at targetVersion to a
+// temp file using the standard updater download path, which verifies the
+// Ed25519 release-manifest signature AND the SHA-256 file checksum before
+// returning. The caller owns the returned temp file (must remove it) and is
+// responsible for the platform-specific swap + service restart. Shared across
+// the per-OS installAndRestartWatchdog implementations so the trust-verified
+// download lives in one place.
+func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
+	u := updater.New(&updater.Config{
+		ServerURL:             h.config.ServerURL,
+		AuthToken:             h.secureToken,
+		CurrentVersion:        h.agentVersion,
+		Component:             "watchdog",
+		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+	})
+	return u.DownloadBinary(targetVersion)
 }
 
 // handleUpgrade performs an auto-update to the specified version.

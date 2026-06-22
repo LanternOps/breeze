@@ -15,12 +15,12 @@
     "monitor": "tsx live-signup/monitor.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.1",
+    "@anthropic-ai/sdk": "^0.105.0",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.0.0",
     "@types/pg": "^8.20.0",
     "pg": "^8.22.0",
     "playwright": "^1.58.2",

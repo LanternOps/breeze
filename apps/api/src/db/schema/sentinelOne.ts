@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   uuid,
@@ -8,15 +9,17 @@ import {
   integer,
   jsonb,
   index,
-  uniqueIndex
+  uniqueIndex,
+  foreignKey
 } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 
 export const s1Integrations = pgTable('s1_integrations', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  legacyOrgId: uuid('org_id').references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
   apiTokenEncrypted: text('api_token_encrypted').notNull(),
   managementUrl: text('management_url').notNull(),
@@ -28,7 +31,11 @@ export const s1Integrations = pgTable('s1_integrations', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  orgIdx: uniqueIndex('s1_integrations_org_idx').on(table.orgId)
+  partnerActiveIdx: uniqueIndex('s1_integrations_partner_active_idx')
+    .on(table.partnerId)
+    .where(sql`${table.isActive} = true`),
+  idPartnerIdx: uniqueIndex('s1_integrations_id_partner_idx').on(table.id, table.partnerId),
+  legacyOrgIdx: index('s1_integrations_legacy_org_idx').on(table.legacyOrgId)
 }));
 
 export const s1Agents = pgTable('s1_agents', {
@@ -94,14 +101,26 @@ export const s1Actions = pgTable('s1_actions', {
   providerActionIdx: index('s1_actions_provider_action_idx').on(table.providerActionId)
 }));
 
-export const s1SiteMappings = pgTable('s1_site_mappings', {
+export const s1OrgMappings = pgTable('s1_org_mappings', {
   id: uuid('id').primaryKey().defaultRandom(),
-  integrationId: uuid('integration_id').notNull().references(() => s1Integrations.id),
-  siteName: varchar('site_name', { length: 200 }).notNull(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  integrationId: uuid('integration_id').notNull(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  s1SiteId: varchar('s1_site_id', { length: 128 }).notNull(),
+  s1SiteName: varchar('s1_site_name', { length: 200 }),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
+  agentsCount: integer('agents_count').notNull().default(0),
+  metadata: jsonb('metadata'),
+  lastSeenAt: timestamp('last_seen_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  uniqueSiteIdx: uniqueIndex('s1_site_mappings_integration_site_idx').on(table.integrationId, table.siteName),
-  orgIdx: index('s1_site_mappings_org_idx').on(table.orgId)
+  uniqueSiteIdx: uniqueIndex('s1_org_mappings_integration_site_idx').on(table.integrationId, table.s1SiteId),
+  orgIdx: index('s1_org_mappings_org_idx').on(table.orgId),
+  integrationIdx: index('s1_org_mappings_integration_idx').on(table.integrationId),
+  partnerIdx: index('s1_org_mappings_partner_idx').on(table.partnerId),
+  integrationPartnerFk: foreignKey({
+    columns: [table.integrationId, table.partnerId],
+    foreignColumns: [s1Integrations.id, s1Integrations.partnerId],
+    name: 's1_org_mappings_integration_partner_fkey'
+  }).onDelete('cascade')
 }));

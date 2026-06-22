@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { devices } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { computeAndPersistDeviceReliability, computeAndPersistOrgReliability } from '../services/reliabilityScoring';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
@@ -53,9 +54,7 @@ let reliabilityWorker: Worker<ReliabilityJobData> | null = null;
 
 export function getReliabilityQueue(): Queue<ReliabilityJobData> {
   if (!reliabilityQueue) {
-    reliabilityQueue = new Queue<ReliabilityJobData>(RELIABILITY_QUEUE, {
-      connection: getBullMQConnection(),
-    });
+    reliabilityQueue = createInstrumentedQueue<ReliabilityJobData>(RELIABILITY_QUEUE);
   }
   return reliabilityQueue;
 }

@@ -39,6 +39,9 @@ vi.mock('../services/redis', () => ({
 vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  // #1105 tripwire used by createInstrumentedQueue (the queue factory this
+  // worker now constructs through). No-op here — no held context under test.
+  assertOutsideHeldDbContext: vi.fn(),
   db: {
     select: selectMock,
   },

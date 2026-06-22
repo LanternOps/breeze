@@ -33,14 +33,21 @@ const requireAgentVersionAdmin = requirePermission(
 // Validation schemas
 const platformEnum = z.enum(["windows", "macos", "linux", "darwin"]);
 const architectureEnum = z.enum(["amd64", "arm64"]);
+// "watchdog" lets the agent's reconcile path (and the watchdog's own failover
+// self-update) resolve and download the watchdog component. Omitting it here is
+// why watchdog auto-update 400'd server-side regardless of registration.
+const componentEnum = z.enum([
+  "agent",
+  "helper",
+  "viewer",
+  "user-helper",
+  "watchdog",
+]);
 
 const latestQuerySchema = z.object({
   platform: platformEnum,
   arch: architectureEnum,
-  component: z
-    .enum(["agent", "helper", "viewer", "user-helper"])
-    .optional()
-    .default("agent"),
+  component: componentEnum.optional().default("agent"),
 });
 
 const downloadParamsSchema = z.object({
@@ -50,10 +57,7 @@ const downloadParamsSchema = z.object({
 const downloadQuerySchema = z.object({
   platform: platformEnum,
   arch: architectureEnum,
-  component: z
-    .enum(["agent", "helper", "viewer", "user-helper"])
-    .optional()
-    .default("agent"),
+  component: componentEnum.optional().default("agent"),
 });
 
 const createVersionSchema = z.object({
@@ -68,10 +72,7 @@ const createVersionSchema = z.object({
   fileSize: z.number().int().positive().optional(),
   releaseNotes: z.string().optional(),
   isLatest: z.boolean().optional().default(false),
-  component: z
-    .enum(["agent", "helper", "viewer", "user-helper"])
-    .optional()
-    .default("agent"),
+  component: componentEnum.optional().default("agent"),
 });
 
 type ReleaseManifest = {
@@ -271,7 +272,11 @@ function buildServerRelativeAgentDownloadUrl(
   architecture: string,
   component: string,
 ): string | null {
-  if (component !== "agent" && component !== "helper") {
+  if (
+    component !== "agent" &&
+    component !== "helper" &&
+    component !== "watchdog"
+  ) {
     return null;
   }
   const origin = getServerOriginForDownloadResponse();
@@ -281,6 +286,9 @@ function buildServerRelativeAgentDownloadUrl(
   const os = dbPlatformToRouteOs(dbPlatform);
   if (component === "helper") {
     return `${origin}/api/v1/agents/download/helper/${os}/${architecture}`;
+  }
+  if (component === "watchdog") {
+    return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}`;
   }
   return `${origin}/api/v1/agents/download/${os}/${architecture}`;
 }

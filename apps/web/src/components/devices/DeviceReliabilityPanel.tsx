@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ChevronDown, RefreshCw, ShieldCheck, Sparkles, Wrench, XCircle } from 'lucide-react';
 
+import type { AiPageContext } from '@breeze/shared';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
+import { useClickOutside } from '../../hooks/useClickOutside';
+import { useAiStore } from '../../stores/aiStore';
 
 type ReliabilityTopIssue = {
   type: 'crashes' | 'hangs' | 'services' | 'hardware' | 'uptime';
@@ -24,6 +27,9 @@ type ReliabilityDriver = {
 
 type ReliabilitySnapshot = {
   deviceId: string;
+  hostname?: string;
+  osType?: 'windows' | 'macos' | 'linux';
+  status?: string;
   reliabilityScore: number;
   trendDirection: 'improving' | 'stable' | 'degrading';
   trendConfidence: number;
@@ -50,6 +56,17 @@ const issueLabels: Record<ReliabilityTopIssue['type'], string> = {
   uptime: 'Uptime',
 };
 
+const OUTCOME_ITEMS: Array<{
+  outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
+  label: string;
+  Icon: typeof AlertTriangle;
+  iconClass: string;
+}> = [
+  { outcome: 'failure_confirmed', label: 'Device failed', Icon: AlertTriangle, iconClass: 'text-destructive' },
+  { outcome: 'replaced', label: 'Device replaced', Icon: Wrench, iconClass: 'text-muted-foreground' },
+  { outcome: 'false_alarm', label: 'False alarm', Icon: XCircle, iconClass: 'text-muted-foreground' },
+];
+
 function scoreClass(score: number): string {
   if (score <= 50) return 'text-destructive';
   if (score <= 70) return 'text-warning';
@@ -62,6 +79,27 @@ function scoreBarClass(score: number): string {
   if (score <= 70) return 'bg-warning';
   if (score <= 85) return 'bg-info';
   return 'bg-success';
+}
+
+function scoreBandLabel(score: number): string {
+  if (score <= 50) return 'critical';
+  if (score <= 70) return 'poor';
+  if (score <= 85) return 'fair';
+  return 'good';
+}
+
+function buildReliabilitySeedPrompt(snapshot: ReliabilitySnapshot, drivers: ReliabilityDriver[]): string {
+  const mtbf = snapshot.mtbfHours === null ? 'unknown' : `${Math.round(snapshot.mtbfHours)}h`;
+  const driverText = drivers.length > 0
+    ? drivers.map((d) => `${d.label} (score ${d.score})`).join('; ')
+    : 'none flagged';
+  return [
+    `Review this device's reliability and recommend what to do.`,
+    `Score ${snapshot.reliabilityScore}/100 (${scoreBandLabel(snapshot.reliabilityScore)}), trend ${snapshot.trendDirection}.`,
+    `30-day uptime ${snapshot.uptime30d.toFixed(1)}%, MTBF ${mtbf}.`,
+    `Top factors dragging the score: ${driverText}.`,
+    `What are the likely root causes, and what remediation — scripts, checks, or a ticket — do you recommend?`,
+  ].join(' ');
 }
 
 function formatDate(value: string): string {
@@ -121,6 +159,29 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   }, [fetchReliability, mlFlags.loaded, reliabilityDisabled]);
 
   const drivers = useMemo(() => (snapshot?.drivers ?? []).slice(0, 3), [snapshot?.drivers]);
+
+  const startDeviceTask = useAiStore((s) => s.startDeviceTask);
+
+  const askAi = useCallback(() => {
+    if (!snapshot) return;
+    const ctx: AiPageContext = {
+      type: 'device',
+      id: deviceId,
+      hostname: snapshot.hostname ?? deviceId,
+      os: snapshot.osType,
+      status: snapshot.status,
+    };
+    void startDeviceTask(deviceId, ctx, buildReliabilitySeedPrompt(snapshot, drivers));
+  }, [snapshot, deviceId, drivers, startDeviceTask]);
+
+  const [outcomeMenuOpen, setOutcomeMenuOpen] = useState(false);
+  const outcomeMenuRef = useRef<HTMLDivElement>(null);
+  useClickOutside(outcomeMenuOpen, outcomeMenuRef, () => setOutcomeMenuOpen(false));
+
+  function handleOutcome(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
+    setOutcomeMenuOpen(false);
+    void submitFeedback(outcome);
+  }
 
   async function submitFeedback(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
     setLabeling(outcome);
@@ -246,34 +307,59 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           <p className="mt-2 text-xs text-muted-foreground">Updated {formatDate(snapshot.computedAt)}</p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-col items-start gap-2 xl:items-end">
           <button
             type="button"
-            onClick={() => void submitFeedback('failure_confirmed')}
-            disabled={labeling !== null}
-            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="reliability-ask-ai"
+            onClick={askAi}
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            <CheckCircle className="h-4 w-4" />
-            Failure
+            <Sparkles className="h-4 w-4" />
+            Ask AI about reliability
           </button>
-          <button
-            type="button"
-            onClick={() => void submitFeedback('replaced')}
-            disabled={labeling !== null}
-            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Wrench className="h-4 w-4" />
-            Replaced
-          </button>
-          <button
-            type="button"
-            onClick={() => void submitFeedback('false_alarm')}
-            disabled={labeling !== null}
-            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <XCircle className="h-4 w-4" />
-            False alarm
-          </button>
+          <div ref={outcomeMenuRef} className="relative">
+            <button
+              type="button"
+              data-testid="reliability-outcome-trigger"
+              aria-haspopup="true"
+              aria-expanded={outcomeMenuOpen}
+              disabled={labeling !== null}
+              onClick={() => setOutcomeMenuOpen((o) => !o)}
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Mark outcome
+              <ChevronDown className="h-3.5 w-3.5" />
+            </button>
+
+            {outcomeMenuOpen && (
+              <div
+                role="menu"
+                data-testid="reliability-outcome-menu"
+                className="absolute right-0 top-9 z-30 w-64 rounded-md border bg-popover p-1 shadow-lg"
+              >
+                <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Was this accurate?
+                </p>
+                {OUTCOME_ITEMS.map(({ outcome, label, Icon, iconClass }) => (
+                  <button
+                    key={outcome}
+                    type="button"
+                    data-testid={`reliability-outcome-${outcome}`}
+                    disabled={labeling !== null}
+                    onClick={() => handleOutcome(outcome)}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Icon className={`h-4 w-4 shrink-0 ${iconClass}`} />
+                    {label}
+                  </button>
+                ))}
+                <hr className="my-1" />
+                <p className="px-2 pb-1.5 pt-0.5 text-xs text-muted-foreground">
+                  These train the reliability model — they don't change the device.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

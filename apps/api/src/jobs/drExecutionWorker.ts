@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { withSystemDbAccessContext } from '../db';
 import { reconcileDrExecution } from '../services/drExecutionService';
 import { isReusableState } from '../services/bullmqUtils';
@@ -29,9 +30,7 @@ function getDrExecutionReconcileJobId(executionId: string): string {
 
 function getDrExecutionQueue(): Queue<DrExecutionQueueJobData> {
   if (!drExecutionQueue) {
-    drExecutionQueue = new Queue<DrExecutionQueueJobData>(DR_EXECUTION_QUEUE, {
-      connection: getBullMQConnection(),
-    });
+    drExecutionQueue = createInstrumentedQueue<DrExecutionQueueJobData>(DR_EXECUTION_QUEUE);
   }
   return drExecutionQueue;
 }

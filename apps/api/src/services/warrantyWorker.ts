@@ -1,6 +1,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { getBullMQConnection } from './redis';
+import { createInstrumentedQueue } from './bullmqQueue';
 import { syncWarrantyForDevice, syncWarrantyBatch, getDevicesNeedingWarrantySync } from './warrantySync';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -26,9 +27,7 @@ type WarrantyJobData = SyncSingleJob | SyncBatchJob;
 
 export function getWarrantyQueue(): Queue {
   if (!warrantyQueue) {
-    warrantyQueue = new Queue(WARRANTY_QUEUE, {
-      connection: getBullMQConnection(),
-    });
+    warrantyQueue = createInstrumentedQueue(WARRANTY_QUEUE);
   }
   return warrantyQueue;
 }

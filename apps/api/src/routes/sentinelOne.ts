@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1SiteMappings, s1Threats } from '../db/schema';
+import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1OrgMappings, s1Threats } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   isThreatAction,
@@ -28,6 +28,73 @@ import { S1_HOSTNAME_ALLOWLIST } from '../services/sentinelOne/constants';
 
 export const sentinelOneRoutes = new Hono();
 sentinelOneRoutes.use('*', authMiddleware);
+
+type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
+
+// B1: Partner-scope resolution helpers
+
+export function resolvePartnerId(
+  auth: RouteAuth,
+  requested?: string
+): { partnerId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'partner') {
+    if (!auth.partnerId) return { error: 'Partner context required', status: 403 };
+    if (requested && requested !== auth.partnerId) return { error: 'Access to this partner denied', status: 403 };
+    return { partnerId: auth.partnerId };
+  }
+
+  if (auth.scope === 'organization') {
+    if (!auth.partnerId) return { error: 'Partner context required', status: 403 };
+    if (requested && requested !== auth.partnerId) return { error: 'Access to this partner denied', status: 403 };
+    return { partnerId: auth.partnerId };
+  }
+
+  if (!requested) return { error: 'partnerId is required for system scope', status: 400 };
+  return { partnerId: requested };
+}
+
+export function requirePartnerManager(
+  auth: RouteAuth,
+  requested?: string
+): { partnerId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    return { error: 'SentinelOne credentials and mappings are managed at partner scope', status: 403 };
+  }
+  return resolvePartnerId(auth, requested);
+}
+
+export function resolveOrgId(
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
+  requestedOrgId?: string
+): { orgId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) {
+      return { error: 'Organization context required', status: 403 };
+    }
+    if (requestedOrgId && requestedOrgId !== auth.orgId) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId: auth.orgId };
+  }
+
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId: requestedOrgId };
+  }
+
+  if (auth.orgId) {
+    return { orgId: auth.orgId };
+  }
+
+  const orgIds = auth.accessibleOrgIds ?? [];
+  if (orgIds.length === 1 && orgIds[0]) {
+    return { orgId: orgIds[0] };
+  }
+
+  return { error: 'orgId is required for this scope', status: 400 };
+}
 
 function withOrgCondition(conditions: SQL[], condition: SQL | undefined): void {
   if (condition) conditions.push(condition);
@@ -93,41 +160,18 @@ async function hasDeniedThreatDeviceSite(
   return hasDeniedDeviceSite(orgId, deviceIds, permissions);
 }
 
-function resolveOrgId(
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
-  requestedOrgId?: string
-): { orgId: string } | { error: string; status: 400 | 403 } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) {
-      return { error: 'Organization context required', status: 403 };
-    }
-    if (requestedOrgId && requestedOrgId !== auth.orgId) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (requestedOrgId) {
-    if (!auth.canAccessOrg(requestedOrgId)) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: requestedOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  const orgIds = auth.accessibleOrgIds ?? [];
-  if (orgIds.length === 1 && orgIds[0]) {
-    return { orgId: orgIds[0] };
-  }
-
-  return { error: 'orgId is required for this scope', status: 400 };
+function requestedPartnerId(c: { req: { query: (key: string) => string | undefined } }): string | undefined {
+  return c.req.query('partnerId');
 }
 
+function requestedOrgId(c: { req: { query: (key: string) => string | undefined } }): string | undefined {
+  return c.req.query('orgId');
+}
+
+// B2: Updated integration schemas — partner-scoped
+
 const integrationUpsertSchema = z.object({
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
   managementUrl: z.string().url().max(2_000).superRefine((value, ctx) => {
     const result = checkSsrfSafe(value, {
@@ -146,6 +190,7 @@ const integrationUpsertSchema = z.object({
 });
 
 const listThreatsQuerySchema = z.object({
+  partnerId: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
   integrationId: z.string().guid().optional(),
   deviceId: z.string().guid().optional(),
@@ -170,19 +215,35 @@ const threatActionSchema = z.object({
   threatIds: z.array(z.string().min(1).max(128)).min(1).max(200)
 });
 
+// B4: /sync — partner-scoped
 const syncSchema = z.object({
-  orgId: z.string().guid().optional(),
+  partnerId: z.string().guid().optional(),
   integrationId: z.string().guid().optional()
 });
 
+// B2: GET /integration — partner resolves; org callers also get mapped status
 const integrationQuerySchema = z.object({
-  orgId: z.string().guid().optional()
+  partnerId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
-const siteMapSchema = z.object({
+// B3: /organizations/map schema (replaces /sites/map)
+const organizationMapSchema = z.object({
   integrationId: z.string().guid(),
-  siteName: z.string().min(1).max(200),
+  s1SiteId: z.string().min(1).max(128),
   orgId: z.string().guid().nullable()
+});
+
+// B3: /sites query schema (partner-scope)
+const sitesQuerySchema = z.object({
+  partnerId: z.string().guid().optional(),
+  integrationId: z.string().guid().optional(),
+});
+
+// B4: status query schema
+const statusQuerySchema = z.object({
+  partnerId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
 });
 
 function normalizedHost(value: string): string {
@@ -190,6 +251,7 @@ function normalizedHost(value: string): string {
   return parsed.host.toLowerCase();
 }
 
+// B2: GET /integration — dual-scope: partner resolves integration; org-scope also returns mapped status
 sentinelOneRoutes.get(
   '/integration',
   requireScope('organization', 'partner', 'system'),
@@ -197,15 +259,13 @@ sentinelOneRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     const [integration] = await db
       .select({
         id: s1Integrations.id,
-        orgId: s1Integrations.orgId,
+        partnerId: s1Integrations.partnerId,
         name: s1Integrations.name,
         managementUrl: s1Integrations.managementUrl,
         isActive: s1Integrations.isActive,
@@ -213,19 +273,42 @@ sentinelOneRoutes.get(
         lastSyncStatus: s1Integrations.lastSyncStatus,
         lastSyncError: s1Integrations.lastSyncError,
         createdAt: s1Integrations.createdAt,
-        updatedAt: s1Integrations.updatedAt
+        updatedAt: s1Integrations.updatedAt,
+        hasApiToken: sql<boolean>`(${s1Integrations.apiTokenEncrypted} is not null and ${s1Integrations.apiTokenEncrypted} != '')`,
       })
       .from(s1Integrations)
-      .where(eq(s1Integrations.orgId, orgResult.orgId))
+      .where(and(
+        eq(s1Integrations.partnerId, partnerResult.partnerId),
+        eq(s1Integrations.isActive, true)
+      ))
       .limit(1);
 
-    return c.json({ data: integration ?? null });
+    if (!integration) {
+      return c.json({ data: null });
+    }
+
+    if (auth.scope === 'organization') {
+      const orgResult = resolveOrgId(auth, query.orgId ?? requestedOrgId(c));
+      if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+      const [mapping] = await db
+        .select({ id: s1OrgMappings.id })
+        .from(s1OrgMappings)
+        .where(and(
+          eq(s1OrgMappings.integrationId, integration.id),
+          eq(s1OrgMappings.orgId, orgResult.orgId)
+        ))
+        .limit(1);
+      if (!mapping) return c.json({ data: null, mapped: false, connected: true });
+    }
+
+    return c.json({ data: integration });
   }
 );
 
+// B2: POST /integration — partner-only scope; writes partnerId, leaves legacyOrgId untouched
 sentinelOneRoutes.post(
   '/integration',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
   zValidator('json', integrationUpsertSchema),
@@ -233,10 +316,8 @@ sentinelOneRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const orgResult = resolveOrgId(auth, body.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const partnerResult = requirePartnerManager(auth, body.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     // Token is required for new integrations, optional for updates
     const hasToken = typeof body.apiToken === 'string' && body.apiToken.length > 0;
@@ -253,10 +334,14 @@ sentinelOneRoutes.post(
       .select({
         id: s1Integrations.id,
         managementUrl: s1Integrations.managementUrl,
-        apiTokenEncrypted: s1Integrations.apiTokenEncrypted
+        apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
+        isActive: s1Integrations.isActive,
       })
       .from(s1Integrations)
-      .where(eq(s1Integrations.orgId, orgResult.orgId))
+      .where(and(
+        eq(s1Integrations.partnerId, partnerResult.partnerId),
+        eq(s1Integrations.isActive, true)
+      ))
       .limit(1);
 
     if (!existing && !encryptedToken) {
@@ -264,6 +349,13 @@ sentinelOneRoutes.post(
     }
     if (existing && !encryptedToken && normalizedHost(existing.managementUrl) !== normalizedHost(body.managementUrl)) {
       return c.json({ error: 'API token must be re-entered when changing the SentinelOne management host' }, 400);
+    }
+
+    // For new integrations, encryptedToken is guaranteed non-null by the guard above.
+    // For updates, use the existing encrypted token as fallback.
+    const tokenForInsert = encryptedToken ?? existing?.apiTokenEncrypted;
+    if (!tokenForInsert) {
+      return c.json({ error: 'API token is required for new integrations' }, 400);
     }
 
     const now = new Date();
@@ -277,35 +369,53 @@ sentinelOneRoutes.post(
       conflictSet.apiTokenEncrypted = sql`excluded.api_token_encrypted`;
     }
 
-    // For new integrations, encryptedToken is guaranteed non-null by the guard above.
-    // For updates, use the existing encrypted token as fallback so the INSERT row
-    // satisfies NOT NULL even though the conflict path preserves the existing value.
-    const tokenForInsert = encryptedToken ?? existing?.apiTokenEncrypted;
-    if (!tokenForInsert) {
-      return c.json({ error: 'API token is required for new integrations' }, 400);
-    }
-
-    const [integration] = await db
-      .insert(s1Integrations)
-      .values({
-        orgId: orgResult.orgId,
-        name: body.name,
-        managementUrl: body.managementUrl,
-        apiTokenEncrypted: tokenForInsert,
-        isActive: body.isActive ?? true,
-        createdBy: auth.user.id,
-        updatedAt: now
-      })
-      .onConflictDoUpdate({
-        target: s1Integrations.orgId,
-        set: conflictSet
-      })
-      .returning({
-        id: s1Integrations.id,
-        orgId: s1Integrations.orgId,
-        name: s1Integrations.name,
-        isActive: s1Integrations.isActive
-      });
+    const [integration] = existing
+      ? await db
+        .update(s1Integrations)
+        .set({
+          name: body.name,
+          managementUrl: body.managementUrl,
+          isActive: body.isActive ?? existing.isActive ?? true,
+          ...(encryptedToken ? { apiTokenEncrypted: encryptedToken } : {}),
+          updatedAt: now,
+        })
+        .where(eq(s1Integrations.id, existing.id))
+        .returning({
+          id: s1Integrations.id,
+          partnerId: s1Integrations.partnerId,
+          name: s1Integrations.name,
+          managementUrl: s1Integrations.managementUrl,
+          isActive: s1Integrations.isActive,
+          lastSyncAt: s1Integrations.lastSyncAt,
+          lastSyncStatus: s1Integrations.lastSyncStatus,
+          lastSyncError: s1Integrations.lastSyncError,
+          createdAt: s1Integrations.createdAt,
+          updatedAt: s1Integrations.updatedAt,
+        })
+      : await db
+        .insert(s1Integrations)
+        .values({
+          partnerId: partnerResult.partnerId,
+          name: body.name,
+          managementUrl: body.managementUrl,
+          apiTokenEncrypted: tokenForInsert,
+          isActive: body.isActive ?? true,
+          createdBy: auth.user.id,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({
+          id: s1Integrations.id,
+          partnerId: s1Integrations.partnerId,
+          name: s1Integrations.name,
+          managementUrl: s1Integrations.managementUrl,
+          isActive: s1Integrations.isActive,
+          lastSyncAt: s1Integrations.lastSyncAt,
+          lastSyncStatus: s1Integrations.lastSyncStatus,
+          lastSyncError: s1Integrations.lastSyncError,
+          createdAt: s1Integrations.createdAt,
+          updatedAt: s1Integrations.updatedAt,
+        });
 
     if (!integration) {
       return c.json({ error: 'Failed to save SentinelOne integration' }, 500);
@@ -313,21 +423,28 @@ sentinelOneRoutes.post(
 
     let syncJobId: string | null = null;
     let warning: string | undefined;
-    try {
-      syncJobId = await scheduleS1Sync(integration.id);
-    } catch (error) {
-      warning = `Integration saved but sync could not be scheduled: ${error instanceof Error ? error.message : String(error)}`;
-      console.error('[s1-route] Failed to schedule initial sync:', error);
+    if (integration.isActive) {
+      try {
+        syncJobId = await scheduleS1Sync(integration.id);
+      } catch (error) {
+        warning = `Integration saved but sync could not be scheduled: ${error instanceof Error ? error.message : String(error)}`;
+        console.error('[s1-route] Failed to schedule initial sync:', error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      }
     }
 
     try {
       writeRouteAudit(c, {
-        orgId: integration.orgId,
-        action: 's1.integration.upsert',
+        orgId: null,
+        action: existing ? 's1.integration.update' : 's1.integration.create',
         resourceType: 's1_integration',
         resourceId: integration.id,
         resourceName: integration.name,
-        details: { isActive: integration.isActive, syncJobId }
+        details: {
+          partnerId: integration.partnerId,
+          isActive: integration.isActive,
+          syncJobId
+        }
       });
     } catch (auditErr) {
       console.error('[s1-route] Audit write failed:', auditErr);
@@ -337,29 +454,38 @@ sentinelOneRoutes.post(
     return c.json({
       data: {
         ...integration,
-        syncJobId
+        hasApiToken: true,
+        syncJobId,
       },
-      warning
-    });
+      ...(warning ? { warning } : {})
+    }, existing ? 200 : 201);
   }
 );
 
+// B4: GET /status — dual-scope: resolves partner's active integration; org-scope scopes to org
 sentinelOneRoutes.get(
   '/status',
   requireScope('organization', 'partner', 'system'),
-  zValidator('query', integrationQuerySchema),
+  zValidator('query', statusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
+    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    const requestedOrg = query.orgId ?? requestedOrgId(c);
+    const orgResult = requestedOrg || auth.scope === 'organization'
+      ? resolveOrgId(auth, requestedOrg)
+      : null;
+    if (orgResult && 'error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
+    const scopedOrgId = orgResult && 'orgId' in orgResult ? orgResult.orgId : null;
 
     const [integration] = await db
       .select({
         id: s1Integrations.id,
-        orgId: s1Integrations.orgId,
+        partnerId: s1Integrations.partnerId,
         name: s1Integrations.name,
         managementUrl: s1Integrations.managementUrl,
         isActive: s1Integrations.isActive,
@@ -368,7 +494,10 @@ sentinelOneRoutes.get(
         lastSyncError: s1Integrations.lastSyncError
       })
       .from(s1Integrations)
-      .where(eq(s1Integrations.orgId, orgResult.orgId))
+      .where(and(
+        eq(s1Integrations.partnerId, partnerResult.partnerId),
+        eq(s1Integrations.isActive, true)
+      ))
       .limit(1);
 
     if (!integration) {
@@ -379,9 +508,53 @@ sentinelOneRoutes.get(
           mappedDevices: 0,
           infectedAgents: 0,
           activeThreats: 0,
-          pendingActions: 0
+          highOrCriticalThreats: 0,
+          pendingActions: 0,
+          reportedThreatCount: 0
         }
       });
+    }
+
+    // For org-scope callers, confirm the org is mapped before returning data
+    if (scopedOrgId) {
+      const [mapping] = await db
+        .select({ id: s1OrgMappings.id })
+        .from(s1OrgMappings)
+        .where(and(
+          eq(s1OrgMappings.integrationId, integration.id),
+          eq(s1OrgMappings.orgId, scopedOrgId)
+        ))
+        .limit(1);
+      if (!mapping) {
+        return c.json({
+          integration,
+          mapped: false,
+          summary: {
+            totalAgents: 0,
+            mappedDevices: 0,
+            infectedAgents: 0,
+            activeThreats: 0,
+            pendingActions: 0
+          }
+        });
+      }
+    }
+
+    const agentConditions: SQL[] = [eq(s1Agents.integrationId, integration.id)];
+    const threatConditions: SQL[] = [eq(s1Threats.integrationId, integration.id)];
+    const actionConditions: SQL[] = [];
+
+    if (scopedOrgId) {
+      agentConditions.push(eq(s1Agents.orgId, scopedOrgId));
+      threatConditions.push(eq(s1Threats.orgId, scopedOrgId));
+      actionConditions.push(eq(s1Actions.orgId, scopedOrgId));
+    } else {
+      const agentOrgCondition = auth.orgCondition(s1Agents.orgId);
+      const threatOrgCondition = auth.orgCondition(s1Threats.orgId);
+      const actionOrgCondition = auth.orgCondition(s1Actions.orgId);
+      if (agentOrgCondition) agentConditions.push(agentOrgCondition);
+      if (threatOrgCondition) threatConditions.push(threatOrgCondition);
+      if (actionOrgCondition) actionConditions.push(actionOrgCondition);
     }
 
     const [agentSummary, threatSummary, actionSummary] = await Promise.all([
@@ -393,24 +566,25 @@ sentinelOneRoutes.get(
           totalThreatCount: sql<number>`coalesce(sum(${s1Agents.threatCount}), 0)::int`
         })
         .from(s1Agents)
-        .where(eq(s1Agents.integrationId, integration.id)),
+        .where(and(...agentConditions)),
       db
         .select({
           activeThreats: sql<number>`count(*) filter (where ${s1Threats.status} in ('active', 'in_progress'))::int`,
           highOrCritical: sql<number>`count(*) filter (where ${s1Threats.severity} in ('high', 'critical'))::int`
         })
         .from(s1Threats)
-        .where(eq(s1Threats.integrationId, integration.id)),
+        .where(and(...threatConditions)),
       db
         .select({
           pendingActions: sql<number>`count(*) filter (where ${s1Actions.status} in ('queued', 'in_progress'))::int`
         })
         .from(s1Actions)
-        .where(eq(s1Actions.orgId, integration.orgId))
+        .where(actionConditions.length > 0 ? and(...actionConditions) : undefined)
     ]);
 
     return c.json({
       integration,
+      mapped: true,
       summary: {
         totalAgents: Number(agentSummary[0]?.totalAgents ?? 0),
         mappedDevices: Number(agentSummary[0]?.mappedDevices ?? 0),
@@ -548,6 +722,8 @@ sentinelOneRoutes.post(
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
+    // getActiveS1IntegrationForOrg internals will be updated in Task C3;
+    // the route keeps its call signature unchanged.
     const integration = await getActiveS1IntegrationForOrg(orgResult.orgId);
 
     if (!integration) {
@@ -611,6 +787,8 @@ sentinelOneRoutes.post(
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
+    // getActiveS1IntegrationForOrg internals will be updated in Task C3;
+    // the route keeps its call signature unchanged.
     const integration = await getActiveS1IntegrationForOrg(orgResult.orgId);
 
     if (!integration) {
@@ -666,52 +844,49 @@ sentinelOneRoutes.post(
   }
 );
 
+// B4: POST /sync — partner-scoped; loads partner's active integration
 sentinelOneRoutes.post(
   '/sync',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   zValidator('json', syncSchema),
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    let integrationId = body.integrationId;
-    let orgId: string;
+    const partnerResult = requirePartnerManager(auth, body.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
-    if (integrationId) {
-      const [integration] = await db
-        .select({ id: s1Integrations.id, orgId: s1Integrations.orgId })
-        .from(s1Integrations)
-        .where(eq(s1Integrations.id, integrationId))
-        .limit(1);
+    const conditions: SQL[] = [
+      eq(s1Integrations.partnerId, partnerResult.partnerId),
+      eq(s1Integrations.isActive, true),
+    ];
+    if (body.integrationId) {
+      conditions.push(eq(s1Integrations.id, body.integrationId));
+    }
 
-      if (!integration || !auth.canAccessOrg(integration.orgId)) {
-        return c.json({ error: 'Integration not found or access denied' }, 404);
-      }
+    const [integration] = await db
+      .select({
+        id: s1Integrations.id,
+        partnerId: s1Integrations.partnerId,
+        name: s1Integrations.name,
+        isActive: s1Integrations.isActive,
+      })
+      .from(s1Integrations)
+      .where(and(...conditions))
+      .limit(1);
 
-      orgId = integration.orgId;
-    } else {
-      const orgResult = resolveOrgId(auth, body.orgId);
-      if ('error' in orgResult) {
-        return c.json({ error: orgResult.error }, orgResult.status);
-      }
-      orgId = orgResult.orgId;
+    if (!integration) {
+      return c.json({ error: 'SentinelOne integration not found' }, 404);
+    }
 
-      const [integration] = await db
-        .select({ id: s1Integrations.id })
-        .from(s1Integrations)
-        .where(and(eq(s1Integrations.orgId, orgId), eq(s1Integrations.isActive, true)))
-        .limit(1);
-
-      if (!integration) {
-        return c.json({ error: 'No active SentinelOne integration found for this organization' }, 404);
-      }
-      integrationId = integration.id;
+    if (!integration.isActive) {
+      return c.json({ error: 'Integration is inactive. Activate it before syncing.' }, 400);
     }
 
     let jobId: string;
     try {
-      jobId = await scheduleS1Sync(integrationId);
+      jobId = await scheduleS1Sync(integration.id);
     } catch (syncError) {
       console.error('[s1-route] Failed to schedule S1 sync:', syncError);
       captureException(syncError);
@@ -720,164 +895,143 @@ sentinelOneRoutes.post(
 
     try {
       writeRouteAudit(c, {
-        orgId,
+        orgId: null,
         action: 's1.sync.manual',
         resourceType: 's1_integration',
-        resourceId: integrationId,
-        details: { jobId }
+        resourceId: integration.id,
+        resourceName: integration.name,
+        details: { partnerId: integration.partnerId, jobId }
       });
     } catch (auditErr) {
       console.error('[s1-route] Audit write failed:', auditErr);
       captureException(auditErr);
     }
 
-    return c.json({ data: { integrationId, jobId } });
+    return c.json({ data: { integrationId: integration.id, jobId } });
   }
 );
 
+// B3: GET /sites — partner-scope; lists discovered s1OrgMappings rows for partner's active integration
 sentinelOneRoutes.get(
   '/sites',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('query', integrationQuerySchema),
+  requireScope('partner', 'system'),
+  zValidator('query', sitesQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const partnerResult = requirePartnerManager(auth, query.partnerId ?? requestedPartnerId(c));
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    const integrationConditions: SQL[] = [
+      eq(s1Integrations.partnerId, partnerResult.partnerId),
+      eq(s1Integrations.isActive, true),
+    ];
+    if (query.integrationId) integrationConditions.push(eq(s1Integrations.id, query.integrationId));
 
     const [integration] = await db
       .select({ id: s1Integrations.id })
       .from(s1Integrations)
-      .where(eq(s1Integrations.orgId, orgResult.orgId))
+      .where(and(...integrationConditions))
       .limit(1);
 
-    if (!integration) {
-      return c.json({ data: [] });
-    }
+    if (!integration) return c.json({ data: [], integrationId: null });
 
-    const siteRows = await db
+    const rows = await db
       .select({
-        siteName: sql<string>`metadata->>'siteName'`,
-        agentCount: sql<number>`count(*)::int`
+        s1SiteId: s1OrgMappings.s1SiteId,
+        s1SiteName: s1OrgMappings.s1SiteName,
+        agentsCount: s1OrgMappings.agentsCount,
+        mappedOrgId: s1OrgMappings.orgId,
+        mappedOrgName: organizations.name,
+        provisional: sql<boolean>`coalesce((${s1OrgMappings.metadata}->>'provisional')::boolean, false)`,
+        lastSeenAt: s1OrgMappings.lastSeenAt,
+        updatedAt: s1OrgMappings.updatedAt,
       })
-      .from(s1Agents)
-      .where(
-        and(
-          eq(s1Agents.integrationId, integration.id),
-          sql`metadata->>'siteName' IS NOT NULL`,
-          sql`metadata->>'siteName' != ''`
-        )
-      )
-      .groupBy(sql`metadata->>'siteName'`)
-      .orderBy(sql`metadata->>'siteName'`);
+      .from(s1OrgMappings)
+      .leftJoin(organizations, eq(s1OrgMappings.orgId, organizations.id))
+      .where(eq(s1OrgMappings.integrationId, integration.id))
+      .orderBy(s1OrgMappings.s1SiteName, s1OrgMappings.s1SiteId);
 
-    const mappings = await db
-      .select({
-        siteName: s1SiteMappings.siteName,
-        orgId: s1SiteMappings.orgId,
-        orgName: organizations.name
-      })
-      .from(s1SiteMappings)
-      .leftJoin(organizations, eq(s1SiteMappings.orgId, organizations.id))
-      .where(eq(s1SiteMappings.integrationId, integration.id));
-
-    const mappingBySite = new Map(mappings.map((m) => [m.siteName, { orgId: m.orgId, orgName: m.orgName }]));
-
-    const data = siteRows.map((row) => {
-      const mapping = mappingBySite.get(row.siteName);
-      return {
-        siteName: row.siteName,
-        agentCount: row.agentCount,
-        mappedOrgId: mapping?.orgId ?? null,
-        mappedOrgName: mapping?.orgName ?? null
-      };
-    });
-
-    return c.json({ data, integrationId: integration.id });
+    return c.json({ data: rows, integrationId: integration.id });
   }
 );
 
+// B3: POST /organizations/map — partner-only; body { integrationId, s1SiteId, orgId | null }
 sentinelOneRoutes.post(
-  '/sites/map',
-  requireScope('organization', 'partner', 'system'),
+  '/organizations/map',
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  zValidator('json', siteMapSchema),
+  requireMfa(),
+  zValidator('json', organizationMapSchema),
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
+    // Early scope gate: org callers are rejected before any DB fetch.
+    // (In prod requireScope already blocks them; this guard makes the in-route
+    // requirePartnerManager check consistent even when requireScope is bypassed
+    // in tests.)
+    const earlyPartnerCheck = requirePartnerManager(auth);
+    if ('error' in earlyPartnerCheck) return c.json({ error: earlyPartnerCheck.error }, earlyPartnerCheck.status);
+
     const [integration] = await db
-      .select({ id: s1Integrations.id, orgId: s1Integrations.orgId })
+      .select({
+        id: s1Integrations.id,
+        partnerId: s1Integrations.partnerId,
+      })
       .from(s1Integrations)
-      .where(eq(s1Integrations.id, body.integrationId))
+      .where(and(
+        eq(s1Integrations.id, body.integrationId),
+        eq(s1Integrations.isActive, true)
+      ))
       .limit(1);
 
-    if (!integration || !auth.canAccessOrg(integration.orgId)) {
-      return c.json({ error: 'Integration not found or access denied' }, 404);
+    if (!integration) return c.json({ error: 'SentinelOne integration not found' }, 404);
+
+    // Full partner validation: confirm caller can manage this specific integration's partner
+    const partnerResult = requirePartnerManager(auth, integration.partnerId);
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    if (body.orgId !== null) {
+      if (!auth.canAccessOrg(body.orgId)) {
+        return c.json({ error: 'Access to target organization denied' }, 403);
+      }
+
+      const [targetOrg] = await db
+        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, body.orgId))
+        .limit(1);
+      if (!targetOrg || targetOrg.partnerId !== integration.partnerId) {
+        return c.json({ error: 'Target organization does not belong to this partner' }, 403);
+      }
     }
 
-    if (body.orgId === null) {
-      await db
-        .delete(s1SiteMappings)
-        .where(
-          and(
-            eq(s1SiteMappings.integrationId, body.integrationId),
-            eq(s1SiteMappings.siteName, body.siteName)
-          )
-        );
-
-      try {
-        writeRouteAudit(c, {
-          orgId: integration.orgId,
-          action: 's1.site.unmap',
-          resourceType: 's1_site_mapping',
-          resourceName: body.siteName,
-          details: { integrationId: body.integrationId }
-        });
-      } catch (auditErr) {
-      console.error('[s1-route] Audit write failed:', auditErr);
-      captureException(auditErr);
-    }
-
-      return c.json({ data: { siteName: body.siteName, mappedOrgId: null } });
-    }
-
-    if (!auth.canAccessOrg(body.orgId)) {
-      return c.json({ error: 'Access to target organization denied' }, 403);
-    }
-
-    const now = new Date();
-    await db
-      .insert(s1SiteMappings)
-      .values({
-        integrationId: body.integrationId,
-        siteName: body.siteName,
-        orgId: body.orgId,
-        updatedAt: now
-      })
-      .onConflictDoUpdate({
-        target: [s1SiteMappings.integrationId, s1SiteMappings.siteName],
-        set: {
-          orgId: sql`excluded.org_id`,
-          updatedAt: now
-        }
+    const updated = await db
+      .update(s1OrgMappings)
+      .set({ orgId: body.orgId, updatedAt: new Date() })
+      .where(and(
+        eq(s1OrgMappings.integrationId, body.integrationId),
+        eq(s1OrgMappings.partnerId, integration.partnerId),
+        eq(s1OrgMappings.s1SiteId, body.s1SiteId)
+      ))
+      .returning({
+        s1SiteId: s1OrgMappings.s1SiteId,
+        mappedOrgId: s1OrgMappings.orgId,
       });
 
-    try {
-      writeRouteAudit(c, {
-        orgId: integration.orgId,
-        action: 's1.site.map',
-        resourceType: 's1_site_mapping',
-        resourceName: body.siteName,
-        details: { integrationId: body.integrationId, targetOrgId: body.orgId }
-      });
-    } catch (auditErr) {
-      console.error('[s1-route] Audit write failed:', auditErr);
-      captureException(auditErr);
+    if (updated.length === 0) {
+      return c.json({ error: 'SentinelOne site mapping not found. Run sync first to discover sites.' }, 404);
     }
 
-    return c.json({ data: { siteName: body.siteName, mappedOrgId: body.orgId } });
+    writeRouteAudit(c, {
+      orgId: body.orgId,
+      action: body.orgId ? 's1.site.map' : 's1.site.unmap',
+      resourceType: 's1_org_mapping',
+      resourceName: body.s1SiteId,
+      details: { integrationId: body.integrationId, partnerId: integration.partnerId }
+    });
+
+    return c.json({ data: updated[0] });
   }
 );

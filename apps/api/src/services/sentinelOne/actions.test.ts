@@ -1,16 +1,37 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as DbModule from '../../db';
 import { SentinelOneHttpError } from './client';
 
 // actions.ts pulls in ../../db (and transitively ../../jobs/s1Sync) at import
 // time. We only exercise the pure helpers (truncateError /
 // logActionDispatchFailureServerSide), so stub the heavy deps to keep this a
 // fast unit test rather than wiring a full DB/queue mock.
-vi.mock('../../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-}));
+
+// Queued select results for getActiveS1IntegrationForOrg tests. Must be
+// declared via vi.hoisted so it is available inside the hoisted vi.mock factory.
+const { selectQueue } = vi.hoisted(() => {
+  const selectQueue: unknown[][] = [];
+  return { selectQueue };
+});
+
+vi.mock('../../db', () => {
+  const mockSelect = vi.fn(() => {
+    const rows = selectQueue.shift() ?? [];
+    const chain: Record<string, unknown> = {};
+    for (const method of ['from', 'where', 'innerJoin', 'leftJoin']) {
+      chain[method] = vi.fn().mockReturnValue(chain);
+    }
+    chain.limit = vi.fn().mockResolvedValue(rows);
+    chain.then = (resolve: (value: unknown[]) => unknown) => resolve(rows);
+    return chain;
+  });
+  return {
+    db: { select: mockSelect, insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
 
 vi.mock('../../jobs/s1Sync', () => ({
   dispatchS1Isolation: vi.fn(),
@@ -18,12 +39,119 @@ vi.mock('../../jobs/s1Sync', () => ({
   scheduleS1ActionPoll: vi.fn(),
 }));
 
-import { truncateError, logActionDispatchFailureServerSide } from './actions';
+import { truncateError, logActionDispatchFailureServerSide, getActiveS1IntegrationForOrg } from './actions';
 
 const UPSTREAM_BODY_MARKER = 'UPSTREAM_BODY_MARKER_should_never_reach_tenant';
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  selectQueue.length = 0;
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('getActiveS1IntegrationForOrg — partner-axis resolution', () => {
+  it('returns the partner active integration (with orgId = passed-in orgId) when org belongs to a partner with an active integration', async () => {
+    // Step 1: org lookup returns partner_id
+    selectQueue.push([{ id: 'org-1', partnerId: 'partner-1' }]);
+    // Step 2: active integration for partner
+    selectQueue.push([{
+      id: 'int-1',
+      partnerId: 'partner-1',
+      name: 'My S1 Integration',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    }]);
+    // Step 3: s1_org_mappings existence check
+    selectQueue.push([{ id: 'mapping-1' }]);
+
+    const result = await getActiveS1IntegrationForOrg('org-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe('int-1');
+    expect(result!.orgId).toBe('org-1'); // caller-provided orgId preserved in return
+    expect(result!.name).toBe('My S1 Integration');
+  });
+
+  it('returns null when the org is not found in the DB', async () => {
+    // org lookup returns empty
+    selectQueue.push([]);
+
+    const result = await getActiveS1IntegrationForOrg('org-missing');
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the partner has no active integration', async () => {
+    // org lookup returns partner_id
+    selectQueue.push([{ id: 'org-2', partnerId: 'partner-no-integration' }]);
+    // no active integration found
+    selectQueue.push([]);
+
+    const result = await getActiveS1IntegrationForOrg('org-2');
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the org has no s1_org_mappings row under the integration (defense-in-depth)', async () => {
+    // org lookup returns partner_id
+    selectQueue.push([{ id: 'org-3', partnerId: 'partner-1' }]);
+    // active integration exists
+    selectQueue.push([{
+      id: 'int-1',
+      partnerId: 'partner-1',
+      name: 'My S1 Integration',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    }]);
+    // but no s1_org_mappings row for this org
+    selectQueue.push([]);
+
+    const result = await getActiveS1IntegrationForOrg('org-3');
+
+    expect(result).toBeNull();
+  });
+
+  it('regression(#1735): partner-axis reads (steps 2&3) use system DB context so org-scoped callers are not blocked by RLS', async () => {
+    // Arrange: all three steps return data so the function returns a result.
+    selectQueue.push([{ id: 'org-1', partnerId: 'partner-1' }]);
+    selectQueue.push([{
+      id: 'int-1',
+      partnerId: 'partner-1',
+      name: 'My S1 Integration',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    }]);
+    selectQueue.push([{ id: 'mapping-1' }]);
+
+    // Import the mocked db module so we can inspect call counts.
+    const dbMod = await import('../../db') as unknown as typeof DbModule & {
+      runOutsideDbContext: ReturnType<typeof vi.fn>;
+      withSystemDbAccessContext: ReturnType<typeof vi.fn>;
+    };
+
+    const result = await getActiveS1IntegrationForOrg('org-1');
+
+    // The function must return the integration (not null, which would be the
+    // buggy org-scoped-caller outcome when partner rows are hidden by RLS).
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe('int-1');
+
+    // CRITICAL: runOutsideDbContext + withSystemDbAccessContext must have been
+    // called for steps 2 & 3. This test FAILS if the system-scope wrap is
+    // removed, proving the regression guard is not vacuous.
+    expect(dbMod.runOutsideDbContext).toHaveBeenCalled();
+    expect(dbMod.withSystemDbAccessContext).toHaveBeenCalled();
+    // Both step 2 (integration lookup) and step 3 (mapping check) each call the
+    // pair once, so we expect at least 2 calls each.
+    expect(dbMod.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    expect(dbMod.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('truncateError', () => {

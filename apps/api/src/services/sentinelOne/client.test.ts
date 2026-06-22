@@ -222,6 +222,47 @@ describe('SentinelOneClient error handling', () => {
   });
 });
 
+describe('SentinelOneClient agent normalization', () => {
+  it('extracts siteId from a raw agent row (C1)', async () => {
+    safeFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'a1', siteId: 'site-123', siteName: 'Acme' }],
+        pagination: {}
+      })
+    });
+
+    const client = new SentinelOneClient({
+      managementUrl: 'https://example.sentinelone.net',
+      apiToken: 'token'
+    });
+    const { results } = await client.listAgents();
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.siteId).toBe('site-123');
+    expect(results[0]!.siteName).toBe('Acme');
+  });
+
+  it('normalizes siteId to null when absent from the raw row', async () => {
+    safeFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'a2', siteName: 'OtherSite' }],
+        pagination: {}
+      })
+    });
+
+    const client = new SentinelOneClient({
+      managementUrl: 'https://example.sentinelone.net',
+      apiToken: 'token'
+    });
+    const { results } = await client.listAgents();
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.siteId).toBeNull();
+  });
+});
+
 describe('SentinelOneClient activity status mapping', () => {
   it('maps SentinelOne activity status to internal statuses', async () => {
     const makeClient = () => new SentinelOneClient({

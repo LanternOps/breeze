@@ -30,7 +30,13 @@ runbook; this prompt only sets expectations.
     You have no separate GitHub identity, so never treat the operator's own
     assigned issues as poaching.
 - **Work in an isolated git worktree off fresh `main`.** Never edit the shared
-  main working copy in place.
+  main working copy in place. **You are likely spawned with your CWD already
+  inside an existing worktree that belongs to a *different* task — do NOT work
+  there and do NOT reach back into `/Users/toddhebebrand/breeze`. Create your
+  OWN new worktree off freshly-fetched `origin/main`, `cd` into it, and verify
+  the base commit before branching.** (Both failure modes — reusing the spawn
+  worktree and editing the shared checkout — have silently reverted other PRs'
+  files this session.)
 - **Verify with real evidence** (affected tests single-fork + typecheck) before
   claiming the fix is ready. Never report ready on red tests.
 - **Never merge the PR. Never close the issue.** Those are the user's calls.

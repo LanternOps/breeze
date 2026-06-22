@@ -25,6 +25,7 @@ vi.mock('../db', () => ({
     transaction: vi.fn(),
   },
   withSystemDbAccessContext: undefined,
+  assertOutsideHeldDbContext: vi.fn(),
 }));
 
 vi.mock('../db/schema', () => ({

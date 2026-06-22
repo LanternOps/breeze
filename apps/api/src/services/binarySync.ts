@@ -50,6 +50,16 @@ const USER_HELPER_TARGETS = [
   },
 ] as const;
 
+// breeze-watchdog is the supervisor sibling of breeze-agent, shipped as its own
+// per-arch GitHub release asset on every platform. It was historically only
+// placed by the full installer, so once an agent auto-upgraded its watchdog
+// stayed frozen at install-time version (the agent's in-place upgrade never
+// touched it, and the watchdog component was never registered here). Registering
+// it lets the server drive watchdog upgrades (heartbeat.ts watchdogUpgradeTo)
+// and lets the agent's handleWatchdogUpgrade self-heal fetch the matching binary.
+// Same asset-name shape as the agent: breeze-watchdog-{goos}-{goarch}[.exe].
+const WATCHDOG_TARGETS = AGENT_TARGETS;
+
 interface BinaryInfo {
   filename: string;
   filePath: string;
@@ -621,6 +631,50 @@ export async function syncFromGitHub(
     } catch (err) {
       console.error(
         `[binarySync] Failed to upsert user-helper version for ${platform}/${target.goarch}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // Sync watchdog binaries. Same per-arch asset shape as the agent. Missing for
+  // any release predating the watchdog component being published — the
+  // `release.assets.find` returns undefined and the loop body short-circuits.
+  for (const target of WATCHDOG_TARGETS) {
+    const suffix = target.goos === "windows" ? ".exe" : "";
+    const assetName = `breeze-watchdog-${target.goos}-${target.goarch}${suffix}`;
+    const asset = release.assets.find((a) => a.name === assetName);
+    if (!asset) continue;
+    const metadata = await getReleaseAssetMetadata({
+      asset,
+      trustedManifest,
+      fallbackChecksums,
+      releaseTag: release.tag_name,
+    });
+    if (!metadata) {
+      // See agent loop above: `!metadata` after `!asset` passed indicates an
+      // unexpected manifest/checksums inconsistency, not a missing artifact.
+      console.warn(
+        `[binarySync] Missing metadata for watchdog asset (release=${release.tag_name}, asset=${assetName}, component=watchdog); skipping`,
+      );
+      continue;
+    }
+    const platform = GH_PLATFORM_MAP[target.goos];
+    if (!platform) continue;
+
+    try {
+      await upsertVersion(
+        version,
+        platform,
+        target.goarch,
+        "watchdog",
+        asset.browser_download_url,
+        metadata,
+        release.body,
+      );
+      synced.push(`watchdog:${platform}/${target.goarch}`);
+    } catch (err) {
+      console.error(
+        `[binarySync] Failed to upsert watchdog version for ${platform}/${target.goarch}:`,
         err instanceof Error ? err.message : err,
       );
     }

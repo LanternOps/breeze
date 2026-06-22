@@ -513,6 +513,116 @@ describe("binarySync", () => {
     });
   });
 
+  // The watchdog sync loop registers breeze-watchdog as its own
+  // component=watchdog row so the server can drive watchdog upgrades and the
+  // agent's reconcile path can fetch the matching binary. Without this, the
+  // watchdog could never auto-update on the hosted (BINARY_SOURCE=github) path.
+  describe("syncFromGitHub watchdog loop", () => {
+    function stubGitHubReleaseFetch(
+      signed: ReturnType<typeof makeSignedReleaseManifestMulti>,
+      assetBytes: Map<string, Buffer>,
+    ) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: signed.release,
+                body: "release notes",
+                assets: [
+                  ...Array.from(assetBytes.entries()).map(([name, buf]) => ({
+                    name,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/${name}`,
+                    size: buf.length,
+                  })),
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json`,
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json.ed25519`,
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+    }
+
+    it("registers component=watchdog when the watchdog asset is present", async () => {
+      const agentAsset = {
+        name: "breeze-agent-linux-amd64",
+        buffer: Buffer.from("trusted linux agent bytes"),
+      };
+      const watchdogAsset = {
+        name: "breeze-watchdog-linux-amd64",
+        buffer: Buffer.from("trusted linux watchdog bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([agentAsset, watchdogAsset]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([
+          [agentAsset.name, agentAsset.buffer],
+          [watchdogAsset.name, watchdogAsset.buffer],
+        ]),
+      );
+
+      const result = await syncFromGitHub();
+
+      expect(result.synced).toEqual(
+        expect.arrayContaining(["agent:linux/amd64", "watchdog:linux/amd64"]),
+      );
+
+      const watchdogInsert = (dbMocks.insertValues.mock.calls as any[][]).find(
+        (call) => (call[0] as { component: string }).component === "watchdog",
+      );
+      expect(watchdogInsert).toBeDefined();
+      expect(watchdogInsert![0]).toMatchObject({
+        version: "1.2.3",
+        platform: "linux",
+        architecture: "amd64",
+        component: "watchdog",
+        checksum: signed.checksums.get(watchdogAsset.name),
+        downloadUrl: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${watchdogAsset.name}`,
+      });
+    });
+
+    it("succeeds without a watchdog row when the asset is missing (backward-compat)", async () => {
+      const agentAsset = {
+        name: "breeze-agent-linux-amd64",
+        buffer: Buffer.from("agent only bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([agentAsset]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([[agentAsset.name, agentAsset.buffer]]),
+      );
+
+      const result = await syncFromGitHub();
+
+      expect(result.synced).toContain("agent:linux/amd64");
+      expect(result.synced).not.toContain("watchdog:linux/amd64");
+      const watchdogInserts = dbMocks.insertValues.mock.calls.filter(
+        (call: any[]) => (call[0] as { component: string }).component === "watchdog",
+      );
+      expect(watchdogInserts).toHaveLength(0);
+    });
+  });
+
   it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
     // The agent_versions table has a UNIQUE constraint on
     // (version, platform, architecture, component). The local-binary path used

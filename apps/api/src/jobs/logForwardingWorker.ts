@@ -9,6 +9,7 @@
 
 import { Queue, Worker, Job, UnrecoverableError } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { withSystemDbAccessContext } from '../db';
 import { bulkIndexEvents, clearClientCache } from '../services/logForwarding';
 
@@ -98,8 +99,7 @@ function sanitizeLogForwardingData(data: LogForwardingJobData): LogForwardingJob
 
 export function getLogForwardingQueue(): Queue<LogForwardingJobData> {
   if (!queue) {
-    queue = new Queue<LogForwardingJobData>(QUEUE_NAME, {
-      connection: getBullMQConnection(),
+    queue = createInstrumentedQueue<LogForwardingJobData>(QUEUE_NAME, {
       defaultJobOptions: {
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 500 },

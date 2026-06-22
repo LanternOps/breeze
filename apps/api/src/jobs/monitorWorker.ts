@@ -10,6 +10,7 @@ import * as dbModule from '../db';
 import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, discoveredAssets } from '../db/schema';
 import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { buildMonitorCommand } from '../routes/monitors';
@@ -36,9 +37,7 @@ let monitorQueue: Queue | null = null;
 
 export function getMonitorQueue(): Queue {
   if (!monitorQueue) {
-    monitorQueue = new Queue(MONITOR_QUEUE, {
-      connection: getBullMQConnection()
-    });
+    monitorQueue = createInstrumentedQueue(MONITOR_QUEUE);
   }
   return monitorQueue;
 }

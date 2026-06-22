@@ -48,7 +48,7 @@ export type DiscoveredAsset = {
   profileSubnets?: string[] | null;
 };
 
-type ApiDiscoveryAsset = {
+export type ApiDiscoveryAsset = {
   id: string;
   assetType?: string;
   approvalStatus?: DiscoveredAssetApprovalStatus;
@@ -142,7 +142,7 @@ function normalizeOpenPorts(raw: ApiDiscoveryAsset['openPorts']): OpenPortEntry[
   );
 }
 
-function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
+export function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
   return {
     id: asset.id,
     ip: asset.ipAddress ?? '—',
@@ -170,7 +170,7 @@ function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
   };
 }
 
-function toDetail(asset: DiscoveredAsset): AssetDetail {
+export function toDetail(asset: DiscoveredAsset): AssetDetail {
   return {
     ...asset,
     openPorts: asset.openPorts ?? [],

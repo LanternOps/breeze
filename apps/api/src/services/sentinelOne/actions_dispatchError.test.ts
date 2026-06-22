@@ -26,41 +26,47 @@ import { SentinelOneHttpError } from './client';
 const UPSTREAM_BODY_MARKER = 'UPSTREAM_S1_ACTION_BODY_MARKER_must_not_reach_tenant';
 const UPSTREAM_BODY_SECRET = 'Authorization: Bearer s1_action_leaked_token';
 
-// Capture every row array passed to `db.insert(...).values(<rows>)`.
-const insertedRows: Array<Record<string, unknown>> = [];
-
-const selectQueue: unknown[][] = [];
-
-const mockDb = {
-  select: vi.fn(() => {
-    const rows = selectQueue.shift() ?? [];
-    const chain: Record<string, unknown> = {};
-    for (const method of ['from', 'where', 'innerJoin', 'leftJoin']) {
-      chain[method] = vi.fn().mockReturnValue(chain);
-    }
-    chain.limit = vi.fn().mockResolvedValue(rows);
-    chain.then = (resolve: (value: unknown[]) => unknown) => resolve(rows);
-    return chain;
-  }),
-  insert: vi.fn(() => ({
-    values: vi.fn((rows: Array<Record<string, unknown>>) => {
-      insertedRows.push(...rows);
-      return {
-        returning: vi.fn().mockResolvedValue(
-          rows.map((_row, i) => ({ id: `action-${i}`, deviceId: (rows[i]!.deviceId as string | null) ?? null })),
-        ),
-      };
+// Hoisted together so the `../../db` mock factory (which now loads eagerly via
+// urlSafety.ts → assertOutsideHeldDbContext) can reference mockDb/selectQueue/
+// insertedRows without TDZ. Array identities are preserved, so the tests below
+// still push into and assert against the same instances.
+const { insertedRows, selectQueue, mockDb } = vi.hoisted(() => {
+  // Capture every row array passed to `db.insert(...).values(<rows>)`.
+  const insertedRows: Array<Record<string, unknown>> = [];
+  const selectQueue: unknown[][] = [];
+  const mockDb = {
+    select: vi.fn(() => {
+      const rows = selectQueue.shift() ?? [];
+      const chain: Record<string, unknown> = {};
+      for (const method of ['from', 'where', 'innerJoin', 'leftJoin']) {
+        chain[method] = vi.fn().mockReturnValue(chain);
+      }
+      chain.limit = vi.fn().mockResolvedValue(rows);
+      chain.then = (resolve: (value: unknown[]) => unknown) => resolve(rows);
+      return chain;
     }),
-  })),
-  update: vi.fn(),
-  delete: vi.fn(),
-};
+    insert: vi.fn(() => ({
+      values: vi.fn((rows: Array<Record<string, unknown>>) => {
+        insertedRows.push(...rows);
+        return {
+          returning: vi.fn().mockResolvedValue(
+            rows.map((_row, i) => ({ id: `action-${i}`, deviceId: (rows[i]!.deviceId as string | null) ?? null })),
+          ),
+        };
+      }),
+    })),
+    update: vi.fn(),
+    delete: vi.fn(),
+  };
+  return { insertedRows, selectQueue, mockDb };
+});
 
 vi.mock('../../db', () => ({
   db: mockDb,
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
   withDbAccessContext: <T>(_ctx: unknown, fn: () => T): T => fn(),
   withSystemDbAccessContext: <T>(fn: () => T): T => fn(),
+  assertOutsideHeldDbContext: vi.fn(),
 }));
 
 const dispatchS1IsolationMock = vi.fn();

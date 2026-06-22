@@ -23,6 +23,15 @@ const { title } = Astro.props;
       the script changes (see issue #618).
     -->
     <script is:inline src="/theme-bootstrap.js"></script>
+    <!--
+      Keep Monaco's runtime theme <style> alive across View-Transition swaps.
+      Must register globally (not inside the editor component) because the
+      failing navigation is scripts-list -> editor, where the editor island is
+      unmounted on the list page. External script so it's covered by
+      script-src 'self'. Ordered ahead of the client router below so the
+      listener is installed before the first swap can fire. See issue #1589.
+    -->
+    <script is:inline src="/monaco-theme-persist.js"></script>
     <title>{title} | Breeze RMM</title>
     <ClientRouter />
   </head>

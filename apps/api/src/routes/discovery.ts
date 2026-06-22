@@ -334,6 +334,7 @@ discoveryRoutes.get(
           schedule: p.schedule,
           deepScan: p.deepScan,
           resolveHostnames: p.resolveHostnames,
+          alertSettings: p.alertSettings ?? null,
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
           lastRunAt: row.lastRunAt ? new Date(row.lastRunAt).toISOString() : null
@@ -892,6 +893,7 @@ discoveryRoutes.get(
           manufacturer: a.manufacturer,
           model: a.model,
           openPorts: a.openPorts,
+          snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
           linkedDeviceId: a.linkedDeviceId,
           linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,

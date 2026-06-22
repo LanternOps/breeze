@@ -20,6 +20,8 @@ type SiteOption = {
 type ProfileOption = {
   id: string;
   name: string;
+  siteId: string | null;
+  recordsChanges: boolean;
 };
 
 type NetworkChangesPanelProps = {
@@ -126,7 +128,20 @@ export default function NetworkChangesPanel({
         const id = typeof row.id === 'string' ? row.id : null;
         const name = typeof row.name === 'string' ? row.name : null;
         if (!id || !name) return null;
-        return { id, name };
+        // A profile records discovery-scan change events only when the master
+        // Alerting switch is on AND at least one recording sub-toggle is set —
+        // the worker gates each insert on `enabled && alertOn{New,Changed,...}`
+        // (assetApproval.ts), so `enabled: true` with every sub-toggle off
+        // still records nothing. Mirror that here so the hint stays accurate.
+        const alert = (row.alertSettings && typeof row.alertSettings === 'object')
+          ? row.alertSettings as Record<string, unknown>
+          : null;
+        const recordsChanges = !!(alert
+          && alert.enabled === true
+          && [alert.alertOnNew, alert.alertOnChanged, alert.alertOnDisappeared]
+            .some((flag) => flag === true));
+        const siteId = typeof row.siteId === 'string' ? row.siteId : null;
+        return { id, name, siteId, recordsChanges };
       })
       .filter((row: ProfileOption | null): row is ProfileOption => row !== null);
 
@@ -217,6 +232,37 @@ export default function NetworkChangesPanel({
     () => new Map(profiles.map((profile) => [profile.id, profile])),
     [profiles]
   );
+
+  // Discovery-scan change events are only recorded for profiles that have
+  // Alerting enabled with a recording sub-toggle on (assetApproval.ts gates
+  // `shouldAlert` on `alertSettings.enabled && alertOn*`, and discoveryWorker.ts
+  // only inserts a network_change_event when `shouldAlert` is true). Surface
+  // that prerequisite in the empty state so an empty Changes tab isn't misread
+  // as a bug. Assumes the profile list from /discovery/profiles is complete
+  // (it is currently unpaginated).
+  const alertingPrerequisite = useMemo<
+    { state: 'profile-disabled' | 'all-disabled'; profileName?: string } | null
+  >(() => {
+    if (profiles.length === 0) return null;
+
+    if (filters.profileId !== 'all') {
+      const selected = profileById.get(filters.profileId);
+      if (selected && !selected.recordsChanges) {
+        return { state: 'profile-disabled', profileName: selected.name };
+      }
+      return null;
+    }
+
+    // No specific profile selected: scope the check to the active site filter so
+    // a disabled site isn't masked by an enabled profile elsewhere in the org.
+    const inScope = filters.siteId === 'all'
+      ? profiles
+      : profiles.filter((profile) => profile.siteId === filters.siteId);
+    if (inScope.length > 0 && inScope.every((profile) => !profile.recordsChanges)) {
+      return { state: 'all-disabled' };
+    }
+    return null;
+  }, [profiles, profileById, filters.profileId, filters.siteId]);
 
   const deviceById = useMemo(
     () => new Map(devices.map((device) => [device.id, device])),
@@ -422,6 +468,22 @@ export default function NetworkChangesPanel({
     </div>
   );
 
+  const renderEmptyState = () =>
+    alertingPrerequisite ? (
+      <div className="mx-auto max-w-xl space-y-1 text-sm text-muted-foreground" data-testid="changes-alerting-hint">
+        <p className="font-medium text-foreground">No change events recorded yet.</p>
+        <p>
+          {alertingPrerequisite.state === 'profile-disabled'
+            ? `Discovery scans on “${alertingPrerequisite.profileName}” won’t record changes until Alerting is enabled on that profile.`
+            : 'Discovery scans won’t record changes until Alerting is enabled on a discovery profile.'}
+          {' '}Enable <span className="font-medium text-foreground">Alerting</span> in the profile’s
+          settings (Profiles tab) to start tracking network changes.
+        </p>
+      </div>
+    ) : (
+      <span className="text-sm text-muted-foreground">No change events match the selected filters.</span>
+    );
+
   return (
     <div className="space-y-6">
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -446,6 +508,7 @@ export default function NetworkChangesPanel({
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Site</label>
             <select
+              aria-label="Site"
               value={filters.siteId}
               onChange={(event) => setFilters((previous) => ({ ...previous, siteId: event.target.value }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
@@ -462,6 +525,7 @@ export default function NetworkChangesPanel({
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Profile</label>
             <select
+              aria-label="Profile"
               value={filters.profileId}
               onChange={(event) => setFilters((previous) => ({ ...previous, profileId: event.target.value }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
@@ -600,8 +664,8 @@ export default function NetworkChangesPanel({
                   </tr>
                 ) : changes.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No change events match the selected filters.
+                    <td colSpan={7} className="px-4 py-6 text-center">
+                      {renderEmptyState()}
                     </td>
                   </tr>
                 ) : (
@@ -634,9 +698,7 @@ export default function NetworkChangesPanel({
               </DataCard>
             ) : changes.length === 0 ? (
               <DataCard>
-                <p className="py-2 text-center text-sm text-muted-foreground">
-                  No change events match the selected filters.
-                </p>
+                <div className="py-2 text-center">{renderEmptyState()}</div>
               </DataCard>
             ) : (
               changes.map((change) => {

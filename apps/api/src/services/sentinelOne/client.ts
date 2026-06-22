@@ -24,6 +24,7 @@ export interface S1Agent {
   uuid: string | null;
   computerName: string | null;
   machineType: string | null;
+  siteId: string | null;
   siteName: string | null;
   osName: string | null;
   networkInterfaces?: Array<{ inet?: string[] }>;
@@ -299,6 +300,7 @@ export class SentinelOneClient {
       uuid: str(row.uuid),
       computerName: str(row.computerName) ?? str(row.hostname),
       machineType: str(row.machineType),
+      siteId: str(row.siteId),
       siteName: str(row.siteName),
       osName: str(row.osName),
       networkInterfaces: Array.isArray(row.networkInterfaces) ? row.networkInterfaces as Array<{ inet?: string[] }> : undefined,
