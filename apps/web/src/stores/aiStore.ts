@@ -56,7 +56,7 @@ interface AiState {
   close: () => void;
   setPageContext: (ctx: AiPageContext | null) => void;
   createSession: (opts?: { deviceId?: string }) => Promise<void>;
-  startDeviceTask: (deviceId: string, ctx: AiPageContext) => Promise<void>;
+  startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
@@ -152,12 +152,18 @@ export const useAiStore = create<AiState>()(
     }
   },
 
-  // Start a fresh AI session bound to a specific device ("Fix with AI" on the
-  // device page). Sets the device page-context, opens the panel, and creates a
-  // device-scoped session; the user then types the instruction in the chat.
-  startDeviceTask: async (deviceId, ctx) => {
+  // Start a fresh AI session bound to a specific device ("Ask AI about reliability"
+  // on the device page). Sets the device page-context, opens the panel, creates a
+  // device-scoped session, and — when an initial message is supplied — auto-sends it
+  // so the tech gets an answer without retyping the context.
+  startDeviceTask: async (deviceId, ctx, initialMessage) => {
     set({ pageContext: ctx, sessionId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
     await get().createSession({ deviceId });
+    // Only send if the session was actually created — createSession leaves
+    // sessionId null and sets `error` on failure; sending then would be session-less.
+    if (initialMessage && initialMessage.trim() && get().sessionId) {
+      await get().sendMessage(initialMessage);
+    }
   },
 
   loadSession: async (sessionId: string) => {
