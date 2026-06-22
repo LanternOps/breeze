@@ -346,6 +346,121 @@ describe('computeTopIssues', () => {
     const uptime = issues.find((i) => i.type === 'uptime');
     expect(uptime?.severity).toBe('critical');
   });
+
+  // Issue #1721: workstation/laptop roles should not be flagged with an uptime
+  // top-issue, since regular sleep/shutdown is expected for those devices.
+  it('suppresses the uptime issue when suppressUptimeIssue is true (low uptime)', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 80,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+      suppressUptimeIssue: true,
+    });
+    expect(issues.find((i) => i.type === 'uptime')).toBeUndefined();
+  });
+
+  it('still flags non-uptime issues when suppressUptimeIssue is true', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 80,
+      crashCount30d: 3,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+      suppressUptimeIssue: true,
+    });
+    expect(issues.find((i) => i.type === 'uptime')).toBeUndefined();
+    expect(issues.find((i) => i.type === 'crashes')?.severity).toBe('critical');
+  });
+
+  it('still flags the uptime issue when suppressUptimeIssue is false (default behaviour preserved)', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 80,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+      suppressUptimeIssue: false,
+    });
+    expect(issues.find((i) => i.type === 'uptime')?.severity).toBe('critical');
+  });
+});
+
+// Issue #1721: device-type-aware reliability weight profiles.
+describe('device-role weight profiles', () => {
+  const {
+    resolveFactorWeights,
+    isWorkstationRole,
+    INFRA_FACTOR_WEIGHTS,
+    WORKSTATION_FACTOR_WEIGHTS,
+  } = reliabilityScoringInternals;
+
+  const sum = (w: typeof INFRA_FACTOR_WEIGHTS) =>
+    w.uptime + w.crashes + w.hangs + w.serviceFailures + w.hardwareErrors;
+
+  it('both profiles sum to 100', () => {
+    expect(sum(INFRA_FACTOR_WEIGHTS)).toBe(100);
+    expect(sum(WORKSTATION_FACTOR_WEIGHTS)).toBe(100);
+  });
+
+  it('the infra profile keeps the historical uptime weight of 30', () => {
+    expect(INFRA_FACTOR_WEIGHTS.uptime).toBe(30);
+  });
+
+  it('the workstation profile drops uptime to zero', () => {
+    expect(WORKSTATION_FACTOR_WEIGHTS.uptime).toBe(0);
+  });
+
+  it('classifies only the workstation role as workstation-class', () => {
+    expect(isWorkstationRole('workstation')).toBe(true);
+    expect(isWorkstationRole('server')).toBe(false);
+    expect(isWorkstationRole('nas')).toBe(false);
+    expect(isWorkstationRole('unknown')).toBe(false);
+    expect(isWorkstationRole(null)).toBe(false);
+    expect(isWorkstationRole(undefined)).toBe(false);
+  });
+
+  it('resolves the workstation profile for workstation devices', () => {
+    expect(resolveFactorWeights('workstation')).toBe(WORKSTATION_FACTOR_WEIGHTS);
+  });
+
+  it.each(['server', 'nas', 'router', 'switch', 'firewall', 'printer', 'unknown', null, undefined])(
+    'resolves the infra profile for role %s',
+    (role) => {
+      expect(resolveFactorWeights(role as string | null | undefined)).toBe(INFRA_FACTOR_WEIGHTS);
+    }
+  );
+
+  // A normally-rebooting laptop (low uptime, otherwise clean) should score far
+  // higher under the workstation profile than under the infra profile, because
+  // uptime no longer drags the weighted total down.
+  it('a low-uptime but otherwise-clean device scores higher under the workstation profile', () => {
+    const uptimeScore = 0; // <=90% uptime -> 0 on the uptime factor
+    const cleanScore = 100; // no crashes/hangs/service/hardware faults
+    const weighted = (w: typeof INFRA_FACTOR_WEIGHTS) =>
+      (uptimeScore * w.uptime
+        + cleanScore * w.crashes
+        + cleanScore * w.hangs
+        + cleanScore * w.serviceFailures
+        + cleanScore * w.hardwareErrors) / 100;
+
+    const infra = weighted(INFRA_FACTOR_WEIGHTS);
+    const workstation = weighted(WORKSTATION_FACTOR_WEIGHTS);
+
+    expect(infra).toBe(70); // 30% uptime weight lost entirely
+    expect(workstation).toBe(100); // uptime carries no weight
+    expect(workstation).toBeGreaterThan(infra);
+  });
 });
 
 describe('reliability explanation drivers', () => {

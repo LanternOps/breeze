@@ -14,13 +14,70 @@ import { shouldProduceMlOutput } from './mlFeatureFlags';
 import { captureException } from './sentry';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const RELIABILITY_FACTOR_WEIGHTS = {
+
+type ReliabilityFactorWeights = {
+  uptime: number;
+  crashes: number;
+  hangs: number;
+  serviceFailures: number;
+  hardwareErrors: number;
+};
+
+// Issue #1721: scoring weights are device-type-aware. Uptime is a meaningful
+// reliability signal for always-on infrastructure (servers, NAS, network gear)
+// but NOT for workstations/laptops, which are *expected* to sleep and shut down
+// daily — penalising a normally-rebooting laptop on uptime (30% of the score)
+// produces a misleading low reliability score. So workstation-class roles drop
+// the uptime weight to zero and redistribute it across the fault factors that
+// actually indicate a problem (crashes/hangs/service/hardware).
+//
+// Each profile MUST sum to 100 (asserted by assertWeightsSumTo100 at module load).
+
+// Always-on infrastructure: the historical default. Uptime carries real signal.
+const INFRA_FACTOR_WEIGHTS: ReliabilityFactorWeights = {
   uptime: 30,
   crashes: 25,
   hangs: 15,
   serviceFailures: 15,
   hardwareErrors: 15,
-} as const;
+};
+
+// Workstations/laptops: uptime is not a fault signal, so its 30 points are
+// redistributed onto the remaining factors (proportionally to the infra
+// profile's non-uptime weights: 25/15/15/15 of 70 → +10.7/+6.4/+6.4/+6.4).
+const WORKSTATION_FACTOR_WEIGHTS: ReliabilityFactorWeights = {
+  uptime: 0,
+  crashes: 36,
+  hangs: 21,
+  serviceFailures: 21,
+  hardwareErrors: 22,
+};
+
+function assertWeightsSumTo100(label: string, weights: ReliabilityFactorWeights): void {
+  const total = weights.uptime + weights.crashes + weights.hangs + weights.serviceFailures + weights.hardwareErrors;
+  if (total !== 100) {
+    throw new Error(`[ReliabilityScoring] weight profile "${label}" must sum to 100 (got ${total})`);
+  }
+}
+assertWeightsSumTo100('infra', INFRA_FACTOR_WEIGHTS);
+assertWeightsSumTo100('workstation', WORKSTATION_FACTOR_WEIGHTS);
+
+// Roles whose uptime is not a reliability signal (expected to sleep/shut down).
+// Everything else (server, nas, router, switch, firewall, access_point, printer,
+// camera, iot, phone, unknown) keeps the always-on infra profile.
+const WORKSTATION_ROLES = new Set(['workstation']);
+
+function isWorkstationRole(deviceRole: string | null | undefined): boolean {
+  return deviceRole != null && WORKSTATION_ROLES.has(deviceRole);
+}
+
+/**
+ * Pick the reliability weight profile for a device role. Workstation-class roles
+ * drop the uptime factor; all other roles use the always-on infra profile.
+ */
+function resolveFactorWeights(deviceRole: string | null | undefined): ReliabilityFactorWeights {
+  return isWorkstationRole(deviceRole) ? WORKSTATION_FACTOR_WEIGHTS : INFRA_FACTOR_WEIGHTS;
+}
 
 export type ReliabilityTrendDirection = 'improving' | 'stable' | 'degrading';
 export type ReliabilityScoreRange = 'critical' | 'poor' | 'fair' | 'good';
@@ -583,6 +640,10 @@ function computeTopIssues(input: {
   serviceFailureCount30d: number;
   hardwareErrorCount30d: number;
   criticalHardwareCount30d: number;
+  // Issue #1721: suppress the `uptime` top-issue for roles where regular
+  // sleep/shutdown is expected (workstations/laptops). Defaults to false so
+  // every existing caller keeps the original behaviour.
+  suppressUptimeIssue?: boolean;
 }): ReliabilityTopIssue[] {
   const issues: ReliabilityTopIssue[] = [];
   const recentBuckets = bucketsInWindow(input.dailyBuckets, 30, input.now);
@@ -627,7 +688,7 @@ function computeTopIssues(input: {
     });
   }
 
-  if (input.uptime30d < 95) {
+  if (!input.suppressUptimeIssue && input.uptime30d < 95) {
     issues.push({
       type: 'uptime',
       count: Math.max(1, Math.round(100 - input.uptime30d)),
@@ -826,6 +887,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
       id: devices.id,
       orgId: devices.orgId,
       enrolledAt: devices.enrolledAt,
+      deviceRole: devices.deviceRole,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -900,12 +962,17 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     warningHardwareCount30d
   );
 
+  // Issue #1721: pick a device-type-aware weight profile so a normally-rebooting
+  // workstation/laptop isn't penalised on uptime the way an always-on server is.
+  const weights = resolveFactorWeights(device.deviceRole);
+  const suppressUptimeIssue = isWorkstationRole(device.deviceRole);
+
   const reliabilityScore = clampScore(
-    uptimeScore * (RELIABILITY_FACTOR_WEIGHTS.uptime / 100)
-    + crashScore * (RELIABILITY_FACTOR_WEIGHTS.crashes / 100)
-    + hangScore * (RELIABILITY_FACTOR_WEIGHTS.hangs / 100)
-    + serviceFailureScore * (RELIABILITY_FACTOR_WEIGHTS.serviceFailures / 100)
-    + hardwareErrorScore * (RELIABILITY_FACTOR_WEIGHTS.hardwareErrors / 100)
+    uptimeScore * (weights.uptime / 100)
+    + crashScore * (weights.crashes / 100)
+    + hangScore * (weights.hangs / 100)
+    + serviceFailureScore * (weights.serviceFailures / 100)
+    + hardwareErrorScore * (weights.hardwareErrors / 100)
   );
 
   const trend = computeTrend(dailyBuckets, now);
@@ -919,6 +986,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     serviceFailureCount30d,
     hardwareErrorCount30d,
     criticalHardwareCount30d,
+    suppressUptimeIssue,
   });
 
   const latestProcessedAt = maxTimestamp([
@@ -928,20 +996,24 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   ]) ?? now.toISOString();
 
   const detailsPayload = {
+    // Issue #1721: record which device-type-aware weight profile was applied so
+    // the card's per-factor "% weight" (read from factors[*].weight) and any
+    // downstream consumer can see the role-specific weighting that was used.
+    weightProfile: isWorkstationRole(device.deviceRole) ? 'workstation' : 'infra',
     factors: {
-      uptime: { score: uptimeScore, weight: RELIABILITY_FACTOR_WEIGHTS.uptime, uptime7d, uptime30d, uptime90d },
-      crashes: { score: crashScore, weight: RELIABILITY_FACTOR_WEIGHTS.crashes, crashCount7d, crashCount30d, crashCount90d },
-      hangs: { score: hangScore, weight: RELIABILITY_FACTOR_WEIGHTS.hangs, hangCount7d, hangCount30d, unresolvedHangCount30d },
+      uptime: { score: uptimeScore, weight: weights.uptime, uptime7d, uptime30d, uptime90d },
+      crashes: { score: crashScore, weight: weights.crashes, crashCount7d, crashCount30d, crashCount90d },
+      hangs: { score: hangScore, weight: weights.hangs, hangCount7d, hangCount30d, unresolvedHangCount30d },
       serviceFailures: {
         score: serviceFailureScore,
-        weight: RELIABILITY_FACTOR_WEIGHTS.serviceFailures,
+        weight: weights.serviceFailures,
         serviceFailureCount7d,
         serviceFailureCount30d,
         recoveredServiceCount30d,
       },
       hardwareErrors: {
         score: hardwareErrorScore,
-        weight: RELIABILITY_FACTOR_WEIGHTS.hardwareErrors,
+        weight: weights.hardwareErrors,
         hardwareErrorCount7d,
         hardwareErrorCount30d,
         criticalHardwareCount30d,
@@ -1456,4 +1528,8 @@ export const reliabilityScoringInternals = {
   computeTopIssues,
   buildReliabilityDrivers,
   computeReliabilityEvaluationSummary,
+  resolveFactorWeights,
+  isWorkstationRole,
+  INFRA_FACTOR_WEIGHTS,
+  WORKSTATION_FACTOR_WEIGHTS,
 };
