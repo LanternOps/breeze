@@ -114,7 +114,11 @@ describe('resolveApprovedPatchesForDevice — tombstone exclusion', () => {
         scope: 'organization',
         orgId,
         accessibleOrgIds: [orgId],
-        accessiblePartnerIds: null,
+        // patch_approvals is partner-scoped (RLS: breeze_has_partner_access).
+        // The evaluator derives the partner from the device's org and queries
+        // patch_approvals by partner_id, so the calling context must include
+        // the org's partner in accessiblePartnerIds for RLS to permit the read.
+        accessiblePartnerIds: [partnerId],
         userId: null,
       },
       () => resolveApprovedPatchesForDevice(deviceId, orgId, RING_CONFIG),
