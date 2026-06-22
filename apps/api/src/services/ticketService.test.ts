@@ -9,12 +9,14 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, conf
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
+  const txExecuteMock = vi.fn().mockResolvedValue(undefined);
+  const txUpdateReturning = vi.fn();
   return {
     emitMock: vi.fn().mockResolvedValue(undefined),
     emitTriageFeedbackMock: vi.fn().mockResolvedValue(undefined),
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
-    dbMocks: { insertReturning, updateReturning, selectResult },
+    dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
     configMocks: {
       getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
       getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
@@ -72,14 +74,40 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => ({ returning: vi.fn(() => dbMocks.insertReturning()) }))
-    }))
+    })),
+    // Transaction mock: invokes callback with a tx stub that records SET/VALUES
+    // calls through the same recorders so tests can assert on child table UPDATEs.
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const tx = {
+        update: vi.fn(() => ({
+          set: vi.fn((v) => {
+            setMock(v);
+            return {
+              where: vi.fn((w) => {
+                whereMock(w);
+                return { returning: vi.fn(() => dbMocks.txUpdateReturning()) };
+              })
+            };
+          })
+        })),
+        insert: vi.fn(() => ({
+          values: vi.fn((v) => {
+            valuesMock(v);
+            return { returning: vi.fn(() => dbMocks.insertReturning()) };
+          })
+        })),
+        execute: vi.fn((...args) => dbMocks.txExecuteMock(...args)),
+      };
+      return fn(tx);
+    })
   }
 }));
 vi.mock('../db/schema', () => ({
   tickets: { id: 'id', orgId: 'orgId', status: 'status', assignedTo: 'assignedTo', statusId: 'statusId' },
   ticketComments: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId' },
-  organizations: { id: 'id', partnerId: 'partnerId' },
+  ticketParts: { ticketId: 'ticketId', orgId: 'orgId' },
+  organizations: { id: 'id', partnerId: 'partnerId', name: 'name' },
   alerts: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', orgId: 'orgId' },
   users: { id: 'id', partnerId: 'partnerId' },
@@ -92,6 +120,7 @@ import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
   updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
+  moveTicketOrg,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 
@@ -1921,5 +1950,115 @@ describe('portalCommentMutable', () => {
 
     const result = await portalCommentMutable('c1', 'pu-42');
     expect(result).toEqual({ ok: true });
+  });
+});
+
+describe('moveTicketOrg', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    whereMock.mockClear();
+    dbMocks.txExecuteMock.mockClear();
+    dbMocks.txUpdateReturning.mockClear();
+  });
+
+  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 3 tables', async () => {
+    // Ticket { id:'t1', orgId:'oA', partnerId:'p1', deviceId:'d1' }
+    // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }]) // getTicketOrThrow
+      .mockResolvedValueOnce([                                                               // org lookup (IN clause)
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp' }
+      ]);
+    // txUpdateReturning returns the updated ticket row from the tx.update() call
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined); // 3 child-table raw UPDATEs
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]); // tx.insert ticketComments
+
+    const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    expect(result.orgId).toBe('oB');
+    expect(result.deviceId).toBeNull();
+
+    // The tx.update call should have set orgId + deviceId:null
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'oB', deviceId: null }));
+
+    // 3 raw SQL executes for the child tables (time_entries, ticket_parts, ticket_alert_links)
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(3);
+
+    // System feed comment inserted with "Moved to <org name>"
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: 't1',
+      commentType: 'system',
+      content: 'Moved to Beta Corp'
+    }));
+
+    // ticket.updated event emitted
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      ticketId: 't1',
+      orgId: 'oB',
+      payload: { changed: ['orgId'] }
+    }));
+
+    // Dual-org audit: source + target
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'oA',
+      action: 'ticket.move_org.source',
+      resourceId: 't1'
+    }));
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'oB',
+      action: 'ticket.move_org.target',
+      resourceId: 't1'
+    }));
+  });
+
+  it('rejects a cross-partner target (400)', async () => {
+    // Ticket in org oA (partner p1), target org oX (partner p2)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }]) // ticket
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp' },
+        { id: 'oX', partnerId: 'p2', name: 'Cross Corp' }  // different partner!
+      ]);
+
+    const err = await moveTicketOrg('t1', 'oX', { userId: 'admin' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/same partner/i);
+    // No transaction started
+    expect(setMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when target equals the current org', async () => {
+    const ticket = { id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null };
+    dbMocks.selectResult.mockResolvedValueOnce([ticket]); // getTicketOrThrow
+
+    const result = await moveTicketOrg('t1', 'oA', { userId: 'admin' });
+    // Returns the existing ticket unchanged
+    expect(result).toBe(ticket);
+    // No org lookup, no transaction, no event, no audit
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when target org is not found (404)', async () => {
+    // Org lookup returns only the source org — target is missing
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ id: 'oA', partnerId: 'p1', name: 'Alpha Corp' }]); // no oB row
+
+    const err = await moveTicketOrg('t1', 'oB', { userId: 'admin' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    expect(err.message).toMatch(/target organization not found/i);
+    expect(setMock).not.toHaveBeenCalled();
   });
 });

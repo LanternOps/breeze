@@ -1,7 +1,7 @@
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum, ticketParts, timeEntries } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -1010,6 +1010,78 @@ export async function deleteTicketComment(
     result: 'success'
   });
   return { id: commentId };
+}
+
+// ─── Org re-assignment (Phase 6a) ─────────────────────────────────────────────
+
+// Child tables that denormalize org_id and reference a ticket. Mirrors the
+// device-move CUSTOM_ORG_REWRITE_TABLES set (core.ts) — keep in lockstep.
+// ticket_comments is intentionally absent: it has no org_id (child-via-parent).
+const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links'] as const;
+
+/**
+ * Reassigns a ticket to another organization of the SAME partner.
+ * - Detaches any linked device (device belongs to the source org).
+ * - Re-stamps org_id on all denormalized child tables.
+ * - Writes a system feed comment and dual-org audit log entries.
+ * - Emits ticket.updated.
+ * Rejects cross-partner moves with 400; unknown target with 404; same-org is a no-op.
+ */
+export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor: TicketActor): Promise<typeof tickets.$inferSelect> {
+  const ticket = await getTicketOrThrow(ticketId);
+  if (ticket.orgId === targetOrgId) return ticket;
+
+  const orgRows = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
+    .from(organizations)
+    .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
+    .limit(2);
+  const sourceOrg = orgRows.find((r) => r.id === ticket.orgId);
+  const targetOrg = orgRows.find((r) => r.id === targetOrgId);
+  if (!targetOrg) throw new TicketServiceError('Target organization not found', 404);
+  if (!sourceOrg || sourceOrg.partnerId !== targetOrg.partnerId) {
+    throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
+  }
+
+  let updated: typeof tickets.$inferSelect | undefined;
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(tickets)
+      .set({ orgId: targetOrgId, deviceId: null, updatedAt: new Date() })
+      .where(eq(tickets.id, ticketId))
+      .returning();
+    updated = row;
+    for (const table of TICKET_ORG_DENORMALIZED_TABLES) {
+      await tx.execute(
+        sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
+      );
+    }
+    // System feed entry on the moved ticket.
+    await tx.insert(ticketComments).values({
+      ticketId,
+      userId: actor.userId,
+      authorName: actor.name ?? null,
+      authorType: 'internal',
+      commentType: 'system',
+      content: `Moved to ${targetOrg.name}`,
+      isPublic: false
+    });
+  });
+  if (!updated) throw new TicketServiceError('Ticket not found', 404);
+
+  await emitTicketEvent({
+    type: 'ticket.updated',
+    ticketId,
+    orgId: targetOrgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { changed: ['orgId'] }
+  });
+  // Audit on BOTH orgs so the move shows in source and target feeds (device precedent).
+  const details = { fromOrgId: ticket.orgId, toOrgId: targetOrgId, detachedDeviceId: ticket.deviceId ?? null };
+  await createAuditLogAsync({ orgId: ticket.orgId, actorId: actor.userId, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: targetOrgId, actorId: actor.userId, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  return updated;
 }
 
 /**
