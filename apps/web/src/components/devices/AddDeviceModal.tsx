@@ -125,9 +125,14 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const [selectedOS, setSelectedOS] = useState<'windows' | 'macos' | 'linux'>(userOS);
   const [sha256s, setSha256s] = useState<Record<string, string>>({});
 
-  // Fetch published SHA256SUMS so users can verify uninstall scripts before running
+  // Fetch published SHA256SUMS so users can verify uninstall scripts before running.
+  // Wrap in Promise.resolve().then() so a *synchronous* throw from fetch/Request
+  // construction (e.g. a relative URL with no base under jsdom/undici in tests) is
+  // turned into a rejection the .catch() below can swallow — otherwise it escapes as
+  // an unhandled error and pollutes the parallel vitest suite (best-effort fetch).
   useEffect(() => {
-    fetch('/scripts/SHA256SUMS')
+    Promise.resolve()
+      .then(() => fetch('/scripts/SHA256SUMS'))
       .then((r) => r.text())
       .then((t) => {
         const map: Record<string, string> = {};
