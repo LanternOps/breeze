@@ -7,6 +7,7 @@ import { tickets, ticketComments, ticketAlertLinks, devices, organizations, user
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from './siteScope';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { escapeLike } from '../../utils/sql';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
@@ -310,9 +311,10 @@ ticketsRoutes.get(
     else if (q.slaState === 'breaching') conditions.push(sql`(${SLA_BREACHED} OR ${SLA_AT_RISK})`);
     else if (q.slaState === 'ok') conditions.push(sql`(NOT ${SLA_BREACHED} AND NOT ${SLA_AT_RISK})`);
     if (q.search) {
-      // Escape ILIKE special chars so literal % and _ in the query aren't wildcards.
-      const escaped = q.search.replace(/[%_]/g, '\\$&');
-      const term = `%${escaped}%`;
+      // Escape ILIKE special chars (\, %, _) so they match literally, not as
+      // wildcards/escapes. Use the shared helper — the prior inline regex
+      // dropped backslash, so a trailing '\' could escape the closing '%'.
+      const term = `%${escapeLike(q.search)}%`;
       const searchCond = or(ilike(tickets.subject, term), ilike(tickets.internalNumber, term));
       if (searchCond) conditions.push(searchCond);
     }
