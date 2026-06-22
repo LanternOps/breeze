@@ -26,17 +26,20 @@ const UPSTREAM_BODY_SECRET = 'Authorization: Bearer s1_leaked_token';
 // Capture every `db.update(...).set(<payload>)` payload.
 const setCalls: Array<Record<string, unknown>> = [];
 
-const mockDb = {
+// Hoisted so the `../db` mock factory (which now loads eagerly via
+// urlSafety.ts → assertOutsideHeldDbContext) can reference mockDb without TDZ.
+const mockDb = vi.hoisted(() => ({
   select: vi.fn(),
   insert: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
-};
+}));
 
 vi.mock('../db', () => ({
   db: mockDb,
   withSystemDbAccessContext: undefined,
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
+  assertOutsideHeldDbContext: vi.fn(),
 }));
 
 vi.mock('../services/secretCrypto', () => ({
