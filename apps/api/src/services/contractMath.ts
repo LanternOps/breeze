@@ -57,3 +57,40 @@ export function isExpired(input: { endDate: string | null; periodStart: string }
   if (input.endDate === null) return false;
   return input.periodStart >= input.endDate;
 }
+
+/** Add (or subtract) whole days to an ISO YYYY-MM-DD date, in UTC. */
+export function addDaysISO(iso: string, days: number): string {
+  const segments = iso.split('-');
+  const y = Number(segments[0]);
+  const m = Number(segments[1]);
+  const d = Number(segments[2]);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${dt.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+/** ISO start of the period the billing sweep is about to bill. */
+export function duePeriodStartFor(billingTiming: BillingTiming, nextBillingAt: string, intervalMonths: number): string {
+  return billingTiming === 'advance' ? nextBillingAt : addMonthsClamped(nextBillingAt, -intervalMonths);
+}
+
+/** True when asOf is in [endDate - noticeDays, endDate). */
+export function isWithinNoticeWindow(asOf: string, endDate: string, noticeDays: number): boolean {
+  const windowStart = addDaysISO(endDate, -noticeDays);
+  return asOf >= windowStart && asOf < endDate;
+}
+
+/** Roll endDate forward by whole terms until the due period no longer trips isExpired. */
+export function extendTermPastDue(input: { endDate: string; duePeriodStart: string; termMonths: number }):
+  { newEndDate: string; renewed: boolean } {
+  let endDate = input.endDate;
+  let renewed = false;
+  let guard = 0;
+  while (isExpired({ endDate, periodStart: input.duePeriodStart })) {
+    endDate = addMonthsClamped(endDate, input.termMonths);
+    renewed = true;
+    if (++guard > 100000) break; // runaway guard (mirrors periodIndexFor)
+  }
+  return { newEndDate: endDate, renewed };
+}

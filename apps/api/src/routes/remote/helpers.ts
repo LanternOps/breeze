@@ -6,10 +6,13 @@ import {
   remoteSessions,
   fileTransfers,
   devices,
-  auditLogs
+  auditLogs,
+  configPolicyFeatureLinks,
+  configPolicyRemoteAccessSettings
 } from '../../db/schema';
 import { canAccessSite, type UserPermissions } from '../../services/permissions';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
+import type { AuthContext } from '../../middleware/auth';
 
 // ============================================
 // TURN CREDENTIAL GENERATION (RFC 5389 time-limited HMAC)
@@ -331,4 +334,195 @@ export async function logSessionAudit(
     console.error('Failed to log session audit:', error);
     captureException(error);
   }
+}
+
+// ============================================
+// REMOTE SESSION CONSENT / NOTIFICATION PROMPT POLICY
+// ============================================
+
+/** The two audit actions a consent-denied outcome can be recorded under. */
+export type ConsentDenyAuditAction = 'session_consent_denied' | 'session_consent_bypassed';
+
+/**
+ * Classify a consent-deny `reason` into its audit action. A genuine user denial
+ * or a consent timeout is a real "denied" decision; any other reason (no user
+ * present, helper absent, a malformed helper reply, or an operator policy
+ * choosing proceed-then-block) is a bypass/unavailable outcome, audited
+ * distinctly. Single source of truth shared by the agent's WS command-result
+ * path (agentWs.ts) and the operator deny route (sessions.ts) so the two cannot
+ * drift on how the same reason is classified.
+ */
+export function classifyConsentDenyAction(reason: string): ConsentDenyAuditAction {
+  return reason === 'user' || reason === 'timeout'
+    ? 'session_consent_denied'
+    : 'session_consent_bypassed';
+}
+
+/**
+ * Resolve the desktop session id carried by an agent consent marker. The command
+ * id is authoritative (`expected`); when the result body also carries a session
+ * id it must match, otherwise the marker is rejected (returns null) rather than
+ * trusting a mismatched/forged value. Returns null when no id can be trusted.
+ */
+export function resolveConsentMarkerSessionId(
+  expected: string | null,
+  fromResult: string | null
+): string | null {
+  if (!expected) return null;
+  if (fromResult && fromResult !== expected) return null;
+  return expected;
+}
+
+export type SessionPromptMode = 'off' | 'notify' | 'consent';
+export type ConsentUnavailableBehavior = 'proceed' | 'block';
+export type TechnicianIdentityLevel = 'name_email' | 'name' | 'generic';
+
+export interface RemoteSessionPromptConfig {
+  mode: SessionPromptMode;
+  consentUnavailableBehavior: ConsentUnavailableBehavior;
+  notifyOnEnd: boolean;
+  showIndicator: boolean;
+  identityLevel: TechnicianIdentityLevel;
+}
+
+// Spec defaults applied when no `remote_access` policy resolves for the device,
+// or when policy resolution fails. `notify` is the safe baseline: the end user is
+// told a session is starting but is not asked to consent, so a resolution outage
+// can never silently elevate to a fully-silent (`off`) session.
+export const DEFAULT_REMOTE_SESSION_PROMPT_CONFIG: RemoteSessionPromptConfig = {
+  mode: 'notify',
+  consentUnavailableBehavior: 'proceed',
+  notifyOnEnd: true,
+  showIndicator: true,
+  identityLevel: 'name_email',
+};
+
+// System-scope auth used to resolve the effective config without an org filter.
+// Mirrors the `systemAuth` constant in services/remoteAccessPolicy.ts so internal
+// policy resolution sees every assignment level regardless of the caller scope.
+const promptConfigSystemAuth: AuthContext = {
+  user: { id: 'system', email: 'system', name: 'System', isPlatformAdmin: false },
+  token: {} as never,
+  partnerId: null,
+  orgId: null,
+  scope: 'system',
+  accessibleOrgIds: null,
+  orgCondition: () => undefined,
+  canAccessOrg: () => true,
+};
+
+function coercePromptMode(value: unknown): SessionPromptMode {
+  return value === 'off' || value === 'notify' || value === 'consent'
+    ? value
+    : DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.mode;
+}
+
+function coerceConsentUnavailable(value: unknown): ConsentUnavailableBehavior {
+  return value === 'proceed' || value === 'block'
+    ? value
+    : DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.consentUnavailableBehavior;
+}
+
+function coerceIdentityLevel(value: unknown): TechnicianIdentityLevel {
+  return value === 'name_email' || value === 'name' || value === 'generic'
+    ? value
+    : DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.identityLevel;
+}
+
+/**
+ * Resolve the effective remote-session consent/notification prompt config for a
+ * device. Resolves the effective `remote_access` configuration feature the same
+ * way `resolveDesktopSessionPolicy` does (via `resolveEffectiveConfig`), then
+ * reads the authoritative normalized `config_policy_remote_access_settings` row
+ * by `featureLinkId`. Returns the spec defaults when no `remote_access` policy
+ * applies, when the settings row is missing, or when resolution fails.
+ *
+ * Runs the DB work via `runOutsideDbContext` → `withSystemDbAccessContext` so it
+ * works from paths that have no request-scoped DB context (e.g. viewer-token
+ * desktop WS handlers) AND satisfies tenant isolation: the breeze_app pool needs
+ * an explicit DB context or the SELECTs return 0 rows under FORCE RLS.
+ */
+export async function resolveRemoteSessionPromptConfig(
+  deviceId: string
+): Promise<RemoteSessionPromptConfig> {
+  try {
+    // Imported lazily so unit tests that mock `../../db/schema` with a partial
+    // table set don't have to satisfy the full configurationPolicy import graph
+    // just to exercise the pure `buildTechnicianDisplay` helper in this module.
+    const { resolveEffectiveConfig } = await import('../../services/configurationPolicy');
+    return await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const effective = await resolveEffectiveConfig(deviceId, promptConfigSystemAuth);
+        const feature = effective?.features?.remote_access;
+        if (!feature) {
+          return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
+        }
+
+        // Find the remote_access feature link for the source policy, then read
+        // the normalized settings row keyed on that link. The authoritative
+        // values live in config_policy_remote_access_settings (the JSONB on the
+        // feature link is only a UI/compat mirror).
+        const [settings] = await db
+          .select({
+            sessionPromptMode: configPolicyRemoteAccessSettings.sessionPromptMode,
+            consentUnavailableBehavior: configPolicyRemoteAccessSettings.consentUnavailableBehavior,
+            notifyOnSessionEnd: configPolicyRemoteAccessSettings.notifyOnSessionEnd,
+            showActiveIndicator: configPolicyRemoteAccessSettings.showActiveIndicator,
+            technicianIdentityLevel: configPolicyRemoteAccessSettings.technicianIdentityLevel,
+          })
+          .from(configPolicyRemoteAccessSettings)
+          .innerJoin(
+            configPolicyFeatureLinks,
+            eq(configPolicyRemoteAccessSettings.featureLinkId, configPolicyFeatureLinks.id)
+          )
+          .where(
+            and(
+              eq(configPolicyFeatureLinks.configPolicyId, feature.sourcePolicyId),
+              eq(configPolicyFeatureLinks.featureType, 'remote_access')
+            )
+          )
+          .limit(1);
+
+        if (!settings) {
+          return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
+        }
+
+        return {
+          mode: coercePromptMode(settings.sessionPromptMode),
+          consentUnavailableBehavior: coerceConsentUnavailable(settings.consentUnavailableBehavior),
+          notifyOnEnd: settings.notifyOnSessionEnd ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.notifyOnEnd,
+          showIndicator: settings.showActiveIndicator ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.showIndicator,
+          identityLevel: coerceIdentityLevel(settings.technicianIdentityLevel),
+        };
+      })
+    );
+  } catch (error) {
+    // Fail-safe to the spec defaults (mode 'notify') rather than 500-ing the
+    // offer handler. A resolution outage must not silently produce a fully
+    // silent session, nor block the operator entirely.
+    console.error(
+      `[RemoteSessionPrompt] Failed to resolve prompt config for device ${deviceId}; using defaults:`,
+      error instanceof Error ? error.message : error
+    );
+    captureException(error);
+    return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
+  }
+}
+
+/**
+ * Redact the technician identity shipped to the agent (and shown to the end user
+ * in the consent/notification prompt) per the configured identity level:
+ *   - `generic`    → no name, no email (only the org name is shown)
+ *   - `name`       → name + org name, email dropped
+ *   - `name_email` → name + email + org name (full)
+ */
+export function buildTechnicianDisplay(
+  level: TechnicianIdentityLevel,
+  name: string | null,
+  email: string | null,
+  orgName: string | null,
+): { name: string | null; email: string | null; orgName: string | null } {
+  if (level === 'generic') return { name: null, email: null, orgName };
+  if (level === 'name') return { name, email: null, orgName };
+  return { name, email, orgName };
 }

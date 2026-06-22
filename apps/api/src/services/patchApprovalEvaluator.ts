@@ -3,7 +3,7 @@
  *
  * Single approval/filtering gate for patch job execution. For each device it
  * resolves the set of pending patches a job is allowed to install, covering:
- *  - manual approvals (org-wide or ring-scoped)
+ *  - manual approvals (partner-wide or ring-scoped)
  *  - ring category rules (including the virtual 'third_party_app' category)
  *  - ring-level auto-approve (enabled + severities + deferral window) — #1317
  *  - ring-less policy-level auto-approve (severity list + deferral window)
@@ -14,7 +14,7 @@
  */
 
 import { db } from '../db';
-import { devicePatches, patches, patchApprovals, OUTSTANDING_DEVICE_PATCH_STATUSES } from '../db/schema';
+import { devicePatches, patches, patchApprovals, organizations, OUTSTANDING_DEVICE_PATCH_STATUSES } from '../db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 
 // ============================================
@@ -52,6 +52,13 @@ export type AppRuleVerdict = 'allowed' | 'blocked' | 'held';
  */
 export interface ApprovalEvaluationConfig {
   ringId: string | null;
+  /**
+   * The partner that owns the ring referenced by ringId. Used to guard against
+   * a config policy that links a ring from another partner (featurePolicyId is
+   * an unconstrained uuid). If ringPartnerId !== device-org's partner, the ring
+   * is ignored (treated as ringId = null).
+   */
+  ringPartnerId?: string | null;
   categoryRules: CategoryRule[];
   autoApprove: unknown;
   deferralDays: number;
@@ -229,6 +236,23 @@ export async function resolveApprovedPatchesForDevice(
   orgId: string,
   ringConfig: ApprovalEvaluationConfig
 ): Promise<ApprovedPatch[]> {
+  // Resolve the device-org's partner. Approvals are partner-scoped; an org
+  // without a partner cannot have approvals.
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const partnerId = orgRow?.partnerId ?? null;
+  if (!partnerId) return []; // org without a partner cannot have approvals
+
+  // Cross-partner ring guard: a config policy could reference a ring owned by
+  // a different partner (featurePolicyId is an unconstrained uuid). If the
+  // ring's partner != this device-org's partner, treat it as no ring.
+  if (ringConfig.ringId && ringConfig.ringPartnerId && ringConfig.ringPartnerId !== partnerId) {
+    ringConfig = { ...ringConfig, ringId: null };
+  }
+
   // 1. Query outstanding (needs-install) devicePatches, joined with patch details.
   //    Only 'pending' is outstanding — 'missing' is a stale tombstone (see
   //    OUTSTANDING_DEVICE_PATCH_STATUSES); automation must never try to install it.
@@ -298,7 +322,8 @@ export async function resolveApprovedPatchesForDevice(
 
   if (finalCandidates.length === 0) return [];
 
-  // 2. Load manual approvals for this org (optionally scoped to ring)
+  // 2. Load manual approvals for this partner (optionally scoped to ring).
+  //    partner-wide (ring_id NULL) AND ring-specific rows are both returned.
   const patchIds = finalCandidates.map((p) => p.patchId);
   const manualApprovals = await db
     .select({
@@ -309,7 +334,7 @@ export async function resolveApprovedPatchesForDevice(
     .from(patchApprovals)
     .where(
       and(
-        eq(patchApprovals.orgId, orgId),
+        eq(patchApprovals.partnerId, partnerId),
         inArray(patchApprovals.patchId, patchIds),
         eq(patchApprovals.status, 'approved')
       )
@@ -318,7 +343,7 @@ export async function resolveApprovedPatchesForDevice(
   // Index manual approvals by patchId for fast lookup
   const manualApprovalSet = new Set<string>();
   for (const approval of manualApprovals) {
-    // Ring-scoped approval: match if ringId matches or approval is org-wide (null ringId)
+    // Ring-scoped approval: match if ringId matches, or approval is partner-wide (null ringId)
     if (approval.ringId === ringConfig.ringId || approval.ringId === null) {
       manualApprovalSet.add(approval.patchId);
     }
@@ -394,17 +419,8 @@ function evaluatePatchApproval(
     return 'manual';
   }
 
-  // No ring linked: manual approvals plus policy-level auto-approve. When a
-  // ring is linked this block is skipped entirely, so policyAutoApprove is
-  // never consulted.
+  // No ring linked → only manual approvals apply (partner-wide blanket handled above).
   if (!ringConfig.ringId) {
-    const pa = ringConfig.policyAutoApprove;
-    if (pa?.enabled && patch.severity && pa.severities.includes(patch.severity)) {
-      if (isHeldByDeferral(patch, pa.deferralDays, now, 'policy')) {
-        return null;
-      }
-      return 'policy_auto_approve';
-    }
     return null;
   }
 

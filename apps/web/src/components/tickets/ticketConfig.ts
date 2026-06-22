@@ -21,6 +21,7 @@ export interface TicketSummary {
   assigneeName: string | null;
   categoryId: string | null;
   dueDate: string | null;
+  tags?: string[];
   slaBreachedAt: string | null;
   resolutionSlaMinutes?: number | null;
   responseSlaMinutes?: number | null;
@@ -44,6 +45,8 @@ export interface TicketComment {
   oldValue: string | null;
   newValue: string | null;
   createdAt: string;
+  editedAt?: string | null;
+  deleted?: boolean;
 }
 
 export interface TicketDetail extends TicketSummary {

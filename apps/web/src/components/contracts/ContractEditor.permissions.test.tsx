@@ -50,7 +50,8 @@ const draftDetail: ContractDetail = {
   contract: {
     id: 'ct-1', partnerId: 'p1', orgId: 'org-1', name: 'Acme MSA', status: 'draft',
     billingTiming: 'advance', intervalMonths: 1, startDate: '2026-06-01', endDate: null,
-    nextBillingAt: null, autoIssue: false, currencyCode: 'USD', notes: null, terms: null,
+    nextBillingAt: null, autoIssue: false, autoRenew: false, renewalTermMonths: null, renewalNoticeDays: null,
+    currencyCode: 'USD', notes: null, terms: null,
     createdBy: null, createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
   },
   lines: [

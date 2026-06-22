@@ -121,6 +121,11 @@ export const ticketParamSchema = z.object({
   id: z.string().guid()
 });
 
+export const ticketCommentParamSchema = z.object({
+  id: z.string().guid(),
+  commentId: z.string().guid()
+});
+
 export const commentSchema = z.object({
   content: z.string().min(1).max(5000)
 });

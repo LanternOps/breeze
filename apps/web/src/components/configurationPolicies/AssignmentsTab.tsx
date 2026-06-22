@@ -431,7 +431,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
             No assignments yet. Assign this policy to targets above.
           </p>
         ) : (
-          <div className="mt-4 overflow-hidden rounded-md border">
+          <div className="mt-4 overflow-x-auto rounded-md border">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

@@ -7,6 +7,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { getJwtClaims } from '@/lib/authScope';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
 type ScriptEditPageProps = {
@@ -28,6 +29,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
 
   const isNew = !scriptId;
   const { organizations } = useOrgStore();
+  const { scope: jwtScope } = getJwtClaims();
 
   const fetchScript = useCallback(async () => {
     if (!scriptId) return;
@@ -45,6 +47,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       }
       const data = await response.json();
       const scriptData = data.script ?? data;
+      const scopeOrgId: string | null = scriptData.orgId ?? null;
       setScript({
         name: scriptData.name,
         description: scriptData.description || '',
@@ -56,9 +59,14 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         timeoutSeconds: scriptData.timeoutSeconds || 300,
         runAs: scriptData.runAs || 'system',
         exitCodeSeverityMapping: mappingToRows(scriptData.exitCodeSeverityMapping),
+        // Seed the "Available to" re-scope picker from the current scope
+        // (issue #1734): org_id NULL = partner-wide ("All Orgs"), else a
+        // specific org. The picker only renders for partner-scope users.
+        availability: scopeOrgId ? 'org' : 'partner',
+        orgId: scopeOrgId ?? undefined,
       });
       setScriptScope({
-        orgId: scriptData.orgId ?? null,
+        orgId: scopeOrgId,
         partnerId: scriptData.partnerId ?? null,
         isSystem: scriptData.isSystem ?? false,
       });
@@ -81,18 +89,35 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       const url = isNew ? '/scripts' : `/scripts/${scriptId}`;
       const method = isNew ? 'POST' : 'PUT';
 
-      let payload: typeof values & { availability?: 'org' | 'partner'; orgId?: string | null };
+      type ScriptPayload = Omit<ScriptSubmitValues, 'availability' | 'orgId'> & {
+        availability?: 'org' | 'partner';
+        orgId?: string | null;
+      };
+      const { availability: _availability, orgId: _orgId, ...baseValues } = values;
+      let payload: ScriptPayload = baseValues;
       if (isNew) {
         if (values.availability === 'org') {
           // Org-specific script: use the selected orgId from the form or fall back to the current org
           const orgId = values.orgId || useOrgStore.getState().currentOrgId || undefined;
-          payload = { ...values, availability: 'org', orgId };
+          payload = { ...baseValues, availability: 'org', orgId };
         } else {
           // Partner-wide (default) or single-org user: let the backend resolve
-          payload = { ...values, availability: 'partner' };
+          payload = { ...baseValues, availability: 'partner' };
         }
       } else {
-        payload = values;
+        // Edit: forward the re-scope fields only for partner-scope users whose
+        // scope actually differs from the script's current scope (issue #1734).
+        // Org-scope users can't re-scope (the picker is hidden and the backend
+        // 403s them), so strip the seeded `availability`/`orgId` for them.
+        const canRescope =
+          jwtScope === 'partner' && !scriptScope?.isSystem && _availability !== undefined;
+        if (canRescope) {
+          const targetOrgId = _availability === 'org' ? (_orgId || undefined) : null;
+          const scopeUnchanged = (scriptScope?.orgId ?? null) === (targetOrgId ?? null);
+          if (!scopeUnchanged) {
+            payload = { ...baseValues, availability: _availability, orgId: targetOrgId };
+          }
+        }
       }
 
       const response = await fetchWithAuth(url, {
@@ -207,6 +232,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         submitLabel={isNew ? 'Create Script' : 'Save Changes'}
         loading={submitting}
         isNew={isNew}
+        isSystemScript={scriptScope?.isSystem ?? false}
       />
     </div>
   );

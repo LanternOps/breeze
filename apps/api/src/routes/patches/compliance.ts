@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { readFile } from 'node:fs/promises';
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import { requirePermission, requireScope } from '../../middleware/auth';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -17,7 +17,7 @@ import {
   OUTSTANDING_DEVICE_PATCH_STATUSES
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
-import { resolvePatchReportOrgId } from './helpers';
+import { resolvePatchReportOrgId, resolvePartnerIdForOrg } from './helpers';
 
 export const complianceRoutes = new Hono();
 
@@ -40,9 +40,12 @@ complianceRoutes.get(
     const query = c.req.valid('query');
 
     let effectiveOrgId = query.orgId ?? null;
+    // effectivePartnerId drives approval lookups (patch_approvals is partner-scoped).
+    // effectiveOrgId drives device/patch scoping (device_patches, devices remain org-scoped).
+    let effectivePartnerId: string | null = null;
     if (query.ringId) {
       const [ring] = await db
-        .select({ orgId: patchPolicies.orgId })
+        .select({ partnerId: patchPolicies.partnerId })
         .from(patchPolicies)
         .where(eq(patchPolicies.id, query.ringId))
         .limit(1);
@@ -50,12 +53,17 @@ complianceRoutes.get(
       if (!ring) {
         return c.json({ error: 'Update ring not found' }, 404);
       }
-      if (!auth.canAccessOrg(ring.orgId)) {
+      if (auth.scope !== 'system' && auth.partnerId !== ring.partnerId) {
         return c.json({ error: 'Access denied to this update ring' }, 403);
       }
-      effectiveOrgId = ring.orgId;
+      effectivePartnerId = ring.partnerId;
     } else if (effectiveOrgId && !auth.canAccessOrg(effectiveOrgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    // For the non-ring path, resolve the partner from the org.
+    if (effectivePartnerId === null && effectiveOrgId) {
+      effectivePartnerId = await resolvePartnerIdForOrg(effectiveOrgId);
     }
 
     // Get devices scoped to org (or all accessible orgs for partner/system)
@@ -109,20 +117,66 @@ complianceRoutes.get(
       });
     }
 
-    // If ringId specified, scope to ring-approved patches only
+    // If ringId specified, scope to ring-approved patches only.
+    // Approvals are partner-scoped; use effectivePartnerId resolved above.
     let ringPatchScope: string[] | null = null;
-    if (query.ringId && effectiveOrgId) {
-      const ringApprovedPatches = await db
-        .select({ patchId: patchApprovals.patchId })
-        .from(patchApprovals)
-        .where(
-          and(
-            eq(patchApprovals.orgId, effectiveOrgId),
-            eq(patchApprovals.ringId, query.ringId),
-            eq(patchApprovals.status, 'approved')
+    if (query.ringId && effectivePartnerId) {
+      // patch_approvals is partner-axis RLS; org-scoped callers get 0 rows in
+      // request context (accessiblePartnerIds=[]). Partner is SERVER-DERIVED
+      // from the ring's partnerId (already access-checked above).
+      const ringApprovedPatches = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({ patchId: patchApprovals.patchId })
+            .from(patchApprovals)
+            .where(
+              and(
+                eq(patchApprovals.partnerId, effectivePartnerId!),
+                eq(patchApprovals.ringId, query.ringId!),
+                eq(patchApprovals.status, 'approved')
+              )
+            )
+        )
+      );
+      ringPatchScope = ringApprovedPatches.map(a => a.patchId);
+    }
+
+    // Pre-fetch approved patch IDs in system context when we have a known partner.
+    // patch_approvals is partner-axis RLS; org-scoped callers cannot read it in
+    // request context (accessiblePartnerIds=[]). The partner is SERVER-DERIVED
+    // from the org/ring (already access-checked), so reading their approvals in
+    // system context does not leak cross-partner data.
+    // For the system-wide case (effectivePartnerId=null, no ringId, no orgId),
+    // we fall back to the correlated SQL subquery which resolves per-device partner.
+    let preApprovedPatchIds: Set<string> | null = null;
+    if (effectivePartnerId !== null) {
+      const candidatePatchRows = await db
+        .select({ patchId: devicePatches.patchId })
+        .from(devicePatches)
+        .where(inArray(devicePatches.deviceId, deviceIds));
+      const candidatePatchIds = [...new Set(candidatePatchRows.map(r => r.patchId))];
+
+      if (candidatePatchIds.length > 0) {
+        const approvalConditions: Parameters<typeof and>[0][] = [
+          eq(patchApprovals.partnerId, effectivePartnerId),
+          inArray(patchApprovals.patchId, candidatePatchIds),
+          eq(patchApprovals.status, 'approved')
+        ];
+        if (query.ringId) {
+          approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
+        }
+        const approvedRows = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({ patchId: patchApprovals.patchId })
+              .from(patchApprovals)
+              .where(and(...approvalConditions))
           )
         );
-      ringPatchScope = ringApprovedPatches.map(a => a.patchId);
+        preApprovedPatchIds = new Set(approvedRows.map(r => r.patchId));
+      } else {
+        preApprovedPatchIds = new Set();
+      }
     }
 
     // Get patch status counts
@@ -154,10 +208,19 @@ complianceRoutes.get(
     const approvalRingScope = query.ringId
       ? sql`and (pa.ring_id = ${query.ringId}::uuid or pa.ring_id is null)`
       : sql``;
+    // patch_approvals has no org_id — correlate per-row through the device's org
+    // to find the owning partner. This is correct for all scopes:
+    //  - org scope: each device has the same org/partner, correlated correctly.
+    //  - partner scope: devices span multiple orgs, all under the same partner.
+    //  - ring scope: effectivePartnerId is set; ring scope is handled by approvalRingScope.
+    //  - system scope (no orgId, no ringId): effectivePartnerId is null here, so
+    //    a scalar bind of NULL::uuid would make every device-patch show as
+    //    unapproved. The correlated subquery resolves each device's partner
+    //    independently, so the system-wide aggregate view is correct.
     const isApprovedForInstall = sql`exists (
       select 1
       from patch_approvals pa
-      where pa.org_id = ${devicePatches.orgId}
+      where pa.partner_id = (select o.partner_id from organizations o where o.id = ${devicePatches.orgId})
         and pa.patch_id = ${devicePatches.patchId}
         and pa.status = 'approved'
         ${approvalRingScope}
@@ -207,8 +270,20 @@ complianceRoutes.get(
         osType: devices.osType,
         lastSeenAt: devices.lastSeenAt,
         missingCount: sql<number>`count(*) filter (where ${isOutstanding})`,
-        approvedMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${isApprovedForInstall})`,
-        unapprovedMissing: sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
+        approvedMissing: preApprovedPatchIds !== null
+          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+              preApprovedPatchIds.size > 0
+                ? inArray(devicePatches.patchId, [...preApprovedPatchIds])
+                : sql`false`
+            })`
+          : sql<number>`count(*) filter (where ${isOutstanding} and ${isApprovedForInstall})`,
+        unapprovedMissing: preApprovedPatchIds !== null
+          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+              preApprovedPatchIds.size > 0
+                ? sql`not ${inArray(devicePatches.patchId, [...preApprovedPatchIds])}`
+                : sql`true`
+            })`
+          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
         criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'critical')`,
         importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'important')`,
         osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,

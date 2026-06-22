@@ -43,7 +43,7 @@ export interface FilterChipBarProps {
 
 const EMPTY_GROUP: FilterConditionGroup = { operator: 'AND', conditions: [] };
 
-function defaultConditionForField(field: FilterFieldDefinition): FilterCondition {
+export function defaultConditionForField(field: FilterFieldDefinition): FilterCondition {
   const op = field.operators[0];
   let value: FilterCondition['value'] = '';
   if (op === 'in' || op === 'notIn' || op === 'hasAny' || op === 'hasAll') value = [];
@@ -266,7 +266,7 @@ interface ChipProps {
   focused?: boolean;
 }
 
-function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, btnRef, onKeyDown, focused }: ChipProps) {
+export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, btnRef, onKeyDown, focused }: ChipProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const field = getFieldDef(condition.field)

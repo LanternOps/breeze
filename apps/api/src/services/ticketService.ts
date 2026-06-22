@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
@@ -22,7 +22,7 @@ export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStat
   closed: ['open']
 };
 
-export type TicketServiceErrorStatus = 400 | 404 | 409 | 500;
+export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 500;
 
 /**
  * Machine-readable error codes for callers that aggregate outcomes (e.g. the
@@ -898,4 +898,230 @@ export async function createTicketFromAlert(
     );
   }
   return ticket;
+}
+
+// ─── Comment mutation primitives (Phase 6a) ───────────────────────────────────
+
+/**
+ * System-generated comment types that may never be edited or deleted by users.
+ */
+export const SYSTEM_COMMENT_TYPES = new Set(['status_change', 'assignment', 'time_entry', 'system']);
+
+async function loadCommentWithTicket(commentId: string) {
+  const rows = await db
+    .select()
+    .from(ticketComments)
+    .where(eq(ticketComments.id, commentId))
+    .limit(1);
+  const comment = rows[0];
+  if (!comment) throw new TicketServiceError('Comment not found', 404);
+  const ticket = await getTicketOrThrow(comment.ticketId);
+  return { comment, ticket };
+}
+
+function assertCommentEditable(
+  comment: typeof ticketComments.$inferSelect,
+  actor: TicketActor,
+  canManageAny: boolean
+) {
+  if (SYSTEM_COMMENT_TYPES.has(comment.commentType)) {
+    throw new TicketServiceError('System-generated entries cannot be edited or deleted', 400);
+  }
+  if (comment.deletedAt) {
+    throw new TicketServiceError('Comment already deleted', 409);
+  }
+  const isAuthor = comment.userId != null && comment.userId === actor.userId;
+  if (!isAuthor && !canManageAny) {
+    throw new TicketServiceError('You can only edit or delete your own comments', 403);
+  }
+}
+
+export async function editTicketComment(
+  commentId: string,
+  input: { content: string },
+  actor: TicketActor,
+  opts: { canManageAny: boolean; expectedTicketId?: string }
+) {
+  const { comment, ticket } = await loadCommentWithTicket(commentId);
+  // Defense-in-depth: reject comment/ticket id mismatch before any
+  // existence-revealing check so the response is indistinguishable from missing.
+  if (opts.expectedTicketId !== undefined && comment.ticketId !== opts.expectedTicketId) {
+    throw new TicketServiceError('Comment not found', 404);
+  }
+  assertCommentEditable(comment, actor, opts.canManageAny);
+
+  const previousContent = comment.content;
+  const updated = await db
+    .update(ticketComments)
+    .set({ content: input.content, editedAt: new Date() })
+    .where(eq(ticketComments.id, commentId))
+    .returning();
+  const row = updated[0];
+  if (!row) throw new TicketServiceError('Comment not found', 404);
+
+  // NOTE: no emitTicketEvent here — emitting 'ticket.commented' on an edit
+  // would re-trigger the notify worker's "new reply" email to the portal
+  // requester. The web UI re-fetches via load({background:true}) after edit.
+  // A future 'ticket.comment_edited' event type can be added when automation
+  // consumers need it.
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.comment.edit',
+    resourceType: 'ticket',
+    resourceId: ticket.id,
+    details: { commentId, previousContent },
+    result: 'success'
+  });
+  return row;
+}
+
+export async function deleteTicketComment(
+  commentId: string,
+  actor: TicketActor,
+  opts: { canManageAny: boolean; expectedTicketId?: string }
+) {
+  const { comment, ticket } = await loadCommentWithTicket(commentId);
+  // Defense-in-depth: reject comment/ticket id mismatch before any
+  // existence-revealing check so the response is indistinguishable from missing.
+  if (opts.expectedTicketId !== undefined && comment.ticketId !== opts.expectedTicketId) {
+    throw new TicketServiceError('Comment not found', 404);
+  }
+  assertCommentEditable(comment, actor, opts.canManageAny);
+
+  const previousContent = comment.content;
+  const deleted = await db
+    .update(ticketComments)
+    .set({ deletedAt: new Date() })
+    .where(eq(ticketComments.id, commentId))
+    .returning();
+  if (deleted.length === 0) {
+    throw new TicketServiceError('Comment not found or already deleted', 409);
+  }
+
+  // NOTE: no emitTicketEvent here — emitting 'ticket.commented' on a delete
+  // would send a ghost "new reply" email to the portal requester. The web UI
+  // re-fetches via load({background:true}) after delete.
+  // A future 'ticket.comment_deleted' event type can be added when automation
+  // consumers need it.
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.comment.delete',
+    resourceType: 'ticket',
+    resourceId: ticket.id,
+    details: { commentId, previousContent },
+    result: 'success'
+  });
+  return { id: commentId };
+}
+
+// ─── Org re-assignment (Phase 6a) ─────────────────────────────────────────────
+
+// Child tables that denormalize org_id and reference a ticket. Mirrors the
+// device-move CUSTOM_ORG_REWRITE_TABLES set (core.ts) — keep in lockstep.
+// ticket_comments is intentionally absent: it has no org_id (child-via-parent).
+// invoice_lines is intentionally excluded: issued billing history must remain
+// stamped with the org that was billed (matches device CUSTOM_ORG_REWRITE_TABLES
+// exclusion); its ticket_id FK is ON DELETE SET NULL so moves do not orphan it.
+const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links'] as const;
+
+/**
+ * Reassigns a ticket to another organization of the SAME partner.
+ * - Detaches any linked device (device belongs to the source org).
+ * - Re-stamps org_id on all denormalized child tables.
+ * - Writes a system feed comment and dual-org audit log entries.
+ * - Emits ticket.updated.
+ * Rejects cross-partner moves with 400; unknown target with 404; same-org is a no-op.
+ */
+export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor: TicketActor): Promise<typeof tickets.$inferSelect> {
+  const ticket = await getTicketOrThrow(ticketId);
+  if (ticket.orgId === targetOrgId) return ticket;
+
+  const orgRows = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
+    .from(organizations)
+    .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
+    .limit(2);
+  const sourceOrg = orgRows.find((r) => r.id === ticket.orgId);
+  const targetOrg = orgRows.find((r) => r.id === targetOrgId);
+  if (!targetOrg) throw new TicketServiceError('Target organization not found', 404);
+  if (!sourceOrg || sourceOrg.partnerId !== targetOrg.partnerId) {
+    throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
+  }
+
+  let updated: typeof tickets.$inferSelect | undefined;
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(tickets)
+      .set({ orgId: targetOrgId, deviceId: null, updatedAt: new Date() })
+      .where(eq(tickets.id, ticketId))
+      .returning();
+    updated = row;
+    for (const table of TICKET_ORG_DENORMALIZED_TABLES) {
+      await tx.execute(
+        sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
+      );
+    }
+    // System feed entry on the moved ticket.
+    await tx.insert(ticketComments).values({
+      ticketId,
+      userId: actor.userId,
+      authorName: actor.name ?? null,
+      authorType: 'internal',
+      commentType: 'system',
+      content: `Moved to ${targetOrg.name}`,
+      isPublic: false
+    });
+  });
+  if (!updated) throw new TicketServiceError('Ticket not found', 404);
+
+  await emitTicketEvent({
+    type: 'ticket.updated',
+    ticketId,
+    orgId: targetOrgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { changed: ['orgId'] }
+  });
+  // Audit on BOTH orgs so the move shows in source and target feeds (device precedent).
+  const details = { fromOrgId: ticket.orgId, toOrgId: targetOrgId, detachedDeviceId: ticket.deviceId ?? null };
+  await createAuditLogAsync({ orgId: ticket.orgId, actorId: actor.userId, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: targetOrgId, actorId: actor.userId, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  return updated;
+}
+
+/**
+ * Checks whether a portal customer may still edit or delete their own comment.
+ * The window closes once any later comment on the ticket has authorType !== 'portal'
+ * (i.e. a staff member or system event has acted on the ticket after this comment).
+ */
+export async function portalCommentMutable(
+  commentId: string,
+  portalUserId: string
+): Promise<{ ok: boolean; reason?: 'not_found' | 'not_author' | 'staff_replied' }> {
+  const rows = await db
+    .select()
+    .from(ticketComments)
+    .where(eq(ticketComments.id, commentId))
+    .limit(1);
+  const comment = rows[0];
+  if (!comment || comment.deletedAt) return { ok: false, reason: 'not_found' };
+  if (comment.portalUserId !== portalUserId) return { ok: false, reason: 'not_author' };
+
+  // Single query: select authorType for all later comments on this ticket.
+  // If any has authorType !== 'portal' the edit window is closed.
+  // Deleted later comments still close the window — staff acted, then withdrew.
+  const laterRows = await db
+    .select({ authorType: ticketComments.authorType })
+    .from(ticketComments)
+    .where(and(
+      eq(ticketComments.ticketId, comment.ticketId),
+      gt(ticketComments.createdAt, comment.createdAt)
+    ))
+    .limit(50);
+  if (laterRows.some((r) => r.authorType !== 'portal')) {
+    return { ok: false, reason: 'staff_replied' };
+  }
+  return { ok: true };
 }

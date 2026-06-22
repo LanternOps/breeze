@@ -4,7 +4,7 @@ import { users } from './users';
 import { organizations } from './orgs';
 
 export const remoteSessionTypeEnum = pgEnum('remote_session_type', ['terminal', 'desktop', 'file_transfer']);
-export const remoteSessionStatusEnum = pgEnum('remote_session_status', ['pending', 'connecting', 'active', 'disconnected', 'failed']);
+export const remoteSessionStatusEnum = pgEnum('remote_session_status', ['pending', 'connecting', 'active', 'disconnected', 'failed', 'denied']);
 export const fileTransferDirectionEnum = pgEnum('file_transfer_direction', ['upload', 'download']);
 export const fileTransferStatusEnum = pgEnum('file_transfer_status', ['pending', 'transferring', 'completed', 'failed']);
 

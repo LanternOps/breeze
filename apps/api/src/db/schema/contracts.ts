@@ -14,6 +14,9 @@ export const contractBillingTimingEnum = pgEnum('contract_billing_timing', [
 export const contractLineTypeEnum = pgEnum('contract_line_type', [
   'flat', 'per_device', 'per_seat', 'manual'
 ]);
+export const contractRenewalNoticeKindEnum = pgEnum('contract_renewal_notice_kind', [
+  'advance', 'renewed'
+]);
 
 export const contracts = pgTable('contracts', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -27,6 +30,9 @@ export const contracts = pgTable('contracts', {
   endDate: date('end_date'),
   nextBillingAt: date('next_billing_at'),
   autoIssue: boolean('auto_issue').notNull().default(false),
+  autoRenew: boolean('auto_renew').notNull().default(false),
+  renewalTermMonths: integer('renewal_term_months'),
+  renewalNoticeDays: integer('renewal_notice_days'),
   currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
   notes: text('notes'),
   terms: text('terms'),
@@ -72,4 +78,19 @@ export const contractBillingPeriods = pgTable('contract_billing_periods', {
 }, (t) => [
   uniqueIndex('contract_billing_periods_contract_period_uq').on(t.contractId, t.periodStart),
   index('contract_billing_periods_org_idx').on(t.orgId)
+]);
+
+export const contractRenewalNotices = pgTable('contract_renewal_notices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  contractId: uuid('contract_id').notNull().references(() => contracts.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // The end_date the notice pertains to. For 'advance' this is the term about to lapse;
+  // for 'renewed' this is the NEW end_date after extension. (contract_id, end_date, kind)
+  // is UNIQUE — that triple is the once-per-term idempotency key.
+  endDate: date('end_date').notNull(),
+  kind: contractRenewalNoticeKindEnum('kind').notNull(),
+  sentAt: timestamp('sent_at').defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('contract_renewal_notices_uq').on(t.contractId, t.endDate, t.kind),
+  index('contract_renewal_notices_org_idx').on(t.orgId)
 ]);

@@ -175,7 +175,7 @@ export default function WebhookList({ onAdd, onEdit }: WebhookListProps) {
         </button>
       </div>
 
-      <div className="overflow-hidden rounded-lg border bg-card">
+      <div className="overflow-x-auto rounded-lg border bg-card">
         <table className="min-w-full divide-y text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
             <tr>

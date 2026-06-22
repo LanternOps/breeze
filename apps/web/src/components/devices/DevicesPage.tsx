@@ -12,13 +12,12 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
-import { FilterChipBar } from './FilterChipBar';
-import { QuickAddChips } from './QuickAddChips';
+import { DeviceFilterToolbar } from './DeviceFilterToolbar';
+import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
 import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
-import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
@@ -59,8 +58,10 @@ function summarizeFailedDevices(names: string[]): string {
 }
 
 export default function DevicesPage() {
-  const { organizations: orgStoreOrgs, currentOrgId } = useOrgStore();
-  const currentOrg = orgStoreOrgs.find(o => o.id === currentOrgId) ?? null;
+  // Org scope is shown by the always-visible top-bar switcher (scope pill +
+  // org picker); the page header no longer repeats it. orgStoreOrgs is still
+  // used to name orgs in the run-script confirm dialog.
+  const { organizations: orgStoreOrgs } = useOrgStore();
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -87,6 +88,11 @@ export default function DevicesPage() {
     if (typeof window === 'undefined') return null;
     return decodeFilterFromHash(window.location.hash);
   });
+  // Inline ("instant") client-side filters — shared between DeviceFilterToolbar
+  // (the controls) and DeviceList (the filtering) so each dimension has a single
+  // source of truth. This is the hybrid model's client half; the group above is
+  // its server half.
+  const [listFilters, setListFilters] = useState<ListFilters>(DEFAULT_LIST_FILTERS);
   const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
   // Resolve the advanced filter to the complete (uncapped) matching id set
   // once, here, so the list AND grid views render the same filtered fleet.
@@ -162,9 +168,26 @@ export default function DevicesPage() {
   // Grid view applies the advanced filter here; the list view passes the id
   // set into DeviceList, which combines it with its local quick-filters
   // (search/status/os/etc. stay list-only).
+  //
+  // Decommissioned devices are hidden by default (old list behavior). Show them
+  // only when the active filter group explicitly targets the 'decommissioned'
+  // status, so a user filtering FOR decommissioned still sees them.
+  const includeDecommissioned = useMemo(() => {
+    const conds = advancedFilter?.conditions ?? [];
+    return conds.some(c => {
+      if ('conditions' in c) return false; // nested groups: ignore (rare)
+      if (c.field !== 'status') return false;
+      return Array.isArray(c.value)
+        ? (c.value as unknown[]).includes('decommissioned')
+        : c.value === 'decommissioned';
+    });
+  }, [advancedFilter]);
   const gridDevices = useMemo(
-    () => (advancedFilterIds === null ? devices : devices.filter(d => advancedFilterIds.has(d.id))),
-    [devices, advancedFilterIds]
+    () => {
+      const base = includeDecommissioned ? devices : devices.filter(d => d.status !== 'decommissioned');
+      return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
+    },
+    [devices, advancedFilterIds, includeDecommissioned]
   );
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
@@ -271,6 +294,18 @@ export default function DevicesPage() {
             ramTotalMb: typeof hardware.ramTotalMb === 'number' ? hardware.ramTotalMb : undefined,
             diskTotalGb: typeof hardware.diskTotalGb === 'number' ? hardware.diskTotalGb : undefined,
           } : undefined,
+          // Reliability column (#1720): score is null until the reliability
+          // worker has computed one for the device; the column renders a dash
+          // and sorts those rows last. Trend is validated against the known
+          // enum rather than blind-cast, so an unexpected API value falls back
+          // to null (no glyph) instead of leaking through the type.
+          reliabilityScore: typeof d.reliabilityScore === 'number' ? d.reliabilityScore : null,
+          reliabilityTrend:
+            d.reliabilityTrend === 'improving' ||
+            d.reliabilityTrend === 'stable' ||
+            d.reliabilityTrend === 'degrading'
+              ? d.reliabilityTrend
+              : null,
         };
       });
 
@@ -858,7 +893,6 @@ export default function DevicesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
-          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/devices'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">
             Manage and monitor your fleet.
           </p>
@@ -900,17 +934,18 @@ export default function DevicesPage() {
       </div>
 
       {filtersV2 ? (
-        <div className="flex flex-col gap-2">
-          <FilterChipBar
-            value={advancedFilter}
-            onChange={setAdvancedFilter}
-            orgs={orgs}
-            sites={sites}
-            softwareOptions={softwareOptions}
-            onSoftwareSearch={handleSoftwareSearch}
-          />
-          <QuickAddChips value={advancedFilter} onChange={setAdvancedFilter} />
-        </div>
+        <DeviceFilterToolbar
+          value={advancedFilter}
+          onChange={setAdvancedFilter}
+          listFilters={listFilters}
+          onListFiltersChange={setListFilters}
+          orgs={orgs}
+          sites={sites}
+          groups={deviceGroups}
+          softwareOptions={softwareOptions}
+          onSoftwareSearch={handleSoftwareSearch}
+          onCreateGroup={() => setShowCreateGroup(true)}
+        />
       ) : (
         <DeviceFilterBar
           value={advancedFilter}
@@ -964,6 +999,9 @@ export default function DevicesPage() {
           onBulkAction={handleBulkAction}
           serverFilterIds={advancedFilterIds}
           serverFilterLoading={advancedFilterLoading}
+          includeDecommissioned={includeDecommissioned}
+          listFilters={listFilters}
+          onListFiltersChange={setListFilters}
           onCreateGroup={() => setShowCreateGroup(true)}
           autoSelectGroupId={autoSelectGroupId}
           onAutoSelectConsumed={handleAutoSelectConsumed}

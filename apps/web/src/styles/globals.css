@@ -8779,6 +8779,17 @@ select {
     width: 6px;
   }
 
+  /* Hide the scrollbar while keeping horizontal scroll/swipe — used by the
+     device filter chip row, where a visible track would overlay the short
+     pill row. Content still scrolls via wheel/trackpad/touch. */
+  .no-scrollbar {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* old Edge / IE */
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none; /* Chrome / Safari */
+  }
+
   /* Onboarding tour highlight */
   .tour-highlight {
     position: relative;

@@ -467,6 +467,108 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     clickHeader('Sort by pending reboot');
     expect(rowOrder(container)).toEqual(['host-needs-reboot', 'host-clean', 'host-old-agent']);
   });
+
+  it('renders the reliability score as an opt-in badge column; devices with no score show a dash (#1720)', () => {
+    seedColumns('reliability');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'c3c3c3c3-0000-0000-0000-000000000001', hostname: 'host-scored', reliabilityScore: 73 },
+      { ...baseDevice, id: 'c3c3c3c3-0000-0000-0000-000000000002', hostname: 'host-unscored', reliabilityScore: null },
+    ];
+
+    render(<DeviceList devices={devices} />);
+
+    const scored = screen.getByTestId('device-c3c3c3c3-0000-0000-0000-000000000001-reliability');
+    expect(scored.textContent).toContain('73');
+    const unscored = screen.getByTestId('device-c3c3c3c3-0000-0000-0000-000000000002-reliability');
+    // Em-dash dash cell for the missing score — asserted exactly so a future
+    // `score ?? 0` regression (which would render a bare "0") fails here.
+    expect(unscored.textContent).toBe('—');
+  });
+
+  it('does not render a trend glyph for a scored device with no trend (#1720)', () => {
+    seedColumns('reliability');
+    const device: Device = {
+      ...baseDevice,
+      id: 'c6c6c6c6-0000-0000-0000-000000000001',
+      hostname: 'host-notrend',
+      reliabilityScore: 80,
+      // reliabilityTrend intentionally absent.
+    };
+
+    render(<DeviceList devices={[device]} />);
+
+    const cell = screen.getByTestId('device-c6c6c6c6-0000-0000-0000-000000000001-reliability');
+    expect(cell.textContent).toBe('80');
+    expect(screen.queryByLabelText('Improving')).toBeNull();
+    expect(screen.queryByLabelText('Stable')).toBeNull();
+    expect(screen.queryByLabelText('Degrading')).toBeNull();
+  });
+
+  // Pins the band-color ladder to DeviceReliabilityPanel.tsx scoreClass
+  // (≤50 destructive / ≤70 warning / ≤85 info / else success). The boundary
+  // values (50/51, 70/71, 85/86) are the ones a threshold typo would flip.
+  it.each([
+    [50, 'text-destructive'],
+    [51, 'text-warning'],
+    [70, 'text-warning'],
+    [71, 'text-info'],
+    [85, 'text-info'],
+    [86, 'text-success'],
+  ])('renders the %i reliability score in the %s band', (score, expectedClass) => {
+    seedColumns('reliability');
+    const device: Device = {
+      ...baseDevice,
+      id: 'c7c7c7c7-0000-0000-0000-000000000001',
+      hostname: 'host-band',
+      reliabilityScore: score,
+    };
+
+    render(<DeviceList devices={[device]} />);
+
+    const badge = screen
+      .getByTestId('device-c7c7c7c7-0000-0000-0000-000000000001-reliability')
+      .querySelector('span');
+    expect(badge?.className).toContain(expectedClass);
+  });
+
+  it('sorts reliability numerically with unscored devices last in both directions (#1720)', () => {
+    seedColumns('reliability');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'c4c4c4c4-0000-0000-0000-000000000001', hostname: 'host-high', reliabilityScore: 95 },
+      { ...baseDevice, id: 'c4c4c4c4-0000-0000-0000-000000000002', hostname: 'host-low', reliabilityScore: 40 },
+      { ...baseDevice, id: 'c4c4c4c4-0000-0000-0000-000000000003', hostname: 'host-unscored', reliabilityScore: null },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    clickHeader('Sort by reliability score');
+    expect(rowOrder(container)).toEqual(['host-low', 'host-high', 'host-unscored']);
+
+    clickHeader('Sort by reliability score');
+    expect(rowOrder(container)).toEqual(['host-high', 'host-low', 'host-unscored']);
+  });
+
+  it.each([
+    ['improving', 'Improving', '↑'],
+    ['stable', 'Stable', '→'],
+    ['degrading', 'Degrading', '↓'],
+  ] as const)('shows the %s trend glyph alongside the score (#1720)', (trend, label, glyph) => {
+    seedColumns('reliability');
+    const device: Device = {
+      ...baseDevice,
+      id: 'c5c5c5c5-0000-0000-0000-000000000001',
+      hostname: 'host-trend',
+      reliabilityScore: 60,
+      reliabilityTrend: trend,
+    };
+
+    render(<DeviceList devices={[device]} />);
+
+    const cell = screen.getByTestId('device-c5c5c5c5-0000-0000-0000-000000000001-reliability');
+    expect(cell.textContent).toContain('60');
+    expect(cell.textContent).toContain(glyph);
+    expect(screen.getByLabelText(label)).toBeInTheDocument();
+  });
 });
 
 describe('DeviceList — pending reboot badge', () => {

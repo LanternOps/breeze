@@ -3,10 +3,8 @@ import { Hono } from 'hono';
 import { updateRingRoutes } from './updateRings';
 
 const RING_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const RING_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-const ORG_ID = '11111111-1111-1111-1111-111111111111';
-const ORG_ID_2 = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
+const PARTNER_ID_2 = '44444444-4444-4444-4444-444444444444';
 const PATCH_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 vi.mock('../services', () => ({}));
@@ -16,7 +14,8 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('./updateRingsHelpers', () => ({
-  resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map())
+  resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map()),
+  resolveRingDeviceIds: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../db', () => ({
@@ -35,7 +34,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   patchPolicies: {
     id: 'id',
-    orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     description: 'description',
     enabled: 'enabled',
@@ -51,10 +50,11 @@ vi.mock('../db/schema', () => ({
     targets: 'targets',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
-    createdBy: 'createdBy'
+    createdBy: 'createdBy',
+    kind: 'kind',
   },
   patchApprovals: {
-    orgId: 'orgId',
+    partnerId: 'partnerId',
     ringId: 'ringId',
     patchId: 'patchId',
     status: 'status'
@@ -97,12 +97,12 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
-      scope: 'organization',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      partnerId: null,
-      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
-      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
+      user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
+      scope: 'partner',
+      orgId: null,
+      partnerId: PARTNER_ID,
+      accessibleOrgIds: [],
+      canAccessOrg: () => false
     });
     return next();
   }),
@@ -113,11 +113,12 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { resolveRingDeviceIds } from './updateRingsHelpers';
 
 function makeRing(overrides: Record<string, unknown> = {}) {
   return {
     id: RING_ID,
-    orgId: ORG_ID,
+    partnerId: PARTNER_ID,
     name: 'Test Ring',
     description: 'A test update ring',
     enabled: true,
@@ -144,14 +145,15 @@ describe('updateRings routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(resolveRingDeviceIds).mockResolvedValue([]);
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
-        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
-        scope: 'organization',
-        orgId: ORG_ID,
-        partnerId: null,
-        accessibleOrgIds: [ORG_ID],
-        canAccessOrg: (orgId: string) => orgId === ORG_ID
+        user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        accessibleOrgIds: [],
+        canAccessOrg: () => false
       });
       return next();
     });
@@ -169,7 +171,7 @@ describe('updateRings routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID }])
+              limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
             })
           })
         } as any)
@@ -205,7 +207,7 @@ describe('updateRings routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 1 }])
           })
         } as any)
-        // approval statuses
+        // approval statuses (partner-scoped)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -242,29 +244,43 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    it('should return 403 for ring from a different partner', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID_2 }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+    });
   });
 
   // ----------------------------------------------------------------
   // GET /:id/compliance - Ring compliance
   // ----------------------------------------------------------------
   describe('GET /update-rings/:id/compliance', () => {
-    it('should return compliance data for a ring', async () => {
+    it('should return compliance data for a ring with assigned devices', async () => {
+      // Ring has devices assigned via config-policy assignments
+      vi.mocked(resolveRingDeviceIds).mockResolvedValueOnce(['device-1', 'device-2']);
+
       vi.mocked(db.select)
         // ring lookup
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID, name: 'Test Ring' }])
+              limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' }])
             })
           })
         } as any)
-        // org devices
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ id: 'device-1' }, { id: 'device-2' }])
-          })
-        } as any)
-        // approved patches
+        // approved patches (partner-scoped)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ patchId: PATCH_ID }])
@@ -292,22 +308,19 @@ describe('updateRings routes', () => {
       expect(body.data.ringId).toBe(RING_ID);
       expect(body.data.summary).toBeDefined();
       expect(body.data.compliancePercent).toBeDefined();
+      // Confirm device resolution used the helper, not a direct org-scoped query
+      expect(vi.mocked(resolveRingDeviceIds)).toHaveBeenCalledWith(RING_ID);
     });
 
-    it('should return 100% compliance when no devices', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID, name: 'Test Ring' }])
-            })
+    it('should return 100% compliance when no devices assigned to ring', async () => {
+      // resolveRingDeviceIds returns [] by default in beforeEach
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' }])
           })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([])
-          })
-        } as any);
+        })
+      } as any);
 
       const res = await app.request(`/update-rings/${RING_ID}/compliance`, {
         method: 'GET',
@@ -335,63 +348,28 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(404);
     });
-  });
 
-  // ----------------------------------------------------------------
-  // Partner/System scope tests
-  // ----------------------------------------------------------------
-  describe('partner scope', () => {
-    beforeEach(() => {
-      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-        c.set('auth', {
-          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
-          scope: 'partner',
-          orgId: null,
-          partnerId: PARTNER_ID,
-          accessibleOrgIds: [ORG_ID],
-          canAccessOrg: (orgId: string) => orgId === ORG_ID
-        });
-        return next();
-      });
-    });
-
-    it('should auto-resolve orgId for single-org partner', async () => {
-      // ensureDefaultRing
+    it('should return 403 for ring from a different partner', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: RING_ID }])
-          })
-        })
-      } as any);
-      // list query
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockResolvedValue([makeRing()])
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID_2, name: 'Other Ring' }])
           })
         })
       } as any);
 
-      const res = await app.request('/update-rings', {
+      const res = await app.request(`/update-rings/${RING_ID}/compliance`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-    });
-
-    it('should reject partner creating ring for inaccessible org', async () => {
-      const res = await app.request('/update-rings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ name: 'Ring', orgId: ORG_ID_2 })
       });
 
       expect(res.status).toBe(403);
     });
   });
 
+  // ----------------------------------------------------------------
+  // Partner/System scope tests
+  // ----------------------------------------------------------------
   describe('system scope', () => {
     beforeEach(() => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -407,7 +385,7 @@ describe('updateRings routes', () => {
       });
     });
 
-    it('should list rings without orgId for system scope', async () => {
+    it('should list rings without partnerId for system scope', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -424,6 +402,43 @@ describe('updateRings routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
+    });
+
+    it('should allow system scope to access any ring', async () => {
+      // Ring belongs to a different partner, but system can see it
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeRing({ partnerId: PARTNER_ID_2 })])
+            })
+          })
+        } as any)
+        // approval counts
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // recent jobs
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
     });
   });
 

@@ -9,7 +9,12 @@ import {
   scripts,
   scriptExecutions,
   devices,
-  deviceCommands
+  deviceCommands,
+  automationPolicies,
+  patchPolicies,
+  configPolicyComplianceRules,
+  configPolicyFeatureLinks,
+  configurationPolicies
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -64,6 +69,69 @@ function resolveScriptAuditOrgId(
   return scriptOrgId ?? deviceOrgId ?? auth.orgId ?? null;
 }
 
+type RescopeAuth = {
+  scope: string;
+  partnerId: string | null;
+  accessibleOrgIds: string[] | null;
+  canAccessOrg: (orgId: string) => boolean;
+};
+
+type RescopeTarget = { orgId: string | null; partnerId: string | null };
+type RescopeError = { error: string; status: 400 | 403 };
+
+function isRescopeError(r: RescopeTarget | RescopeError): r is RescopeError {
+  return 'error' in r;
+}
+
+/**
+ * Resolve the requested target scope for a script re-scope on edit (issue
+ * #1734). Returns the `{ orgId, partnerId }` to persist, or a typed error.
+ *
+ * Tenancy rules (mirror the create path at the POST handler):
+ * - Only partner-scope callers may re-scope. Org-scope callers can't move a
+ *   script across orgs or promote it partner-wide — they may only edit their
+ *   own org's scripts in place, so re-scope fields are rejected (403).
+ * - `availability: 'partner'` → partner-wide ("All Orgs"): org_id NULL,
+ *   partner_id = caller's partner. Never `is_system` (that stays seed-only).
+ * - `availability: 'org'` → a single org the caller can access; denied
+ *   otherwise. partner_id stays denormalized for RLS.
+ * The RLS UPDATE WITH CHECK (`breeze_has_org_access(org_id) OR
+ * breeze_has_partner_access(partner_id)`) is the backstop — a forged target
+ * the caller can't reach fails there with no row written.
+ */
+function resolveRescopeTarget(
+  auth: RescopeAuth,
+  availability: 'org' | 'partner',
+  requestedOrgId: string | null | undefined,
+  currentScope: { orgId: string | null; partnerId: string | null }
+): RescopeTarget | RescopeError {
+  if (auth.scope !== 'partner') {
+    return { error: 'Only partner-scope users can change a script\'s scope', status: 403 };
+  }
+  const partnerId = auth.partnerId;
+  if (!partnerId) {
+    return { error: 'Partner context required', status: 403 };
+  }
+  // The script must already belong to this partner — never re-scope a row
+  // from another partner or a system row through this path.
+  if (currentScope.partnerId !== partnerId) {
+    return { error: 'This script is not owned by your partner and cannot be re-scoped', status: 403 };
+  }
+
+  if (availability === 'partner') {
+    return { orgId: null, partnerId };
+  }
+
+  // availability === 'org': a single specific org the caller can access.
+  if (!requestedOrgId) {
+    return { error: 'orgId is required to scope a script to a specific organization', status: 400 };
+  }
+  if (!auth.canAccessOrg(requestedOrgId)) {
+    return { error: 'Access to this organization denied', status: 403 };
+  }
+  return { orgId: requestedOrgId, partnerId };
+}
+
 function getAllowedSiteIds(c: { get: (key: string) => unknown }): string[] | undefined {
   return (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
 }
@@ -116,7 +184,14 @@ const updateScriptSchema = z.object({
   parameters: z.any().optional(),
   timeoutSeconds: z.number().int().min(1).max(86400).optional(),
   runAs: z.enum(['system', 'user', 'elevated']).optional(),
-  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional()
+  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional(),
+  // Re-scope on edit (issue #1734). Mirrors the create-time "Available to"
+  // control: 'org' = a single specific org, 'partner' = partner-wide ("All
+  // Orgs"). When `availability` is present the PUT handler re-scopes the row.
+  // `isSystem` is intentionally NOT accepted here — promotion to a global
+  // system row stays system-scope-seed-only (the Discussion #633 write hole).
+  availability: z.enum(['org', 'partner']).optional(),
+  orgId: z.string().guid().nullable().optional()
 });
 
 const executeScriptSchema = z.object({
@@ -503,6 +578,89 @@ scriptRoutes.put(
     // Build updates object
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
+    // Re-scope on edit (issue #1734). Only applied when `availability` is sent;
+    // a plain content/metadata edit never touches org/partner. System scripts
+    // never get re-scoped here (the system read-only guard above already 403s
+    // non-system callers, and `availability` is the only path that writes
+    // org/partner — `isSystem` is not accepted by the schema, so the #633 hole
+    // stays closed).
+    if (data.availability !== undefined) {
+      const target = resolveRescopeTarget(
+        auth,
+        data.availability,
+        data.orgId,
+        { orgId: script.orgId, partnerId: script.partnerId }
+      );
+      if (isRescopeError(target)) {
+        return c.json({ error: target.error }, target.status);
+      }
+
+      const scopeChanged = target.orgId !== script.orgId;
+      if (scopeChanged) {
+        // Narrowing = the script stops covering an org it covered before
+        // (partner-wide → one org, or org A → org B). Block while live policy
+        // references exist so we never leave a dangling cross-org reference
+        // (issue #1734 open question — block, don't silently detach/cascade).
+        const widening = target.orgId === null; // → partner-wide covers all orgs
+        if (!widening) {
+          // These counts run on the caller's request RLS context. The caller is
+          // always partner-scope here (resolveRescopeTarget enforces it), and
+          // all three reference tables resolve to a direct `org_id` (RLS shape
+          // 1) reachable via the partner short-circuit in breeze_has_org_access
+          // — so the partner sees references across ALL their orgs and the count
+          // can't silently under-report for the partner's own rows. A future
+          // RLS change on these tables would weaken this guard; keep them
+          // partner-visible. These cover every non-self-healing `scripts.id` FK
+          // (remediation_suggestions is onDelete:set null, so it self-heals).
+          const [autoRef] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(automationPolicies)
+            .where(eq(automationPolicies.remediationScriptId, scriptId));
+          const [patchRef] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(patchPolicies)
+            .where(
+              or(
+                eq(patchPolicies.preInstallScript, scriptId),
+                eq(patchPolicies.postInstallScript, scriptId)
+              )
+            );
+          // config_policy_compliance_rules has no direct org_id — join through
+          // its feature link to the parent configuration_policies (org_id) so
+          // the count is RLS-scoped to the partner's orgs.
+          const [complianceRef] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(configPolicyComplianceRules)
+            .innerJoin(
+              configPolicyFeatureLinks,
+              eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
+            )
+            .innerJoin(
+              configurationPolicies,
+              eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id)
+            )
+            .where(eq(configPolicyComplianceRules.remediationScriptId, scriptId));
+          const referenceCount =
+            Number(autoRef?.count ?? 0) +
+            Number(patchRef?.count ?? 0) +
+            Number(complianceRef?.count ?? 0);
+          if (referenceCount > 0) {
+            return c.json(
+              {
+                error:
+                  'Cannot narrow this script\'s scope while it is referenced by automation, patch, or configuration policies. Detach those references first, or promote it to All Orgs instead.',
+                referencingPolicies: referenceCount
+              },
+              409
+            );
+          }
+        }
+      }
+
+      updates.orgId = target.orgId;
+      updates.partnerId = target.partnerId;
+    }
+
     if (data.name !== undefined) updates.name = data.name;
     if (data.description !== undefined) updates.description = data.description;
     if (data.category !== undefined) updates.category = data.category;
@@ -525,15 +683,34 @@ scriptRoutes.put(
       .where(eq(scripts.id, scriptId))
       .returning();
 
+    // The row was read+authorized above, but RLS (USING) or a concurrent
+    // soft-delete can still leave the UPDATE matching 0 rows. Without this
+    // guard the handler would write a fabricated `script.update` audit (a
+    // scopeChange to null/null that never happened) and return HTTP 200 with a
+    // null body, which the web layer toasts as success — a silent failure.
+    if (!updated) {
+      return c.json({ error: 'Script not found or no longer writable' }, 404);
+    }
+
     writeRouteAudit(c, {
       orgId: resolveScriptAuditOrgId(auth, script.orgId),
       action: 'script.update',
       resourceType: 'script',
-      resourceId: updated?.id,
-      resourceName: updated?.name,
+      resourceId: updated.id,
+      resourceName: updated.name,
       details: {
         changedFields: Object.keys(data),
-        newVersion: updated?.version
+        newVersion: updated.version,
+        // Forensic trail for scope changes (issue #1734): record the old and
+        // new scope so a re-scope is auditable.
+        ...(data.availability !== undefined
+          ? {
+              scopeChange: {
+                from: { orgId: script.orgId, partnerId: script.partnerId },
+                to: { orgId: updated.orgId ?? null, partnerId: updated.partnerId ?? null }
+              }
+            }
+          : {})
       }
     });
 

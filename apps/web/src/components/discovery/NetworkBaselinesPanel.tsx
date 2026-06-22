@@ -3,6 +3,7 @@ import { ArrowRight, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime, mapNetworkBaseline, type NetworkBaseline } from './networkTypes';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 type SiteOption = {
   id: string;
@@ -311,6 +312,81 @@ export default function NetworkBaselinesPanel({
     );
   }
 
+  const enabledAlertsFor = (baseline: NetworkBaseline): string[] => {
+    const enabledAlerts: string[] = [];
+    if (baseline.alertSettings.newDevice) enabledAlerts.push('new');
+    if (baseline.alertSettings.disappeared) enabledAlerts.push('gone');
+    if (baseline.alertSettings.changed) enabledAlerts.push('changed');
+    if (baseline.alertSettings.rogueDevice) enabledAlerts.push('rogue');
+    return enabledAlerts;
+  };
+
+  const renderSubnet = (baseline: NetworkBaseline) => {
+    const enabledAlerts = enabledAlertsFor(baseline);
+    return (
+      <>
+        <div className="font-mono text-sm">{baseline.subnet}</div>
+        <div className="text-xs text-muted-foreground">
+          Alerts: {enabledAlerts.length > 0 ? enabledAlerts.join(', ') : 'none'}
+        </div>
+      </>
+    );
+  };
+
+  const renderSchedule = (baseline: NetworkBaseline) => (
+    <>
+      <div className="text-sm">
+        {baseline.scanSchedule.enabled
+          ? `Every ${baseline.scanSchedule.intervalHours}h`
+          : 'Paused'}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        Next: {formatDateTime(baseline.scanSchedule.nextScanAt, timezone)}
+      </div>
+    </>
+  );
+
+  const renderActions = (baseline: NetworkBaseline) => (
+    <div className="flex items-center justify-end gap-2">
+      <button
+        type="button"
+        onClick={() => onViewChanges(baseline.id)}
+        className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
+        title="View changes"
+      >
+        Changes
+        <ArrowRight className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        onClick={() => handleRunNow(baseline)}
+        disabled={!canManage}
+        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-40"
+        title="Run now"
+      >
+        <Play className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => handleEdit(baseline)}
+        disabled={!canManage}
+        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-40"
+        title="Edit"
+      >
+        <Pencil className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => handleDelete(baseline)}
+        disabled={!canManage}
+        className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-40"
+        title="Delete"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+
   return (
     <>
     <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
@@ -347,103 +423,80 @@ export default function NetworkBaselinesPanel({
           </div>
         )}
 
-        <div className="mt-6 overflow-hidden rounded-md border">
-          <table className="min-w-full divide-y">
-            <thead className="bg-muted/40">
-              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Subnet</th>
-                <th className="px-4 py-3">Site</th>
-                <th className="px-4 py-3">Schedule</th>
-                <th className="px-4 py-3">Last Scan</th>
-                <th className="px-4 py-3">Known Devices</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {baselines.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No network baselines yet. Create one to enable continuous change detection.
-                  </td>
+        <ResponsiveTable
+          className="mt-6"
+          table={
+            <table className="min-w-full divide-y">
+              <thead className="bg-muted/40">
+                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3">Subnet</th>
+                  <th className="px-4 py-3">Site</th>
+                  <th className="px-4 py-3">Schedule</th>
+                  <th className="px-4 py-3">Last Scan</th>
+                  <th className="px-4 py-3">Known Devices</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
-              ) : (
-                baselines.map((baseline) => (
-                  (() => {
-                    const enabledAlerts: string[] = [];
-                    if (baseline.alertSettings.newDevice) enabledAlerts.push('new');
-                    if (baseline.alertSettings.disappeared) enabledAlerts.push('gone');
-                    if (baseline.alertSettings.changed) enabledAlerts.push('changed');
-                    if (baseline.alertSettings.rogueDevice) enabledAlerts.push('rogue');
-
-                    return (
-                      <tr key={baseline.id} className="transition hover:bg-muted/40">
-                        <td className="px-4 py-3">
-                          <div className="font-mono text-sm">{baseline.subnet}</div>
-                          <div className="text-xs text-muted-foreground">
-                            Alerts: {enabledAlerts.length > 0 ? enabledAlerts.join(', ') : 'none'}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm">{siteNameById.get(baseline.siteId) ?? baseline.siteId}</td>
-                        <td className="px-4 py-3">
-                          <div className="text-sm">
-                            {baseline.scanSchedule.enabled
-                              ? `Every ${baseline.scanSchedule.intervalHours}h`
-                              : 'Paused'}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            Next: {formatDateTime(baseline.scanSchedule.nextScanAt, timezone)}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm">{formatDateTime(baseline.lastScanAt, timezone)}</td>
-                        <td className="px-4 py-3 text-sm">{baseline.knownDevices.length}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => onViewChanges(baseline.id)}
-                              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
-                              title="View changes"
-                            >
-                              Changes
-                              <ArrowRight className="h-3 w-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRunNow(baseline)}
-                              disabled={!canManage}
-                              className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-40"
-                              title="Run now"
-                            >
-                              <Play className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleEdit(baseline)}
-                              disabled={!canManage}
-                              className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-40"
-                              title="Edit"
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(baseline)}
-                              disabled={!canManage}
-                              className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-40"
-                              title="Delete"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })()
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y">
+                {baselines.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      No network baselines yet. Create one to enable continuous change detection.
+                    </td>
+                  </tr>
+                ) : (
+                  baselines.map((baseline) => (
+                    <tr key={baseline.id} className="transition hover:bg-muted/40">
+                      <td className="px-4 py-3">{renderSubnet(baseline)}</td>
+                      <td className="px-4 py-3 text-sm">{siteNameById.get(baseline.siteId) ?? baseline.siteId}</td>
+                      <td className="px-4 py-3">{renderSchedule(baseline)}</td>
+                      <td className="px-4 py-3 text-sm">{formatDateTime(baseline.lastScanAt, timezone)}</td>
+                      <td className="px-4 py-3 text-sm">{baseline.knownDevices.length}</td>
+                      <td className="px-4 py-3">{renderActions(baseline)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          }
+          cards={
+            baselines.length === 0 ? (
+              <DataCard>
+                <p className="py-2 text-center text-sm text-muted-foreground">
+                  No network baselines yet. Create one to enable continuous change detection.
+                </p>
+              </DataCard>
+            ) : (
+              baselines.map((baseline) => {
+                const enabledAlerts = enabledAlertsFor(baseline);
+                return (
+                <DataCard key={baseline.id}>
+                  <div className="font-mono text-sm font-semibold">{baseline.subnet}</div>
+                  <div className="text-xs text-muted-foreground">
+                    Alerts: {enabledAlerts.length > 0 ? enabledAlerts.join(', ') : 'none'}
+                  </div>
+                  <div className="mt-3 space-y-2 border-t pt-3">
+                    <CardField label="Site">
+                      <span className="text-sm">{siteNameById.get(baseline.siteId) ?? baseline.siteId}</span>
+                    </CardField>
+                    <div>
+                      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Schedule</span>
+                      <div className="mt-1">{renderSchedule(baseline)}</div>
+                    </div>
+                    <CardField label="Last scan">
+                      <span className="text-sm">{formatDateTime(baseline.lastScanAt, timezone)}</span>
+                    </CardField>
+                    <CardField label="Known devices">
+                      <span className="text-sm">{baseline.knownDevices.length}</span>
+                    </CardField>
+                  </div>
+                  <CardActions>{renderActions(baseline)}</CardActions>
+                </DataCard>
+                );
+              })
+            )
+          }
+        />
       </div>
 
       <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-6 shadow-sm">

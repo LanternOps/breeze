@@ -1,7 +1,12 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import DiscoveryProfileList, { type DiscoveryProfile } from './DiscoveryProfileList';
+
+// The responsive table renders both a desktop <table> and a mobile card list in
+// the DOM at once (the sm: breakpoint is CSS-only, invisible to jsdom), so every
+// row's text/labels appear twice. Scope assertions to the desktop surface.
+const desktop = () => within(screen.getByTestId('responsive-table-desktop'));
 
 const profiles: DiscoveryProfile[] = [
   {
@@ -32,15 +37,15 @@ describe('DiscoveryProfileList', () => {
       />
     );
 
-    expect(screen.getByLabelText('Running HQ sweep')).toBeDisabled();
-    expect(screen.getByLabelText('Run Branch sweep')).not.toBeDisabled();
+    expect(desktop().getByLabelText('Running HQ sweep')).toBeDisabled();
+    expect(desktop().getByLabelText('Run Branch sweep')).not.toBeDisabled();
   });
 
   it('passes the selected profile when Run is clicked', () => {
     const onRun = vi.fn();
     render(<DiscoveryProfileList profiles={profiles} onRun={onRun} />);
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
     expect(onRun).toHaveBeenCalledWith(profiles[0]);
   });
