@@ -7,7 +7,7 @@
   "types": "./src/index.ts",
   "exports": { ".": "./src/index.ts" },
   "scripts": { "test": "vitest", "typecheck": "tsc --noEmit" },
-  "dependencies": { "@azure/msal-browser": "^4.0.0", "dompurify": "^3.4.10", "marked": "^18.0.5" },
+  "dependencies": { "@azure/msal-browser": "^4.0.0", "dompurify": "^3.4.11", "marked": "^18.0.5" },
   "peerDependencies": { "react": "^19.2.7", "react-dom": "^19.2.7" },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
