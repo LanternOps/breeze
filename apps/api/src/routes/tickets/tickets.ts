@@ -439,11 +439,17 @@ ticketsRoutes.get(
       .limit(1);
     const { orgName = null, deviceHostname = null, assigneeName = null, statusName = null, statusColor = null } = decorationRows[0] ?? {};
 
-    const comments = await db
+    const commentRows = await db
       .select()
       .from(ticketComments)
-      .where(and(eq(ticketComments.ticketId, id), isNull(ticketComments.deletedAt)))
+      .where(eq(ticketComments.ticketId, id))
       .orderBy(asc(ticketComments.createdAt));
+    const comments = commentRows.map((row) => ({
+      ...row,
+      deleted: row.deletedAt != null,
+      // Never ship the prior text of a deleted comment to the client.
+      content: row.deletedAt != null ? '' : row.content,
+    }));
 
     const alertLinks = await db
       .select({

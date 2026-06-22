@@ -133,7 +133,7 @@ vi.mock('../../db', () => ({
         where: vi.fn((...args: unknown[]) => {
           lastWhereArgs.push({ conditions: args });
           const result = {
-          orderBy: vi.fn(() => Promise.resolve([])),
+          orderBy: vi.fn(() => Promise.resolve(dbSelectMock())),
           groupBy: vi.fn(() => dbGroupByMock()),
           // getScopedTicketOr404 and GET /:id single-row lookups both use .limit(1)
           limit: vi.fn(() => dbSelectMock()),
@@ -567,6 +567,35 @@ describe('GET /tickets/:id — scoped pre-check', () => {
     expect(body.data.orgName).toBeNull();
     expect(body.data.deviceHostname).toBeNull();
     expect(body.data.assigneeName).toBeNull();
+  });
+
+  it('returns soft-deleted comments to staff as tombstones with empty content', async () => {
+    const deletedAt = new Date('2026-06-20T10:00:00Z').toISOString();
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET])  // scoped ticket lookup
+      .mockResolvedValueOnce([])             // decoration query
+      .mockResolvedValueOnce([              // comments query
+        { id: 'c-1', ticketId: TICKET_ID, content: 'visible', deletedAt: null,  editedAt: null, createdAt: new Date().toISOString() },
+        { id: 'c-2', ticketId: TICKET_ID, content: 'secret',  deletedAt: deletedAt, editedAt: null, createdAt: new Date().toISOString() }
+      ])
+      .mockResolvedValue([]);               // alert links
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const comments = body.data.comments;
+
+    // Non-deleted comment: real content, deleted:false
+    const live = comments.find((c: any) => c.id === 'c-1');
+    expect(live).toBeTruthy();
+    expect(live.content).toBe('visible');
+    expect(live.deleted).toBe(false);
+
+    // Deleted comment: tombstone with empty content — prior text must not reach client
+    const tomb = comments.find((c: any) => c.id === 'c-2');
+    expect(tomb).toBeTruthy();
+    expect(tomb.deleted).toBe(true);
+    expect(tomb.content).toBe('');  // prior text must not leak to the client
   });
 });
 
