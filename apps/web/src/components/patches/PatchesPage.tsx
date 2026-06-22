@@ -204,13 +204,11 @@ export default function PatchesPage() {
   // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
   // See spec 2026-05-15-ws-a-action-feedback-design.md (targeted scope; sweeping migration is a non-goal).
   const handleBulkApprove = async (patchIds: string[]) => {
-    // Approval needs a target org. With a specific org selected, fetchWithAuth
-    // auto-injects ?orgId=<currentOrgId>; a selected ring also resolves the org
-    // server-side. In All-orgs mode with no ring, there is nothing to attach the
-    // approval to and the API returns 400 ('orgId is required for partner/system
-    // scope'), so guard with a clear prompt instead of firing a doomed request.
-    if (!selectedRingId && !currentOrgId) {
-      throw new Error('Select an organization or update ring to approve patches');
+    // Partner/system users can approve partner-wide (the API derives the partner
+    // from auth.partnerId) or ring-scoped (when selectedRingId is set). Org-scoped
+    // users cannot manage approvals — those are governed at the partner level.
+    if (!canManageRings) {
+      throw new Error('Patch approvals are managed at the partner level');
     }
     // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
@@ -241,9 +239,9 @@ export default function PatchesPage() {
   };
 
   const handleBulkDecline = async (patchIds: string[]) => {
-    // Same ring/org context requirement as approve (see handleBulkApprove).
-    if (!selectedRingId && !currentOrgId) {
-      throw new Error('Select an organization or update ring to decline patches');
+    // Same partner-level scope requirement as approve (see handleBulkApprove).
+    if (!canManageRings) {
+      throw new Error('Patch approvals are managed at the partner level');
     }
     const failed: string[] = [];
     for (const id of patchIds) {

@@ -132,11 +132,55 @@ describe('PatchesPage', () => {
     expect(desktop().getAllByRole('button', { name: 'Review' })).toHaveLength(1);
   });
 
-  it('blocks bulk approve and prompts for an update ring when there is no org context', async () => {
-    // Partner on the global /patches view: no current org and no ring selected.
-    // Approval is ring-scoped, so the request would 400 ('orgId is required for
-    // partner/system scope') — guard it client-side with a clear prompt instead.
+  it('partner scope: allows bulk approve in all-orgs mode (no org, no ring) — request fires partner-wide', async () => {
+    // After the partner-scoping migration, the API derives the partner from
+    // auth.partnerId. A partner user in all-orgs mode (no org, no ring) is valid —
+    // the old "select an org or ring" guard was a UX regression.
+    jwtScope.scope = 'partner';
     orgState.currentOrgId = null;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'Critical Security Update',
+              severity: 'critical',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'pending',
+            },
+          ],
+        });
+      }
+      if (url === '/patches/bulk-approve') {
+        return makeJsonResponse({ approved: ['patch-1'], failed: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('Critical Security Update');
+    fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
+
+    // Guard must NOT throw — the request must fire
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/bulk-approve',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+  });
+
+  it('org scope: blocks bulk approve with partner-level message', async () => {
+    // Org-scoped users cannot manage approvals (rings are partner-scoped).
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
@@ -164,7 +208,7 @@ describe('PatchesPage', () => {
     fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
     fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
 
-    await screen.findByText(/select an organization or update ring/i);
+    await screen.findByText(/patch approvals are managed at the partner level/i);
     expect(fetchMock).not.toHaveBeenCalledWith('/patches/bulk-approve', expect.anything());
   });
 
