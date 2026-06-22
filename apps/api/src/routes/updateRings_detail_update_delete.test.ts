@@ -3,11 +3,8 @@ import { Hono } from 'hono';
 import { updateRingRoutes } from './updateRings';
 
 const RING_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const RING_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-const ORG_ID = '11111111-1111-1111-1111-111111111111';
-const ORG_ID_2 = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
-const PATCH_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const PARTNER_ID_2 = '44444444-4444-4444-4444-444444444444';
 
 vi.mock('../services', () => ({}));
 
@@ -16,7 +13,8 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('./updateRingsHelpers', () => ({
-  resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map())
+  resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map()),
+  resolveRingDeviceIds: vi.fn().mockResolvedValue([])
 }));
 
 vi.mock('../db', () => ({
@@ -35,7 +33,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   patchPolicies: {
     id: 'id',
-    orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     description: 'description',
     enabled: 'enabled',
@@ -51,10 +49,11 @@ vi.mock('../db/schema', () => ({
     targets: 'targets',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
-    createdBy: 'createdBy'
+    createdBy: 'createdBy',
+    kind: 'kind',
   },
   patchApprovals: {
-    orgId: 'orgId',
+    partnerId: 'partnerId',
     ringId: 'ringId',
     patchId: 'patchId',
     status: 'status'
@@ -97,12 +96,12 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
-      scope: 'organization',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      partnerId: null,
-      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
-      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
+      user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
+      scope: 'partner',
+      orgId: null,
+      partnerId: PARTNER_ID,
+      accessibleOrgIds: [],
+      canAccessOrg: () => false
     });
     return next();
   }),
@@ -117,7 +116,7 @@ import { authMiddleware } from '../middleware/auth';
 function makeRing(overrides: Record<string, unknown> = {}) {
   return {
     id: RING_ID,
-    orgId: ORG_ID,
+    partnerId: PARTNER_ID,
     name: 'Test Ring',
     description: 'A test update ring',
     enabled: true,
@@ -146,12 +145,12 @@ describe('updateRings routes', () => {
     vi.clearAllMocks();
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
-        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
-        scope: 'organization',
-        orgId: ORG_ID,
-        partnerId: null,
-        accessibleOrgIds: [ORG_ID],
-        canAccessOrg: (orgId: string) => orgId === ORG_ID
+        user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        accessibleOrgIds: [],
+        canAccessOrg: () => false
       });
       return next();
     });
@@ -224,11 +223,11 @@ describe('updateRings routes', () => {
       expect(res.status).toBe(404);
     });
 
-    it('should return 403 for ring from inaccessible org', async () => {
+    it('should return 403 for ring from a different partner', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([makeRing({ orgId: ORG_ID_2 })])
+            limit: vi.fn().mockResolvedValue([makeRing({ partnerId: PARTNER_ID_2 })])
           })
         })
       } as any);
@@ -259,7 +258,7 @@ describe('updateRings routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID }])
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
           })
         })
       } as any);
@@ -300,11 +299,11 @@ describe('updateRings routes', () => {
       expect(res.status).toBe(404);
     });
 
-    it('should return 403 for ring from inaccessible org', async () => {
+    it('should return 403 for ring from a different partner', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID_2 }])
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID_2 }])
           })
         })
       } as any);
@@ -324,7 +323,7 @@ describe('updateRings routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID }])
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
           })
         })
       } as any);
@@ -366,7 +365,7 @@ describe('updateRings routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID, name: 'Test Ring' }])
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' }])
           })
         })
       } as any);
@@ -403,11 +402,11 @@ describe('updateRings routes', () => {
       expect(res.status).toBe(404);
     });
 
-    it('should return 403 for ring from inaccessible org', async () => {
+    it('should return 403 for ring from a different partner', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: RING_ID, orgId: ORG_ID_2, name: 'Ring' }])
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID_2, name: 'Ring' }])
           })
         })
       } as any);

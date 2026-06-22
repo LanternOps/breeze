@@ -46,7 +46,12 @@ vi.mock('../db/schema', () => ({
 // the worker doesn't spin up Redis/BullMQ or the full resolver graph.
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/featureConfigResolver', () => ({ checkDeviceMaintenanceWindow: vi.fn() }));
-vi.mock('./patchJobExecutor', () => ({ enqueuePatchJob: vi.fn() }));
+vi.mock('./patchJobExecutor', () => ({
+  enqueuePatchJob: vi.fn(),
+  selectStaleScheduledJobIds: vi.fn(),
+  filterOrphanedJobIds: vi.fn(),
+}));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/patchJobSnapshot', () => ({ buildPatchesSnapshot: vi.fn() }));
 vi.mock('../services/configPolicyPatching', () => ({
   backfillMissingPatchSettings: vi.fn(),
@@ -57,8 +62,10 @@ vi.mock('../services/configPolicyPatching', () => ({
 vi.mock('bullmq', () => ({ Queue: class {}, Worker: class {}, Job: class {} }));
 
 import { __testOnly } from './patchSchedulerWorker';
+import { enqueuePatchJob, filterOrphanedJobIds } from './patchJobExecutor';
+import { captureException } from '../services/sentry';
 
-const { loadDeviceSchedulingContexts } = __testOnly;
+const { loadDeviceSchedulingContexts, enqueueScanResults } = __testOnly;
 
 describe('loadDeviceSchedulingContexts (#1318 partner tz)', () => {
   beforeEach(() => {
@@ -163,5 +170,111 @@ describe('loadDeviceSchedulingContexts (#1318 partner tz)', () => {
     ];
     const [ctx] = await loadDeviceSchedulingContexts(['dev-1']);
     expect(ctx?.timezone).toBe('UTC');
+  });
+});
+
+describe('enqueueScanResults orphan reconcile (#1733)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const now = new Date('2026-06-21T09:00:00Z');
+
+  it('enqueues created jobs then re-enqueues only the orphaned scheduled jobs', async () => {
+    // staleScheduledJobs includes the just-created job-1 (already enqueued) plus
+    // job-orphan (lost its enqueue, past run time). filterOrphanedJobIds is what
+    // distinguishes them — here it reports only job-orphan as needing recovery.
+    const orphan = { id: 'job-orphan', scheduledAt: new Date('2026-06-21T08:00:00Z') };
+    vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce([orphan]);
+
+    const result = await enqueueScanResults({
+      enqueueJobIds: ['job-1'],
+      staleScheduledJobs: [{ id: 'job-1', scheduledAt: now }, orphan],
+    }, now);
+
+    expect(filterOrphanedJobIds).toHaveBeenCalledWith([{ id: 'job-1', scheduledAt: now }, orphan]);
+    expect(enqueuePatchJob).toHaveBeenCalledWith('job-1');
+    // run time already passed → no delay (undefined)
+    expect(enqueuePatchJob).toHaveBeenCalledWith('job-orphan', undefined);
+    expect(enqueuePatchJob).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ enqueued: 1, recovered: 1 });
+    // recovered > 0 → surfaced to Sentry so the #1733 race rate is observable
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('#1733 race active') }),
+    );
+  });
+
+  it('preserves the remaining delay when recovering a future-scheduled orphan (regression: no early fire)', async () => {
+    // A POST-route job scheduled 1h in the future whose delayed enqueue was lost.
+    // Recovering it must NOT fire immediately — it must re-enqueue with the
+    // remaining delay so it runs at its intended window.
+    const futureOrphan = { id: 'job-future', scheduledAt: new Date('2026-06-21T10:00:00Z') };
+    vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce([futureOrphan]);
+
+    const result = await enqueueScanResults({
+      enqueueJobIds: [],
+      staleScheduledJobs: [futureOrphan],
+    }, now);
+
+    // 10:00 - 09:00 = 3,600,000ms remaining delay
+    expect(enqueuePatchJob).toHaveBeenCalledWith('job-future', 60 * 60 * 1000);
+    expect(result).toEqual({ enqueued: 0, recovered: 1 });
+  });
+
+  it('does not throw or skip recovery when a fresh enqueue fails (still sweeps orphans)', async () => {
+    const orphan = { id: 'job-orphan', scheduledAt: null };
+    vi.mocked(enqueuePatchJob)
+      .mockRejectedValueOnce(new Error('redis down'))
+      .mockResolvedValue(undefined);
+    vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce([orphan]);
+
+    const result = await enqueueScanResults({
+      enqueueJobIds: ['job-fresh'],
+      staleScheduledJobs: [orphan],
+    }, now);
+
+    // fresh enqueue threw → enqueued stays 0, but the orphan sweep still ran
+    expect(result).toEqual({ enqueued: 0, recovered: 1 });
+    expect(enqueuePatchJob).toHaveBeenCalledWith('job-orphan', undefined);
+  });
+
+  it('surfaces a failed orphan re-enqueue to Sentry (a lost run staying lost is page-worthy)', async () => {
+    const orphan = { id: 'job-orphan', scheduledAt: null };
+    vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce([orphan]);
+    vi.mocked(enqueuePatchJob).mockRejectedValueOnce(new Error('redis down'));
+
+    const result = await enqueueScanResults({
+      enqueueJobIds: [],
+      staleScheduledJobs: [orphan],
+    }, now);
+
+    expect(result).toEqual({ enqueued: 0, recovered: 0 });
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('recovers nothing when no scheduled rows are orphaned', async () => {
+    vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce([]);
+
+    const result = await enqueueScanResults({
+      enqueueJobIds: ['job-1'],
+      staleScheduledJobs: [{ id: 'job-1', scheduledAt: now }],
+    }, now);
+
+    expect(result).toEqual({ enqueued: 1, recovered: 0 });
+    expect(enqueuePatchJob).toHaveBeenCalledTimes(1);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('swallows a reconcile-sweep failure without losing the fresh enqueues (but surfaces it)', async () => {
+    vi.mocked(filterOrphanedJobIds).mockRejectedValueOnce(new Error('queue read failed'));
+
+    const result = await enqueueScanResults({
+      enqueueJobIds: ['job-1'],
+      staleScheduledJobs: [{ id: 'job-1', scheduledAt: now }],
+    }, now);
+
+    expect(result).toEqual({ enqueued: 1, recovered: 0 });
+    expect(enqueuePatchJob).toHaveBeenCalledWith('job-1');
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error));
   });
 });

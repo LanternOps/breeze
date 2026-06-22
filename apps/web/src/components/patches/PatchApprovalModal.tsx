@@ -8,6 +8,7 @@ import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
+import { getJwtClaims } from '../../lib/authScope';
 
 export type PatchApprovalAction = 'approve' | 'decline' | 'defer';
 
@@ -15,8 +16,7 @@ type PatchApprovalModalProps = {
   open: boolean;
   patch?: Patch | null;
   ringId?: string | null;
-  /** Current org context (from the org switcher). When absent and no ring is
-   * selected, approval has no org to resolve, so the action is blocked. */
+  /** @deprecated No longer drives the approval gate; retained only for callers that still pass it. */
   currentOrgId?: string | null;
   /** Name of the organization this patch approval applies to, for the confirm message. */
   orgName?: string | null;
@@ -84,29 +84,25 @@ export default function PatchApprovalModal({
   }, [open, patch?.id]);
 
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
-  // Approval needs a target org: either a selected ring (resolves its org
-  // server-side) or a specific org selected in the switcher (sent as ?orgId=).
-  // In All-orgs mode with no ring there is nothing to attach the decision to, so
-  // disable the action up-front with a clear hint rather than letting the click
-  // 400 ('orgId is required for partner/system scope').
-  const canResolveOrg = useMemo(() => !!ringId || !!currentOrgId, [ringId, currentOrgId]);
+  // Approval is partner-scoped. Partner/system users can approve partner-wide
+  // (no ring) or ring-scoped (ring selected). Org-scoped users cannot approve.
+  const isOrgScope = useMemo(() => getJwtClaims().scope === 'organization', []);
   const canSubmit = useMemo(() => {
     if (isSubmitting) return false;
-    if (!canResolveOrg) return false;
+    if (isOrgScope) return false;
     if (action !== 'defer') return true;
     return deferUntil.trim().length > 0;
-  }, [action, deferUntil, isSubmitting, canResolveOrg]);
+  }, [action, deferUntil, isSubmitting, isOrgScope]);
 
   if (!patch) return null;
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
-    // Approval is ring-scoped. With no ring and no current org (a partner on the
-    // global /patches view), the API has no org to attach the approval to and
-    // returns 400. Block early with a clear prompt — before opening the approve
-    // confirm dialog — instead of firing a doomed request.
-    if (!ringId && !currentOrgId) {
-      setSubmitError(`Select an update ring to ${action} patches`);
+    // Approval is partner-scoped. Org-scoped users cannot approve — block early
+    // before opening the approve confirm dialog.
+    const { scope } = getJwtClaims();
+    if (scope === 'organization') {
+      setSubmitError('Patch approvals are managed at the partner level');
       return;
     }
     // Gate approve behind a scope-naming confirm dialog.
@@ -127,8 +123,8 @@ export default function PatchApprovalModal({
       const endpoint = action === 'approve' ? 'approve' : action === 'decline' ? 'decline' : 'defer';
       const body: Record<string, unknown> = { note: notes };
       if (ringId) body.ringId = ringId;
-      // orgId is auto-injected by fetchWithAuth from the selected org (?orgId=)
-      // when no ring is selected; the API also resolves it from the ring.
+      // Partner-wide (no ring): the API resolves the partner from auth.partnerId.
+      // Ring-scoped: the API resolves the org from the ring.
       if (action === 'defer') {
         if (!deferUntil.trim()) {
           throw new Error('Choose when the patch should be deferred until');
@@ -236,9 +232,9 @@ export default function PatchApprovalModal({
           </div>
         )}
 
-        {!canResolveOrg && !submitError && (
+        {isOrgScope && !submitError && (
           <div className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
-            Select an organization (or an update ring) to {action} patches.
+            Patch approvals are managed at the partner level.
           </div>
         )}
 
@@ -261,7 +257,7 @@ export default function PatchApprovalModal({
             type="button"
             onClick={handleSubmit}
             disabled={!canSubmit}
-            title={!canResolveOrg ? `Select an organization to ${action} patches` : undefined}
+            title={isOrgScope ? 'Patch approvals are managed at the partner level' : undefined}
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="inline-flex items-center gap-2">

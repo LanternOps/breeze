@@ -10,12 +10,20 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
 
+const orgStoreState: {
+  currentOrgId: string | null;
+  currentSiteId: string | null;
+  sites: unknown[];
+  allOrgs: boolean;
+} = {
+  currentOrgId: 'org-1',
+  currentSiteId: 'site-1',
+  sites: [],
+  allOrgs: false
+};
+
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: () => ({
-    currentOrgId: 'org-1',
-    currentSiteId: 'site-1',
-    sites: []
-  })
+  useOrgStore: () => orgStoreState
 }));
 
 vi.mock('../../lib/navigation', () => ({
@@ -91,6 +99,10 @@ function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('DiscoveryPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.currentSiteId = 'site-1';
+    orgStoreState.sites = [];
+    orgStoreState.allOrgs = false;
     window.history.pushState({}, '', '/discovery#profiles');
   });
 
@@ -232,5 +244,103 @@ describe('DiscoveryPage', () => {
 
     // Spinner still cleared on the early-return path (finally ran).
     await waitFor(() => expect(desktop().getByLabelText('Run HQ sweep')).not.toBeDisabled());
+  });
+
+  describe('All-Orgs mode (explicit allOrgs scope, currentOrgId === null)', () => {
+    beforeEach(() => {
+      // Explicit All-Orgs scope: allOrgs flag set, not a transient hydration null.
+      orgStoreState.currentOrgId = null;
+      orgStoreState.currentSiteId = null;
+      orgStoreState.allOrgs = true;
+    });
+
+    it('renders the select-an-organization prompt and does not fire org-scoped requests', async () => {
+      window.history.pushState({}, '', '/discovery#assets');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      // Prompt is shown instead of an error state.
+      expect(
+        await screen.findByText('Select an organization to view network discovery')
+      ).toBeInTheDocument();
+
+      // No tab content is rendered (none of the org-scoped tabs mount).
+      expect(screen.queryByText('Assets tab')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Topology' })).not.toBeInTheDocument();
+
+      // Crucially, the page never fires the org-scoped request that would 400.
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/profiles');
+    });
+
+    it('does not fire the org-scoped asset-detail fetch for an ?asset= deep link', async () => {
+      // The `?asset=<id>` deep link sets topologyAssetId, which would otherwise
+      // fetch the org-scoped /discovery/assets/<id> endpoint and 400 in All-Orgs
+      // mode. The guard must suppress it.
+      window.history.pushState({}, '', '/discovery?asset=asset-9#assets');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      await screen.findByText('Select an organization to view network discovery');
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/assets/asset-9');
+    });
+
+    it('hides the New Profile action while in All-Orgs mode', async () => {
+      window.history.pushState({}, '', '/discovery#profiles');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      await screen.findByText('Select an organization to view network discovery');
+      expect(screen.queryByRole('button', { name: /New Profile/ })).not.toBeInTheDocument();
+    });
+
+    it('restores normal behavior and fetches profiles when a single org is selected', async () => {
+      window.history.pushState({}, '', '/discovery#profiles');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse(profilesPayload));
+
+      const { rerender } = render(<DiscoveryPage />);
+
+      // Starts on the prompt, no profiles request.
+      await screen.findByText('Select an organization to view network discovery');
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/profiles');
+
+      // User picks a concrete org via the switcher -> store updates, re-render.
+      orgStoreState.currentOrgId = 'org-1';
+      orgStoreState.currentSiteId = 'site-1';
+      orgStoreState.allOrgs = false;
+      rerender(<DiscoveryPage />);
+
+      // Prompt is gone, the profiles tab mounts, and the org-scoped fetch fires.
+      // 'HQ sweep' renders in BOTH the desktop table and the mobile cards
+      // (ResponsiveTable, #1760), so wait for the async render then scope the
+      // assertion to the desktop table — matches the sibling tests in this file
+      // which use findAllByText + desktop(). A bare findByText sees 2 matches.
+      await screen.findAllByText('HQ sweep');
+      expect(desktop().getByText('HQ sweep')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Select an organization to view network discovery')
+      ).not.toBeInTheDocument();
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/discovery/profiles');
+    });
+  });
+
+  it('does not flash the prompt on a transient pre-hydration null org', async () => {
+    // Before the first org is auto-selected, currentOrgId is null but allOrgs is
+    // false. Single-org users must NOT see the "select an organization" prompt
+    // in this window -- the guard keys on the explicit allOrgs flag.
+    orgStoreState.currentOrgId = null;
+    orgStoreState.currentSiteId = null;
+    orgStoreState.allOrgs = false;
+    window.history.pushState({}, '', '/discovery#assets');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+
+    expect(await screen.findByText('Assets tab')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Select an organization to view network discovery')
+    ).not.toBeInTheDocument();
   });
 });

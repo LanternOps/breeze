@@ -294,6 +294,18 @@ export default function DevicesPage() {
             ramTotalMb: typeof hardware.ramTotalMb === 'number' ? hardware.ramTotalMb : undefined,
             diskTotalGb: typeof hardware.diskTotalGb === 'number' ? hardware.diskTotalGb : undefined,
           } : undefined,
+          // Reliability column (#1720): score is null until the reliability
+          // worker has computed one for the device; the column renders a dash
+          // and sorts those rows last. Trend is validated against the known
+          // enum rather than blind-cast, so an unexpected API value falls back
+          // to null (no glyph) instead of leaking through the type.
+          reliabilityScore: typeof d.reliabilityScore === 'number' ? d.reliabilityScore : null,
+          reliabilityTrend:
+            d.reliabilityTrend === 'improving' ||
+            d.reliabilityTrend === 'stable' ||
+            d.reliabilityTrend === 'degrading'
+              ? d.reliabilityTrend
+              : null,
         };
       });
 

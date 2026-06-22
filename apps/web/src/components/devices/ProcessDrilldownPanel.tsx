@@ -12,9 +12,17 @@ type Props = {
   onClose: () => void;
 };
 
+// Why a sample-less drilldown is empty:
+// - 'none-recorded': the device has never recorded any process sample
+//   (e.g. the sampler hasn't run / isn't shipping yet) — issue #1722.
+// - 'none-near-time': samples exist, but none at-or-before the clicked time
+//   (the click predates the first sample).
+type EmptyKind = null | 'none-recorded' | 'none-near-time';
+
 export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) {
   const [rows, setRows] = useState<Row[]>([]);
   const [sampleTime, setSampleTime] = useState<string | null>(null);
+  const [emptyKind, setEmptyKind] = useState<EmptyKind>(null);
   const [sortKey, setSortKey] = useState<SortKey>('cpu');
   const [live, setLive] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -28,6 +36,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
     (async () => {
       setLoading(true);
       setError(undefined);
+      setEmptyKind(null);
       try {
         if (live) {
           // On-demand process listing lives under /system-tools; the agent
@@ -49,14 +58,23 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
             ramMb: Number(p.memoryMb ?? p.ramMb ?? 0),
           })));
           setSampleTime(null);
+          setEmptyKind(null);
         } else {
           const res = await fetchWithAuth(`/devices/${deviceId}/process-samples?at=${encodeURIComponent(at)}`);
           if (!res.ok) throw new Error('Failed to fetch process sample');
           const json = await res.json();
           if (cancelled) return;
-          if (!json.sample) { setRows([]); setSampleTime(null); return; }
+          if (!json.sample) {
+            setRows([]);
+            setSampleTime(null);
+            // The API tells us whether the device has ANY recorded sample so we
+            // can disambiguate the empty state (issue #1722).
+            setEmptyKind(json.hasAnySample ? 'none-near-time' : 'none-recorded');
+            return;
+          }
           setRows((json.sample.topProcesses ?? []) as Row[]);
           setSampleTime(json.sample.timestamp);
+          setEmptyKind(null);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load processes');
@@ -90,11 +108,20 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
         </div>
 
         <p className="mt-1 text-xs text-muted-foreground" data-testid="process-drilldown-sample-time">
-          {live
-            ? 'Live (now)'
-            : sampleTime
-              ? `Nearest sample: ${formatDateTime(sampleTime)}`
-              : 'No sample near this time'}
+          {/* Suppressed on error so the red error banner below isn't contradicted
+              by a stale "no sample" subtitle (the catch sets neither sampleTime
+              nor emptyKind). */}
+          {error
+            ? ''
+            : live
+              ? 'Live (now)'
+              : sampleTime
+                ? `Nearest sample: ${formatDateTime(sampleTime)}`
+                : emptyKind === 'none-recorded'
+                  ? 'No process samples recorded for this device yet'
+                  : emptyKind === 'none-near-time'
+                    ? 'No process sample recorded at or before this time'
+                    : 'No sample near this time'}
         </p>
 
         <div className="mt-3 flex gap-2 text-sm">
@@ -112,6 +139,17 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
             </tr>
           </thead>
           <tbody>
+            {!loading && sorted.length === 0 && !error && (
+              <tr data-testid="process-drilldown-empty">
+                <td colSpan={4} className="py-4 text-center text-muted-foreground">
+                  {live
+                    ? 'No processes returned for this device.'
+                    : emptyKind === 'none-recorded'
+                      ? 'No process samples have been recorded for this device yet. The agent collects them periodically — check back once it has reported.'
+                      : 'No process sample was recorded at or before this point. Try clicking a more recent point on the graph.'}
+                </td>
+              </tr>
+            )}
             {sorted.map((r, i) => (
               <tr key={r.pid} data-testid={`process-drilldown-row-${i}`}>
                 <td>{r.name}</td>
