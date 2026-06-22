@@ -5,7 +5,7 @@
 //
 // Persistence reuses the existing saved-filters backend (GET/POST/DELETE
 // /filters); the conditions column stores the FilterConditionGroup verbatim. The
-// hostname quick-search is deliberately NOT part of a view — it's a transient
+// device quick-search is deliberately NOT part of a view — it's a transient
 // lookup, not a reusable saved query.
 //
 // "Default view" has no backend column, so it's a per-browser preference in

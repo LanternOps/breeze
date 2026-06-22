@@ -5,7 +5,8 @@
 // In the chip-centric model every structured filter (status/os/role/org/site/
 // group/CPU/etc.) lives in the single server-resolved FilterConditionGroup and
 // renders as an editable chip. The ONLY inline/instant client filter left is
-// the hostname search box, so this object now carries just `search`.
+// device search (display name or hostname), so this object now carries just
+// `search`.
 
 export interface ListFilters {
   search: string;

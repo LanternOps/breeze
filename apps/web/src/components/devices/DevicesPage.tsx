@@ -262,7 +262,8 @@ export default function DevicesPage() {
 
         return {
           id: d.id as string,
-          hostname: (d.hostname ?? d.displayName ?? 'Unknown') as string,
+          hostname: (d.hostname ?? 'Unknown') as string,
+          displayName: typeof d.displayName === 'string' ? d.displayName : undefined,
           os: (d.osType ?? d.os ?? 'windows') as OSType,
           osVersion: (d.osVersion ?? '') as string,
           status: (d.status ?? 'offline') as DeviceStatus,
@@ -315,7 +316,8 @@ export default function DevicesPage() {
         id: d.id as string,
         deviceClass: (d.deviceClass as DeviceClass) ?? 'network',
         assetType: (d.assetType as DeviceRole | undefined) ?? 'unknown',
-        hostname: (d.hostname ?? d.displayName ?? 'Unknown') as string,
+        hostname: (d.hostname ?? 'Unknown') as string,
+        displayName: typeof d.displayName === 'string' ? d.displayName : undefined,
         // No OS for a network device; the OS column renders "—" for network rows.
         os: '' as OSType,
         osVersion: '',

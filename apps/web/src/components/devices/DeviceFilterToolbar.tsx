@@ -1,7 +1,7 @@
 // DeviceFilterToolbar — the single, unified filter surface for the Devices
 // page, in the chip-centric model. EVERY structured filter is an editable chip
 // living in one server-resolved FilterConditionGroup; the only standing inline
-// control is the hostname Search box.
+// control is the device Search box.
 //
 // Layout (one control row):
 //   🔍 Search · quick-preset chips · More ▾ (add any chip type) · Advanced ▾
@@ -34,7 +34,7 @@ export interface DeviceFilterToolbarProps {
   // The server-resolved group (quick chips + More-added chips + Advanced drawer).
   value: FilterConditionGroup | null;
   onChange: (next: FilterConditionGroup | null) => void;
-  // Instant client-side filter (hostname search only), owned by DevicesPage and
+  // Instant client-side filter (device search only), owned by DevicesPage and
   // shared with DeviceList.
   listFilters: ListFilters;
   onListFiltersChange: (next: ListFilters) => void;
@@ -289,18 +289,18 @@ export function DeviceFilterToolbar({
 
   return (
     <div data-testid="device-filter-toolbar" className="flex flex-col gap-2">
-      {/* Unified filter bar — one surface holding the live hostname search, the
+      {/* Unified filter bar — one surface holding the live device search, the
           quick-preset chips, and the "+ Add filter" picker. The bar itself owns
           the border + focus ring; everything inside is borderless/chip-light so
           the controls read as one cohesive tool, not three stacked widgets. */}
       <div className="flex items-center gap-2 rounded-lg border bg-background px-2 py-1.5 transition focus-within:ring-2 focus-within:ring-ring">
-        {/* Hostname search — borderless, blends into the bar (the one live filter). */}
+        {/* Device search — borderless, blends into the bar (the one live filter). */}
         <div className="flex w-40 shrink-0 items-center gap-2 sm:w-56">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search hostname…"
-            aria-label="Search by hostname"
+            placeholder="Search devices"
+            aria-label="Search devices"
             value={listFilters.search}
             onChange={e => patch({ search: e.target.value })}
             className="w-full appearance-none border-0 bg-transparent p-0 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-0"

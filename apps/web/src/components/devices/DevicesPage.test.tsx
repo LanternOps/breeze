@@ -123,13 +123,15 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; watchdogVersion?: string | null };
+type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null };
 vi.mock('./DeviceList', () => ({
   default: ({ devices, serverFilterIds, onBulkAction }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
+      data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
+      data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
       {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script'].map(action => (
@@ -194,6 +196,18 @@ beforeEach(() => {
 });
 
 describe('DevicesPage — advanced filter applies to BOTH views', () => {
+  it('passes displayName through to DeviceList without replacing hostname', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), displayName: 'Reception Laptop' }],
+    } as never);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-hostnames')).toContain('host-alpha');
+    expect(list.getAttribute('data-display-names')).toContain('Reception Laptop');
+  });
+
   it('grid view renders only the devices matching the advanced filter (not the raw list)', async () => {
     render(<DevicesPage />);
 
