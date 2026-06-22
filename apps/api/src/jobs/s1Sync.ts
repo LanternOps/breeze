@@ -293,34 +293,6 @@ export function resolveDeviceIdForAgent(
   return null;
 }
 
-export function normalizeS1SiteName(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
-}
-
-export function resolveOrgIdForAgentSite(
-  siteName: unknown,
-  defaultOrgId: string,
-  siteOrgIds: Map<string, string>
-): string {
-  const normalized = normalizeS1SiteName(siteName);
-  if (!normalized) return defaultOrgId;
-  return siteOrgIds.get(normalized) ?? defaultOrgId;
-}
-
-export function resolveAgentSyncTarget(
-  agent: Record<string, unknown>,
-  defaultOrgId: string,
-  siteOrgIds: Map<string, string>,
-  candidatesByOrg: Map<string, DeviceCandidates>
-): AgentContext {
-  const orgId = resolveOrgIdForAgentSite(agent.siteName, defaultOrgId, siteOrgIds);
-  const candidates = candidatesByOrg.get(orgId) ?? { byHostname: new Map(), byIp: new Map() };
-  return {
-    orgId,
-    deviceId: resolveDeviceIdForAgent(agent, candidates)
-  };
-}
-
 /**
  * Load s1_org_mappings rows that have a mapped org, keyed by s1_site_id.
  * Only includes rows with non-null org_id (mirrors huntressSync loadMappedOrgIds).

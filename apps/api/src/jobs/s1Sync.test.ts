@@ -5,9 +5,6 @@ import {
   logSyncFailureServerSide,
   normalizeSeverity,
   normalizeThreatStatus,
-  normalizeS1SiteName,
-  resolveAgentSyncTarget,
-  resolveOrgIdForAgentSite,
   resolveDeviceIdForAgent,
   resolveAgentSyncTargetById,
   truncateError
@@ -198,46 +195,6 @@ describe('resolveDeviceIdForAgent', () => {
     };
     expect(resolveDeviceIdForAgent(agent, candidates)).toBe('device-aaa');
   });
-});
-
-describe('SentinelOne site-to-org mapping helpers', () => {
-  it('normalizes provider site names for case-insensitive lookup', () => {
-    expect(normalizeS1SiteName('  Denver Site  ')).toBe('denver site');
-    expect(normalizeS1SiteName('')).toBeNull();
-    expect(normalizeS1SiteName(null)).toBeNull();
-  });
-
-  it('resolves mapped sites to their target org and falls back to the integration org', () => {
-    const mappings = new Map([
-      ['denver site', 'org-denver'],
-      ['nyc', 'org-nyc'],
-    ]);
-
-    expect(resolveOrgIdForAgentSite('Denver Site', 'org-default', mappings)).toBe('org-denver');
-    expect(resolveOrgIdForAgentSite('unknown', 'org-default', mappings)).toBe('org-default');
-    expect(resolveOrgIdForAgentSite(null, 'org-default', mappings)).toBe('org-default');
-  });
-
-  it('uses the mapped org device candidates when resolving an agent', () => {
-    const target = resolveAgentSyncTarget(
-      { siteName: 'Denver Site', computerName: 'server-1' },
-      'org-default',
-      new Map([['denver site', 'org-denver']]),
-      new Map([
-        ['org-default', {
-          byHostname: new Map([['server-1', 'device-default']]),
-          byIp: new Map(),
-        }],
-        ['org-denver', {
-          byHostname: new Map([['server-1', 'device-denver']]),
-          byIp: new Map(),
-        }],
-      ])
-    );
-
-    expect(target).toEqual({ orgId: 'org-denver', deviceId: 'device-denver' });
-  });
-
 });
 
 describe('C2 site-id based routing helpers', () => {
