@@ -34,6 +34,7 @@ export const COLUMN_IDS = [
   'uptime',
   'enrolled',
   'desktopAccess',
+  'reliability',
 ] as const;
 
 export type ColumnId = (typeof COLUMN_IDS)[number];
@@ -66,6 +67,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   uptime: 'Uptime',
   enrolled: 'Enrolled',
   desktopAccess: 'Desktop Access',
+  reliability: 'Reliability',
 };
 
 export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [
